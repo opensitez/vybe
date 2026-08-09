@@ -3,7 +3,8 @@
 use vybe_ast::class_normalize::{NormalMembers, build_normal_method, from_method_stmt, types::*};
 use vybe_ast::{
     Argument, BinOp, ClassKind, ClassMember, ClassModifiers, ConstructorInitializerTarget,
-    ExprKind, Expression, Modifiers, Param, PassBy, PropertySetter, Span, Statement, StmtKind };
+    ExprKind, Expression, Modifiers, Param, PassBy, PropertySetter, Span, Statement, StmtKind,
+};
 
 /// `this.<name>`.
 /// A component read from inside a derived member.
@@ -15,14 +16,16 @@ fn this_field(name: &str) -> Expression {
     Expression::new(ExprKind::Member {
         object: Box::new(Expression::new(ExprKind::This)),
         field: name.to_string(),
-        null_safe: false })
+        null_safe: false,
+    })
 }
 
 fn this_component(index: usize) -> Expression {
     Expression::new(ExprKind::Index {
         object: Box::new(Expression::new(ExprKind::This)),
         index: Box::new(Expression::int(index as i64)),
-        null_safe: false })
+        null_safe: false,
+    })
 }
 
 /// Render a value the way Kotlin does — `emitter/tostring.rs` dispatches on the
@@ -31,7 +34,8 @@ fn kt_render(expr: Expression) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident("__kt_tostring")),
         args: vec![Argument::positional(expr)],
-        optional: false })
+        optional: false,
+    })
 }
 
 fn ret(expr: Expression) -> Vec<Statement> {
@@ -47,7 +51,8 @@ fn no_arg_param(name: &str) -> Param {
         is_rest: false,
         is_kwargs: false,
         is_optional: false,
-        is_nullable: true }
+        is_nullable: true,
+    }
 }
 
 /// `ClassKind::Record` — derive the members a `data class` gets for free.
@@ -106,14 +111,16 @@ fn derive_record_members(class_name: &str, out: &mut NormalMembers) {
             is_rest: false,
             is_kwargs: false,
             is_optional: true,
-            is_nullable: false })
+            is_nullable: false,
+        })
         .collect();
     let copy_call = Expression::new(ExprKind::New {
         class: Box::new(Expression::ident(class_name)),
         args: components
             .iter()
             .map(|comp| Argument::positional(Expression::ident(comp)))
-            .collect() });
+            .collect(),
+    });
     out.instance_methods
         .push(method("copy", copy_params, ret(copy_call)));
 
@@ -124,7 +131,8 @@ fn derive_record_members(class_name: &str, out: &mut NormalMembers) {
         Expression::new(ExprKind::Binary {
             op: BinOp::Concat,
             left: Box::new(left),
-            right: Box::new(right) })
+            right: Box::new(right),
+        })
     };
     text = concat(text, kt_render(this_field(&components[0])));
     for comp in components.iter().skip(1) {
@@ -139,7 +147,8 @@ fn derive_record_members(class_name: &str, out: &mut NormalMembers) {
     let other = "__kt_other";
     let mut eq = Expression::new(ExprKind::IsType {
         expr: Box::new(Expression::ident(other)),
-        type_name: class_name.to_string() });
+        type_name: class_name.to_string(),
+    });
     for comp in &components {
         eq = Expression::new(ExprKind::Binary {
             op: BinOp::And,
@@ -150,7 +159,10 @@ fn derive_record_members(class_name: &str, out: &mut NormalMembers) {
                 right: Box::new(Expression::new(ExprKind::Member {
                     object: Box::new(Expression::ident(other)),
                     field: comp.clone(),
-                    null_safe: false })) })) });
+                    null_safe: false,
+                })),
+            })),
+        });
     }
     out.instance_methods
         .push(method("equals", vec![no_arg_param(other)], ret(eq)));
@@ -161,7 +173,8 @@ fn derive_record_members(class_name: &str, out: &mut NormalMembers) {
         args: vec![Argument::positional(kt_render(Expression::new(
             ExprKind::This,
         )))],
-        optional: false });
+        optional: false,
+    });
     out.instance_methods
         .push(method("hashCode", vec![], ret(hash)));
 
@@ -177,7 +190,8 @@ fn derive_record_members(class_name: &str, out: &mut NormalMembers) {
         out.special_methods.push(SpecialMethod {
             kind: slot,
             canonical_name: canonical,
-            source_name: spelling.to_string() });
+            source_name: spelling.to_string(),
+        });
     }
 }
 
@@ -211,7 +225,9 @@ fn kotlin_interface_defaults() -> AugmentationPolicy {
             constructors: false,
             // An abstract declaration is a REQUIREMENT, not an implementation;
             // copying the bodiless stub in would shadow whatever supplies it.
-            abstract_members: false } }
+            abstract_members: false,
+        },
+    }
 }
 
 fn kotlin_delegation() -> AugmentationPolicy {
@@ -232,7 +248,9 @@ fn kotlin_delegation() -> AugmentationPolicy {
             // are all abstract. Those declarations are the only record of WHAT
             // to forward — the forwarder's body is generated to call the
             // delegate — so excluding them leaves nothing to promote at all.
-            abstract_members: true } }
+            abstract_members: true,
+        },
+    }
 }
 
 /// A copy of `stmt` whose `FunctionDecl` name is `name`.
@@ -275,7 +293,8 @@ pub fn normalize_class(
                     array_bounds: array_bounds.clone(),
                     access: Access::from(m.visibility),
                     readonly: m.is_readonly,
-                    value_type: None };
+                    value_type: None,
+                };
                 out.push_field(m.is_static, field);
             }
             ClassMember::Method(stmt) => {
@@ -316,7 +335,8 @@ pub fn normalize_class(
                     out.special_methods.push(SpecialMethod {
                         kind,
                         canonical_name: canonical.clone(),
-                        source_name: src_name.clone() });
+                        source_name: src_name.clone(),
+                    });
                 }
                 out.push_method(m.is_static, method);
             }
@@ -342,7 +362,8 @@ pub fn normalize_class(
                                 args.iter()
                                     .map(|e| vybe_ast::Argument::positional(e.clone()))
                                     .collect(),
-                            ) },
+                            ),
+                        },
                         None => {
                             if parents.is_empty() {
                                 BaseCall::None
@@ -351,7 +372,8 @@ pub fn normalize_class(
                             }
                         }
                     },
-                    named_name: None };
+                    named_name: None,
+                };
                 out.push_constructor(normalized);
             }
             ClassMember::Property {
@@ -408,7 +430,8 @@ pub fn normalize_class(
                     is_static: m.is_static,
                     getter: getter_method,
                     setter: setter_method,
-                    auto_field: if *is_auto { Some(pname.clone()) } else { None } });
+                    auto_field: if *is_auto { Some(pname.clone()) } else { None },
+                });
             }
             // `class C(d: I) : I by d` — the members of `I` become available on
             // `C`, running on the DELEGATE. That is exactly `Promote`, the mode

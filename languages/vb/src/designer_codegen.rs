@@ -27,7 +27,8 @@ fn property_value_to_vbnet(val: &PropertyValue) -> Option<String> {
         PropertyValue::Double(d) => Some(d.to_string()),
         PropertyValue::Expression(code) => Some(code.clone()),
         // StringArray values need special handling (Items.AddRange etc.) – skip in generic output
-        PropertyValue::StringArray(_) => None }
+        PropertyValue::StringArray(_) => None,
+    }
 }
 
 /// Format a font string "Family, sizepx[, Style]" into a VB.NET Font constructor call.

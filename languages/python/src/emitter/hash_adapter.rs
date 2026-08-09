@@ -32,7 +32,14 @@ fn lset(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
 }
 
-fn call_import(chunks: &mut [Chunk], current: usize, module: &str, name: &str, argc: u8, line: u32) {
+fn call_import(
+    chunks: &mut [Chunk],
+    current: usize,
+    module: &str,
+    name: &str,
+    argc: u8,
+    line: u32,
+) {
     // Register on the CURRENT chunk so `normalize_import_table` remaps this
     // spec `call` through the emitting chunk's own table.
     let idx = chunks[current].add_import(module, name);
@@ -82,7 +89,8 @@ fn algo_sizes(algo: &str) -> Option<(i32, i32)> {
         "sha3_512" => (64, 72),
         "blake2b" => (64, 128),
         "blake2s" => (32, 64),
-        _ => return None })
+        _ => return None,
+    })
 }
 
 /// Widen a data argument in `slot` to something `bytes_from_value` accepts:
@@ -198,18 +206,30 @@ pub fn emit_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
         (
             "digest_size",
             [
-                ("md5", 16), ("sha1", 20), ("sha224", 28), ("sha384", 48),
-                ("sha512", 64), ("sha3_224", 28), ("sha3_384", 48),
-                ("sha3_512", 64), ("blake2b", 64),
+                ("md5", 16),
+                ("sha1", 20),
+                ("sha224", 28),
+                ("sha384", 48),
+                ("sha512", 64),
+                ("sha3_224", 28),
+                ("sha3_384", 48),
+                ("sha3_512", 64),
+                ("blake2b", 64),
             ],
             32,
         ),
         (
             "block_size",
             [
-                ("md5", 64), ("sha1", 64), ("sha224", 64), ("sha384", 128),
-                ("sha512", 128), ("sha3_224", 144), ("sha3_384", 104),
-                ("sha3_512", 72), ("blake2b", 128),
+                ("md5", 64),
+                ("sha1", 64),
+                ("sha224", 64),
+                ("sha384", 128),
+                ("sha512", 128),
+                ("sha3_224", 144),
+                ("sha3_384", 104),
+                ("sha3_512", 72),
+                ("blake2b", 128),
             ],
             64,
         ),

@@ -63,9 +63,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.concat_stringify" => {
             super::string_adapter::emit_concat_stringify(chunks, current, line)
         }
-        "php.compare3" => {
-            super::relational_adapter::emit_compare3(chunks, current, line)
-        }
+        "php.compare3" => super::relational_adapter::emit_compare3(chunks, current, line),
         "php.compare_gt" => {
             let chunk = &mut chunks[current];
             super::relational_adapter::emit_relational_compare(
@@ -620,9 +618,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.strtolower" => {
             crate::emitter::string_adapter::emit_strtolower(chunks, current, argc, line)
         }
-        "php.strrev" => {
-            crate::emitter::string_adapter::emit_strrev(chunks, current, argc, line)
-        }
+        "php.strrev" => crate::emitter::string_adapter::emit_strrev(chunks, current, argc, line),
         "php.str_repeat" => {
             crate::emitter::string_adapter::emit_str_repeat(chunks, current, argc, line)
         }
@@ -655,7 +651,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::string_adapter::emit_base64_decode(chunks, current, argc, line)
         }
         "php.explode" => crate::emitter::string_adapter::emit_explode(chunks, current, argc, line),
-        "php.sscanf" => vybe_compiler::primitives::sprintf::emit_sscanf(chunks, current, argc, line),
+        "php.sscanf" => {
+            vybe_compiler::primitives::sprintf::emit_sscanf(chunks, current, argc, line)
+        }
         "php.uniqid" => {
             crate::emitter::string_adapter::emit_php_uniqid(chunks, current, argc, line)
         }
@@ -672,9 +670,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.str_word_count" => {
             crate::emitter::string_adapter::emit_str_word_count(chunks, current, argc, line)
         }
-        "php.var_dump" => {
-            super::output_adapter::emit_php_var_dump(chunks, current, argc, line)
-        }
+        "php.var_dump" => super::output_adapter::emit_php_var_dump(chunks, current, argc, line),
         "php.var_dump_stringify" => {
             crate::emitter::string_adapter::emit_var_dump_stringify(chunks, current, argc, line)
         }
@@ -738,9 +734,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.strripos" => {
             crate::emitter::string_adapter::emit_strripos(chunks, current, argc, line)
         }
-        "php.strrpos" => {
-            crate::emitter::string_adapter::emit_strrpos(chunks, current, argc, line)
-        }
+        "php.strrpos" => crate::emitter::string_adapter::emit_strrpos(chunks, current, argc, line),
         "php.strpos" => crate::emitter::string_adapter::emit_strpos(chunks, current, argc, line),
         "php.strtr" => crate::emitter::string_adapter::emit_strtr(chunks, current, argc, line),
         "php.quotemeta" => {
@@ -1526,6 +1520,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
 
         // ── Fortran `max(a, b, c, ...)` / `min(a, b, c, ...)` — variadic.
         // Pure WASM (chained f64.max / f64.min); no host calls.
-        _ => return false }
+        _ => return false,
+    }
     true
 }

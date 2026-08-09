@@ -1,8 +1,8 @@
 use vybe_compiler::primitives::instructions::{core_wasm, host};
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
-use vybe_compiler::primitives::{collections, dict, ops, strings, tuples};
+use vybe_compiler::primitives::{collections, dict, ops, sets, strings, tuples};
 
 fn emit_throw_python_exception(chunk: &mut Chunk, exc_name: &str, message: &str, line: u32) {
     chunk.emit_struct_new(0, 0, line);
@@ -1354,7 +1354,12 @@ pub fn emit_getitem(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::I32_OR, line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
-    emit_throw_python_exception(&mut chunks[current], "IndexError", "list index out of range", line);
+    emit_throw_python_exception(
+        &mut chunks[current],
+        "IndexError",
+        "list index out of range",
+        line,
+    );
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
@@ -1468,7 +1473,7 @@ pub fn emit_clear(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    call_import(chunks, current, "ecma:set", "clear", 1, line);
+    sets::emit_clear(chunks, current, line);
     chunks[current].emit_end(line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
@@ -1829,11 +1834,11 @@ pub fn emit_py_sum(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
 pub fn emit_make_set(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     if argc == 0 {
-        call_import(chunks, current, "ecma:set", "new", 0, line);
+        sets::emit_new(chunks, current, line);
         return;
     }
     call_import(chunks, current, "ecma:array", "from", 1, line);
-    call_import(chunks, current, "ecma:set", "fromIterable", 1, line);
+    sets::emit_from_iterable(chunks, current, line);
 }
 
 /// `frozenset(iterable)` — a real `ecma:set` (so every set op/method works),
@@ -1857,6 +1862,24 @@ pub fn emit_frozenset(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     c.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
 }
 
+/// Python frozenset hash key. The ECMA Map/Set substrate correctly uses object
+/// identity for object keys, but Python frozenset keys compare structurally. For
+/// Python dict/set-key positions, normalize the frozen set to a deterministic
+/// string key built from sorted set values.
+pub fn emit_frozenset_key(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc != 1 {
+        return;
+    }
+    let base = stash_args(chunks, current, 1, line);
+    chunks[current].emit_string_const("__py_frozenset:", line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
+    sets::emit_values_array(chunks, current, line);
+    collections::emit_sort(chunks, current, line);
+    chunks[current].emit_string_const("\x1f", line);
+    collections::emit_join(chunks, current, line);
+    ops::emit_dyn_add(&mut chunks[current], line);
+}
+
 /// Set predicate methods (`issubset`/`issuperset`/`isdisjoint`) compose the
 /// matching `ecma:set` host fn, which returns a raw i32. Python needs a real
 /// `bool` so `print` renders `True`/`False`, not `1`/`0`.
@@ -1864,15 +1887,127 @@ pub fn emit_set_predicate(chunks: &mut [Chunk], current: usize, host_fn: &str, l
     let base = stash_args(chunks, current, 2, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
-    call_import(chunks, current, "ecma:set", host_fn, 2, line);
+    match host_fn {
+        "isSubsetOf" => sets::emit_is_subset_of(chunks, current, line),
+        "isSupersetOf" => sets::emit_is_superset_of(chunks, current, line),
+        "isDisjointFrom" => sets::emit_is_disjoint_from(chunks, current, line),
+        _ => return,
+    }
     vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
+}
+
+fn emit_preserve_frozenset_result(chunks: &mut [Chunk], current: usize, recv: u16, line: u32) {
+    let out = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    let frozen_key = chunks[current].add_constant(vybe_runtime::Value::String(
+        std::sync::Arc::from("__frozenset"),
+    ));
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, frozen_key, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_string_const("Set", line);
+    let type_key =
+        chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from("__type")));
+    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    core_wasm::bool_const(&mut chunks[current], line, true);
+    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, frozen_key, line);
+
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+}
+
+fn emit_python_set_arg(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    emit_make_set(chunks, current, 1, line);
+}
+
+pub fn emit_set_union(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc == 0 {
+        sets::emit_new(chunks, current, line);
+        return;
+    }
+    let base = stash_args(chunks, current, argc, line);
+    let out = chunks[current].alloc_scratch(1);
+    sets::emit_new(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    for offset in 0..argc as u16 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+        if offset == 0 {
+            chunks[current].emit_op_u16(Op::LOCAL_GET, base + offset, line);
+        } else {
+            emit_python_set_arg(chunks, current, base + offset, line);
+        }
+        sets::emit_union_with(chunks, current, line);
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    emit_preserve_frozenset_result(chunks, current, base, line);
+}
+
+pub fn emit_set_intersection(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc == 0 {
+        sets::emit_new(chunks, current, line);
+        return;
+    }
+    let base = stash_args(chunks, current, argc, line);
+    let out = chunks[current].alloc_scratch(1);
+    sets::emit_new(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
+    sets::emit_union(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    for offset in 1..argc as u16 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+        emit_python_set_arg(chunks, current, base + offset, line);
+        sets::emit_intersection(chunks, current, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    emit_preserve_frozenset_result(chunks, current, base, line);
+}
+
+pub fn emit_set_difference(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc == 0 {
+        sets::emit_new(chunks, current, line);
+        return;
+    }
+    let base = stash_args(chunks, current, argc, line);
+    let out = chunks[current].alloc_scratch(1);
+    sets::emit_new(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
+    sets::emit_union(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    for offset in 1..argc as u16 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+        emit_python_set_arg(chunks, current, base + offset, line);
+        sets::emit_difference(chunks, current, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    emit_preserve_frozenset_result(chunks, current, base, line);
+}
+
+pub fn emit_set_symmetric_difference(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc != 2 {
+        return;
+    }
+    let base = stash_args(chunks, current, argc, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
+    emit_python_set_arg(chunks, current, base + 1, line);
+    sets::emit_symmetric_difference(chunks, current, line);
+    emit_preserve_frozenset_result(chunks, current, base, line);
 }
 
 pub fn emit_add(chunks: &mut [Chunk], current: usize, line: u32) {
     let base = stash_args(chunks, current, 2, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
-    call_import(chunks, current, "ecma:set", "add", 2, line);
+    sets::emit_add(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
@@ -1898,7 +2033,7 @@ fn emit_remove_impl(chunks: &mut [Chunk], current: usize, raises: bool, line: u3
     // `ecma:set.delete` returns a bool: whether the member was present.
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
-    call_import(chunks, current, "ecma:set", "delete", 2, line);
+    sets::emit_delete(chunks, current, line);
     if raises {
         // `set.remove(x)` raises KeyError when x is absent; `discard` does not.
         vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
@@ -1960,9 +2095,9 @@ pub fn emit_copy(chunks: &mut [Chunk], current: usize, line: u32) {
     collections::emit_slice(chunks, current, line);
 
     chunks[current].emit_else(line);
-    call_import(chunks, current, "ecma:set", "new", 0, line);
+    sets::emit_new(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    call_import(chunks, current, "ecma:set", "union", 2, line);
+    sets::emit_union(chunks, current, line);
     chunks[current].emit_end(line);
 
     chunks[current].emit_else(line);
@@ -2006,7 +2141,7 @@ pub fn emit_update(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
-    call_import(chunks, current, "ecma:set", "unionWith", 2, line);
+    sets::emit_union_with(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_else(line);
@@ -2025,8 +2160,13 @@ pub fn emit_update(chunks: &mut [Chunk], current: usize, line: u32) {
 fn emit_set_update_call(chunks: &mut [Chunk], current: usize, func: &str, line: u32) {
     let base = stash_args(chunks, current, 2, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
-    call_import(chunks, current, "ecma:set", func, 2, line);
+    emit_python_set_arg(chunks, current, base + 1, line);
+    match func {
+        "intersectWith" => sets::emit_intersect_with(chunks, current, line),
+        "exceptWith" => sets::emit_except_with(chunks, current, line),
+        "symmetricExceptWith" => sets::emit_symmetric_except_with(chunks, current, line),
+        _ => return,
+    }
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
@@ -2109,7 +2249,7 @@ pub fn emit_pop(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         // delete v from the set
         chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-        call_import(chunks, current, "ecma:set", "delete", 2, line);
+        sets::emit_delete(chunks, current, line);
         chunks[current].emit_op(Op::DROP, line);
 
         chunks[current].emit_end(line);

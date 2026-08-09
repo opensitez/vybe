@@ -111,21 +111,8 @@ fn fizzbuzz() {
     assert_eq!(
         out,
         vec![
-            "1",
-            "2",
-            "Fizz",
-            "4",
-            "Buzz",
-            "Fizz",
-            "7",
-            "8",
-            "Fizz",
-            "10",
-            "11",
-            "Fizz",
-            "13",
-            "14",
-            "FizzBuzz",
+            "1", "2", "Fizz", "4", "Buzz", "Fizz", "7", "8", "Fizz", "10", "11", "Fizz", "13",
+            "14", "FizzBuzz",
         ],
     );
 }

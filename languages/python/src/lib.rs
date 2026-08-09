@@ -31,7 +31,8 @@ pub fn register() {
         emit_dispatch: Some(emitter::dispatch::dispatch),
         normalize_class: Some(normalize_class::normalize_class),
         register_tree: Some(emitter::tree_register::register_namespace_tree),
-        expand_source: None });
+        expand_source: None,
+    });
     vybe_runtime::registry::register_hooks(
         "python",
         vybe_runtime::registry::LanguageHooks {

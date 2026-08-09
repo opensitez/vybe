@@ -10,8 +10,10 @@
 //! `ecma:array.isArray`, because one Kotlin spelling covers both.
 
 use std::sync::Arc;
-use vybe_compiler::primitives::{collections as common_collections, dict, loops, ops};
 use vybe_compiler::primitives::instructions::{core_wasm, host};
+use vybe_compiler::primitives::{
+    callable, collections as common_collections, dict, loops, ops, sets,
+};
 use vybe_runtime::Chunk;
 use vybe_runtime::Value;
 use vybe_runtime::opcode::Op;
@@ -66,7 +68,7 @@ fn call_fn(chunks: &mut [Chunk], current: usize, fn_slot: u16, args: &[u16], lin
     for &a in args {
         get(chunks, current, a, line);
     }
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, args.len() as u8, 1, line);
+    callable::emit_direct_invoke(chunks, current, args.len() as u8, line);
 }
 
 /// Iterate the map in `m`, leaving each key in `key` and value in `value`
@@ -96,7 +98,14 @@ fn for_each_entry(
 }
 
 /// Build the `Map.Entry` for the current `(key, value)` into `entry`.
-fn make_entry(chunks: &mut Vec<Chunk>, current: usize, key: u16, value: u16, entry: u16, line: u32) {
+fn make_entry(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    key: u16,
+    value: u16,
+    entry: u16,
+    line: u32,
+) {
     get(chunks, current, key, line);
     get(chunks, current, value, line);
     crate::emitter::collections::emit_make_entry(chunks, current, line);
@@ -141,7 +150,13 @@ fn emit_entry_op(chunks: &mut Vec<Chunk>, current: usize, op: EntryOp, line: u32
             chunks[current].emit_end(line);
         }
         EntryOp::FilterProjected { on_key } => {
-            call_fn(chunks, current, f, &[if on_key { key } else { value }], line);
+            call_fn(
+                chunks,
+                current,
+                f,
+                &[if on_key { key } else { value }],
+                line,
+            );
             truthy(chunks, current, line);
             chunks[current].emit_if(line);
             get(chunks, current, out, line);
@@ -177,11 +192,21 @@ pub fn emit_map_filter_not(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, l
 }
 
 pub fn emit_filter_keys(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
-    emit_entry_op(chunks, current, EntryOp::FilterProjected { on_key: true }, line);
+    emit_entry_op(
+        chunks,
+        current,
+        EntryOp::FilterProjected { on_key: true },
+        line,
+    );
 }
 
 pub fn emit_filter_values(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
-    emit_entry_op(chunks, current, EntryOp::FilterProjected { on_key: false }, line);
+    emit_entry_op(
+        chunks,
+        current,
+        EntryOp::FilterProjected { on_key: false },
+        line,
+    );
 }
 
 pub fn emit_map_values_transform(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
@@ -747,6 +772,15 @@ pub fn emit_remove_any(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     ops::emit_i32_to_bool(&mut chunks[current], line);
     chunks[current].emit_end(line);
     chunks[current].emit_else(line);
+    get(chunks, current, recv, line);
+    crate::emitter::collections::emit_is_ecma_set(chunks, current, line);
+    truthy(chunks, current, line);
+    chunks[current].emit_if_value(line);
+    get(chunks, current, recv, line);
+    get(chunks, current, x, line);
+    crate::emitter::collections::emit_set_delete_value_eq(chunks, current, line);
+    ops::emit_i32_to_bool(&mut chunks[current], line);
+    chunks[current].emit_else(line);
     // Dict-backed receiver. Keys are stored stringified — normalize with
     // KOTLIN's tostring, the same renderer `kotlin_key_expr` stored them
     // with: a data-class element's key is its structural `Box(v=1)`, which
@@ -784,6 +818,7 @@ pub fn emit_remove_any(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     get(chunks, current, prev, line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
 }
 
 /// `clear()` for ANY receiver.
@@ -810,7 +845,15 @@ pub fn emit_clear_any(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: 
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
     get(chunks, current, recv, line);
+    crate::emitter::collections::emit_is_ecma_set(chunks, current, line);
+    truthy(chunks, current, line);
+    chunks[current].emit_if_value(line);
+    get(chunks, current, recv, line);
+    sets::emit_clear(chunks, current, line);
+    chunks[current].emit_else(line);
+    get(chunks, current, recv, line);
     dict::emit_method_clear_stack(chunks, current, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }

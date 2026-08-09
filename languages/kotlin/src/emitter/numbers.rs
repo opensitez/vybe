@@ -252,13 +252,7 @@ pub fn emit_compare_zero(chunks: &mut Vec<Chunk>, current: usize, op: CompareZer
 /// Fixed-width integer casts: `toByte()`/`toShort()` sign-extend from the
 /// low bits (255.toByte() is -1, like the JVM); `toUByte()`/`toUShort()`
 /// mask unsigned. `math.trunc` alone never wrapped.
-pub fn emit_wrap_int(
-    chunks: &mut Vec<Chunk>,
-    current: usize,
-    bits: u8,
-    signed: bool,
-    line: u32,
-) {
+pub fn emit_wrap_int(chunks: &mut Vec<Chunk>, current: usize, bits: u8, signed: bool, line: u32) {
     let chunk = &mut chunks[current];
     // `Number` first: `"-128".toByte()` arrives with a STRING receiver, and
     // `toI32` traps on it. Numbers pass through unchanged.
@@ -273,7 +267,11 @@ pub fn emit_wrap_int(
         chunk.emit_i32_const(shift, line);
         chunk.emit_op(Op::I32_SHR_S, line);
     } else {
-        let mask = if bits >= 32 { -1 } else { (1i64 << bits) as i32 - 1 };
+        let mask = if bits >= 32 {
+            -1
+        } else {
+            (1i64 << bits) as i32 - 1
+        };
         chunk.emit_i32_const(mask, line);
         chunk.emit_op(Op::I32_AND, line);
     }

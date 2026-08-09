@@ -70,10 +70,13 @@ end module shapes
                         } if name.eq_ignore_ascii_case("Shape") => {
                             Some((parents, modifiers, members))
                         }
-                        _ => None },
-                    _ => None })
+                        _ => None,
+                    },
+                    _ => None,
+                })
             }
-            _ => None })
+            _ => None,
+        })
         .expect("missing Shape declaration");
 
     assert_eq!(parents, &["Base".to_string()]);
@@ -85,8 +88,10 @@ end module shapes
         .filter_map(|member| match member {
             ClassMember::Method(stmt) => match &stmt.kind {
                 StmtKind::FunctionDecl { name, .. } => Some(name.as_str()),
-                _ => None },
-            _ => None })
+                _ => None,
+            },
+            _ => None,
+        })
         .collect();
     assert!(method_names.contains(&"area"));
     assert!(!method_names.contains(&"area_iface"));
@@ -98,8 +103,10 @@ end module shapes
                 StmtKind::FunctionDecl {
                     name, modifiers, ..
                 } if name.eq_ignore_ascii_case("area") => Some(modifiers),
-                _ => None },
-            _ => None })
+                _ => None,
+            },
+            _ => None,
+        })
         .expect("missing area binding");
 
     assert_eq!(area_modifiers.visibility, Visibility::Private);

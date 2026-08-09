@@ -152,7 +152,8 @@ fn if_multiple_statements_in_body() {
 
 #[test]
 fn single_line_if_false_path() {
-    let out = run_prints("program t\nif (1 == 0) print *, \"no\"\nprint *, \"ok\"\nend program t\n");
+    let out =
+        run_prints("program t\nif (1 == 0) print *, \"no\"\nprint *, \"ok\"\nend program t\n");
     assert_eq!(out, vec!["ok"]);
 }
 

@@ -5,9 +5,9 @@
 //! struct so `$ref->getName()` dispatches via STRUCT_GET + CALL_REF.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::reflection;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
-use vybe_compiler::primitives::reflection;
 
 fn sconst(c: &mut Chunk, s: &str) -> u16 {
     c.add_constant(Value::String(Arc::from(s)))

@@ -1075,15 +1075,12 @@ pub fn emit_mysqli_stmt_true(chunks: &mut [Chunk], current: usize, argc: u8, lin
 /// channel `wasi:sql` specifies is `list<string>`, so the driver re-parses the
 /// literal anyway and a per-arg type would have nowhere to go.
 ///
-/// php binds by REFERENCE and re-reads each variable at `execute()`. This
-/// captures by value, which is right for the bind-then-execute shape; a
-/// rebind-and-re-execute loop still needs the wider `&$v` support.
-pub fn emit_php_mysqli_stmt_bind_param(
-    chunks: &mut [Chunk],
-    current: usize,
-    argc: u8,
-    line: u32,
-) {
+/// php binds by REFERENCE and re-reads each variable at `execute()`. What
+/// arrives here is therefore a reference CELL, not a value — the php walker
+/// supplies the `&` php leaves unspelled. Storing it whole is deliberate: the
+/// shared `pdo_statement_execute` reads through it at execute time, which is
+/// where php reads it too, so a rebind-and-re-execute loop sees the new value.
+pub fn emit_php_mysqli_stmt_bind_param(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let value_count = argc.saturating_sub(2) as usize;
     let chunk = &mut chunks[current];
 

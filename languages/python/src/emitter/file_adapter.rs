@@ -409,9 +409,23 @@ pub fn emit_mkstemp(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 pub fn emit_samefile(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let base = stash_args(chunks, current, argc, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
-    call_import(chunks, current, "wasi:filesystem", "pathGetFullPath", 1, line);
+    call_import(
+        chunks,
+        current,
+        "wasi:filesystem",
+        "pathGetFullPath",
+        1,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
-    call_import(chunks, current, "wasi:filesystem", "pathGetFullPath", 1, line);
+    call_import(
+        chunks,
+        current,
+        "wasi:filesystem",
+        "pathGetFullPath",
+        1,
+        line,
+    );
     call_import(chunks, current, "wasm:js-string", "equals", 2, line);
     ops::emit_i32_to_bool(&mut chunks[current], line);
 }

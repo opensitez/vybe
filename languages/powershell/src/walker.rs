@@ -3,18 +3,18 @@
 //! Transforms Pest parse trees into the shared JS-shaped AST used by compiler
 //! primitives.
 
-use pest::iterators::Pair;
-use pest::Parser;
-use vybe_ast::*;
 use super::Rule;
+use pest::Parser;
+use pest::iterators::Pair;
+use vybe_ast::*;
 
 use std::collections::HashMap;
 use std::collections::VecDeque;
 
 pub fn parse(source: &str) -> Result<Module, String> {
     let source = normalize_source(source);
-    let mut pairs =
-        super::PowerShellParser::parse(Rule::program, &source).map_err(|e| format!("Parse error: {e}"))?;
+    let mut pairs = super::PowerShellParser::parse(Rule::program, &source)
+        .map_err(|e| format!("Parse error: {e}"))?;
 
     let pair = pairs
         .next()
@@ -459,7 +459,11 @@ fn collect_aliases(stmt: &Statement, out: &mut HashMap<String, String>) {
         }
         let named = |key: &str| {
             args.iter()
-                .find(|a| a.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(key)))
+                .find(|a| {
+                    a.name
+                        .as_deref()
+                        .is_some_and(|n| n.eq_ignore_ascii_case(key))
+                })
                 .map(|a| a.value.clone())
         };
         let positional: Vec<&Argument> = args.iter().filter(|a| a.name.is_none()).collect();
@@ -1080,7 +1084,12 @@ fn parse_switch_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
             // CONDITION is tested against the subject: pattern match, not
             // equality.
             Rule::switch_flag => {
-                matcher = match child.as_str().trim_start_matches('-').to_lowercase().as_str() {
+                matcher = match child
+                    .as_str()
+                    .trim_start_matches('-')
+                    .to_lowercase()
+                    .as_str()
+                {
                     "regex" => Some(false),
                     "wildcard" => Some(true),
                     _ => matcher,
@@ -1448,10 +1457,12 @@ fn parse_try_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
             // children are `kw_finally` and `block` — neither is a statement, so
             // every `finally` body came out empty and simply never ran.
             Rule::finally_clause => {
-                finally = Some(match child.into_inner().find(|p| p.as_rule() == Rule::block) {
-                    Some(block) => parse_block_statements(block)?,
-                    None => Vec::new(),
-                });
+                finally = Some(
+                    match child.into_inner().find(|p| p.as_rule() == Rule::block) {
+                        Some(block) => parse_block_statements(block)?,
+                        None => Vec::new(),
+                    },
+                );
             }
             _ => {}
         }
@@ -1503,10 +1514,7 @@ fn parse_throw_stmt(pair: Pair<Rule>) -> Statement {
         .into_inner()
         .find(|c| c.as_rule() == Rule::expression)
         .map(walk_expr);
-    Statement::new(StmtKind::Throw {
-        expr,
-        cause: None,
-    })
+    Statement::new(StmtKind::Throw { expr, cause: None })
 }
 
 fn parse_break_stmt(pair: Pair<Rule>) -> Statement {
@@ -1987,9 +1995,7 @@ fn parse_command_parts(tokens: &[String]) -> Option<(Expression, Vec<Argument>)>
             if let Some(next) = tokens.get(i + 1) {
                 // `-x -5` passes -5 TO `-x`; a leading `-` only starts another
                 // parameter when what follows is a name, not a number.
-                if (next.starts_with('-') && !is_negative_number(next))
-                    || next.trim().is_empty()
-                {
+                if (next.starts_with('-') && !is_negative_number(next)) || next.trim().is_empty() {
                     args.push(Argument {
                         value: Expression::bool(true),
                         name: Some(flag.to_string()),
@@ -2070,10 +2076,7 @@ fn is_negative_number(token: &str) -> bool {
 /// a hashtable literal and are NOT — the character only splats before a name.
 fn splat_token_name(token: &str) -> Option<&str> {
     let rest = token.strip_prefix('@')?;
-    let ok = !rest.is_empty()
-        && rest
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_');
+    let ok = !rest.is_empty() && rest.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
     ok.then_some(rest)
 }
 
@@ -2448,7 +2451,11 @@ fn walk_format(pair: Pair<Rule>) -> Expression {
         match child.as_rule() {
             Rule::format_op => saw_op = true,
             Rule::format_args => {
-                args.extend(child.into_inner().map(|a| Argument::positional(walk_expr(a))));
+                args.extend(
+                    child
+                        .into_inner()
+                        .map(|a| Argument::positional(walk_expr(a))),
+                );
             }
             _ => {}
         }
@@ -2542,7 +2549,10 @@ fn walk_cast(pair: Pair<Rule>) -> Expression {
     // `0`. `!!$x` reaches the profile's own truthiness rule and yields a real
     // boolean, so the conversion is expressed with nodes the compiler already
     // owns rather than a new cast target.
-    if matches!(type_name.to_lowercase().as_str(), "bool" | "boolean" | "system.boolean") {
+    if matches!(
+        type_name.to_lowercase().as_str(),
+        "bool" | "boolean" | "system.boolean"
+    ) {
         return negate(negate(expr));
     }
 
@@ -2639,10 +2649,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Expression {
                 // shared `[builtin_slots.array] contains` slot already lowers.
                 // `BinOp::In` takes the needle on the left, matching how
                 // `-contains` itself is built above.
-                if !is_static
-                    && args.len() == 1
-                    && name.eq_ignore_ascii_case("ContainsValue")
-                {
+                if !is_static && args.len() == 1 && name.eq_ignore_ascii_case("ContainsValue") {
                     let values = method_call_expr(expr, "__ps_ht_values", Vec::new());
                     let mut args = args;
                     expr = Expression::new(ExprKind::Binary {
@@ -2683,10 +2690,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Expression {
                 // this is the call itself — the same thing `& $sb` already
                 // compiles to.
                 if !is_static
-                    && matches!(
-                        name.to_lowercase().as_str(),
-                        "invoke" | "invokereturnasis"
-                    )
+                    && matches!(name.to_lowercase().as_str(), "invoke" | "invokereturnasis")
                 {
                     expr = Expression::new(ExprKind::Call {
                         callee: Box::new(expr),
@@ -2949,22 +2953,27 @@ fn normalize_cmdlet(name: &str, args: &[Argument]) -> Option<Expression> {
     let positional: Vec<&Argument> = args.iter().filter(|a| a.name.is_none()).collect();
     let named = |key: &str| {
         args.iter()
-            .find(|a| a.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(key)))
+            .find(|a| {
+                a.name
+                    .as_deref()
+                    .is_some_and(|n| n.eq_ignore_ascii_case(key))
+            })
             .map(|a| a.value.clone())
     };
 
     match name.to_lowercase().as_str() {
         // `New-Object System.Text.StringBuilder` / `-TypeName … -ArgumentList …`
         "new-object" => {
-            let type_expr = named("TypeName").or_else(|| positional.first().map(|a| a.value.clone()))?;
+            let type_expr =
+                named("TypeName").or_else(|| positional.first().map(|a| a.value.clone()))?;
             let type_name = literal_text(&type_expr)?;
 
             let mut ctor_args: Vec<Argument> = Vec::new();
             if let Some(list) = named("ArgumentList") {
                 match list.kind {
-                    ExprKind::Array(elems) => ctor_args.extend(
-                        elems.into_iter().map(|e| Argument::positional(e.value)),
-                    ),
+                    ExprKind::Array(elems) => {
+                        ctor_args.extend(elems.into_iter().map(|e| Argument::positional(e.value)))
+                    }
                     _ => ctor_args.push(Argument::positional(list)),
                 }
             } else {
@@ -2992,7 +3001,11 @@ fn normalize_cmdlet(name: &str, args: &[Argument]) -> Option<Expression> {
         "set-content" => {
             let path = named("Path").or_else(|| positional.first().map(|a| a.value.clone()))?;
             let value = named("Value").or_else(|| positional.get(1).map(|a| a.value.clone()))?;
-            Some(dotnet_static_call("System.IO.File", "WriteAllText", vec![path, value]))
+            Some(dotnet_static_call(
+                "System.IO.File",
+                "WriteAllText",
+                vec![path, value],
+            ))
         }
         "remove-item" => Some(dotnet_static_call(
             "System.IO.File",
@@ -3004,9 +3017,9 @@ fn normalize_cmdlet(name: &str, args: &[Argument]) -> Option<Expression> {
         // the assignment `$o.X = 1` written the long way.
         "add-member" => {
             let target = positional.first().map(|a| a.value.clone())?;
-            let name = literal_text(&named("Name").or_else(|| {
-                positional.get(1).map(|a| a.value.clone())
-            })?)?;
+            let name = literal_text(
+                &named("Name").or_else(|| positional.get(1).map(|a| a.value.clone()))?,
+            )?;
             let value = named("Value").or_else(|| positional.get(2).map(|a| a.value.clone()))?;
             Some(Expression::new(ExprKind::Assign {
                 target: Box::new(Expression::new(ExprKind::Member {
@@ -3020,9 +3033,12 @@ fn normalize_cmdlet(name: &str, args: &[Argument]) -> Option<Expression> {
 
         "join-path" => {
             let head = named("Path").or_else(|| positional.first().map(|a| a.value.clone()))?;
-            let tail =
-                named("ChildPath").or_else(|| positional.get(1).map(|a| a.value.clone()))?;
-            Some(dotnet_static_call("System.IO.Path", "Combine", vec![head, tail]))
+            let tail = named("ChildPath").or_else(|| positional.get(1).map(|a| a.value.clone()))?;
+            Some(dotnet_static_call(
+                "System.IO.Path",
+                "Combine",
+                vec![head, tail],
+            ))
         }
 
         // `Set-Variable -Name x -Value 1` IS an assignment to `$x` — the same
@@ -3056,8 +3072,8 @@ fn normalize_cmdlet(name: &str, args: &[Argument]) -> Option<Expression> {
             let ms = match named("Milliseconds") {
                 Some(v) => v,
                 None => {
-                    let secs = named("Seconds")
-                        .or_else(|| positional.first().map(|a| a.value.clone()))?;
+                    let secs =
+                        named("Seconds").or_else(|| positional.first().map(|a| a.value.clone()))?;
                     Expression::new(ExprKind::Binary {
                         op: BinOp::Mul,
                         left: Box::new(secs),
@@ -3065,7 +3081,11 @@ fn normalize_cmdlet(name: &str, args: &[Argument]) -> Option<Expression> {
                     })
                 }
             };
-            Some(dotnet_static_call("System.Threading.Thread", "Sleep", vec![ms]))
+            Some(dotnet_static_call(
+                "System.Threading.Thread",
+                "Sleep",
+                vec![ms],
+            ))
         }
 
         _ => None,
@@ -3145,7 +3165,9 @@ fn walk_hash_literal(pair: Pair<Rule>) -> Expression {
             continue;
         }
         let mut parts = entry.into_inner();
-        let Some(key_pair) = parts.next() else { continue };
+        let Some(key_pair) = parts.next() else {
+            continue;
+        };
         let key = hash_key_text(key_pair);
         let value = parts.next().map(walk_expr).unwrap_or_else(Expression::null);
         props.push(ObjectProperty::KeyValue {
@@ -3308,7 +3330,9 @@ fn walk_number(raw: &str) -> Expression {
 }
 
 fn walk_var_ref(raw: &str) -> Expression {
-    let name = raw.trim_start_matches('$').trim_matches(|c| c == '{' || c == '}');
+    let name = raw
+        .trim_start_matches('$')
+        .trim_matches(|c| c == '{' || c == '}');
     match name.to_lowercase().as_str() {
         "true" => Expression::bool(true),
         "false" => Expression::bool(false),
@@ -3409,7 +3433,10 @@ fn build_binary(op_raw: &str, left: Expression, right: Expression) -> Expression
         let stripped = op_text.trim_start_matches('-');
         // `-ceq` / `-ieq` are the case-sensitive / case-insensitive forms of
         // `-eq`; they select comparison casing, not a different operator.
-        match stripped.strip_prefix('c').or_else(|| stripped.strip_prefix('i')) {
+        match stripped
+            .strip_prefix('c')
+            .or_else(|| stripped.strip_prefix('i'))
+        {
             Some(rest) if is_comparison_word(rest) => rest.to_string(),
             _ => stripped.to_string(),
         }
@@ -3437,7 +3464,11 @@ fn build_binary(op_raw: &str, left: Expression, right: Expression) -> Expression
             "IsMatch",
             vec![left, pattern],
         );
-        return if word.starts_with("not") { negate(test) } else { test };
+        return if word.starts_with("not") {
+            negate(test)
+        } else {
+            test
+        };
     }
 
     // `-is` / `-isnot` are TYPE TESTS. `BinOp::Is` is reference equality
@@ -3454,14 +3485,14 @@ fn build_binary(op_raw: &str, left: Expression, right: Expression) -> Expression
                 op: BinOp::In,
                 left: Box::new(right),
                 right: Box::new(left),
-            }))
+            }));
         }
         "notin" => {
             return negate(Expression::new(ExprKind::Binary {
                 op: BinOp::In,
                 left: Box::new(left),
                 right: Box::new(right),
-            }))
+            }));
         }
         _ => {}
     }
@@ -3601,8 +3632,9 @@ fn type_test_expr(value: Expression, type_expr: &Expression) -> Expression {
 
     let tag = match leaf.trim_end_matches("[]") {
         "int" | "int16" | "int32" | "int64" | "long" | "short" | "byte" | "sbyte" | "uint"
-        | "uint16" | "uint32" | "uint64" | "ushort" | "double" | "single" | "float"
-        | "decimal" => Some("number"),
+        | "uint16" | "uint32" | "uint64" | "ushort" | "double" | "single" | "float" | "decimal" => {
+            Some("number")
+        }
         "string" | "char" => Some("string"),
         "bool" | "boolean" => Some("boolean"),
         // A PowerShell hashtable is an ordinary object here — `@{a=1}` walks to
@@ -3783,7 +3815,10 @@ fn parse_double_quoted_string(text: &str) -> Expression {
                 }
 
                 let name = chars[(i + 1)..end].iter().collect::<String>();
-                parts.push(InterpolPart::Expr(parse_script_expression(&format!("${}", name))));
+                parts.push(InterpolPart::Expr(parse_script_expression(&format!(
+                    "${}",
+                    name
+                ))));
                 i = end;
             }
 
@@ -3907,7 +3942,12 @@ fn is_ps_variable_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == ':'
 }
 
-fn find_matching_in_chars(chars: &[char], open_idx: usize, open: char, close: char) -> Option<usize> {
+fn find_matching_in_chars(
+    chars: &[char],
+    open_idx: usize,
+    open: char,
+    close: char,
+) -> Option<usize> {
     let mut in_single = false;
     let mut in_double = false;
     let mut escaped = false;

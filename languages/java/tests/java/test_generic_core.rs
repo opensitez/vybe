@@ -29,7 +29,7 @@ fn java_var_type_hint(body: &[Statement], name: &str) -> Option<String> {
         };
         for decl in declarations {
             if matches!(&decl.pattern, BindingPattern::Ident(var) if var == name) {
-                return decl.type_hint.clone();
+                return decl.type_hint.as_ref().map(ToString::to_string);
             }
         }
     }

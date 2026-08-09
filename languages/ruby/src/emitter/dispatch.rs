@@ -15,7 +15,8 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "ruby.to_s" => emit_to_s(&mut chunks[current], line),
         name if crate::emitter::runtime_adapter::emit_helper(name, chunks, current, argc, line) => {
         }
-        _ => return false }
+        _ => return false,
+    }
     true
 }
 

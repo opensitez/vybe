@@ -30,17 +30,25 @@ block_comment = _{ "(;" ~ (block_comment | (!";" ~ ANY) | (";" ~ !")"))* ~ ";)" 
 // execution semantics, so they are skipped wherever they appear, like comments.
 // `(@` never begins real code, so this is unambiguous. Strings are matched so a
 // `)` inside a string literal does not close the group early.
+// Comments are matched BEFORE the paren group: a `(; ) ;)` block comment or a
+// `;; bla)` line comment inside an annotation carries an unbalanced `)` that
+// would otherwise close the annotation early.
 annotation  = _{ "(@" ~ annot_item* ~ ")" }
 annot_group = _{ "(" ~ annot_item* ~ ")" }
-annot_item  = _{ annot_group | string | (!("(" | ")") ~ ANY) }
+annot_item  = _{ block_comment | line_comment | annot_group | string | (!("(" | ")") ~ ANY) }
 
 // ── Atoms ────────────────────────────────────────────────────────────────────
 
-// $identifier — may contain most printable ASCII except whitespace and parens
-id = @{
-    "$" ~ (ASCII_ALPHANUMERIC | "_" | "." | "-" | "+" | "*" | "/" | "\\"
-         | "^" | "~" | "=" | "<" | ">" | "!" | "?" | "@" | "#" | "&"
-         | "|" | ":" | "'")+
+// $identifier — the spec's full `idchar` set:
+//   0-9 A-Z a-z ! # $ % & ' * + - . / : < = > ? @ \ ^ _ ` | ~
+// plus the WASM 3.0 quoted form `$"…"`, which admits any string (including
+// spaces and escapes) as a single identifier.
+id = @{ "$" ~ (string | id_char+) }
+
+id_char = _{
+    ASCII_ALPHANUMERIC | "_" | "." | "-" | "+" | "*" | "/" | "\\"
+  | "^" | "~" | "=" | "<" | ">" | "!" | "?" | "@" | "#" | "&"
+  | "|" | ":" | "'" | "$" | "%" | "`"
 }
 
 // Numeric literals
@@ -65,18 +73,17 @@ float = @{
       | "nan"
       | "inf"
       // A hex float MUST carry a "." or a "p" exponent; without one, "0x0F" is a
-      // hex integer, not a float (the `integer` rule must win).
-      // Hex floats REQUIRE a `p`/`P` binary exponent (spec `Thexfloat`), so
-      // `0x1.5` (no exponent) is invalid — a value without `p` is a hex integer.
+      // hex integer, not a float (the `integer` rule must win). Per the spec's
+      // `hexfloat`, the `p`/`P` exponent is REQUIRED only when there is no dot:
+      // `0xa0_ff.f141_a59a` is a valid hex float, `0x1_a_A_0_f` is an integer.
       | "0x" ~ hex_digit+ ~ (
-            "." ~ hex_digit* ~ ("p" | "P") ~ ("+" | "-")? ~ dec_digit+
+            "." ~ hex_digit* ~ (("p" | "P") ~ ("+" | "-")? ~ dec_digit+)?
           | ("p" | "P") ~ ("+" | "-")? ~ dec_digit+
         )
-      // A decimal float with a `.` needs fractional digits OR an exponent
-      // (spec: the mantissa's dot must be followed by a `frac`, or an exponent
-      // must be present): `1.5`, `1.5e3`, `1.e5` are valid; bare `1.` is not.
-      | dec_digit+ ~ "." ~ dec_digit+ ~ (("e" | "E") ~ ("+" | "-")? ~ dec_digit+)?
-      | dec_digit+ ~ "." ~ ("e" | "E") ~ ("+" | "-")? ~ dec_digit+
+      // Spec: `float ::= num '.' frac?` with `frac ::= ε | digit frac`, so the
+      // fraction after the dot may be EMPTY — `0123456789.` and `0123456789.e19`
+      // are both valid floats.
+      | dec_digit+ ~ "." ~ dec_digit* ~ (("e" | "E") ~ ("+" | "-")? ~ dec_digit+)?
       | dec_digit+ ~ ("e" | "E") ~ ("+" | "-")? ~ dec_digit+
     )
 }
@@ -123,8 +130,10 @@ typeuse = {
 // Extends val_type with GC reference types: (ref null? heaptype)
 any_val_type = { "(" ~ "ref" ~ "null"? ~ heap_type ~ ")" | val_type }
 
-param  = { "(" ~ "param"  ~ id? ~ any_val_type+ ~ ")" }
-result = { "(" ~ "result" ~ any_val_type+ ~ ")" }
+// The type list may be EMPTY — `(func (param))` and `(func (result))` are the
+// spec's explicit spellings of "no params" / "no results" (func_ptrs, type).
+param  = { "(" ~ "param"  ~ id? ~ any_val_type* ~ ")" }
+result = { "(" ~ "result" ~ any_val_type* ~ ")" }
 
 // ── Instructions ──────────────────────────────────────────────────────────────
 
@@ -334,7 +343,12 @@ func_field = {
     "(" ~ "func" ~ id? ~ export_inline* ~ import_inline? ~ typeuse ~ local* ~ instr* ~ ")"
 }
 
-local = { "(" ~ "local" ~ id? ~ any_val_type+ ~ ")" }
+// `any_val_type*`, not `+`: `(local)` is the spec's explicit "declare no
+// locals" group (func.wast:81), exactly like the already-fixed empty `(param)`
+// / `(result)`. With `+` it did not match `local` at all and fell through to
+// being read as a FOLDED INSTRUCTION named `local` — "undefined is not
+// callable" at run time, killing the whole function.
+local = { "(" ~ "local" ~ id? ~ any_val_type* ~ ")" }
 
 export_inline = { "(" ~ "export" ~ string ~ ")" }
 import_inline = { "(" ~ "import" ~ string ~ string ~ ")" }
@@ -365,18 +379,28 @@ export_desc = {
 
 // ── Table ─────────────────────────────────────────────────────────────────────
 
+// A table's element type is any reftype, including the typed forms
+// `(ref null $t)` / `(ref func)`. The optional trailing `folded_instr` is the
+// WASM 3.0 table INITIALISER expression — `(table $t 10 funcref (ref.null func))`.
+// The inline `(elem …)` abbreviation takes either a bare funcidx list or full
+// element expressions (`(ref.func $f)`, `(ref.null func)`).
 table_field = {
-    "(" ~ "table" ~ id? ~ export_inline* ~ import_inline? ~ table_type ~ ")"
-  | "(" ~ "table" ~ id? ~ export_inline* ~ ref_type ~ "(" ~ "elem" ~ index* ~ ")" ~ ")"
+    "(" ~ "table" ~ id? ~ export_inline* ~ import_inline? ~ table_type ~ folded_instr? ~ ")"
+  | "(" ~ "table" ~ id? ~ export_inline* ~ ref_val_type ~ "(" ~ "elem" ~ (elem_item+ | index*) ~ ")" ~ ")"
 }
 
-table_type = { integer ~ integer? ~ ref_type }
+table_type = { integer ~ integer? ~ ref_val_type }
 
 // ── Memory ────────────────────────────────────────────────────────────────────
 
+// The inline `(memory (data "…"))` abbreviation declares a memory sized to hold
+// exactly the data plus an active segment at offset 0 (start, float_exprs).
 memory_field = {
     "(" ~ "memory" ~ id? ~ export_inline* ~ import_inline? ~ mem_type ~ ")"
+  | "(" ~ "memory" ~ id? ~ export_inline* ~ inline_memory_data ~ ")"
 }
+
+inline_memory_data = { "(" ~ "data" ~ string* ~ ")" }
 
 // Optional address-type keyword (`i64` = memory64 proposal, `i32` = default),
 // then the min (and optional max) page limits. The keyword is a bare literal so
@@ -402,7 +426,7 @@ tag_type  = { "(" ~ "func" ~ param* ~ ")" | param* }
 // ── Element segment ───────────────────────────────────────────────────────────
 
 elem_field = {
-    "(" ~ "elem" ~ id? ~ elem_mode? ~ ref_type? ~ elem_item* ~ ")"
+    "(" ~ "elem" ~ id? ~ elem_mode? ~ ref_val_type? ~ elem_item* ~ ")"
   | "(" ~ "elem" ~ id? ~ elem_mode? ~ "func"? ~ index* ~ ")"
 }
 
@@ -448,11 +472,15 @@ struct_subtype = { "(" ~ "struct_subtype" ~ field_def* ~ index ~ ")" }
 array_subtype  = { "(" ~ "array_subtype" ~ (field_def | storage_type) ~ index ~ ")" }
 // Continuation type (stack-switching proposal): `(cont $func_type)`.
 cont_type      = { "(" ~ "cont" ~ index ~ ")" }
-field_def      = { "(" ~ "field" ~ id? ~ storage_type ~ ")" }
+// `(field t1 t2 t3)` is the abbreviation for three consecutive unnamed fields
+// (a NAMED field declares exactly one).
+field_def      = { "(" ~ "field" ~ id? ~ storage_type+ ~ ")" }
 storage_type   = { "(" ~ "mut" ~ (val_type | packed_type | ref_val_type) ~ ")" | val_type | packed_type | ref_val_type }
 packed_type    = @{ "i8" | "i16" }
 ref_val_type   = { "(" ~ "ref" ~ "null"? ~ heap_type ~ ")" | ref_type }
-heap_type      = @{ "func" | "extern" | "exn" | "any" | "eq" | "i31" | "data" | "struct" | "array" | "string" | "none" | "noextern" | "nofunc" | "noexn" | id }
+// A heap type is an abstract name, a `$id`, or a NUMERIC type index — `(ref 0)`
+// and `(param (ref 1))` address the type section positionally (ref, type-rec).
+heap_type      = @{ "func" | "extern" | "exn" | "any" | "eq" | "i31" | "data" | "struct" | "array" | "string" | "none" | "noextern" | "nofunc" | "noexn" | id | integer }
 func_type      = { "(" ~ "func" ~ param* ~ result* ~ ")" }
 
 // ── Start ─────────────────────────────────────────────────────────────────────
@@ -461,7 +489,22 @@ start_field = { "(" ~ "start" ~ index ~ ")" }
 
 // ── Module ────────────────────────────────────────────────────────────────────
 
-module = { "(" ~ "module" ~ id? ~ module_field* ~ ")" }
+// `(module definition …)` declares a module WITHOUT instantiating it (the
+// instance form then instantiates it by name). The keyword is CAPTURED, not a
+// bare literal: the walker has to suppress every instantiation effect for it.
+// Walking one as an ordinary module allocates its declared memories and tables
+// — `(module definition (table 0xffff_ffff funcref))` (table.wast:9) is a
+// ~70GB `resize` and `(module definition (memory 65536))` (memory.wast:8) is
+// 4GiB, both for a module the spec never instantiates.
+module_definition_kw = { "definition" }
+module = { "(" ~ "module" ~ module_definition_kw? ~ id? ~ (module_field | rec_group)* ~ ")" }
+
+// A recursion group `(rec (type …) …)` makes its type definitions mutually
+// recursive. That is a TYPE-IDENTITY property, not a structural one — the
+// members are ordinary module fields — so the rule is SILENT and splices its
+// members straight into the module, which is exactly how every consumer
+// (prescan and walk) already sees them.
+rec_group = _{ "(" ~ "rec" ~ module_field* ~ ")" }
 
 // ── WAST Script Commands ──────────────────────────────────────────────────────
 
@@ -478,13 +521,13 @@ assert_trap = { "(" ~ "assert_trap" ~ action ~ string ~ ")" }
 assert_instantiation_trap = { "(" ~ "assert_trap" ~ module ~ string ~ ")" }
 
 // (assert_invalid (module …) "message")  — validation error
-assert_invalid = { "(" ~ "assert_invalid" ~ module ~ string ~ ")" }
+assert_invalid = { "(" ~ "assert_invalid" ~ module_or_binary ~ string ~ ")" }
 
 // (assert_malformed (module …) "message")  — parse/decode error
 assert_malformed = { "(" ~ "assert_malformed" ~ module_or_binary ~ string ~ ")" }
 
 // (assert_unlinkable (module …) "message")  — link error
-assert_unlinkable = { "(" ~ "assert_unlinkable" ~ module ~ string ~ ")" }
+assert_unlinkable = { "(" ~ "assert_unlinkable" ~ module_or_binary ~ string ~ ")" }
 
 // (assert_exhaustion action "message")  — stack overflow
 assert_exhaustion = { "(" ~ "assert_exhaustion" ~ action ~ string ~ ")" }
@@ -509,7 +552,9 @@ result_val = {
   | "(" ~ "f32.const" ~ (float | integer) ~ ")"
   | "(" ~ "f64.const" ~ (float | integer) ~ ")"
   | "(" ~ "v128.const" ~ val_lane_type ~ integer+ ~ ")"
-  | "(" ~ "ref.null"   ~ heap_type ~ ")"
+  // The heap type is optional: a bare `(ref.null)` expects "null of ANY heap
+  // type", the reftype-agnostic spelling used by ref_null / select.
+  | "(" ~ "ref.null"   ~ heap_type? ~ ")"
   | "(" ~ "ref.extern" ~ integer ~ ")"
   | "(" ~ "ref.func"   ~ ")"
   | "(" ~ "f32.const"  ~ "nan:canonical" ~ ")"
@@ -536,12 +581,15 @@ expr = {
   | "(" ~ "ref.func"   ~ index ~ ")"
 }
 
-// ── Module or binary/quote (for assert_malformed) ─────────────────────────────
+// ── Module or binary/quote (for assert_malformed/invalid/unlinkable) ──────────
+// The binary/quote forms must precede plain `module`: the plain rule cannot
+// consume the `binary`/`quote` keyword and would fail mid-way. `id?` because
+// the spec allows `(module $M binary "…")`.
 
 module_or_binary = {
-    module
-  | "(" ~ "module" ~ "binary" ~ string+ ~ ")"
-  | "(" ~ "module" ~ "quote"  ~ string+ ~ ")"
+    "(" ~ "module" ~ id? ~ "binary" ~ string+ ~ ")"
+  | "(" ~ "module" ~ id? ~ "quote"  ~ string+ ~ ")"
+  | module
 }
 
 // ── Top-level WAST program ────────────────────────────────────────────────────
@@ -567,6 +615,12 @@ script_cmd = {
   | invoke_cmd
   | register_cmd
   | get_cmd
+  // A script may write a module's fields BARE at the top level — the implicit
+  // single-module abbreviation (`(func) (memory 0) (func (export "f"))`). Last,
+  // so a real command always wins; its shape is a module's, so it walks as one.
+  | inline_module
 }
+
+inline_module = { module_field+ }
 
 program = { SOI ~ script_cmd* ~ EOI }

@@ -69,10 +69,13 @@ fn procedure_dummy_param_is_stamped_callable() {
                         {
                             Some(params)
                         }
-                        _ => None },
-                    _ => None })
+                        _ => None,
+                    },
+                    _ => None,
+                })
             }
-            _ => None })
+            _ => None,
+        })
         .expect("missing step params");
 
     let rhs = step

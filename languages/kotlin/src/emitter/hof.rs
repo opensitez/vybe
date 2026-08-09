@@ -4,18 +4,17 @@
 //! live in the language crate and not `platforms/jvm`. Each adapter receives
 //! the receiver deepest on the stack, then the source arguments, with
 //! `argc` counting receiver + args (the shared instance-target convention). A
-//! lambda argument arrives as an ordinary closure value; calling it is
-//! `LOCAL_GET fn; LOCAL_GET args…; CALL_REF n` — the same convention the
-//! shared HOF path and the dotnet LINQ adapter use, and closures tolerate an
-//! arity mismatch the way the shared `fold` already relies on.
+//! lambda argument arrives as an ordinary closure value; calling it goes
+//! through the shared callable primitive, so Kotlin HOFs follow the same
+//! machinery as Java streams and delegate/function-reference invocation.
 //!
 //! Result collections are built with the shared primitives: arrays via
 //! `collections::*`, maps via `dict::*` (`ARRAY_SET` keeps `__keys` insertion
 //! order), and Pairs via `tuples::emit_tuple`, which stamps the tag the
 //! renderer's `(a, b)` bracket decision reads.
 
-use vybe_compiler::primitives::{collections, dict, loops, ops, tuples};
 use vybe_compiler::primitives::instructions::core_wasm;
+use vybe_compiler::primitives::{callable, collections, dict, loops, ops, sets, tuples};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
@@ -59,7 +58,7 @@ fn call_fn(chunks: &mut [Chunk], current: usize, fn_slot: u16, args: &[u16], lin
     for &a in args {
         get(chunks, current, a, line);
     }
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, args.len() as u8, 1, line);
+    callable::emit_direct_invoke(chunks, current, args.len() as u8, line);
 }
 
 /// `arr[i]` from locals. Leaves the element on the stack.
@@ -368,19 +367,47 @@ fn emit_scan_matches(chunks: &mut Vec<Chunk>, current: usize, kind: ScanResult, 
 /// `first()` / `first { }` — throws `NoSuchElementException` when nothing
 /// matches, which is Kotlin's contract and the reason `null` was wrong.
 pub fn emit_first(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
-    emit_edge(chunks, current, argc, Edge::First, /*or_null:*/ false, line);
+    emit_edge(
+        chunks,
+        current,
+        argc,
+        Edge::First,
+        /*or_null:*/ false,
+        line,
+    );
 }
 
 pub fn emit_first_or_null(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
-    emit_edge(chunks, current, argc, Edge::First, /*or_null:*/ true, line);
+    emit_edge(
+        chunks,
+        current,
+        argc,
+        Edge::First,
+        /*or_null:*/ true,
+        line,
+    );
 }
 
 pub fn emit_last(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
-    emit_edge(chunks, current, argc, Edge::Last, /*or_null:*/ false, line);
+    emit_edge(
+        chunks,
+        current,
+        argc,
+        Edge::Last,
+        /*or_null:*/ false,
+        line,
+    );
 }
 
 pub fn emit_last_or_null(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
-    emit_edge(chunks, current, argc, Edge::Last, /*or_null:*/ true, line);
+    emit_edge(
+        chunks,
+        current,
+        argc,
+        Edge::Last,
+        /*or_null:*/ true,
+        line,
+    );
 }
 
 enum Edge {
@@ -388,7 +415,14 @@ enum Edge {
     Last,
 }
 
-fn emit_edge(chunks: &mut Vec<Chunk>, current: usize, argc: u8, edge: Edge, or_null: bool, line: u32) {
+fn emit_edge(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    argc: u8,
+    edge: Edge,
+    or_null: bool,
+    line: u32,
+) {
     // With a predicate: filter semantics, but only the edge element is kept.
     let f = if argc >= 2 {
         let f = chunks[current].alloc_scratch(1);
@@ -474,7 +508,12 @@ fn emit_single_impl(chunks: &mut Vec<Chunk>, current: usize, or_null: bool, line
     if or_null {
         chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     } else {
-        throw_no_such_element(chunks, current, "Collection has not exactly one element.", line);
+        throw_no_such_element(
+            chunks,
+            current,
+            "Collection has not exactly one element.",
+            line,
+        );
         chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
     chunks[current].emit_end(line);
@@ -1176,8 +1215,8 @@ fn emit_pair_with_props(chunks: &mut Vec<Chunk>, current: usize, a: u16, b: u16,
     for (prop, slot) in [("first", a), ("second", b)] {
         chunks[current].emit_dup(line);
         get(chunks, current, slot, line);
-        let k = chunks[current]
-            .add_constant(vybe_runtime::Value::String(std::sync::Arc::from(prop)));
+        let k =
+            chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from(prop)));
         chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
     }
 }
@@ -1576,8 +1615,9 @@ pub fn emit_size_any(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     // A StringBuilder carries its text in `__buffer`; its `length` is the
     // buffer's, not a key count.
     get(chunks, current, v, line);
-    let buf_key = chunks[current]
-        .add_constant(vybe_runtime::Value::String(std::sync::Arc::from("__buffer")));
+    let buf_key = chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
+        "__buffer",
+    )));
     chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, buf_key, line);
     let buf = chunks[current].alloc_scratch(1);
     set(chunks, current, buf, line);
@@ -1589,7 +1629,18 @@ pub fn emit_size_any(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     vybe_compiler::primitives::strings::emit_length(&mut chunks[current], line);
     chunks[current].emit_else(line);
     get(chunks, current, v, line);
+    let tag = chunks[current].add_import("ecma:object", "toStringTag");
+    chunks[current].emit_call(tag, 1, line);
+    chunks[current].emit_string_const("[object Set]", line);
+    let eq = chunks[current].add_import("wasm:js-string", "equals");
+    chunks[current].emit_call(eq, 2, line);
+    chunks[current].emit_if_value(line);
+    get(chunks, current, v, line);
+    sets::emit_size(chunks, current, line);
+    chunks[current].emit_else(line);
+    get(chunks, current, v, line);
     dict::emit_method_size(chunks, current, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
@@ -1611,8 +1662,8 @@ pub fn emit_grouping_by(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line
     for (prop, slot) in [(GROUPING_SRC, arr), (GROUPING_FN, f)] {
         chunks[current].emit_dup(line);
         get(chunks, current, slot, line);
-        let k = chunks[current]
-            .add_constant(vybe_runtime::Value::String(std::sync::Arc::from(prop)));
+        let k =
+            chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from(prop)));
         chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
     }
 }
@@ -1625,8 +1676,8 @@ fn pop_grouping(chunks: &mut Vec<Chunk>, current: usize, line: u32) -> (u16, u16
     set(chunks, current, g, line);
     for (prop, slot) in [(GROUPING_SRC, src), (GROUPING_FN, f)] {
         get(chunks, current, g, line);
-        let k = chunks[current]
-            .add_constant(vybe_runtime::Value::String(std::sync::Arc::from(prop)));
+        let k =
+            chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from(prop)));
         chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
         set(chunks, current, slot, line);
     }
@@ -1673,7 +1724,14 @@ pub fn emit_grouping_fold(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, li
     set(chunks, current, f, line);
     set(chunks, current, init, line);
     let (src, keyfn) = pop_grouping(chunks, current, line);
-    emit_grouping_accumulate(chunks, current, src, keyfn, GroupAcc::Fold { init, f }, line);
+    emit_grouping_accumulate(
+        chunks,
+        current,
+        src,
+        keyfn,
+        GroupAcc::Fold { init, f },
+        line,
+    );
 }
 
 /// `reduce { key, acc, e -> }` on a grouping.
@@ -1845,7 +1903,6 @@ fn emit_sized_array(chunks: &mut Vec<Chunk>, current: usize, argc: u8, null_fill
     get(chunks, current, out, line);
 }
 
-
 /// `distinct()` — first occurrence of each value, order preserved.
 pub fn emit_distinct(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
     let arr = chunks[current].alloc_scratch(1);
@@ -1894,7 +1951,6 @@ pub fn emit_sorted_map_of(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
     crate::emitter::maps::emit_to_sorted_map(chunks, current, 1, line);
 }
 
-
 // ── Receiver-dispatching HOFs (`x.filter { }` for every collection kind) ────
 //
 // Kotlin's `filter` returns a Map on a Map and a List on a List or Set; `map`
@@ -1911,6 +1967,23 @@ fn is_set_marked(chunks: &mut Vec<Chunk>, current: usize, slot: u16, line: u32) 
     chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
+}
+
+fn is_ecma_set(chunks: &mut Vec<Chunk>, current: usize, slot: u16, line: u32) {
+    get(chunks, current, slot, line);
+    let tag = chunks[current].add_import("ecma:object", "toStringTag");
+    chunks[current].emit_call(tag, 1, line);
+    chunks[current].emit_string_const("[object Set]", line);
+    let eq = chunks[current].add_import("wasm:js-string", "equals");
+    chunks[current].emit_call(eq, 2, line);
+}
+
+fn materialize_set_values(chunks: &mut Vec<Chunk>, current: usize, slot: u16, line: u32) -> u16 {
+    let values = chunks[current].alloc_scratch(1);
+    get(chunks, current, slot, line);
+    crate::emitter::collections::emit_to_list(chunks, current, 1, line);
+    set(chunks, current, values, line);
+    values
 }
 
 /// The filter loop over the list in `arr`. Leaves the result list.
@@ -1967,11 +2040,13 @@ fn emit_kt_filter_impl(chunks: &mut Vec<Chunk>, current: usize, invert: bool, li
     chunks[current].emit_if_value(line);
     // Set.filter → List of matching ELEMENTS (the values view — `__keys`
     // holds string spellings plus the marker itself).
-    let keys = chunks[current].alloc_scratch(1);
-    get(chunks, current, recv, line);
-    crate::emitter::collections::emit_to_list(chunks, current, 1, line);
-    set(chunks, current, keys, line);
+    let keys = materialize_set_values(chunks, current, recv, line);
     filter_loop(chunks, current, keys, f, invert, line);
+    chunks[current].emit_else(line);
+    is_ecma_set(chunks, current, recv, line);
+    chunks[current].emit_if_value(line);
+    let values = materialize_set_values(chunks, current, recv, line);
+    filter_loop(chunks, current, values, f, invert, line);
     chunks[current].emit_else(line);
     // Map.filter → Map of matching entries.
     get(chunks, current, recv, line);
@@ -1981,6 +2056,7 @@ fn emit_kt_filter_impl(chunks: &mut Vec<Chunk>, current: usize, invert: bool, li
     } else {
         crate::emitter::maps::emit_map_filter(chunks, current, 2, line);
     }
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
@@ -2037,15 +2113,18 @@ pub fn emit_kt_map_hof(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line:
     chunks[current].emit_else(line);
     is_set_marked(chunks, current, recv, line);
     chunks[current].emit_if_value(line);
-    let keys = chunks[current].alloc_scratch(1);
-    get(chunks, current, recv, line);
-    crate::emitter::collections::emit_to_list(chunks, current, 1, line);
-    set(chunks, current, keys, line);
+    let keys = materialize_set_values(chunks, current, recv, line);
     map_loop(chunks, current, keys, f, line);
+    chunks[current].emit_else(line);
+    is_ecma_set(chunks, current, recv, line);
+    chunks[current].emit_if_value(line);
+    let values = materialize_set_values(chunks, current, recv, line);
+    map_loop(chunks, current, values, f, line);
     chunks[current].emit_else(line);
     get(chunks, current, recv, line);
     get(chunks, current, f, line);
     crate::emitter::maps::emit_map_to_list(chunks, current, 2, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
@@ -2068,10 +2147,7 @@ pub fn emit_kt_for_each(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line
     chunks[current].emit_else(line);
     is_set_marked(chunks, current, recv, line);
     chunks[current].emit_if_value(line);
-    let view = chunks[current].alloc_scratch(1);
-    get(chunks, current, recv, line);
-    crate::emitter::collections::emit_to_list(chunks, current, 1, line);
-    set(chunks, current, view, line);
+    let view = materialize_set_values(chunks, current, recv, line);
     let idx2 = chunks[current].alloc_scratch(1);
     let elem2 = chunks[current].alloc_scratch(1);
     for_each(chunks, current, view, idx2, elem2, line, |chunks| {
@@ -2080,9 +2156,29 @@ pub fn emit_kt_for_each(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line
     });
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_else(line);
+    is_ecma_set(chunks, current, recv, line);
+    chunks[current].emit_if_value(line);
+    let view_set = materialize_set_values(chunks, current, recv, line);
+    let idx_set = chunks[current].alloc_scratch(1);
+    let elem_set = chunks[current].alloc_scratch(1);
+    for_each(
+        chunks,
+        current,
+        view_set,
+        idx_set,
+        elem_set,
+        line,
+        |chunks| {
+            call_fn(chunks, current, f, &[elem_set], line);
+            chunks[current].emit_op(Op::DROP, line);
+        },
+    );
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunks[current].emit_else(line);
     get(chunks, current, recv, line);
     get(chunks, current, f, line);
     crate::emitter::maps::emit_map_for_each(chunks, current, 2, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
 }

@@ -991,7 +991,10 @@ commit           = { emit = "common:php.pdo_commit",             min_args = 0, m
 rollBack         = { emit = "common:php.pdo_rollback",           min_args = 0, max_args = 0 }
 inTransaction    = { emit = "common:php.pdo_in_transaction",     min_args = 0, max_args = 0 }
 execute          = { emit = "common:php.pdo_statement_execute",  min_args = 0, max_args = 1 }
-bindParam        = { emit = "common:php.pdo_statement_bind_param", min_args = 2, max_args = 5 }
+# `bindParam($param, &$var, $type, $maxLen, $driverOptions)` — the variable is
+# bound by REFERENCE and re-read at `execute()`, and php spells no `&` for it.
+# Only position 1; the trailing options stay by value.
+bindParam        = { emit = "common:php.pdo_statement_bind_param", min_args = 2, max_args = 5, pass_by = ["value", "alias"] }
 bindValue        = { emit = "common:php.pdo_statement_bind_value", min_args = 2, max_args = 4 }
 bindColumn       = { emit = "common:php.pdo_statement_bind_column", min_args = 2, max_args = 5 }
 fetch            = { emit = "common:php.pdo_statement_fetch",    min_args = 0, max_args = 3 }
@@ -1012,7 +1015,9 @@ lastInsertId     = { emit = "common:php.pdo_last_insert_id",      min_args = 0, 
 attr_get         = { emit = "common:php.mysqli_stmt_attr_get",    min_args = 1, max_args = 1 }
 
 # ── mysqli_stmt OO methods (thin over the shared wasi:sql db_adapter) ──
-bind_param       = { emit = "common:php.mysqli_stmt_bind_param", min_args = 1, max_args = 255 }
+# `bind_param($types, &$var1, &$var2, …)` — variadic, so every position after
+# the type string is by reference; `...` repeats the mode across the tail.
+bind_param       = { emit = "common:php.mysqli_stmt_bind_param", min_args = 1, max_args = 255, pass_by = ["value", "alias..."] }
 bind_result      = { emit = "common:php.mysqli_stmt_true",       min_args = 1, max_args = 255 }
 store_result     = { emit = "common:php.mysqli_stmt_true",       min_args = 0, max_args = 0 }
 free_result      = { emit = "common:php.mysqli_stmt_true",       min_args = 0, max_args = 0 }

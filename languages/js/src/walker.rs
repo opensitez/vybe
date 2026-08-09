@@ -28,7 +28,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
             match pair.as_rule() {
                 Rule::EOI | Rule::NEWLINE => continue,
                 Rule::import_statement => imports.push(walk_import(pair)?),
-                _ => body.push(walk_statement(pair)?) }
+                _ => body.push(walk_statement(pair)?),
+            }
         }
     }
     // TC39 explicit-resource-management classes: when the module references
@@ -91,7 +92,13 @@ pub fn parse(source: &str) -> Result<Module, String> {
         language: Lang::JavaScript,
         body,
         imports,
-        directives: Default::default() })
+        // `this` is ambient — ECMA §10.2.1.1 binds it from the call, and a
+        // method's declared parameters never include it.
+        directives: vybe_ast::Directives {
+            receiver_binding: Some(vybe_ast::ReceiverBinding::Ambient),
+            ..Default::default()
+        },
+    })
 }
 
 fn validate_private_class_syntax(body: &[Statement]) -> Result<(), String> {
@@ -123,7 +130,8 @@ fn validate_private_stmt(stmt: &Statement) -> Result<(), String> {
             cond,
             then_body,
             elifs,
-            else_body } => {
+            else_body,
+        } => {
             validate_private_expr(cond)?;
             validate_private_class_syntax(then_body)?;
             for (cond, body) in elifs {
@@ -139,7 +147,8 @@ fn validate_private_stmt(stmt: &Statement) -> Result<(), String> {
             init,
             cond,
             update,
-            body } => {
+            body,
+        } => {
             if let Some(init) = init {
                 validate_private_stmt(init)?;
             }
@@ -167,7 +176,8 @@ fn validate_private_stmt(stmt: &Statement) -> Result<(), String> {
         StmtKind::While {
             cond,
             body,
-            else_body } => {
+            else_body,
+        } => {
             validate_private_expr(cond)?;
             validate_private_class_syntax(body)?;
             if let Some(body) = else_body {
@@ -182,7 +192,8 @@ fn validate_private_stmt(stmt: &Statement) -> Result<(), String> {
         StmtKind::Switch {
             expr,
             cases,
-            default } => {
+            default,
+        } => {
             validate_private_expr(expr)?;
             for case in cases {
                 for cond in &case.conditions {
@@ -199,7 +210,8 @@ fn validate_private_stmt(stmt: &Statement) -> Result<(), String> {
             body,
             catches,
             else_body,
-            finally } => {
+            finally,
+        } => {
             validate_private_class_syntax(body)?;
             for catch in catches {
                 validate_private_class_syntax(&catch.body)?;
@@ -263,7 +275,8 @@ fn validate_private_stmt(stmt: &Statement) -> Result<(), String> {
             validate_private_expr(control)?;
             validate_private_expr(handler)
         }
-        _ => Ok(()) }
+        _ => Ok(()),
+    }
 }
 
 fn validate_private_class_members(members: &[ClassMember]) -> Result<(), String> {
@@ -313,7 +326,8 @@ fn validate_private_class_members(members: &[ClassMember]) -> Result<(), String>
                     (true, false) => 0b010,
                     (false, true) => 0b100,
                     (true, true) => 0b110,
-                    (false, false) => 0 };
+                    (false, false) => 0,
+                };
                 (name.as_str(), modifiers.is_static, private_kind)
             }
             ClassMember::Constructor { body, .. } => {
@@ -328,7 +342,8 @@ fn validate_private_class_members(members: &[ClassMember]) -> Result<(), String>
                 validate_private_stmt(stmt)?;
                 continue;
             }
-            ClassMember::Event { .. } | ClassMember::Augment(_) => continue };
+            ClassMember::Event { .. } | ClassMember::Augment(_) => continue,
+        };
         if name.starts_with('#') {
             let seen: &mut HashMap<String, u8> = if is_static {
                 &mut static_private
@@ -404,7 +419,8 @@ fn validate_private_expr(expr: &Expression) -> Result<(), String> {
         ExprKind::Call { callee, args, .. }
         | ExprKind::New {
             class: callee,
-            args } => {
+            args,
+        } => {
             validate_private_expr(callee)?;
             for arg in args {
                 validate_private_expr(&arg.value)?;
@@ -415,9 +431,29 @@ fn validate_private_expr(expr: &Expression) -> Result<(), String> {
             validate_private_expr(target)?;
             validate_private_expr(value)
         }
+        ExprKind::Proxy { target, handler } => {
+            validate_private_expr(target)?;
+            validate_private_expr(handler)
+        }
+        ExprKind::CallableRef {
+            target,
+            receiver,
+            adapter,
+            ..
+        } => {
+            validate_private_expr(target)?;
+            if let Some(receiver) = receiver {
+                validate_private_expr(receiver)?;
+            }
+            if let Some(CallableAdapter::Expr { body, .. }) = adapter {
+                validate_private_expr(body)?;
+            }
+            Ok(())
+        }
         ExprKind::Lambda { body, .. } => match body {
             LambdaBody::Expr(expr) => validate_private_expr(expr),
-            LambdaBody::Block(body) => validate_private_class_syntax(body) },
+            LambdaBody::Block(body) => validate_private_class_syntax(body),
+        },
         ExprKind::Array(items) => {
             for item in items {
                 if let Some(key) = &item.key {
@@ -539,10 +575,11 @@ fn validate_private_expr(expr: &Expression) -> Result<(), String> {
         | ExprKind::This
         | ExprKind::Super
         | ExprKind::DefaultOf(_)
-        | ExprKind::AddressOf(_)
+        | ExprKind::FuncRef(_)
         | ExprKind::SuperCall { .. }
         | ExprKind::Yield(None)
-        | ExprKind::Destructure(_) => Ok(()) }
+        | ExprKind::Destructure(_) => Ok(()),
+    }
 }
 
 fn validate_private_case_condition(cond: &CaseCondition) -> Result<(), String> {
@@ -573,7 +610,8 @@ fn stmt_contains_await(stmt: &Statement) -> bool {
             cond,
             then_body,
             elifs,
-            else_body } => {
+            else_body,
+        } => {
             expr_contains_await(cond)
                 || then_body.iter().any(stmt_contains_await)
                 || elifs.iter().any(|(cond, body)| {
@@ -587,7 +625,8 @@ fn stmt_contains_await(stmt: &Statement) -> bool {
             init,
             cond,
             update,
-            body } => {
+            body,
+        } => {
             init.as_ref().is_some_and(|stmt| stmt_contains_await(stmt))
                 || cond.as_ref().is_some_and(expr_contains_await)
                 || update.as_ref().is_some_and(expr_contains_await)
@@ -608,7 +647,8 @@ fn stmt_contains_await(stmt: &Statement) -> bool {
         StmtKind::While {
             cond,
             body,
-            else_body } => {
+            else_body,
+        } => {
             expr_contains_await(cond)
                 || body.iter().any(stmt_contains_await)
                 || else_body
@@ -622,7 +662,8 @@ fn stmt_contains_await(stmt: &Statement) -> bool {
             body,
             catches,
             else_body,
-            finally } => {
+            finally,
+        } => {
             body.iter().any(stmt_contains_await)
                 || catches
                     .iter()
@@ -648,7 +689,8 @@ fn stmt_contains_await(stmt: &Statement) -> bool {
         StmtKind::Switch {
             expr,
             cases,
-            default } => {
+            default,
+        } => {
             expr_contains_await(expr)
                 || cases.iter().any(|case| {
                     case.conditions.iter().any(case_condition_contains_await)
@@ -668,7 +710,8 @@ fn stmt_contains_await(stmt: &Statement) -> bool {
         StmtKind::Lock { expr, body } => {
             expr_contains_await(expr) || body.iter().any(stmt_contains_await)
         }
-        _ => false }
+        _ => false,
+    }
 }
 
 fn class_member_contains_await(member: &ClassMember) -> bool {
@@ -685,7 +728,8 @@ fn class_member_contains_await(member: &ClassMember) -> bool {
                     .is_some_and(|setter| setter.body.iter().any(stmt_contains_await))
         }
         ClassMember::Const { value, .. } => expr_contains_await(value),
-        ClassMember::Event { .. } | ClassMember::Augment(_) => false }
+        ClassMember::Event { .. } | ClassMember::Augment(_) => false,
+    }
 }
 
 fn expr_contains_await(expr: &Expression) -> bool {
@@ -719,13 +763,32 @@ fn expr_contains_await(expr: &Expression) -> bool {
         ExprKind::Call { callee, args, .. }
         | ExprKind::New {
             class: callee,
-            args } => expr_contains_await(callee) || args.iter().any(|arg| expr_contains_await(&arg.value)),
+            args,
+        } => expr_contains_await(callee) || args.iter().any(|arg| expr_contains_await(&arg.value)),
         ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
             expr_contains_await(target) || expr_contains_await(value)
         }
+        ExprKind::Proxy { target, handler } => {
+            expr_contains_await(target) || expr_contains_await(handler)
+        }
+        ExprKind::CallableRef {
+            target,
+            receiver,
+            adapter,
+            ..
+        } => {
+            expr_contains_await(target)
+                || receiver
+                    .as_ref()
+                    .is_some_and(|receiver| expr_contains_await(receiver))
+                || adapter.as_ref().is_some_and(|adapter| match adapter {
+                    CallableAdapter::Expr { body, .. } => expr_contains_await(body),
+                })
+        }
         ExprKind::Lambda { body, .. } => match body {
             LambdaBody::Expr(expr) => expr_contains_await(expr),
-            LambdaBody::Block(body) => body.iter().any(stmt_contains_await) },
+            LambdaBody::Block(body) => body.iter().any(stmt_contains_await),
+        },
         ExprKind::Array(items) => items.iter().any(|item| {
             item.key.as_ref().is_some_and(expr_contains_await) || expr_contains_await(&item.value)
         }),
@@ -734,9 +797,7 @@ fn expr_contains_await(expr: &Expression) -> bool {
         | ExprKind::Sequence(items)
         | ExprKind::Zip {
             iterables: items, ..
-        } => {
-            items.iter().any(expr_contains_await)
-        }
+        } => items.iter().any(expr_contains_await),
         ExprKind::NamedTuple { fields, .. } => {
             fields.iter().any(|(_, expr)| expr_contains_await(expr))
         }
@@ -751,12 +812,14 @@ fn expr_contains_await(expr: &Expression) -> bool {
             ObjectProperty::Method { value, .. } | ObjectProperty::Accessor { value, .. } => {
                 stmt_contains_await(value)
             }
-            ObjectProperty::Shorthand(_) => false }),
+            ObjectProperty::Shorthand(_) => false,
+        }),
         ExprKind::Interpolation(parts) => parts.iter().any(|part| match part {
             InterpolPart::Expr(expr) | InterpolPart::Formatted(expr, _) => {
                 expr_contains_await(expr)
             }
-            InterpolPart::Text(_) => false }),
+            InterpolPart::Text(_) => false,
+        }),
         ExprKind::Yield(Some(expr)) => expr_contains_await(expr),
         ExprKind::Comprehension {
             element,
@@ -802,10 +865,11 @@ fn expr_contains_await(expr: &Expression) -> bool {
         | ExprKind::This
         | ExprKind::Super
         | ExprKind::DefaultOf(_)
-        | ExprKind::AddressOf(_)
+        | ExprKind::FuncRef(_)
         | ExprKind::SuperCall { .. }
         | ExprKind::Yield(None)
-        | ExprKind::Destructure(_) => false }
+        | ExprKind::Destructure(_) => false,
+    }
 }
 
 fn case_condition_contains_await(cond: &CaseCondition) -> bool {
@@ -813,7 +877,8 @@ fn case_condition_contains_await(cond: &CaseCondition) -> bool {
         CaseCondition::Value(expr) | CaseCondition::Comparison { expr, .. } => {
             expr_contains_await(expr)
         }
-        CaseCondition::Range { from, to } => expr_contains_await(from) || expr_contains_await(to) }
+        CaseCondition::Range { from, to } => expr_contains_await(from) || expr_contains_await(to),
+    }
 }
 
 fn place_contains_await(place: &PlaceExpr) -> bool {
@@ -823,7 +888,8 @@ fn place_contains_await(place: &PlaceExpr) -> bool {
             expr_contains_await(object) || expr_contains_await(index)
         }
         PlaceExpr::Deref(expr) => expr_contains_await(expr),
-        PlaceExpr::Ident(_) => false }
+        PlaceExpr::Ident(_) => false,
+    }
 }
 
 fn validate_private_place(place: &PlaceExpr) -> Result<(), String> {
@@ -834,7 +900,8 @@ fn validate_private_place(place: &PlaceExpr) -> Result<(), String> {
             validate_private_expr(index)
         }
         PlaceExpr::Deref(expr) => validate_private_expr(expr),
-        PlaceExpr::Ident(_) => Ok(()) }
+        PlaceExpr::Ident(_) => Ok(()),
+    }
 }
 
 // ── Static TDZ pass — ECMA-262 §14.3.1 / §14.6 ──────────────────────────────
@@ -932,7 +999,8 @@ fn visit_nested_stmt_lists(kind: &mut StmtKind, f: fn(&mut Vec<Statement>)) {
             body,
             catches,
             else_body,
-            finally } => {
+            finally,
+        } => {
             f(body);
             for c in catches {
                 f(&mut c.body);
@@ -965,7 +1033,8 @@ fn tdz_list_declares(stmts: &[Statement], name: &str) -> bool {
             .iter()
             .any(|d| matches!(&d.pattern, BindingPattern::Ident(n) if n == name)),
         StmtKind::FunctionDecl { name: n, .. } | StmtKind::ClassDecl { name: n, .. } => n == name,
-        _ => false })
+        _ => false,
+    })
 }
 
 fn tdz_rewrite_list(stmts: &mut [Statement], name: &str) {
@@ -1010,7 +1079,8 @@ fn tdz_rewrite_stmt(stmt: &mut Statement, name: &str) {
             cond,
             then_body,
             elifs,
-            else_body } => {
+            else_body,
+        } => {
             tdz_rewrite_expr(cond, name);
             tdz_rewrite_list(then_body, name);
             for (c, b) in elifs {
@@ -1024,7 +1094,8 @@ fn tdz_rewrite_stmt(stmt: &mut Statement, name: &str) {
         StmtKind::While {
             cond,
             body,
-            else_body } => {
+            else_body,
+        } => {
             tdz_rewrite_expr(cond, name);
             tdz_rewrite_list(body, name);
             if let Some(b) = else_body {
@@ -1039,7 +1110,8 @@ fn tdz_rewrite_stmt(stmt: &mut Statement, name: &str) {
             init,
             cond,
             update,
-            body } => {
+            body,
+        } => {
             // `for (let name = …)` shadows the outer binding for the loop.
             let shadowed = init.as_ref().is_some_and(|i| {
                 matches!(&i.kind, StmtKind::VarDecl { declarations, .. }
@@ -1078,7 +1150,8 @@ fn tdz_rewrite_stmt(stmt: &mut Statement, name: &str) {
         StmtKind::Switch {
             expr,
             cases,
-            default } => {
+            default,
+        } => {
             tdz_rewrite_expr(expr, name);
             // All switch arms share one block scope (§14.12).
             let shadowed = cases.iter().any(|c| tdz_list_declares(&c.body, name))
@@ -1092,7 +1165,8 @@ fn tdz_rewrite_stmt(stmt: &mut Statement, name: &str) {
                                 tdz_rewrite_expr(from, name);
                                 tdz_rewrite_expr(to, name);
                             }
-                            CaseCondition::Comparison { expr, .. } => tdz_rewrite_expr(expr, name) }
+                            CaseCondition::Comparison { expr, .. } => tdz_rewrite_expr(expr, name),
+                        }
                     }
                     for s in &mut c.body {
                         tdz_rewrite_stmt(s, name);
@@ -1110,7 +1184,8 @@ fn tdz_rewrite_stmt(stmt: &mut Statement, name: &str) {
             body,
             catches,
             else_body,
-            finally } => {
+            finally,
+        } => {
             tdz_rewrite_list(body, name);
             for c in catches {
                 if c.var_name.as_deref() != Some(name) && c.stack_var.as_deref() != Some(name) {
@@ -1139,7 +1214,8 @@ fn tdz_rewrite_stmt(stmt: &mut Statement, name: &str) {
         StmtKind::Using {
             var,
             resource,
-            body } => {
+            body,
+        } => {
             tdz_rewrite_expr(resource, name);
             if var != name {
                 tdz_rewrite_list(body, name);
@@ -1293,16 +1369,20 @@ fn tdz_throw_expr(name: &str) -> Expression {
     let throw_stmt = Statement::new(StmtKind::Throw {
         expr: Some(Expression::new(ExprKind::New {
             class: Box::new(Expression::ident("ReferenceError")),
-            args: vec![Argument::positional(Expression::string(&message))] })),
-        cause: None });
+            args: vec![Argument::positional(Expression::string(&message))],
+        })),
+        cause: None,
+    });
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Lambda {
             params: Vec::new(),
             body: LambdaBody::Block(vec![throw_stmt]),
             is_async: false,
-            captures: Vec::new() })),
+            captures: Vec::new(),
+        })),
         args: Vec::new(),
-        optional: false })
+        optional: false,
+    })
 }
 
 fn fold_const_computed_names(body: &mut [Statement]) {
@@ -1455,7 +1535,8 @@ fn js_array_elision_marker() -> ArrayElement {
         key: Some(Expression::int(-1)),
         value: Expression::new(ExprKind::Lit(Literal::Undefined)),
         spread: false,
-        by_ref: false }
+        by_ref: false,
+    }
 }
 
 fn rewrite_class_method_names(
@@ -1572,10 +1653,12 @@ fn rewrite_expression_keys(
         | ExprKind::NullCoalesce { left, right }
         | ExprKind::Assign {
             target: left,
-            value: right }
+            value: right,
+        }
         | ExprKind::Walrus {
             target: left,
-            value: right }
+            value: right,
+        }
         | ExprKind::Range {
             start: left,
             end: right,
@@ -1613,6 +1696,24 @@ fn rewrite_expression_keys(
             rewrite_expression_keys(class, consts);
             for arg in args.iter_mut() {
                 rewrite_expression_keys(&mut arg.value, consts);
+            }
+        }
+        ExprKind::Proxy { target, handler } => {
+            rewrite_expression_keys(target, consts);
+            rewrite_expression_keys(handler, consts);
+        }
+        ExprKind::CallableRef {
+            target,
+            receiver,
+            adapter,
+            ..
+        } => {
+            rewrite_expression_keys(target, consts);
+            if let Some(receiver) = receiver.as_mut() {
+                rewrite_expression_keys(receiver, consts);
+            }
+            if let Some(CallableAdapter::Expr { body, .. }) = adapter {
+                rewrite_expression_keys(body, consts);
             }
         }
         ExprKind::Lambda { body, .. } => match body {
@@ -1687,7 +1788,8 @@ fn rewrite_expression_keys(
                             if let Some(resolved) = consts.get(name.as_str()) {
                                 *prop = ObjectProperty::KeyValue {
                                     key: Expression::string(resolved),
-                                    value: value.clone() };
+                                    value: value.clone(),
+                                };
                             }
                         }
                     }
@@ -1768,7 +1870,7 @@ fn rewrite_expression_keys(
         | ExprKind::This
         | ExprKind::Super
         | ExprKind::DefaultOf(_)
-        | ExprKind::AddressOf(_)
+        | ExprKind::FuncRef(_)
         | ExprKind::Destructure(_) => {}
     }
 }
@@ -1858,7 +1960,8 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
             StmtKind::Expr(expr)
         }
         Rule::NEWLINE => return Ok(Statement::new(StmtKind::Empty)),
-        other => return Err(format!("Unexpected statement rule: {:?}", other)) };
+        other => return Err(format!("Unexpected statement rule: {:?}", other)),
+    };
     Ok(Statement::with_span(kind, span))
 }
 
@@ -1871,7 +1974,8 @@ fn walk_var_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         "var" => VarDeclKind::Var,
         "let" => VarDeclKind::Let,
         "const" => VarDeclKind::Const,
-        _ => VarDeclKind::Let };
+        _ => VarDeclKind::Let,
+    };
     let mut declarations = Vec::new();
     for p in inner {
         if p.as_rule() == Rule::var_declarator {
@@ -1890,7 +1994,8 @@ fn walk_var_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     }
     Ok(StmtKind::VarDecl {
         declarations,
-        kind: var_kind })
+        kind: var_kind,
+    })
 }
 
 fn walk_var_declarator(pair: Pair<Rule>) -> Result<VarDeclarator, String> {
@@ -1902,7 +2007,8 @@ fn walk_var_declarator(pair: Pair<Rule>) -> Result<VarDeclarator, String> {
         type_hint: None,
         init,
         array_bounds: None,
-        with_events: false })
+        with_events: false,
+    })
 }
 
 // ES2026 `using x = expr` / `await using x = expr` — emit a `StmtKind::Using`
@@ -1931,12 +2037,14 @@ fn walk_using_decl(pair: Pair<Rule>, is_await: bool) -> Result<StmtKind, String>
             return Ok(StmtKind::Using {
                 var: name.clone(),
                 resource: init.clone(),
-                body });
+                body,
+            });
         }
     }
     Ok(StmtKind::VarDecl {
         declarations,
-        kind: VarDeclKind::Const })
+        kind: VarDeclKind::Const,
+    })
 }
 
 // ── `using` lowering — TC39 explicit-resource-management ────────────────────
@@ -1970,7 +2078,8 @@ fn lower_using_declarations(stmts: &mut Vec<Statement>) {
             let StmtKind::Using {
                 var,
                 resource,
-                body } = marker.kind
+                body,
+            } = marker.kind
             else {
                 unreachable!()
             };
@@ -1997,8 +2106,10 @@ fn lower_one_using(
             type_hint: None,
             init: Some(resource),
             array_bounds: None,
-            with_events: false }],
-        kind: VarDeclKind::Const });
+            with_events: false,
+        }],
+        kind: VarDeclKind::Const,
+    });
     let mut out = vec![decl_x];
     out.extend(using_disposal_wrap(var, is_await, tail));
     out
@@ -2013,7 +2124,8 @@ fn using_disposal_wrap(var: &str, is_await: bool, tail: Vec<Statement>) -> Vec<S
         Expression::new(ExprKind::Binary {
             op,
             left: Box::new(l),
-            right: Box::new(r) })
+            right: Box::new(r),
+        })
     };
     let sym_lookup = |field: &str| {
         Expression::new(ExprKind::Index {
@@ -2021,8 +2133,10 @@ fn using_disposal_wrap(var: &str, is_await: bool, tail: Vec<Statement>) -> Vec<S
             index: Box::new(Expression::new(ExprKind::Member {
                 object: Box::new(Expression::ident("Symbol")),
                 field: field.to_string(),
-                null_safe: false })),
-            null_safe: false })
+                null_safe: false,
+            })),
+            null_safe: false,
+        })
     };
     let undefined_lit = || Expression::new(ExprKind::Lit(Literal::Undefined));
     let null_lit = || Expression::new(ExprKind::Lit(Literal::Null));
@@ -2033,15 +2147,18 @@ fn using_disposal_wrap(var: &str, is_await: bool, tail: Vec<Statement>) -> Vec<S
                 type_hint: None,
                 init: Some(init),
                 array_bounds: None,
-                with_events: false }],
-            kind: VarDeclKind::Const })
+                with_events: false,
+            }],
+            kind: VarDeclKind::Const,
+        })
     };
 
     // §9.3.4 GetDisposeMethod — resolved once, at binding time.
     let method_lookup = if is_await {
         Expression::new(ExprKind::NullCoalesce {
             left: Box::new(sym_lookup("asyncDispose")),
-            right: Box::new(sym_lookup("dispose")) })
+            right: Box::new(sym_lookup("dispose")),
+        })
     } else {
         sym_lookup("dispose")
     };
@@ -2055,7 +2172,8 @@ fn using_disposal_wrap(var: &str, is_await: bool, tail: Vec<Statement>) -> Vec<S
         Expression::new(ExprKind::Ternary {
             cond: Box::new(is_nullish),
             then: Box::new(undefined_lit()),
-            else_: Box::new(method_lookup) }),
+            else_: Box::new(method_lookup),
+        }),
     );
 
     // §9.3.3 AddDisposableResource — non-nullish resource without a callable
@@ -2080,19 +2198,24 @@ fn using_disposal_wrap(var: &str, is_await: bool, tail: Vec<Statement>) -> Vec<S
                 class: Box::new(Expression::ident("TypeError")),
                 args: vec![Argument::positional(Expression::string(
                     "Object is not disposable",
-                ))] })),
-            cause: None })],
+                ))],
+            })),
+            cause: None,
+        })],
         elifs: Vec::new(),
-        else_body: None });
+        else_body: None,
+    });
 
     // finally { if (disp !== undefined) [await] disp.call(x); }
     let mut call_disp = Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Member {
             object: Box::new(Expression::ident(&disp)),
             field: "call".to_string(),
-            null_safe: false })),
+            null_safe: false,
+        })),
         args: vec![Argument::positional(Expression::ident(var))],
-        optional: false });
+        optional: false,
+    });
     if is_await {
         call_disp = Expression::new(ExprKind::Await(Box::new(call_disp)));
     }
@@ -2104,13 +2227,15 @@ fn using_disposal_wrap(var: &str, is_await: bool, tail: Vec<Statement>) -> Vec<S
         ),
         then_body: vec![Statement::new(StmtKind::Expr(call_disp))],
         elifs: Vec::new(),
-        else_body: None })];
+        else_body: None,
+    })];
 
     let try_stmt = Statement::new(StmtKind::Try {
         body: tail,
         catches: Vec::new(),
         else_body: None,
-        finally: Some(finally_body) });
+        finally: Some(finally_body),
+    });
 
     vec![decl_disp, guard, try_stmt]
 }
@@ -2137,7 +2262,8 @@ fn walk_binding_pattern(pair: Pair<Rule>) -> Result<BindingPattern, String> {
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(BindingPattern::Array(elems))
         }
-        other => Err(format!("Unexpected binding pattern: {:?}", other)) }
+        other => Err(format!("Unexpected binding pattern: {:?}", other)),
+    }
 }
 
 fn walk_object_pattern_prop(pair: Pair<Rule>) -> Result<ObjectPatternProp, String> {
@@ -2150,20 +2276,23 @@ fn walk_object_pattern_prop(pair: Pair<Rule>) -> Result<ObjectPatternProp, Strin
             key,
             value: None,
             default: None,
-            is_rest: true });
+            is_rest: true,
+        });
     }
     let mut value = None;
     let mut default = None;
     for p in inner {
         match p.as_rule() {
             Rule::binding_pattern => value = Some(walk_binding_pattern(p)?),
-            _ => default = Some(walk_expression(p)?) }
+            _ => default = Some(walk_expression(p)?),
+        }
     }
     Ok(ObjectPatternProp {
         key,
         value,
         default,
-        is_rest: false })
+        is_rest: false,
+    })
 }
 
 fn walk_array_pattern_elem(pair: Pair<Rule>) -> Result<ArrayPatternElem, String> {
@@ -2191,7 +2320,8 @@ fn walk_array_pattern_elem(pair: Pair<Rule>) -> Result<ArrayPatternElem, String>
             let default = inner.next().map(walk_expression).transpose()?;
             Ok(ArrayPatternElem::Pattern(pat, default))
         }
-        other => Err(format!("Unexpected array pattern elem: {:?}", other)) }
+        other => Err(format!("Unexpected array pattern elem: {:?}", other)),
+    }
 }
 
 // ── Function declaration ────────────────────────────────────────────────────
@@ -2275,7 +2405,8 @@ fn walk_param_with_prologue(
         match p.as_rule() {
             Rule::ident_name => binding = Some(BindingPattern::Ident(p.as_str().to_string())),
             Rule::binding_pattern => binding = Some(walk_binding_pattern(p)?),
-            _ => default = Some(walk_expression(p)?) }
+            _ => default = Some(walk_expression(p)?),
+        }
     }
     let binding = binding.ok_or("Expected parameter binding")?;
 
@@ -2289,7 +2420,8 @@ fn walk_param_with_prologue(
                 is_rest,
                 is_kwargs: false,
                 is_optional: false,
-                is_nullable: false },
+                is_nullable: false,
+            },
             None,
         )),
         pattern => {
@@ -2300,8 +2432,10 @@ fn walk_param_with_prologue(
                     type_hint: None,
                     init: Some(Expression::ident(&temp_name)),
                     array_bounds: None,
-                    with_events: false }],
-                kind: VarDeclKind::Let });
+                    with_events: false,
+                }],
+                kind: VarDeclKind::Let,
+            });
             Ok((
                 Param {
                     name: temp_name,
@@ -2311,7 +2445,8 @@ fn walk_param_with_prologue(
                     is_rest,
                     is_kwargs: false,
                     is_optional: false,
-                    is_nullable: false },
+                    is_nullable: false,
+                },
                 Some(stmt),
             ))
         }
@@ -2364,8 +2499,10 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                             class: Box::new(Expression::ident("TypeError")),
                             args: vec![Argument::positional(Expression::string(
                                 "Class extends value undefined is not a constructor or null",
-                            ))] })),
-                        cause: None }));
+                            ))],
+                        })),
+                        cause: None,
+                    }));
                 } else if raw == "null" {
                     extends_null = true;
                 } else if matches!(
@@ -2382,8 +2519,10 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                             class: Box::new(Expression::ident("TypeError")),
                             args: vec![Argument::positional(Expression::string(
                                 "Class extends value is not a constructor or null",
-                            ))] })),
-                        cause: None }));
+                            ))],
+                        })),
+                        cause: None,
+                    }));
                 } else if is_ident_parent {
                     if let ExprKind::Ident(parent_name) = init.kind {
                         parents.push(parent_name);
@@ -2396,8 +2535,10 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                             type_hint: None,
                             init: Some(init),
                             array_bounds: None,
-                            with_events: false }],
-                        kind: VarDeclKind::Var }));
+                            with_events: false,
+                        }],
+                        kind: VarDeclKind::Var,
+                    }));
                     parents.push(synth);
                 }
             }
@@ -2431,11 +2572,14 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     args: vec![Argument::positional(Expression::string(&format!(
                         "Super constructor null of {} is not a constructor",
                         name
-                    )))] })),
-                cause: None })],
+                    )))],
+                })),
+                cause: None,
+            })],
             base_args: None,
             initializer_target: vybe_ast::ConstructorInitializerTarget::Base,
-            visibility: Visibility::Public });
+            visibility: Visibility::Public,
+        });
     }
 
     let class_stmt = StmtKind::ClassDecl {
@@ -2444,7 +2588,8 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         interfaces: Vec::new(),
         members,
         modifiers: ClassModifiers::default(),
-        decorators: vec![] };
+        decorators: vec![],
+    };
 
     if pre_class_stmts.is_empty() {
         Ok(class_stmt)
@@ -2501,7 +2646,8 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
             handles: vec![],
             is_async: false,
             is_generator: false,
-            is_sub: true });
+            is_sub: true,
+        });
         return Ok(ClassMember::Method(Box::new(func)));
     }
 
@@ -2527,7 +2673,8 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
                 modifiers: Modifiers {
                     is_static,
                     ..Default::default()
-                } })
+                },
+            })
         }
         Rule::setter_method => {
             let mut name = String::new();
@@ -2539,7 +2686,8 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
                 is_rest: false,
                 is_kwargs: false,
                 is_optional: false,
-                is_nullable: false };
+                is_nullable: false,
+            };
             let mut body = Vec::new();
             let mut param_prologue = Vec::new();
             for p in member_pair.into_inner() {
@@ -2572,7 +2720,8 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
                 modifiers: Modifiers {
                     is_static,
                     ..Default::default()
-                } })
+                },
+            })
         }
         Rule::class_method => {
             let mut name = String::new();
@@ -2609,7 +2758,8 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
                     body,
                     base_args: None,
                     initializer_target: vybe_ast::ConstructorInitializerTarget::Base,
-                    visibility: Visibility::Public })
+                    visibility: Visibility::Public,
+                })
             } else {
                 if !is_generator {
                     is_generator = body_contains_yield(&body);
@@ -2638,7 +2788,8 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
                             handles: Vec::new(),
                             is_async,
                             is_generator,
-                            is_sub },
+                            is_sub,
+                        },
                     ))))
                 } else {
                     unreachable!()
@@ -2653,7 +2804,8 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
                     Rule::property_name | Rule::ident_name | Rule::ident_or_keyword => {
                         name = extract_property_name(&p)
                     }
-                    _ => init = Some(walk_expression(p)?) }
+                    _ => init = Some(walk_expression(p)?),
+                }
             }
             Ok(ClassMember::Field {
                 name,
@@ -2664,7 +2816,8 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
                     ..Default::default()
                 },
                 with_events: false,
-                array_bounds: None })
+                array_bounds: None,
+            })
         }
         Rule::accessor_property => {
             // TC39 accessor auto-field: treat as a regular class field for now
@@ -2676,7 +2829,8 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
                     Rule::property_name | Rule::ident_name | Rule::ident_or_keyword => {
                         name = extract_property_name(&p)
                     }
-                    _ => init = Some(walk_expression(p)?) }
+                    _ => init = Some(walk_expression(p)?),
+                }
             }
             Ok(ClassMember::Field {
                 name,
@@ -2687,9 +2841,11 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
                     ..Default::default()
                 },
                 with_events: false,
-                array_bounds: None })
+                array_bounds: None,
+            })
         }
-        other => Err(format!("Unexpected class member: {:?}", other)) }
+        other => Err(format!("Unexpected class member: {:?}", other)),
+    }
 }
 
 // ── Control flow ────────────────────────────────────────────────────────────
@@ -2703,12 +2859,14 @@ fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
     // tokens as siblings.
     let else_body = match next_meaningful(&mut inner) {
         Ok(p) => Some(vec![walk_statement(p)?]),
-        Err(_) => None };
+        Err(_) => None,
+    };
     Ok(StmtKind::If {
         cond,
         then_body: vec![then_stmt],
         elifs: Vec::new(),
-        else_body })
+        else_body,
+    })
 }
 
 fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -2761,7 +2919,8 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 body: full_body,
                 of: false,
                 else_body: None,
-                is_async: is_for_await })
+                is_async: is_for_await,
+            })
         }
         Rule::for_of_header => {
             // `for (using r of …)` — the "using" literal is anonymous in the
@@ -2806,16 +2965,19 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     is_rest: false,
                     is_kwargs: false,
                     is_optional: false,
-                    is_nullable: false }];
+                    is_nullable: false,
+                }];
                 let args = vec![Argument::positional(Expression::ident(&var))];
                 let iife = Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::new(ExprKind::Lambda {
                         params,
                         body: LambdaBody::Block(full_body),
                         is_async: false,
-                        captures: Vec::new() })),
+                        captures: Vec::new(),
+                    })),
                     args,
-                    optional: false });
+                    optional: false,
+                });
                 vec![Statement::new(StmtKind::Expr(iife))]
             } else {
                 full_body
@@ -2827,7 +2989,8 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 body: body_final,
                 of: true,
                 else_body: None,
-                is_async: is_for_await })
+                is_async: is_for_await,
+            })
         }
         Rule::for_c_header => {
             let parts: Vec<Pair<Rule>> = header_inner.into_inner().collect();
@@ -2848,7 +3011,8 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
                                     "var" => VarDeclKind::Var,
                                     "let" => VarDeclKind::Let,
                                     "const" => VarDeclKind::Const,
-                                    _ => VarDeclKind::Let };
+                                    _ => VarDeclKind::Let,
+                                };
                                 let mut decls = Vec::new();
                                 for d in vi {
                                     if d.as_rule() == Rule::var_declarator {
@@ -2865,7 +3029,8 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
                                 }
                                 init = Some(Box::new(Statement::new(StmtKind::VarDecl {
                                     declarations: decls,
-                                    kind: var_kind })));
+                                    kind: var_kind,
+                                })));
                             }
                             _ => {
                                 let expr = walk_expression(inner)?;
@@ -2912,7 +3077,8 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
                         is_rest: false,
                         is_kwargs: false,
                         is_optional: false,
-                        is_nullable: false })
+                        is_nullable: false,
+                    })
                     .collect();
                 let args: Vec<Argument> = let_vars
                     .iter()
@@ -2923,9 +3089,11 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
                         params,
                         body: LambdaBody::Block(body),
                         is_async: false,
-                        captures: Vec::new() })),
+                        captures: Vec::new(),
+                    })),
                     args,
-                    optional: false });
+                    optional: false,
+                });
                 vec![Statement::new(StmtKind::Expr(iife))]
             } else {
                 body
@@ -2935,9 +3103,11 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 init,
                 cond,
                 update,
-                body })
+                body,
+            })
         }
-        other => Err(format!("Unexpected for header: {:?}", other)) }
+        other => Err(format!("Unexpected for header: {:?}", other)),
+    }
 }
 
 fn walk_while(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -2947,7 +3117,8 @@ fn walk_while(pair: Pair<Rule>) -> Result<StmtKind, String> {
     Ok(StmtKind::While {
         cond,
         body,
-        else_body: None })
+        else_body: None,
+    })
 }
 
 fn walk_do_while(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -2957,7 +3128,8 @@ fn walk_do_while(pair: Pair<Rule>) -> Result<StmtKind, String> {
     Ok(StmtKind::DoWhile {
         body,
         cond,
-        until: false })
+        until: false,
+    })
 }
 
 fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -2979,7 +3151,8 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     .collect::<Result<Vec<_>, _>>()?;
                 cases.push(SwitchCase {
                     conditions: vec![], // empty = default
-                    body: stmts });
+                    body: stmts,
+                });
             } else {
                 let first = case_inner.next().ok_or("Empty switch case")?;
                 let val = walk_expression(first)?;
@@ -2989,14 +3162,16 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     .collect::<Result<Vec<_>, _>>()?;
                 cases.push(SwitchCase {
                     conditions: vec![CaseCondition::Value(val)],
-                    body: stmts });
+                    body: stmts,
+                });
             }
         }
     }
     Ok(StmtKind::Switch {
         expr,
         cases,
-        default: None })
+        default: None,
+    })
 }
 
 fn walk_return(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -3015,7 +3190,8 @@ fn walk_break(pair: Pair<Rule>) -> Result<StmtKind, String> {
         .map(|p| p.as_str().to_string());
     Ok(StmtKind::Break(match label {
         Some(l) => BreakTarget::Label(l),
-        None => BreakTarget::Implicit }))
+        None => BreakTarget::Implicit,
+    }))
 }
 
 fn walk_continue(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -3025,7 +3201,8 @@ fn walk_continue(pair: Pair<Rule>) -> Result<StmtKind, String> {
         .map(|p| p.as_str().to_string());
     Ok(StmtKind::Continue(match label {
         Some(l) => ContinueTarget::Label(l),
-        None => ContinueTarget::Implicit }))
+        None => ContinueTarget::Implicit,
+    }))
 }
 
 fn walk_throw(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -3036,7 +3213,8 @@ fn walk_throw(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let expr = walk_expression(expr_pair)?;
     Ok(StmtKind::Throw {
         expr: Some(expr),
-        cause: None })
+        cause: None,
+    })
 }
 
 fn walk_try(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -3071,8 +3249,10 @@ fn walk_try(pair: Pair<Rule>) -> Result<StmtKind, String> {
                                             type_hint: None,
                                             init: Some(Expression::ident(&tmp)),
                                             array_bounds: None,
-                                            with_events: false }],
-                                        kind: VarDeclKind::Const }));
+                                            with_events: false,
+                                        }],
+                                        kind: VarDeclKind::Const,
+                                    }));
                                 }
                             }
                         }
@@ -3091,7 +3271,8 @@ fn walk_try(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     var_name,
                     stack_var: None,
                     body: catch_body,
-                    when_clause: None });
+                    when_clause: None,
+                });
             }
             Rule::finally_clause => {
                 for fp in p.into_inner() {
@@ -3107,7 +3288,8 @@ fn walk_try(pair: Pair<Rule>) -> Result<StmtKind, String> {
         body,
         catches,
         else_body: None,
-        finally })
+        finally,
+    })
 }
 
 fn walk_labeled(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -3116,7 +3298,8 @@ fn walk_labeled(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let body = walk_statement(next_meaningful(&mut inner)?)?;
     Ok(StmtKind::Labeled {
         label,
-        body: Box::new(body) })
+        body: Box::new(body),
+    })
 }
 
 // ── Import / Export ─────────────────────────────────────────────────────────
@@ -3173,32 +3356,38 @@ fn walk_import(pair: Pair<Rule>) -> Result<Import, String> {
     let kind = if let Some(ns) = namespace_name {
         ImportKind::Wildcard {
             path: source,
-            alias: Some(ns) }
+            alias: Some(ns),
+        }
     } else if let Some(def) = default_name {
         if names.is_empty() {
             ImportKind::Default {
                 path: source,
-                local: def }
+                local: def,
+            }
         } else {
             // import default, { named } from "mod" — use Named with default as first
             let mut all_names = vec![ImportName {
                 name: "default".into(),
-                alias: Some(def) }];
+                alias: Some(def),
+            }];
             all_names.extend(names);
             ImportKind::Named {
                 path: source,
                 names: all_names,
-                level: 0 }
+                level: 0,
+            }
         }
     } else if !names.is_empty() {
         ImportKind::Named {
             path: source,
             names,
-            level: 0 }
+            level: 0,
+        }
     } else {
         ImportKind::Simple {
             path: source,
-            alias: None }
+            alias: None,
+        }
     };
 
     Ok(Import { kind, span })
@@ -3275,7 +3464,8 @@ fn walk_export(pair: Pair<Rule>) -> Result<StmtKind, String> {
         if let Some(n) = star_alias {
             names.push(ExportName {
                 name: "*".into(),
-                alias: Some(n) });
+                alias: Some(n),
+            });
         }
     }
 
@@ -3284,7 +3474,8 @@ fn walk_export(pair: Pair<Rule>) -> Result<StmtKind, String> {
         names,
         default: default_expr,
         from,
-        star })
+        star,
+    })
 }
 
 // ── Expressions ─────────────────────────────────────────────────────────────
@@ -3325,12 +3516,14 @@ fn split_optional_spine(
         ExprKind::Member {
             object,
             field,
-            null_safe } => {
+            null_safe,
+        } => {
             if null_safe {
                 let rebuilt = Expression::new(ExprKind::Member {
                     object: Box::new(Expression::ident(param)),
                     field,
-                    null_safe: false });
+                    null_safe: false,
+                });
                 return Ok((*object, rebuilt));
             }
             match split_optional_spine(*object, param) {
@@ -3339,25 +3532,30 @@ fn split_optional_spine(
                     Expression::new(ExprKind::Member {
                         object: Box::new(rebuilt_obj),
                         field,
-                        null_safe: false }),
+                        null_safe: false,
+                    }),
                 )),
                 Err(object) => Err(Expression::with_span(
                     ExprKind::Member {
                         object: Box::new(object),
                         field,
-                        null_safe: false },
+                        null_safe: false,
+                    },
                     span,
-                )) }
+                )),
+            }
         }
         ExprKind::Index {
             object,
             index,
-            null_safe } => {
+            null_safe,
+        } => {
             if null_safe {
                 let rebuilt = Expression::new(ExprKind::Index {
                     object: Box::new(Expression::ident(param)),
                     index,
-                    null_safe: false });
+                    null_safe: false,
+                });
                 return Ok((*object, rebuilt));
             }
             match split_optional_spine(*object, param) {
@@ -3366,20 +3564,24 @@ fn split_optional_spine(
                     Expression::new(ExprKind::Index {
                         object: Box::new(rebuilt_obj),
                         index,
-                        null_safe: false }),
+                        null_safe: false,
+                    }),
                 )),
                 Err(object) => Err(Expression::with_span(
                     ExprKind::Index {
                         object: Box::new(object),
                         index,
-                        null_safe: false },
+                        null_safe: false,
+                    },
                     span,
-                )) }
+                )),
+            }
         }
         ExprKind::Call {
             callee,
             args,
-            optional } => {
+            optional,
+        } => {
             // A *method* call (member/index callee) must keep its receiver
             // binding — splitting between the receiver and the call would
             // rebind `this`. Leave those to the compiler's existing
@@ -3392,7 +3594,8 @@ fn split_optional_spine(
                 let rebuilt = Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident(param)),
                     args,
-                    optional: false });
+                    optional: false,
+                });
                 return Ok((*callee, rebuilt));
             }
             if is_method_call {
@@ -3400,7 +3603,8 @@ fn split_optional_spine(
                     ExprKind::Call {
                         callee,
                         args,
-                        optional },
+                        optional,
+                    },
                     span,
                 ));
             }
@@ -3410,17 +3614,21 @@ fn split_optional_spine(
                     Expression::new(ExprKind::Call {
                         callee: Box::new(rebuilt_callee),
                         args,
-                        optional }),
+                        optional,
+                    }),
                 )),
                 Err(callee) => Err(Expression::with_span(
                     ExprKind::Call {
                         callee: Box::new(callee),
                         args,
-                        optional },
+                        optional,
+                    },
                     span,
-                )) }
+                )),
+            }
         }
-        kind => Err(Expression::with_span(kind, span)) }
+        kind => Err(Expression::with_span(kind, span)),
+    }
 }
 
 /// Does the member/index/call spine of this expression contain an optional
@@ -3436,7 +3644,8 @@ fn spine_has_optional(e: &Expression) -> bool {
         ExprKind::Call {
             callee, optional, ..
         } => *optional || spine_has_optional(callee),
-        _ => false }
+        _ => false,
+    }
 }
 
 fn normalize_optional_chain(e: Expression) -> Expression {
@@ -3455,7 +3664,8 @@ fn normalize_optional_chain(e: Expression) -> Expression {
                 Expression::new(ExprKind::Lit(Literal::Undefined)),
             )
         }
-        Err(unchanged) => unchanged }
+        Err(unchanged) => unchanged,
+    }
 }
 
 /// Is this expression the optional-guard IIFE `normalize_optional_chain`
@@ -3477,7 +3687,8 @@ fn rewrite_optional_delete(operand: &Expression) -> Option<ExprKind> {
     let ExprKind::Call {
         callee,
         args,
-        optional: false } = &operand.kind
+        optional: false,
+    } = &operand.kind
     else {
         return None;
     };
@@ -3502,15 +3713,18 @@ fn rewrite_optional_delete(operand: &Expression) -> Option<ExprKind> {
     let guarded = Expression::new(ExprKind::Ternary {
         cond: cond.clone(),
         then: Box::new(Expression::new(ExprKind::Lit(Literal::Bool(true)))),
-        else_: Box::new(live) });
+        else_: Box::new(live),
+    });
     Some(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Lambda {
             params: params.clone(),
             body: LambdaBody::Expr(Box::new(guarded)),
             is_async: false,
-            captures: Vec::new() })),
+            captures: Vec::new(),
+        })),
         args: args.clone(),
-        optional: false })
+        optional: false,
+    })
 }
 
 /// `((param) => param === null || param === undefined ? <short> : <live>)(head)`
@@ -3525,15 +3739,19 @@ fn optional_guard_iife(
         left: Box::new(Expression::new(ExprKind::Binary {
             op: BinOp::StrictEq,
             left: Box::new(Expression::ident(param)),
-            right: Box::new(Expression::new(ExprKind::Lit(Literal::Null))) })),
+            right: Box::new(Expression::new(ExprKind::Lit(Literal::Null))),
+        })),
         right: Box::new(Expression::new(ExprKind::Binary {
             op: BinOp::StrictEq,
             left: Box::new(Expression::ident(param)),
-            right: Box::new(Expression::new(ExprKind::Lit(Literal::Undefined))) })) });
+            right: Box::new(Expression::new(ExprKind::Lit(Literal::Undefined))),
+        })),
+    });
     let body = Expression::new(ExprKind::Ternary {
         cond: Box::new(nullish),
         then: Box::new(short),
-        else_: Box::new(live) });
+        else_: Box::new(live),
+    });
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Lambda {
             params: vec![Param {
@@ -3544,12 +3762,15 @@ fn optional_guard_iife(
                 is_rest: false,
                 is_kwargs: false,
                 is_optional: false,
-                is_nullable: false }],
+                is_nullable: false,
+            }],
             body: LambdaBody::Expr(Box::new(body)),
             is_async: false,
-            captures: Vec::new() })),
+            captures: Vec::new(),
+        })),
         args: vec![Argument::positional(head)],
-        optional: false })
+        optional: false,
+    })
 }
 
 fn collapse_passthrough_expression(mut pair: Pair<Rule>) -> Result<Pair<Rule>, String> {
@@ -3562,7 +3783,8 @@ fn collapse_passthrough_expression(mut pair: Pair<Rule>) -> Result<Pair<Rule>, S
                     .filter(|p| p.as_rule() != Rule::NEWLINE);
                 match (inner.next(), inner.next()) {
                     (Some(first), None) => Some(first),
-                    _ => None }
+                    _ => None,
+                }
             }
             Rule::assignment_expression
             | Rule::conditional_expression
@@ -3579,7 +3801,8 @@ fn collapse_passthrough_expression(mut pair: Pair<Rule>) -> Result<Pair<Rule>, S
                     .filter(|p| p.as_rule() != Rule::NEWLINE);
                 match (inner.next(), inner.next()) {
                     (Some(first), None) => Some(first),
-                    _ => None }
+                    _ => None,
+                }
             }
             Rule::primary => match pair.as_str().trim() {
                 "true" | "false" | "null" | "undefined" | "this" | "super" => None,
@@ -3587,14 +3810,16 @@ fn collapse_passthrough_expression(mut pair: Pair<Rule>) -> Result<Pair<Rule>, S
                     let mut inner = pair.clone().into_inner();
                     match (inner.next(), inner.next()) {
                         (Some(first), None) => Some(first),
-                        _ => None }
+                        _ => None,
+                    }
                 }
             },
             Rule::unary => {
                 let mut inner = pair.clone().into_inner();
                 match (inner.next(), inner.next()) {
                     (Some(first), None) if first.as_rule() == Rule::postfix => Some(first),
-                    _ => None }
+                    _ => None,
+                }
             }
             Rule::postfix => {
                 let mut inner = pair.clone().into_inner();
@@ -3602,7 +3827,8 @@ fn collapse_passthrough_expression(mut pair: Pair<Rule>) -> Result<Pair<Rule>, S
                 let has_postfix = inner.any(|p| p.as_rule() == Rule::postfix_op);
                 match (first, has_postfix) {
                     (Some(first), false) => Some(first),
-                    _ => None }
+                    _ => None,
+                }
             }
             Rule::call_expression => {
                 let mut inner = pair.clone().into_inner();
@@ -3610,13 +3836,16 @@ fn collapse_passthrough_expression(mut pair: Pair<Rule>) -> Result<Pair<Rule>, S
                 let has_chain = inner.any(|p| p.as_rule() == Rule::call_chain);
                 match (first, has_chain) {
                     (Some(first), false) => Some(first),
-                    _ => None }
+                    _ => None,
+                }
             }
-            _ => None };
+            _ => None,
+        };
 
         match next {
             Some(next_pair) => pair = next_pair,
-            None => return Ok(pair) }
+            None => return Ok(pair),
+        }
     }
 }
 
@@ -3648,7 +3877,9 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     args: vec![Argument::positional(Expression::new(ExprKind::Lit(
                         Literal::Str(s.to_string()),
                     )))],
-                    optional: false }) }
+                    optional: false,
+                }),
+            }
         }
         Rule::numeric_literal => {
             // ES2021 numeric separator: strip `_` from digits before parsing
@@ -3691,7 +3922,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     "__js_dynamic_import".to_string(),
                 ))),
                 args,
-                optional: false })
+                optional: false,
+            })
         }
         Rule::private_name => Ok(ExprKind::Ident(pair.as_str().to_string())),
         Rule::ident_name | Rule::ident_or_keyword => {
@@ -3703,7 +3935,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 "undefined" => Ok(ExprKind::Lit(Literal::Undefined)),
                 "this" => Ok(ExprKind::This),
                 "super" => Ok(ExprKind::Super),
-                _ => Ok(ExprKind::Ident(name.to_string())) }
+                _ => Ok(ExprKind::Ident(name.to_string())),
+            }
         }
         Rule::true_kw => Ok(ExprKind::Lit(Literal::Bool(true))),
         Rule::false_kw => Ok(ExprKind::Lit(Literal::Bool(false))),
@@ -3747,7 +3980,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 if op_str == "=" {
                     Ok(ExprKind::Assign {
                         target: Box::new(left),
-                        value: Box::new(right) })
+                        value: Box::new(right),
+                    })
                 } else {
                     // Compound assign — but this is expression level, wrap as assign
                     let op = match op_str {
@@ -3766,13 +4000,16 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         "&&=" => CompoundOp::And,
                         "||=" => CompoundOp::Or,
                         "??=" => CompoundOp::NullCoalesce,
-                        _ => CompoundOp::Add };
+                        _ => CompoundOp::Add,
+                    };
                     Ok(ExprKind::Assign {
                         target: Box::new(left.clone()),
                         value: Box::new(Expression::new(ExprKind::Binary {
                             op: compound_to_binop(op),
                             left: Box::new(left),
-                            right: Box::new(right) })) })
+                            right: Box::new(right),
+                        })),
+                    })
                 }
             } else {
                 walk_expr_kind(inner.remove(0))
@@ -3791,7 +4028,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 Ok(ExprKind::Ternary {
                     cond: Box::new(cond),
                     then: Box::new(then),
-                    else_: Box::new(else_) })
+                    else_: Box::new(else_),
+                })
             } else {
                 walk_expr_kind(inner.remove(0))
             }
@@ -3845,10 +4083,12 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 "~" => UnaryOp::BitNot,
                 "++" => UnaryOp::PreInc,
                 "--" => UnaryOp::PreDec,
-                _ => UnaryOp::Neg };
+                _ => UnaryOp::Neg,
+            };
             Ok(ExprKind::Unary {
                 op,
-                expr: Box::new(operand) })
+                expr: Box::new(operand),
+            })
         }
 
         // Postfix
@@ -3867,10 +4107,12 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             let op = match op_pair.as_str() {
                 "++" => UnaryOp::PostInc,
                 "--" => UnaryOp::PostDec,
-                _ => return Ok(base.kind) };
+                _ => return Ok(base.kind),
+            };
             Ok(ExprKind::Unary {
                 op,
-                expr: Box::new(base) })
+                expr: Box::new(base),
+            })
         }
 
         // Call / member / index chain
@@ -3904,9 +4146,10 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     } else {
                         Vec::new()
                     };
-                    expr = Expression::new(ExprKind::New {
+                    expr = normalize_regexp_new_expr(Expression::new(ExprKind::New {
                         class: Box::new(expr),
-                        args });
+                        args,
+                    }));
                     new_consumed = true;
                 } else if !new_consumed && chain_src.starts_with(".") {
                     // Member access BEFORE constructor args: `new Foo.Bar(42)`.
@@ -3920,7 +4163,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     expr = Expression::new(ExprKind::Member {
                         object: Box::new(expr),
                         field: name,
-                        null_safe: false });
+                        null_safe: false,
+                    });
                 } else {
                     // Chain AFTER `new X(...)` — applied to the constructed object.
                     // Handle: `(args)` call, `.member`, `?.member`, `?.()`, `[idx]`, tagged template.
@@ -3939,7 +4183,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             expr = Expression::new(ExprKind::Call {
                                 callee: Box::new(expr),
                                 args,
-                                optional: true });
+                                optional: true,
+                            });
                         } else {
                             let name = chain_inner
                                 .into_iter()
@@ -3953,7 +4198,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             expr = Expression::new(ExprKind::Member {
                                 object: Box::new(expr),
                                 field: name,
-                                null_safe: true });
+                                null_safe: true,
+                            });
                         }
                     } else if chain_src.starts_with("(") {
                         let args = if let Some(arg_pair) = chain_inner
@@ -3967,7 +4213,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         expr = Expression::new(ExprKind::Call {
                             callee: Box::new(expr),
                             args,
-                            optional: false });
+                            optional: false,
+                        });
                     } else if chain_src.starts_with(".") {
                         let name = chain_inner
                             .into_iter()
@@ -3999,17 +4246,20 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         expr = Expression::new(ExprKind::Index {
                             object: Box::new(expr),
                             index: Box::new(index_expr),
-                            null_safe: false });
+                            null_safe: false,
+                        });
                     }
                 }
             }
 
             // If `new` had no `()` (e.g., `new X`), wrap the bare class.
             if !new_consumed {
-                expr = Expression::new(ExprKind::New {
+                expr = normalize_regexp_new_expr(Expression::new(ExprKind::New {
                     class: Box::new(expr),
-                    args: Vec::new() });
+                    args: Vec::new(),
+                }));
             }
+            normalize_regexp_new_tree(&mut expr);
             Ok(expr.kind)
         }
 
@@ -4076,7 +4326,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             is_rest: false,
                             is_kwargs: false,
                             is_optional: false,
-                            is_nullable: false }]
+                            is_nullable: false,
+                        }]
                     }
                     Rule::param_list => {
                         let (parsed_params, prologue) = walk_params_with_prologue(p)?;
@@ -4087,7 +4338,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         let inner = p.into_inner().next().ok_or("Empty arrow body")?;
                         body = match inner.as_rule() {
                             Rule::function_body => LambdaBody::Block(walk_body(inner)?),
-                            _ => LambdaBody::Expr(Box::new(walk_expression(inner)?)) };
+                            _ => LambdaBody::Expr(Box::new(walk_expression(inner)?)),
+                        };
                     }
                     Rule::function_body => body = LambdaBody::Block(walk_body(p)?),
                     Rule::async_kw => {}
@@ -4132,7 +4384,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 params,
                 body,
                 is_async,
-                captures: Vec::new() })
+                captures: Vec::new(),
+            })
         }
 
         // Function expression
@@ -4157,17 +4410,21 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             type_hint: None,
                             init: Some(init),
                             array_bounds: None,
-                            with_events: false }],
-                        kind: VarDeclKind::Const });
+                            with_events: false,
+                        }],
+                        kind: VarDeclKind::Const,
+                    });
                     let ret = Statement::new(StmtKind::Return(Some(Expression::ident(&fn_name))));
                     return Ok(ExprKind::Call {
                         callee: Box::new(Expression::new(ExprKind::Lambda {
                             params: Vec::new(),
                             body: LambdaBody::Block(vec![decl, ret]),
                             is_async: false,
-                            captures: Vec::new() })),
+                            captures: Vec::new(),
+                        })),
                         args: Vec::new(),
-                        optional: false });
+                        optional: false,
+                    });
                 }
             }
             Ok(ExprKind::FunctionExpr(Box::new(Statement::new(stmt_kind))))
@@ -4188,13 +4445,15 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             }
                         }
                     }
-                    _ => parent = Some(Box::new(walk_expression(p)?)) }
+                    _ => parent = Some(Box::new(walk_expression(p)?)),
+                }
             }
             Ok(ExprKind::ClassExpr {
                 name,
                 parent,
                 interfaces: Vec::new(),
-                members })
+                members,
+            })
         }
 
         // Array literal
@@ -4221,7 +4480,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         key: None,
                         value,
                         spread,
-                        by_ref: false })
+                        by_ref: false,
+                    })
                 })
                 .collect::<Result<Vec<_>, String>>()?;
             Ok(ExprKind::Array(elements))
@@ -4258,7 +4518,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         let s = p.as_str();
                         parts.push(InterpolPart::Text(unescape_template(&s[1..s.len() - 1])));
                     }
-                    _ => parts.push(InterpolPart::Expr(walk_expression(p)?)) }
+                    _ => parts.push(InterpolPart::Expr(walk_expression(p)?)),
+                }
             }
             Ok(ExprKind::Interpolation(parts))
         }
@@ -4282,7 +4543,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             walk_expr_kind(inner)
         }
 
-        other => Err(format!("Unexpected expression rule: {:?}", other)) }
+        other => Err(format!("Unexpected expression rule: {:?}", other)),
+    }
 }
 
 // ── AST-level normalization helpers ────────────────────────────────────────
@@ -4306,7 +4568,8 @@ fn normalize_typeof_strict_eq(expr: Expression) -> Expression {
     if let ExprKind::Binary {
         op: BinOp::StrictEq,
         ref left,
-        ref right } = expr.kind
+        ref right,
+    } = expr.kind
     {
         // typeof x === "typename"
         if let ExprKind::TypeOf(inner) = &left.kind {
@@ -4317,7 +4580,8 @@ fn normalize_typeof_strict_eq(expr: Expression) -> Expression {
                 ) {
                     return Expression::new(ExprKind::IsType {
                         expr: inner.clone(),
-                        type_name: typename.clone() });
+                        type_name: typename.clone(),
+                    });
                 }
             }
         }
@@ -4330,7 +4594,8 @@ fn normalize_typeof_strict_eq(expr: Expression) -> Expression {
                 ) {
                     return Expression::new(ExprKind::IsType {
                         expr: inner.clone(),
-                        type_name: typename.clone() });
+                        type_name: typename.clone(),
+                    });
                 }
             }
         }
@@ -4371,7 +4636,8 @@ fn walk_binary_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
             | Rule::multiplicative_op
             | Rule::mul_op
             | Rule::exp_op => op_pair.as_str().trim(),
-            _ => op_pair.as_str().trim() };
+            _ => op_pair.as_str().trim(),
+        };
         let right = walk_expression(inner[i + 1].clone())?;
 
         let bin_op = match op {
@@ -4400,12 +4666,14 @@ fn walk_binary_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
             "/" => BinOp::Div,
             "%" => BinOp::Mod,
             "**" => BinOp::Pow,
-            _ => BinOp::Add };
+            _ => BinOp::Add,
+        };
 
         left = Expression::new(ExprKind::Binary {
             op: bin_op,
             left: Box::new(left),
-            right: Box::new(right) });
+            right: Box::new(right),
+        });
 
         // Normalize: `typeof x === "typename"` / `"typename" === typeof x`
         // → `IsType { expr: x, type_name: "typename" }`.
@@ -4457,7 +4725,8 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 expr = Expression::new(ExprKind::Index {
                     object: Box::new(expr),
                     index: Box::new(index_expr),
-                    null_safe: true });
+                    null_safe: true,
+                });
             } else {
                 // Detect optional call: ?.(...) — chain_inner may be empty (no args) or contain argument_list.
                 // Use chain_src to detect the "(" after "?." since grammar literals aren't in chain_inner.
@@ -4477,7 +4746,8 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     expr = Expression::new(ExprKind::Call {
                         callee: Box::new(expr),
                         args,
-                        optional: true });
+                        optional: true,
+                    });
                 } else {
                     let name = chain_inner
                         .into_iter()
@@ -4491,7 +4761,8 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     expr = Expression::new(ExprKind::Member {
                         object: Box::new(expr),
                         field: name,
-                        null_safe: true });
+                        null_safe: true,
+                    });
                 }
             }
         } else if chain_src.starts_with("(") {
@@ -4504,10 +4775,7 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
             } else {
                 Vec::new()
             };
-            expr = Expression::new(ExprKind::Call {
-                callee: Box::new(expr),
-                args,
-                optional: false });
+            expr = rewrite_regexp_to_string_call(expr, args);
         } else if chain_src.starts_with(".") {
             // Member access — normalize JS .length to canonical __len__
             let name = chain_inner
@@ -4544,12 +4812,14 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 expr = Expression::new(ExprKind::Member {
                     object: Box::new(expr),
                     field: alias.to_string(),
-                    null_safe: false });
+                    null_safe: false,
+                });
             } else {
                 expr = Expression::new(ExprKind::Index {
                     object: Box::new(expr),
                     index: Box::new(index_expr),
-                    null_safe: false });
+                    null_safe: false,
+                });
             }
         } else if chain_src.starts_with("`") {
             // Tagged template: tag`parts...${expr}...`
@@ -4567,7 +4837,8 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                 key: None,
                                 value: Expression::new(ExprKind::Lit(Literal::Str(s))),
                                 spread: false,
-                                by_ref: false })
+                                by_ref: false,
+                            })
                             .collect(),
                     ))
                 };
@@ -4576,17 +4847,20 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 // Object.assign(cooked, { raw: raw }) — sets .raw and returns the array
                 let raw_obj = Expression::new(ExprKind::Object(vec![ObjectProperty::KeyValue {
                     key: Expression::string("raw"),
-                    value: raw_array }]));
+                    value: raw_array,
+                }]));
                 let strings_with_raw = Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::new(ExprKind::Member {
                         object: Box::new(Expression::ident("Object")),
                         field: "assign".into(),
-                        null_safe: false })),
+                        null_safe: false,
+                    })),
                     args: vec![
                         Argument::positional(cooked_array),
                         Argument::positional(raw_obj),
                     ],
-                    optional: false });
+                    optional: false,
+                });
                 // ECMA-262 §13.2.8.3: template objects are cached per call site.
                 // Wrap in `__vybe_tmpl_N ?? (__vybe_tmpl_N = Object.assign(...))` so
                 // the same object is returned on every invocation of this template site.
@@ -4596,7 +4870,9 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     left: Box::new(Expression::ident(&tmpl_global)),
                     right: Box::new(Expression::new(ExprKind::Assign {
                         target: Box::new(Expression::ident(&tmpl_global)),
-                        value: Box::new(strings_with_raw) })) });
+                        value: Box::new(strings_with_raw),
+                    })),
+                });
                 args.push(Argument::positional(cached_template));
                 for e in exprs {
                     args.push(Argument::positional(e));
@@ -4604,7 +4880,8 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 expr = Expression::new(ExprKind::Call {
                     callee: Box::new(expr),
                     args,
-                    optional: false });
+                    optional: false,
+                });
             }
         }
     }
@@ -4620,24 +4897,28 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
     if let ExprKind::Call {
         ref callee,
         ref args,
-        optional: false } = expr.kind
+        optional: false,
+    } = expr.kind
     {
         if let ExprKind::Member {
             ref object,
             ref field,
-            null_safe: false } = callee.kind
+            null_safe: false,
+        } = callee.kind
         {
             if let ExprKind::Ident(ref name) = object.kind {
                 if name == "Array" && field == "isArray" && args.len() == 1 {
                     let arg = args[0].value.clone();
                     return Ok(ExprKind::IsType {
                         expr: Box::new(arg),
-                        type_name: "array".to_string() });
+                        type_name: "array".to_string(),
+                    });
                 }
             }
         }
     }
 
+    normalize_regexp_new_tree(&mut expr);
     Ok(expr.kind)
 }
 
@@ -4668,7 +4949,8 @@ fn body_contains_closure(stmts: &[Statement], _vars: &[String]) -> bool {
                 has_closure_expr(object) || has_closure_expr(index)
             }
             ExprKind::Assign { target: _, value } => has_closure_expr(value),
-            _ => false }
+            _ => false,
+        }
     }
     fn has_closure_stmt(stmt: &Statement) -> bool {
         match &stmt.kind {
@@ -4694,7 +4976,8 @@ fn body_contains_closure(stmts: &[Statement], _vars: &[String]) -> bool {
             }
             StmtKind::Block(stmts) => stmts.iter().any(has_closure_stmt),
             StmtKind::Return(Some(e)) => has_closure_expr(e),
-            _ => false }
+            _ => false,
+        }
     }
     stmts.iter().any(has_closure_stmt)
 }
@@ -4704,13 +4987,15 @@ fn desugar_variadic_concat(expr: Expression) -> Expression {
     if let ExprKind::Call {
         ref callee,
         ref args,
-        optional } = expr.kind
+        optional,
+    } = expr.kind
     {
         if args.len() > 1 {
             if let ExprKind::Member {
                 ref object,
                 ref field,
-                null_safe } = callee.kind
+                null_safe,
+            } = callee.kind
             {
                 if field == "concat" {
                     // Chain: start with receiver.concat(args[0]), then .concat(args[1]), etc.
@@ -4718,17 +5003,21 @@ fn desugar_variadic_concat(expr: Expression) -> Expression {
                         callee: Box::new(Expression::new(ExprKind::Member {
                             object: object.clone(),
                             field: "concat".to_string(),
-                            null_safe })),
+                            null_safe,
+                        })),
                         args: vec![args[0].clone()],
-                        optional });
+                        optional,
+                    });
                     for arg in &args[1..] {
                         result = Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::new(ExprKind::Member {
                                 object: Box::new(result),
                                 field: "concat".to_string(),
-                                null_safe: false })),
+                                null_safe: false,
+                            })),
                             args: vec![arg.clone()],
-                            optional: false });
+                            optional: false,
+                        });
                     }
                     return result;
                 }
@@ -4875,7 +5164,8 @@ fn unescape_template(s: &str) -> String {
                     result.push_str(&hex);
                 }
             }
-            _ => result.push('\\') }
+            _ => result.push('\\'),
+        }
     }
     result
 }
@@ -4887,17 +5177,20 @@ fn unescape_template(s: &str) -> String {
 fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
     let canonical = match name {
         "length" => Some("__len__"),
-        _ => None };
+        _ => None,
+    };
     if let Some(canonical_name) = canonical {
         Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident(canonical_name)),
             args: vec![Argument::positional(object)],
-            optional: false })
+            optional: false,
+        })
     } else {
         Expression::new(ExprKind::Member {
             object: Box::new(object),
             field: name.to_string(),
-            null_safe: false })
+            null_safe: false,
+        })
     }
 }
 
@@ -4916,14 +5209,16 @@ fn js_well_known_symbol_alias_from_raw(name: &str) -> Option<&'static str> {
         "Symbol.search" => Some("symbolsearch"),
         "Symbol.split" => Some("symbolsplit"),
         "Symbol.unscopables" => Some("unscopables"),
-        _ => None }
+        _ => None,
+    }
 }
 
 fn js_well_known_symbol_alias(expr: &Expression) -> Option<&'static str> {
     let ExprKind::Member {
         object,
         field,
-        null_safe } = &expr.kind
+        null_safe,
+    } = &expr.kind
     else {
         return None;
     };
@@ -4957,7 +5252,8 @@ fn walk_arguments(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
                 value,
                 name: None,
                 by_ref: false,
-                spread })
+                spread,
+            })
         })
         .collect()
 }
@@ -4985,7 +5281,8 @@ fn walk_object_property(pair: Pair<Rule>) -> Result<ObjectProperty, String> {
         if let Some(alias) = js_well_known_symbol_alias(&key) {
             return Ok(ObjectProperty::KeyValue {
                 key: Expression::string(alias),
-                value });
+                value,
+            });
         }
         return Ok(ObjectProperty::Computed { key, value });
     }
@@ -5022,12 +5319,14 @@ fn walk_object_property(pair: Pair<Rule>) -> Result<ObjectProperty, String> {
                     match inner_pair.as_rule() {
                         Rule::string_literal => walk_expression(inner_pair)?,
                         Rule::numeric_literal => walk_expression(inner_pair)?,
-                        _ => Expression::string(&key_str) }
+                        _ => Expression::string(&key_str),
+                    }
                 } else {
                     Expression::string(&key_str)
                 }
             }
-            _ => walk_expression(key_pair)? };
+            _ => walk_expression(key_pair)?,
+        };
         let value = walk_expression(inner.remove(0))?;
         return Ok(ObjectProperty::KeyValue { key, value });
     }
@@ -5044,7 +5343,8 @@ fn to_span(pair: &Pair<Rule>) -> Span {
         start_line: start.0 as u32 - 1,
         start_col: start.1 as u32 - 1,
         end_line: end.0 as u32 - 1,
-        end_col: end.1 as u32 - 1 }
+        end_col: end.1 as u32 - 1,
+    }
 }
 
 fn first_meaningful(pair: Pair<Rule>) -> Result<Pair<Rule>, String> {
@@ -5124,7 +5424,8 @@ fn extract_for_target(parts: &[Pair<Rule>]) -> Result<(String, Vec<Statement>), 
                 var_kind = match p.as_str() {
                     "var" => VarDeclKind::Var,
                     "const" => VarDeclKind::Const,
-                    _ => VarDeclKind::Let };
+                    _ => VarDeclKind::Let,
+                };
             }
             Rule::ident_name => {
                 return Ok((p.as_str().to_string(), Vec::new()));
@@ -5154,11 +5455,14 @@ fn extract_for_target(parts: &[Pair<Rule>]) -> Result<(String, Vec<Statement>), 
                         type_hint: None,
                         init: Some(Expression::ident(&tmp)),
                         array_bounds: None,
-                        with_events: false }],
-                    kind: var_kind });
+                        with_events: false,
+                    }],
+                    kind: var_kind,
+                });
                 return Ok((tmp, vec![prefix]));
             }
-            _ => continue }
+            _ => continue,
+        }
     }
     Err("Expected identifier or binding pattern in for target".into())
 }
@@ -5226,7 +5530,8 @@ fn walk_object_accessor(
         is_rest: false,
         is_kwargs: false,
         is_optional: false,
-        is_nullable: false }];
+        is_nullable: false,
+    }];
     full_params.extend(params);
     let storage_key = if is_getter {
         format!("__get_{}", prop_name)
@@ -5239,7 +5544,9 @@ fn walk_object_accessor(
             params: full_params,
             body: LambdaBody::Block(body),
             is_async: false,
-            captures: Vec::new() }) })
+            captures: Vec::new(),
+        }),
+    })
 }
 
 /// Method shorthand `{ name() {} }` — emit as a key/value with a
@@ -5332,14 +5639,16 @@ fn walk_object_method(mut inner: Vec<Pair<Rule>>) -> Result<ObjectProperty, Stri
         let func = Statement::new(wrapped);
         return Ok(ObjectProperty::Computed {
             key: key_expr,
-            value: Expression::new(ExprKind::FunctionExpr(Box::new(func))) });
+            value: Expression::new(ExprKind::FunctionExpr(Box::new(func))),
+        });
     }
 
     let wrapped = wrap_generator_if_needed(key.clone(), params, body, is_async, is_generator);
     let func = Statement::new(wrapped);
     Ok(ObjectProperty::Method {
         key,
-        value: Box::new(func) })
+        value: Box::new(func),
+    })
 }
 
 /// Translate a regex literal source `/pattern/flags` into the AST shape
@@ -5351,14 +5660,234 @@ fn walk_regex_literal(raw: &str) -> ExprKind {
         .strip_prefix('/')
         .and_then(|s| s.rfind('/').map(|i| (&s[..i], &s[i + 1..])))
     {
-        Some((p, f)) => (unescape_regex_literal_pattern(p), f.to_string()),
-        None => (raw.to_string(), String::new()) };
+        Some((p, f)) => (
+            unescape_regex_literal_pattern(p),
+            canonicalize_regex_flags(f),
+        ),
+        None => (raw.to_string(), String::new()),
+    };
     ExprKind::New {
         class: Box::new(Expression::ident("RegExp")),
         args: vec![
             Argument::positional(Expression::string(&pattern)),
             Argument::positional(Expression::string(&flags)),
-        ] }
+        ],
+    }
+}
+
+fn normalize_regexp_new_expr(expr: Expression) -> Expression {
+    let ExprKind::New {
+        mut class,
+        mut args,
+    } = expr.kind
+    else {
+        return expr;
+    };
+    normalize_intl_constructor_class(&mut class);
+    let is_regexp_ctor = matches!(&class.kind, ExprKind::Ident(name) if name == "RegExp");
+    if is_regexp_ctor {
+        if let Some(flag_arg) = args.get_mut(1) {
+            if let ExprKind::Lit(Literal::Str(flags)) = &mut flag_arg.value.kind {
+                let canonical = canonicalize_regex_flags(flags.as_ref());
+                *flags = canonical;
+            }
+        }
+    }
+    if matches!(&class.kind, ExprKind::Ident(name) if name == "Proxy") && args.len() == 2 {
+        let mut args = args.into_iter();
+        let target = args.next().unwrap().value;
+        let handler = args.next().unwrap().value;
+        return Expression::new(ExprKind::Proxy {
+            target: Box::new(target),
+            handler: Box::new(handler),
+        });
+    }
+    Expression::new(ExprKind::New { class, args })
+}
+
+fn normalize_regexp_new_tree(expr: &mut Expression) {
+    match &mut expr.kind {
+        ExprKind::New { class, args } => {
+            normalize_regexp_new_tree(class);
+            for arg in args.iter_mut() {
+                normalize_regexp_new_tree(&mut arg.value);
+            }
+            normalize_intl_constructor_class(class);
+            if matches!(&class.kind, ExprKind::Ident(name) if name == "RegExp") {
+                if let Some(flag_arg) = args.get_mut(1) {
+                    if let ExprKind::Lit(Literal::Str(flags)) = &mut flag_arg.value.kind {
+                        let canonical = canonicalize_regex_flags(flags.as_ref());
+                        *flags = canonical;
+                    }
+                }
+            }
+        }
+        ExprKind::Member { object, .. } => normalize_regexp_new_tree(object),
+        ExprKind::Index { object, index, .. } => {
+            normalize_regexp_new_tree(object);
+            normalize_regexp_new_tree(index);
+        }
+        ExprKind::Call { callee, args, .. } => {
+            normalize_regexp_new_tree(callee);
+            for arg in args.iter_mut() {
+                normalize_regexp_new_tree(&mut arg.value);
+            }
+            normalize_intl_supported_locales_of_call(callee);
+        }
+        ExprKind::Proxy { target, handler } => {
+            normalize_regexp_new_tree(target);
+            normalize_regexp_new_tree(handler);
+        }
+        _ => {}
+    }
+}
+
+fn normalize_intl_constructor_class(class: &mut Expression) {
+    let ExprKind::Member {
+        object,
+        field,
+        null_safe: false,
+    } = &class.kind
+    else {
+        return;
+    };
+    if !matches!(&object.kind, ExprKind::Ident(name) if name == "Intl") {
+        return;
+    }
+    if is_intl_constructor_name(field) {
+        *class = Expression::ident(field);
+    }
+}
+
+fn is_intl_constructor_name(name: &str) -> bool {
+    matches!(
+        name,
+        "Collator"
+            | "NumberFormat"
+            | "DateTimeFormat"
+            | "ListFormat"
+            | "PluralRules"
+            | "RelativeTimeFormat"
+            | "Segmenter"
+            | "Locale"
+            | "DisplayNames"
+            | "DurationFormat"
+    )
+}
+
+fn normalize_intl_supported_locales_of_call(callee: &mut Expression) {
+    let ExprKind::Member {
+        object,
+        field,
+        null_safe: false,
+    } = &callee.kind
+    else {
+        return;
+    };
+    if field != "supportedLocalesOf" {
+        return;
+    }
+    let ExprKind::Member {
+        object: intl_object,
+        field: constructor,
+        null_safe: false,
+    } = &object.kind
+    else {
+        return;
+    };
+    if !matches!(&intl_object.kind, ExprKind::Ident(name) if name == "Intl") {
+        return;
+    }
+    let Some(internal_name) = intl_supported_locales_of_builtin(constructor) else {
+        return;
+    };
+    *callee = Expression::ident(internal_name);
+}
+
+fn intl_supported_locales_of_builtin(name: &str) -> Option<&'static str> {
+    match name {
+        "Collator" => Some("__vybe_intl_collator_supported_locales_of"),
+        "NumberFormat" => Some("__vybe_intl_numberformat_supported_locales_of"),
+        "DateTimeFormat" => Some("__vybe_intl_datetimeformat_supported_locales_of"),
+        "ListFormat" => Some("__vybe_intl_listformat_supported_locales_of"),
+        "PluralRules" => Some("__vybe_intl_pluralrules_supported_locales_of"),
+        "RelativeTimeFormat" => Some("__vybe_intl_relativetimeformat_supported_locales_of"),
+        "Segmenter" => Some("__vybe_intl_segmenter_supported_locales_of"),
+        "DisplayNames" => Some("__vybe_intl_displaynames_supported_locales_of"),
+        "DurationFormat" => Some("__vybe_intl_durationformat_supported_locales_of"),
+        _ => None,
+    }
+}
+
+fn rewrite_regexp_to_string_call(callee: Expression, args: Vec<Argument>) -> Expression {
+    if args.is_empty() {
+        if let ExprKind::Member {
+            object,
+            field,
+            null_safe: false,
+        } = callee.kind
+        {
+            if field == "toString" && is_regexp_new_expr(&object) {
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::ident("RegExp")),
+                        field: "toString".to_string(),
+                        null_safe: false,
+                    })),
+                    args: vec![Argument::positional(*object)],
+                    optional: false,
+                });
+            }
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Member {
+                    object,
+                    field,
+                    null_safe: false,
+                })),
+                args,
+                optional: false,
+            });
+        }
+    }
+    Expression::new(ExprKind::Call {
+        callee: Box::new(callee),
+        args,
+        optional: false,
+    })
+}
+
+fn is_regexp_new_expr(expr: &Expression) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::New { class, .. } if matches!(&class.kind, ExprKind::Ident(name) if name == "RegExp")
+    )
+}
+
+fn canonicalize_regex_flags(flags: &str) -> String {
+    let mut seen = [false; 128];
+    for ch in flags.chars() {
+        if !ch.is_ascii_alphabetic() {
+            return flags.to_string();
+        }
+        let idx = ch as usize;
+        if seen[idx] {
+            return flags.to_string();
+        }
+        seen[idx] = true;
+    }
+
+    let mut out = String::with_capacity(flags.len());
+    for ch in ['d', 'g', 'i', 'm', 's', 'u', 'v', 'y'] {
+        if seen[ch as usize] {
+            out.push(ch);
+        }
+    }
+    for ch in flags.chars() {
+        if !"dgimsuvy".contains(ch) {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 fn unescape_regex_literal_pattern(pattern: &str) -> String {
@@ -5375,7 +5904,8 @@ fn unescape_regex_literal_pattern(pattern: &str) -> String {
                 out.push('\\');
                 out.push(next);
             }
-            None => out.push('\\') }
+            None => out.push('\\'),
+        }
     }
     out
 }
@@ -5436,7 +5966,8 @@ fn unquote(s: &str) -> String {
                             out.push(l);
                         }
                     }
-                    _ => out.push('\\') }
+                    _ => out.push('\\'),
+                }
             }
             // §12.8.4 UnicodeEscapeSequence: \uHHHH or \u{...}
             Some('u') => {
@@ -5489,7 +6020,8 @@ fn unquote(s: &str) -> String {
                                     for _ in 0..4 {
                                         match probe.next() {
                                             Some(h) if h.is_ascii_hexdigit() => lo_hex.push(h),
-                                            _ => break }
+                                            _ => break,
+                                        }
                                     }
                                     if lo_hex.len() == 4 {
                                         if let Ok(lo) = u32::from_str_radix(&lo_hex, 16) {
@@ -5530,7 +6062,8 @@ fn unquote(s: &str) -> String {
                 out.push('\\');
                 out.push(other);
             }
-            None => out.push('\\') }
+            None => out.push('\\'),
+        }
     }
     out
 }
@@ -5553,7 +6086,8 @@ fn compound_to_binop(op: CompoundOp) -> BinOp {
         CompoundOp::Or => BinOp::Or,
         CompoundOp::NullCoalesce => BinOp::NullCoalesce,
         CompoundOp::IDiv => BinOp::IDiv,
-        CompoundOp::Concat => BinOp::Concat }
+        CompoundOp::Concat => BinOp::Concat,
+    }
 }
 
 fn rewrite_this_in_generator_body(stmts: &mut [Statement]) {
@@ -5572,7 +6106,8 @@ fn rewrite_this_in_generator_body(stmts: &mut [Statement]) {
                     rwe(object);
                     rwe(index);
                 }
-                PlaceExpr::Deref(expr) => rwe(expr) },
+                PlaceExpr::Deref(expr) => rwe(expr),
+            },
             ExprKind::Unary { expr: i, .. }
             | ExprKind::RefLoad(i)
             | ExprKind::IsType { expr: i, .. }
@@ -5588,10 +6123,12 @@ fn rewrite_this_in_generator_body(stmts: &mut [Statement]) {
             | ExprKind::NullCoalesce { left: a, right: b }
             | ExprKind::Assign {
                 target: a,
-                value: b }
+                value: b,
+            }
             | ExprKind::Walrus {
                 target: a,
-                value: b }
+                value: b,
+            }
             | ExprKind::Range {
                 start: a, end: b, ..
             } => {
@@ -5600,7 +6137,8 @@ fn rewrite_this_in_generator_body(stmts: &mut [Statement]) {
             }
             ExprKind::StaticAccess {
                 class: a,
-                member: b } => {
+                member: b,
+            } => {
                 rwe(a);
                 rwe(b);
             }
@@ -5736,7 +6274,8 @@ fn rewrite_this_in_generator_body(stmts: &mut [Statement]) {
                 cond,
                 then_body,
                 elifs,
-                else_body } => {
+                else_body,
+            } => {
                 rwe(cond);
                 for s in then_body {
                     rws(s);
@@ -5756,7 +6295,8 @@ fn rewrite_this_in_generator_body(stmts: &mut [Statement]) {
             StmtKind::While {
                 cond,
                 body,
-                else_body } => {
+                else_body,
+            } => {
                 rwe(cond);
                 for s in body {
                     rws(s);
@@ -5777,7 +6317,8 @@ fn rewrite_this_in_generator_body(stmts: &mut [Statement]) {
                 init,
                 cond,
                 update,
-                body } => {
+                body,
+            } => {
                 if let Some(s) = init {
                     rws(s);
                 }
@@ -5810,7 +6351,8 @@ fn rewrite_this_in_generator_body(stmts: &mut [Statement]) {
             StmtKind::Switch {
                 expr,
                 cases,
-                default } => {
+                default,
+            } => {
                 rwe(expr);
                 for c in cases {
                     for cond in &mut c.conditions {
@@ -5820,7 +6362,8 @@ fn rewrite_this_in_generator_body(stmts: &mut [Statement]) {
                                 rwe(from);
                                 rwe(to);
                             }
-                            CaseCondition::Comparison { expr, .. } => rwe(expr) }
+                            CaseCondition::Comparison { expr, .. } => rwe(expr),
+                        }
                     }
                     for s in &mut c.body {
                         rws(s);
@@ -5836,7 +6379,8 @@ fn rewrite_this_in_generator_body(stmts: &mut [Statement]) {
                 body,
                 catches,
                 else_body,
-                finally } => {
+                finally,
+            } => {
                 for s in body {
                     rws(s);
                 }
@@ -5944,7 +6488,8 @@ fn wrap_generator(
             handles: Vec::new(),
             is_async,
             is_generator: true,
-            is_sub: false },
+            is_sub: false,
+        },
     ))));
 
     let gen_decl = Statement::new(StmtKind::VarDecl {
@@ -5953,8 +6498,10 @@ fn wrap_generator(
             type_hint: None,
             init: Some(gen_func_expr),
             array_bounds: None,
-            with_events: false }],
-        kind: VarDeclKind::Const });
+            with_events: false,
+        }],
+        kind: VarDeclKind::Const,
+    });
 
     let self_decl = Statement::new(StmtKind::VarDecl {
         declarations: vec![VarDeclarator {
@@ -5962,21 +6509,26 @@ fn wrap_generator(
             type_hint: None,
             init: Some(Expression::new(ExprKind::This)),
             array_bounds: None,
-            with_events: false }],
-        kind: VarDeclKind::Const });
+            with_events: false,
+        }],
+        kind: VarDeclKind::Const,
+    });
 
     let callee = Expression::new(ExprKind::Member {
         object: Box::new(Expression::ident("__gen_fn")),
         field: "call".to_string(),
-        null_safe: false });
+        null_safe: false,
+    });
     let call_expr = Expression::new(ExprKind::Call {
         callee: Box::new(callee),
         args: vec![Argument {
             name: None,
             value: Expression::ident("__self_captured"),
             by_ref: false,
-            spread: false }],
-        optional: false });
+            spread: false,
+        }],
+        optional: false,
+    });
     let ret_stmt = Statement::new(StmtKind::Return(Some(call_expr)));
 
     let outer_body = vec![self_decl, gen_decl, ret_stmt];
@@ -5990,7 +6542,8 @@ fn wrap_generator(
         handles: Vec::new(),
         is_async: false,
         is_generator: false,
-        is_sub: false }
+        is_sub: false,
+    }
 }
 
 fn wrap_generator_if_needed(
@@ -6012,7 +6565,8 @@ fn wrap_generator_if_needed(
             handles: Vec::new(),
             is_async,
             is_generator: false,
-            is_sub: false }
+            is_sub: false,
+        }
     }
 }
 
@@ -6051,9 +6605,7 @@ fn normalize_promise_statics(expr: &mut Expression) {
             return None;
         }
         match &args[0].value.kind {
-            ExprKind::Array(items)
-                if items.iter().all(|i| i.key.is_none() && !i.spread) =>
-            {
+            ExprKind::Array(items) if items.iter().all(|i| i.key.is_none() && !i.spread) => {
                 let ExprKind::Array(items) =
                     std::mem::replace(&mut args[0].value.kind, ExprKind::Lit(Literal::Null))
                 else {
@@ -6061,11 +6613,10 @@ fn normalize_promise_statics(expr: &mut Expression) {
                 };
                 Some(items.into_iter().map(|i| i.value).collect())
             }
-            _ => None }
+            _ => None,
+        }
     }
-    let join = |mode| {
-        move |sources| AsyncOp::Join { mode, sources }
-    };
+    let join = |mode| move |sources| AsyncOp::Join { mode, sources };
     let op = match field.as_str() {
         "resolve" => only_arg(args).map(|v| AsyncOp::Resolved(Box::new(v))),
         "reject" => only_arg(args).map(|r| AsyncOp::Rejected(Box::new(r))),
@@ -6073,7 +6624,8 @@ fn normalize_promise_statics(expr: &mut Expression) {
         "allSettled" => array_literal_sources(args).map(join(JoinMode::AllSettled)),
         "race" => array_literal_sources(args).map(join(JoinMode::Race)),
         "any" => array_literal_sources(args).map(join(JoinMode::Any)),
-        _ => None };
+        _ => None,
+    };
     if let Some(op) = op {
         expr.kind = ExprKind::Async(op);
     }

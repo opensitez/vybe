@@ -1,8 +1,8 @@
 //! PHP runtime-surface helpers routed via `common:php.*`.
 
+use vybe_compiler::primitives::collections;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
-use vybe_compiler::primitives::collections;
 
 pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> bool {
     // `array_map(null, a, b, …)` (walker-rewritten to `zip`) → array of tuples
@@ -89,7 +89,8 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
     let global = match name {
         "php.isnumeric" => "__vybe_isnumeric",
         "php.sort_in_place" => "__vybe_sort_in_place",
-        _ => return false };
+        _ => return false,
+    };
     collections::emit_runtime_helper_call(chunks, current, global, argc, line);
     true
 }

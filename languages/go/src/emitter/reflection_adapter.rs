@@ -1,7 +1,7 @@
 //! Go `reflect` facade routed through the shared reflection substrate.
 
-use vybe_runtime::Chunk;
 use vybe_compiler::primitives::reflection;
+use vybe_runtime::Chunk;
 
 pub fn emit_helper(
     name: &str,

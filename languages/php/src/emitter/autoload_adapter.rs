@@ -10,8 +10,8 @@
 //! `\` class-name separator, and `__invoke` for callable objects. The shared
 //! `dynamic_symbols` recipe owns the bytecode shape and knows none of them.
 
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 use vybe_compiler::primitives::dynamic_symbols::{self, ResolverStack};
 
@@ -20,7 +20,8 @@ use vybe_compiler::primitives::dynamic_symbols::{self, ResolverStack};
 fn php_autoload_stack() -> ResolverStack<'static> {
     ResolverStack {
         stack_global: "__php_autoload_stack",
-        invoke_member: Some("__invoke") }
+        invoke_member: Some("__invoke"),
+    }
 }
 
 fn php_class_spelling(name: &str) -> String {

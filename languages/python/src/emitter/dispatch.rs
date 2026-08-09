@@ -89,12 +89,8 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.sql_rollback" => {
             crate::emitter::sql_adapter::emit_rollback(chunks, current, argc, line)
         }
-        "python.sql_close" => {
-            crate::emitter::sql_adapter::emit_close(chunks, current, argc, line)
-        }
-        "python.sql_begin" => {
-            crate::emitter::sql_adapter::emit_begin(chunks, current, argc, line)
-        }
+        "python.sql_close" => crate::emitter::sql_adapter::emit_close(chunks, current, argc, line),
+        "python.sql_begin" => crate::emitter::sql_adapter::emit_begin(chunks, current, argc, line),
         "python.math_factorial" => {
             crate::emitter::math_adapter::emit_factorial(chunks, current, argc, line)
         }
@@ -149,12 +145,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "python.get" => crate::emitter::collections_adapter::emit_get(chunks, current, argc, line),
         "python.pop" => crate::emitter::collections_adapter::emit_pop(chunks, current, argc, line),
-        "python.str_find" => {
-            crate::emitter::string_adapter::emit_str_search(chunks, current, argc, line, false, false)
-        }
-        "python.str_rfind" => {
-            crate::emitter::string_adapter::emit_str_search(chunks, current, argc, line, true, false)
-        }
+        "python.str_find" => crate::emitter::string_adapter::emit_str_search(
+            chunks, current, argc, line, false, false,
+        ),
+        "python.str_rfind" => crate::emitter::string_adapter::emit_str_search(
+            chunks, current, argc, line, true, false,
+        ),
         "python.str_rindex" => {
             crate::emitter::string_adapter::emit_str_search(chunks, current, argc, line, true, true)
         }
@@ -167,12 +163,8 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.file_writelines" => {
             crate::emitter::file_adapter::emit_writelines(chunks, current, argc, line)
         }
-        "python.file_seek" => {
-            crate::emitter::file_adapter::emit_seek(chunks, current, argc, line)
-        }
-        "python.file_tell" => {
-            crate::emitter::file_adapter::emit_tell(chunks, current, argc, line)
-        }
+        "python.file_seek" => crate::emitter::file_adapter::emit_seek(chunks, current, argc, line),
+        "python.file_tell" => crate::emitter::file_adapter::emit_tell(chunks, current, argc, line),
         "python.tmp_gettempdir" => {
             crate::emitter::file_adapter::emit_gettempdir(chunks, current, argc, line)
         }
@@ -182,12 +174,8 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.tmp_named" => {
             crate::emitter::file_adapter::emit_named_temp_file(chunks, current, argc, line)
         }
-        "python.file_open" => {
-            crate::emitter::file_adapter::emit_open(chunks, current, argc, line)
-        }
-        "python.file_read" => {
-            crate::emitter::file_adapter::emit_read(chunks, current, argc, line)
-        }
+        "python.file_open" => crate::emitter::file_adapter::emit_open(chunks, current, argc, line),
+        "python.file_read" => crate::emitter::file_adapter::emit_read(chunks, current, argc, line),
         "python.file_write" => {
             crate::emitter::file_adapter::emit_write(chunks, current, argc, line)
         }
@@ -221,9 +209,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.sys_getsizeof" => {
             crate::emitter::os_adapter::emit_getsizeof(chunks, current, argc, line)
         }
-        "python.sys_intern" => {
-            crate::emitter::os_adapter::emit_intern(chunks, current, argc, line)
-        }
+        "python.sys_intern" => crate::emitter::os_adapter::emit_intern(chunks, current, argc, line),
         "python.sys_getrecursionlimit" => {
             crate::emitter::os_adapter::emit_getrecursionlimit(chunks, current, argc, line)
         }
@@ -239,9 +225,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.sys_exc_info" => {
             crate::emitter::os_adapter::emit_exc_info(chunks, current, argc, line)
         }
-        "python.os_stat" => {
-            crate::emitter::os_adapter::emit_stat(chunks, current, argc, line)
-        }
+        "python.os_stat" => crate::emitter::os_adapter::emit_stat(chunks, current, argc, line),
         "python.os_entry_stat" => {
             crate::emitter::os_adapter::emit_entry_stat(chunks, current, argc, line)
         }
@@ -252,9 +236,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.os_cpu_count" => {
             crate::emitter::os_adapter::emit_cpu_count(chunks, current, argc, line)
         }
-        "python.os_fspath" => {
-            crate::emitter::os_adapter::emit_fspath(chunks, current, argc, line)
-        }
+        "python.os_fspath" => crate::emitter::os_adapter::emit_fspath(chunks, current, argc, line),
         "python.os_strerror" => {
             crate::emitter::os_adapter::emit_strerror(chunks, current, argc, line)
         }
@@ -584,6 +566,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.frozenset" => {
             crate::emitter::collections_adapter::emit_frozenset(chunks, current, argc, line)
         }
+        "python.frozenset_key" => {
+            crate::emitter::collections_adapter::emit_frozenset_key(chunks, current, argc, line)
+        }
         "python.sort_by_key" => {
             crate::emitter::collections_adapter::emit_sort_by_key(chunks, current, argc, line)
         }
@@ -613,7 +598,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "python.re_search" => crate::emitter::re_adapter::emit_search(chunks, current, argc, line),
         "python.re_match" => crate::emitter::re_adapter::emit_match(chunks, current, argc, line),
-        "python.re_findall" => crate::emitter::re_adapter::emit_findall(chunks, current, argc, line),
+        "python.re_findall" => {
+            crate::emitter::re_adapter::emit_findall(chunks, current, argc, line)
+        }
         "python.re_sub" => crate::emitter::re_adapter::emit_sub(chunks, current, argc, line),
         "python.re_split" => crate::emitter::re_adapter::emit_split(chunks, current, argc, line),
         "python.re_escape" => crate::emitter::re_adapter::emit_escape(chunks, current, argc, line),
@@ -638,6 +625,20 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             "isDisjointFrom",
             line,
         ),
+        "python.set_union" => {
+            crate::emitter::collections_adapter::emit_set_union(chunks, current, argc, line)
+        }
+        "python.set_intersection" => {
+            crate::emitter::collections_adapter::emit_set_intersection(chunks, current, argc, line)
+        }
+        "python.set_difference" => {
+            crate::emitter::collections_adapter::emit_set_difference(chunks, current, argc, line)
+        }
+        "python.set_symmetric_difference" => {
+            crate::emitter::collections_adapter::emit_set_symmetric_difference(
+                chunks, current, argc, line,
+            )
+        }
         "python.add" => crate::emitter::collections_adapter::emit_add(chunks, current, line),
         "python.remove" => crate::emitter::collections_adapter::emit_remove(chunks, current, line),
         "python.discard" => {

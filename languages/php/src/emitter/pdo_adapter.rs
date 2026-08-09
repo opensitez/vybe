@@ -359,7 +359,21 @@ fn emit_empty_array(chunks: &mut [Chunk], current: usize, line: u32) {
     collections::emit_array_new(chunks, current, 0, line);
 }
 
-fn emit_sql_literal_from_slot(
+/// Read THROUGH a bound reference, if that is what the slot holds.
+///
+/// `bindParam`/`bind_param` take their variable by reference — php spells no
+/// `&`, the binder declares it, and the php walker supplies it (see
+/// `mark_php_bound_variable_args`). So what lands in `__bound_params` is a
+/// reference CELL, `{__ref_kind, __value}`, not the value; reading the variable
+/// happens here, at `execute()`, which is exactly when php reads it.
+///
+/// The test is structural, not a kind check: anything that is not null, a
+/// number, a string or a boolean is asked for `__value`, and a `__value` that
+/// comes back undefined means it was an ordinary object and the original stands.
+/// A cell is indistinguishable from any other object at this layer and does not
+/// need to be distinguished — a bound plain object has no meaning for a
+/// `list<string>` parameter channel either way.
+fn emit_resolve_bound_reference(
     chunks: &mut [Chunk],
     current: usize,
     value_slot: u16,
@@ -422,6 +436,17 @@ fn emit_sql_literal_from_slot(
         chunk.emit_end(line);
         chunk.emit_end(line);
     }
+
+    resolved_slot
+}
+
+fn emit_sql_literal_from_slot(
+    chunks: &mut [Chunk],
+    current: usize,
+    value_slot: u16,
+    line: u32,
+) -> u16 {
+    let resolved_slot = emit_resolve_bound_reference(chunks, current, value_slot, line);
 
     let out_slot = alloc_local(&mut chunks[current]);
     let string_slot = alloc_local(&mut chunks[current]);
@@ -932,13 +957,7 @@ pub fn emit_php_pdo_set_attribute(chunks: &mut [Chunk], current: usize, _argc: u
 /// Run a `wasi:sql` transaction verb and leave `__in_tx` on the connection to
 /// match — `inTransaction()` is a guest-side flag because the host surface has
 /// no way to ask. Stack: `[conn]` → `[result]`.
-fn emit_transaction_verb(
-    chunks: &mut [Chunk],
-    current: usize,
-    verb: &str,
-    in_tx: bool,
-    line: u32,
-) {
+fn emit_transaction_verb(chunks: &mut [Chunk], current: usize, verb: &str, in_tx: bool, line: u32) {
     let chunk = &mut chunks[current];
     let conn_slot = alloc_local(chunk);
     lset(chunk, conn_slot, line);
@@ -1086,6 +1105,94 @@ pub fn emit_php_pdo_statement_bind_column(
         chunk.emit_op(Op::DROP, line);
     }
     push_const(chunk, Value::Bool(true), line);
+}
+
+/// Read through every bound reference in the POSITIONAL parameter list.
+///
+/// This has to run FIRST, before stringifying and before null-inlining: both of
+/// those ask what a parameter IS — is it null, is it a bool — and a cell answers
+/// for the wrapper, not for the variable. A cell holding null is an object, so
+/// null-inlining would miss it; stringifying it would render the wrapper.
+/// Resolving once here means neither pass, nor the mysqli binder that writes
+/// into this same `__bound_params`, needs to know references exist.
+///
+/// Returns a NEW array. A keyed map is left alone — its values were already
+/// substituted into the SQL text through `emit_sql_literal_from_slot`, which
+/// resolves references on its own.
+fn emit_resolve_bound_references(
+    chunks: &mut [Chunk],
+    current: usize,
+    params_slot: u16,
+    line: u32,
+) -> u16 {
+    let result_slot = alloc_local(&mut chunks[current]);
+    let chunk = &mut chunks[current];
+    lget(chunk, params_slot, line);
+    lset(chunk, result_slot, line);
+
+    lget(chunk, params_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:array", "isArray", 1, line);
+    let chunk = &mut chunks[current];
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+
+    let _ = chunk;
+    emit_empty_array(chunks, current, line);
+    let out_slot = alloc_local(&mut chunks[current]);
+    let chunk = &mut chunks[current];
+    lset(chunk, out_slot, line);
+
+    push_const(chunk, Value::F64(0.0), line);
+    let i_slot = alloc_local(chunk);
+    lset(chunk, i_slot, line);
+
+    lget(chunk, params_slot, line);
+    let _ = chunk;
+    collections::emit_len(chunks, current, line);
+    let n_slot = alloc_local(&mut chunks[current]);
+    let chunk = &mut chunks[current];
+    lset(chunk, n_slot, line);
+
+    let _ = chunk;
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, i_slot, line);
+    lget(chunk, n_slot, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    let _ = chunk;
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    let chunk = &mut chunks[current];
+
+    lget(chunk, params_slot, line);
+    lget(chunk, i_slot, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    let v_slot = alloc_local(&mut chunks[current]);
+    let chunk = &mut chunks[current];
+    lset(chunk, v_slot, line);
+
+    let _ = chunk;
+    let resolved_slot = emit_resolve_bound_reference(chunks, current, v_slot, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, out_slot, line);
+    lget(chunk, resolved_slot, line);
+    let _ = chunk;
+    collections::emit_push(chunks, current, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_op(Op::DROP, line);
+
+    lget(chunk, i_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, i_slot, line);
+    let _ = chunk;
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, out_slot, line);
+    lset(chunk, result_slot, line);
+    chunk.emit_end(line);
+
+    result_slot
 }
 
 /// `wasi:sql`'s parameter channel is `Vec<String>` — the host flattens every
@@ -1417,16 +1524,32 @@ pub fn emit_php_pdo_statement_execute(chunks: &mut [Chunk], current: usize, argc
         emit_apply_named_bound_pairs(chunks, current, sql_text_slot, named_pairs_slot, line);
     }
 
+    // A bound variable arrives as a reference; php reads it HERE, at execute.
+    // Before anything asks what a parameter is, make it be the value.
+    let deref_params_slot =
+        emit_resolve_bound_references(chunks, current, effective_params_slot, line);
+    {
+        let chunk = &mut chunks[current];
+        lget(chunk, deref_params_slot, line);
+        lset(chunk, effective_params_slot, line);
+    }
+
     // Hand the host php's own string for each param, not vybe's generic one.
-    let normalized_params_slot = emit_php_stringify_params(chunks, current, effective_params_slot, line);
+    let normalized_params_slot =
+        emit_php_stringify_params(chunks, current, effective_params_slot, line);
     {
         let chunk = &mut chunks[current];
         lget(chunk, normalized_params_slot, line);
         lset(chunk, effective_params_slot, line);
     }
     // Nulls survive the stringify pass untouched so they are still visible here.
-    let kept_params_slot =
-        emit_inline_null_positional_params(chunks, current, sql_text_slot, effective_params_slot, line);
+    let kept_params_slot = emit_inline_null_positional_params(
+        chunks,
+        current,
+        sql_text_slot,
+        effective_params_slot,
+        line,
+    );
     {
         let chunk = &mut chunks[current];
         lget(chunk, kept_params_slot, line);

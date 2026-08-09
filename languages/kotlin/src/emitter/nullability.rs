@@ -1,5 +1,6 @@
 //! Kotlin nullability operators.
 
+use vybe_compiler::primitives::callable;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
@@ -91,7 +92,7 @@ fn emit_exception_throw(chunk: &mut Chunk, exc_name: &str, message_slot: Option<
     chunk.emit_dup(line);
     if let Some(slot) = message_slot {
         chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
-        chunk.emit_op_u8_u8(Op::CALL_REF, 0, 1, line);
+        callable::emit_direct_invoke_chunk(chunk, 0, line);
     } else {
         chunk.emit_string_const(exc_name, line);
     }

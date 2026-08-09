@@ -33,11 +33,21 @@ pub fn emit_json_dumps(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
                 }
                 2 => c.emit_i32_const(0, line),
                 4 => c.emit_string_const(", ", line),
-                _ => c.emit_string_const(": ", line) }
+                _ => c.emit_string_const(": ", line),
+            }
         }
     }
 
-    let (value_slot, default_slot, sort_slot, indent_slot, item_slot, kv_slot, props_slot, norm_slot) = {
+    let (
+        value_slot,
+        default_slot,
+        sort_slot,
+        indent_slot,
+        item_slot,
+        kv_slot,
+        props_slot,
+        norm_slot,
+    ) = {
         let c = &mut chunks[current];
         (
             c.alloc_scratch(1),
@@ -93,6 +103,8 @@ pub fn emit_json_dumps(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
         c.emit_call(idx, 3, line);
         c.emit_else(line);
     }
-    vybe_compiler::primitives::json::emit_render_separated(chunks, current, norm_slot, item_slot, kv_slot, line);
+    vybe_compiler::primitives::json::emit_render_separated(
+        chunks, current, norm_slot, item_slot, kv_slot, line,
+    );
     chunks[current].emit_end(line);
 }

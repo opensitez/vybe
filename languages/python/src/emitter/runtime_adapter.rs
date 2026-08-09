@@ -4,9 +4,9 @@
 //! Keep Python-specific call shapes here instead of sending them through
 //! the old runtime-helper function table.
 
+use vybe_compiler::primitives::{collections, reflection, target::Target};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
-use vybe_compiler::primitives::{collections, reflection, target::Target};
 
 /// Python builtin exception constructor. It deliberately keeps the common
 /// exception finalizer as the single source of catch/type stamps, then adds
@@ -44,8 +44,8 @@ pub fn emit_py_exception(
     chunks[current].emit_op_u16(Op::LOCAL_SET, args_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, args_slot, line);
     chunks[current].emit_bool_const(true, line);
-    let tuple_key = chunks[current]
-        .add_constant(vybe_runtime::Value::String(std::sync::Arc::from("__tuple")));
+    let tuple_key =
+        chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from("__tuple")));
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, tuple_key, line);
 
     let set_prop = |chunk: &mut Chunk, obj_slot: u16, key: &str, value_slot: u16, line: u32| {
@@ -73,14 +73,15 @@ pub fn emit_py_exception(
         } else {
             collections::emit_array_new(chunks, current, 0, line);
         }
-        let exceptions_key = chunks[current]
-            .add_constant(vybe_runtime::Value::String(std::sync::Arc::from("exceptions")));
+        let exceptions_key = chunks[current].add_constant(vybe_runtime::Value::String(
+            std::sync::Arc::from("exceptions"),
+        ));
         chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, exceptions_key, line);
     }
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunks[current].emit_string_const("", line);
-    let stack_key = chunks[current]
-        .add_constant(vybe_runtime::Value::String(std::sync::Arc::from("stack")));
+    let stack_key =
+        chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from("stack")));
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, stack_key, line);
     if exc_name == "StopIteration" || exc_name == "SystemExit" {
         chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
@@ -89,7 +90,11 @@ pub fn emit_py_exception(
         } else {
             chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         }
-        let key_name = if exc_name == "SystemExit" { "code" } else { "value" };
+        let key_name = if exc_name == "SystemExit" {
+            "code"
+        } else {
+            "value"
+        };
         let key = chunks[current]
             .add_constant(vybe_runtime::Value::String(std::sync::Arc::from(key_name)));
         chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
@@ -129,13 +134,7 @@ pub fn emit_py_int(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, parsed, line);
 }
 
-pub fn emit_py_raise(
-    chunks: &mut [Chunk],
-    current: usize,
-    argc: u8,
-    exc_name: &str,
-    line: u32,
-) {
+pub fn emit_py_raise(chunks: &mut [Chunk], current: usize, argc: u8, exc_name: &str, line: u32) {
     emit_py_exception(chunks, current, argc.min(1), exc_name, line);
     vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
@@ -195,8 +194,7 @@ fn build_value_eq_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.emit_op(Op::I32_AND, line);
     c.emit_if(line);
     {
-        let size_key =
-            c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("size")));
+        let size_key = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("size")));
         c.emit_op_u16(Op::LOCAL_GET, a, line);
         c.emit_struct_field_op(Op::STRUCT_GET, 0, size_key, line);
         c.emit_op_u16(Op::LOCAL_GET, b, line);
@@ -688,7 +686,8 @@ fn emit_seq_relational(chunk: &mut Chunk, a_slot: u16, b_slot: u16, dunder: &str
         "__lt__" => vybe_compiler::primitives::ops::emit_dyn_lt,
         "__gt__" => vybe_compiler::primitives::ops::emit_dyn_gt,
         "__le__" => vybe_compiler::primitives::ops::emit_dyn_le,
-        _ => vybe_compiler::primitives::ops::emit_dyn_ge };
+        _ => vybe_compiler::primitives::ops::emit_dyn_ge,
+    };
     chunk.emit_op_u16(Op::LOCAL_GET, diff, line);
     chunk.emit_i32_const(-1, line);
     chunk.emit_op(Op::I32_NE, line);
@@ -715,7 +714,8 @@ fn emit_set_relational(chunk: &mut Chunk, a_slot: u16, b_slot: u16, dunder: &str
         "__lt__" => ("isSubsetOf", true),
         "__ge__" => ("isSupersetOf", false),
         "__gt__" => ("isSupersetOf", true),
-        _ => ("isSubsetOf", false) };
+        _ => ("isSubsetOf", false),
+    };
     let idx = chunk.add_import("ecma:set", host_fn);
     chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
@@ -1490,7 +1490,9 @@ pub fn emit_py_exception_add_note(chunks: &mut [Chunk], current: usize, line: u3
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
     chunk.emit_op_u16(Op::LOCAL_GET, notes, line);
-    let key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("__notes__")));
+    let key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
+        "__notes__",
+    )));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
@@ -1647,9 +1649,9 @@ fn emit_hash_guarded(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_is_set(chunk, slot, line); // i32: 1 if set/frozenset
     chunk.emit_if_value(line);
     {
-        let frozen_key = chunk.add_constant(vybe_runtime::Value::String(
-            std::sync::Arc::from("__frozenset"),
-        ));
+        let frozen_key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
+            "__frozenset",
+        )));
         chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
         chunk.emit_struct_field_op(Op::STRUCT_GET, 0, frozen_key, line);
         vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
@@ -2018,9 +2020,8 @@ pub fn emit_range(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let stamp = |chunks: &mut [Chunk], key: &str, push: &dyn Fn(&mut Chunk)| {
         chunks[current].emit_dup(line);
         push(&mut chunks[current]);
-        let k = chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
-            key,
-        )));
+        let k =
+            chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from(key)));
         chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
     };
     match start {
@@ -2029,7 +2030,8 @@ pub fn emit_range(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         }),
         None => stamp(chunks, "__py_range_start", &move |c: &mut Chunk| {
             c.emit_f64_const(0.0, line)
-        }) }
+        }),
+    }
     stamp(chunks, "__py_range_stop", &move |c: &mut Chunk| {
         c.emit_op_u16(Op::LOCAL_GET, stop, line)
     });
@@ -2183,7 +2185,8 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
         "python.hash" => "__vybe_hash",
         "python.format_map" => "__vybe_format_map",
         "python.setdefault" => "__vybe_setdefault",
-        _ => return false };
+        _ => return false,
+    };
     collections::emit_runtime_helper_call(chunks, current, global, argc, line);
     true
 }

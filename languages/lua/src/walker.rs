@@ -10,7 +10,8 @@ fn to_span(pair: &Pair<Rule>) -> Span {
         start_line: start_line as u32,
         start_col: start_col as u32,
         end_line: end_line as u32,
-        end_col: end_col as u32 }
+        end_col: end_col as u32,
+    }
 }
 
 pub fn parse(source: &str) -> Result<Module, String> {
@@ -32,7 +33,14 @@ pub fn parse(source: &str) -> Result<Module, String> {
         language: Lang::Lua,
         body,
         imports: Vec::new(),
-        directives: Default::default() };
+        // `self` is an ordinary leading parameter — `function t:m()` is sugar
+        // that DECLARES it, so it is passed like any other argument. Stated
+        // rather than defaulted because Lua says it in its own syntax.
+        directives: vybe_ast::Directives {
+            receiver_binding: Some(vybe_ast::ReceiverBinding::ExplicitParameter),
+            ..Default::default()
+        },
+    };
     super::normalize::normalize_module(&mut module);
     Ok(module)
 }
@@ -59,7 +67,8 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         Rule::break_statement => StmtKind::Break(BreakTarget::Implicit),
         Rule::assign_stmt => walk_assign_stmt(pair)?,
         Rule::expr => StmtKind::Expr(walk_expression(pair)?),
-        other => return Err(format!("Unhandled statement rule: {other:?}")) };
+        other => return Err(format!("Unhandled statement rule: {other:?}")),
+    };
     Ok(Statement::with_span(kind, span))
 }
 
@@ -128,7 +137,8 @@ fn expr_contains_float(expr: &Expression) -> bool {
             expr_contains_float(left) || expr_contains_float(right)
         }
         ExprKind::Call { args, .. } => args.iter().any(|arg| expr_contains_float(&arg.value)),
-        _ => false }
+        _ => false,
+    }
 }
 
 fn force_numeric_expr_float(expr: &mut Expression) {
@@ -190,7 +200,8 @@ fn walk_for_generic(pair: Pair<Rule>) -> Result<StmtKind, String> {
         body: lua_scoped_body(body),
         of: true,
         else_body: None,
-        is_async: false })
+        is_async: false,
+    })
 }
 
 fn walk_local_function(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -213,7 +224,8 @@ fn walk_local_function(pair: Pair<Rule>) -> Result<StmtKind, String> {
         handles: Vec::new(),
         is_async: false,
         is_generator: false,
-        is_sub: false })
+        is_sub: false,
+    })
 }
 
 fn walk_function_parts(parts: Vec<Pair<Rule>>) -> Result<(Vec<Param>, Vec<Statement>), String> {
@@ -243,7 +255,8 @@ fn walk_param_list(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                 is_rest: true,
                 is_kwargs: false,
                 is_optional: false,
-                is_nullable: false }),
+                is_nullable: false,
+            }),
             Rule::name => params.push(Param {
                 name: p.as_str().to_string(),
                 type_hint: None,
@@ -252,7 +265,8 @@ fn walk_param_list(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                 is_rest: false,
                 is_kwargs: false,
                 is_optional: false,
-                is_nullable: false }),
+                is_nullable: false,
+            }),
             Rule::param => {
                 let child = p.into_inner().next().ok_or("empty param")?;
                 match child.as_rule() {
@@ -264,7 +278,8 @@ fn walk_param_list(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                         is_rest: true,
                         is_kwargs: false,
                         is_optional: false,
-                        is_nullable: false }),
+                        is_nullable: false,
+                    }),
                     Rule::name => params.push(Param {
                         name: child.as_str().to_string(),
                         type_hint: None,
@@ -273,11 +288,14 @@ fn walk_param_list(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                         is_rest: false,
                         is_kwargs: false,
                         is_optional: false,
-                        is_nullable: false }),
-                    other => return Err(format!("unexpected param child: {other:?}")) }
+                        is_nullable: false,
+                    }),
+                    other => return Err(format!("unexpected param child: {other:?}")),
+                }
             }
             Rule::comma | Rule::lparen | Rule::rparen => {}
-            other => return Err(format!("unexpected param_list child: {other:?}")) }
+            other => return Err(format!("unexpected param_list child: {other:?}")),
+        }
     }
     Ok(params)
 }
@@ -299,7 +317,8 @@ fn walk_local_var(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     type_hint: None,
                     init: None,
                     array_bounds: None,
-                    with_events: false });
+                    with_events: false,
+                });
             }
             Rule::assign => in_values = true,
             Rule::expr => values.push(walk_expression_value(p)?),
@@ -313,7 +332,8 @@ fn walk_local_var(pair: Pair<Rule>) -> Result<StmtKind, String> {
     }
     Ok(StmtKind::VarDecl {
         declarations,
-        kind: VarDeclKind::Let })
+        kind: VarDeclKind::Let,
+    })
 }
 
 fn walk_function_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -336,7 +356,8 @@ fn walk_function_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
             is_generator: false,
             is_sub: false,
             handles: Vec::new(),
-            return_type: None });
+            return_type: None,
+        });
     }
 
     let (target, colon_method) = walk_qualified_func_name(&func_name)?;
@@ -348,7 +369,8 @@ fn walk_function_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         params,
         body: LambdaBody::Block(body),
         is_async: false,
-        captures: Vec::new() });
+        captures: Vec::new(),
+    });
 
     if colon_method {
         if let Some((table, field)) = split_method_table_field(&target) {
@@ -356,14 +378,18 @@ fn walk_function_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 walk_preserve_data_field(table, &field),
                 Statement::new(StmtKind::Assign {
                     targets: vec![target],
-                    value: lambda, by_ref: false }),
+                    value: lambda,
+                    by_ref: false,
+                }),
             ]));
         }
     }
 
     Ok(StmtKind::Assign {
         targets: vec![target],
-        value: lambda, by_ref: false })
+        value: lambda,
+        by_ref: false,
+    })
 }
 
 fn split_method_table_field(target: &Expression) -> Option<(Expression, String)> {
@@ -382,33 +408,41 @@ fn walk_preserve_data_field(table: Expression, field: &str) -> Statement {
     let slot_val = Expression::new(ExprKind::Index {
         object: Box::new(table.clone()),
         index: Box::new(field_key.clone()),
-        null_safe: false });
+        null_safe: false,
+    });
     let data_key = Expression::new(ExprKind::Lit(Literal::Str("__lua_data".to_string())));
     let data_table = Expression::new(ExprKind::Index {
         object: Box::new(table.clone()),
         index: Box::new(data_key.clone()),
-        null_safe: false });
+        null_safe: false,
+    });
     let data_slot = Expression::new(ExprKind::Index {
         object: Box::new(data_table.clone()),
         index: Box::new(field_key),
-        null_safe: false });
+        null_safe: false,
+    });
     let is_function = Expression::new(ExprKind::Binary {
         op: BinOp::Eq,
         left: Box::new(Expression::new(ExprKind::Unary {
             op: UnaryOp::Typeof,
-            expr: Box::new(slot_val.clone()) })),
+            expr: Box::new(slot_val.clone()),
+        })),
         right: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
             "function".to_string(),
-        )))) });
+        )))),
+    });
     let cond = Expression::new(ExprKind::Binary {
         op: BinOp::And,
         left: Box::new(Expression::new(ExprKind::Unary {
             op: UnaryOp::Not,
-            expr: Box::new(is_function) })),
+            expr: Box::new(is_function),
+        })),
         right: Box::new(Expression::new(ExprKind::Binary {
             op: BinOp::NotEq,
             left: Box::new(slot_val.clone()),
-            right: Box::new(Expression::new(ExprKind::Lit(Literal::Null))) })) });
+            right: Box::new(Expression::new(ExprKind::Lit(Literal::Null))),
+        })),
+    });
     Statement::new(StmtKind::If {
         cond,
         then_body: vec![
@@ -416,21 +450,29 @@ fn walk_preserve_data_field(table: Expression, field: &str) -> Statement {
                 cond: Expression::new(ExprKind::Binary {
                     op: BinOp::Eq,
                     left: Box::new(data_table.clone()),
-                    right: Box::new(Expression::new(ExprKind::Lit(Literal::Null))) }),
+                    right: Box::new(Expression::new(ExprKind::Lit(Literal::Null))),
+                }),
                 then_body: vec![Statement::new(StmtKind::Assign {
                     targets: vec![Expression::new(ExprKind::Index {
                         object: Box::new(table.clone()),
                         index: Box::new(data_key),
-                        null_safe: false })],
-                    value: Expression::new(ExprKind::Array(Vec::new())), by_ref: false })],
+                        null_safe: false,
+                    })],
+                    value: Expression::new(ExprKind::Array(Vec::new())),
+                    by_ref: false,
+                })],
                 elifs: Vec::new(),
-                else_body: None }),
+                else_body: None,
+            }),
             Statement::new(StmtKind::Assign {
                 targets: vec![data_slot],
-                value: slot_val, by_ref: false }),
+                value: slot_val,
+                by_ref: false,
+            }),
         ],
         elifs: Vec::new(),
-        else_body: None })
+        else_body: None,
+    })
 }
 
 /// `name`, `dot`/`colon`, `name`, … → lvalue `a.b.c` for `function a.b.c()`.
@@ -456,7 +498,8 @@ fn walk_qualified_func_name(parts: &[Pair<Rule>]) -> Result<(Expression, bool), 
         target = Expression::new(ExprKind::Index {
             object: Box::new(target),
             index: Box::new(Expression::new(ExprKind::Lit(Literal::Str(field)))),
-            null_safe: false });
+            null_safe: false,
+        });
     }
     Ok((target, colon_method))
 }
@@ -475,7 +518,8 @@ fn lua_ensure_self_param(params: &mut Vec<Param>) {
             is_rest: false,
             is_kwargs: false,
             is_optional: false,
-            is_nullable: false },
+            is_nullable: false,
+        },
     );
 }
 
@@ -487,7 +531,8 @@ fn walk_block(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
                 p.into_inner().next().ok_or("empty guarded statement")?
             }
             Rule::statement => p,
-            other => return Err(format!("unexpected block item: {other:?}")) };
+            other => return Err(format!("unexpected block item: {other:?}")),
+        };
         body.push(walk_statement(stmt_pair)?);
     }
     Ok(body)
@@ -527,7 +572,8 @@ fn walk_if_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
         cond: cond.ok_or("missing if condition")?,
         then_body,
         elifs,
-        else_body })
+        else_body,
+    })
 }
 
 fn walk_while_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -546,7 +592,8 @@ fn walk_while_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
     Ok(StmtKind::While {
         cond: cond.ok_or("missing while condition")?,
         body: lua_scoped_body(body),
-        else_body: None })
+        else_body: None,
+    })
 }
 
 fn walk_repeat_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -565,7 +612,8 @@ fn walk_repeat_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
     Ok(StmtKind::DoWhile {
         body,
         cond: cond.ok_or("missing until condition")?,
-        until: true })
+        until: true,
+    })
 }
 
 fn walk_return_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -620,11 +668,16 @@ fn walk_assign_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 key: None,
                 value: v,
                 spread: false,
-                by_ref: false })
+                by_ref: false,
+            })
             .collect();
         Expression::new(ExprKind::Array(elems))
     };
-    Ok(StmtKind::Assign { targets, value , by_ref: false })
+    Ok(StmtKind::Assign {
+        targets,
+        value,
+        by_ref: false,
+    })
 }
 
 fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
@@ -648,16 +701,24 @@ fn lua_parenthesized_call_first(expr: Expression) -> ExprKind {
                 "__lua_multi_row".to_string(),
             ))),
             args: vec![Argument::positional(expr)],
-            optional: false }))],
-        optional: false }
+            optional: false,
+        }))],
+        optional: false,
+    }
 }
 
 fn walk_expression_value(pair: Pair<Rule>) -> Result<Expression, String> {
     let source = pair.as_str().trim().to_string();
     let span = to_span(&pair);
     let expr = walk_expression(pair)?;
-    if source.starts_with('(') && source.ends_with(')') && matches!(expr.kind, ExprKind::Call { .. }) {
-        Ok(Expression::with_span(lua_parenthesized_call_first(expr), span))
+    if source.starts_with('(')
+        && source.ends_with(')')
+        && matches!(expr.kind, ExprKind::Call { .. })
+    {
+        Ok(Expression::with_span(
+            lua_parenthesized_call_first(expr),
+            span,
+        ))
     } else {
         Ok(expr)
     }
@@ -679,7 +740,10 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
     let mut inner: Vec<Pair<Rule>> = pair.into_inner().collect();
     if inner.len() == 1 {
         let expr = walk_expression(inner.remove(0))?;
-        if source.starts_with('(') && source.ends_with(')') && matches!(expr.kind, ExprKind::Call { .. }) {
+        if source.starts_with('(')
+            && source.ends_with(')')
+            && matches!(expr.kind, ExprKind::Call { .. })
+        {
             return Ok(lua_parenthesized_call_first(expr));
         }
         return Ok(expr.kind);
@@ -697,7 +761,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         Rule::pow_expr => walk_pow_expr(inner),
         Rule::unary => walk_unary_from_inner(inner),
         Rule::expr => walk_expression(inner.remove(0)).map(|e| e.kind),
-        other => Err(format!("Unhandled expression rule: {other:?}")) }
+        other => Err(format!("Unhandled expression rule: {other:?}")),
+    }
 }
 
 fn walk_binary_chain(
@@ -711,7 +776,8 @@ fn walk_binary_chain(
             left = Expression::new(ExprKind::Binary {
                 op: op_fn(""),
                 left: Box::new(left),
-                right: Box::new(right) });
+                right: Box::new(right),
+            });
         }
     }
     Ok(left.kind)
@@ -730,7 +796,8 @@ fn walk_compare_chain(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, String> {
                 left = Expression::new(ExprKind::Binary {
                     op,
                     left: Box::new(left),
-                    right: Box::new(right) });
+                    right: Box::new(right),
+                });
             }
         } else {
             i += 1;
@@ -766,7 +833,8 @@ fn walk_pow_expr(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, String> {
         acc = Expression::new(ExprKind::Binary {
             op: BinOp::Pow,
             left: Box::new(left),
-            right: Box::new(acc) });
+            right: Box::new(acc),
+        });
     }
     Ok(acc.kind)
 }
@@ -786,7 +854,8 @@ fn walk_right_assoc_chain(mut items: Vec<Pair<Rule>>, op: BinOp) -> Result<ExprK
         acc = Expression::new(ExprKind::Binary {
             op: op.clone(),
             left: Box::new(left),
-            right: Box::new(acc) });
+            right: Box::new(acc),
+        });
     }
     Ok(acc.kind)
 }
@@ -805,7 +874,8 @@ fn walk_binary_chain_with_ops(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, St
                 left = Expression::new(ExprKind::Binary {
                     op,
                     left: Box::new(left),
-                    right: Box::new(right) });
+                    right: Box::new(right),
+                });
             }
         } else {
             i += 1;
@@ -875,12 +945,14 @@ fn walk_unary_from_inner(mut inner: Vec<Pair<Rule>>) -> Result<ExprKind, String>
             return Ok(ExprKind::Call {
                 callee: Box::new(Expression::new(ExprKind::Ident("__lua_len".to_string()))),
                 args: vec![Argument::positional(operand)],
-                optional: false });
+                optional: false,
+            });
         }
         let op = parse_unop(op_str)?;
         return Ok(ExprKind::Unary {
             op,
-            expr: Box::new(operand) });
+            expr: Box::new(operand),
+        });
     }
     walk_expression(first).map(|e| e.kind)
 }
@@ -917,7 +989,8 @@ fn walk_call_expression(pair: Pair<Rule>) -> Result<ExprKind, String> {
             expr = Expression::new(ExprKind::Call {
                 callee: Box::new(expr),
                 args,
-                optional: false });
+                optional: false,
+            });
         } else if chain_src.starts_with('.') {
             let field = chain_inner
                 .iter()
@@ -928,7 +1001,8 @@ fn walk_call_expression(pair: Pair<Rule>) -> Result<ExprKind, String> {
             expr = Expression::new(ExprKind::Member {
                 object: Box::new(expr),
                 field,
-                null_safe: false });
+                null_safe: false,
+            });
         } else if chain_src.starts_with(':') {
             let field = chain_inner
                 .iter()
@@ -954,7 +1028,8 @@ fn walk_call_expression(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     "__lua_method_call".to_string(),
                 ))),
                 args: helper_args,
-                optional: false });
+                optional: false,
+            });
         } else if chain_src.starts_with('[') {
             let index = chain_inner
                 .iter()
@@ -965,7 +1040,8 @@ fn walk_call_expression(pair: Pair<Rule>) -> Result<ExprKind, String> {
             expr = Expression::new(ExprKind::Index {
                 object: Box::new(expr),
                 index: Box::new(index),
-                null_safe: false });
+                null_safe: false,
+            });
         }
     }
     Ok(expr.kind)
@@ -1193,7 +1269,8 @@ fn walk_primary(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             body.to_string()
                         }
                     }
-                    _ => strip_long_brackets(raw).to_string() }
+                    _ => strip_long_brackets(raw).to_string(),
+                }
             } else {
                 String::new()
             };
@@ -1214,7 +1291,8 @@ fn walk_primary(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 Ok(expr.kind)
             }
         }
-        other => Err(format!("Unhandled primary: {other:?}")) }
+        other => Err(format!("Unhandled primary: {other:?}")),
+    }
 }
 
 fn walk_table_constructor(pair: Pair<Rule>) -> Result<ExprKind, String> {
@@ -1242,7 +1320,8 @@ fn walk_table_field(field: Pair<Rule>, out: &mut Vec<ArrayElement>) -> Result<()
             key: None,
             value: walk_expression_value(spread_expr.clone())?,
             spread: true,
-            by_ref: false });
+            by_ref: false,
+        });
         return Ok(());
     }
 
@@ -1261,7 +1340,8 @@ fn walk_table_field(field: Pair<Rule>, out: &mut Vec<ArrayElement>) -> Result<()
                     .ok_or("missing bracketed table field value")?,
             )?,
             spread: false,
-            by_ref: false });
+            by_ref: false,
+        });
         return Ok(());
     }
 
@@ -1275,7 +1355,8 @@ fn walk_table_field(field: Pair<Rule>, out: &mut Vec<ArrayElement>) -> Result<()
             key: Some(Expression::new(ExprKind::Lit(Literal::Str(key_name)))),
             value: walk_expression_value(value_expr.clone())?,
             spread: false,
-            by_ref: false });
+            by_ref: false,
+        });
         return Ok(());
     }
 
@@ -1284,7 +1365,8 @@ fn walk_table_field(field: Pair<Rule>, out: &mut Vec<ArrayElement>) -> Result<()
             key: None,
             value: walk_expression_value(expr_pair.clone())?,
             spread: false,
-            by_ref: false });
+            by_ref: false,
+        });
         return Ok(());
     }
 
@@ -1297,7 +1379,8 @@ fn walk_func_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
         params,
         body: LambdaBody::Block(body),
         is_async: false,
-        captures: Vec::new() })
+        captures: Vec::new(),
+    })
 }
 
 fn parse_binop(s: &str) -> Result<BinOp, String> {
@@ -1323,7 +1406,8 @@ fn parse_binop(s: &str) -> Result<BinOp, String> {
         "~" => BinOp::BitXor,
         "<<" => BinOp::Shl,
         ">>" => BinOp::Shr,
-        _ => return Err(format!("unknown binop: {s}")) })
+        _ => return Err(format!("unknown binop: {s}")),
+    })
 }
 
 fn parse_unop(s: &str) -> Result<UnaryOp, String> {
@@ -1331,5 +1415,6 @@ fn parse_unop(s: &str) -> Result<UnaryOp, String> {
         "not" => UnaryOp::Not,
         "-" => UnaryOp::Neg,
         "~" => UnaryOp::BitNot,
-        _ => return Err(format!("unknown unop: {s}")) })
+        _ => return Err(format!("unknown unop: {s}")),
+    })
 }

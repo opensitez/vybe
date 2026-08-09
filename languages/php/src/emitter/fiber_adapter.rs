@@ -145,7 +145,8 @@ pub fn emit_php_fiber_start(chunks: &mut [Chunk], current: usize, argc: u8, line
         vec![StackSwitchHandler {
             kind: 0,
             tag_index: tag as u32,
-            label_index: handler_ip as u32 }],
+            label_index: handler_ip as u32,
+        }],
     );
 }
 

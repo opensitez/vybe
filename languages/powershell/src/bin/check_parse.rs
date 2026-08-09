@@ -2,7 +2,9 @@ use pest::Parser;
 use vybe_language_powershell::{PowerShellParser, Rule};
 
 fn main() {
-    let src = std::env::args().nth(1).unwrap_or_else(|| "if ($a -ne $b) { }".to_string());
+    let src = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "if ($a -ne $b) { }".to_string());
     println!("src: {}", src.replace('\n', "\\n"));
 
     let rules = [

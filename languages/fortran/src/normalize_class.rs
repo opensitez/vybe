@@ -5,12 +5,13 @@
 //! This shim preserves that shape so the shared class compiler can
 //! consume Fortran derived types.
 
-use vybe_ast::{
-    Argument, ClassMember, ClassModifiers, ExprKind, Expression, Literal, Span, StmtKind };
 use vybe_ast::class_normalize::{
-    NormalMembers,
-    Access, BaseCall, NormalClass, NormalConstructor, NormalField, SpecialMethod,
-    from_method_stmt };
+    Access, BaseCall, NormalClass, NormalConstructor, NormalField, NormalMembers, SpecialMethod,
+    from_method_stmt,
+};
+use vybe_ast::{
+    Argument, ClassMember, ClassModifiers, ExprKind, Expression, Literal, Span, StmtKind,
+};
 
 fn synthesize_fixed_array_init(bounds: &[Expression]) -> Option<Expression> {
     let size = bounds.first()?.clone();
@@ -20,7 +21,8 @@ fn synthesize_fixed_array_init(bounds: &[Expression]) -> Option<Expression> {
             Argument::positional(size),
             Argument::positional(Expression::new(ExprKind::Lit(Literal::Int(0)))),
         ],
-        optional: false }))
+        optional: false,
+    }))
 }
 
 pub fn normalize_class(
@@ -62,7 +64,8 @@ pub fn normalize_class(
                     array_bounds: array_bounds.clone(),
                     access: Access::Public,
                     readonly: field_modifiers.is_readonly,
-                    value_type: None };
+                    value_type: None,
+                };
                 m.push_field(field_modifiers.is_static, field);
             }
             ClassMember::Method(stmt) => {
@@ -88,12 +91,12 @@ pub fn normalize_class(
                         } else {
                             BaseCall::Auto
                         },
-                        named_name: None });
+                        named_name: None,
+                    });
                     continue;
                 }
 
-                let (canonical_name, special_kind) =
-                    crate::protocol::canonical_method(source_name);
+                let (canonical_name, special_kind) = crate::protocol::canonical_method(source_name);
                 if let Some(method) =
                     from_method_stmt(span.clone(), stmt, &canonical_name, Access::Public)
                 {
@@ -101,7 +104,8 @@ pub fn normalize_class(
                         m.special_methods.push(SpecialMethod {
                             kind,
                             canonical_name: canonical_name.clone(),
-                            source_name: source_name.to_string() });
+                            source_name: source_name.to_string(),
+                        });
                     }
                     m.push_method(method_modifiers.is_static, method);
                 }

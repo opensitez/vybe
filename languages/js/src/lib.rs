@@ -128,6 +128,16 @@ if (!globalThis.__vybe_js_prelude_done) {
 /// every test and re-parse anyway. Cloning the cached AST is far cheaper
 /// than re-parsing.
 fn prelude_body() -> Vec<vybe_ast::Statement> {
+    // NOT on `vybe_compiler::primitives::prelude` like php/python/go: this
+    // crate depends on `vybe_compiler` only as a DEV-dependency, and promoting
+    // that to a real one would drag every JS build behind a compiler rebuild.
+    // A single constant prelude needs one `OnceLock`, so the duplication is
+    // one line rather than a mechanism.
+    //
+    // JS is also the one language whose prelude is UNCONDITIONAL — every
+    // module gets all of it, because the function-kind intrinsics must be
+    // hoisted before any user declaration stamps its metadata. Gating it is a
+    // separate, measured change.
     static CACHE: std::sync::OnceLock<Vec<vybe_ast::Statement>> = std::sync::OnceLock::new();
     CACHE
         .get_or_init(|| {
@@ -206,7 +216,8 @@ pub fn register() {
         emit_dispatch: Some(emitter::dispatch::dispatch),
         normalize_class: Some(normalize_class::normalize_class),
         register_tree: None,
-        expand_source: None });
+        expand_source: None,
+    });
     vybe_runtime::registry::register_hooks(
         "js",
         vybe_runtime::registry::LanguageHooks {

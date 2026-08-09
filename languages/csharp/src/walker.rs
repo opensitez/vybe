@@ -62,7 +62,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
                     }
                     body.push(Statement::new(StmtKind::NamespaceDecl {
                         name: ns_name,
-                        body: ns_body }));
+                        body: ns_body,
+                    }));
                 }
                 _ => {
                     if let Ok(stmt) = walk_top_level_with_attributes(pair, &pending_attributes) {
@@ -85,9 +86,10 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name: "main".into(),
         language: Lang::CSharp,
         body,
-            // Declared in the profile's `[async]` section; see python's note.
+        // Declared in the profile's `[async]` section; see python's note.
         imports,
-        directives: Default::default() };
+        directives: Default::default(),
+    };
     rewrite_using_imports(&mut module);
     normalize_task_surface(&mut module);
     inject_interface_defaults(&mut module.body);
@@ -97,6 +99,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     rewrite_record_uses(&mut module);
     rewrite_tuple_uses(&mut module);
     rewrite_extension_calls(&mut module);
+    rewrite_set_algebra_bool_calls(&mut module.body);
     rewrite_linked_list_node_uses(&mut module.body);
     rewrite_sorted_dictionary_foreach(&mut module.body);
     rewrite_sorted_set_foreach(&mut module.body);
@@ -115,7 +118,8 @@ fn lower_csharp_pointer_uses(body: &mut [Statement]) {
 #[derive(Clone, Default)]
 struct CsharpPointerScope {
     carray: HashSet<String>,
-    chars: HashSet<String> }
+    chars: HashSet<String>,
+}
 
 fn is_csharp_pointer_type_hint(type_hint: &str) -> bool {
     type_hint.contains('*')
@@ -124,7 +128,8 @@ fn is_csharp_pointer_type_hint(type_hint: &str) -> bool {
 #[derive(Clone)]
 struct CsharpSpanSliceAlias {
     base: Expression,
-    offset: Expression }
+    offset: Expression,
+}
 
 fn rewrite_csharp_span_slice_aliases(body: &mut [Statement]) {
     let mut aliases = HashMap::new();
@@ -178,7 +183,8 @@ fn rewrite_csharp_span_slice_aliases_in_statement(
             cond,
             then_body,
             elifs,
-            else_body } => {
+            else_body,
+        } => {
             rewrite_csharp_span_slice_aliases_in_expr(cond, aliases);
             let mut scoped = aliases.clone();
             rewrite_csharp_span_slice_aliases_in_statements(then_body, &mut scoped);
@@ -192,7 +198,11 @@ fn rewrite_csharp_span_slice_aliases_in_statement(
                 rewrite_csharp_span_slice_aliases_in_statements(body, &mut scoped);
             }
         }
-        StmtKind::While { cond, body, else_body } => {
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
             rewrite_csharp_span_slice_aliases_in_expr(cond, aliases);
             let mut scoped = aliases.clone();
             rewrite_csharp_span_slice_aliases_in_statements(body, &mut scoped);
@@ -205,7 +215,8 @@ fn rewrite_csharp_span_slice_aliases_in_statement(
             init,
             cond,
             update,
-            body } => {
+            body,
+        } => {
             if let Some(init) = init {
                 rewrite_csharp_span_slice_aliases_in_statement(init, aliases);
             }
@@ -267,8 +278,7 @@ fn rewrite_csharp_span_slice_aliases_in_expr(
         | ExprKind::YieldFrom(object)
         | ExprKind::Spread(object)
         | ExprKind::TypeOf(object) => rewrite_csharp_span_slice_aliases_in_expr(object, aliases),
-        ExprKind::Binary { left, right, .. }
-        | ExprKind::NullCoalesce { left, right } => {
+        ExprKind::Binary { left, right, .. } | ExprKind::NullCoalesce { left, right } => {
             rewrite_csharp_span_slice_aliases_in_expr(left, aliases);
             rewrite_csharp_span_slice_aliases_in_expr(right, aliases);
         }
@@ -319,7 +329,8 @@ fn csharp_span_slice_alias_from_expr(expr: &Expression) -> Option<CsharpSpanSlic
     }
     Some(CsharpSpanSliceAlias {
         base: args[0].value.clone(),
-        offset: args[1].value.clone() })
+        offset: args[1].value.clone(),
+    })
 }
 
 fn csharp_span_slice_alias_index(alias: &CsharpSpanSliceAlias, index: Expression) -> Expression {
@@ -328,8 +339,10 @@ fn csharp_span_slice_alias_index(alias: &CsharpSpanSliceAlias, index: Expression
         index: Box::new(Expression::new(ExprKind::Binary {
             op: BinOp::Add,
             left: Box::new(alias.offset.clone()),
-            right: Box::new(index) })),
-        null_safe: false })
+            right: Box::new(index),
+        })),
+        null_safe: false,
+    })
 }
 
 fn is_csharp_char_pointer_type_hint(type_hint: &str) -> bool {
@@ -361,14 +374,16 @@ fn csharp_member(object: Expression, field: &str) -> Expression {
     Expression::new(ExprKind::Member {
         object: Box::new(object),
         field: field.to_string(),
-        null_safe: false })
+        null_safe: false,
+    })
 }
 
 fn csharp_binary(op: BinOp, left: Expression, right: Expression) -> Expression {
     Expression::new(ExprKind::Binary {
         op,
         left: Box::new(left),
-        right: Box::new(right) })
+        right: Box::new(right),
+    })
 }
 
 fn csharp_carray_pointer_eq(left: Expression, right: Expression) -> Expression {
@@ -390,7 +405,8 @@ fn csharp_carray_pointer_eq(left: Expression, right: Expression) -> Expression {
 fn csharp_char_code_expr(value: Expression) -> Expression {
     match value.kind {
         ExprKind::Lit(Literal::Char(ch)) => Expression::int(ch as i64),
-        _ => value }
+        _ => value,
+    }
 }
 
 fn csharp_char_pointer_read_value(
@@ -425,18 +441,21 @@ fn csharp_pointer_init_expr(
     match &init.kind {
         ExprKind::Unary {
             op: UnaryOp::AddrOf,
-            expr } => match &expr.kind {
+            expr,
+        } => match &expr.kind {
             ExprKind::Index { object, index, .. } => {
                 common_pointers::make_carray_ptr((**object).clone(), (**index).clone())
             }
-            _ => init },
+            _ => init,
+        },
         ExprKind::Array(_) => common_pointers::make_carray_ptr(init, Expression::int(0)),
         ExprKind::Ident(name) if scope.carray.contains(name) => init,
         ExprKind::Lit(Literal::Null) => init,
         _ if array_default_for_plain_value => {
             common_pointers::make_carray_ptr(init, Expression::int(0))
         }
-        _ => init }
+        _ => init,
+    }
 }
 
 fn normalize_csharp_char_array_literal(expr: &mut Expression) {
@@ -514,8 +533,7 @@ fn lower_csharp_pointer_statement(stmt: &mut Statement, scope: &mut CsharpPointe
                 if is_csharp_pointer_expr(object, scope) {
                     let target =
                         common_pointers::carray_indexed_read((**object).clone(), (**index).clone());
-                    let write_value =
-                        csharp_char_pointer_write_value(object, value.clone(), scope);
+                    let write_value = csharp_char_pointer_write_value(object, value.clone(), scope);
                     targets[0] = target;
                     *value = write_value;
                     return;
@@ -544,7 +562,8 @@ fn lower_csharp_pointer_statement(stmt: &mut Statement, scope: &mut CsharpPointe
             cond,
             then_body,
             elifs,
-            else_body } => {
+            else_body,
+        } => {
             lower_csharp_pointer_expr(cond, scope);
             let mut scoped = scope.clone();
             lower_csharp_pointer_statements(then_body, &mut scoped);
@@ -558,7 +577,11 @@ fn lower_csharp_pointer_statement(stmt: &mut Statement, scope: &mut CsharpPointe
                 lower_csharp_pointer_statements(body, &mut scoped);
             }
         }
-        StmtKind::While { cond, body, else_body } => {
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
             lower_csharp_pointer_expr(cond, scope);
             let mut scoped = scope.clone();
             lower_csharp_pointer_statements(body, &mut scoped);
@@ -571,7 +594,8 @@ fn lower_csharp_pointer_statement(stmt: &mut Statement, scope: &mut CsharpPointe
             init,
             cond,
             update,
-            body } => {
+            body,
+        } => {
             let mut scoped = scope.clone();
             if let Some(init) = init {
                 lower_csharp_pointer_statement(init, &mut scoped);
@@ -598,7 +622,8 @@ fn lower_csharp_pointer_statement(stmt: &mut Statement, scope: &mut CsharpPointe
             body,
             catches,
             else_body,
-            finally } => {
+            finally,
+        } => {
             let mut scoped = scope.clone();
             lower_csharp_pointer_statements(body, &mut scoped);
             for catch in catches {
@@ -633,9 +658,10 @@ fn lower_csharp_pointer_member(member: &mut ClassMember) {
         }
         ClassMember::Constructor { params, body, .. } => {
             for param in params {
-                if param.type_hint.as_deref().is_some_and(|hint| {
-                    is_csharp_pointer_type_hint(hint) && hint.contains("[]")
-                })
+                if param
+                    .type_hint
+                    .as_deref()
+                    .is_some_and(|hint| is_csharp_pointer_type_hint(hint) && hint.contains("[]"))
                 {
                     scope.carray.insert(param.name.clone());
                 }
@@ -693,7 +719,11 @@ fn lower_csharp_pointer_expr(expr: &mut Expression, scope: &CsharpPointerScope) 
                                 *expr = Expression::new(ExprKind::Sequence(vec![
                                     read_old,
                                     common_pointers::carray_advance_inplace(name, step),
-                                    csharp_char_pointer_read_value((**ptr).clone(), old_again, scope),
+                                    csharp_char_pointer_read_value(
+                                        (**ptr).clone(),
+                                        old_again,
+                                        scope,
+                                    ),
                                 ]));
                                 return;
                             }
@@ -711,7 +741,11 @@ fn lower_csharp_pointer_expr(expr: &mut Expression, scope: &CsharpPointerScope) 
                                 *expr = Expression::new(ExprKind::Sequence(vec![
                                     read_old,
                                     common_pointers::carray_retreat_inplace(name, step),
-                                    csharp_char_pointer_read_value((**ptr).clone(), old_again, scope),
+                                    csharp_char_pointer_read_value(
+                                        (**ptr).clone(),
+                                        old_again,
+                                        scope,
+                                    ),
                                 ]));
                                 return;
                             }
@@ -730,7 +764,8 @@ fn lower_csharp_pointer_expr(expr: &mut Expression, scope: &CsharpPointerScope) 
             lower_csharp_pointer_expr(object, scope);
             lower_csharp_pointer_expr(index, scope);
             if is_csharp_pointer_expr(object, scope) {
-                let read = common_pointers::carray_indexed_read((**object).clone(), (**index).clone());
+                let read =
+                    common_pointers::carray_indexed_read((**object).clone(), (**index).clone());
                 *expr = csharp_char_pointer_read_value((**object).clone(), read, scope);
             }
         }
@@ -769,7 +804,8 @@ fn lower_csharp_pointer_expr(expr: &mut Expression, scope: &CsharpPointerScope) 
                         expr: Box::new(csharp_carray_pointer_eq(
                             (**left).clone(),
                             (**right).clone(),
-                        )) });
+                        )),
+                    });
                 }
                 (BinOp::Add, true, _) => {
                     *expr = common_pointers::carray_advance((**left).clone(), (**right).clone());
@@ -791,11 +827,10 @@ fn lower_csharp_pointer_expr(expr: &mut Expression, scope: &CsharpPointerScope) 
             lower_csharp_pointer_expr(target, scope);
             if let ExprKind::RefLoad(ptr) = &target.kind {
                 if is_csharp_pointer_expr(ptr, scope) {
-                    *expr =
-                        common_pointers::carray_deref_write(
-                            (**ptr).clone(),
-                            csharp_char_pointer_write_value(ptr, (**value).clone(), scope),
-                        );
+                    *expr = common_pointers::carray_deref_write(
+                        (**ptr).clone(),
+                        csharp_char_pointer_write_value(ptr, (**value).clone(), scope),
+                    );
                 }
             }
         }
@@ -918,7 +953,8 @@ fn split_csharp_top_level(text: &str, separator: char) -> Vec<String> {
                 }
                 current.clear();
             }
-            _ => current.push(ch) }
+            _ => current.push(ch),
+        }
     }
 
     let piece = current.trim();
@@ -962,7 +998,8 @@ fn parse_attribute_argument(text: &str) -> Option<Argument> {
                 value: parse_csharp_inline_expression(rhs.trim())?,
                 name: Some(lhs_trimmed.rsplit('.').next()?.to_string()),
                 by_ref: false,
-                spread: false });
+                spread: false,
+            });
         }
     }
 
@@ -970,7 +1007,8 @@ fn parse_attribute_argument(text: &str) -> Option<Argument> {
         value: parse_csharp_inline_expression(trimmed)?,
         name: None,
         by_ref: false,
-        spread: false })
+        spread: false,
+    })
 }
 
 fn parse_attribute_specs(raw: &str) -> Vec<Expression> {
@@ -1000,7 +1038,8 @@ fn parse_attribute_specs(raw: &str) -> Vec<Expression> {
 
             Some(Expression::new(ExprKind::New {
                 class: Box::new(build_dotted_expr(&normalize_attribute_type_name(name))),
-                args }))
+                args,
+            }))
         })
         .collect()
 }
@@ -1009,11 +1048,13 @@ fn attribute_leaf_name(expr: &Expression) -> Option<String> {
     let callee = match &expr.kind {
         ExprKind::Call { callee, .. } => callee.as_ref(),
         ExprKind::New { class, .. } => class.as_ref(),
-        _ => expr };
+        _ => expr,
+    };
     match &callee.kind {
         ExprKind::Ident(name) => Some(name.rsplit('.').next().unwrap_or(name).to_string()),
         ExprKind::Member { field, .. } => Some(field.clone()),
-        _ => None }
+        _ => None,
+    }
 }
 
 fn explicit_interface_runtime_name(interface_name: &str, member_name: &str) -> String {
@@ -1173,7 +1214,8 @@ fn rewrite_explicit_interface_accesses_in_statement(
         | StmtKind::Return(Some(expr))
         | StmtKind::Throw {
             expr: Some(expr),
-            cause: None }
+            cause: None,
+        }
         | StmtKind::Using { resource: expr, .. }
         | StmtKind::Lock { expr, .. }
         | StmtKind::CompoundAssign { value: expr, .. } => {
@@ -1181,7 +1223,8 @@ fn rewrite_explicit_interface_accesses_in_statement(
         }
         StmtKind::Throw {
             expr: Some(expr),
-            cause: Some(cause) } => {
+            cause: Some(cause),
+        } => {
             rewrite_explicit_interface_accesses_in_expr(expr, conflicted);
             rewrite_explicit_interface_accesses_in_expr(cause, conflicted);
         }
@@ -1213,7 +1256,8 @@ fn rewrite_explicit_interface_accesses_in_statement(
             cond,
             then_body,
             elifs,
-            else_body } => {
+            else_body,
+        } => {
             rewrite_explicit_interface_accesses_in_expr(cond, conflicted);
             rewrite_explicit_interface_accesses_in_statements(then_body, conflicted);
             for (elif_cond, elif_body) in elifs {
@@ -1228,7 +1272,8 @@ fn rewrite_explicit_interface_accesses_in_statement(
             init,
             cond,
             update,
-            body } => {
+            body,
+        } => {
             if let Some(init) = init {
                 rewrite_explicit_interface_accesses_in_statement(init, conflicted);
             }
@@ -1255,7 +1300,8 @@ fn rewrite_explicit_interface_accesses_in_statement(
         StmtKind::While {
             cond,
             body,
-            else_body } => {
+            else_body,
+        } => {
             rewrite_explicit_interface_accesses_in_expr(cond, conflicted);
             rewrite_explicit_interface_accesses_in_statements(body, conflicted);
             if let Some(else_body) = else_body {
@@ -1269,7 +1315,8 @@ fn rewrite_explicit_interface_accesses_in_statement(
         StmtKind::Switch {
             expr,
             cases,
-            default } => {
+            default,
+        } => {
             rewrite_explicit_interface_accesses_in_expr(expr, conflicted);
             for case in cases {
                 for condition in &mut case.conditions {
@@ -1296,7 +1343,8 @@ fn rewrite_explicit_interface_accesses_in_statement(
             body,
             catches,
             else_body,
-            finally } => {
+            finally,
+        } => {
             rewrite_explicit_interface_accesses_in_statements(body, conflicted);
             for catch in catches {
                 if let Some(when_clause) = &mut catch.when_clause {
@@ -1446,6 +1494,24 @@ fn rewrite_explicit_interface_accesses_in_expr(
                 rewrite_explicit_interface_accesses_in_expr(&mut arg.value, conflicted);
             }
         }
+        ExprKind::Proxy { target, handler } => {
+            rewrite_explicit_interface_accesses_in_expr(target, conflicted);
+            rewrite_explicit_interface_accesses_in_expr(handler, conflicted);
+        }
+        ExprKind::CallableRef {
+            target,
+            receiver,
+            adapter,
+            ..
+        } => {
+            rewrite_explicit_interface_accesses_in_expr(target, conflicted);
+            if let Some(receiver) = receiver {
+                rewrite_explicit_interface_accesses_in_expr(receiver, conflicted);
+            }
+            if let Some(CallableAdapter::Expr { body, .. }) = adapter {
+                rewrite_explicit_interface_accesses_in_expr(body, conflicted);
+            }
+        }
         ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
             rewrite_explicit_interface_accesses_in_expr(target, conflicted);
             rewrite_explicit_interface_accesses_in_expr(value, conflicted);
@@ -1581,7 +1647,7 @@ fn rewrite_explicit_interface_accesses_in_expr(
         | ExprKind::DefaultOf(_)
         | ExprKind::This
         | ExprKind::Super
-        | ExprKind::AddressOf(_)
+        | ExprKind::FuncRef(_)
         | ExprKind::SuperCall { .. }
         | ExprKind::Yield(None)
         | ExprKind::Destructure(_) => {}
@@ -1590,7 +1656,8 @@ fn rewrite_explicit_interface_accesses_in_expr(
 
 #[derive(Clone)]
 struct RecordShape {
-    positional_fields: Vec<String> }
+    positional_fields: Vec<String>,
+}
 
 fn extract_deconstruct_shape(params: &[Param], body: &[Statement]) -> Option<RecordShape> {
     if params.is_empty() || body.len() != params.len() {
@@ -1617,8 +1684,10 @@ fn extract_deconstruct_shape(params: &[Param], body: &[Statement]) -> Option<Rec
             ExprKind::Member {
                 object,
                 field,
-                null_safe: false } if matches!(object.kind, ExprKind::This) => field.clone(),
-            _ => return None };
+                null_safe: false,
+            } if matches!(object.kind, ExprKind::This) => field.clone(),
+            _ => return None,
+        };
         positional_fields.push(field_name);
     }
 
@@ -1803,7 +1872,8 @@ fn rewrite_record_uses_in_statement(
             cond,
             then_body,
             elifs,
-            else_body } => {
+            else_body,
+        } => {
             rewrite_record_uses_in_expr(cond, record_shapes, scopes);
             scopes.push(HashMap::new());
             rewrite_record_uses_in_statements(then_body, record_shapes, scopes);
@@ -1824,7 +1894,8 @@ fn rewrite_record_uses_in_statement(
             init,
             cond,
             update,
-            body } => {
+            body,
+        } => {
             scopes.push(HashMap::new());
             if let Some(init) = init {
                 rewrite_record_uses_in_statement(init, record_shapes, scopes);
@@ -1855,7 +1926,8 @@ fn rewrite_record_uses_in_statement(
         StmtKind::While {
             cond,
             body,
-            else_body } => {
+            else_body,
+        } => {
             rewrite_record_uses_in_expr(cond, record_shapes, scopes);
             scopes.push(HashMap::new());
             rewrite_record_uses_in_statements(body, record_shapes, scopes);
@@ -1873,7 +1945,8 @@ fn rewrite_record_uses_in_statement(
         StmtKind::Switch {
             expr,
             cases,
-            default } => {
+            default,
+        } => {
             rewrite_record_uses_in_expr(expr, record_shapes, scopes);
             for case in cases {
                 for condition in &mut case.conditions {
@@ -1923,9 +1996,11 @@ fn rewrite_record_uses_in_statement(
                                         value: Expression::new(ExprKind::Member {
                                             object: Box::new(obj.clone()),
                                             field: field.clone(),
-                                            null_safe: false }),
+                                            null_safe: false,
+                                        }),
                                         spread: false,
-                                        by_ref: false })
+                                        by_ref: false,
+                                    })
                                     .collect();
                                 let patterns = names
                                     .iter()
@@ -1962,16 +2037,19 @@ fn destructure_target_names(target: &Expression) -> Option<Vec<String>> {
             .iter()
             .map(|e| match &e.kind {
                 ExprKind::Ident(n) => Some(n.clone()),
-                _ => None })
+                _ => None,
+            })
             .collect(),
         ExprKind::Destructure(DestructurePattern::Array(patterns)) => patterns
             .iter()
             .map(|p| match p {
                 ArrayPatternElem::Hole => Some("_".to_string()),
                 ArrayPatternElem::Pattern(BindingPattern::Ident(n), _) => Some(n.clone()),
-                _ => None })
+                _ => None,
+            })
             .collect(),
-        _ => None }
+        _ => None,
+    }
 }
 
 fn rewrite_record_uses_in_expr(
@@ -1995,7 +2073,8 @@ fn rewrite_record_uses_in_expr(
                         *expr = if matches!(op, BinOp::NotEq) {
                             Expression::new(ExprKind::Unary {
                                 op: UnaryOp::Not,
-                                expr: Box::new(equals_expr) })
+                                expr: Box::new(equals_expr),
+                            })
                         } else {
                             equals_expr
                         };
@@ -2006,10 +2085,12 @@ fn rewrite_record_uses_in_expr(
         ExprKind::NullCoalesce { left, right }
         | ExprKind::Assign {
             target: left,
-            value: right }
+            value: right,
+        }
         | ExprKind::Walrus {
             target: left,
-            value: right } => {
+            value: right,
+        } => {
             rewrite_record_uses_in_expr(left, record_shapes, scopes);
             rewrite_record_uses_in_expr(right, record_shapes, scopes);
         }
@@ -2157,15 +2238,19 @@ fn build_record_field_equality(
             left: Box::new(Expression::new(ExprKind::Member {
                 object: Box::new(left.clone()),
                 field: field.clone(),
-                null_safe: false })),
+                null_safe: false,
+            })),
             right: Box::new(Expression::new(ExprKind::Member {
                 object: Box::new(right.clone()),
                 field: field.clone(),
-                null_safe: false })) });
+                null_safe: false,
+            })),
+        });
         combined = Expression::new(ExprKind::Binary {
             op: BinOp::And,
             left: Box::new(combined),
-            right: Box::new(cmp) });
+            right: Box::new(cmp),
+        });
     }
     combined
 }
@@ -2185,12 +2270,14 @@ fn build_tuple_structural_equality(left: &Expression, right: &Expression) -> Opt
             Expression::new(ExprKind::Binary {
                 op: BinOp::Eq,
                 left: Box::new(left_item.clone()),
-                right: Box::new(right_item.clone()) })
+                right: Box::new(right_item.clone()),
+            })
         });
         combined = Expression::new(ExprKind::Binary {
             op: BinOp::And,
             left: Box::new(combined),
-            right: Box::new(cmp) });
+            right: Box::new(cmp),
+        });
     }
 
     Some(combined)
@@ -2232,7 +2319,8 @@ fn rewrite_record_deconstruction_stmt(
             ExprKind::Ident(name) if !name.starts_with("__discard_") => {
                 ArrayPatternElem::Pattern(BindingPattern::Ident(name.clone()), None)
             }
-            _ => ArrayPatternElem::Hole })
+            _ => ArrayPatternElem::Hole,
+        })
         .collect();
 
     let values = shape
@@ -2243,16 +2331,20 @@ fn rewrite_record_deconstruction_stmt(
             value: Expression::new(ExprKind::Member {
                 object: Box::new((**object).clone()),
                 field: field.clone(),
-                null_safe: false }),
+                null_safe: false,
+            }),
             spread: false,
-            by_ref: false })
+            by_ref: false,
+        })
         .collect();
 
     Some(StmtKind::Assign {
         targets: vec![Expression::new(ExprKind::Destructure(
             DestructurePattern::Array(patterns),
         ))],
-        value: Expression::new(ExprKind::Array(values)), by_ref: false })
+        value: Expression::new(ExprKind::Array(values)),
+        by_ref: false,
+    })
 }
 
 fn infer_record_type(
@@ -2267,11 +2359,13 @@ fn infer_record_type(
             .find_map(|scope| scope.get(name).cloned()),
         ExprKind::New { class, .. } => match &class.kind {
             ExprKind::Ident(name) if record_shapes.contains_key(name) => Some(name.clone()),
-            _ => None },
+            _ => None,
+        },
         ExprKind::Cast { type_name, .. } if record_shapes.contains_key(type_name) => {
             Some(type_name.clone())
         }
-        _ => None }
+        _ => None,
+    }
 }
 
 fn rewrite_tuple_uses(module: &mut Module) {
@@ -2397,7 +2491,8 @@ fn rewrite_tuple_uses_in_statement(stmt: &mut Statement, scopes: &mut Vec<HashMa
             cond,
             then_body,
             elifs,
-            else_body } => {
+            else_body,
+        } => {
             rewrite_tuple_uses_in_expr(cond, scopes);
             scopes.push(HashMap::new());
             rewrite_tuple_uses_in_statements(then_body, scopes);
@@ -2418,7 +2513,8 @@ fn rewrite_tuple_uses_in_statement(stmt: &mut Statement, scopes: &mut Vec<HashMa
             init,
             cond,
             update,
-            body } => {
+            body,
+        } => {
             scopes.push(HashMap::new());
             if let Some(init) = init {
                 rewrite_tuple_uses_in_statement(init, scopes);
@@ -2449,7 +2545,8 @@ fn rewrite_tuple_uses_in_statement(stmt: &mut Statement, scopes: &mut Vec<HashMa
         StmtKind::While {
             cond,
             body,
-            else_body } => {
+            else_body,
+        } => {
             rewrite_tuple_uses_in_expr(cond, scopes);
             scopes.push(HashMap::new());
             rewrite_tuple_uses_in_statements(body, scopes);
@@ -2467,7 +2564,8 @@ fn rewrite_tuple_uses_in_statement(stmt: &mut Statement, scopes: &mut Vec<HashMa
         StmtKind::Switch {
             expr,
             cases,
-            default } => {
+            default,
+        } => {
             rewrite_tuple_uses_in_expr(expr, scopes);
             for case in cases {
                 for condition in &mut case.conditions {
@@ -2510,11 +2608,13 @@ fn rewrite_tuple_uses_in_expr(expr: &mut Expression, scopes: &mut Vec<HashMap<St
                             build_tuple_structural_equality(left, right)
                                 .unwrap_or_else(|| build_tuple_runtime_equality(left, right, arity))
                         }
-                        _ => build_tuple_runtime_equality(left, right, arity) };
+                        _ => build_tuple_runtime_equality(left, right, arity),
+                    };
                     *expr = if matches!(op, BinOp::NotEq) {
                         Expression::new(ExprKind::Unary {
                             op: UnaryOp::Not,
-                            expr: Box::new(equals_expr) })
+                            expr: Box::new(equals_expr),
+                        })
                     } else {
                         equals_expr
                     };
@@ -2524,10 +2624,12 @@ fn rewrite_tuple_uses_in_expr(expr: &mut Expression, scopes: &mut Vec<HashMap<St
         ExprKind::NullCoalesce { left, right }
         | ExprKind::Assign {
             target: left,
-            value: right }
+            value: right,
+        }
         | ExprKind::Walrus {
             target: left,
-            value: right } => {
+            value: right,
+        } => {
             rewrite_tuple_uses_in_expr(left, scopes);
             rewrite_tuple_uses_in_expr(right, scopes);
         }
@@ -2664,11 +2766,13 @@ fn infer_tuple_arity(expr: &Expression, scopes: &[HashMap<String, usize>]) -> Op
             .find_map(|scope| scope.get(name).copied()),
         ExprKind::Tuple(items) => Some(items.len()),
         ExprKind::Cast { expr, .. } => infer_tuple_arity(expr, scopes),
-        _ => None }
+        _ => None,
+    }
 }
 
 use vybe_compiler::primitives::tuples::{
-    named_tuple_arity, positional_read as named_tuple_positional_read };
+    named_tuple_arity, positional_read as named_tuple_positional_read,
+};
 
 /// A `var (a, b) = t;` where `t` is a tuple-valued expression lowers to a block
 /// ending in `t.Deconstruct(out a, out b)`. Tuples carry no `Deconstruct`, so
@@ -2695,10 +2799,12 @@ fn rewrite_tuple_deconstruction_block(
 
     let named_arity = named_tuple_arity(object).or_else(|| match &object.kind {
         ExprKind::Ident(name) => NAMED_TUPLE_VARS.with(|m| m.borrow().get(name).copied()),
-        _ => None });
+        _ => None,
+    });
     let (arity, is_named) = match named_arity {
         Some(a) => (a, true),
-        None => (infer_tuple_arity(object, scopes)?, false) };
+        None => (infer_tuple_arity(object, scopes)?, false),
+    };
     if arity != args.len() {
         return None;
     }
@@ -2710,7 +2816,8 @@ fn rewrite_tuple_deconstruction_block(
             ExprKind::Ident(name) => {
                 ArrayPatternElem::Pattern(BindingPattern::Ident(name.clone()), None)
             }
-            _ => ArrayPatternElem::Hole })
+            _ => ArrayPatternElem::Hole,
+        })
         .collect();
 
     let init = if is_named {
@@ -2719,7 +2826,8 @@ fn rewrite_tuple_deconstruction_block(
                 key: None,
                 value: named_tuple_positional_read((**object).clone(), i),
                 spread: false,
-                by_ref: false })
+                by_ref: false,
+            })
             .collect();
         Expression::new(ExprKind::Array(values))
     } else {
@@ -2732,8 +2840,10 @@ fn rewrite_tuple_deconstruction_block(
             type_hint: None,
             init: Some(init),
             array_bounds: None,
-            with_events: false }],
-        kind: VarDeclKind::Let })
+            with_events: false,
+        }],
+        kind: VarDeclKind::Let,
+    })
 }
 
 fn build_tuple_runtime_equality(left: &Expression, right: &Expression, arity: usize) -> Expression {
@@ -2744,15 +2854,19 @@ fn build_tuple_runtime_equality(left: &Expression, right: &Expression, arity: us
             left: Box::new(Expression::new(ExprKind::Index {
                 object: Box::new(left.clone()),
                 index: Box::new(Expression::int(index as i64)),
-                null_safe: false })),
+                null_safe: false,
+            })),
             right: Box::new(Expression::new(ExprKind::Index {
                 object: Box::new(right.clone()),
                 index: Box::new(Expression::int(index as i64)),
-                null_safe: false })) });
+                null_safe: false,
+            })),
+        });
         combined = Expression::new(ExprKind::Binary {
             op: BinOp::And,
             left: Box::new(combined),
-            right: Box::new(cmp) });
+            right: Box::new(cmp),
+        });
     }
     combined
 }
@@ -2786,12 +2900,14 @@ fn wrap_checked_byte_value(value: Expression, is_checked: bool) -> Expression {
         Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__vybe_csharp_checked_byte_cast")),
             args: vec![Argument::positional(value)],
-            optional: false })
+            optional: false,
+        })
     } else {
         Expression::new(ExprKind::Call {
             callee: Box::new(build_dotted_expr("Convert.ToByte")),
             args: vec![Argument::positional(value)],
-            optional: false })
+            optional: false,
+        })
     }
 }
 
@@ -2799,7 +2915,8 @@ fn is_checked_byte_wrapper_call(expr: &Expression, is_checked: bool) -> bool {
     let ExprKind::Call {
         callee,
         args,
-        optional: false } = &expr.kind
+        optional: false,
+    } = &expr.kind
     else {
         return false;
     };
@@ -2845,10 +2962,13 @@ fn rewrite_checked_numeric_statement(
             let result_expr = Expression::new(ExprKind::Binary {
                 op: bin_op,
                 left: Box::new(target.clone()),
-                right: Box::new(value.clone()) });
+                right: Box::new(value.clone()),
+            });
             stmt.kind = StmtKind::Assign {
                 targets: vec![target.clone()],
-                value: wrap_checked_byte_value(result_expr, is_checked), by_ref: false };
+                value: wrap_checked_byte_value(result_expr, is_checked),
+                by_ref: false,
+            };
         }
         StmtKind::Assign { targets, value, .. } => {
             rewrite_checked_numeric_expr(value, scopes, is_checked);
@@ -2888,7 +3008,8 @@ fn rewrite_checked_numeric_statement(
             cond,
             then_body,
             elifs,
-            else_body } => {
+            else_body,
+        } => {
             rewrite_checked_numeric_expr(cond, scopes, is_checked);
             scopes.push(HashMap::new());
             rewrite_checked_numeric_statements(then_body, scopes, is_checked);
@@ -2909,7 +3030,8 @@ fn rewrite_checked_numeric_statement(
             init,
             cond,
             update,
-            body } => {
+            body,
+        } => {
             scopes.push(HashMap::new());
             if let Some(init) = init {
                 rewrite_checked_numeric_statement(init, scopes, is_checked);
@@ -2940,7 +3062,8 @@ fn rewrite_checked_numeric_statement(
         StmtKind::While {
             cond,
             body,
-            else_body } => {
+            else_body,
+        } => {
             rewrite_checked_numeric_expr(cond, scopes, is_checked);
             scopes.push(HashMap::new());
             rewrite_checked_numeric_statements(body, scopes, is_checked);
@@ -3118,7 +3241,8 @@ fn checked_numeric_compound_binop(op: &CompoundOp) -> Option<BinOp> {
         CompoundOp::Shl => Some(BinOp::Shl),
         CompoundOp::Shr => Some(BinOp::Shr),
         CompoundOp::UShr => Some(BinOp::UShr),
-        _ => None }
+        _ => None,
+    }
 }
 
 /// Normalize C#'s Task surface into the common async model (`AsyncOp`).
@@ -3165,7 +3289,8 @@ fn normalize_task_expr(expr: &mut Expression) {
                             if th == "Threading"
                                 && matches!(&system.kind, ExprKind::Ident(sys) if sys == "System")))
             }
-            _ => false }
+            _ => false,
+        }
     }
     fn is_task_static(callee: &Expression, name: &str) -> bool {
         matches!(&callee.kind,
@@ -3199,7 +3324,8 @@ fn normalize_task_expr(expr: &mut Expression) {
             } else if is_task_static(callee, "WhenAll") {
                 Some(AsyncOp::Join {
                     mode: JoinMode::All,
-                    sources: std::mem::take(args).into_iter().map(|a| a.value).collect() })
+                    sources: std::mem::take(args).into_iter().map(|a| a.value).collect(),
+                })
             } else if args.len() == 1
                 && matches!(&callee.kind,
                     ExprKind::Member { field, .. } if field == "ConfigureAwait")
@@ -3219,31 +3345,33 @@ fn normalize_task_expr(expr: &mut Expression) {
                 // <expr>.GetAwaiter().GetResult() → BlockOn(<expr>) — the
                 // sync↔async boundary, matched as the exact two-step chain.
                 match &mut callee.kind {
-                    ExprKind::Member { object: get_result_recv, field, .. }
-                        if field == "GetResult" =>
-                    {
-                        match &mut get_result_recv.kind {
-                            ExprKind::Call { callee: inner, args: inner_args, .. }
-                                if inner_args.is_empty() =>
-                            {
-                                match &mut inner.kind {
-                                    ExprKind::Member { object: task, field, .. }
-                                        if field == "GetAwaiter" =>
-                                    {
-                                        let task = std::mem::replace(
-                                            &mut **task,
-                                            Expression::with_span(
-                                                ExprKind::Lit(Literal::Null),
-                                                span,
-                                            ),
-                                        );
-                                        Some(AsyncOp::BlockOn(Box::new(task)))
-                                    }
-                                    _ => None }
+                    ExprKind::Member {
+                        object: get_result_recv,
+                        field,
+                        ..
+                    } if field == "GetResult" => match &mut get_result_recv.kind {
+                        ExprKind::Call {
+                            callee: inner,
+                            args: inner_args,
+                            ..
+                        } if inner_args.is_empty() => match &mut inner.kind {
+                            ExprKind::Member {
+                                object: task,
+                                field,
+                                ..
+                            } if field == "GetAwaiter" => {
+                                let task = std::mem::replace(
+                                    &mut **task,
+                                    Expression::with_span(ExprKind::Lit(Literal::Null), span),
+                                );
+                                Some(AsyncOp::BlockOn(Box::new(task)))
                             }
-                            _ => None }
-                    }
-                    _ => None }
+                            _ => None,
+                        },
+                        _ => None,
+                    },
+                    _ => None,
+                }
             } else {
                 None
             }
@@ -3262,7 +3390,8 @@ fn normalize_task_expr(expr: &mut Expression) {
             );
             Some(AsyncOp::AwaitEager(Box::new(inner)))
         }
-        _ => None };
+        _ => None,
+    };
     if let Some(op) = replacement {
         expr.kind = ExprKind::Async(op);
     }
@@ -3275,7 +3404,8 @@ fn rewrite_using_imports(module: &mut Module) {
         match &import.kind {
             ImportKind::Simple {
                 path,
-                alias: Some(alias) } => {
+                alias: Some(alias),
+            } => {
                 aliases.insert(alias.clone(), normalize_import_path(path));
             }
             ImportKind::Wildcard { path, alias: None } => {
@@ -3420,10 +3550,16 @@ fn lower_one_csharp_using(var: &str, resource: Expression, tail: Vec<Statement>)
             type_hint: resource_type.clone().map(Into::into),
             init: Some(resource),
             array_bounds: None,
-            with_events: false }],
-        kind: VarDeclKind::Let });
+            with_events: false,
+        }],
+        kind: VarDeclKind::Let,
+    });
     let mut out = vec![decl];
-    out.extend(csharp_using_disposal_wrap(var, tail, resource_type.as_deref()));
+    out.extend(csharp_using_disposal_wrap(
+        var,
+        tail,
+        resource_type.as_deref(),
+    ));
     out
 }
 
@@ -3437,29 +3573,35 @@ fn csharp_using_disposal_wrap(
             body: tail,
             catches: Vec::new(),
             else_body: None,
-            finally: Some(Vec::new()) })];
+            finally: Some(Vec::new()),
+        })];
     }
     let var_expr = Expression::ident(var);
     let dispose_call = Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Member {
             object: Box::new(var_expr.clone()),
             field: "Dispose".to_string(),
-            null_safe: false })),
+            null_safe: false,
+        })),
         args: vec![],
-        optional: false });
+        optional: false,
+    });
     let finally_body = vec![Statement::new(StmtKind::If {
         cond: Expression::new(ExprKind::Binary {
             op: BinOp::StrictNotEq,
             left: Box::new(var_expr),
-            right: Box::new(Expression::null()) }),
+            right: Box::new(Expression::null()),
+        }),
         then_body: vec![Statement::new(StmtKind::Expr(dispose_call))],
         elifs: Vec::new(),
-        else_body: None })];
+        else_body: None,
+    })];
     vec![Statement::new(StmtKind::Try {
         body: tail,
         catches: Vec::new(),
         else_body: None,
-        finally: Some(finally_body) })]
+        finally: Some(finally_body),
+    })]
 }
 
 // ── HashSet / SortedSet set-algebra bool APIs ───────────────────────────────
@@ -3470,15 +3612,152 @@ fn csharp_using_disposal_wrap(
 // `cond ? true : false` ternary so the stack carries JS bool values.
 
 fn rewrite_set_algebra_bool_calls(body: &mut [Statement]) {
+    let set_locals = collect_csharp_set_locals(body);
     for stmt in body.iter_mut() {
-        rewrite_set_algebra_bool_calls_in_stmt(stmt);
+        rewrite_set_algebra_bool_calls_in_stmt(stmt, &set_locals);
     }
+}
+
+fn csharp_type_hint_is_set(hint: &str) -> bool {
+    let lower = hint.to_ascii_lowercase();
+    lower.contains("hashset") || lower.contains("sortedset")
+}
+
+fn csharp_expr_is_set_new(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::New { class, .. } => expr_dotted_name(class)
+            .map(|name| csharp_type_hint_is_set(&name))
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+fn collect_csharp_set_locals(body: &[Statement]) -> HashSet<String> {
+    let mut out = HashSet::new();
+    collect_csharp_set_locals_in_body(body, &mut out);
+    out
+}
+
+fn collect_csharp_set_locals_in_body(body: &[Statement], out: &mut HashSet<String>) {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::VarDecl { declarations, .. } => {
+                for decl in declarations {
+                    if let BindingPattern::Ident(name) = &decl.pattern {
+                        let typed_as_set = decl
+                            .type_hint
+                            .as_deref()
+                            .map(csharp_type_hint_is_set)
+                            .unwrap_or(false);
+                        let initialized_as_set =
+                            decl.init.as_ref().map(csharp_expr_is_set_new).unwrap_or(false);
+                        if typed_as_set || initialized_as_set {
+                            out.insert(name.clone());
+                        }
+                    }
+                }
+            }
+            StmtKind::Block(body)
+            | StmtKind::NamespaceDecl { body, .. }
+            | StmtKind::FunctionDecl { body, .. } => collect_csharp_set_locals_in_body(body, out),
+            StmtKind::ClassDecl { members, .. }
+            | StmtKind::StructDecl { members, .. }
+            | StmtKind::ModuleDecl { members, .. } => {
+                for member in members {
+                    match member {
+                        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+                            collect_csharp_set_locals_in_stmt(stmt, out);
+                        }
+                        ClassMember::Constructor { body, .. } => {
+                            collect_csharp_set_locals_in_body(body, out);
+                        }
+                        ClassMember::Property { getter, setter, .. } => {
+                            if let Some(getter) = getter {
+                                collect_csharp_set_locals_in_body(getter, out);
+                            }
+                            if let Some(setter) = setter {
+                                collect_csharp_set_locals_in_body(&setter.body, out);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            StmtKind::If {
+                then_body,
+                elifs,
+                else_body,
+                ..
+            } => {
+                collect_csharp_set_locals_in_body(then_body, out);
+                for (_, body) in elifs {
+                    collect_csharp_set_locals_in_body(body, out);
+                }
+                if let Some(body) = else_body {
+                    collect_csharp_set_locals_in_body(body, out);
+                }
+            }
+            StmtKind::For { init, body, .. } => {
+                if let Some(init) = init {
+                    collect_csharp_set_locals_in_stmt(init, out);
+                }
+                collect_csharp_set_locals_in_body(body, out);
+            }
+            StmtKind::ForIn {
+                body, else_body, ..
+            }
+            | StmtKind::While {
+                body, else_body, ..
+            } => {
+                collect_csharp_set_locals_in_body(body, out);
+                if let Some(body) = else_body {
+                    collect_csharp_set_locals_in_body(body, out);
+                }
+            }
+            StmtKind::DoWhile { body, .. }
+            | StmtKind::Using { body, .. }
+            | StmtKind::Lock { body, .. } => collect_csharp_set_locals_in_body(body, out),
+            StmtKind::Try {
+                body,
+                catches,
+                else_body,
+                finally,
+                ..
+            } => {
+                collect_csharp_set_locals_in_body(body, out);
+                for catch in catches {
+                    collect_csharp_set_locals_in_body(&catch.body, out);
+                }
+                if let Some(body) = else_body {
+                    collect_csharp_set_locals_in_body(body, out);
+                }
+                if let Some(body) = finally {
+                    collect_csharp_set_locals_in_body(body, out);
+                }
+            }
+            StmtKind::Switch { cases, default, .. } => {
+                for case in cases {
+                    collect_csharp_set_locals_in_body(&case.body, out);
+                }
+                if let Some(body) = default {
+                    collect_csharp_set_locals_in_body(body, out);
+                }
+            }
+            StmtKind::Labeled { body, .. } => collect_csharp_set_locals_in_stmt(body, out),
+            _ => {}
+        }
+    }
+}
+
+fn collect_csharp_set_locals_in_stmt(stmt: &Statement, out: &mut HashSet<String>) {
+    collect_csharp_set_locals_in_body(std::slice::from_ref(stmt), out);
 }
 
 #[derive(Clone)]
 struct LinkedListNodeAlias {
     list: Expression,
-    index: Expression }
+    index: Expression,
+}
 
 fn rewrite_linked_list_node_uses(body: &mut [Statement]) {
     let mut aliases = HashMap::new();
@@ -3517,9 +3796,11 @@ fn rewrite_sorted_dictionary_foreach_in_body(
                             callee: Box::new(Expression::new(ExprKind::Member {
                                 object: Box::new(Expression::ident(name)),
                                 field: "EntriesSorted".into(),
-                                null_safe: false })),
+                                null_safe: false,
+                            })),
                             args: vec![],
-                            optional: false });
+                            optional: false,
+                        });
                     }
                 }
                 let mut scoped = sorted_dicts.clone();
@@ -3580,7 +3861,8 @@ fn rewrite_sorted_set_foreach_in_body(body: &mut [Statement], sorted_sets: &mut 
                 for decl in declarations {
                     let name = match &decl.pattern {
                         BindingPattern::Ident(n) => n.clone(),
-                        _ => continue };
+                        _ => continue,
+                    };
                     let hinted = decl
                         .type_hint
                         .as_deref()
@@ -3609,9 +3891,11 @@ fn rewrite_sorted_set_foreach_in_body(body: &mut [Statement], sorted_sets: &mut 
                             callee: Box::new(Expression::new(ExprKind::Member {
                                 object: Box::new(Expression::ident(name)),
                                 field: "ElementsSorted".into(),
-                                null_safe: false })),
+                                null_safe: false,
+                            })),
                             args: vec![],
-                            optional: false });
+                            optional: false,
+                        });
                     }
                 }
                 let mut scoped = sorted_sets.clone();
@@ -3688,7 +3972,8 @@ fn rewrite_linked_list_node_uses_in_stmt(
             cond,
             then_body,
             elifs,
-            else_body } => {
+            else_body,
+        } => {
             rewrite_linked_list_node_uses_in_expr(cond, aliases);
             let mut then_aliases = aliases.clone();
             rewrite_linked_list_node_uses_in_body(then_body, &mut then_aliases);
@@ -3706,7 +3991,8 @@ fn rewrite_linked_list_node_uses_in_stmt(
             init,
             cond,
             update,
-            body } => {
+            body,
+        } => {
             let mut scoped = aliases.clone();
             if let Some(init) = init {
                 rewrite_linked_list_node_uses_in_stmt(init, &mut scoped);
@@ -3735,7 +4021,8 @@ fn rewrite_linked_list_node_uses_in_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body } => {
+            else_body,
+        } => {
             rewrite_linked_list_node_uses_in_expr(cond, aliases);
             let mut scoped = aliases.clone();
             rewrite_linked_list_node_uses_in_body(body, &mut scoped);
@@ -3781,7 +4068,8 @@ fn rewrite_linked_list_node_uses_in_expr(
                     expr.kind = ExprKind::Index {
                         object: Box::new(alias.list),
                         index: Box::new(alias.index),
-                        null_safe: false };
+                        null_safe: false,
+                    };
                 }
             }
         }
@@ -3797,7 +4085,8 @@ fn rewrite_linked_list_node_uses_in_expr(
                             Expression::new(ExprKind::Binary {
                                 op: BinOp::Add,
                                 left: Box::new(alias.index),
-                                right: Box::new(Expression::int(1)) }),
+                                right: Box::new(Expression::int(1)),
+                            }),
                             args[1].value.clone(),
                         )
                         .kind;
@@ -3836,7 +4125,8 @@ fn rewrite_linked_list_node_uses_in_expr(
                                 (**object).clone(),
                                 "Length",
                             )),
-                            right: Box::new(Expression::int(1)) }),
+                            right: Box::new(Expression::int(1)),
+                        }),
                     )
                     .kind;
                     return;
@@ -3847,7 +4137,8 @@ fn rewrite_linked_list_node_uses_in_expr(
         ExprKind::Binary { left, right, .. }
         | ExprKind::Assign {
             target: left,
-            value: right }
+            value: right,
+        }
         | ExprKind::NullCoalesce { left, right } => {
             rewrite_linked_list_node_uses_in_expr(left, aliases);
             rewrite_linked_list_node_uses_in_expr(right, aliases);
@@ -3875,7 +4166,8 @@ fn linked_list_alias_from_call(expr: &Expression) -> Option<LinkedListNodeAlias>
     if field.eq_ignore_ascii_case("AddFirst") {
         return Some(LinkedListNodeAlias {
             list: (**object).clone(),
-            index: Expression::int(0) });
+            index: Expression::int(0),
+        });
     }
     if field.eq_ignore_ascii_case("AddLast") {
         return Some(LinkedListNodeAlias {
@@ -3883,7 +4175,9 @@ fn linked_list_alias_from_call(expr: &Expression) -> Option<LinkedListNodeAlias>
             index: Expression::new(ExprKind::Binary {
                 op: BinOp::Sub,
                 left: Box::new(canonicalize_member_access((**object).clone(), "Length")),
-                right: Box::new(Expression::int(1)) }) });
+                right: Box::new(Expression::int(1)),
+            }),
+        });
     }
     if field.eq_ignore_ascii_case("Find") && args.len() == 1 {
         return Some(LinkedListNodeAlias {
@@ -3892,9 +4186,12 @@ fn linked_list_alias_from_call(expr: &Expression) -> Option<LinkedListNodeAlias>
                 callee: Box::new(Expression::new(ExprKind::Member {
                     object: Box::new((**object).clone()),
                     field: "IndexOf".into(),
-                    null_safe: false })),
+                    null_safe: false,
+                })),
                 args: vec![args[0].clone()],
-                optional: false }) });
+                optional: false,
+            }),
+        });
     }
     None
 }
@@ -3917,7 +4214,9 @@ fn linked_list_node_alias_for_expr(
                 index: Expression::new(ExprKind::Binary {
                     op: BinOp::Add,
                     left: Box::new(alias.index),
-                    right: Box::new(Expression::int(1)) }) })
+                    right: Box::new(Expression::int(1)),
+                }),
+            })
         }
         ExprKind::Member { object, field, .. } if field.eq_ignore_ascii_case("Previous") => {
             let alias = linked_list_node_alias_for_expr(object, aliases)?;
@@ -3926,9 +4225,12 @@ fn linked_list_node_alias_for_expr(
                 index: Expression::new(ExprKind::Binary {
                     op: BinOp::Sub,
                     left: Box::new(alias.index),
-                    right: Box::new(Expression::int(1)) }) })
+                    right: Box::new(Expression::int(1)),
+                }),
+            })
         }
-        _ => None }
+        _ => None,
+    }
 }
 
 fn linked_list_insert_call(list: Expression, index: Expression, value: Expression) -> Expression {
@@ -3936,9 +4238,11 @@ fn linked_list_insert_call(list: Expression, index: Expression, value: Expressio
         callee: Box::new(Expression::new(ExprKind::Member {
             object: Box::new(list),
             field: "InsertAtRaw".into(),
-            null_safe: false })),
+            null_safe: false,
+        })),
         args: vec![Argument::positional(index), Argument::positional(value)],
-        optional: false })
+        optional: false,
+    })
 }
 
 fn linked_list_remove_at_call(list: Expression, index: Expression) -> Expression {
@@ -3946,28 +4250,32 @@ fn linked_list_remove_at_call(list: Expression, index: Expression) -> Expression
         callee: Box::new(Expression::new(ExprKind::Member {
             object: Box::new(list),
             field: "RemoveAt".into(),
-            null_safe: false })),
+            null_safe: false,
+        })),
         args: vec![Argument::positional(index)],
-        optional: false })
+        optional: false,
+    })
 }
 
-fn rewrite_set_algebra_bool_calls_in_stmt(stmt: &mut Statement) {
+fn rewrite_set_algebra_bool_calls_in_stmt(stmt: &mut Statement, set_locals: &HashSet<String>) {
     match &mut stmt.kind {
         StmtKind::Expr(expr)
         | StmtKind::Return(Some(expr))
         | StmtKind::Throw {
             expr: Some(expr),
-            cause: None } => rewrite_set_algebra_bool_calls_in_expr(expr),
+            cause: None,
+        } => rewrite_set_algebra_bool_calls_in_expr(expr, set_locals),
         StmtKind::Throw {
             expr: Some(expr),
-            cause: Some(cause) } => {
-            rewrite_set_algebra_bool_calls_in_expr(expr);
-            rewrite_set_algebra_bool_calls_in_expr(cause);
+            cause: Some(cause),
+        } => {
+            rewrite_set_algebra_bool_calls_in_expr(expr, set_locals);
+            rewrite_set_algebra_bool_calls_in_expr(cause, set_locals);
         }
         StmtKind::VarDecl { declarations, .. } => {
             for decl in declarations {
                 if let Some(init) = &mut decl.init {
-                    rewrite_set_algebra_bool_calls_in_expr(init);
+                    rewrite_set_algebra_bool_calls_in_expr(init, set_locals);
                 }
             }
         }
@@ -3980,7 +4288,7 @@ fn rewrite_set_algebra_bool_calls_in_stmt(stmt: &mut Statement) {
             for member in members {
                 match member {
                     ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
-                        rewrite_set_algebra_bool_calls_in_stmt(stmt);
+                        rewrite_set_algebra_bool_calls_in_stmt(stmt, set_locals);
                     }
                     ClassMember::Constructor { body, .. } => rewrite_set_algebra_bool_calls(body),
                     ClassMember::Property { getter, setter, .. } => {
@@ -4002,10 +4310,10 @@ fn rewrite_set_algebra_bool_calls_in_stmt(stmt: &mut Statement) {
             else_body,
             ..
         } => {
-            rewrite_set_algebra_bool_calls_in_expr(cond);
+            rewrite_set_algebra_bool_calls_in_expr(cond, set_locals);
             rewrite_set_algebra_bool_calls(then_body);
             for (elif_cond, elif_body) in elifs {
-                rewrite_set_algebra_bool_calls_in_expr(elif_cond);
+                rewrite_set_algebra_bool_calls_in_expr(elif_cond, set_locals);
                 rewrite_set_algebra_bool_calls(elif_body);
             }
             if let Some(else_body) = else_body {
@@ -4020,13 +4328,13 @@ fn rewrite_set_algebra_bool_calls_in_stmt(stmt: &mut Statement) {
             ..
         } => {
             if let Some(init) = init {
-                rewrite_set_algebra_bool_calls_in_stmt(init);
+                rewrite_set_algebra_bool_calls_in_stmt(init, set_locals);
             }
             if let Some(cond) = cond {
-                rewrite_set_algebra_bool_calls_in_expr(cond);
+                rewrite_set_algebra_bool_calls_in_expr(cond, set_locals);
             }
             if let Some(update) = update {
-                rewrite_set_algebra_bool_calls_in_expr(update);
+                rewrite_set_algebra_bool_calls_in_expr(update, set_locals);
             }
             rewrite_set_algebra_bool_calls(body);
         }
@@ -4036,7 +4344,7 @@ fn rewrite_set_algebra_bool_calls_in_stmt(stmt: &mut Statement) {
             else_body,
             ..
         } => {
-            rewrite_set_algebra_bool_calls_in_expr(iter);
+            rewrite_set_algebra_bool_calls_in_expr(iter, set_locals);
             rewrite_set_algebra_bool_calls(body);
             if let Some(else_body) = else_body {
                 rewrite_set_algebra_bool_calls(else_body);
@@ -4048,22 +4356,22 @@ fn rewrite_set_algebra_bool_calls_in_stmt(stmt: &mut Statement) {
             else_body,
             ..
         } => {
-            rewrite_set_algebra_bool_calls_in_expr(cond);
+            rewrite_set_algebra_bool_calls_in_expr(cond, set_locals);
             rewrite_set_algebra_bool_calls(body);
             if let Some(else_body) = else_body {
                 rewrite_set_algebra_bool_calls(else_body);
             }
         }
         StmtKind::DoWhile { cond, body, .. } => {
-            rewrite_set_algebra_bool_calls_in_expr(cond);
+            rewrite_set_algebra_bool_calls_in_expr(cond, set_locals);
             rewrite_set_algebra_bool_calls(body);
         }
         StmtKind::Using { resource, body, .. } => {
-            rewrite_set_algebra_bool_calls_in_expr(resource);
+            rewrite_set_algebra_bool_calls_in_expr(resource, set_locals);
             rewrite_set_algebra_bool_calls(body);
         }
         StmtKind::Lock { expr, body, .. } => {
-            rewrite_set_algebra_bool_calls_in_expr(expr);
+            rewrite_set_algebra_bool_calls_in_expr(expr, set_locals);
             rewrite_set_algebra_bool_calls(body);
         }
         StmtKind::Try {
@@ -4090,7 +4398,7 @@ fn rewrite_set_algebra_bool_calls_in_stmt(stmt: &mut Statement) {
             default,
             ..
         } => {
-            rewrite_set_algebra_bool_calls_in_expr(expr);
+            rewrite_set_algebra_bool_calls_in_expr(expr, set_locals);
             for case in cases {
                 rewrite_set_algebra_bool_calls(&mut case.body);
             }
@@ -4098,7 +4406,7 @@ fn rewrite_set_algebra_bool_calls_in_stmt(stmt: &mut Statement) {
                 rewrite_set_algebra_bool_calls(default);
             }
         }
-        StmtKind::Labeled { body, .. } => rewrite_set_algebra_bool_calls_in_stmt(body),
+        StmtKind::Labeled { body, .. } => rewrite_set_algebra_bool_calls_in_stmt(body, set_locals),
         _ => {}
     }
 }
@@ -4131,7 +4439,8 @@ fn expr_same_reference(a: &Expression, b: &Expression) -> bool {
                 ..
             },
         ) => fa == fb && expr_same_reference(oa, ob),
-        _ => false }
+        _ => false,
+    }
 }
 
 fn try_fold_set_algebra_self_call(
@@ -4145,43 +4454,79 @@ fn try_fold_set_algebra_self_call(
     match method.to_ascii_lowercase().as_str() {
         "issubsetof" | "issupersetof" | "setequals" => Some(Expression::bool(true)),
         "ispropersubsetof" | "ispropersupersetof" => Some(Expression::bool(false)),
-        _ => None }
+        _ => None,
+    }
 }
 
 fn wrap_csharp_bool(expr: Expression) -> Expression {
     Expression::new(ExprKind::Ternary {
         cond: Box::new(expr),
         then: Box::new(Expression::bool(true)),
-        else_: Box::new(Expression::bool(false)) })
+        else_: Box::new(Expression::bool(false)),
+    })
 }
 
-fn rewrite_set_algebra_bool_calls_in_expr(expr: &mut Expression) {
+fn rewrite_set_algebra_bool_calls_in_expr(expr: &mut Expression, set_locals: &HashSet<String>) {
     match &mut expr.kind {
         ExprKind::Unary { expr: inner, .. }
         | ExprKind::Await(inner)
         | ExprKind::Spread(inner)
         | ExprKind::TypeOf(inner)
-        | ExprKind::Delete(inner) => rewrite_set_algebra_bool_calls_in_expr(inner),
+        | ExprKind::Delete(inner) => rewrite_set_algebra_bool_calls_in_expr(inner, set_locals),
         ExprKind::Binary { left, right, .. }
         | ExprKind::NullCoalesce { left, right }
         | ExprKind::Assign {
             target: left,
-            value: right } => {
-            rewrite_set_algebra_bool_calls_in_expr(left);
-            rewrite_set_algebra_bool_calls_in_expr(right);
+            value: right,
+        } => {
+            rewrite_set_algebra_bool_calls_in_expr(left, set_locals);
+            rewrite_set_algebra_bool_calls_in_expr(right, set_locals);
         }
         ExprKind::Ternary { cond, then, else_ } => {
-            rewrite_set_algebra_bool_calls_in_expr(cond);
-            rewrite_set_algebra_bool_calls_in_expr(then);
-            rewrite_set_algebra_bool_calls_in_expr(else_);
+            rewrite_set_algebra_bool_calls_in_expr(cond, set_locals);
+            rewrite_set_algebra_bool_calls_in_expr(then, set_locals);
+            rewrite_set_algebra_bool_calls_in_expr(else_, set_locals);
         }
-        ExprKind::Member { object, .. } => rewrite_set_algebra_bool_calls_in_expr(object),
+        ExprKind::Member { object, .. } => rewrite_set_algebra_bool_calls_in_expr(object, set_locals),
         ExprKind::Index { object, index, .. } => {
-            rewrite_set_algebra_bool_calls_in_expr(object);
-            rewrite_set_algebra_bool_calls_in_expr(index);
+            rewrite_set_algebra_bool_calls_in_expr(object, set_locals);
+            rewrite_set_algebra_bool_calls_in_expr(index, set_locals);
         }
         ExprKind::Call { callee, args, .. } => {
             if let ExprKind::Member { object, field, .. } = &callee.kind {
+                if field.eq_ignore_ascii_case("Contains")
+                    && args.len() == 2
+                    && expr_dotted_name(object).is_some_and(|name| {
+                        name.eq_ignore_ascii_case("System.MemoryExtensions")
+                    })
+                    && matches!(&args[0].value.kind, ExprKind::Ident(name) if set_locals.contains(name))
+                {
+                    rewrite_set_algebra_bool_calls_in_expr(&mut args[1].value, set_locals);
+                    *expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__dotnet_hashset_contains")),
+                        args: vec![
+                            Argument::positional(args[0].value.clone()),
+                            Argument::positional(args[1].value.clone()),
+                        ],
+                        optional: false,
+                    });
+                    return;
+                }
+                if field.eq_ignore_ascii_case("Contains")
+                    && args.len() == 1
+                    && matches!(&object.kind, ExprKind::Ident(name) if set_locals.contains(name))
+                {
+                    rewrite_set_algebra_bool_calls_in_expr(&mut args[0].value, set_locals);
+                    *expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__dotnet_hashset_contains")),
+                        args: vec![
+                            Argument::positional((**object).clone()),
+                            Argument::positional(args[0].value.clone()),
+                        ],
+                        optional: false,
+                    });
+                    return;
+                }
                 if is_set_algebra_bool_method(field) && args.len() == 1 {
                     if let Some(folded) =
                         try_fold_set_algebra_self_call(object, field, &args[0].value)
@@ -4189,46 +4534,47 @@ fn rewrite_set_algebra_bool_calls_in_expr(expr: &mut Expression) {
                         *expr = folded;
                         return;
                     }
-                    rewrite_set_algebra_bool_calls_in_expr(&mut args[0].value);
+                    rewrite_set_algebra_bool_calls_in_expr(&mut args[0].value, set_locals);
                     let call =
                         std::mem::replace(expr, Expression::new(ExprKind::Lit(Literal::Null)));
                     *expr = wrap_csharp_bool(call);
                     return;
                 }
             }
-            rewrite_set_algebra_bool_calls_in_expr(callee);
+            rewrite_set_algebra_bool_calls_in_expr(callee, set_locals);
             for arg in args {
-                rewrite_set_algebra_bool_calls_in_expr(&mut arg.value);
+                rewrite_set_algebra_bool_calls_in_expr(&mut arg.value, set_locals);
             }
         }
         ExprKind::New { class, args, .. } => {
-            rewrite_set_algebra_bool_calls_in_expr(class);
+            rewrite_set_algebra_bool_calls_in_expr(class, set_locals);
             for arg in args {
-                rewrite_set_algebra_bool_calls_in_expr(&mut arg.value);
+                rewrite_set_algebra_bool_calls_in_expr(&mut arg.value, set_locals);
             }
         }
         ExprKind::Lambda { body, .. } => match body {
-            LambdaBody::Expr(expr) => rewrite_set_algebra_bool_calls_in_expr(expr),
-            LambdaBody::Block(stmts) => rewrite_set_algebra_bool_calls(stmts) },
+            LambdaBody::Expr(expr) => rewrite_set_algebra_bool_calls_in_expr(expr, set_locals),
+            LambdaBody::Block(stmts) => rewrite_set_algebra_bool_calls(stmts),
+        },
         ExprKind::Array(items) => {
             for item in items {
-                rewrite_set_algebra_bool_calls_in_expr(&mut item.value);
+                rewrite_set_algebra_bool_calls_in_expr(&mut item.value, set_locals);
             }
         }
         ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
             for item in items {
-                rewrite_set_algebra_bool_calls_in_expr(item);
+                rewrite_set_algebra_bool_calls_in_expr(item, set_locals);
             }
         }
         ExprKind::Object(props) => {
             for prop in props {
                 match prop {
                     ObjectProperty::KeyValue { value, .. } => {
-                        rewrite_set_algebra_bool_calls_in_expr(value);
+                        rewrite_set_algebra_bool_calls_in_expr(value, set_locals);
                     }
-                    ObjectProperty::Spread(expr) => rewrite_set_algebra_bool_calls_in_expr(expr),
+                    ObjectProperty::Spread(expr) => rewrite_set_algebra_bool_calls_in_expr(expr, set_locals),
                     ObjectProperty::Method { value, .. } => {
-                        rewrite_set_algebra_bool_calls_in_stmt(value);
+                        rewrite_set_algebra_bool_calls_in_stmt(value, set_locals);
                     }
                     _ => {}
                 }
@@ -4262,7 +4608,8 @@ fn rewrite_using_imports_in_statement(
         | StmtKind::Return(Some(expr))
         | StmtKind::Throw {
             expr: Some(expr),
-            cause: None }
+            cause: None,
+        }
         | StmtKind::Using { resource: expr, .. }
         | StmtKind::Lock { expr, .. }
         | StmtKind::CompoundAssign { value: expr, .. } => {
@@ -4270,7 +4617,8 @@ fn rewrite_using_imports_in_statement(
         }
         StmtKind::Throw {
             expr: Some(expr),
-            cause: Some(cause) } => {
+            cause: Some(cause),
+        } => {
             rewrite_using_imports_in_expr(expr, aliases, static_paths);
             rewrite_using_imports_in_expr(cause, aliases, static_paths);
         }
@@ -4308,10 +4656,7 @@ fn rewrite_using_imports_in_statement(
                 rewrite_using_imports_in_member(member, aliases, static_paths);
             }
         }
-        StmtKind::InterfaceDecl {
-            decorators,
-            ..
-        } => {
+        StmtKind::InterfaceDecl { decorators, .. } => {
             for decorator in decorators {
                 rewrite_using_imports_in_expr(decorator, aliases, static_paths);
             }
@@ -4337,7 +4682,8 @@ fn rewrite_using_imports_in_statement(
             cond,
             then_body,
             elifs,
-            else_body } => {
+            else_body,
+        } => {
             rewrite_using_imports_in_expr(cond, aliases, static_paths);
             rewrite_using_imports_in_statements(then_body, aliases, static_paths);
             for (elif_cond, elif_body) in elifs {
@@ -4352,7 +4698,8 @@ fn rewrite_using_imports_in_statement(
             init,
             cond,
             update,
-            body } => {
+            body,
+        } => {
             if let Some(init) = init {
                 rewrite_using_imports_in_statement(init, aliases, static_paths);
             }
@@ -4379,7 +4726,8 @@ fn rewrite_using_imports_in_statement(
         StmtKind::While {
             cond,
             body,
-            else_body } => {
+            else_body,
+        } => {
             rewrite_using_imports_in_expr(cond, aliases, static_paths);
             rewrite_using_imports_in_statements(body, aliases, static_paths);
             if let Some(else_body) = else_body {
@@ -4393,7 +4741,8 @@ fn rewrite_using_imports_in_statement(
         StmtKind::Switch {
             expr,
             cases,
-            default } => {
+            default,
+        } => {
             rewrite_using_imports_in_expr(expr, aliases, static_paths);
             for case in cases {
                 for condition in &mut case.conditions {
@@ -4420,7 +4769,8 @@ fn rewrite_using_imports_in_statement(
             body,
             catches,
             else_body,
-            finally } => {
+            finally,
+        } => {
             rewrite_using_imports_in_statements(body, aliases, static_paths);
             for catch in catches {
                 if let Some(when_clause) = &mut catch.when_clause {
@@ -4585,6 +4935,24 @@ fn rewrite_using_imports_in_expr(
                 rewrite_using_imports_in_expr(&mut arg.value, aliases, static_paths);
             }
         }
+        ExprKind::Proxy { target, handler } => {
+            rewrite_using_imports_in_expr(target, aliases, static_paths);
+            rewrite_using_imports_in_expr(handler, aliases, static_paths);
+        }
+        ExprKind::CallableRef {
+            target,
+            receiver,
+            adapter,
+            ..
+        } => {
+            rewrite_using_imports_in_expr(target, aliases, static_paths);
+            if let Some(receiver) = receiver {
+                rewrite_using_imports_in_expr(receiver, aliases, static_paths);
+            }
+            if let Some(CallableAdapter::Expr { body, .. }) = adapter {
+                rewrite_using_imports_in_expr(body, aliases, static_paths);
+            }
+        }
         ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
             rewrite_using_imports_in_expr(target, aliases, static_paths);
             rewrite_using_imports_in_expr(value, aliases, static_paths);
@@ -4725,7 +5093,7 @@ fn rewrite_using_imports_in_expr(
         | ExprKind::DefaultOf(_)
         | ExprKind::This
         | ExprKind::Super
-        | ExprKind::AddressOf(_)
+        | ExprKind::FuncRef(_)
         | ExprKind::SuperCall { .. }
         | ExprKind::Yield(None)
         | ExprKind::Destructure(_) => {}
@@ -4891,7 +5259,8 @@ fn rewrite_extension_calls_in_statement(
         | StmtKind::Return(Some(expr))
         | StmtKind::Throw {
             expr: Some(expr),
-            cause: None }
+            cause: None,
+        }
         | StmtKind::Using { resource: expr, .. }
         | StmtKind::Lock { expr, .. }
         | StmtKind::CompoundAssign { value: expr, .. } => {
@@ -4899,7 +5268,8 @@ fn rewrite_extension_calls_in_statement(
         }
         StmtKind::Throw {
             expr: Some(expr),
-            cause: Some(cause) } => {
+            cause: Some(cause),
+        } => {
             rewrite_extension_calls_in_expr(expr, extension_methods, extension_containers);
             rewrite_extension_calls_in_expr(cause, extension_methods, extension_containers);
         }
@@ -4935,7 +5305,8 @@ fn rewrite_extension_calls_in_statement(
             cond,
             then_body,
             elifs,
-            else_body } => {
+            else_body,
+        } => {
             rewrite_extension_calls_in_expr(cond, extension_methods, extension_containers);
             rewrite_extension_calls_in_statements(
                 then_body,
@@ -4962,7 +5333,8 @@ fn rewrite_extension_calls_in_statement(
             init,
             cond,
             update,
-            body } => {
+            body,
+        } => {
             if let Some(init) = init {
                 rewrite_extension_calls_in_statement(init, extension_methods, extension_containers);
             }
@@ -4993,7 +5365,8 @@ fn rewrite_extension_calls_in_statement(
         StmtKind::While {
             cond,
             body,
-            else_body } => {
+            else_body,
+        } => {
             rewrite_extension_calls_in_expr(cond, extension_methods, extension_containers);
             rewrite_extension_calls_in_statements(body, extension_methods, extension_containers);
             if let Some(else_body) = else_body {
@@ -5011,7 +5384,8 @@ fn rewrite_extension_calls_in_statement(
         StmtKind::Switch {
             expr,
             cases,
-            default } => {
+            default,
+        } => {
             rewrite_extension_calls_in_expr(expr, extension_methods, extension_containers);
             for case in cases {
                 for condition in &mut case.conditions {
@@ -5060,7 +5434,8 @@ fn rewrite_extension_calls_in_statement(
             body,
             catches,
             else_body,
-            finally } => {
+            finally,
+        } => {
             rewrite_extension_calls_in_statements(body, extension_methods, extension_containers);
             for catch in catches {
                 if let Some(when_clause) = &mut catch.when_clause {
@@ -5232,7 +5607,8 @@ fn rewrite_extension_calls_in_expr(
             let replacement = if let ExprKind::Member {
                 object,
                 field,
-                null_safe } = &callee.kind
+                null_safe,
+            } = &callee.kind
             {
                 if *null_safe {
                     None
@@ -5249,7 +5625,8 @@ fn rewrite_extension_calls_in_expr(
                         ExprKind::Call {
                             callee: Box::new(build_dotted_expr(static_path)),
                             args: rewritten_args,
-                            optional: false }
+                            optional: false,
+                        }
                     })
                 }
             } else {
@@ -5268,6 +5645,28 @@ fn rewrite_extension_calls_in_expr(
                     extension_methods,
                     extension_containers,
                 );
+            }
+        }
+        ExprKind::Proxy { target, handler } => {
+            rewrite_extension_calls_in_expr(target, extension_methods, extension_containers);
+            rewrite_extension_calls_in_expr(handler, extension_methods, extension_containers);
+        }
+        ExprKind::CallableRef {
+            target,
+            receiver,
+            adapter,
+            ..
+        } => {
+            rewrite_extension_calls_in_expr(target, extension_methods, extension_containers);
+            if let Some(receiver) = receiver {
+                rewrite_extension_calls_in_expr(
+                    receiver,
+                    extension_methods,
+                    extension_containers,
+                );
+            }
+            if let Some(CallableAdapter::Expr { body, .. }) = adapter {
+                rewrite_extension_calls_in_expr(body, extension_methods, extension_containers);
             }
         }
         ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
@@ -5452,7 +5851,7 @@ fn rewrite_extension_calls_in_expr(
         | ExprKind::DefaultOf(_)
         | ExprKind::This
         | ExprKind::Super
-        | ExprKind::AddressOf(_)
+        | ExprKind::FuncRef(_)
         | ExprKind::SuperCall { .. }
         | ExprKind::Yield(None)
         | ExprKind::Destructure(_) => {}
@@ -5465,8 +5864,10 @@ fn expr_dotted_name(expr: &Expression) -> Option<String> {
         ExprKind::Member {
             object,
             field,
-            null_safe } if !null_safe => expr_dotted_name(object).map(|prefix| format!("{prefix}.{field}")),
-        _ => None }
+            null_safe,
+        } if !null_safe => expr_dotted_name(object).map(|prefix| format!("{prefix}.{field}")),
+        _ => None,
+    }
 }
 
 fn synthesize_checked_numeric_helpers() -> Vec<Statement> {
@@ -5479,11 +5880,14 @@ fn synthesize_checked_byte_cast_helper() -> Statement {
         left: Box::new(Expression::new(ExprKind::Binary {
             op: BinOp::Lt,
             left: Box::new(Expression::ident("value")),
-            right: Box::new(Expression::int(0)) })),
+            right: Box::new(Expression::int(0)),
+        })),
         right: Box::new(Expression::new(ExprKind::Binary {
             op: BinOp::Gt,
             left: Box::new(Expression::ident("value")),
-            right: Box::new(Expression::int(255)) })) });
+            right: Box::new(Expression::int(255)),
+        })),
+    });
 
     Statement::with_span(
         StmtKind::FunctionDecl {
@@ -5496,7 +5900,8 @@ fn synthesize_checked_byte_cast_helper() -> Statement {
                 is_rest: false,
                 is_kwargs: false,
                 is_optional: false,
-                is_nullable: false }],
+                is_nullable: false,
+            }],
             return_type: Some("byte".into()),
             body: vec![
                 Statement::new(StmtKind::If {
@@ -5508,20 +5913,25 @@ fn synthesize_checked_byte_cast_helper() -> Statement {
                                 Literal::Str(
                                     "Arithmetic operation resulted in an overflow.".into(),
                                 ),
-                            )))] })),
-                        cause: None })],
+                            )))],
+                        })),
+                        cause: None,
+                    })],
                     elifs: vec![],
-                    else_body: None }),
+                    else_body: None,
+                }),
                 Statement::new(StmtKind::Return(Some(Expression::new(ExprKind::Call {
                     callee: Box::new(build_dotted_expr("Convert.ToByte")),
                     args: vec![Argument::positional(Expression::ident("value"))],
-                    optional: false })))),
+                    optional: false,
+                })))),
             ],
             modifiers: Modifiers::default(),
             handles: Vec::new(),
             is_async: false,
             is_generator: false,
-            is_sub: false },
+            is_sub: false,
+        },
         Span::default(),
     )
 }
@@ -5541,7 +5951,8 @@ fn walk_top_level_with_attributes(
         Rule::enum_declaration => walk_enum_decl(pair, attributes)?,
         Rule::record_declaration => walk_record_decl(pair, attributes)?,
         Rule::delegate_declaration => walk_delegate_decl(pair)?,
-        _ => walk_statement(pair)?.kind };
+        _ => walk_statement(pair)?.kind,
+    };
     Ok(Statement::with_span(kind, span))
 }
 
@@ -5612,7 +6023,8 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         Rule::enum_declaration => walk_enum_decl(pair, &[])?,
         Rule::record_declaration => walk_record_decl(pair, &[])?,
         Rule::delegate_declaration => walk_delegate_decl(pair)?,
-        other => return Err(format!("Unexpected statement rule: {:?}", other)) };
+        other => return Err(format!("Unexpected statement rule: {:?}", other)),
+    };
     Ok(Statement::with_span(kind, span))
 }
 
@@ -5642,7 +6054,8 @@ fn classify_expr_stmt(expr: Expression) -> StmtKind {
                             ..
                         },
                     ) => member_target_eq(lo, lf, to, tf),
-                    _ => false };
+                    _ => false,
+                };
                 let compound_op = match op {
                     BinOp::Add => Some(CompoundOp::Add),
                     BinOp::Sub => Some(CompoundOp::Sub),
@@ -5656,7 +6069,8 @@ fn classify_expr_stmt(expr: Expression) -> StmtKind {
                     BinOp::Shr => Some(CompoundOp::Shr),
                     BinOp::UShr => Some(CompoundOp::UShr),
                     BinOp::NullCoalesce => Some(CompoundOp::NullCoalesce),
-                    _ => None };
+                    _ => None,
+                };
                 if is_same_target {
                     if let Some(compound_op) = compound_op {
                         // `btn.Click += handler` / `-=` → AddHandler / RemoveHandler so
@@ -5675,15 +6089,17 @@ fn classify_expr_stmt(expr: Expression) -> StmtKind {
                                         callee: Box::new(Expression::new(ExprKind::Member {
                                             object: object.clone(),
                                             field: accessor,
-                                            null_safe: false })),
+                                            null_safe: false,
+                                        })),
                                         args: vec![Argument::positional((**right).clone())],
-                                        optional: false }));
+                                        optional: false,
+                                    }));
                                 }
-                                if vybe_compiler::primitives::events::is_known_gui_event_field(field)
-                                    && vybe_compiler::primitives::events::is_event_handler_expr(
-                                        &right,
-                                    )
-                                {
+                                if vybe_compiler::primitives::events::is_known_gui_event_field(
+                                    field,
+                                ) && vybe_compiler::primitives::events::is_event_handler_expr(
+                                    &right,
+                                ) {
                                     let control = (**object).clone();
                                     let event = field.to_lowercase();
                                     let handler = (**right).clone();
@@ -5691,33 +6107,41 @@ fn classify_expr_stmt(expr: Expression) -> StmtKind {
                                         CompoundOp::Add => StmtKind::AddHandler {
                                             control,
                                             event,
-                                            handler },
+                                            handler,
+                                        },
                                         _ => StmtKind::RemoveHandler {
                                             control,
                                             event,
-                                            handler } };
+                                            handler,
+                                        },
+                                    };
                                 }
                             }
                         }
                         return StmtKind::CompoundAssign {
                             target: *target,
                             op: compound_op,
-                            value: *right.clone() };
+                            value: *right.clone(),
+                        };
                     }
                 }
             }
             StmtKind::Assign {
                 targets: vec![*target],
-                value: *value, by_ref: false }
+                value: *value,
+                by_ref: false,
+            }
         }
-        _ => StmtKind::Expr(expr) }
+        _ => StmtKind::Expr(expr),
+    }
 }
 
 fn lower_array_resize_expr_stmt(expr: &Expression) -> Option<StmtKind> {
     let ExprKind::Call {
         callee,
         args,
-        optional: false } = &expr.kind
+        optional: false,
+    } = &expr.kind
     else {
         return None;
     };
@@ -5727,13 +6151,15 @@ fn lower_array_resize_expr_stmt(expr: &Expression) -> Option<StmtKind> {
 
     let array_name = match &args[0].value.kind {
         ExprKind::Ident(name) => name.clone(),
-        _ => return None };
+        _ => return None,
+    };
 
     let is_array_resize = match &callee.kind {
         ExprKind::Member {
             object,
             field,
-            null_safe: false } if field.eq_ignore_ascii_case("Resize") => {
+            null_safe: false,
+        } if field.eq_ignore_ascii_case("Resize") => {
             matches!(&object.kind,
                 ExprKind::Ident(name) if name.eq_ignore_ascii_case("Array")
             ) || matches!(&object.kind,
@@ -5742,7 +6168,8 @@ fn lower_array_resize_expr_stmt(expr: &Expression) -> Option<StmtKind> {
                     && array.eq_ignore_ascii_case("Array")
             )
         }
-        _ => false };
+        _ => false,
+    };
     if !is_array_resize {
         return None;
     }
@@ -5753,7 +6180,9 @@ fn lower_array_resize_expr_stmt(expr: &Expression) -> Option<StmtKind> {
         bounds: vec![Expression::new(ExprKind::Binary {
             op: BinOp::Sub,
             left: Box::new(args[1].value.clone()),
-            right: Box::new(Expression::new(ExprKind::Lit(Literal::Int(1)))) })] })
+            right: Box::new(Expression::new(ExprKind::Lit(Literal::Int(1)))),
+        })],
+    })
 }
 
 fn member_target_eq(obj_a: &Expression, field_a: &str, obj_b: &Expression, field_b: &str) -> bool {
@@ -5775,7 +6204,8 @@ fn member_target_eq(obj_a: &Expression, field_a: &str, obj_b: &Expression, field
                 ..
             },
         ) => member_target_eq(inner_a, inner_field_a, inner_b, inner_field_b),
-        _ => false }
+        _ => false,
+    }
 }
 
 // ── Using directive ─────────────────────────────────────────────────────────
@@ -5863,37 +6293,44 @@ fn walk_tuple_deconstruction(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     type_hint: None,
                     init: None,
                     array_bounds: None,
-                    with_events: false });
+                    with_events: false,
+                });
                 name
             };
             args.push(Argument {
                 value: Expression::ident(&target_name),
                 name: None,
                 by_ref: true,
-                spread: false });
+                spread: false,
+            });
         }
 
         let mut body = Vec::new();
         if !declarations.is_empty() {
             body.push(Statement::new(StmtKind::VarDecl {
                 declarations,
-                kind: VarDeclKind::Let }));
+                kind: VarDeclKind::Let,
+            }));
         }
         body.push(Statement::new(StmtKind::Expr(Expression::new(
             ExprKind::Call {
                 callee: Box::new(Expression::new(ExprKind::Member {
                     object: Box::new(value),
                     field: "Deconstruct".into(),
-                    null_safe: false })),
+                    null_safe: false,
+                })),
                 args,
-                optional: false },
+                optional: false,
+            },
         ))));
         return Ok(StmtKind::Block(body));
     }
     let target = Expression::new(ExprKind::Destructure(DestructurePattern::Array(pattern)));
     Ok(StmtKind::Assign {
         targets: vec![target],
-        value, by_ref: false })
+        value,
+        by_ref: false,
+    })
 }
 
 fn walk_tuple_binding_list(pair: Pair<Rule>) -> Result<Vec<ArrayPatternElem>, String> {
@@ -5927,7 +6364,8 @@ fn walk_tuple_binding_pattern(pair: Pair<Rule>) -> Result<ArrayPatternElem, Stri
         other => Err(format!(
             "unexpected tuple binding pattern rule: {:?}",
             other
-        )) }
+        )),
+    }
 }
 
 fn collect_tuple_binding_leaf_names(pattern: &[ArrayPatternElem], out: &mut Vec<String>) {
@@ -5961,7 +6399,8 @@ fn infer_csharp_new_type_name(class: &Expression) -> Option<String> {
     match &class.kind {
         ExprKind::Ident(name) => Some(name.clone()),
         ExprKind::Member { field, .. } => Some(field.clone()),
-        _ => None }
+        _ => None,
+    }
 }
 
 fn has_ordinal_ignore_case_comparer_arg(args: &[Argument]) -> bool {
@@ -6034,7 +6473,8 @@ fn infer_anonymous_member_name(expr: &Expression) -> String {
     match &expr.kind {
         ExprKind::Member { field, .. } => field.clone(),
         ExprKind::Ident(name) => name.clone(),
-        _ => "Item".to_string() }
+        _ => "Item".to_string(),
+    }
 }
 
 fn infer_csharp_type_from_expr(expr: &Expression) -> Option<String> {
@@ -6095,7 +6535,8 @@ fn infer_csharp_type_from_expr(expr: &Expression) -> Option<String> {
             }
             infer_csharp_iife_return_type(expr)
         }
-        _ => None }
+        _ => None,
+    }
 }
 
 fn infer_csharp_foreach_element_type(iter: &Expression) -> Option<String> {
@@ -6115,12 +6556,14 @@ fn infer_csharp_foreach_element_type(iter: &Expression) -> Option<String> {
             }
             element_type
         }
-        _ => None }
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Default)]
 struct CSharpOperatorInfo {
-    return_type: Option<String> }
+    return_type: Option<String>,
+}
 
 type CSharpOperatorTable = HashMap<String, HashMap<String, CSharpOperatorInfo>>;
 
@@ -6181,7 +6624,8 @@ fn collect_csharp_operator_methods_in_members(
                         operators.entry(type_key.clone()).or_default().insert(
                             name.clone(),
                             CSharpOperatorInfo {
-                                return_type: return_type.clone() },
+                                return_type: return_type.clone(),
+                            },
                         );
                     }
                 }
@@ -6227,7 +6671,8 @@ fn csharp_xml_linq_property_return_type(
         ("XAttribute", "Value") => Some("string"),
         ("XName", "LocalName") => Some("string"),
         ("XName", "NamespaceName") => Some("string"),
-        _ => None }
+        _ => None,
+    }
 }
 
 fn rewrite_csharp_xml_linq_factories(body: &mut [Statement]) {
@@ -6260,7 +6705,8 @@ fn rewrite_csharp_xml_linq_factories_stmt(stmt: &mut Statement) {
             cond,
             then_body,
             elifs,
-            else_body } => {
+            else_body,
+        } => {
             rewrite_csharp_xml_linq_factories_expr(cond);
             rewrite_csharp_xml_linq_factories(then_body);
             for (elif_cond, elif_body) in elifs {
@@ -6279,7 +6725,8 @@ fn rewrite_csharp_xml_linq_factories_stmt(stmt: &mut Statement) {
             init,
             cond,
             update,
-            body } => {
+            body,
+        } => {
             if let Some(init) = init {
                 rewrite_csharp_xml_linq_factories_stmt(init);
             }
@@ -6333,7 +6780,8 @@ fn rewrite_csharp_xml_linq_factories_expr(expr: &mut Expression) {
                 let xml_arg = args[0].value.clone();
                 *expr = Expression::new(ExprKind::New {
                     class: Box::new(Expression::ident("XDocument")),
-                    args: vec![Argument::positional(xml_arg)] });
+                    args: vec![Argument::positional(xml_arg)],
+                });
             }
         }
         ExprKind::Member { object, .. } => rewrite_csharp_xml_linq_factories_expr(object),
@@ -6405,11 +6853,13 @@ fn build_csharp_operator_static_call(
                 ExprKind::Member {
                     object: Box::new(Expression::ident(&csharp_type_key(type_name))),
                     field: method.into(),
-                    null_safe: false },
+                    null_safe: false,
+                },
                 span.clone(),
             )),
             args: args.into_iter().map(Argument::positional).collect(),
-            optional: false },
+            optional: false,
+        },
         span.clone(),
     );
     if return_type
@@ -6586,7 +7036,10 @@ fn rewrite_user_defined_operator_calls_in_statement(
                             .and_then(|e| infer_csharp_expr_type(e, operators, scopes))
                     });
                     if let Some(type_name) = inferred {
-                        scopes.last_mut().unwrap().insert(name.clone(), type_name.to_string());
+                        scopes
+                            .last_mut()
+                            .unwrap()
+                            .insert(name.clone(), type_name.to_string());
                     }
                 }
             }
@@ -6620,7 +7073,8 @@ fn rewrite_user_defined_operator_calls_in_statement(
             cond,
             then_body,
             elifs,
-            else_body } => {
+            else_body,
+        } => {
             rewrite_user_defined_operator_expr(cond, operators, scopes);
             scopes.push(HashMap::new());
             rewrite_user_defined_operator_calls_in_statements(then_body, operators, scopes);
@@ -6641,7 +7095,8 @@ fn rewrite_user_defined_operator_calls_in_statement(
             init,
             cond,
             update,
-            body } => {
+            body,
+        } => {
             scopes.push(HashMap::new());
             if let Some(init) = init {
                 rewrite_user_defined_operator_calls_in_statement(init, operators, scopes);
@@ -6676,7 +7131,8 @@ fn rewrite_user_defined_operator_calls_in_statement(
         StmtKind::While {
             cond,
             body,
-            else_body } => {
+            else_body,
+        } => {
             rewrite_user_defined_operator_expr(cond, operators, scopes);
             rewrite_user_defined_operator_calls_in_statements(body, operators, scopes);
             if let Some(else_body) = else_body {
@@ -6690,7 +7146,8 @@ fn rewrite_user_defined_operator_calls_in_statement(
         StmtKind::Switch {
             expr,
             cases,
-            default } => {
+            default,
+        } => {
             rewrite_user_defined_operator_expr(expr, operators, scopes);
             for case in cases {
                 for condition in &mut case.conditions {
@@ -6719,7 +7176,8 @@ fn rewrite_user_defined_operator_calls_in_statement(
             body,
             catches,
             else_body,
-            finally } => {
+            finally,
+        } => {
             rewrite_user_defined_operator_calls_in_statements(body, operators, scopes);
             for catch in catches {
                 rewrite_user_defined_operator_calls_in_statements(
@@ -6738,7 +7196,8 @@ fn rewrite_user_defined_operator_calls_in_statement(
         StmtKind::Using { resource, body, .. }
         | StmtKind::Lock {
             expr: resource,
-            body } => {
+            body,
+        } => {
             rewrite_user_defined_operator_expr(resource, operators, scopes);
             rewrite_user_defined_operator_calls_in_statements(body, operators, scopes);
         }
@@ -6825,7 +7284,8 @@ fn rewrite_user_defined_operator_expr(
                     ExprKind::Binary {
                         op: *op,
                         left: Box::new((**left).clone()),
-                        right: Box::new((**right).clone()) },
+                        right: Box::new((**right).clone()),
+                    },
                     span,
                 );
                 *expr = materialize_csharp_bool_expr(bool_expr);
@@ -6858,7 +7318,8 @@ fn rewrite_user_defined_operator_expr(
                 let bool_expr = Expression::with_span(
                     ExprKind::Unary {
                         op: *op,
-                        expr: Box::new((**inner).clone()) },
+                        expr: Box::new((**inner).clone()),
+                    },
                     span,
                 );
                 *expr = materialize_csharp_bool_expr(bool_expr);
@@ -6890,9 +7351,11 @@ fn rewrite_user_defined_operator_expr(
                             callee: Box::new(Expression::new(ExprKind::Member {
                                 object: Box::new((**object).clone()),
                                 field: field.clone(),
-                                null_safe: false })),
+                                null_safe: false,
+                            })),
                             args: vec![],
-                            optional: false },
+                            optional: false,
+                        },
                         span,
                     );
                     return infer_csharp_expr_type(expr, operators, scopes);
@@ -6991,7 +7454,8 @@ fn rewrite_user_defined_operator_expr(
         }
         ExprKind::Cast {
             expr: inner,
-            type_name } => {
+            type_name,
+        } => {
             rewrite_user_defined_operator_expr(inner, operators, scopes);
             let method = format!("op_Explicit{}", csharp_operator_type_suffix(type_name));
             let source_type = infer_csharp_expr_type(inner, operators, scopes);
@@ -7012,9 +7476,11 @@ fn rewrite_user_defined_operator_expr(
                         callee: Box::new(Expression::new(ExprKind::Member {
                             object: Box::new((**inner).clone()),
                             field: "Value".into(),
-                            null_safe: false })),
+                            null_safe: false,
+                        })),
                         args: vec![],
-                        optional: false },
+                        optional: false,
+                    },
                     span,
                 );
                 return Some("string".into());
@@ -7068,7 +7534,8 @@ fn rewrite_user_defined_operator_expr(
             rewrite_user_defined_operator_expr(inner, operators, scopes);
             None
         }
-        _ => infer_csharp_expr_type(expr, operators, scopes) }
+        _ => infer_csharp_expr_type(expr, operators, scopes),
+    }
 }
 
 fn infer_csharp_expr_type(
@@ -7097,7 +7564,8 @@ fn infer_csharp_expr_type(
             infer_csharp_type_from_expr(expr)
         }
         ExprKind::Cast { type_name, .. } => Some(type_name.clone()),
-        _ => infer_csharp_type_from_expr(expr) }
+        _ => infer_csharp_type_from_expr(expr),
+    }
 }
 
 /// C# `char` is modeled as a one-character JS string ("C# over JS"), so a
@@ -7110,7 +7578,8 @@ fn infer_csharp_expr_type(
 fn csharp_storage_type_hint(type_name: &str) -> String {
     match type_name.trim().to_lowercase().as_str() {
         "char" | "system.char" => "string".to_string(),
-        _ => type_name.to_string() }
+        _ => type_name.to_string(),
+    }
 }
 
 /// True for the contiguous-view shapes (`Span<T>`, `ReadOnlyMemory<T>`, …).
@@ -7143,6 +7612,148 @@ fn default_value_expr_for_type(type_hint: &str, normalized_hint: &str) -> Expres
     Expression::new(ExprKind::DefaultOf(type_hint.to_string()))
 }
 
+fn csharp_declared_type_is_delegate_like(type_hint: &str) -> bool {
+    let leaf = type_hint
+        .trim()
+        .rsplit('.')
+        .next()
+        .unwrap_or(type_hint)
+        .split('<')
+        .next()
+        .unwrap_or(type_hint)
+        .trim_end_matches('?');
+
+    matches!(leaf, "Action" | "Func" | "Predicate")
+        || leaf.ends_with("Delegate")
+        || leaf.ends_with("Handler")
+}
+
+fn csharp_member_target_looks_static(object: &Expression) -> bool {
+    expr_dotted_name(object)
+        .and_then(|path| {
+            path.rsplit('.')
+                .next()
+                .and_then(|leaf| leaf.chars().next())
+                .map(char::is_uppercase)
+        })
+        .unwrap_or(false)
+}
+
+fn csharp_delegate_value_param_count(type_hint: &str) -> Option<usize> {
+    let leaf = type_hint
+        .trim()
+        .rsplit('.')
+        .next()
+        .unwrap_or(type_hint)
+        .trim_end_matches('?');
+    let Some(generic_start) = leaf.find('<') else {
+        return match leaf {
+            "Action" => Some(0),
+            _ => None,
+        };
+    };
+    let generic_end = leaf.rfind('>').unwrap_or(leaf.len());
+    let args = &leaf[generic_start + 1..generic_end];
+    let mut depth = 0usize;
+    let mut count = if args.trim().is_empty() { 0 } else { 1 };
+    for ch in args.chars() {
+        match ch {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => count += 1,
+            _ => {}
+        }
+    }
+    let name = &leaf[..generic_start];
+    match name {
+        "Action" => Some(count),
+        "Predicate" => Some(1),
+        "Func" => count.checked_sub(1),
+        _ => None,
+    }
+}
+
+fn csharp_delegate_returns_void(type_hint: &str) -> bool {
+    let leaf = type_hint
+        .trim()
+        .rsplit('.')
+        .next()
+        .unwrap_or(type_hint)
+        .trim_end_matches('?');
+    leaf == "Action" || leaf.starts_with("Action<")
+}
+
+fn csharp_delegate_adapter_params(count: usize) -> Vec<Param> {
+    (0..count)
+        .map(|i| Param {
+            name: format!("__cs_delegate_arg_{i}"),
+            type_hint: None,
+            default: None,
+            pass_by: PassBy::Value,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: false,
+            is_nullable: false,
+        })
+        .collect()
+}
+
+fn csharp_normalize_delegate_initializer(type_hint: &str, init: Expression) -> Expression {
+    if !csharp_declared_type_is_delegate_like(type_hint) {
+        return init;
+    }
+
+    match init.kind {
+        ExprKind::Ident(name) => Expression::new(ExprKind::FuncRef(name)),
+        ExprKind::Member {
+            object,
+            field,
+            null_safe,
+        } if !null_safe => {
+            let receiver = (*object).clone();
+            let target = Expression::new(ExprKind::Member {
+                object,
+                field,
+                null_safe: false,
+            });
+            if !csharp_member_target_looks_static(&receiver) {
+                if csharp_delegate_returns_void(type_hint) {
+                    return target;
+                }
+                let adapter = csharp_delegate_value_param_count(type_hint).map(|arity| {
+                    let params = csharp_delegate_adapter_params(arity);
+                    let args = params
+                        .iter()
+                        .map(|param| Argument::positional(Expression::ident(&param.name)))
+                        .collect();
+                    let body = Expression::new(ExprKind::Call {
+                        callee: Box::new(target.clone()),
+                        args,
+                        optional: false,
+                    });
+                    CallableAdapter::Expr {
+                        params,
+                        body: Box::new(body),
+                    }
+                });
+                return Expression::new(ExprKind::CallableRef {
+                    target: Box::new(target),
+                    receiver: Some(Box::new(receiver)),
+                    binding: CallableBinding::BoundReceiver,
+                    adapter,
+                });
+            }
+            Expression::new(ExprKind::CallableRef {
+                target: Box::new(target),
+                receiver: None,
+                binding: CallableBinding::Static,
+                adapter: None,
+            })
+        }
+        _ => init,
+    }
+}
+
 fn walk_local_var(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner = pair.into_inner();
     let first = inner.next().ok_or("Empty local var")?;
@@ -7155,7 +7766,8 @@ fn walk_local_var(pair: Pair<Rule>) -> Result<StmtKind, String> {
         | Rule::base_type
         | Rule::dotted_name
         | Rule::global_qualified_name => Some(first.as_str().to_string()),
-        _ => None };
+        _ => None,
+    };
 
     let mut declarations = Vec::new();
     for p in inner {
@@ -7182,13 +7794,17 @@ fn walk_local_var(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     decl.init = Some(default_value_expr_for_type(&type_hint, &normalized_hint));
                 }
             }
+            if let Some(init) = decl.init.take() {
+                decl.init = Some(csharp_normalize_delegate_initializer(&type_hint, init));
+            }
             if matches!(normalized_hint.as_str(), "object" | "system.object") {
                 if let Some(ref init) = decl.init {
                     if let vybe_ast::ExprKind::New { class, .. } = &init.kind {
                         let inferred = match &class.kind {
                             vybe_ast::ExprKind::Ident(n) => Some(n.clone()),
                             vybe_ast::ExprKind::Member { field, .. } => Some(field.clone()),
-                            _ => None };
+                            _ => None,
+                        };
                         if let Some(name) = inferred {
                             decl.type_hint = Some(name.into());
                         }
@@ -7212,7 +7828,8 @@ fn walk_local_var(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
     Ok(StmtKind::VarDecl {
         declarations,
-        kind: VarDeclKind::Let })
+        kind: VarDeclKind::Let,
+    })
 }
 
 fn walk_var_declarator(pair: Pair<Rule>) -> Result<VarDeclarator, String> {
@@ -7237,19 +7854,22 @@ fn walk_var_declarator(pair: Pair<Rule>) -> Result<VarDeclarator, String> {
                         key: None,
                         value: expr,
                         spread: false,
-                        by_ref: false })
+                        by_ref: false,
+                    })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             Some(Expression::with_span(ExprKind::Array(elems), span))
         }
         Some(p) => Some(walk_expression(p)?),
-        None => None };
+        None => None,
+    };
     Ok(VarDeclarator {
         pattern: BindingPattern::Ident(name),
         type_hint: None,
         init,
         array_bounds: None,
-        with_events: false })
+        with_events: false,
+    })
 }
 
 // ── Class declaration ───────────────────────────────────────────────────────
@@ -7394,7 +8014,8 @@ fn walk_class_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKi
         interfaces,
         members,
         modifiers: class_mods,
-        decorators: decorators.to_vec() })
+        decorators: decorators.to_vec(),
+    })
 }
 
 /// Lower C# 12 primary-constructor params onto the shared class shape: a
@@ -7418,7 +8039,8 @@ fn apply_primary_constructor(
             init: None,
             modifiers: Modifiers::default(),
             with_events: false,
-            array_bounds: None });
+            array_bounds: None,
+        });
     }
     let ctor_body: Vec<Statement> = params
         .iter()
@@ -7427,8 +8049,11 @@ fn apply_primary_constructor(
                 targets: vec![Expression::new(ExprKind::Member {
                     object: Box::new(Expression::new(ExprKind::This)),
                     field: p.name.clone(),
-                    null_safe: false })],
-                value: Expression::ident(&p.name), by_ref: false })
+                    null_safe: false,
+                })],
+                value: Expression::ident(&p.name),
+                by_ref: false,
+            })
         })
         .collect();
     members.insert(
@@ -7439,7 +8064,8 @@ fn apply_primary_constructor(
             body: ctor_body,
             base_args,
             initializer_target: ConstructorInitializerTarget::Base,
-            visibility: Visibility::Public },
+            visibility: Visibility::Public,
+        },
     );
 }
 
@@ -7634,7 +8260,8 @@ fn rewrite_property_backing_field_idents_in_statement(
         | StmtKind::Return(Some(expr))
         | StmtKind::Throw {
             expr: Some(expr),
-            cause: None }
+            cause: None,
+        }
         | StmtKind::Using { resource: expr, .. }
         | StmtKind::Lock { expr, .. } => {
             rewrite_property_backing_field_idents_in_expr(expr, renames);
@@ -7645,7 +8272,8 @@ fn rewrite_property_backing_field_idents_in_statement(
         }
         StmtKind::Throw {
             expr: Some(expr),
-            cause: Some(cause) } => {
+            cause: Some(cause),
+        } => {
             rewrite_property_backing_field_idents_in_expr(expr, renames);
             rewrite_property_backing_field_idents_in_expr(cause, renames);
         }
@@ -7677,7 +8305,8 @@ fn rewrite_property_backing_field_idents_in_statement(
             cond,
             then_body,
             elifs,
-            else_body } => {
+            else_body,
+        } => {
             rewrite_property_backing_field_idents_in_expr(cond, renames);
             rewrite_property_backing_field_idents_in_statements(then_body, renames);
             for (elif_cond, elif_body) in elifs {
@@ -7692,7 +8321,8 @@ fn rewrite_property_backing_field_idents_in_statement(
             init,
             cond,
             update,
-            body } => {
+            body,
+        } => {
             if let Some(init) = init {
                 rewrite_property_backing_field_idents_in_statement(init, renames);
             }
@@ -7719,7 +8349,8 @@ fn rewrite_property_backing_field_idents_in_statement(
         StmtKind::While {
             cond,
             body,
-            else_body } => {
+            else_body,
+        } => {
             rewrite_property_backing_field_idents_in_expr(cond, renames);
             rewrite_property_backing_field_idents_in_statements(body, renames);
             if let Some(else_body) = else_body {
@@ -7733,7 +8364,8 @@ fn rewrite_property_backing_field_idents_in_statement(
         StmtKind::Switch {
             expr,
             cases,
-            default } => {
+            default,
+        } => {
             rewrite_property_backing_field_idents_in_expr(expr, renames);
             for case in cases {
                 for condition in &mut case.conditions {
@@ -7760,7 +8392,8 @@ fn rewrite_property_backing_field_idents_in_statement(
             body,
             catches,
             else_body,
-            finally } => {
+            finally,
+        } => {
             rewrite_property_backing_field_idents_in_statements(body, renames);
             for catch in catches {
                 if let Some(when_clause) = &mut catch.when_clause {
@@ -7947,7 +8580,8 @@ fn inject_csharp_generic_binding_params(params: &mut Vec<Param>, generic_count: 
             is_rest: false,
             is_kwargs: false,
             is_optional: true,
-            is_nullable: false });
+            is_nullable: false,
+        });
         params.push(Param {
             name: csharp_generic_default_param_name(index),
             type_hint: None,
@@ -7956,7 +8590,8 @@ fn inject_csharp_generic_binding_params(params: &mut Vec<Param>, generic_count: 
             is_rest: false,
             is_kwargs: false,
             is_optional: true,
-            is_nullable: false });
+            is_nullable: false,
+        });
     }
 }
 
@@ -7970,7 +8605,8 @@ fn inject_csharp_generic_ctor_fields(members: &mut Vec<ClassMember>, generic_cou
                 init: None,
                 modifiers: Modifiers::default(),
                 with_events: false,
-                array_bounds: None },
+                array_bounds: None,
+            },
         );
     }
 }
@@ -8050,7 +8686,8 @@ fn rewrite_generic_ctor_news_in_statement(stmt: &mut Statement, generic_params: 
         | StmtKind::Return(Some(expr))
         | StmtKind::Throw {
             expr: Some(expr),
-            cause: None }
+            cause: None,
+        }
         | StmtKind::Using { resource: expr, .. }
         | StmtKind::Lock { expr, .. }
         | StmtKind::CompoundAssign { value: expr, .. } => {
@@ -8058,7 +8695,8 @@ fn rewrite_generic_ctor_news_in_statement(stmt: &mut Statement, generic_params: 
         }
         StmtKind::Throw {
             expr: Some(expr),
-            cause: Some(cause) } => {
+            cause: Some(cause),
+        } => {
             rewrite_generic_ctor_news_in_expr(expr, generic_params);
             rewrite_generic_ctor_news_in_expr(cause, generic_params);
         }
@@ -8083,7 +8721,8 @@ fn rewrite_generic_ctor_news_in_statement(stmt: &mut Statement, generic_params: 
             cond,
             then_body,
             elifs,
-            else_body } => {
+            else_body,
+        } => {
             rewrite_generic_ctor_news_in_expr(cond, generic_params);
             rewrite_generic_ctor_news_in_statements(then_body, generic_params);
             for (elif_cond, elif_body) in elifs {
@@ -8098,7 +8737,8 @@ fn rewrite_generic_ctor_news_in_statement(stmt: &mut Statement, generic_params: 
             init,
             cond,
             update,
-            body } => {
+            body,
+        } => {
             if let Some(init) = init {
                 rewrite_generic_ctor_news_in_statement(init, generic_params);
             }
@@ -8125,7 +8765,8 @@ fn rewrite_generic_ctor_news_in_statement(stmt: &mut Statement, generic_params: 
         StmtKind::While {
             cond,
             body,
-            else_body } => {
+            else_body,
+        } => {
             rewrite_generic_ctor_news_in_expr(cond, generic_params);
             rewrite_generic_ctor_news_in_statements(body, generic_params);
             if let Some(else_body) = else_body {
@@ -8139,7 +8780,8 @@ fn rewrite_generic_ctor_news_in_statement(stmt: &mut Statement, generic_params: 
         StmtKind::Switch {
             expr,
             cases,
-            default } => {
+            default,
+        } => {
             rewrite_generic_ctor_news_in_expr(expr, generic_params);
             for case in cases {
                 for condition in &mut case.conditions {
@@ -8166,7 +8808,8 @@ fn rewrite_generic_ctor_news_in_statement(stmt: &mut Statement, generic_params: 
             body,
             catches,
             else_body,
-            finally } => {
+            finally,
+        } => {
             rewrite_generic_ctor_news_in_statements(body, generic_params);
             for catch in catches {
                 if let Some(when_clause) = &mut catch.when_clause {
@@ -8239,7 +8882,8 @@ fn rewrite_generic_ctor_news_in_expr(expr: &mut Expression, generic_params: &[St
                     *class = Box::new(Expression::new(ExprKind::Member {
                         object: Box::new(Expression::new(ExprKind::This)),
                         field: csharp_generic_ctor_field_name(index),
-                        null_safe: false }));
+                        null_safe: false,
+                    }));
                 }
             }
         }
@@ -8359,7 +9003,8 @@ fn rewrite_generic_bindings_in_statement(stmt: &mut Statement, generic_params: &
         | StmtKind::Return(Some(expr))
         | StmtKind::Throw {
             expr: Some(expr),
-            cause: None }
+            cause: None,
+        }
         | StmtKind::Using { resource: expr, .. }
         | StmtKind::Lock { expr, .. }
         | StmtKind::CompoundAssign { value: expr, .. } => {
@@ -8367,7 +9012,8 @@ fn rewrite_generic_bindings_in_statement(stmt: &mut Statement, generic_params: &
         }
         StmtKind::Throw {
             expr: Some(expr),
-            cause: Some(cause) } => {
+            cause: Some(cause),
+        } => {
             rewrite_generic_bindings_in_expr(expr, generic_params);
             rewrite_generic_bindings_in_expr(cause, generic_params);
         }
@@ -8392,7 +9038,8 @@ fn rewrite_generic_bindings_in_statement(stmt: &mut Statement, generic_params: &
             cond,
             then_body,
             elifs,
-            else_body } => {
+            else_body,
+        } => {
             rewrite_generic_bindings_in_expr(cond, generic_params);
             rewrite_generic_bindings_in_statements(then_body, generic_params);
             for (elif_cond, elif_body) in elifs {
@@ -8407,7 +9054,8 @@ fn rewrite_generic_bindings_in_statement(stmt: &mut Statement, generic_params: &
             init,
             cond,
             update,
-            body } => {
+            body,
+        } => {
             if let Some(init) = init {
                 rewrite_generic_bindings_in_statement(init, generic_params);
             }
@@ -8434,7 +9082,8 @@ fn rewrite_generic_bindings_in_statement(stmt: &mut Statement, generic_params: &
         StmtKind::While {
             cond,
             body,
-            else_body } => {
+            else_body,
+        } => {
             rewrite_generic_bindings_in_expr(cond, generic_params);
             rewrite_generic_bindings_in_statements(body, generic_params);
             if let Some(else_body) = else_body {
@@ -8448,7 +9097,8 @@ fn rewrite_generic_bindings_in_statement(stmt: &mut Statement, generic_params: &
         StmtKind::Switch {
             expr,
             cases,
-            default } => {
+            default,
+        } => {
             rewrite_generic_bindings_in_expr(expr, generic_params);
             for case in cases {
                 for condition in &mut case.conditions {
@@ -8475,7 +9125,8 @@ fn rewrite_generic_bindings_in_statement(stmt: &mut Statement, generic_params: &
             body,
             catches,
             else_body,
-            finally } => {
+            finally,
+        } => {
             rewrite_generic_bindings_in_statements(body, generic_params);
             for catch in catches {
                 if let Some(when_clause) = &mut catch.when_clause {
@@ -8560,7 +9211,8 @@ fn rewrite_generic_bindings_in_expr(expr: &mut Expression, generic_params: &[Str
         }
         ExprKind::Lambda { body, .. } => match body {
             LambdaBody::Expr(expr) => rewrite_generic_bindings_in_expr(expr, generic_params),
-            LambdaBody::Block(body) => rewrite_generic_bindings_in_statements(body, generic_params) },
+            LambdaBody::Block(body) => rewrite_generic_bindings_in_statements(body, generic_params),
+        },
         ExprKind::Array(items) => {
             for item in items {
                 rewrite_generic_bindings_in_expr(&mut item.value, generic_params);
@@ -8686,7 +9338,8 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
                     }
                 }
             }
-            _ => member_pair = Some(p) }
+            _ => member_pair = Some(p),
+        }
     }
 
     mods.decorators.extend(attributes.iter().cloned());
@@ -8722,12 +9375,14 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
                 Rule::struct_declaration => walk_struct_decl(mp, &attributes)?,
                 Rule::interface_declaration => walk_interface_decl(mp, &attributes)?,
                 Rule::enum_declaration => walk_enum_decl(mp, &attributes)?,
-                _ => unreachable!() };
+                _ => unreachable!(),
+            };
             Ok(vec![ClassMember::NestedType(Box::new(
                 Statement::with_span(kind, span),
             ))])
         }
-        other => Err(format!("Unexpected class member: {:?}", other)) }
+        other => Err(format!("Unexpected class member: {:?}", other)),
+    }
 }
 
 /// `~ClassName() { ... }` — the C# finalizer (ECMA-334 §15.13).
@@ -8767,7 +9422,8 @@ fn walk_destructor(pair: Pair<Rule>, mut mods: Modifiers) -> Result<ClassMember,
             handles: Vec::new(),
             is_async: false,
             is_generator: false,
-            is_sub: true },
+            is_sub: true,
+        },
     ))))
 }
 
@@ -8818,7 +9474,8 @@ fn walk_constructor(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, St
                 is_generator: false,
                 is_sub: true,
                 handles: Vec::new(),
-                modifiers: mods },
+                modifiers: mods,
+            },
         ))));
     }
 
@@ -8828,7 +9485,8 @@ fn walk_constructor(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, St
         body,
         base_args,
         initializer_target,
-        visibility: Visibility::Public })
+        visibility: Visibility::Public,
+    })
 }
 
 fn walk_property(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, String> {
@@ -8903,8 +9561,9 @@ fn walk_property(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, 
                                 Rule::expression_body => {
                                     is_auto = false;
                                     if let Some(expr_pair) = ap.into_inner().next() {
-                                        acc_body =
-                                            Some(vec![walk_expression_body_stmt(expr_pair, is_get)?]);
+                                        acc_body = Some(vec![walk_expression_body_stmt(
+                                            expr_pair, is_get,
+                                        )?]);
                                     }
                                 }
                                 Rule::class_modifiers => {} // skip accessor modifiers
@@ -8922,10 +9581,12 @@ fn walk_property(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, 
                                 is_rest: false,
                                 is_kwargs: false,
                                 is_optional: false,
-                                is_nullable: false };
+                                is_nullable: false,
+                            };
                             setter = Some(PropertySetter {
                                 param,
-                                body: acc_body.unwrap_or_default() });
+                                body: acc_body.unwrap_or_default(),
+                            });
                         }
                     }
                 }
@@ -8951,7 +9612,8 @@ fn walk_property(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, 
         getter,
         setter,
         is_auto,
-        modifiers: mods.clone() }];
+        modifiers: mods.clone(),
+    }];
     // Auto-property compiles its `__name` backing field. Emit a Field
     // entry with the same backing name so its `init` runs at instance
     // construction. ECMA-334 §15.7.4 — auto-property initializers run
@@ -8970,7 +9632,8 @@ fn walk_property(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, 
                 init: Some(init_expr),
                 modifiers: mods,
                 with_events: false,
-                array_bounds: None });
+                array_bounds: None,
+            });
         }
     }
     Ok(out)
@@ -9029,14 +9692,16 @@ fn make_event_accessor(method_name: &str, body: Vec<Statement>) -> ClassMember {
                 is_rest: false,
                 is_kwargs: false,
                 is_optional: false,
-                is_nullable: false }],
+                is_nullable: false,
+            }],
             return_type: None,
             body,
             modifiers: Modifiers::default(),
             handles: Vec::new(),
             is_async: false,
             is_generator: false,
-            is_sub: true },
+            is_sub: true,
+        },
         Span::default(),
     )))
 }
@@ -9064,12 +9729,16 @@ fn rewrite_event_accessor_delegate_ops(stmts: &mut [Statement]) {
                         Argument::positional(target.clone()),
                         Argument::positional(value.clone()),
                     ],
-                    optional: false });
+                    optional: false,
+                });
                 Some(StmtKind::Assign {
                     targets: vec![target.clone()],
-                    value: combined, by_ref: false })
+                    value: combined,
+                    by_ref: false,
+                })
             }
-            _ => None };
+            _ => None,
+        };
         if let Some(kind) = replacement {
             stmt.kind = kind;
             continue;
@@ -9131,7 +9800,8 @@ fn walk_event(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
         name: name.clone(),
         type_hint,
         params: Vec::new(),
-        visibility: Visibility::Public }];
+        visibility: Visibility::Public,
+    }];
     if add_body.is_some() || remove_body.is_some() {
         // Custom accessors: `value` in each body is the handler param.
         CUSTOM_EVENTS.with(|s| s.borrow_mut().insert(name.clone()));
@@ -9332,7 +10002,8 @@ fn rewrite_named_tuple_returns_in_stmt(stmt: &mut Statement, tuple_names: &[Opti
             body,
             catches,
             else_body,
-            finally } => {
+            finally,
+        } => {
             rewrite_named_tuple_returns_in_stmts(body, tuple_names);
             for catch in catches {
                 rewrite_named_tuple_returns_in_stmts(&mut catch.body, tuple_names);
@@ -9388,7 +10059,8 @@ fn lower_initialize_component_event_stmt(stmt: &Statement) -> Option<StmtKind> {
     let bin_op = match op {
         CompoundOp::Add => BinOp::Add,
         CompoundOp::Sub => BinOp::Sub,
-        _ => return None };
+        _ => return None,
+    };
 
     if !is_this_rooted_member_target(target) {
         return None;
@@ -9401,9 +10073,11 @@ fn lower_initialize_component_event_stmt(stmt: &Statement) -> Option<StmtKind> {
                 ExprKind::Binary {
                     op: bin_op,
                     left: Box::new(target.clone()),
-                    right: Box::new(value.clone()) },
+                    right: Box::new(value.clone()),
+                },
                 stmt.span,
-            )) },
+            )),
+        },
         stmt.span,
     );
 
@@ -9415,8 +10089,10 @@ fn is_this_rooted_member_target(expr: &Expression) -> bool {
         ExprKind::Member { object, .. } => match &object.kind {
             ExprKind::This => true,
             ExprKind::Member { .. } => is_this_rooted_member_target(object),
-            _ => false },
-        _ => false }
+            _ => false,
+        },
+        _ => false,
+    }
 }
 
 /// Walk a top-level / local function declaration. Same shape as a
@@ -9479,7 +10155,8 @@ fn walk_local_function(pair: Pair<Rule>) -> Result<StmtKind, String> {
         is_async: false,
         is_generator,
         is_sub,
-        handles: Vec::new() })
+        handles: Vec::new(),
+    })
 }
 
 /// Map a C# operator symbol (`+`, `==`, …) to the ECMA-335 / .NET
@@ -9512,7 +10189,8 @@ fn operator_method_name(symbol: &str, arity: usize) -> &'static str {
         ("^", _) => "op_ExclusiveOr",
         ("<<", _) => "op_LeftShift",
         (">>", _) => "op_RightShift",
-        _ => "op_Unknown" }
+        _ => "op_Unknown",
+    }
 }
 
 /// Which PROTOCOL SLOT a C# operator fills.
@@ -9552,7 +10230,8 @@ fn csharp_operator_protocol_slot(symbol: &str, arity: usize) -> Option<ProtocolS
         ("^", _) => Some(ProtocolSlot::Xor),
         ("<<", _) => Some(ProtocolSlot::LShift),
         (">>", _) => Some(ProtocolSlot::RShift),
-        _ => None }
+        _ => None,
+    }
 }
 
 /// Rewrite a `static` 2-arg operator into the 1-arg INSTANCE method a protocol
@@ -9566,7 +10245,10 @@ fn csharp_operator_protocol_slot(symbol: &str, arity: usize) -> Option<ProtocolS
 ///
 /// Returns false when there is no left parameter to fold, leaving the method
 /// static and name-resolved.
-fn normalize_csharp_operator_as_instance(params: &mut Vec<Param>, body: &mut Vec<Statement>) -> bool {
+fn normalize_csharp_operator_as_instance(
+    params: &mut Vec<Param>,
+    body: &mut Vec<Statement>,
+) -> bool {
     if params.len() < 2 {
         return false;
     }
@@ -9579,8 +10261,10 @@ fn normalize_csharp_operator_as_instance(params: &mut Vec<Param>, body: &mut Vec
                 type_hint: left.type_hint,
                 init: Some(Expression::new(ExprKind::This)),
                 array_bounds: None,
-                with_events: false }],
-            kind: VarDeclKind::Let }),
+                with_events: false,
+            }],
+            kind: VarDeclKind::Let,
+        }),
     );
     true
 }
@@ -9589,7 +10273,8 @@ fn conversion_operator_method_name(keyword: &str, return_type: Option<&str>) -> 
     let op = match keyword {
         "implicit" => "op_Implicit",
         "explicit" => "op_Explicit",
-        _ => return None };
+        _ => return None,
+    };
     let suffix = return_type
         .map(csharp_operator_type_suffix)
         .unwrap_or_default();
@@ -9621,7 +10306,8 @@ fn csharp_binary_operator_method_name(op: BinOp) -> Option<&'static str> {
         BinOp::BitXor => Some("op_ExclusiveOr"),
         BinOp::Shl => Some("op_LeftShift"),
         BinOp::Shr => Some("op_RightShift"),
-        _ => None }
+        _ => None,
+    }
 }
 
 fn csharp_unary_operator_method_name(op: UnaryOp) -> Option<&'static str> {
@@ -9632,7 +10318,8 @@ fn csharp_unary_operator_method_name(op: UnaryOp) -> Option<&'static str> {
         UnaryOp::BitNot => Some("op_OnesComplement"),
         UnaryOp::PreInc | UnaryOp::PostInc => Some("op_Increment"),
         UnaryOp::PreDec | UnaryOp::PostDec => Some("op_Decrement"),
-        _ => None }
+        _ => None,
+    }
 }
 
 fn csharp_builtin_bool_binary_op(op: BinOp) -> bool {
@@ -9659,7 +10346,8 @@ fn materialize_csharp_bool_expr(expr: Expression) -> Expression {
         ExprKind::Ternary {
             cond: Box::new(expr),
             then: Box::new(Expression::new(ExprKind::Lit(Literal::Bool(true)))),
-            else_: Box::new(Expression::new(ExprKind::Lit(Literal::Bool(false)))) },
+            else_: Box::new(Expression::new(ExprKind::Lit(Literal::Bool(false)))),
+        },
         span,
     )
 }
@@ -9716,7 +10404,8 @@ fn walk_operator(pair: Pair<Rule>, mut mods: Modifiers) -> Result<ClassMember, S
             is_async: false,
             is_generator,
             is_sub,
-            handles: Vec::new() },
+            handles: Vec::new(),
+        },
     ))))
 }
 
@@ -9769,8 +10458,9 @@ fn walk_indexer(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, S
                                 }
                                 Rule::expression_body => {
                                     if let Some(expr_pair) = ap.into_inner().next() {
-                                        acc_body =
-                                            Some(vec![walk_expression_body_stmt(expr_pair, is_get)?]);
+                                        acc_body = Some(vec![walk_expression_body_stmt(
+                                            expr_pair, is_get,
+                                        )?]);
                                     }
                                 }
                                 Rule::class_modifiers => {}
@@ -9788,6 +10478,10 @@ fn walk_indexer(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, S
             _ => {}
         }
     }
+    // An explicitly-implemented indexer (`int IFoo.this[int i]`) is reachable
+    // only through a cast to that interface, so it does not claim the type's
+    // index role.
+    let has_explicit_interface = explicit_interface.is_some();
     if let Some(interface_name) = explicit_interface {
         getter_name = explicit_interface_runtime_name(&interface_name, &getter_name);
         setter_name = explicit_interface_runtime_name(&interface_name, &setter_name);
@@ -9795,6 +10489,35 @@ fn walk_indexer(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, S
 
     let mut members = Vec::new();
     if let Some(body) = getter {
+        // `this[i]` is the `GetItem` ROLE — the same one VB's `Default
+        // Property`, Dart's `operator []`, Ruby's `[]` and Python's
+        // `__getitem__` fill. Declaring it is what lets the shared index site
+        // resolve `obj[i]` from the receiver's declared type instead of
+        // probing every object at runtime for an accessor key only a C# file
+        // could have produced.
+        //
+        // Emitted ALONGSIDE the `__get___index__` accessor rather than
+        // replacing it, exactly as VB emits its `Default Property` twice: a
+        // method whose name starts with `__get_` is bound by the class
+        // emitter as an ACCESSOR and never reaches the alias binder, so a
+        // slot declared on it would be computed and dropped.
+        if !has_explicit_interface {
+            let mut slot_mods = mods.clone();
+            slot_mods.protocol_slot = Some(ProtocolSlot::GetItem);
+            members.push(ClassMember::Method(Box::new(Statement::new(
+                StmtKind::FunctionDecl {
+                    name: "__getitem__".to_string(),
+                    params: params.clone(),
+                    return_type: None,
+                    body: body.clone(),
+                    modifiers: slot_mods,
+                    handles: Vec::new(),
+                    is_async: false,
+                    is_generator: false,
+                    is_sub: false,
+                },
+            ))));
+        }
         members.push(ClassMember::Method(Box::new(Statement::new(
             StmtKind::FunctionDecl {
                 name: getter_name,
@@ -9805,7 +10528,8 @@ fn walk_indexer(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, S
                 handles: Vec::new(),
                 is_async: false,
                 is_generator: false,
-                is_sub: false },
+                is_sub: false,
+            },
         ))));
     }
     if let Some(body) = setter {
@@ -9818,7 +10542,26 @@ fn walk_indexer(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, S
             is_rest: false,
             is_kwargs: false,
             is_optional: false,
-            is_nullable: false });
+            is_nullable: false,
+        });
+        // The write half of the same role, declared for the same reason.
+        if !has_explicit_interface {
+            let mut slot_mods = mods.clone();
+            slot_mods.protocol_slot = Some(ProtocolSlot::SetItem);
+            members.push(ClassMember::Method(Box::new(Statement::new(
+                StmtKind::FunctionDecl {
+                    name: "__setitem__".to_string(),
+                    params: setter_params.clone(),
+                    return_type: Some("void".into()),
+                    body: body.clone(),
+                    modifiers: slot_mods,
+                    handles: Vec::new(),
+                    is_async: false,
+                    is_generator: false,
+                    is_sub: true,
+                },
+            ))));
+        }
         members.push(ClassMember::Method(Box::new(Statement::new(
             StmtKind::FunctionDecl {
                 name: setter_name,
@@ -9829,7 +10572,8 @@ fn walk_indexer(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, S
                 handles: Vec::new(),
                 is_async: false,
                 is_generator: false,
-                is_sub: true },
+                is_sub: true,
+            },
         ))));
     }
 
@@ -9921,7 +10665,8 @@ fn walk_method(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, String>
             handles: Vec::new(),
             is_async,
             is_generator,
-            is_sub },
+            is_sub,
+        },
     ))))
 }
 
@@ -9950,14 +10695,16 @@ fn walk_field(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, Str
         .map(|decl| {
             let name = match decl.pattern {
                 BindingPattern::Ident(n) => n,
-                _ => String::new() };
+                _ => String::new(),
+            };
             ClassMember::Field {
                 name,
                 type_hint: type_hint.clone(),
                 init: decl.init,
                 modifiers: mods.clone(),
                 with_events: false,
-                array_bounds: None }
+                array_bounds: None,
+            }
         })
         .collect())
 }
@@ -9988,8 +10735,11 @@ fn walk_struct_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
                         targets: vec![Expression::new(ExprKind::Member {
                             object: Box::new(Expression::new(ExprKind::This)),
                             field: param.name.clone(),
-                            null_safe: false })],
-                        value: Expression::ident(&param.name), by_ref: false }));
+                            null_safe: false,
+                        })],
+                        value: Expression::ident(&param.name),
+                        by_ref: false,
+                    }));
                 }
                 if !ctor_params.is_empty() {
                     members.insert(
@@ -10000,7 +10750,8 @@ fn walk_struct_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
                             body: field_inits,
                             base_args: None,
                             initializer_target: ConstructorInitializerTarget::Base,
-                            visibility: Visibility::Public },
+                            visibility: Visibility::Public,
+                        },
                     );
                 }
             }
@@ -10037,7 +10788,8 @@ fn walk_struct_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
                 ClassMember::Property {
                     name, modifiers, ..
                 } if !modifiers.is_static => Some(name.clone()),
-                _ => None })
+                _ => None,
+            })
             .collect();
 
         let other_param = Param {
@@ -10048,26 +10800,31 @@ fn walk_struct_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
             is_rest: false,
             is_kwargs: false,
             is_optional: false,
-            is_nullable: false };
+            is_nullable: false,
+        };
 
         let mut eq_expr = Expression::bool(true);
         for member_name in comparable_members {
             let left = Expression::new(ExprKind::Member {
                 object: Box::new(Expression::new(ExprKind::This)),
                 field: member_name.clone(),
-                null_safe: false });
+                null_safe: false,
+            });
             let right = Expression::new(ExprKind::Member {
                 object: Box::new(Expression::ident("other")),
                 field: member_name,
-                null_safe: false });
+                null_safe: false,
+            });
             let cmp = Expression::new(ExprKind::Binary {
                 op: BinOp::Eq,
                 left: Box::new(left),
-                right: Box::new(right) });
+                right: Box::new(right),
+            });
             eq_expr = Expression::new(ExprKind::Binary {
                 op: BinOp::And,
                 left: Box::new(eq_expr),
-                right: Box::new(cmp) });
+                right: Box::new(cmp),
+            });
         }
 
         members.push(ClassMember::Method(Box::new(Statement::new(
@@ -10083,7 +10840,8 @@ fn walk_struct_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
                 modifiers: Modifiers {
                     is_override: true,
                     ..Default::default()
-                } },
+                },
+            },
         ))));
     }
 
@@ -10111,7 +10869,8 @@ fn walk_struct_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
             storage: ValueStorage::Value,
             equality: ValueEquality::Structural,
             ..Default::default()
-        } })
+        },
+    })
 }
 
 // ── Interface ───────────────────────────────────────────────────────────────
@@ -10160,7 +10919,8 @@ fn extract_interface_default_method(member: Pair<Rule>) -> Result<Option<ClassMe
             handles: Vec::new(),
             is_async: false,
             is_generator: false,
-            is_sub },
+            is_sub,
+        },
         Span::default(),
     )))))
 }
@@ -10249,7 +11009,8 @@ fn walk_interface_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<St
         name,
         parents,
         members,
-        decorators: decorators.to_vec() })
+        decorators: decorators.to_vec(),
+    })
 }
 
 fn walk_interface_member(pair: Pair<Rule>) -> Result<InterfaceMember, String> {
@@ -10297,13 +11058,15 @@ fn walk_interface_member(pair: Pair<Rule>) -> Result<InterfaceMember, String> {
             params,
             return_type: type_hint,
             is_sub,
-            signature_source: None })
+            signature_source: None,
+        })
     } else {
         Ok(InterfaceMember::Property {
             name,
             type_hint,
             is_readonly: has_getter && !has_setter,
-            is_writeonly: !has_getter && has_setter })
+            is_writeonly: !has_getter && has_setter,
+        })
     }
 }
 
@@ -10333,7 +11096,8 @@ fn walk_interface_operator_member(pair: Pair<Rule>) -> Result<InterfaceMember, S
         params,
         return_type,
         is_sub,
-        signature_source: None })
+        signature_source: None,
+    })
 }
 
 // ── Enum ────────────────────────────────────────────────────────────────────
@@ -10359,12 +11123,14 @@ fn walk_enum_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKin
                         for ep in em.into_inner() {
                             match ep.as_rule() {
                                 Rule::ident_name => en = ep.as_str().to_string(),
-                                _ => val = Some(walk_expression(ep)?) }
+                                _ => val = Some(walk_expression(ep)?),
+                            }
                         }
                         members.push(EnumMember {
                             name: en,
                             value: val,
-                            constructor_args: Vec::new() });
+                            constructor_args: Vec::new(),
+                        });
                     }
                 }
             }
@@ -10384,7 +11150,8 @@ fn walk_enum_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKin
         backing_type: None,
         interfaces: Vec::new(),
         body_members: Vec::new(),
-        decorators: decorators.to_vec() })
+        decorators: decorators.to_vec(),
+    })
 }
 
 // ── Record ──────────────────────────────────────────────────────────────────
@@ -10449,7 +11216,8 @@ fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
             init: None,
             modifiers: Modifiers::default(),
             with_events: false,
-            array_bounds: None });
+            array_bounds: None,
+        });
     }
 
     // Generate constructor from params
@@ -10461,8 +11229,11 @@ fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
                     targets: vec![Expression::new(ExprKind::Member {
                         object: Box::new(Expression::new(ExprKind::This)),
                         field: p.name.clone(),
-                        null_safe: false })],
-                    value: Expression::ident(&p.name), by_ref: false })
+                        null_safe: false,
+                    })],
+                    value: Expression::ident(&p.name),
+                    by_ref: false,
+                })
             })
             .collect();
         members.push(ClassMember::Constructor {
@@ -10471,7 +11242,8 @@ fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
             body: ctor_body,
             base_args,
             initializer_target: vybe_ast::ConstructorInitializerTarget::Base,
-            visibility: Visibility::Public });
+            visibility: Visibility::Public,
+        });
     }
 
     let has_user_deconstruct = members.iter().any(|m| {
@@ -10492,7 +11264,10 @@ fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
                     value: Expression::new(ExprKind::Member {
                         object: Box::new(Expression::new(ExprKind::This)),
                         field: p.name.clone(),
-                        null_safe: false }), by_ref: false })
+                        null_safe: false,
+                    }),
+                    by_ref: false,
+                })
             })
             .collect();
         let out_params: Vec<Param> = params
@@ -10505,7 +11280,8 @@ fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
                 is_rest: false,
                 is_kwargs: false,
                 is_optional: false,
-                is_nullable: false })
+                is_nullable: false,
+            })
             .collect();
         members.push(ClassMember::Method(Box::new(Statement::new(
             StmtKind::FunctionDecl {
@@ -10517,7 +11293,8 @@ fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
                 is_generator: false,
                 is_sub: true,
                 handles: Vec::new(),
-                modifiers: Modifiers::default() },
+                modifiers: Modifiers::default(),
+            },
         ))));
     }
 
@@ -10539,25 +11316,30 @@ fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
             is_rest: false,
             is_kwargs: false,
             is_optional: false,
-            is_nullable: false };
+            is_nullable: false,
+        };
         let mut eq_expr = Expression::bool(true);
         for p in &params {
             let left = Expression::new(ExprKind::Member {
                 object: Box::new(Expression::new(ExprKind::This)),
                 field: p.name.clone(),
-                null_safe: false });
+                null_safe: false,
+            });
             let right = Expression::new(ExprKind::Member {
                 object: Box::new(Expression::ident("other")),
                 field: p.name.clone(),
-                null_safe: false });
+                null_safe: false,
+            });
             let cmp = Expression::new(ExprKind::Binary {
                 op: BinOp::Eq,
                 left: Box::new(left),
-                right: Box::new(right) });
+                right: Box::new(right),
+            });
             eq_expr = Expression::new(ExprKind::Binary {
                 op: BinOp::And,
                 left: Box::new(eq_expr),
-                right: Box::new(cmp) });
+                right: Box::new(cmp),
+            });
         }
         let body = vec![Statement::new(StmtKind::Return(Some(eq_expr)))];
         members.push(ClassMember::Method(Box::new(Statement::new(
@@ -10573,7 +11355,8 @@ fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
                 modifiers: Modifiers {
                     is_override: true,
                     ..Default::default()
-                } },
+                },
+            },
         ))));
     }
 
@@ -10595,7 +11378,8 @@ fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
             is_rest: false,
             is_kwargs: false,
             is_optional: false,
-            is_nullable: false };
+            is_nullable: false,
+        };
         let right_param = Param {
             name: "right".into(),
             type_hint: Some(name.clone().into()),
@@ -10604,25 +11388,30 @@ fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
             is_rest: false,
             is_kwargs: false,
             is_optional: false,
-            is_nullable: false };
+            is_nullable: false,
+        };
         let mut eq_expr = Expression::bool(true);
         for p in &params {
             let left = Expression::new(ExprKind::Member {
                 object: Box::new(Expression::ident("left")),
                 field: p.name.clone(),
-                null_safe: false });
+                null_safe: false,
+            });
             let right = Expression::new(ExprKind::Member {
                 object: Box::new(Expression::ident("right")),
                 field: p.name.clone(),
-                null_safe: false });
+                null_safe: false,
+            });
             let cmp = Expression::new(ExprKind::Binary {
                 op: BinOp::Eq,
                 left: Box::new(left),
-                right: Box::new(right) });
+                right: Box::new(right),
+            });
             eq_expr = Expression::new(ExprKind::Binary {
                 op: BinOp::And,
                 left: Box::new(eq_expr),
-                right: Box::new(cmp) });
+                right: Box::new(cmp),
+            });
         }
         let body = vec![Statement::new(StmtKind::Return(Some(eq_expr)))];
         members.push(ClassMember::Method(Box::new(Statement::new(
@@ -10638,7 +11427,8 @@ fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
                 modifiers: Modifiers {
                     is_static: true,
                     ..Default::default()
-                } },
+                },
+            },
         ))));
     }
 
@@ -10660,7 +11450,8 @@ fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
                 concat = Expression::new(ExprKind::Binary {
                     op: BinOp::Add,
                     left: Box::new(concat),
-                    right: Box::new(Expression::new(ExprKind::Lit(Literal::Str(", ".into())))) });
+                    right: Box::new(Expression::new(ExprKind::Lit(Literal::Str(", ".into())))),
+                });
             }
             concat = Expression::new(ExprKind::Binary {
                 op: BinOp::Add,
@@ -10668,19 +11459,23 @@ fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
                 right: Box::new(Expression::new(ExprKind::Lit(Literal::Str(format!(
                     "{} = ",
                     p.name
-                ))))) });
+                ))))),
+            });
             concat = Expression::new(ExprKind::Binary {
                 op: BinOp::Add,
                 left: Box::new(concat),
                 right: Box::new(Expression::new(ExprKind::Member {
                     object: Box::new(Expression::new(ExprKind::This)),
                     field: p.name.clone(),
-                    null_safe: false })) });
+                    null_safe: false,
+                })),
+            });
         }
         concat = Expression::new(ExprKind::Binary {
             op: BinOp::Add,
             left: Box::new(concat),
-            right: Box::new(Expression::new(ExprKind::Lit(Literal::Str(" }".into())))) });
+            right: Box::new(Expression::new(ExprKind::Lit(Literal::Str(" }".into())))),
+        });
         let body = vec![Statement::new(StmtKind::Return(Some(concat)))];
         members.push(ClassMember::Method(Box::new(Statement::new(
             StmtKind::FunctionDecl {
@@ -10695,7 +11490,8 @@ fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
                 modifiers: Modifiers {
                     is_override: true,
                     ..Default::default()
-                } },
+                },
+            },
         ))));
     }
 
@@ -10716,7 +11512,8 @@ fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
             },
             ..record_mods
         },
-        decorators: decorators.to_vec() })
+        decorators: decorators.to_vec(),
+    })
 }
 
 // ── Delegate ────────────────────────────────────────────────────────────────
@@ -10741,7 +11538,8 @@ fn walk_delegate_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         params,
         return_type: return_type.clone(),
         is_sub: return_type.as_deref() == Some("void"),
-        visibility: Visibility::Public })
+        visibility: Visibility::Public,
+    })
 }
 
 // ── Control flow ────────────────────────────────────────────────────────────
@@ -10791,7 +11589,8 @@ fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
         cond,
         then_body,
         elifs,
-        else_body })
+        else_body,
+    })
 }
 
 fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -10855,7 +11654,8 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
         init,
         cond,
         update,
-        body })
+        body,
+    })
 }
 
 fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -10914,8 +11714,10 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     type_hint: None,
                     init: Some(Expression::ident(&var)),
                     array_bounds: None,
-                    with_events: false }],
-                kind: VarDeclKind::Let }),
+                    with_events: false,
+                }],
+                kind: VarDeclKind::Let,
+            }),
         );
     } else {
         let uses_entry_fields = !var.is_empty()
@@ -10930,13 +11732,17 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     value: Expression::new(ExprKind::Index {
                         object: Box::new(Expression::ident(&source_var)),
                         index: Box::new(Expression::int(0)),
-                        null_safe: false }) },
+                        null_safe: false,
+                    }),
+                },
                 ObjectProperty::KeyValue {
                     key: Expression::string("Value"),
                     value: Expression::new(ExprKind::Index {
                         object: Box::new(Expression::ident(&source_var)),
                         index: Box::new(Expression::int(1)),
-                        null_safe: false }) },
+                        null_safe: false,
+                    }),
+                },
             ]));
             body.insert(
                 0,
@@ -10946,8 +11752,10 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
                         type_hint: None,
                         init: Some(entry_object),
                         array_bounds: None,
-                        with_events: false }],
-                    kind: VarDeclKind::Let }),
+                        with_events: false,
+                    }],
+                    kind: VarDeclKind::Let,
+                }),
             );
             var = source_var;
         } else {
@@ -10964,8 +11772,10 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
                             type_hint: Some(csharp_storage_type_hint(&type_hint).into()),
                             init: Some(Expression::ident(&source_var)),
                             array_bounds: None,
-                            with_events: false }],
-                        kind: VarDeclKind::Let }),
+                            with_events: false,
+                        }],
+                        kind: VarDeclKind::Let,
+                    }),
                 );
                 var = source_var;
             }
@@ -11019,7 +11829,8 @@ fn walk_while(pair: Pair<Rule>) -> Result<StmtKind, String> {
     Ok(StmtKind::While {
         cond,
         body,
-        else_body: None })
+        else_body: None,
+    })
 }
 
 fn walk_do_while(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -11029,7 +11840,8 @@ fn walk_do_while(pair: Pair<Rule>) -> Result<StmtKind, String> {
     Ok(StmtKind::DoWhile {
         body,
         cond,
-        until: false })
+        until: false,
+    })
 }
 
 fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -11039,7 +11851,9 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
         Value(Expression),
         Pattern {
             pattern: Pair<'i, Rule>,
-            guard: Option<Expression> } }
+            guard: Option<Expression>,
+        },
+    }
 
     let mut inner = pair.into_inner();
     let expr = walk_expression(inner.next().ok_or("switch: no expr")?)?;
@@ -11119,7 +11933,8 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
                         let cond = Expression::new(ExprKind::Binary {
                             op: BinOp::StrictEq,
                             left: Box::new(subject_expr.clone()),
-                            right: Box::new(value) });
+                            right: Box::new(value),
+                        });
                         arms.push((cond, stripped_body.clone()));
                     }
                     SwitchLabelInfo::Pattern { pattern, guard } => {
@@ -11130,7 +11945,8 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
                         let mark_matched_stmt =
                             Statement::new(StmtKind::Expr(Expression::new(ExprKind::Assign {
                                 target: Box::new(Expression::ident(&matched_name)),
-                                value: Box::new(Expression::bool(true)) })));
+                                value: Box::new(Expression::bool(true)),
+                            })));
                         if let Some(binding_stmt) = binding {
                             if let Some(guard_expr) = guard {
                                 let binding_name = extract_binding_name(&binding_stmt);
@@ -11143,7 +11959,8 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
                                 cond = Expression::new(ExprKind::Binary {
                                     op: BinOp::And,
                                     left: Box::new(cond),
-                                    right: Box::new(rewritten_guard) });
+                                    right: Box::new(rewritten_guard),
+                                });
                             }
                             body.insert(0, binding_stmt.clone());
                             body.push(mark_matched_stmt);
@@ -11151,7 +11968,8 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
                             cond = Expression::new(ExprKind::Binary {
                                 op: BinOp::And,
                                 left: Box::new(cond),
-                                right: Box::new(guard_expr) });
+                                right: Box::new(guard_expr),
+                            });
                             body.push(mark_matched_stmt);
                         } else {
                             body.push(mark_matched_stmt);
@@ -11168,8 +11986,10 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 type_hint: None,
                 init: Some(expr),
                 array_bounds: None,
-                with_events: false }],
-            kind: VarDeclKind::Let });
+                with_events: false,
+            }],
+            kind: VarDeclKind::Let,
+        });
 
         let matched_decl = Statement::new(StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
@@ -11177,34 +11997,41 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 type_hint: Some("bool".to_string().into()),
                 init: Some(Expression::bool(false)),
                 array_bounds: None,
-                with_events: false }],
-            kind: VarDeclKind::Let });
+                with_events: false,
+            }],
+            kind: VarDeclKind::Let,
+        });
 
         let mut body = vec![decl, matched_decl];
         for (cond, then_body) in arms {
             let not_matched = Expression::new(ExprKind::Unary {
                 op: UnaryOp::Not,
-                expr: Box::new(Expression::ident(&matched_name)) });
+                expr: Box::new(Expression::ident(&matched_name)),
+            });
             let gated_cond = Expression::new(ExprKind::Binary {
                 op: BinOp::And,
                 left: Box::new(not_matched),
-                right: Box::new(cond) });
+                right: Box::new(cond),
+            });
             body.push(Statement::new(StmtKind::If {
                 cond: gated_cond,
                 then_body,
                 elifs: Vec::new(),
-                else_body: None }));
+                else_body: None,
+            }));
         }
 
         if let Some(default_stmts) = default_body {
             let not_matched = Expression::new(ExprKind::Unary {
                 op: UnaryOp::Not,
-                expr: Box::new(Expression::ident(&matched_name)) });
+                expr: Box::new(Expression::ident(&matched_name)),
+            });
             body.push(Statement::new(StmtKind::If {
                 cond: not_matched,
                 then_body: default_stmts,
                 elifs: Vec::new(),
-                else_body: None }));
+                else_body: None,
+            }));
         }
         return Ok(StmtKind::Block(body));
     }
@@ -11227,14 +12054,16 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
             let conditions = value_labels.into_iter().map(CaseCondition::Value).collect();
             cases.push(SwitchCase {
                 conditions,
-                body: stmts });
+                body: stmts,
+            });
         }
     }
 
     Ok(StmtKind::Switch {
         expr,
         cases,
-        default })
+        default,
+    })
 }
 
 fn walk_return(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -11393,7 +12222,8 @@ fn walk_try(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     var_name,
                     stack_var: None,
                     body: catch_body,
-                    when_clause: when_filter });
+                    when_clause: when_filter,
+                });
             }
             Rule::finally_clause => {
                 for fp in p.into_inner() {
@@ -11410,7 +12240,8 @@ fn walk_try(pair: Pair<Rule>) -> Result<StmtKind, String> {
         body,
         catches,
         else_body: None,
-        finally })
+        finally,
+    })
 }
 
 fn walk_using_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -11439,7 +12270,8 @@ fn walk_using_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
     Ok(StmtKind::Using {
         var,
         resource,
-        body })
+        body,
+    })
 }
 
 fn walk_using_declaration(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -11458,7 +12290,8 @@ fn walk_using_declaration(pair: Pair<Rule>) -> Result<StmtKind, String> {
     Ok(StmtKind::Using {
         var,
         resource,
-        body: Vec::new() })
+        body: Vec::new(),
+    })
 }
 
 fn walk_lock(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -11526,7 +12359,8 @@ fn param_attribute_carrier(index: usize, decorator: Expression) -> Expression {
         args: vec![
             Argument::positional(Expression::int(index as i64)),
             Argument::positional(decorator),
-        ] })
+        ],
+    })
 }
 
 fn walk_param_with_decorators(pair: Pair<Rule>) -> Result<(Param, Vec<Expression>), String> {
@@ -11567,7 +12401,8 @@ fn walk_param_with_decorators(pair: Pair<Rule>) -> Result<(Param, Vec<Expression
             }
             Rule::type_name => type_hint = Some(p.as_str().trim().to_string()),
             Rule::ident_name => name = p.as_str().to_string(),
-            _ => default = Some(walk_expression(p)?) }
+            _ => default = Some(walk_expression(p)?),
+        }
     }
     let is_nullable = type_hint
         .as_deref()
@@ -11582,7 +12417,8 @@ fn walk_param_with_decorators(pair: Pair<Rule>) -> Result<(Param, Vec<Expression
             is_rest,
             is_kwargs: false,
             is_optional: false,
-            is_nullable },
+            is_nullable,
+        },
         decorators,
     ))
 }
@@ -11606,7 +12442,8 @@ fn walk_expression_body_stmt(inner: Pair<Rule>, as_return: bool) -> Result<State
         return Ok(Statement::with_span(
             StmtKind::Throw {
                 expr: Some(walk_expression(value)?),
-                cause: None },
+                cause: None,
+            },
             span,
         ));
     }
@@ -11631,7 +12468,8 @@ fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
 struct QueryState {
     result_expr: Expression,
     item_param: String,
-    bindings: Vec<(String, Expression)> }
+    bindings: Vec<(String, Expression)>,
+}
 
 fn query_param(name: &str) -> Param {
     Param {
@@ -11642,14 +12480,16 @@ fn query_param(name: &str) -> Param {
         is_rest: false,
         is_kwargs: false,
         is_optional: false,
-        is_nullable: false }
+        is_nullable: false,
+    }
 }
 
 fn query_member(object: Expression, field: &str) -> Expression {
     Expression::new(ExprKind::Member {
         object: Box::new(object),
         field: field.to_string(),
-        null_safe: false })
+        null_safe: false,
+    })
 }
 
 fn query_lambda(param: &str, body: Expression) -> Expression {
@@ -11657,7 +12497,8 @@ fn query_lambda(param: &str, body: Expression) -> Expression {
         params: vec![query_param(param)],
         body: LambdaBody::Expr(Box::new(body)),
         is_async: false,
-        captures: Vec::new() })
+        captures: Vec::new(),
+    })
 }
 
 fn query_call(target: Expression, method: &str, args: Vec<Expression>) -> Expression {
@@ -11699,12 +12540,14 @@ fn query_object_from_bindings(
     for (name, value) in bindings {
         props.push(ObjectProperty::KeyValue {
             key: Expression::string(name),
-            value: value.clone() });
+            value: value.clone(),
+        });
     }
     if let Some((name, value)) = extra {
         props.push(ObjectProperty::KeyValue {
             key: Expression::string(&name),
-            value });
+            value,
+        });
     }
     Expression::new(ExprKind::Object(props))
 }
@@ -11891,7 +12734,8 @@ fn lower_csharp_query_body(pair: Pair<Rule>, state: QueryState) -> Result<Expres
                                 Expression::new(ExprKind::Binary {
                                     op: BinOp::Eq,
                                     left: Box::new(left_key_expr),
-                                    right: Box::new(right_key_expr) }),
+                                    right: Box::new(right_key_expr),
+                                }),
                             )],
                         );
                         let projected = query_call(
@@ -11915,7 +12759,8 @@ fn lower_csharp_query_body(pair: Pair<Rule>, state: QueryState) -> Result<Expres
                         state.item_param = "__query_item".to_string();
                         state.bindings = query_bindings_for_item(&state.item_param, &names);
                     }
-                    _ => return Err(format!("unsupported query clause: {:?}", clause.as_rule())) }
+                    _ => return Err(format!("unsupported query clause: {:?}", clause.as_rule())),
+                }
             }
             Rule::query_select_or_group_clause => terminal = Some(child),
             Rule::query_continuation => continuation = Some(child),
@@ -11992,7 +12837,8 @@ fn lower_csharp_query_body(pair: Pair<Rule>, state: QueryState) -> Result<Expres
             QueryState {
                 result_expr: result_after_terminal,
                 item_param: name.clone(),
-                bindings: vec![(name.clone(), Expression::ident(&name))] },
+                bindings: vec![(name.clone(), Expression::ident(&name))],
+            },
         );
     }
 
@@ -12010,7 +12856,8 @@ fn parse_csharp_query_expression(pair: Pair<Rule>) -> Result<Expression, String>
         QueryState {
             result_expr: source_expr,
             item_param: range_var.clone(),
-            bindings: vec![(range_var.clone(), Expression::ident(&range_var))] },
+            bindings: vec![(range_var.clone(), Expression::ident(&range_var))],
+        },
     )?;
     Ok(Expression::with_span(lowered.kind, span))
 }
@@ -12083,7 +12930,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         key: None,
                         spread: false,
                         by_ref: false,
-                        value: Expression::int(b as i64) })
+                        value: Expression::int(b as i64),
+                    })
                     .collect();
                 Ok(ExprKind::Array(bytes))
             } else {
@@ -12125,7 +12973,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         .ok()
                         .and_then(char::from_u32)
                         .unwrap_or('\0'),
-                    _ => rest.chars().next().unwrap_or('\0') }
+                    _ => rest.chars().next().unwrap_or('\0'),
+                }
             } else {
                 inner.chars().next().unwrap_or('\0')
             };
@@ -12176,7 +13025,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 if op_str == "=" {
                     Ok(ExprKind::Assign {
                         target: Box::new(strip_object_get_lvalue(left)),
-                        value: Box::new(right) })
+                        value: Box::new(right),
+                    })
                 } else {
                     let op = match op_str {
                         "+=" => CompoundOp::Add,
@@ -12190,13 +13040,16 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         "<<=" => CompoundOp::Shl,
                         ">>=" => CompoundOp::Shr,
                         "??=" => CompoundOp::NullCoalesce,
-                        _ => CompoundOp::Add };
+                        _ => CompoundOp::Add,
+                    };
                     Ok(ExprKind::Assign {
                         target: Box::new(strip_object_get_lvalue(left.clone())),
                         value: Box::new(Expression::new(ExprKind::Binary {
                             op: compound_to_binop(op),
                             left: Box::new(left),
-                            right: Box::new(right) })) })
+                            right: Box::new(right),
+                        })),
+                    })
                 }
             } else {
                 walk_expr_kind(inner.remove(0))
@@ -12221,14 +13074,16 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             is_rest: false,
                             is_kwargs: false,
                             is_optional: false,
-                            is_nullable: false }]
+                            is_nullable: false,
+                        }]
                     }
                     Rule::param_list => params = walk_params(p)?,
                     Rule::lambda_body => {
                         let inner = p.into_inner().next().ok_or("Empty lambda body")?;
                         body = match inner.as_rule() {
                             Rule::block_statement => LambdaBody::Block(walk_body(inner)?),
-                            _ => LambdaBody::Expr(Box::new(walk_expression(inner)?)) };
+                            _ => LambdaBody::Expr(Box::new(walk_expression(inner)?)),
+                        };
                     }
                     _ => {}
                 }
@@ -12238,7 +13093,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 params,
                 body,
                 is_async,
-                captures: Vec::new() })
+                captures: Vec::new(),
+            })
         }
 
         // Ternary
@@ -12257,7 +13113,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 Ok(ExprKind::Ternary {
                     cond: Box::new(cond),
                     then: Box::new(then),
-                    else_: Box::new(else_) })
+                    else_: Box::new(else_),
+                })
             } else {
                 walk_expr_kind(inner.remove(0))
             }
@@ -12297,10 +13154,12 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 "~" => UnaryOp::BitNot,
                 "++" => UnaryOp::PreInc,
                 "--" => UnaryOp::PreDec,
-                _ => UnaryOp::Neg };
+                _ => UnaryOp::Neg,
+            };
             Ok(ExprKind::Unary {
                 op,
-                expr: Box::new(operand) })
+                expr: Box::new(operand),
+            })
         }
 
         // C# explicit cast `(TypeName)expr` — lower to the canonical
@@ -12324,7 +13183,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             };
             Ok(ExprKind::Cast {
                 expr: Box::new(operand),
-                type_name })
+                type_name,
+            })
         }
 
         // Postfix
@@ -12342,10 +13202,12 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             let op = match op_pair.as_str() {
                 "++" => UnaryOp::PostInc,
                 "--" => UnaryOp::PostDec,
-                _ => return Ok(base.kind) };
+                _ => return Ok(base.kind),
+            };
             Ok(ExprKind::Unary {
                 op,
-                expr: Box::new(base) })
+                expr: Box::new(base),
+            })
         }
 
         // Call / member / index chain
@@ -12483,7 +13345,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             }
         }
 
-        other => Err(format!("Unexpected expression rule: {:?}", other)) }
+        other => Err(format!("Unexpected expression rule: {:?}", other)),
+    }
 }
 
 // ── Binary chain walker ─────────────────────────────────────────────────────
@@ -12521,16 +13384,19 @@ fn walk_relational(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             left: Box::new(typeof_expr),
                             right: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
                                 js_typeof.into(),
-                            )))) })
+                            )))),
+                        })
                     } else {
                         Expression::new(ExprKind::IsType {
                             expr: Box::new(left.clone()),
-                            type_name })
+                            type_name,
+                        })
                     };
                     left = Expression::new(ExprKind::Ternary {
                         cond: Box::new(test),
                         then: Box::new(left),
-                        else_: Box::new(Expression::null()) });
+                        else_: Box::new(Expression::null()),
+                    });
                 }
             }
             Rule::binary_relational => {
@@ -12545,11 +13411,13 @@ fn walk_relational(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         ">" => BinOp::Gt,
                         ">>" => BinOp::Shr,
                         "<<" => BinOp::Shl,
-                        _ => BinOp::Lt };
+                        _ => BinOp::Lt,
+                    };
                     left = Expression::new(ExprKind::Binary {
                         op: bin_op,
                         left: Box::new(left),
-                        right: Box::new(right) });
+                        right: Box::new(right),
+                    });
                 }
             }
             Rule::switch_expr_postfix => {
@@ -12564,7 +13432,8 @@ fn walk_relational(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 left = Expression::new(ExprKind::Binary {
                     op: BinOp::Lt,
                     left: Box::new(left),
-                    right: Box::new(right) });
+                    right: Box::new(right),
+                });
             }
         }
     }
@@ -12593,7 +13462,8 @@ fn walk_binary_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
             let type_name = normalize_runtime_type_name(right.as_str());
             left = Expression::new(ExprKind::IsType {
                 expr: Box::new(left),
-                type_name });
+                type_name,
+            });
             i += 2;
             continue;
         }
@@ -12602,7 +13472,8 @@ fn walk_binary_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
             let type_name = normalize_runtime_type_name(right.as_str());
             left = Expression::new(ExprKind::Cast {
                 expr: Box::new(left),
-                type_name });
+                type_name,
+            });
             i += 2;
             continue;
         }
@@ -12635,7 +13506,8 @@ fn walk_binary_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     let type_name = normalize_runtime_type_name(op_str.trim_start_matches("is"));
                     left = Expression::new(ExprKind::IsType {
                         expr: Box::new(left),
-                        type_name });
+                        type_name,
+                    });
                     i += 2;
                     continue;
                 }
@@ -12643,7 +13515,8 @@ fn walk_binary_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     let type_name = normalize_runtime_type_name(op_str.trim_start_matches("as"));
                     left = Expression::new(ExprKind::Cast {
                         expr: Box::new(left),
-                        type_name });
+                        type_name,
+                    });
                     i += 2;
                     continue;
                 }
@@ -12667,19 +13540,23 @@ fn walk_binary_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         class: Box::new(Expression::ident("DivideByZeroException")),
                         args: vec![Argument::positional(Expression::new(ExprKind::Lit(
                             Literal::Str("Attempted to divide by zero.".into()),
-                        )))] })),
-                    cause: None },
+                        )))],
+                    })),
+                    cause: None,
+                },
                 Span::default(),
             );
             let lambda = Expression::new(ExprKind::Lambda {
                 params: vec![],
                 body: LambdaBody::Block(vec![throw_stmt]),
                 is_async: false,
-                captures: Vec::new() });
+                captures: Vec::new(),
+            });
             left = Expression::new(ExprKind::Call {
                 callee: Box::new(lambda),
                 args: vec![],
-                optional: false });
+                optional: false,
+            });
             i += 2;
             continue;
         }
@@ -12689,7 +13566,8 @@ fn walk_binary_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 left = if matches!(bin_op, BinOp::NotEq) {
                     Expression::new(ExprKind::Unary {
                         op: UnaryOp::Not,
-                        expr: Box::new(tuple_eq) })
+                        expr: Box::new(tuple_eq),
+                    })
                 } else {
                     tuple_eq
                 };
@@ -12701,7 +13579,8 @@ fn walk_binary_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
         left = Expression::new(ExprKind::Binary {
             op: bin_op,
             left: Box::new(left),
-            right: Box::new(right) });
+            right: Box::new(right),
+        });
         i += 2;
     }
 
@@ -12739,7 +13618,8 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
             expr = Expression::new(ExprKind::Member {
                 object: Box::new(expr),
                 field: name,
-                null_safe: true });
+                null_safe: true,
+            });
         } else if chain_src.starts_with("(") {
             // Call — normalize known method calls to canonical builtins
             let mut generic_type_args = Vec::new();
@@ -12768,7 +13648,8 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 let method_name = match &expr.kind {
                     ExprKind::Ident(name) => Some(name.as_str()),
                     ExprKind::Member { field, .. } => Some(field.as_str()),
-                    _ => None };
+                    _ => None,
+                };
                 args.extend(csharp_method_generic_binding_args_for_method(
                     method_name,
                     &generic_type_args,
@@ -12799,7 +13680,8 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         expr = Expression::new(ExprKind::Index {
                             object: Box::new(expr),
                             index: Box::new(Expression::int(n - 1)),
-                            null_safe: false });
+                            null_safe: false,
+                        });
                         continue;
                     }
                 }
@@ -12816,7 +13698,12 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
             // System.Threading.Channels reader-side properties → ChanOp:
             // `x.Reader.Count` and `x.Reader.Completion.IsCompleted`.
             if !next_is_call && name == "Count" {
-                if let ExprKind::Member { object: ch_obj, field: side, .. } = &expr.kind {
+                if let ExprKind::Member {
+                    object: ch_obj,
+                    field: side,
+                    ..
+                } = &expr.kind
+                {
                     if side.eq_ignore_ascii_case("Reader") {
                         expr = Expression::new(ExprKind::Chan(ChanOp::Len(ch_obj.clone())));
                         continue;
@@ -12824,10 +13711,18 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 }
             }
             if !next_is_call && name == "IsCompleted" {
-                if let ExprKind::Member { object: comp_obj, field: comp, .. } = &expr.kind {
+                if let ExprKind::Member {
+                    object: comp_obj,
+                    field: comp,
+                    ..
+                } = &expr.kind
+                {
                     if comp.eq_ignore_ascii_case("Completion") {
-                        if let ExprKind::Member { object: ch_obj, field: side, .. } =
-                            &comp_obj.kind
+                        if let ExprKind::Member {
+                            object: ch_obj,
+                            field: side,
+                            ..
+                        } = &comp_obj.kind
                         {
                             if side.eq_ignore_ascii_case("Reader") {
                                 expr = Expression::new(ExprKind::Chan(ChanOp::Drained(
@@ -12843,7 +13738,8 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 expr = Expression::new(ExprKind::Member {
                     object: Box::new(expr),
                     field: name,
-                    null_safe: false });
+                    null_safe: false,
+                });
             } else {
                 expr = canonicalize_member_access(expr, &name);
             }
@@ -12894,11 +13790,13 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     let range = Expression::new(ExprKind::Range {
                         start: Box::new(start),
                         end: Box::new(end),
-                        inclusive: false });
+                        inclusive: false,
+                    });
                     expr = Expression::new(ExprKind::Index {
                         object: Box::new(expr),
                         index: Box::new(range),
-                        null_safe });
+                        null_safe,
+                    });
                 } else {
                     // Multi-arg index `m[i, j]` lowers to nested
                     // `m[i][j]`. Single-arg index is the common case.
@@ -12909,19 +13807,22 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             Expression::new(ExprKind::Call {
                                 callee: Box::new(Expression::ident("__csharp_str_char_code_at")),
                                 args: vec![Argument::positional(expr), Argument::positional(index)],
-                                optional: false })
+                                optional: false,
+                            })
                         } else {
                             Expression::new(ExprKind::Index {
                                 object: Box::new(expr),
                                 index: Box::new(index),
-                                null_safe })
+                                null_safe,
+                            })
                         };
                         for p in iter {
                             let index = walk_index_part(p, expr.clone())?;
                             expr = Expression::new(ExprKind::Index {
                                 object: Box::new(expr),
                                 index: Box::new(index),
-                                null_safe: false });
+                                null_safe: false,
+                            });
                         }
                     }
                 }
@@ -12981,7 +13882,8 @@ fn walk_stackalloc_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 Ok(build_csharp_sized_array_expr(&[length], &element_type, 0).kind)
             }
         }
-        None => Ok(common_memory::heap_array(Vec::new()).kind) }
+        None => Ok(common_memory::heap_array(Vec::new()).kind),
+    }
 }
 
 fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
@@ -13021,7 +13923,8 @@ fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         for mp in ip.into_inner() {
                             match mp.as_rule() {
                                 Rule::ident_name => name = mp.as_str().to_string(),
-                                _ => val = walk_expression(mp).unwrap_or(Expression::null()) }
+                                _ => val = walk_expression(mp).unwrap_or(Expression::null()),
+                            }
                         }
                         obj_init.push((name, val));
                     }
@@ -13038,7 +13941,8 @@ fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     for mp in am.into_inner() {
                         match mp.as_rule() {
                             Rule::ident_name => name = Some(mp.as_str().to_string()),
-                            _ => val = walk_expression(mp).unwrap_or(Expression::null()) }
+                            _ => val = walk_expression(mp).unwrap_or(Expression::null()),
+                        }
                     }
                     // Bare members (`x.Age`, `id`) infer their property name.
                     let field = name.unwrap_or_else(|| infer_anonymous_member_name(&val));
@@ -13067,7 +13971,8 @@ fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
             .into_iter()
             .map(|(name, value)| vybe_ast::ObjectProperty::KeyValue {
                 key: Expression::string(&name),
-                value })
+                value,
+            })
             .collect();
         return Ok(ExprKind::Object(props));
     }
@@ -13127,7 +14032,8 @@ fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 key: None,
                 value: v,
                 spread: false,
-                by_ref: false })
+                by_ref: false,
+            })
             .collect();
         return Ok(ExprKind::Array(elements));
     }
@@ -13141,11 +14047,13 @@ fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
             callee: Box::new(Expression::new(ExprKind::Member {
                 object: Box::new(arr),
                 field: "join".into(),
-                null_safe: false })),
+                null_safe: false,
+            })),
             args: vec![Argument::positional(Expression::new(ExprKind::Lit(
                 Literal::Str("".into()),
             )))],
-            optional: false });
+            optional: false,
+        });
     }
 
     // .NET `new string(ch, count)` repeats the single-character string.
@@ -13153,14 +14061,17 @@ fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
         return Ok(ExprKind::Call {
             callee: Box::new(Expression::ident("str_repeat")),
             args: vec![args[0].clone(), args[1].clone()],
-            optional: false });
+            optional: false,
+        });
     }
 
     // Build class expression — dotted names become Member chains
     // (e.g. "MyApp.Foo" → Member { Ident("MyApp"), "Foo" })
     let class_expr = build_dotted_expr(&type_name);
 
-    if is_span_or_memory_runtime_type(&raw_type_name) && array_init.is_empty() && obj_init.is_empty()
+    if is_span_or_memory_runtime_type(&raw_type_name)
+        && array_init.is_empty()
+        && obj_init.is_empty()
     {
         match args.len() {
             0 => return Ok(common_memory::heap_array(Vec::new()).kind),
@@ -13170,9 +14081,11 @@ fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     callee: Box::new(Expression::new(ExprKind::Member {
                         object: Box::new(build_dotted_expr("System.MemoryExtensions")),
                         field: "AsSpan".into(),
-                        null_safe: false })),
+                        null_safe: false,
+                    })),
                     args,
-                    optional: false });
+                    optional: false,
+                });
             }
             _ => {}
         }
@@ -13201,27 +14114,34 @@ fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
     if !obj_init.is_empty() {
         let new_call = Expression::new(ExprKind::New {
             class: Box::new(class_expr),
-            args });
+            args,
+        });
         let generic_bindings = csharp_generic_ctor_bindings(&raw_type_name, &type_name);
         let new_call = if generic_bindings.is_empty() {
             new_call
         } else {
             Expression::new(emit_generic_ctor_binding_iife(new_call, generic_bindings))
         };
-        return Ok(emit_object_init_iife(new_call, obj_init, Some(type_name.clone())));
+        return Ok(emit_object_init_iife(
+            new_call,
+            obj_init,
+            Some(type_name.clone()),
+        ));
     }
 
     let generic_bindings = csharp_generic_ctor_bindings(&raw_type_name, &type_name);
     if !generic_bindings.is_empty() {
         let new_call = Expression::new(ExprKind::New {
             class: Box::new(class_expr),
-            args });
+            args,
+        });
         return Ok(emit_generic_ctor_binding_iife(new_call, generic_bindings));
     }
 
     Ok(ExprKind::New {
         class: Box::new(class_expr),
-        args })
+        args,
+    })
 }
 
 fn csharp_array_rank_group_count(type_name: &str) -> usize {
@@ -13255,7 +14175,8 @@ fn csharp_array_default_expr(type_name: &str) -> Expression {
         | "decimal" => Expression::int(0),
         "bool" | "boolean" => Expression::bool(false),
         "char" => Expression::new(ExprKind::Lit(Literal::Char('\0'))),
-        _ => Expression::null() }
+        _ => Expression::null(),
+    }
 }
 
 fn build_csharp_sized_array_expr(
@@ -13279,7 +14200,8 @@ fn build_csharp_sized_array_expr(
             Argument::positional(dimensions[0].clone()),
             Argument::positional(init),
         ],
-        optional: false })
+        optional: false,
+    })
 }
 
 fn try_csharp_type_name(expr: &Expression) -> Option<String> {
@@ -13287,13 +14209,15 @@ fn try_csharp_type_name(expr: &Expression) -> Option<String> {
         ExprKind::Lit(Literal::Str(name)) => Some(name.clone()),
         ExprKind::Ident(name) => Some(name.clone()),
         ExprKind::Member { .. } => expr_dotted_name(expr),
-        _ => None }
+        _ => None,
+    }
 }
 
 fn try_csharp_usize_literal(expr: &Expression) -> Option<usize> {
     match &expr.kind {
         ExprKind::Lit(Literal::Int(value)) if *value >= 0 => Some(*value as usize),
-        _ => None }
+        _ => None,
+    }
 }
 
 fn is_csharp_zero_literal(expr: &Expression) -> bool {
@@ -13320,7 +14244,8 @@ fn build_csharp_get_length_expr(receiver: Expression, dimension: usize) -> Expre
         target = Expression::new(ExprKind::Index {
             object: Box::new(target),
             index: Box::new(Expression::int(0)),
-            null_safe: false });
+            null_safe: false,
+        });
     }
     canonicalize_member_access(target, "Length")
 }
@@ -13402,8 +14327,10 @@ fn emit_generic_ctor_binding_iife(
                 type_hint: None,
                 init: Some(new_call),
                 array_bounds: None,
-                with_events: false }],
-            kind: VarDeclKind::Var },
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        },
         Span::default(),
     ));
     for (index, binding_expr) in bindings {
@@ -13411,8 +14338,10 @@ fn emit_generic_ctor_binding_iife(
             target: Box::new(Expression::new(ExprKind::Member {
                 object: Box::new(Expression::ident("__obj")),
                 field: csharp_generic_ctor_field_name(index),
-                null_safe: false })),
-            value: Box::new(binding_expr) });
+                null_safe: false,
+            })),
+            value: Box::new(binding_expr),
+        });
         body.push(Statement::with_span(
             StmtKind::Expr(assign),
             Span::default(),
@@ -13426,11 +14355,13 @@ fn emit_generic_ctor_binding_iife(
         params: vec![],
         body: LambdaBody::Block(body),
         is_async: false,
-        captures: Vec::new() });
+        captures: Vec::new(),
+    });
     ExprKind::Call {
         callee: Box::new(lambda),
         args: vec![],
-        optional: false }
+        optional: false,
+    }
 }
 
 /// IIFE-style lowering for `new T(args) { Prop = value, ... }`. Builds
@@ -13451,8 +14382,10 @@ fn emit_object_init_iife(
                 type_hint: type_hint.map(Into::into),
                 init: Some(new_call),
                 array_bounds: None,
-                with_events: false }],
-            kind: VarDeclKind::Var },
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        },
         Span::default(),
     ));
     for (name, value) in props {
@@ -13461,8 +14394,10 @@ fn emit_object_init_iife(
             target: Box::new(Expression::new(ExprKind::Member {
                 object: Box::new(Expression::ident("__obj")),
                 field: name,
-                null_safe: false })),
-            value: Box::new(value) });
+                null_safe: false,
+            })),
+            value: Box::new(value),
+        });
         body.push(Statement::with_span(
             StmtKind::Expr(assign),
             Span::default(),
@@ -13476,11 +14411,13 @@ fn emit_object_init_iife(
         params: vec![],
         body: LambdaBody::Block(body),
         is_async: false,
-        captures: Vec::new() });
+        captures: Vec::new(),
+    });
     ExprKind::Call {
         callee: Box::new(lambda),
         args: vec![],
-        optional: false }
+        optional: false,
+    }
 }
 
 /// Convert a dotted name like "MyApp.Foo.Bar" into a Member chain expression.
@@ -13495,7 +14432,8 @@ fn build_dotted_expr(name: &str) -> Expression {
         expr = Expression::new(ExprKind::Member {
             object: Box::new(expr),
             field: part.to_string(),
-            null_safe: false });
+            null_safe: false,
+        });
     }
     expr
 }
@@ -13598,7 +14536,8 @@ fn csharp_method_generic_binding_args(type_args: &[String]) -> Vec<Argument> {
             | "double" | "float" | "decimal" => Expression::int(0),
             "bool" => Expression::new(ExprKind::Lit(Literal::Bool(false))),
             "char" => Expression::new(ExprKind::Lit(Literal::Char('\0'))),
-            _ => Expression::null() };
+            _ => Expression::null(),
+        };
         args.push(Argument::positional(default_binding));
     }
     args
@@ -13622,7 +14561,8 @@ fn walk_with_expr(receiver: Expression, postfix: Pair<Rule>) -> Result<Expressio
                     for mp in ip.into_inner() {
                         match mp.as_rule() {
                             Rule::ident_name => name = mp.as_str().to_string(),
-                            _ => val = walk_expression(mp).unwrap_or(Expression::null()) }
+                            _ => val = walk_expression(mp).unwrap_or(Expression::null()),
+                        }
                     }
                     props.push((name, val));
                 }
@@ -13647,7 +14587,8 @@ fn walk_with_expr(receiver: Expression, postfix: Pair<Rule>) -> Result<Expressio
             Argument::positional(Expression::new(ExprKind::Object(Vec::new()))),
             Argument::positional(Expression::ident("__src")),
         ],
-        optional: false });
+        optional: false,
+    });
     body.push(Statement::with_span(
         StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
@@ -13655,8 +14596,10 @@ fn walk_with_expr(receiver: Expression, postfix: Pair<Rule>) -> Result<Expressio
                 type_hint: None,
                 init: Some(assign_call),
                 array_bounds: None,
-                with_events: false }],
-            kind: VarDeclKind::Var },
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        },
         Span::default(),
     ));
     for (name, value) in props {
@@ -13664,8 +14607,10 @@ fn walk_with_expr(receiver: Expression, postfix: Pair<Rule>) -> Result<Expressio
             target: Box::new(Expression::new(ExprKind::Member {
                 object: Box::new(Expression::ident("__o")),
                 field: name,
-                null_safe: false })),
-            value: Box::new(value) });
+                null_safe: false,
+            })),
+            value: Box::new(value),
+        });
         body.push(Statement::with_span(
             StmtKind::Expr(assign),
             Span::default(),
@@ -13684,14 +14629,17 @@ fn walk_with_expr(receiver: Expression, postfix: Pair<Rule>) -> Result<Expressio
             is_rest: false,
             is_kwargs: false,
             is_optional: false,
-            is_nullable: false }],
+            is_nullable: false,
+        }],
         body: LambdaBody::Block(body),
         is_async: false,
-        captures: Vec::new() });
+        captures: Vec::new(),
+    });
     Ok(Expression::new(ExprKind::Call {
         callee: Box::new(lambda),
         args: vec![Argument::positional(receiver)],
-        optional: false }))
+        optional: false,
+    }))
 }
 
 /// Lower a C# 8 switch expression `subject switch { arm, ... }` into
@@ -13757,7 +14705,8 @@ fn walk_switch_expr(subject: Expression, postfix: Pair<Rule>) -> Result<Expressi
                     ExprKind::Ternary {
                         cond: Box::new(guard),
                         then: Box::new(result),
-                        else_: Box::new(else_branch.clone()) },
+                        else_: Box::new(else_branch.clone()),
+                    },
                     span.clone(),
                 )
             } else {
@@ -13770,18 +14719,21 @@ fn walk_switch_expr(subject: Expression, postfix: Pair<Rule>) -> Result<Expressi
                     Statement::with_span(StmtKind::Return(Some(scoped_result)), Span::default()),
                 ]),
                 is_async: false,
-                captures: Vec::new() });
+                captures: Vec::new(),
+            });
             Expression::new(ExprKind::Call {
                 callee: Box::new(lambda),
                 args: vec![],
-                optional: false })
+                optional: false,
+            })
         } else {
             let then_cond = if let Some(guard) = when_guard {
                 Expression::with_span(
                     ExprKind::Binary {
                         op: BinOp::And,
                         left: Box::new(cond.clone()),
-                        right: Box::new(guard) },
+                        right: Box::new(guard),
+                    },
                     span.clone(),
                 )
             } else {
@@ -13791,7 +14743,8 @@ fn walk_switch_expr(subject: Expression, postfix: Pair<Rule>) -> Result<Expressi
                 ExprKind::Ternary {
                     cond: Box::new(then_cond),
                     then: Box::new(result),
-                    else_: Box::new(else_branch) },
+                    else_: Box::new(else_branch),
+                },
                 span.clone(),
             );
             else_branch = next;
@@ -13801,7 +14754,8 @@ fn walk_switch_expr(subject: Expression, postfix: Pair<Rule>) -> Result<Expressi
             ExprKind::Ternary {
                 cond: Box::new(cond),
                 then: Box::new(then_branch),
-                else_: Box::new(else_branch) },
+                else_: Box::new(else_branch),
+            },
             span.clone(),
         );
         else_branch = next;
@@ -13839,9 +14793,11 @@ fn build_switch_pattern_cond(
                     ExprKind::Binary {
                         op: BinOp::And,
                         left: Box::new(prev),
-                        right: Box::new(c) },
+                        right: Box::new(c),
+                    },
                     span.clone(),
-                ) });
+                ),
+            });
         }
         let and_cond = and_cond.unwrap_or_else(|| {
             Expression::with_span(ExprKind::Lit(Literal::Bool(true)), span.clone())
@@ -13852,9 +14808,11 @@ fn build_switch_pattern_cond(
                 ExprKind::Binary {
                     op: BinOp::Or,
                     left: Box::new(prev),
-                    right: Box::new(and_cond) },
+                    right: Box::new(and_cond),
+                },
                 span.clone(),
-            ) });
+            ),
+        });
     }
     Ok(or_cond.unwrap_or_else(|| Expression::with_span(ExprKind::Lit(Literal::Bool(false)), span)))
 }
@@ -13908,7 +14866,8 @@ fn build_switch_primary_cond(
             ExprKind::Binary {
                 op,
                 left: Box::new(subject),
-                right: Box::new(rhs) },
+                right: Box::new(rhs),
+            },
             span.clone(),
         );
     } else {
@@ -13935,14 +14894,16 @@ fn build_switch_primary_cond(
                         right: Box::new(Expression::with_span(
                             ExprKind::Lit(Literal::Str(js_typeof.into())),
                             span.clone(),
-                        )) },
+                        )),
+                    },
                     span.clone(),
                 )
             } else {
                 Expression::with_span(
                     ExprKind::IsType {
                         expr: Box::new(subject),
-                        type_name },
+                        type_name,
+                    },
                     span.clone(),
                 )
             };
@@ -13954,7 +14915,8 @@ fn build_switch_primary_cond(
                 ExprKind::Binary {
                     op: BinOp::StrictEq,
                     left: Box::new(subject),
-                    right: Box::new(rhs) },
+                    right: Box::new(rhs),
+                },
                 span.clone(),
             );
         } else {
@@ -13988,7 +14950,8 @@ fn build_switch_pattern_binding(
                 if !declarations.is_empty() {
                     return Ok(Some(Statement::new(StmtKind::VarDecl {
                         declarations,
-                        kind: VarDeclKind::Let })));
+                        kind: VarDeclKind::Let,
+                    })));
                 }
                 continue;
             }
@@ -13999,7 +14962,8 @@ fn build_switch_pattern_binding(
                 if !declarations.is_empty() {
                     return Ok(Some(Statement::new(StmtKind::VarDecl {
                         declarations,
-                        kind: VarDeclKind::Let })));
+                        kind: VarDeclKind::Let,
+                    })));
                 }
                 continue;
             }
@@ -14027,8 +14991,10 @@ fn build_switch_pattern_binding(
                         type_hint: None,
                         init: Some(subject.clone()),
                         array_bounds: None,
-                        with_events: false }],
-                    kind: VarDeclKind::Let })));
+                        with_events: false,
+                    }],
+                    kind: VarDeclKind::Let,
+                })));
             }
         }
     }
@@ -14079,14 +15045,16 @@ fn build_switch_tuple_pattern_cond(
             ExprKind::Index {
                 object: Box::new(subject.clone()),
                 index: Box::new(Expression::int(index as i64)),
-                null_safe: false },
+                null_safe: false,
+            },
             span.clone(),
         );
         let eq = Expression::with_span(
             ExprKind::Binary {
                 op: BinOp::StrictEq,
                 left: Box::new(item),
-                right: Box::new(expected) },
+                right: Box::new(expected),
+            },
             span.clone(),
         );
         cond = Some(match cond {
@@ -14094,10 +15062,12 @@ fn build_switch_tuple_pattern_cond(
                 ExprKind::Binary {
                     op: BinOp::And,
                     left: Box::new(prev),
-                    right: Box::new(eq) },
+                    right: Box::new(eq),
+                },
                 span.clone(),
             ),
-            None => eq });
+            None => eq,
+        });
     }
     cond.unwrap_or_else(|| Expression::with_span(ExprKind::Lit(Literal::Bool(true)), span))
 }
@@ -14140,7 +15110,8 @@ fn index_expr(subject: &Expression, index: Expression) -> Expression {
         ExprKind::Index {
             object: Box::new(subject.clone()),
             index: Box::new(index),
-            null_safe: false },
+            null_safe: false,
+        },
         subject.span.clone(),
     )
 }
@@ -14151,7 +15122,8 @@ fn length_expr(subject: &Expression) -> Expression {
         ExprKind::Member {
             object: Box::new(subject.clone()),
             field: "Length".into(),
-            null_safe: false },
+            null_safe: false,
+        },
         subject.span.clone(),
     )
 }
@@ -14163,7 +15135,8 @@ fn suffix_index_expr(subject: &Expression, suffix_len: usize, j: usize) -> Expre
         ExprKind::Binary {
             op: BinOp::Sub,
             left: Box::new(length_expr(subject)),
-            right: Box::new(Expression::int((suffix_len - j) as i64)) },
+            right: Box::new(Expression::int((suffix_len - j) as i64)),
+        },
         subject.span.clone(),
     )
 }
@@ -14196,7 +15169,8 @@ fn build_general_pattern_cond(
                     ExprKind::Binary {
                         op: BinOp::And,
                         left: Box::new(cond),
-                        right: Box::new(next) },
+                        right: Box::new(next),
+                    },
                     span.clone(),
                 );
             }
@@ -14204,7 +15178,8 @@ fn build_general_pattern_cond(
                 Ok(Expression::with_span(
                     ExprKind::Unary {
                         op: UnaryOp::Not,
-                        expr: Box::new(cond) },
+                        expr: Box::new(cond),
+                    },
                     span,
                 ))
             } else {
@@ -14218,7 +15193,8 @@ fn build_general_pattern_cond(
                 .ok_or("Empty pattern atom inner".to_string())?;
             match first.as_rule() {
                 Rule::pattern_type => build_general_pattern_cond(subject, first.clone()),
-                _ => build_general_pattern_cond(subject, first.clone()) }
+                _ => build_general_pattern_cond(subject, first.clone()),
+            }
         }
         Rule::null_kw => Ok(Expression::with_span(
             ExprKind::Binary {
@@ -14227,7 +15203,8 @@ fn build_general_pattern_cond(
                 right: Box::new(Expression::with_span(
                     ExprKind::Lit(Literal::Null),
                     span.clone(),
-                )) },
+                )),
+            },
             span,
         )),
         Rule::true_kw
@@ -14240,7 +15217,8 @@ fn build_general_pattern_cond(
                 ExprKind::Binary {
                     op: BinOp::StrictEq,
                     left: Box::new(subject),
-                    right: Box::new(lit) },
+                    right: Box::new(lit),
+                },
                 span,
             ))
         }
@@ -14264,7 +15242,8 @@ fn build_general_pattern_cond(
                 ExprKind::Binary {
                     op,
                     left: Box::new(subject),
-                    right: Box::new(rhs) },
+                    right: Box::new(rhs),
+                },
                 span,
             ))
         }
@@ -14303,7 +15282,8 @@ fn build_general_pattern_cond(
                         BinOp::StrictEq
                     },
                     left: Box::new(length_expr(&subject)),
-                    right: Box::new(Expression::int(min_len)) },
+                    right: Box::new(Expression::int(min_len)),
+                },
                 span.clone(),
             );
             for (i, inner) in prefix.iter().enumerate() {
@@ -14316,7 +15296,8 @@ fn build_general_pattern_cond(
                     ExprKind::Binary {
                         op: BinOp::And,
                         left: Box::new(cond),
-                        right: Box::new(sub) },
+                        right: Box::new(sub),
+                    },
                     span.clone(),
                 );
             }
@@ -14331,7 +15312,8 @@ fn build_general_pattern_cond(
                     ExprKind::Binary {
                         op: BinOp::And,
                         left: Box::new(cond),
-                        right: Box::new(sub) },
+                        right: Box::new(sub),
+                    },
                     span.clone(),
                 );
             }
@@ -14350,10 +15332,12 @@ fn build_general_pattern_cond(
                         ExprKind::Binary {
                             op: BinOp::Or,
                             left: Box::new(prev),
-                            right: Box::new(next) },
+                            right: Box::new(next),
+                        },
                         span.clone(),
                     ),
-                    None => next });
+                    None => next,
+                });
             }
             Ok(cond.unwrap_or_else(|| Expression::bool(true)))
         }
@@ -14366,14 +15350,16 @@ fn build_general_pattern_cond(
             let negated = Expression::with_span(
                 ExprKind::Unary {
                     op: UnaryOp::Neg,
-                    expr: Box::new(magnitude) },
+                    expr: Box::new(magnitude),
+                },
                 span.clone(),
             );
             Ok(Expression::with_span(
                 ExprKind::Binary {
                     op: BinOp::StrictEq,
                     left: Box::new(subject),
-                    right: Box::new(negated) },
+                    right: Box::new(negated),
+                },
                 span,
             ))
         }
@@ -14391,10 +15377,12 @@ fn build_general_pattern_cond(
                         ExprKind::Binary {
                             op: BinOp::And,
                             left: Box::new(prev),
-                            right: Box::new(next) },
+                            right: Box::new(next),
+                        },
                         span.clone(),
                     ),
-                    None => next });
+                    None => next,
+                });
             };
             for part in pattern.into_inner() {
                 match part.as_rule() {
@@ -14410,7 +15398,8 @@ fn build_general_pattern_cond(
                             ExprKind::Member {
                                 object: Box::new(subject.clone()),
                                 field: member.as_str().trim().to_string(),
-                                null_safe: false },
+                                null_safe: false,
+                            },
                             span.clone(),
                         );
                         let test = build_general_pattern_cond(member_expr, clause)?;
@@ -14440,14 +15429,16 @@ fn build_general_pattern_cond(
                             span.clone(),
                         )),
                         field: member,
-                        null_safe: false },
+                        null_safe: false,
+                    },
                     span.clone(),
                 );
                 return Ok(Expression::with_span(
                     ExprKind::Binary {
                         op: BinOp::StrictEq,
                         left: Box::new(subject),
-                        right: Box::new(constant) },
+                        right: Box::new(constant),
+                    },
                     span,
                 ));
             }
@@ -14462,14 +15453,16 @@ fn build_general_pattern_cond(
                         right: Box::new(Expression::with_span(
                             ExprKind::Lit(Literal::Str(js_typeof.into())),
                             span.clone(),
-                        )) },
+                        )),
+                    },
                     span,
                 ))
             } else {
                 Ok(Expression::with_span(
                     ExprKind::IsType {
                         expr: Box::new(subject),
-                        type_name },
+                        type_name,
+                    },
                     span,
                 ))
             }
@@ -14480,7 +15473,8 @@ fn build_general_pattern_cond(
                 ExprKind::Binary {
                     op: BinOp::StrictEq,
                     left: Box::new(subject),
-                    right: Box::new(rhs) },
+                    right: Box::new(rhs),
+                },
                 span,
             ))
         }
@@ -14501,7 +15495,8 @@ fn collect_pattern_var_bindings(
         type_hint: None,
         init: Some(init),
         array_bounds: None,
-        with_events: false };
+        with_events: false,
+    };
     match pattern.as_rule() {
         // Pass-through wrappers — descend.
         Rule::property_pattern_value | Rule::pattern_clause | Rule::pattern_atom => {
@@ -14528,7 +15523,8 @@ fn collect_pattern_var_bindings(
                         let member_expr = Expression::new(ExprKind::Member {
                             object: Box::new(subject.clone()),
                             field: member.as_str().trim().to_string(),
-                            null_safe: false });
+                            null_safe: false,
+                        });
                         collect_pattern_var_bindings(&member_expr, clause, out)?;
                     }
                     // Trailing designation: `is Point { X: 1 } p` binds the
@@ -14555,11 +15551,13 @@ fn collect_pattern_var_bindings(
                 let end = Expression::new(ExprKind::Binary {
                     op: BinOp::Sub,
                     left: Box::new(length_expr(subject)),
-                    right: Box::new(Expression::int(suffix.len() as i64)) });
+                    right: Box::new(Expression::int(suffix.len() as i64)),
+                });
                 let range = Expression::new(ExprKind::Range {
                     start: Box::new(Expression::int(prefix.len() as i64)),
                     end: Box::new(end),
-                    inclusive: false });
+                    inclusive: false,
+                });
                 out.push(declarator(name, index_expr(subject, range)));
             }
             let suf_len = suffix.len();
@@ -14634,8 +15632,10 @@ fn build_general_pattern_binding(
                     type_hint: None,
                     init: Some(subject),
                     array_bounds: None,
-                    with_events: false }],
-                kind: VarDeclKind::Let })))
+                    with_events: false,
+                }],
+                kind: VarDeclKind::Let,
+            })))
         }
         // A switch arm's pattern nests under its own rules rather than
         // `pattern_clause` — descend to whatever binds.
@@ -14658,9 +15658,11 @@ fn build_general_pattern_binding(
             }
             Ok(Some(Statement::new(StmtKind::VarDecl {
                 declarations,
-                kind: VarDeclKind::Let })))
+                kind: VarDeclKind::Let,
+            })))
         }
-        _ => Ok(None) }
+        _ => Ok(None),
+    }
 }
 
 fn build_scoped_guard_expr(
@@ -14675,15 +15677,18 @@ fn build_scoped_guard_expr(
             Statement::new(StmtKind::Return(Some(guard))),
         ]),
         is_async: false,
-        captures: Vec::new() });
+        captures: Vec::new(),
+    });
     let scoped_guard = Expression::new(ExprKind::Call {
         callee: Box::new(guard_lambda),
         args: vec![],
-        optional: false });
+        optional: false,
+    });
     Expression::new(ExprKind::Ternary {
         cond: Box::new(cond),
         then: Box::new(scoped_guard),
-        else_: Box::new(Expression::bool(false)) })
+        else_: Box::new(Expression::bool(false)),
+    })
 }
 
 fn build_scoped_then_expr(binding_stmt: Statement, then_expr: Expression) -> Expression {
@@ -14694,11 +15699,13 @@ fn build_scoped_then_expr(binding_stmt: Statement, then_expr: Expression) -> Exp
             Statement::new(StmtKind::Return(Some(then_expr))),
         ]),
         is_async: false,
-        captures: Vec::new() });
+        captures: Vec::new(),
+    });
     Expression::new(ExprKind::Call {
         callee: Box::new(then_lambda),
         args: vec![],
-        optional: false })
+        optional: false,
+    })
 }
 
 fn extract_binding_name(stmt: &Statement) -> Option<String> {
@@ -14718,32 +15725,40 @@ fn rewrite_ident_expr(expr: &Expression, name: &str, replacement: &Expression) -
         ExprKind::Binary { op, left, right } => ExprKind::Binary {
             op: *op,
             left: Box::new(rewrite_ident_expr(left, name, replacement)),
-            right: Box::new(rewrite_ident_expr(right, name, replacement)) },
+            right: Box::new(rewrite_ident_expr(right, name, replacement)),
+        },
         ExprKind::Unary { op, expr: inner } => ExprKind::Unary {
             op: *op,
-            expr: Box::new(rewrite_ident_expr(inner, name, replacement)) },
+            expr: Box::new(rewrite_ident_expr(inner, name, replacement)),
+        },
         ExprKind::Ternary { cond, then, else_ } => ExprKind::Ternary {
             cond: Box::new(rewrite_ident_expr(cond, name, replacement)),
             then: Box::new(rewrite_ident_expr(then, name, replacement)),
-            else_: Box::new(rewrite_ident_expr(else_, name, replacement)) },
+            else_: Box::new(rewrite_ident_expr(else_, name, replacement)),
+        },
         ExprKind::Member {
             object,
             field,
-            null_safe } => ExprKind::Member {
+            null_safe,
+        } => ExprKind::Member {
             object: Box::new(rewrite_ident_expr(object, name, replacement)),
             field: field.clone(),
-            null_safe: *null_safe },
+            null_safe: *null_safe,
+        },
         ExprKind::Index {
             object,
             index,
-            null_safe } => ExprKind::Index {
+            null_safe,
+        } => ExprKind::Index {
             object: Box::new(rewrite_ident_expr(object, name, replacement)),
             index: Box::new(rewrite_ident_expr(index, name, replacement)),
-            null_safe: *null_safe },
+            null_safe: *null_safe,
+        },
         ExprKind::Call {
             callee,
             args,
-            optional } => ExprKind::Call {
+            optional,
+        } => ExprKind::Call {
             callee: Box::new(rewrite_ident_expr(callee, name, replacement)),
             args: args
                 .iter()
@@ -14751,10 +15766,13 @@ fn rewrite_ident_expr(expr: &Expression, name: &str, replacement: &Expression) -
                     value: rewrite_ident_expr(&arg.value, name, replacement),
                     name: arg.name.clone(),
                     by_ref: arg.by_ref,
-                    spread: arg.spread })
+                    spread: arg.spread,
+                })
                 .collect(),
-            optional: *optional },
-        _ => expr.kind.clone() };
+            optional: *optional,
+        },
+        _ => expr.kind.clone(),
+    };
     Expression::with_span(kind, expr.span.clone())
 }
 
@@ -14775,7 +15793,8 @@ fn build_scoped_pattern_test(
             Expression::new(ExprKind::Binary {
                 op: BinOp::And,
                 left: Box::new(cond),
-                right: Box::new(guard) }),
+                right: Box::new(guard),
+            }),
             binding,
         ));
     }
@@ -14819,7 +15838,8 @@ fn split_leading_is_pattern_guard(
             }
             Ok(None)
         }
-        _ => Ok(None) }
+        _ => Ok(None),
+    }
 }
 
 fn extract_is_pattern_subject_clause(
@@ -14866,7 +15886,8 @@ fn extract_is_pattern_subject_clause(
             }
             Ok(None)
         }
-        _ => Ok(None) }
+        _ => Ok(None),
+    }
 }
 
 fn lower_if_pattern_condition(cond_pair: Pair<Rule>) -> Result<Option<Expression>, String> {
@@ -14923,7 +15944,8 @@ fn emit_dict_iife(
     let type_hint = annotate_case_insensitive_ctor_type(type_name.clone(), &args);
     let new_dict = Expression::new(ExprKind::New {
         class: Box::new(Expression::ident(&type_name)),
-        args });
+        args,
+    });
     let mut body: Vec<Statement> = Vec::new();
     body.push(Statement::with_span(
         StmtKind::VarDecl {
@@ -14932,8 +15954,10 @@ fn emit_dict_iife(
                 type_hint: Some(type_hint.into()),
                 init: Some(new_dict),
                 array_bounds: None,
-                with_events: false }],
-            kind: VarDeclKind::Var },
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        },
         Span::default(),
     ));
     for (k, v) in pairs {
@@ -14941,9 +15965,11 @@ fn emit_dict_iife(
             callee: Box::new(Expression::new(ExprKind::Member {
                 object: Box::new(Expression::ident("__d")),
                 field: "Add".into(),
-                null_safe: false })),
+                null_safe: false,
+            })),
             args: vec![Argument::positional(k), Argument::positional(v)],
-            optional: false });
+            optional: false,
+        });
         body.push(Statement::with_span(
             StmtKind::Expr(add_call),
             Span::default(),
@@ -14957,11 +15983,13 @@ fn emit_dict_iife(
         params: vec![],
         body: LambdaBody::Block(body),
         is_async: false,
-        captures: Vec::new() });
+        captures: Vec::new(),
+    });
     ExprKind::Call {
         callee: Box::new(lambda),
         args: vec![],
-        optional: false }
+        optional: false,
+    }
 }
 
 /// IIFE-style lowering for `new HashSet<T> { v1, v2, ... }` — same
@@ -14969,7 +15997,8 @@ fn emit_dict_iife(
 fn emit_set_iife(type_name: String, args: Vec<Argument>, elements: Vec<Expression>) -> ExprKind {
     let new_set = Expression::new(ExprKind::New {
         class: Box::new(Expression::ident(&type_name)),
-        args: args.clone() });
+        args: args.clone(),
+    });
     let mut body: Vec<Statement> = Vec::new();
     body.push(Statement::with_span(
         StmtKind::VarDecl {
@@ -14980,8 +16009,10 @@ fn emit_set_iife(type_name: String, args: Vec<Argument>, elements: Vec<Expressio
                 ),
                 init: Some(new_set),
                 array_bounds: None,
-                with_events: false }],
-            kind: VarDeclKind::Var },
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        },
         Span::default(),
     ));
     for v in elements {
@@ -14989,9 +16020,11 @@ fn emit_set_iife(type_name: String, args: Vec<Argument>, elements: Vec<Expressio
             callee: Box::new(Expression::new(ExprKind::Member {
                 object: Box::new(Expression::ident("__s")),
                 field: "Add".into(),
-                null_safe: false })),
+                null_safe: false,
+            })),
             args: vec![Argument::positional(v)],
-            optional: false });
+            optional: false,
+        });
         body.push(Statement::with_span(
             StmtKind::Expr(add_call),
             Span::default(),
@@ -15005,11 +16038,13 @@ fn emit_set_iife(type_name: String, args: Vec<Argument>, elements: Vec<Expressio
         params: vec![],
         body: LambdaBody::Block(body),
         is_async: false,
-        captures: Vec::new() });
+        captures: Vec::new(),
+    });
     ExprKind::Call {
         callee: Box::new(lambda),
         args: vec![],
-        optional: false }
+        optional: false,
+    }
 }
 
 /// IIFE-style lowering for `new List<T> { v1, v2, ... }` /
@@ -15018,7 +16053,8 @@ fn emit_set_iife(type_name: String, args: Vec<Argument>, elements: Vec<Expressio
 fn emit_list_iife(type_name: String, args: Vec<Argument>, elements: Vec<Expression>) -> ExprKind {
     let new_list = Expression::new(ExprKind::New {
         class: Box::new(Expression::ident(&type_name)),
-        args: args.clone() });
+        args: args.clone(),
+    });
     let mut body: Vec<Statement> = Vec::new();
     body.push(Statement::with_span(
         StmtKind::VarDecl {
@@ -15029,8 +16065,10 @@ fn emit_list_iife(type_name: String, args: Vec<Argument>, elements: Vec<Expressi
                 ),
                 init: Some(new_list),
                 array_bounds: None,
-                with_events: false }],
-            kind: VarDeclKind::Var },
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        },
         Span::default(),
     ));
     for v in elements {
@@ -15038,9 +16076,11 @@ fn emit_list_iife(type_name: String, args: Vec<Argument>, elements: Vec<Expressi
             callee: Box::new(Expression::new(ExprKind::Member {
                 object: Box::new(Expression::ident("__l")),
                 field: "Add".into(),
-                null_safe: false })),
+                null_safe: false,
+            })),
             args: vec![Argument::positional(v)],
-            optional: false });
+            optional: false,
+        });
         body.push(Statement::with_span(
             StmtKind::Expr(add_call),
             Span::default(),
@@ -15054,11 +16094,13 @@ fn emit_list_iife(type_name: String, args: Vec<Argument>, elements: Vec<Expressi
         params: vec![],
         body: LambdaBody::Block(body),
         is_async: false,
-        captures: Vec::new() });
+        captures: Vec::new(),
+    });
     ExprKind::Call {
         callee: Box::new(lambda),
         args: vec![],
-        optional: false }
+        optional: false,
+    }
 }
 
 /// Walk a single `collection_element` (the body of a flat or nested
@@ -15085,12 +16127,14 @@ fn walk_collection_element(pair: Pair<Rule>) -> Result<Expression, String> {
                         key: None,
                         value: key,
                         spread: false,
-                        by_ref: false },
+                        by_ref: false,
+                    },
                     ArrayElement {
                         key: None,
                         value,
                         spread: false,
-                        by_ref: false },
+                        by_ref: false,
+                    },
                 ])));
             }
         }
@@ -15103,7 +16147,8 @@ fn walk_collection_element(pair: Pair<Rule>) -> Result<Expression, String> {
                         key: None,
                         value: expr,
                         spread: false,
-                        by_ref: false });
+                        by_ref: false,
+                    });
                 }
             }
             return Ok(Expression::new(ExprKind::Array(elements)));
@@ -15127,7 +16172,8 @@ fn walk_collection_expression_element(pair: Pair<Rule>) -> Result<ArrayElement, 
         key: None,
         value: walk_expression(expr_pair)?,
         spread,
-        by_ref: false })
+        by_ref: false,
+    })
 }
 
 /// Map a C# primitive type name to its `typeof` result string in JS,
@@ -15140,7 +16186,8 @@ fn primitive_to_typeof(type_name: &str) -> Option<&'static str> {
         "int" | "long" | "double" | "float" | "decimal" | "byte" | "sbyte" | "short" | "ushort"
         | "uint" | "ulong" | "nint" | "nuint" => Some("number"),
         "bool" | "Boolean" => Some("boolean"),
-        _ => None }
+        _ => None,
+    }
 }
 
 /// Walk a single index part (the inside of `arr[...]`).
@@ -15158,13 +16205,16 @@ fn walk_index_part(pair: Pair<Rule>, receiver: Expression) -> Result<Expression,
             let length = Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__len__")),
                 args: vec![Argument::positional(receiver)],
-                optional: false });
+                optional: false,
+            });
             Ok(Expression::new(ExprKind::Binary {
                 op: BinOp::Sub,
                 left: Box::new(length),
-                right: Box::new(n_expr) }))
+                right: Box::new(n_expr),
+            }))
         }
-        _ => walk_expression(pair) }
+        _ => walk_expression(pair),
+    }
 }
 
 /// Walk an `is`-pattern operand into a boolean expression. Covers
@@ -15203,7 +16253,8 @@ fn walk_arguments(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
                     value: Expression::with_span(ExprKind::Ident(name), to_span(name_pair)),
                     name: None,
                     by_ref: true,
-                    spread: false });
+                    spread: false,
+                });
             }
 
             // Named argument: first child is `ident_name`, second is the
@@ -15225,7 +16276,8 @@ fn walk_arguments(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
                         value,
                         name: Some(name_str),
                         by_ref,
-                        spread: false });
+                        spread: false,
+                    });
                 }
             }
 
@@ -15238,7 +16290,8 @@ fn walk_arguments(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
                 value,
                 name: None,
                 by_ref,
-                spread: false })
+                spread: false,
+            })
         })
         .collect()
 }
@@ -15262,7 +16315,8 @@ fn to_span(pair: &Pair<Rule>) -> Span {
         start_line: start.0 as u32 - 1,
         start_col: start.1 as u32 - 1,
         end_line: end.0 as u32 - 1,
-        end_col: end.1 as u32 - 1 }
+        end_col: end.1 as u32 - 1,
+    }
 }
 
 fn unquote(s: &str) -> String {
@@ -15322,7 +16376,8 @@ fn strip_object_get_lvalue(expr: Expression) -> Expression {
                 return Expression::new(ExprKind::Member {
                     object: Box::new(args[0].value.clone()),
                     field: field.clone(),
-                    null_safe: false });
+                    null_safe: false,
+                });
             }
         }
     }
@@ -15363,7 +16418,8 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
                     name.to_string(),
                 )))),
             ],
-            optional: false });
+            optional: false,
+        });
     }
 
     if name.eq_ignore_ascii_case("Value") {
@@ -15371,7 +16427,8 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
             return Expression::new(ExprKind::Index {
                 object: Box::new(list),
                 index: Box::new(index),
-                null_safe: false });
+                null_safe: false,
+            });
         }
     }
 
@@ -15394,9 +16451,11 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
                 callee: Box::new(Expression::new(ExprKind::Member {
                     object: Box::new(static_object),
                     field: name.to_string(),
-                    null_safe: false })),
+                    null_safe: false,
+                })),
                 args: vec![],
-                optional: false });
+                optional: false,
+            });
         }
     }
 
@@ -15408,9 +16467,11 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
             callee: Box::new(Expression::new(ExprKind::Member {
                 object: Box::new(build_dotted_expr("System.MemoryExtensions")),
                 field: "IsEmpty".into(),
-                null_safe: false })),
+                null_safe: false,
+            })),
             args: vec![Argument::positional(object)],
-            optional: false });
+            optional: false,
+        });
     }
 
     // typeof(T) emits a string literal `"System.<Name>"`. Resolve
@@ -15443,7 +16504,8 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
                         return Expression::new(ExprKind::Member {
                             object: inner.clone(),
                             field: "Count".into(),
-                            null_safe: false });
+                            null_safe: false,
+                        });
                     }
                 }
             }
@@ -15484,9 +16546,11 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
                                 callee: Box::new(Expression::new(ExprKind::Member {
                                     object: Box::new(Expression::ident("Array")),
                                     field: "isArray".into(),
-                                    null_safe: false })),
+                                    null_safe: false,
+                                })),
                                 args: vec![Argument::positional((**receiver).clone())],
-                                optional: false });
+                                optional: false,
+                            });
                         }
                         let short = dotnet_lowering::runtime_type_name_expr((**receiver).clone());
                         if name == "Name" {
@@ -15498,7 +16562,8 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
                             left: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
                                 "System.".into(),
                             )))),
-                            right: Box::new(short) });
+                            right: Box::new(short),
+                        });
                     }
                 }
             }
@@ -15523,21 +16588,25 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
         Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident(canonical_name)),
             args: vec![Argument::positional(object)],
-            optional: false })
+            optional: false,
+        })
     } else if is_zero_arity_method && !is_class_static {
         // Convert property-like zero-arity methods to method calls
         Expression::new(ExprKind::Call {
             callee: Box::new(Expression::new(ExprKind::Member {
                 object: Box::new(object),
                 field: name.to_string(),
-                null_safe: false })),
+                null_safe: false,
+            })),
             args: vec![],
-            optional: false })
+            optional: false,
+        })
     } else {
         Expression::new(ExprKind::Member {
             object: Box::new(object),
             field: name.to_string(),
-            null_safe: false })
+            null_safe: false,
+        })
     }
 }
 
@@ -15551,7 +16620,8 @@ fn linked_list_node_index_expr(expr: &Expression) -> Option<(Expression, Express
             Expression::new(ExprKind::Binary {
                 op: BinOp::Sub,
                 left: Box::new(canonicalize_member_access((**object).clone(), "Length")),
-                right: Box::new(Expression::int(1)) }),
+                right: Box::new(Expression::int(1)),
+            }),
         )),
         ExprKind::Member { object, field, .. } if field.eq_ignore_ascii_case("Next") => {
             let (list, index) = linked_list_node_index_expr(object)?;
@@ -15560,7 +16630,8 @@ fn linked_list_node_index_expr(expr: &Expression) -> Option<(Expression, Express
                 Expression::new(ExprKind::Binary {
                     op: BinOp::Add,
                     left: Box::new(index),
-                    right: Box::new(Expression::int(1)) }),
+                    right: Box::new(Expression::int(1)),
+                }),
             ))
         }
         ExprKind::Member { object, field, .. } if field.eq_ignore_ascii_case("Previous") => {
@@ -15570,10 +16641,12 @@ fn linked_list_node_index_expr(expr: &Expression) -> Option<(Expression, Express
                 Expression::new(ExprKind::Binary {
                     op: BinOp::Sub,
                     left: Box::new(index),
-                    right: Box::new(Expression::int(1)) }),
+                    right: Box::new(Expression::int(1)),
+                }),
             ))
         }
-        _ => None }
+        _ => None,
+    }
 }
 
 /// `arr.Clone()` (0-arg) → a shallow array copy. Applied only when the caller
@@ -15588,7 +16661,8 @@ fn rewrite_csharp_array_clone(operand: Expression) -> Expression {
                     return Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__csharp_array_clone")),
                         args: vec![Argument::positional((**object).clone())],
-                        optional: false });
+                        optional: false,
+                    });
                 }
             }
         }
@@ -15605,7 +16679,8 @@ fn rewrite_csharp_string_instance_call(
         Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident(name)),
             args: call_args,
-            optional: false })
+            optional: false,
+        })
     };
 
     // A `ReadOnlySpan<char>` over a string IS the substring on this runtime —
@@ -15778,7 +16853,8 @@ fn rewrite_csharp_string_instance_call(
             let end = Expression::new(ExprKind::Binary {
                 op: BinOp::Add,
                 left: Box::new(start.clone()),
-                right: Box::new(length) });
+                right: Box::new(length),
+            });
             return Some(call_builtin(
                 "__csharp_str_substring",
                 vec![
@@ -15843,8 +16919,10 @@ fn rewrite_csharp_string_instance_call(
             left: Box::new(Expression::new(ExprKind::Binary {
                 op: BinOp::Add,
                 left: Box::new(before),
-                right: Box::new(args[1].value.clone()) })),
-            right: Box::new(after) }));
+                right: Box::new(args[1].value.clone()),
+            })),
+            right: Box::new(after),
+        }));
     }
     if field.eq_ignore_ascii_case("Remove") && (args.len() == 1 || args.len() == 2) {
         let start = args[0].value.clone();
@@ -15862,7 +16940,8 @@ fn rewrite_csharp_string_instance_call(
         let after_start = Expression::new(ExprKind::Binary {
             op: BinOp::Add,
             left: Box::new(start),
-            right: Box::new(args[1].value.clone()) });
+            right: Box::new(args[1].value.clone()),
+        });
         let after = call_builtin(
             "__csharp_str_substring",
             vec![
@@ -15874,7 +16953,8 @@ fn rewrite_csharp_string_instance_call(
         return Some(Expression::new(ExprKind::Binary {
             op: BinOp::Add,
             left: Box::new(before),
-            right: Box::new(after) }));
+            right: Box::new(after),
+        }));
     }
 
     None
@@ -15885,7 +16965,8 @@ fn is_csharp_stringish_receiver(expr: &Expression) -> bool {
         ExprKind::Lit(Literal::Str(_)) | ExprKind::Interpolation(_) => true,
         ExprKind::Ident(name) => name == "text",
         ExprKind::Binary { op: BinOp::Add, .. } => true,
-        _ => false }
+        _ => false,
+    }
 }
 
 fn char_arg_to_string(expr: &Expression) -> Expression {
@@ -15926,7 +17007,8 @@ fn csharp_span_extension_method_call(
             callee: Box::new(Expression::new(ExprKind::Member {
                 object: Box::new(build_dotted_expr("System.Array")),
                 field: "Copy".into(),
-                null_safe: false })),
+                null_safe: false,
+            })),
             args: vec![
                 Argument::positional(receiver),
                 Argument::positional(Expression::int(0)),
@@ -15934,7 +17016,8 @@ fn csharp_span_extension_method_call(
                 Argument::positional(alias.offset),
                 Argument::positional(count),
             ],
-            optional: false }));
+            optional: false,
+        }));
     }
 
     if (field.eq_ignore_ascii_case("Slice")
@@ -15946,18 +17029,21 @@ fn csharp_span_extension_method_call(
         let count = Expression::new(ExprKind::Binary {
             op: BinOp::Sub,
             left: Box::new(canonicalize_member_access(receiver.clone(), "Length")),
-            right: Box::new(start.clone()) });
+            right: Box::new(start.clone()),
+        });
         return Some(Expression::new(ExprKind::Call {
             callee: Box::new(Expression::new(ExprKind::Member {
                 object: Box::new(build_dotted_expr("System.MemoryExtensions")),
                 field: "Slice".into(),
-                null_safe: false })),
+                null_safe: false,
+            })),
             args: vec![
                 Argument::positional(receiver),
                 Argument::positional(start),
                 Argument::positional(count),
             ],
-            optional: false }));
+            optional: false,
+        }));
     }
 
     let name = match field.to_ascii_lowercase().as_str() {
@@ -15977,7 +17063,8 @@ fn csharp_span_extension_method_call(
         "mismatch" if args.len() == 1 => "Mismatch",
         "asspan" if args.len() == 2 => "AsSpan",
         "asmemory" if args.len() == 2 => "AsSpan",
-        _ => return None };
+        _ => return None,
+    };
 
     let mut call_args = Vec::with_capacity(args.len() + 1);
     call_args.push(Argument::positional(receiver));
@@ -15986,9 +17073,11 @@ fn csharp_span_extension_method_call(
         callee: Box::new(Expression::new(ExprKind::Member {
             object: Box::new(build_dotted_expr("System.MemoryExtensions")),
             field: name.into(),
-            null_safe: false })),
+            null_safe: false,
+        })),
         args: call_args,
-        optional: false }))
+        optional: false,
+    }))
 }
 
 fn build_csharp_string_null_or_empty_expr(value: Expression, trim_first: bool) -> Expression {
@@ -15996,7 +17085,8 @@ fn build_csharp_string_null_or_empty_expr(value: Expression, trim_first: bool) -
         Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__csharp_str_trim")),
             args: vec![Argument::positional(value.clone())],
-            optional: false })
+            optional: false,
+        })
     } else {
         value.clone()
     };
@@ -16005,14 +17095,18 @@ fn build_csharp_string_null_or_empty_expr(value: Expression, trim_first: bool) -
         left: Box::new(Expression::new(ExprKind::Binary {
             op: BinOp::Eq,
             left: Box::new(value),
-            right: Box::new(Expression::new(ExprKind::Lit(Literal::Null))) })),
+            right: Box::new(Expression::new(ExprKind::Lit(Literal::Null))),
+        })),
         right: Box::new(Expression::new(ExprKind::Binary {
             op: BinOp::Eq,
             left: Box::new(Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__csharp_str_length")),
                 args: vec![Argument::positional(value_for_len)],
-                optional: false })),
-            right: Box::new(Expression::int(0)) })) })
+                optional: false,
+            })),
+            right: Box::new(Expression::int(0)),
+        })),
+    })
 }
 
 // C# method call canonicalization is intentionally minimal:
@@ -16037,13 +17131,16 @@ fn csharp_chan_async_poll(body: Vec<Statement>) -> Expression {
         body: LambdaBody::Block(vec![Statement::new(StmtKind::While {
             cond: Expression::bool(true),
             body,
-            else_body: None })]),
+            else_body: None,
+        })]),
         is_async: true,
-        captures: Vec::new() });
+        captures: Vec::new(),
+    });
     Expression::new(ExprKind::Call {
         callee: Box::new(lambda),
         args: Vec::new(),
-        optional: false })
+        optional: false,
+    })
 }
 
 /// One ready-queue turn as a statement — `AsyncOp::Yield` (C#'s
@@ -16065,18 +17162,78 @@ fn csharp_chan_pair_out_desugar(op: ChanOp, out_target: &Expression) -> Expressi
     Expression::new(ExprKind::Sequence(vec![
         Expression::new(ExprKind::Assign {
             target: Box::new(pair.clone()),
-            value: Box::new(Expression::new(ExprKind::Chan(op))) }),
+            value: Box::new(Expression::new(ExprKind::Chan(op))),
+        }),
         Expression::new(ExprKind::Assign {
             target: Box::new(out_target.clone()),
             value: Box::new(Expression::new(ExprKind::Index {
                 object: Box::new(pair.clone()),
                 index: Box::new(Expression::int(0)),
-                null_safe: false })) }),
+                null_safe: false,
+            })),
+        }),
         Expression::new(ExprKind::Index {
             object: Box::new(pair),
             index: Box::new(Expression::int(1)),
-            null_safe: false }),
+            null_safe: false,
+        }),
     ]))
+}
+
+/// `Enum.TryParse<T>(s, out r)` / `Enum.TryParse<T>(s, ignoreCase, out r)`
+/// → `(r = Enum.Parse("T", s, ignoreCase)) != null`.
+///
+/// The `out` calling convention is C# SYNTAX and normalizes here for exactly
+/// the reason every other `TryParse` does in `try_parse_desugar`: the common
+/// tree has no out-parameters, so the write has to become an ordinary
+/// ASSIGNMENT. `Enum.TryParse` was the one that did not, and the shared
+/// compiler hand-rolled the store instead — a second store mechanism, and the
+/// one that silently did not fire once a parse started answering with the
+/// member object rather than a name string.
+///
+/// It answers through `Enum.Parse`, not a lookup of its own, so success and
+/// the parsed value come from ONE site: `TryParse` is `Parse` plus a null test.
+///
+/// The generic argument arrives as a TRAILING binding pair appended by
+/// `csharp_method_generic_binding_args`, so the visible arguments are
+/// everything before it and the type name is the ctor binding's spelling.
+fn csharp_enum_try_parse_desugar(args: &[Argument]) -> Option<Expression> {
+    let type_name = expr_dotted_name(&args.get(args.len().checked_sub(2)?)?.value)?;
+    let visible = &args[..args.len() - 2];
+    let (input, ignore_case, out_target) = match visible {
+        [input, out_arg] if out_arg.by_ref => (&input.value, None, &out_arg.value),
+        [input, ignore_case, out_arg] if out_arg.by_ref => (
+            &input.value,
+            Some(ignore_case.value.clone()),
+            &out_arg.value,
+        ),
+        _ => return None,
+    };
+
+    let mut parse_args = vec![
+        Argument::positional(Expression::string(&type_name)),
+        Argument::positional(input.clone()),
+    ];
+    parse_args.extend(ignore_case.map(Argument::positional));
+
+    let parse_call = Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(build_dotted_expr("System.Enum")),
+            field: "Parse".into(),
+            null_safe: false,
+        })),
+        args: parse_args,
+        optional: false,
+    });
+
+    Some(Expression::new(ExprKind::Binary {
+        op: BinOp::NotEq,
+        left: Box::new(Expression::new(ExprKind::Assign {
+            target: Box::new(out_target.clone()),
+            value: Box::new(parse_call),
+        })),
+        right: Box::new(Expression::null()),
+    }))
 }
 
 fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expression {
@@ -16095,7 +17252,8 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
                 if field.eq_ignore_ascii_case("CreateUnbounded") {
                     return Expression::new(ExprKind::Chan(ChanOp::New {
                         capacity: Some(Box::new(Expression::int(i32::MAX as i64))),
-                        zero: Box::new(Expression::null()) }));
+                        zero: Box::new(Expression::null()),
+                    }));
                 }
                 if field.eq_ignore_ascii_case("CreateBounded") {
                     let capacity = args
@@ -16106,16 +17264,23 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
                         .unwrap_or_else(|| Expression::int(i32::MAX as i64));
                     return Expression::new(ExprKind::Chan(ChanOp::New {
                         capacity: Some(Box::new(capacity)),
-                        zero: Box::new(Expression::null()) }));
+                        zero: Box::new(Expression::null()),
+                    }));
                 }
             }
         }
-        if let ExprKind::Member { object: ch_obj, field: side, .. } = &object.kind {
+        if let ExprKind::Member {
+            object: ch_obj,
+            field: side,
+            ..
+        } = &object.kind
+        {
             if side.eq_ignore_ascii_case("Writer") {
                 if field.eq_ignore_ascii_case("TryWrite") && args.len() == 1 {
                     return Expression::new(ExprKind::Chan(ChanOp::TrySend {
                         channel: ch_obj.clone(),
-                        value: Box::new(args[0].value.clone()) }));
+                        value: Box::new(args[0].value.clone()),
+                    }));
                 }
                 // WriteAsync = the suspending send as an async POLL loop:
                 // TrySend until room appears, one job tick per miss.
@@ -16128,23 +17293,25 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
                         Statement::new(StmtKind::If {
                             cond: Expression::new(ExprKind::Chan(ChanOp::TrySend {
                                 channel: ch_obj.clone(),
-                                value: Box::new(args[0].value.clone()) })),
+                                value: Box::new(args[0].value.clone()),
+                            })),
                             then_body: vec![Statement::new(StmtKind::Return(Some(
                                 Expression::null(),
                             )))],
                             elifs: Vec::new(),
-                            else_body: None }),
+                            else_body: None,
+                        }),
                         Statement::new(StmtKind::If {
-                            cond: Expression::new(ExprKind::Chan(ChanOp::Closed(
-                                ch_obj.clone(),
-                            ))),
+                            cond: Expression::new(ExprKind::Chan(ChanOp::Closed(ch_obj.clone()))),
                             then_body: vec![Statement::new(StmtKind::Throw {
                                 expr: Some(Expression::string(
                                     "ChannelClosedException: The channel has been closed.",
                                 )),
-                                cause: None })],
+                                cause: None,
+                            })],
                             elifs: Vec::new(),
-                            else_body: None }),
+                            else_body: None,
+                        }),
                         csharp_await_tick(),
                     ]);
                 }
@@ -16161,33 +17328,37 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
                     return csharp_chan_async_poll(vec![
                         Statement::new(StmtKind::Expr(Expression::new(ExprKind::Assign {
                             target: Box::new(pair.clone()),
-                            value: Box::new(Expression::new(ExprKind::Chan(
-                                ChanOp::TryRecv(ch_obj.clone()),
-                            ))) }))),
+                            value: Box::new(Expression::new(ExprKind::Chan(ChanOp::TryRecv(
+                                ch_obj.clone(),
+                            )))),
+                        }))),
                         Statement::new(StmtKind::If {
                             cond: Expression::new(ExprKind::Index {
                                 object: Box::new(pair.clone()),
                                 index: Box::new(Expression::int(1)),
-                                null_safe: false }),
+                                null_safe: false,
+                            }),
                             then_body: vec![Statement::new(StmtKind::Return(Some(
                                 Expression::new(ExprKind::Index {
                                     object: Box::new(pair.clone()),
                                     index: Box::new(Expression::int(0)),
-                                    null_safe: false }),
+                                    null_safe: false,
+                                }),
                             )))],
                             elifs: Vec::new(),
-                            else_body: None }),
+                            else_body: None,
+                        }),
                         Statement::new(StmtKind::If {
-                            cond: Expression::new(ExprKind::Chan(ChanOp::Drained(
-                                ch_obj.clone(),
-                            ))),
+                            cond: Expression::new(ExprKind::Chan(ChanOp::Drained(ch_obj.clone()))),
                             then_body: vec![Statement::new(StmtKind::Throw {
                                 expr: Some(Expression::string(
                                     "ChannelClosedException: The channel has been closed.",
                                 )),
-                                cause: None })],
+                                cause: None,
+                            })],
                             elifs: Vec::new(),
-                            else_body: None }),
+                            else_body: None,
+                        }),
                         csharp_await_tick(),
                     ]);
                 }
@@ -16198,28 +17369,30 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
                     return csharp_chan_async_poll(vec![
                         Statement::new(StmtKind::Expr(Expression::new(ExprKind::Assign {
                             target: Box::new(pair.clone()),
-                            value: Box::new(Expression::new(ExprKind::Chan(
-                                ChanOp::TryPeek(ch_obj.clone()),
-                            ))) }))),
+                            value: Box::new(Expression::new(ExprKind::Chan(ChanOp::TryPeek(
+                                ch_obj.clone(),
+                            )))),
+                        }))),
                         Statement::new(StmtKind::If {
                             cond: Expression::new(ExprKind::Index {
                                 object: Box::new(pair.clone()),
                                 index: Box::new(Expression::int(1)),
-                                null_safe: false }),
+                                null_safe: false,
+                            }),
                             then_body: vec![Statement::new(StmtKind::Return(Some(
                                 Expression::bool(true),
                             )))],
                             elifs: Vec::new(),
-                            else_body: None }),
+                            else_body: None,
+                        }),
                         Statement::new(StmtKind::If {
-                            cond: Expression::new(ExprKind::Chan(ChanOp::Drained(
-                                ch_obj.clone(),
-                            ))),
+                            cond: Expression::new(ExprKind::Chan(ChanOp::Drained(ch_obj.clone()))),
                             then_body: vec![Statement::new(StmtKind::Return(Some(
                                 Expression::bool(false),
                             )))],
                             elifs: Vec::new(),
-                            else_body: None }),
+                            else_body: None,
+                        }),
                         csharp_await_tick(),
                     ]);
                 }
@@ -16227,8 +17400,7 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
             if side.eq_ignore_ascii_case("Reader")
                 && args.len() == 1
                 && args[0].by_ref
-                && (field.eq_ignore_ascii_case("TryRead")
-                    || field.eq_ignore_ascii_case("TryPeek"))
+                && (field.eq_ignore_ascii_case("TryRead") || field.eq_ignore_ascii_case("TryPeek"))
             {
                 let op = if field.eq_ignore_ascii_case("TryRead") {
                     ChanOp::TryRecv(ch_obj.clone())
@@ -16260,17 +17432,16 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
     if let ExprKind::Member { object, field, .. } = &callee.kind {
         if field.eq_ignore_ascii_case("GetType")
             && args.len() == 1
-            && expr_dotted_name(object)
-                .as_deref()
-                .is_some_and(|path| {
-                    path.eq_ignore_ascii_case("Type") || path.eq_ignore_ascii_case("System.Type")
-                })
+            && expr_dotted_name(object).as_deref().is_some_and(|path| {
+                path.eq_ignore_ascii_case("Type") || path.eq_ignore_ascii_case("System.Type")
+            })
             && matches!(&args[0].value.kind, ExprKind::Lit(Literal::Str(_)))
         {
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__vybe_type_get")),
                 args,
-                optional: false });
+                optional: false,
+            });
         }
     }
 
@@ -16288,9 +17459,11 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
                         callee: Box::new(Expression::new(ExprKind::Member {
                             object: Box::new(build_dotted_expr(&stripped)),
                             field: field.clone(),
-                            null_safe: false })),
+                            null_safe: false,
+                        })),
                         args,
-                        optional: false });
+                        optional: false,
+                    });
                 }
             }
         }
@@ -16320,9 +17493,11 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
                                         callee: Box::new(Expression::new(ExprKind::Member {
                                             object: Box::new(build_dotted_expr(&stripped)),
                                             field: field.clone(),
-                                            null_safe: false })),
+                                            null_safe: false,
+                                        })),
                                         args,
-                                        optional: false });
+                                        optional: false,
+                                    });
                                 }
                             }
                         }
@@ -16338,7 +17513,21 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
         {
             return Expression::new(ExprKind::New {
                 class: Box::new(Expression::ident("XDocument")),
-                args });
+                args,
+            });
+        }
+
+        // `Enum.TryParse<T>(…, out r)` — same normalization, but the enum form
+        // carries its type as a trailing generic binding pair, so it never had
+        // the 2-argument shape the block below matches on.
+        if field.eq_ignore_ascii_case("TryParse")
+            && expr_dotted_name(object).as_deref().is_some_and(|path| {
+                path.eq_ignore_ascii_case("Enum") || path.eq_ignore_ascii_case("System.Enum")
+            })
+        {
+            if let Some(rewritten) = csharp_enum_try_parse_desugar(&args) {
+                return rewritten;
+            }
         }
 
         // `X.TryParse(s, out r)` — the `out`-param calling convention is C#
@@ -16349,7 +17538,8 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
             let recv = match &object.kind {
                 ExprKind::Ident(n) => Some(n.as_str()),
                 ExprKind::Member { field: f, .. } => Some(f.as_str()),
-                _ => None };
+                _ => None,
+            };
             if let Some(rewritten) =
                 dotnet_lowering::try_parse_desugar(recv, &callee, &args[0].value, &args[1].value)
             {
@@ -16369,8 +17559,7 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
         {
             return rewritten;
         }
-        if let Some(rewritten) =
-            csharp_span_extension_method_call((**object).clone(), field, &args)
+        if let Some(rewritten) = csharp_span_extension_method_call((**object).clone(), field, &args)
         {
             return rewritten;
         }
@@ -16387,12 +17576,15 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
                 callee: Box::new(Expression::new(ExprKind::Member {
                     object: Box::new((**object).clone()),
                     field: "AddMonths".into(),
-                    null_safe: false })),
+                    null_safe: false,
+                })),
                 args: vec![Argument::positional(Expression::new(ExprKind::Binary {
                     op: BinOp::Mul,
                     left: Box::new(args[0].value.clone()),
-                    right: Box::new(Expression::int(12)) }))],
-                optional: false });
+                    right: Box::new(Expression::int(12)),
+                }))],
+                optional: false,
+            });
         }
         if field.eq_ignore_ascii_case("CopyTo")
             && args.len() == 2
@@ -16402,13 +17594,15 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
                 callee: Box::new(Expression::new(ExprKind::Member {
                     object: Box::new(build_dotted_expr("System.Array")),
                     field: "Copy".into(),
-                    null_safe: false })),
+                    null_safe: false,
+                })),
                 args: vec![
                     Argument::positional((**object).clone()),
                     Argument::positional(args[0].value.clone()),
                     Argument::positional(canonicalize_member_access((**object).clone(), "Length")),
                 ],
-                optional: false });
+                optional: false,
+            });
         }
         if field.eq_ignore_ascii_case("ThenBy") && args.len() == 1 {
             if let ExprKind::Call {
@@ -16442,7 +17636,8 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
                                     is_rest: false,
                                     is_kwargs: false,
                                     is_optional: false,
-                                    is_nullable: false },
+                                    is_nullable: false,
+                                },
                                 Param {
                                     name: "right".into(),
                                     type_hint: None,
@@ -16451,7 +17646,8 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
                                     is_rest: false,
                                     is_kwargs: false,
                                     is_optional: false,
-                                    is_nullable: false },
+                                    is_nullable: false,
+                                },
                             ],
                             body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Ternary {
                                 cond: Box::new(Expression::new(ExprKind::Binary {
@@ -16459,18 +17655,23 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
                                     left: Box::new(primary_cmp.clone()),
                                     right: Box::new(Expression::new(ExprKind::Lit(Literal::Int(
                                         0,
-                                    )))) })),
+                                    )))),
+                                })),
                                 then: Box::new(primary_cmp),
-                                else_: Box::new(secondary_cmp) }))),
+                                else_: Box::new(secondary_cmp),
+                            }))),
                             is_async: false,
-                            captures: Vec::new() });
+                            captures: Vec::new(),
+                        });
                         return Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::new(ExprKind::Member {
                                 object: Box::new((**object).clone()),
                                 field: "Sort".into(),
-                                null_safe: false })),
+                                null_safe: false,
+                            })),
                             args: vec![Argument::positional(comparator)],
-                            optional: false });
+                            optional: false,
+                        });
                     }
                 }
             }
@@ -16496,11 +17697,13 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
                             callee: Box::new(Expression::new(ExprKind::Member {
                                 object: Box::new(args[0].value.clone()),
                                 field: "Sort".into(),
-                                null_safe: false })),
+                                null_safe: false,
+                            })),
                             args: vec![Argument::positional(build_string_comparer_lambda(
                                 ignore_case,
                             ))],
-                            optional: false });
+                            optional: false,
+                        });
                     }
                 }
             }
@@ -16512,7 +17715,8 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
                     Argument::positional((**object).clone()),
                     Argument::positional(args[0].value.clone()),
                 ],
-                optional: false });
+                optional: false,
+            });
         }
     }
     // Static method rewrites to canonical instance form
@@ -16537,7 +17741,8 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
                 return Expression::new(ExprKind::Binary {
                     op: BinOp::Eq,
                     left: Box::new(left),
-                    right: Box::new(right) });
+                    right: Box::new(right),
+                });
             }
             if (tag == "__dotnet_stringcomparer_ordinalignorecase"
                 || tag == "__dotnet_stringcomparer_ordinal")
@@ -16570,7 +17775,8 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
                 return Expression::new(ExprKind::Binary {
                     op: BinOp::Eq,
                     left: Box::new(args[0].value.clone()),
-                    right: Box::new(args[1].value.clone()) });
+                    right: Box::new(args[1].value.clone()),
+                });
             }
         }
         if let Some(path) = expr_dotted_name(object) {
@@ -16582,7 +17788,8 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
                 return Expression::new(ExprKind::Member {
                     object: Box::new(args[0].value.clone()),
                     field: "Length".into(),
-                    null_safe: false });
+                    null_safe: false,
+                });
             }
         }
         if let ExprKind::Ident(obj_name) = &object.kind {
@@ -16610,14 +17817,17 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
                     key: None,
                     spread: true,
                     by_ref: false,
-                    value: arr }]));
+                    value: arr,
+                }]));
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::new(ExprKind::Member {
                         object: Box::new(materialized),
                         field: "join".to_string(),
-                        null_safe: false })),
+                        null_safe: false,
+                    })),
                     args: vec![Argument::positional(sep)],
-                    optional: false });
+                    optional: false,
+                });
             }
             // `char.IsXxx` / `char.ToXxx` are NOT rewritten here. They are
             // `System.Char` statics, registered in the dotnet namespace tree,
@@ -16662,21 +17872,25 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
                     key: None,
                     spread: true,
                     by_ref: false,
-                    value: arr }]));
+                    value: arr,
+                }]));
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::new(ExprKind::Member {
                         object: Box::new(materialized),
                         field: "join".to_string(),
-                        null_safe: false })),
+                        null_safe: false,
+                    })),
                     args: vec![Argument::positional(sep)],
-                    optional: false });
+                    optional: false,
+                });
             }
         }
     }
     Expression::new(ExprKind::Call {
         callee: Box::new(callee),
         args,
-        optional: false })
+        optional: false,
+    })
 }
 
 fn lower_case_expr(expr: Expression) -> Expression {
@@ -16685,7 +17899,8 @@ fn lower_case_expr(expr: Expression) -> Expression {
             "__csharp_str_to_lower".into(),
         ))),
         args: vec![Argument::positional(expr)],
-        optional: false })
+        optional: false,
+    })
 }
 
 fn is_string_comparison_arg(expr: &Expression) -> bool {
@@ -16699,18 +17914,22 @@ fn compare_expr(left: Expression, right: Expression) -> Expression {
     let lt = Expression::new(ExprKind::Binary {
         op: BinOp::Lt,
         left: Box::new(left.clone()),
-        right: Box::new(right.clone()) });
+        right: Box::new(right.clone()),
+    });
     let gt = Expression::new(ExprKind::Binary {
         op: BinOp::Gt,
         left: Box::new(left),
-        right: Box::new(right) });
+        right: Box::new(right),
+    });
     Expression::new(ExprKind::Ternary {
         cond: Box::new(lt),
         then: Box::new(Expression::new(ExprKind::Lit(Literal::Int(-1)))),
         else_: Box::new(Expression::new(ExprKind::Ternary {
             cond: Box::new(gt),
             then: Box::new(Expression::new(ExprKind::Lit(Literal::Int(1)))),
-            else_: Box::new(Expression::new(ExprKind::Lit(Literal::Int(0)))) })) })
+            else_: Box::new(Expression::new(ExprKind::Lit(Literal::Int(0)))),
+        })),
+    })
 }
 
 fn build_string_comparer_lambda(ignore_case: bool) -> Expression {
@@ -16734,7 +17953,8 @@ fn build_string_comparer_lambda(ignore_case: bool) -> Expression {
                 is_rest: false,
                 is_kwargs: false,
                 is_optional: false,
-                is_nullable: false },
+                is_nullable: false,
+            },
             Param {
                 name: "right".into(),
                 type_hint: None,
@@ -16743,18 +17963,21 @@ fn build_string_comparer_lambda(ignore_case: bool) -> Expression {
                 is_rest: false,
                 is_kwargs: false,
                 is_optional: false,
-                is_nullable: false },
+                is_nullable: false,
+            },
         ],
         body: LambdaBody::Expr(Box::new(compare_expr(left_expr, right_expr))),
         is_async: false,
-        captures: Vec::new() })
+        captures: Vec::new(),
+    })
 }
 
 fn invoke_selector(selector: Expression, arg: Expression) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(selector),
         args: vec![Argument::positional(arg)],
-        optional: false })
+        optional: false,
+    })
 }
 
 /// Map a C#/.NET type-name token to its System.* short name.
@@ -16853,9 +18076,11 @@ fn find_if_is_property_pattern_binding(pair: Pair<Rule>) -> Result<Option<Statem
             }
             Ok(Some(Statement::new(StmtKind::VarDecl {
                 declarations,
-                kind: VarDeclKind::Let })))
+                kind: VarDeclKind::Let,
+            })))
         }
-        _ => Ok(None) }
+        _ => Ok(None),
+    }
 }
 
 fn build_type_pattern_binding_stmt(
@@ -16869,8 +18094,10 @@ fn build_type_pattern_binding_stmt(
             type_hint: Some(type_name.into()),
             init: Some(subject),
             array_bounds: None,
-            with_events: false }],
-        kind: VarDeclKind::Let })
+            with_events: false,
+        }],
+        kind: VarDeclKind::Let,
+    })
 }
 
 fn find_if_is_pattern_binding(
@@ -16934,7 +18161,8 @@ fn find_if_is_pattern_binding(
                 atom_inner[1].as_str().to_string(),
             )))
         }
-        _ => Ok(None) }
+        _ => Ok(None),
+    }
 }
 
 // `char_in_range` / `eq_lit` / `or_chain` lived here to build the inline ASCII
@@ -17017,7 +18245,8 @@ fn parse_interpolated_hole_text(text: &str) -> Result<Expression, String> {
                 Argument::positional(Expression::new(ExprKind::Lit(Literal::Str(composite)))),
                 Argument::positional(value),
             ],
-            optional: false }));
+            optional: false,
+        }));
     }
 
     let value = parse_interpolated_expr_text(text)?;
@@ -17027,7 +18256,8 @@ fn parse_interpolated_hole_text(text: &str) -> Result<Expression, String> {
             Argument::positional(Expression::new(ExprKind::Lit(Literal::Str("{0}".into())))),
             Argument::positional(value),
         ],
-        optional: false }))
+        optional: false,
+    }))
 }
 
 fn parse_interpolated_expr_text(text: &str) -> Result<Expression, String> {
@@ -17036,7 +18266,8 @@ fn parse_interpolated_expr_text(text: &str) -> Result<Expression, String> {
         return Ok(Expression::new(ExprKind::Ternary {
             cond: Box::new(parse_interpolated_expr_text(cond_src)?),
             then: Box::new(parse_interpolated_expr_text(then_src)?),
-            else_: Box::new(parse_interpolated_expr_text(else_src)?) }));
+            else_: Box::new(parse_interpolated_expr_text(else_src)?),
+        }));
     }
 
     let mut parsed = CSharpParser::parse(Rule::expression, trimmed)
@@ -17058,7 +18289,8 @@ fn split_interpolated_format_hole(text: &str) -> Option<(&str, Option<&str>, Opt
         )),
         (Some(c), _) => Some((trimmed[..c].trim(), Some(trimmed[c + 1..].trim()), None)),
         (None, Some(k)) => Some((trimmed[..k].trim(), None, Some(trimmed[k + 1..].trim()))),
-        _ => None }
+        _ => None,
+    }
 }
 
 fn find_top_level_interpolation_separator(text: &str, needle: char) -> Option<usize> {
@@ -17240,5 +18472,6 @@ fn compound_to_binop(op: CompoundOp) -> BinOp {
         CompoundOp::Or => BinOp::Or,
         CompoundOp::NullCoalesce => BinOp::NullCoalesce,
         CompoundOp::IDiv => BinOp::IDiv,
-        CompoundOp::Concat => BinOp::Concat }
+        CompoundOp::Concat => BinOp::Concat,
+    }
 }

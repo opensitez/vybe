@@ -520,7 +520,8 @@ fn fortran_matrix_logical_gate_table() {
             1 => 0,
             2 => 2,
             3 => 4,
-            _ => 6 };
+            _ => 6,
+        };
         let src = format!(
             r#"
 program fortran_matrix_logical_gate_table

@@ -261,7 +261,8 @@ fn string_slice_len_trim_chain() {
 
 #[test]
 fn lge_equal() {
-    let out = run_prints("program t\nlogical :: b\nb = lge('abc', 'abc')\nprint *, b\nend program t\n");
+    let out =
+        run_prints("program t\nlogical :: b\nb = lge('abc', 'abc')\nprint *, b\nend program t\n");
     assert_eq!(out, ["true"]);
 }
 

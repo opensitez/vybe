@@ -1,5 +1,6 @@
 mod helpers;
 mod test_generators;
+mod test_type_gettype_dynamic;
 mod test_vb_abstract_class_inheritance_chain;
 mod test_vb_access_modifiers;
 mod test_vb_action_func_delegates;
@@ -810,4 +811,3 @@ mod test_vb_yield_in_using;
 mod test_vb_yield_infinite_loop;
 mod test_vb_yield_state_machine;
 mod test_vb_yield_statement;
-mod test_type_gettype_dynamic;

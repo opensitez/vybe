@@ -6,7 +6,8 @@ use vybe_runtime::{Chunk, Value};
 
 use vybe_compiler::primitives::functions::create_function_chunk;
 use vybe_compiler::primitives::object::{
-    emit_bind_bound_method, emit_bind_getter, emit_bind_setter };
+    emit_bind_bound_method, emit_bind_getter, emit_bind_setter,
+};
 
 const SERIAL_KIND_KEY: &str = "vybe$php_ser_kind";
 
@@ -222,7 +223,8 @@ fn emit_apply_header(
             chunk.emit_call(add_header, 2, line);
             chunk.emit_end(line);
         }
-        None => chunk.emit_call(set_header, 2, line) }
+        None => chunk.emit_call(set_header, 2, line),
+    }
     chunk.emit_op(Op::DROP, line);
 
     chunk.emit_end(line);
@@ -613,7 +615,8 @@ fn helper_loop_start(chunk: &mut Chunk, line: u32) -> vybe_compiler::primitives:
     vybe_compiler::primitives::loops::LoopState {
         block_patch,
         loop_patch,
-        body_block_patch: None }
+        body_block_patch: None,
+    }
 }
 
 fn helper_loop_cond(chunk: &mut Chunk, line: u32) {
@@ -622,7 +625,11 @@ fn helper_loop_cond(chunk: &mut Chunk, line: u32) {
     chunk.emit_br_if(1, line);
 }
 
-fn helper_loop_end(chunk: &mut Chunk, state: vybe_compiler::primitives::loops::LoopState, line: u32) {
+fn helper_loop_end(
+    chunk: &mut Chunk,
+    state: vybe_compiler::primitives::loops::LoopState,
+    line: u32,
+) {
     chunk.emit_br(0, line);
     chunk.emit_end(line);
     chunk.patch_loop(state.loop_patch);
@@ -1794,7 +1801,6 @@ pub fn emit_weak_ref_create(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
     // Return the struct
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
 }
-
 
 /// PHP `setcookie($name, $value, $options)`.
 ///

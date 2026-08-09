@@ -4,15 +4,16 @@
 //! so the search is emitted here from ordinary opcodes rather than invented as
 //! a host fn. `insort` composes the same search with `ecma:array.splice`.
 
+use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
-use vybe_compiler::primitives::instructions::core_wasm;
 
 /// Which end of a run of equal values the insertion point lands on.
 #[derive(Clone, Copy, PartialEq)]
 pub enum Side {
     Left,
-    Right }
+    Right,
+}
 
 /// The insertion point for `x` in the sorted `a[lo..hi]`.
 ///
@@ -54,7 +55,8 @@ fn emit_search(
     chunk.emit_op_u16(Op::LOCAL_GET, x, line);
     match side {
         Side::Left => vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line),
-        Side::Right => vybe_compiler::primitives::ops::emit_dyn_le(chunk, line) }
+        Side::Right => vybe_compiler::primitives::ops::emit_dyn_le(chunk, line),
+    }
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, mid, line);
     core_wasm::i32_const(chunk, line, 1);

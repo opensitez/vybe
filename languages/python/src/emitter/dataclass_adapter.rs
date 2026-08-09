@@ -175,9 +175,8 @@ fn emit_walk(chunks: &mut [Chunk], current: usize, argc: u8, shape: Shape, line:
             chunk.emit_struct_new(0, 0, line);
             chunk.emit_dup(line);
             chunk.emit_op_u16(Op::LOCAL_GET, key, line);
-            let name_key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
-                "name",
-            )));
+            let name_key =
+                chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("name")));
             chunk.emit_struct_field_op(Op::STRUCT_SET, 0, name_key, line);
             let push = chunk.add_import("ecma:array", "push");
             chunk.emit_call(push, 2, line);

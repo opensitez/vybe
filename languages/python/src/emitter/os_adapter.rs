@@ -149,7 +149,14 @@ pub fn emit_scandir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
     let raws = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_GET, dir, line);
-    call_import(chunks, current, "wasi:filesystem", "readDirEntries", 1, line);
+    call_import(
+        chunks,
+        current,
+        "wasi:filesystem",
+        "readDirEntries",
+        1,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_SET, raws, line);
 
     let out = chunks[current].alloc_scratch(1);
@@ -252,7 +259,14 @@ pub fn emit_walk(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, cur, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, cur, line);
-    call_import(chunks, current, "wasi:filesystem", "readDirEntries", 1, line);
+    call_import(
+        chunks,
+        current,
+        "wasi:filesystem",
+        "readDirEntries",
+        1,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_SET, raws, line);
     chunks[current].emit_array_new_fixed(0, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, dirs, line);
@@ -503,7 +517,14 @@ pub fn emit_copytree(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, s_dir, line);
-    call_import(chunks, current, "wasi:filesystem", "readDirEntries", 1, line);
+    call_import(
+        chunks,
+        current,
+        "wasi:filesystem",
+        "readDirEntries",
+        1,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_SET, raws, line);
     chunks[current].emit_i32_const(0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
@@ -576,7 +597,14 @@ pub fn emit_which(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     // `get-environment: func() -> list<tuple<string, string>>` takes NO key
     // (wasi-cli 0.3.0 `wit/environment.wit`). Keying the pair list is this
     // adapter's job, so the pairs become a map and `PATH` is read from it.
-    call_import(chunks, current, "wasi:cli/environment", "get-environment", 0, line);
+    call_import(
+        chunks,
+        current,
+        "wasi:cli/environment",
+        "get-environment",
+        0,
+        line,
+    );
     call_import(chunks, current, "ecma:map", "fromEntries", 1, line);
     chunks[current].emit_string_const("PATH", line);
     collections::emit_get(chunks, current, line);

@@ -14,7 +14,12 @@ end program fortran_bulk_array_section_mass
 "#,
     );
 
-    assert_eq!(out, (1..=100).map(|i| (11 * (2 * i + 9) / 2).to_string()).collect::<Vec<String>>());
+    assert_eq!(
+        out,
+        (1..=100)
+            .map(|i| (11 * (2 * i + 9) / 2).to_string())
+            .collect::<Vec<String>>()
+    );
 }
 
 #[test]
@@ -34,7 +39,10 @@ end program fortran_bulk_array_shape_casts
 "#,
     );
 
-    assert_eq!(out, (1..=10).map(|i| i.to_string()).collect::<Vec<String>>());
+    assert_eq!(
+        out,
+        (1..=10).map(|i| i.to_string()).collect::<Vec<String>>()
+    );
 }
 
 #[test]
@@ -122,7 +130,13 @@ end program fortran_bulk_select_case_character_ranges
     );
 
     let expected: Vec<String> = (1..=100)
-        .map(|i| if ((i - 1) % 26 + 1) <= 13 { "first" } else { "second" })
+        .map(|i| {
+            if ((i - 1) % 26 + 1) <= 13 {
+                "first"
+            } else {
+                "second"
+            }
+        })
         .map(|x| x.to_string())
         .collect::<Vec<String>>();
     assert_eq!(out, expected);
@@ -151,7 +165,10 @@ end program fortran_bulk_subroutine_optionals_flow
 "#,
     );
 
-    assert_eq!(out, (1..=100).map(|i| i.to_string()).collect::<Vec<String>>());
+    assert_eq!(
+        out,
+        (1..=100).map(|i| i.to_string()).collect::<Vec<String>>()
+    );
 }
 
 #[test]
@@ -174,7 +191,10 @@ end program fortran_bulk_pointer_reassociation
 "#,
     );
 
-    assert_eq!(out, (1..=100).map(|i| i.to_string()).collect::<Vec<String>>());
+    assert_eq!(
+        out,
+        (1..=100).map(|i| i.to_string()).collect::<Vec<String>>()
+    );
 }
 
 #[test]
@@ -214,7 +234,11 @@ end program fortran_bulk_procedure_pointer_dispatch
     assert_eq!(
         out,
         (1..=50)
-            .map(|i| if i % 2 == 0 { (2 * i).to_string() } else { (3 * i).to_string() })
+            .map(|i| if i % 2 == 0 {
+                (2 * i).to_string()
+            } else {
+                (3 * i).to_string()
+            })
             .collect::<Vec<String>>(),
     );
 }
@@ -278,11 +302,7 @@ end program fortran_bulk_logical_parentheses
         .map(|i| {
             let a = i % 3 == 0;
             let b = i % 5 == 0;
-            if (a && !b) || (!a && b) {
-                "xor"
-            } else {
-                "eq"
-            }
+            if (a && !b) || (!a && b) { "xor" } else { "eq" }
         })
         .map(|s| s.to_string())
         .collect::<Vec<String>>();
@@ -303,7 +323,10 @@ end program fortran_bulk_implicit_none_recovery
 "#,
     );
 
-    assert_eq!(out, (3..=102).map(|v| v.to_string()).collect::<Vec<String>>());
+    assert_eq!(
+        out,
+        (3..=102).map(|v| v.to_string()).collect::<Vec<String>>()
+    );
 }
 
 #[test]
@@ -354,7 +377,10 @@ end program fortran_bulk_array_bounds_edges
 "#,
     );
 
-    assert_eq!(out, (8..=12).map(|v| v.to_string()).collect::<Vec<String>>());
+    assert_eq!(
+        out,
+        (8..=12).map(|v| v.to_string()).collect::<Vec<String>>()
+    );
 }
 
 #[test]
@@ -376,7 +402,10 @@ end program fortran_bulk_associative_pointer_lifetimes
 "#,
     );
 
-    assert_eq!(out, (1..=20).map(|v| v.to_string()).collect::<Vec<String>>());
+    assert_eq!(
+        out,
+        (1..=20).map(|v| v.to_string()).collect::<Vec<String>>()
+    );
 }
 
 #[test]
@@ -399,7 +428,12 @@ end program fortran_bulk_derived_type_defaults
 "#,
     );
 
-    assert_eq!(out, (3..=102).map(|v| (v + 2).to_string()).collect::<Vec<String>>());
+    assert_eq!(
+        out,
+        (3..=102)
+            .map(|v| (v + 2).to_string())
+            .collect::<Vec<String>>()
+    );
 }
 
 #[test]
@@ -487,7 +521,10 @@ end program fortran_bulk_optional_keywords
 "#,
     );
 
-    assert_eq!(out, (1..=100).map(|i| i.to_string()).collect::<Vec<String>>());
+    assert_eq!(
+        out,
+        (1..=100).map(|i| i.to_string()).collect::<Vec<String>>()
+    );
 }
 
 #[test]
@@ -535,7 +572,10 @@ end program fortran_bulk_file_unit_style
 "#,
     );
 
-    assert_eq!(out, (1..=20).map(|i| i.to_string()).collect::<Vec<String>>());
+    assert_eq!(
+        out,
+        (1..=20).map(|i| i.to_string()).collect::<Vec<String>>()
+    );
 }
 
 #[test]
@@ -585,7 +625,12 @@ end program fortran_bulk_static_init_chain
 "#,
     );
 
-    assert_eq!(out, (1..=100).map(|i| (i + 6).to_string()).collect::<Vec<String>>());
+    assert_eq!(
+        out,
+        (1..=100)
+            .map(|i| (i + 6).to_string())
+            .collect::<Vec<String>>()
+    );
 }
 
 #[test]
@@ -630,7 +675,15 @@ end program fortran_bulk_associate_array_aliasing
 "#,
     );
 
-    assert_eq!(out, vec!["11".to_string(), "44".to_string(), "66".to_string(), "44".to_string()]);
+    assert_eq!(
+        out,
+        vec![
+            "11".to_string(),
+            "44".to_string(),
+            "66".to_string(),
+            "44".to_string()
+        ]
+    );
 }
 
 #[test]

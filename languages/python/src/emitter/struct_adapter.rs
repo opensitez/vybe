@@ -47,7 +47,9 @@ fn emit_dynamic_byte_at_const(
     lget(&mut chunks[current], data_slot, line);
     call_import(chunks, current, "wasm:js-string", "test", 1, line);
     chunks[current].emit_if_value(line);
-    vybe_compiler::primitives::packing::emit_char_code_at_i32_const(chunks, current, data_slot, index, line);
+    vybe_compiler::primitives::packing::emit_char_code_at_i32_const(
+        chunks, current, data_slot, index, line,
+    );
     chunks[current].emit_else(line);
     lget(&mut chunks[current], data_slot, line);
     chunks[current].emit_i32_const(index, line);
@@ -323,7 +325,11 @@ pub fn emit_struct_unpack(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
     chunks[current].emit_i32_const(4, line);
     chunks[current].emit_op(Op::I32_LT_S, line);
     chunks[current].emit_if(line);
-    emit_throw_exception(&mut chunks[current], "unpack requires a buffer of 4 bytes", line);
+    emit_throw_exception(
+        &mut chunks[current],
+        "unpack requires a buffer of 4 bytes",
+        line,
+    );
     chunks[current].emit_end(line);
     chunks[current].emit_f64_const(0.0, line);
     lset(&mut chunks[current], zero_offset, line);
@@ -482,7 +488,9 @@ pub fn emit_struct_pack_into(chunks: &mut Vec<Chunk>, current: usize, argc: u8, 
         lget(&mut chunks[current], offset, line);
         chunks[current].emit_f64_const(f64::from(i), line);
         chunks[current].emit_op(Op::F64_ADD, line);
-        vybe_compiler::primitives::packing::emit_char_code_at_i32_const(chunks, current, packed, i, line);
+        vybe_compiler::primitives::packing::emit_char_code_at_i32_const(
+            chunks, current, packed, i, line,
+        );
         vybe_compiler::primitives::collections::emit_set(chunks, current, line);
         chunks[current].emit_op(Op::DROP, line);
     }

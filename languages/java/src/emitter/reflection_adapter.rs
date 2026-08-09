@@ -1,9 +1,9 @@
 //! Java reflection surface backed by the shared reflection descriptor shape.
 
-use vybe_runtime::Chunk;
-use vybe_runtime::opcode::Op;
 use vybe_compiler::primitives::instructions::host;
 use vybe_compiler::primitives::{reflection, strings};
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 fn get(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);

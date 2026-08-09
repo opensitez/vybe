@@ -1,6 +1,6 @@
+use vybe_compiler::primitives::collections;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
-use vybe_compiler::primitives::collections;
 
 const MULT: i64 = 0x5DEECE66D;
 const ADD: i64 = 0xB;

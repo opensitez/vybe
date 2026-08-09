@@ -22,7 +22,8 @@
 use vybe_ast::{
     Argument, ArrayElement, BinOp, BindingPattern, CatchClause, ClassMember, ClassModifiers,
     ConstructorInitializerTarget, ExprKind, Expression, Literal, Modifiers, ObjectProperty, Param,
-    PassBy, Statement, StmtKind, VarDeclKind, VarDeclarator, Visibility };
+    PassBy, Statement, StmtKind, VarDeclKind, VarDeclarator, Visibility,
+};
 
 pub const OUT_SENTINEL: &str = "__j_out";
 
@@ -78,7 +79,8 @@ fn array_lit(items: Vec<Expression>) -> Expression {
                 key: None,
                 value,
                 spread: false,
-                by_ref: false })
+                by_ref: false,
+            })
             .collect(),
     ))
 }
@@ -93,7 +95,8 @@ fn obj_props(props: Vec<(&str, Expression)>) -> Expression {
             .into_iter()
             .map(|(key, value)| ObjectProperty::KeyValue {
                 key: str_lit(key),
-                value })
+                value,
+            })
             .collect(),
     ))
 }
@@ -105,14 +108,16 @@ fn typeof_expr(value: Expression) -> Expression {
 fn new_expr(class_name: &str, args: Vec<Expression>) -> Expression {
     expr(ExprKind::New {
         class: Box::new(ident(class_name)),
-        args: args.into_iter().map(Argument::positional).collect() })
+        args: args.into_iter().map(Argument::positional).collect(),
+    })
 }
 
 fn member(object: Expression, field: &str) -> Expression {
     expr(ExprKind::Member {
         object: Box::new(object),
         field: field.to_string(),
-        null_safe: false })
+        null_safe: false,
+    })
 }
 
 fn fld(object: &str, field: &str) -> Expression {
@@ -123,14 +128,16 @@ fn index_expr(object: Expression, index: Expression) -> Expression {
     expr(ExprKind::Index {
         object: Box::new(object),
         index: Box::new(index),
-        null_safe: false })
+        null_safe: false,
+    })
 }
 
 fn call_expr(callee: Expression, args: Vec<Expression>) -> Expression {
     expr(ExprKind::Call {
         callee: Box::new(callee),
         args: args.into_iter().map(Argument::positional).collect(),
-        optional: false })
+        optional: false,
+    })
 }
 
 fn call(name: &str, args: Vec<Expression>) -> Expression {
@@ -145,7 +152,8 @@ fn binary(op: BinOp, left: Expression, right: Expression) -> Expression {
     expr(ExprKind::Binary {
         op,
         left: Box::new(left),
-        right: Box::new(right) })
+        right: Box::new(right),
+    })
 }
 
 fn add(left: Expression, right: Expression) -> Expression {
@@ -184,7 +192,9 @@ fn to_str(x: Expression) -> Expression {
 fn assign(target: Expression, value: Expression) -> Statement {
     stmt(StmtKind::Assign {
         targets: vec![target],
-        value, by_ref: false })
+        value,
+        by_ref: false,
+    })
 }
 
 fn var_decl(name: &str, init: Expression) -> Statement {
@@ -194,8 +204,10 @@ fn var_decl(name: &str, init: Expression) -> Statement {
             type_hint: None,
             init: Some(init),
             array_bounds: None,
-            with_events: false }],
-        kind: VarDeclKind::Var })
+            with_events: false,
+        }],
+        kind: VarDeclKind::Var,
+    })
 }
 
 fn if_stmt(
@@ -207,14 +219,16 @@ fn if_stmt(
         cond,
         then_body,
         elifs: Vec::new(),
-        else_body })
+        else_body,
+    })
 }
 
 fn while_stmt(cond: Expression, body: Vec<Statement>) -> Statement {
     stmt(StmtKind::While {
         cond,
         body,
-        else_body: None })
+        else_body: None,
+    })
 }
 
 fn ret(value: Expression) -> Statement {
@@ -234,7 +248,8 @@ fn function_stmt(name: &str, params: Vec<&str>, body: Vec<Statement>) -> Stateme
                 is_rest: false,
                 is_kwargs: false,
                 is_optional: false,
-                is_nullable: false })
+                is_nullable: false,
+            })
             .collect(),
         return_type: None,
         body,
@@ -242,7 +257,8 @@ fn function_stmt(name: &str, params: Vec<&str>, body: Vec<Statement>) -> Stateme
         handles: Vec::new(),
         is_async: false,
         is_generator: false,
-        is_sub: false })
+        is_sub: false,
+    })
 }
 
 /// One-character substring `s.substring(i, i + 1)`.
@@ -1193,7 +1209,8 @@ fn build_prelude() -> Vec<Statement> {
                             undefined_lit(),
                         ],
                     )),
-                    cause: None })],
+                    cause: None,
+                })],
                 None,
             ),
             var_decl("neg", bool_lit(false)),
@@ -2850,7 +2867,8 @@ fn monitor_fns() -> Vec<Statement> {
                         undefined_lit(),
                     ],
                 )),
-                cause: None }),
+                cause: None,
+            }),
         ],
     ));
     out
@@ -3115,7 +3133,8 @@ fn objects_fns() -> Vec<Statement> {
                             undefined_lit(),
                         ],
                     )),
-                    cause: None })],
+                    cause: None,
+                })],
                 None,
             ),
             ret(ident("x")),
@@ -6245,7 +6264,8 @@ fn thread_fns() -> Vec<Statement> {
                     key: None,
                     value,
                     spread: false,
-                    by_ref: false })
+                    by_ref: false,
+                })
                 .collect(),
         ))
     };
@@ -6265,7 +6285,8 @@ fn thread_fns() -> Vec<Statement> {
                     undefined_lit(),
                 ],
             )),
-            cause: None })
+            cause: None,
+        })
     };
     let mut out = Vec::new();
 
@@ -6288,7 +6309,8 @@ fn thread_fns() -> Vec<Statement> {
         is_rest: false,
         is_kwargs: false,
         is_optional: false,
-        is_nullable: false };
+        is_nullable: false,
+    };
     out.push(Statement::new(StmtKind::ClassDecl {
         name: "Thread".to_string(),
         parents: Vec::new(),
@@ -6303,7 +6325,8 @@ fn thread_fns() -> Vec<Statement> {
                 )))],
                 base_args: None,
                 initializer_target: ConstructorInitializerTarget::Base,
-                visibility: Visibility::Public },
+                visibility: Visibility::Public,
+            },
             ClassMember::Method(Box::new(function_stmt(
                 "run",
                 vec![],
@@ -6362,7 +6385,8 @@ fn thread_fns() -> Vec<Statement> {
             ))),
         ],
         modifiers: ClassModifiers::default(),
-        decorators: Vec::new() }));
+        decorators: Vec::new(),
+    }));
 
     out.push(function_stmt(
         "__j_thread_init",
@@ -6486,9 +6510,11 @@ fn thread_fns() -> Vec<Statement> {
                     var_name: None,
                     stack_var: None,
                     body: vec![assign(fld("t", "__slept"), bool_lit(true))],
-                    when_clause: None }],
+                    when_clause: None,
+                }],
                 else_body: None,
-                finally: None }),
+                finally: None,
+            }),
             assign(ident("__j_current_thread"), ident("prev")),
             if_stmt(
                 binary(BinOp::NotEq, fld("t", "__slept"), bool_lit(true)),
@@ -6730,9 +6756,11 @@ fn thread_fns() -> Vec<Statement> {
                     var_name: Some("e".to_string()),
                     stack_var: None,
                     body: vec![assign(fld("f", "error"), ident("e"))],
-                    when_clause: None }],
+                    when_clause: None,
+                }],
                 else_body: None,
-                finally: Some(vec![assign(fld("f", "done"), bool_lit(true))]) }),
+                finally: Some(vec![assign(fld("f", "done"), bool_lit(true))]),
+            }),
             ret(null_lit()),
         ],
     ));
@@ -6757,7 +6785,8 @@ fn thread_fns() -> Vec<Statement> {
                             undefined_lit(),
                         ],
                     )),
-                    cause: None })],
+                    cause: None,
+                })],
                 None,
             ),
             if_stmt(
@@ -6784,7 +6813,8 @@ fn thread_fns() -> Vec<Statement> {
                             fld("f", "error"),
                         ],
                     )),
-                    cause: None })],
+                    cause: None,
+                })],
                 None,
             ),
             ret(fld("f", "result")),

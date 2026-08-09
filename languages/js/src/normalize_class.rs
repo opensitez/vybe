@@ -30,14 +30,11 @@
 //! the legacy `compile_class` orchestration in `crate::primitives::classes`.
 //! Phase 2b flips the switch.
 
+use vybe_ast::class_normalize::{NormalMembers, build_normal_method, from_method_stmt, types::*};
 use vybe_ast::{
     Argument, ClassMember, ClassModifiers, ExprKind, Expression, LambdaBody, Modifiers, Param,
-    PropertySetter, Span, Statement, StmtKind };
-use vybe_ast::class_normalize::{
-    NormalMembers,
-    build_normal_method,
-    from_method_stmt,
-    types::* };
+    PropertySetter, Span, Statement, StmtKind,
+};
 
 /// Normalise the members of a JS `class X extends Y { … }` declaration.
 ///
@@ -73,7 +70,8 @@ pub fn normalize_class(
                     array_bounds: array_bounds.clone(),
                     access: access_for_js(fname),
                     readonly: false, // JS doesn't have readonly at class field level
-                    value_type: None };
+                    value_type: None,
+                };
                 out.push_field(modifiers.is_static, field);
             }
             ClassMember::Method(stmt) => {
@@ -98,7 +96,8 @@ pub fn normalize_class(
                         out.special_methods.push(SpecialMethod {
                             kind: k,
                             canonical_name: canon,
-                            source_name: nm.source_name.clone() });
+                            source_name: nm.source_name.clone(),
+                        });
                     }
                     out.push_method(is_static_method(stmt), nm);
                 }
@@ -123,7 +122,8 @@ pub fn normalize_class(
                         // runtime TypeError in the spec, but JS's grammar
                         // permits it. The walker mirrors the source
                         // faithfully — no auto super-call insertion.
-                        None => BaseCall::None },
+                        None => BaseCall::None,
+                    },
                     named_name: None, // JS has no named constructors
                 });
             }
@@ -175,7 +175,8 @@ pub fn normalize_class(
                     is_static: modifiers.is_static,
                     getter: getter_method,
                     setter: setter_method,
-                    auto_field: if *is_auto { Some(pname.clone()) } else { None } });
+                    auto_field: if *is_auto { Some(pname.clone()) } else { None },
+                });
             }
             // `Event`, `Const`, `NestedType` aren't reached from JS AST
             // (those are VB / C# / Pascal constructs). Keep the match
@@ -195,7 +196,7 @@ pub fn normalize_class(
 
     NormalClass {
         implicit_self_fields: false, // JS: bare `foo` doesn't resolve to this.foo
-        ..Default::default() // JS has no destructor syntax
+        ..Default::default()         // JS has no destructor syntax
     }
     .with_members(out)
 }
@@ -205,11 +206,13 @@ fn static_block_field(span: Span, index: usize, body: Vec<Statement>) -> NormalF
         params: Vec::<Param>::new(),
         body: LambdaBody::Block(body),
         is_async: false,
-        captures: Vec::new() });
+        captures: Vec::new(),
+    });
     let init = Expression::new(ExprKind::Call {
         callee: Box::new(lambda),
         args: Vec::<Argument>::new(),
-        optional: false });
+        optional: false,
+    });
     NormalField {
         span,
         name: format!("__static_block_{}", index),
@@ -218,7 +221,8 @@ fn static_block_field(span: Span, index: usize, body: Vec<Statement>) -> NormalF
         array_bounds: None,
         access: Access::Private,
         readonly: false,
-        value_type: None }
+        value_type: None,
+    }
 }
 
 /// Build a `NormalMethod` from a `StmtKind::FunctionDecl` wrapped
@@ -287,7 +291,8 @@ mod tests {
             handles: vec![],
             is_async: false,
             is_generator: false,
-            is_sub: false });
+            is_sub: false,
+        });
         let members = vec![ClassMember::Method(Box::new(method))];
         let nc = normalize_class(
             dummy_span(),
@@ -316,7 +321,8 @@ mod tests {
             handles: vec![],
             is_async: false,
             is_generator: false,
-            is_sub: false });
+            is_sub: false,
+        });
         let members = vec![ClassMember::Method(Box::new(method))];
         let nc = normalize_class(
             dummy_span(),
@@ -344,7 +350,8 @@ mod tests {
             handles: vec![],
             is_async: false,
             is_generator: false,
-            is_sub: false });
+            is_sub: false,
+        });
         let members = vec![ClassMember::Method(Box::new(method))];
         let nc = normalize_class(
             dummy_span(),
@@ -368,7 +375,8 @@ mod tests {
             body: vec![],
             base_args: Some(vec![base_arg]),
             initializer_target: vybe_ast::ConstructorInitializerTarget::Base,
-            visibility: vybe_ast::Visibility::Public };
+            visibility: vybe_ast::Visibility::Public,
+        };
         let nc = normalize_class(
             dummy_span(),
             "Dog",
@@ -396,7 +404,8 @@ mod tests {
             body: vec![],
             base_args: None,
             initializer_target: vybe_ast::ConstructorInitializerTarget::Base,
-            visibility: vybe_ast::Visibility::Public };
+            visibility: vybe_ast::Visibility::Public,
+        };
         let nc = normalize_class(
             dummy_span(),
             "Dog",
@@ -419,7 +428,8 @@ mod tests {
             body: vec![],
             base_args: None,
             initializer_target: vybe_ast::ConstructorInitializerTarget::Base,
-            visibility: vybe_ast::Visibility::Public };
+            visibility: vybe_ast::Visibility::Public,
+        };
         let nc = normalize_class(
             dummy_span(),
             "Animal",

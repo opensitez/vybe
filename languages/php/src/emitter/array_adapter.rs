@@ -8,9 +8,9 @@
 //! per the cross-language type model.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
-use vybe_compiler::primitives::instructions::core_wasm;
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
@@ -344,7 +344,8 @@ fn emit_json_stringify_slots(
             chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
             chunk.emit_end(line);
         }
-        None => chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line) }
+        None => chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line),
+    }
     let _ = chunk;
     call_import(chunks, current, "ecma:json", "stringify", 3, line);
 }
@@ -2626,7 +2627,6 @@ pub fn emit_array_combine(chunks: &mut [Chunk], current: usize, _argc: u8, line:
     chunk.emit_op(Op::ARRAY_GET, line);
     chunk.emit_op(Op::ARRAY_SET, line);
 
-
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_ADD, line);
@@ -2842,7 +2842,6 @@ fn emit_array_diff_or_intersect(chunks: &mut [Chunk], current: usize, intersect:
     lget(chunk, key_slot, line);
     push_const(chunk, Value::Bool(true), line);
     chunk.emit_op(Op::ARRAY_SET, line);
-
 
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(1.0), line);
@@ -6802,5 +6801,3 @@ pub fn emit_php_print_r(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     push_const(chunk, Value::Bool(true), line);
     chunk.emit_end(line);
 }
-
-

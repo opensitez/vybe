@@ -44,7 +44,14 @@ fn push_str(chunk: &mut Chunk, value: &str, line: u32) {
     chunk.emit_string_const(value, line);
 }
 
-fn call_import(chunks: &mut [Chunk], current: usize, module: &str, name: &str, argc: u8, line: u32) {
+fn call_import(
+    chunks: &mut [Chunk],
+    current: usize,
+    module: &str,
+    name: &str,
+    argc: u8,
+    line: u32,
+) {
     let idx = chunks[current].add_import(module, name);
     chunks[current].emit_call(idx, argc, line);
 }
@@ -146,7 +153,13 @@ fn emit_row_to_tuple(chunks: &mut [Chunk], current: usize, row_slot: u16, line: 
 /// Compute `use_raw = truthy(cursor.__conn.row_factory)` into `flag_slot` — set
 /// when the connection's `row_factory` is `sqlite3.Row`, so fetch returns the
 /// raw column-keyed row (named + positional access) instead of a tuple.
-fn emit_row_factory_flag(chunks: &mut [Chunk], current: usize, cursor: u16, flag_slot: u16, line: u32) {
+fn emit_row_factory_flag(
+    chunks: &mut [Chunk],
+    current: usize,
+    cursor: u16,
+    flag_slot: u16,
+    line: u32,
+) {
     lget(&mut chunks[current], cursor, line);
     struct_get_key(&mut chunks[current], "__conn", line);
     struct_get_key(&mut chunks[current], "row_factory", line);
@@ -166,7 +179,13 @@ fn emit_row_result(chunks: &mut [Chunk], current: usize, row_slot: u16, raw_flag
 
 /// Push i32 `1` into `flag_slot` if the SQL in `sql_slot` is row-returning
 /// (`SELECT`/`PRAGMA`/`WITH`/`EXPLAIN`/`VALUES`), else `0`.
-fn emit_is_query_flag(chunks: &mut [Chunk], current: usize, sql_slot: u16, flag_slot: u16, line: u32) {
+fn emit_is_query_flag(
+    chunks: &mut [Chunk],
+    current: usize,
+    sql_slot: u16,
+    flag_slot: u16,
+    line: u32,
+) {
     let upper = alloc(&mut chunks[current]);
     // upper = sql.trim().toUpperCase()
     lget(&mut chunks[current], sql_slot, line);

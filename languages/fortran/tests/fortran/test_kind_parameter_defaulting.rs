@@ -1,5 +1,5 @@
-use super::helpers::run_prints;
 use super::helpers::compile_ok;
+use super::helpers::run_prints;
 
 #[test]
 fn test_kind_parameter_defaulting_selects_default_real_kind() {

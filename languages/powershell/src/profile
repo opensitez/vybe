@@ -248,9 +248,8 @@ int = "common:strings.char_code"
 # ────────────────────────────────────────────────────────────────────────────
 
 [namespaces]
-# Enable .NET runtime surface semantics; namespace lookup is data-driven by
-# the common resolver through the tree mounts and ambient imports below.
-use_dotnet = true
+# Namespace lookup is data-driven by the common resolver through the tree
+# mounts and ambient imports below.
 source_imports_are_namespaces = true
 
 # Types under this namespace-tree path dispatch at RUNTIME through the type

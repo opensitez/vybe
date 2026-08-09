@@ -4,9 +4,9 @@
 //! always match the lower-level ECMA array helpers, so keep those translations
 //! in the Java frontend.
 
+use vybe_compiler::primitives::{callable, collections, instructions::host};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
-use vybe_compiler::primitives::{collections, instructions::host};
 
 fn get(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
@@ -473,7 +473,7 @@ pub fn emit_set_all(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_br_if(1, line);
     get(&mut chunks[current], mapper, line);
     get(&mut chunks[current], index, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    callable::emit_direct_invoke(chunks, current, 1, line);
     set(&mut chunks[current], value, line);
     get(&mut chunks[current], array, line);
     get(&mut chunks[current], index, line);
@@ -533,7 +533,7 @@ pub fn emit_parallel_prefix(chunks: &mut [Chunk], current: usize, argc: u8, line
     get(&mut chunks[current], operator, line);
     get(&mut chunks[current], previous, line);
     get(&mut chunks[current], current_value, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+    callable::emit_direct_invoke(chunks, current, 2, line);
     set(&mut chunks[current], value, line);
     get(&mut chunks[current], array, line);
     get(&mut chunks[current], index, line);

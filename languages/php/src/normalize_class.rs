@@ -16,11 +16,8 @@
 //!   - `abstract class` / `final class` → `is_abstract` / `is_sealed`.
 //!   - `class Foo implements I1, I2` → `interfaces`.
 
+use vybe_ast::class_normalize::{NormalMembers, build_normal_method, from_method_stmt, types::*};
 use vybe_ast::{ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, StmtKind};
-use vybe_ast::class_normalize::{
-    NormalMembers, build_normal_method,
-    from_method_stmt,
-    types::* };
 
 /// PHP `use SomeTrait;` — the language's rules, stated once.
 ///
@@ -43,7 +40,9 @@ const PHP_TRAIT: AugmentationPolicy = AugmentationPolicy {
         fields: true,
         statics: true,
         constructors: false,
-        abstract_members: true } };
+        abstract_members: true,
+    },
+};
 
 pub fn normalize_class(
     span: Span,
@@ -73,7 +72,8 @@ pub fn normalize_class(
                     array_bounds: array_bounds.clone(),
                     access: Access::from(m.visibility),
                     readonly: m.is_readonly,
-                    value_type: None };
+                    value_type: None,
+                };
                 out.push_field(m.is_static, field);
             }
             ClassMember::Method(stmt) => {
@@ -102,7 +102,8 @@ pub fn normalize_class(
                     out.special_methods.push(SpecialMethod {
                         kind,
                         canonical_name: canonical,
-                        source_name: src_name.clone() });
+                        source_name: src_name.clone(),
+                    });
                 }
                 out.push_method(m.is_static, method);
             }
@@ -124,8 +125,10 @@ pub fn normalize_class(
                         ),
                         // PHP: `parent::__construct(...)` is optional;
                         // when missing no auto-call is emitted.
-                        None => BaseCall::None },
-                    named_name: None });
+                        None => BaseCall::None,
+                    },
+                    named_name: None,
+                });
             }
             ClassMember::Property {
                 name: pname,
@@ -174,7 +177,8 @@ pub fn normalize_class(
                     is_static: m.is_static,
                     getter: getter_method,
                     setter: setter_method,
-                    auto_field: if *is_auto { Some(pname.clone()) } else { None } });
+                    auto_field: if *is_auto { Some(pname.clone()) } else { None },
+                });
             }
             ClassMember::Const {
                 name: cname,
@@ -197,7 +201,8 @@ pub fn normalize_class(
                         array_bounds: None,
                         access: Access::Public,
                         readonly: true,
-                        value_type: None },
+                        value_type: None,
+                    },
                 );
                 // Keep the raw entry too so the legacy `Class.Const`
                 // global path is still emitted for any caller that
@@ -213,6 +218,12 @@ pub fn normalize_class(
 
     NormalClass {
         implicit_self_fields: false, // PHP requires `$this->field`
+        // Late static binding: `static::` / `get_called_class()` resolve
+        // against the class the call went THROUGH, which the callee cannot
+        // recover — so a static method takes the called class as a receiver.
+        // Declared here rather than inferred from the profile NAME in shared
+        // code, the way `explicit_self_param` already is in seven frontends.
+        late_static_binding: true,
         ..Default::default()
     }
     .with_members(out)
@@ -237,7 +248,8 @@ mod tests {
             handles: vec![],
             is_async: false,
             is_generator: false,
-            is_sub: false })))
+            is_sub: false,
+        })))
     }
 
     #[test]

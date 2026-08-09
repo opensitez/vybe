@@ -1,7 +1,7 @@
 use std::env;
 
-use vybe_language_powershell::{PowerShellParser, Rule};
 use pest::Parser;
+use vybe_language_powershell::{PowerShellParser, Rule};
 
 fn main() {
     let src = env::args()
@@ -26,7 +26,12 @@ fn main() {
     println!("--- if_stmt ---");
     match PowerShellParser::parse(Rule::if_stmt, &src) {
         Ok(mut p) => {
-            println!("if_stmt ok: {}", p.next().map(|p| p.as_str().replace('\n', "\\n")).unwrap_or_default());
+            println!(
+                "if_stmt ok: {}",
+                p.next()
+                    .map(|p| p.as_str().replace('\n', "\\n"))
+                    .unwrap_or_default()
+            );
             if let Some(root) = p.next() {
                 println!("unexpected extra {} pairs", root.into_inner().count());
             }

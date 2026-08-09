@@ -21,12 +21,8 @@
 //!     emit whatever the walker produced (consistent with Python's
 //!     own "consenting adults" philosophy).
 
+use vybe_ast::class_normalize::{NormalMembers, build_normal_method, from_method_stmt, types::*};
 use vybe_ast::{ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, StmtKind};
-use vybe_ast::class_normalize::{
-    NormalMembers,
-    build_normal_method,
-    from_method_stmt,
-    types::* };
 
 /// `<ClassName>.<field>` — the read an instance-side mirror of a class
 /// attribute initialises from, so the value object is shared rather than
@@ -37,7 +33,8 @@ fn class_attr_read(class_name: &str, field: &str) -> vybe_ast::Expression {
             class_name.to_string(),
         ))),
         field: field.to_string(),
-        null_safe: false })
+        null_safe: false,
+    })
 }
 
 pub fn normalize_class(
@@ -68,7 +65,8 @@ pub fn normalize_class(
                     array_bounds: array_bounds.clone(),
                     access: Access::Public, // Python is convention-based
                     readonly: false,
-                    value_type: None };
+                    value_type: None,
+                };
                 // A Python class attribute is readable through instances
                 // (`a.kind` falls back to `type(a).kind`), so the class body's
                 // `kind = ...` is BOTH a static field and an instance one. The
@@ -112,7 +110,8 @@ pub fn normalize_class(
                     out.special_methods.push(SpecialMethod {
                         kind,
                         canonical_name: canonical.clone(),
-                        source_name: src_name.clone() });
+                        source_name: src_name.clone(),
+                    });
                 }
 
                 out.push_method(m.is_static, method);
@@ -138,8 +137,10 @@ pub fn normalize_class(
                         // injected (Python's object.__init__ takes no args
                         // and is a no-op, so subclasses are free to skip
                         // calling it — MRO finds it if needed).
-                        None => BaseCall::None },
-                    named_name: None });
+                        None => BaseCall::None,
+                    },
+                    named_name: None,
+                });
             }
             ClassMember::Property {
                 name: pname,
@@ -190,7 +191,8 @@ pub fn normalize_class(
                     is_static: m.is_static,
                     getter: getter_method,
                     setter: setter_method,
-                    auto_field: if *is_auto { Some(pname.clone()) } else { None } });
+                    auto_field: if *is_auto { Some(pname.clone()) } else { None },
+                });
             }
             // Python has no separate augmentation syntax — a "mixin" is just
             // another base class, so it arrives through `parents` and is
@@ -245,14 +247,16 @@ mod tests {
                 is_rest: false,
                 is_kwargs: false,
                 is_optional: false,
-                is_nullable: false }],
+                is_nullable: false,
+            }],
             return_type: None,
             body: vec![],
             modifiers: Modifiers::default(),
             handles: vec![],
             is_async: false,
             is_generator: false,
-            is_sub: false });
+            is_sub: false,
+        });
         let members = vec![ClassMember::Method(Box::new(method))];
         let nc = normalize_class(
             dummy_span(),
@@ -280,7 +284,8 @@ mod tests {
             handles: vec![],
             is_async: false,
             is_generator: false,
-            is_sub: false });
+            is_sub: false,
+        });
         let members = vec![ClassMember::Method(Box::new(method))];
         let nc = normalize_class(
             dummy_span(),
@@ -305,7 +310,8 @@ mod tests {
             handles: vec![],
             is_async: false,
             is_generator: false,
-            is_sub: false });
+            is_sub: false,
+        });
         let members = vec![ClassMember::Method(Box::new(method))];
         let nc = normalize_class(
             dummy_span(),
@@ -341,7 +347,8 @@ mod tests {
             body: vec![],
             base_args: None,
             initializer_target: vybe_ast::ConstructorInitializerTarget::Base,
-            visibility: vybe_ast::Visibility::Public };
+            visibility: vybe_ast::Visibility::Public,
+        };
         let nc = normalize_class(
             dummy_span(),
             "Foo",
@@ -368,7 +375,8 @@ mod tests {
             init: Some(init),
             modifiers: mods,
             with_events: false,
-            array_bounds: None };
+            array_bounds: None,
+        };
         let nc = normalize_class(
             dummy_span(),
             "Foo",

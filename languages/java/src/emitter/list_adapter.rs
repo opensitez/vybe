@@ -1,15 +1,16 @@
 //! Java collection overloads composed from the shared ECMA array surface.
 
 use std::sync::Arc;
-use vybe_runtime::Chunk;
-use vybe_runtime::Value;
-use vybe_runtime::opcode::Op;
 use vybe_compiler::primitives::{
-    collections,
+    callable, collections,
     functions::create_function_chunk,
     heap,
     instructions::{core_wasm, host},
-    sorted_collection };
+    sorted_collection,
+};
+use vybe_runtime::Chunk;
+use vybe_runtime::Value;
+use vybe_runtime::opcode::Op;
 
 fn get(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
@@ -143,14 +144,18 @@ fn emit_java_exception_throw(chunks: &mut [Chunk], current: usize, name: &str, l
     chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("", line);
-    vybe_compiler::primitives::errors::emit_exception_new_finalize(&mut chunks[current], name, line);
+    vybe_compiler::primitives::errors::emit_exception_new_finalize(
+        &mut chunks[current],
+        name,
+        line,
+    );
     vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
 }
 
 fn emit_throw_if_null(chunks: &mut [Chunk], current: usize, value: u16, line: u32) {
     get(&mut chunks[current], value, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
-    chunks[current].emit_if_value(line);
+    chunks[current].emit_if(line);
     emit_java_exception_throw(chunks, current, "NullPointerException", line);
     chunks[current].emit_end(line);
 }
@@ -227,7 +232,7 @@ pub fn emit_set_of(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     get(&mut chunks[current], inner_value, line);
     vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if_value(line);
+    chunks[current].emit_if(line);
     emit_java_exception_throw(chunks, current, "IllegalArgumentException", line);
     chunks[current].emit_end(line);
     get(&mut chunks[current], inner_index, line);
@@ -281,7 +286,7 @@ fn emit_throw_if_immutable_map(chunks: &mut [Chunk], current: usize, map: u16, l
     chunks[current].emit_string_const(IMMUTABLE_MAP_KEY, line);
     host::emit(&mut chunks[current], "ecma:object", "get", 2, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if_value(line);
+    chunks[current].emit_if(line);
     emit_java_exception_throw(chunks, current, "UnsupportedOperationException", line);
     chunks[current].emit_end(line);
 }
@@ -291,7 +296,7 @@ fn emit_throw_if_immutable_list(chunks: &mut [Chunk], current: usize, list: u16,
     chunks[current].emit_string_const(IMMUTABLE_LIST_KEY, line);
     host::emit(&mut chunks[current], "ecma:object", "get", 2, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if_value(line);
+    chunks[current].emit_if(line);
     emit_java_exception_throw(chunks, current, "UnsupportedOperationException", line);
     chunks[current].emit_end(line);
 }
@@ -308,7 +313,7 @@ fn emit_canonicalize_map_key(chunks: &mut [Chunk], current: usize, map: u16, key
     chunks[current].emit_string_const(IDENTITY_MAP_KEY, line);
     host::emit(&mut chunks[current], "ecma:object", "get", 2, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if_value(line);
+    chunks[current].emit_if(line);
     get(&mut chunks[current], key, line);
     host::emit(&mut chunks[current], "ecma:value", "typeof", 1, line);
     chunks[current].emit_string_const("object", line);
@@ -317,7 +322,7 @@ fn emit_canonicalize_map_key(chunks: &mut [Chunk], current: usize, map: u16, key
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     vybe_compiler::primitives::ops::emit_dyn_not(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_AND, line);
-    chunks[current].emit_if_value(line);
+    chunks[current].emit_if(line);
     let identity = chunks[current].alloc_scratch(1);
     get_object_prop(chunks, current, key, IDENTITY_KEY_PROP, line);
     set(&mut chunks[current], identity, line);
@@ -798,7 +803,7 @@ pub fn emit_collection_extreme(
     get(&mut chunks[current], comparator, line);
     get(&mut chunks[current], value, line);
     get(&mut chunks[current], best, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+    callable::emit_direct_invoke(chunks, current, 2, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     if min {
         vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
@@ -1288,7 +1293,7 @@ pub fn emit_map_compute_if_absent(chunks: &mut [Chunk], current: usize, line: u3
     chunks[current].emit_else(line);
     get(&mut chunks[current], fn_slot, line);
     get(&mut chunks[current], original_key, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    callable::emit_direct_invoke(chunks, current, 1, line);
     set(&mut chunks[current], result, line);
     get(&mut chunks[current], map, line);
     get(&mut chunks[current], key, line);
@@ -1472,7 +1477,7 @@ pub fn emit_map_compute(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_else(line);
     emit_unwrap_identity_map_value(chunks, current, map, old_value, line);
     chunks[current].emit_end(line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+    callable::emit_direct_invoke(chunks, current, 2, line);
     set(&mut chunks[current], result, line);
 
     emit_null_check(chunks, current, result, line);
@@ -1517,7 +1522,7 @@ pub fn emit_map_compute_if_present(chunks: &mut [Chunk], current: usize, line: u
     get(&mut chunks[current], fn_slot, line);
     get(&mut chunks[current], original_key, line);
     emit_unwrap_identity_map_value(chunks, current, map, old_value, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+    callable::emit_direct_invoke(chunks, current, 2, line);
     set(&mut chunks[current], result, line);
     emit_null_check(chunks, current, result, line);
     chunks[current].emit_if_value(line);
@@ -1570,7 +1575,7 @@ pub fn emit_map_merge(chunks: &mut [Chunk], current: usize, line: u32) {
     get(&mut chunks[current], fn_slot, line);
     emit_unwrap_identity_map_value(chunks, current, map, old_value, line);
     get(&mut chunks[current], value, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+    callable::emit_direct_invoke(chunks, current, 2, line);
     chunks[current].emit_else(line);
     get(&mut chunks[current], value, line);
     chunks[current].emit_end(line);
@@ -1642,7 +1647,7 @@ pub fn emit_map_replace_all(chunks: &mut [Chunk], current: usize, line: u32) {
     get(&mut chunks[current], fn_slot, line);
     get(&mut chunks[current], key, line);
     get(&mut chunks[current], value, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+    callable::emit_direct_invoke(chunks, current, 2, line);
     host::emit(&mut chunks[current], "ecma:map", "set", 3, line);
     chunks[current].emit_op(Op::DROP, line);
 
@@ -1691,7 +1696,7 @@ pub fn emit_map_for_each(chunks: &mut [Chunk], current: usize, line: u32) {
     get(&mut chunks[current], callback, line);
     emit_identity_entry_key(chunks, current, map, pair, line);
     emit_identity_entry_value(chunks, current, map, pair, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+    callable::emit_direct_invoke(chunks, current, 2, line);
     chunks[current].emit_op(Op::DROP, line);
 
     get(&mut chunks[current], index, line);
@@ -1711,7 +1716,8 @@ fn emit_concurrent_items(chunks: &mut [Chunk], current: usize, map: u16, mode: u
     match mode {
         0 => host::emit(&mut chunks[current], "ecma:map", "keys", 1, line),
         1 => host::emit(&mut chunks[current], "ecma:map", "values", 1, line),
-        _ => host::emit(&mut chunks[current], "ecma:map", "entries", 1, line) }
+        _ => host::emit(&mut chunks[current], "ecma:map", "entries", 1, line),
+    }
 }
 
 pub fn emit_concurrent_for_each(chunks: &mut [Chunk], current: usize, mode: u8, line: u32) {
@@ -1745,7 +1751,7 @@ pub fn emit_concurrent_for_each(chunks: &mut [Chunk], current: usize, mode: u8, 
     set(&mut chunks[current], item, line);
     get(&mut chunks[current], callback, line);
     get(&mut chunks[current], item, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    callable::emit_direct_invoke(chunks, current, 1, line);
     chunks[current].emit_op(Op::DROP, line);
     get(&mut chunks[current], index, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
@@ -1798,7 +1804,7 @@ pub fn emit_concurrent_reduce(chunks: &mut [Chunk], current: usize, mode: u8, li
     get(&mut chunks[current], items, line);
     get(&mut chunks[current], index, line);
     collections::emit_get(chunks, current, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+    callable::emit_direct_invoke(chunks, current, 2, line);
     set(&mut chunks[current], acc, line);
     get(&mut chunks[current], index, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
@@ -1843,7 +1849,7 @@ pub fn emit_concurrent_search(chunks: &mut [Chunk], current: usize, mode: u8, li
     get(&mut chunks[current], items, line);
     get(&mut chunks[current], index, line);
     collections::emit_get(chunks, current, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    callable::emit_direct_invoke(chunks, current, 1, line);
     set(&mut chunks[current], found, line);
     get(&mut chunks[current], found, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
@@ -2144,7 +2150,7 @@ pub fn emit_java_thread_start_with(chunks: &mut Vec<Chunk>, current: usize, line
     vybe_compiler::primitives::globals::emit_read(&mut worker, "__j_runnable_run", line);
     worker.emit_op_u16(Op::LOCAL_GET, 0, line);
     worker.emit_struct_field_op(Op::STRUCT_GET, 0, target_key, line);
-    worker.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    callable::emit_direct_invoke_chunk(&mut worker, 1, line);
     worker.emit_op(Op::RETURN, line);
     worker.local_count = 1;
     chunks.push(worker);
@@ -3213,6 +3219,29 @@ pub fn emit_blocking_queue_drain_to(chunks: &mut [Chunk], current: usize, argc: 
     get(&mut chunks[current], moved, line);
 }
 
+pub fn emit_set_add(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], value, line);
+    if argc >= 3 {
+        let index = chunks[current].alloc_scratch(1);
+        let list = chunks[current].alloc_scratch(1);
+        set(&mut chunks[current], index, line);
+        set(&mut chunks[current], list, line);
+        emit_throw_if_immutable_list(chunks, current, list, line);
+        get(&mut chunks[current], list, line);
+        get(&mut chunks[current], index, line);
+        get(&mut chunks[current], value, line);
+        vybe_platform_jvm::emitter::collection_adapter::emit_add(chunks, current, argc, line);
+        return;
+    }
+    let list = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], list, line);
+    emit_throw_if_immutable_list(chunks, current, list, line);
+    get(&mut chunks[current], list, line);
+    get(&mut chunks[current], value, line);
+    vybe_platform_jvm::emitter::collection_adapter::emit_add(chunks, current, argc, line);
+}
+
 pub fn emit_copy_on_write_add_if_absent(chunks: &mut [Chunk], current: usize, line: u32) {
     let value = chunks[current].alloc_scratch(1);
     let list = chunks[current].alloc_scratch(1);
@@ -3974,7 +4003,7 @@ pub fn emit_remove_if(chunks: &mut [Chunk], current: usize, line: u32) {
     set(&mut chunks[current], value, line);
     get(&mut chunks[current], predicate, line);
     get(&mut chunks[current], value, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    callable::emit_direct_invoke(chunks, current, 1, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     get(&mut chunks[current], list, line);
@@ -4031,7 +4060,7 @@ pub fn emit_replace_all(chunks: &mut [Chunk], current: usize, line: u32) {
     get(&mut chunks[current], list, line);
     get(&mut chunks[current], index, line);
     collections::emit_get(chunks, current, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    callable::emit_direct_invoke(chunks, current, 1, line);
     set(&mut chunks[current], value, line);
     get(&mut chunks[current], list, line);
     get(&mut chunks[current], index, line);

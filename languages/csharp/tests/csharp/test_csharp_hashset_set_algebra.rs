@@ -228,7 +228,7 @@ csharp_cases! {
 
     is_subset_of_after_union_with_superset => {
         r#"using System.Collections.Generic; var a = new HashSet<int> { 1 }; var b = new HashSet<int> { 1, 2 }; a.UnionWith(b); Console.WriteLine(a.IsSubsetOf(b));"#,
-        ["False"]
+        ["True"]
     };
 
     intersect_with_after_except_yields_empty_when_disjoint => {

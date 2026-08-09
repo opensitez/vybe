@@ -8,9 +8,9 @@
 //! host fns; no JS polyfills.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::{string_encoding, string_similarity, strings, url};
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
-use vybe_compiler::primitives::{string_encoding, string_similarity, strings, url};
 
 // ── Local-slot / push helpers (mirror datetime_adapter) ────────────
 
@@ -301,7 +301,6 @@ pub fn emit_var_dump_stringify(chunks: &mut [Chunk], current: usize, _argc: u8, 
     chunk.emit_end(line);
     chunk.emit_end(line);
 }
-
 
 // ── ucwords ────────────────────────────────────────────────────────
 
@@ -3875,7 +3874,6 @@ pub fn emit_stripcslashes(chunks: &mut [Chunk], current: usize, argc: u8, line: 
 // Helper: emit rot13 for a letter range; base = 65 (upper) or 97 (lower).
 // Stack on entry: code_slot is loaded. Stack on exit: rotated code pushed.
 
-
 // ── nl2br ─────────────────────────────────────────────────────────────────
 
 pub fn emit_nl2br(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -5479,7 +5477,13 @@ fn strtok_scan_chunk(chunks: &mut Vec<Chunk>) -> usize {
 }
 
 /// `helper(subject, delims, start)` — CALL_REF wants [callee, args…].
-fn emit_strtok_call(chunks: &mut Vec<Chunk>, current: usize, s_slot: u16, delim_slot: u16, line: u32) {
+fn emit_strtok_call(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    s_slot: u16,
+    delim_slot: u16,
+    line: u32,
+) {
     let helper = strtok_scan_chunk(chunks);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::REF_FUNC, helper as u16, line);
@@ -6683,7 +6687,6 @@ pub fn emit_count_chars(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
 
 /// Decode a single hex digit's char code to its value on the stack top.
 
-
 // ── convert_uuencode / convert_uudecode ────────────────────────────
 //
 // uuencode maps each 3 input bytes to 4 printable chars: 6-bit groups
@@ -6698,8 +6701,6 @@ pub fn emit_count_chars(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
 /// Push `floor(slot / div)` onto the stack.
 
 /// Push `slot mod m` onto the stack (m a power used in uuencode).
-
-
 
 // ── mb_substr ──────────────────────────────────────────────────────────
 //

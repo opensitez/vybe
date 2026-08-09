@@ -8,7 +8,8 @@ fn register_powershell() {
 #[test]
 fn powershell_profile_extensions_include_ps1() {
     register_powershell();
-    let lang = vybe_compiler::languages::find_by_name("powershell").expect("powershell language not registered");
+    let lang = vybe_compiler::languages::find_by_name("powershell")
+        .expect("powershell language not registered");
     let src = (lang.profile_source)();
     assert!(src.contains("ps\""));
     assert!(src.contains("ps1"));
@@ -20,7 +21,11 @@ fn powershell_profile_extensions_include_ps1() {
 fn powershell_parse_smoke() {
     register_powershell();
     let ast = vybe_language_powershell::parse("Write-Output hello\n");
-    assert!(ast.is_ok(), "parser should accept basic command text: {:?}", ast.err());
+    assert!(
+        ast.is_ok(),
+        "parser should accept basic command text: {:?}",
+        ast.err()
+    );
 }
 
 #[test]

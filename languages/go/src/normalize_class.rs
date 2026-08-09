@@ -11,11 +11,12 @@
 //! rule that a shallower depth wins outright and an EQUAL depth with the same
 //! name is an error, not a silent pick.
 
-use vybe_ast::{ClassMember, ClassModifiers, Span, StmtKind};
 use vybe_ast::class_normalize::{
     Augmentation, AugmentationConflict, AugmentationContributes, AugmentationMode,
     AugmentationPosition, AugmentationSuper, NormalClass, NormalField, NormalMembers,
-    SpecialMethod, access_from_visibility, from_method_stmt };
+    SpecialMethod, access_from_visibility, from_method_stmt,
+};
+use vybe_ast::{ClassMember, ClassModifiers, Span, StmtKind};
 
 /// Go field promotion, stated once.
 ///
@@ -42,8 +43,10 @@ fn go_embedding(field_name: &str, field_type: &str) -> Augmentation {
             fields: false,
             statics: false,
             constructors: false,
-            abstract_members: false },
-        depth: 0 }
+            abstract_members: false,
+        },
+        depth: 0,
+    }
 }
 
 /// `*pkg.Inner` -> `Inner`. A Go embedded field's NAME is the last segment of
@@ -95,7 +98,8 @@ pub fn normalize_class(
                     array_bounds: array_bounds.clone(),
                     access: access_from_visibility(modifiers.visibility),
                     readonly: modifiers.is_readonly,
-                    value_type: None };
+                    value_type: None,
+                };
                 m.push_field(modifiers.is_shared, field);
             }
             ClassMember::Method(stmt) => {
@@ -121,11 +125,13 @@ pub fn normalize_class(
                     m.special_methods.push(SpecialMethod {
                         kind,
                         canonical_name: canonical.clone(),
-                        source_name: source_name.clone() });
+                        source_name: source_name.clone(),
+                    });
                 }
                 m.push_method(modifiers.is_shared, method);
             }
-            other => m.raw_extra_members.push(other.clone()) }
+            other => m.raw_extra_members.push(other.clone()),
+        }
     }
 
     NormalClass {
@@ -140,8 +146,8 @@ pub fn normalize_class(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vybe_ast::{Modifiers, Statement, Visibility};
     use vybe_ast::class_normalize::types::SpecialMethodKind;
+    use vybe_ast::{Modifiers, Statement, Visibility};
 
     fn dummy_span() -> Span {
         Span::default()
@@ -160,7 +166,8 @@ mod tests {
             handles: vec![],
             is_async: false,
             is_generator: false,
-            is_sub: false })))
+            is_sub: false,
+        })))
     }
 
     /// A Go type fills a role by method NAME — `fmt.Stringer` is `String()

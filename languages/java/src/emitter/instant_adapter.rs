@@ -1,8 +1,8 @@
 //! Small Java `java.time` adapter backed by ECMA date helpers.
 
+use vybe_compiler::primitives::instructions::{core_wasm, host};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
-use vybe_compiler::primitives::instructions::{core_wasm, host};
 
 fn get(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
@@ -1218,7 +1218,11 @@ pub fn emit_time_day_of_year(chunks: &mut [Chunk], current: usize, line: u32) {
     core_wasm::i32_const(&mut chunks[current], line, 0);
     host::emit(&mut chunks[current], "ecma:date", "UTC", 7, line);
     chunks[current].emit_op(Op::F64_SUB, line);
-    core_wasm::f64_const(&mut chunks[current], line, vybe_compiler::primitives::datetime::MS_PER_DAY);
+    core_wasm::f64_const(
+        &mut chunks[current],
+        line,
+        vybe_compiler::primitives::datetime::MS_PER_DAY,
+    );
     chunks[current].emit_op(Op::F64_DIV, line);
     host::emit(&mut chunks[current], "ecma:math", "floor", 1, line);
 }

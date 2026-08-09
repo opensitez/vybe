@@ -6,7 +6,9 @@ use std::sync::{Arc, Mutex};
 use vybe_runtime::{HostContext, VM, Value};
 
 fn main() {
-    let path = std::env::args().nth(1).expect("usage: run_snippet <file.py>");
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: run_snippet <file.py>");
     let src = std::fs::read_to_string(&path).expect("read source");
 
     vybe_language_python::register();

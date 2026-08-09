@@ -6,10 +6,10 @@
 //! floats (float literals, `/` true division, `float()`, float-returning math)
 //! — never a blanket cast of every number.
 
-use vybe_runtime::Chunk;
-use vybe_runtime::opcode::Op;
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_compiler::primitives::ops;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 /// Python float display. Stack: `[num]` → `[string]`.
 pub fn emit_float_repr(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {

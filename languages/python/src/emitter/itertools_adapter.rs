@@ -8,9 +8,9 @@
 //!
 //! No new host fns.
 
+use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
-use vybe_compiler::primitives::instructions::core_wasm;
 
 /// How many items an infinite generator (`count`, `cycle`) materialises.
 /// Bounded because the list is eager; callers take a prefix via `next`/`islice`.
@@ -167,7 +167,8 @@ pub fn emit_reduce(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 struct Filter {
     keep_when: bool,
     stop_at_first_false: bool,
-    skip_leading: bool }
+    skip_leading: bool,
+}
 
 fn emit_pred_filter(chunks: &mut [Chunk], current: usize, spec: Filter, line: u32) {
     let xs = chunks[current].alloc_scratch(1);
@@ -277,7 +278,8 @@ pub fn emit_filterfalse(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
         Filter {
             keep_when: false,
             stop_at_first_false: false,
-            skip_leading: false },
+            skip_leading: false,
+        },
         line,
     );
 }
@@ -290,7 +292,8 @@ pub fn emit_takewhile(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
         Filter {
             keep_when: true,
             stop_at_first_false: true,
-            skip_leading: false },
+            skip_leading: false,
+        },
         line,
     );
 }
@@ -303,7 +306,8 @@ pub fn emit_dropwhile(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
         Filter {
             keep_when: true,
             stop_at_first_false: false,
-            skip_leading: true },
+            skip_leading: true,
+        },
         line,
     );
 }

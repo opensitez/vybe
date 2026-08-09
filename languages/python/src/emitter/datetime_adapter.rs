@@ -19,9 +19,9 @@
 //!   * `ecma:date.getUTCMonth` is 0-based, Python's `.month` is 1-based.
 //!   * `getUTCDay` is Sunday=0, Python's `weekday()` is Monday=0.
 
+use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
-use vybe_compiler::primitives::instructions::core_wasm;
 
 pub const TYPE_KEY: &str = "__type";
 pub const TIME_KEY: &str = "__time";
@@ -68,7 +68,8 @@ fn struct_get(chunk: &mut Chunk, key: &str, line: u32) {
 /// hardcoding one.
 enum Tag<'a> {
     Const(&'a str),
-    Local(u16) }
+    Local(u16),
+}
 
 /// Wrap a ms timestamp in a fully-materialized value.
 /// Stack: `[ms]` → `[obj]`.
@@ -85,7 +86,8 @@ fn emit_materialize_tag(chunk: &mut Chunk, tag: Tag, line: u32) {
     chunk.emit_dup(line);
     match tag {
         Tag::Const(s) => chunk.emit_string_const(s, line),
-        Tag::Local(slot) => chunk.emit_op_u16(Op::LOCAL_GET, slot, line) }
+        Tag::Local(slot) => chunk.emit_op_u16(Op::LOCAL_GET, slot, line),
+    }
     struct_set(chunk, TYPE_KEY, line);
 
     chunk.emit_dup(line);
@@ -153,7 +155,8 @@ fn emit_components_new(chunk: &mut Chunk, argc: u8, first: usize, type_tag: &str
     for i in (0..argc as usize).rev() {
         match slots.get(first + i) {
             Some(slot) => chunk.emit_op_u16(Op::LOCAL_SET, *slot, line),
-            None => chunk.emit_op(Op::DROP, line) }
+            None => chunk.emit_op(Op::DROP, line),
+        }
     }
 
     emit_utc_from_locals(chunk, &slots, line);
@@ -485,7 +488,11 @@ fn emit_time_of_day_ms(chunk: &mut Chunk, obj: u16, line: u32) {
         core_wasm::f64_const(chunk, line, scale);
         chunk.emit_op(Op::F64_MUL, line);
     };
-    part(chunk, "hour", vybe_compiler::primitives::datetime::MS_PER_HOUR);
+    part(
+        chunk,
+        "hour",
+        vybe_compiler::primitives::datetime::MS_PER_HOUR,
+    );
     part(chunk, "minute", 60_000.0);
     chunk.emit_op(Op::F64_ADD, line);
     part(chunk, "second", MS_PER_SECOND);
@@ -647,7 +654,8 @@ pub fn emit_cal_monthrange(chunks: &mut [Chunk], current: usize, _argc: u8, line
 pub enum DtOp {
     Add,
     Sub,
-    Mul }
+    Mul,
+}
 
 /// `slot` holds an object carrying `key`. The `typeof` guard matters:
 /// `STRUCT_GET` traps on a primitive, and these run on every `+`.
@@ -681,7 +689,8 @@ fn dt_op_code(op: &DtOp) -> Op {
     match op {
         DtOp::Add => Op::F64_ADD,
         DtOp::Sub => Op::F64_SUB,
-        DtOp::Mul => Op::F64_MUL }
+        DtOp::Mul => Op::F64_MUL,
+    }
 }
 
 /// `+`/`-`/`*` over this adapter's values, for the combinations Python

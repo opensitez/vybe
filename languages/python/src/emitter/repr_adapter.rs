@@ -16,10 +16,10 @@
 //! scanning `chunks` for that name), since `repr` runs on every `print`/`str`.
 
 use std::sync::Arc;
-use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
 use vybe_compiler::primitives::functions::create_function_chunk;
 use vybe_compiler::primitives::tuples::{FIELDS_TAG, TUPLE_TAG, TYPENAME_TAG};
+use vybe_runtime::opcode::Op;
+use vybe_runtime::{Chunk, Value};
 
 const REPR_CHUNK: &str = "__py_repr";
 
@@ -416,7 +416,17 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
             // non-empty: brace-join, wrapping in `frozenset(...)` when frozen
             lget(&mut c, frozen, line);
             c.emit_if(line);
-            emit_join(&mut c, self_idx, set_arr, out, i, n, "frozenset({", "})", line);
+            emit_join(
+                &mut c,
+                self_idx,
+                set_arr,
+                out,
+                i,
+                n,
+                "frozenset({",
+                "})",
+                line,
+            );
             c.emit_else(line);
             emit_join(&mut c, self_idx, set_arr, out, i, n, "{", "}", line);
             c.emit_end(line);
@@ -531,7 +541,8 @@ fn loop_start(chunk: &mut Chunk, line: u32) -> vybe_compiler::primitives::loops:
     vybe_compiler::primitives::loops::LoopState {
         block_patch,
         loop_patch,
-        body_block_patch: None }
+        body_block_patch: None,
+    }
 }
 fn loop_end(chunk: &mut Chunk, state: vybe_compiler::primitives::loops::LoopState, line: u32) {
     chunk.emit_br(0, line);

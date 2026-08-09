@@ -74,14 +74,6 @@ pub fn emit_php_print_expr(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_i32_const(1, line);
 }
 
-
-
-
-
-
-
-
-
 pub fn emit_ob_implicit_flush(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     chunks[current].emit_bool_const(true, line);
 }

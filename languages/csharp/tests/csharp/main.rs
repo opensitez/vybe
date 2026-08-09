@@ -457,5 +457,5 @@ mod test_strings;
 mod test_strings_advanced;
 mod test_threading_dotnet;
 mod test_type_features;
-mod test_winforms;
 mod test_type_gettype_dynamic;
+mod test_winforms;

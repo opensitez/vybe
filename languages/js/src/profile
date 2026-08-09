@@ -77,7 +77,6 @@ unresolved_reference_throws = true
 coerces_value_to_type_hint = false
 # ECMA-262 §9.1.2: `this` is bound ambiently from the call context (`__js_this`),
 # not passed as an explicit first positional parameter.
-ambient_this_binding = true
 # ECMA-262 §10.2.1.1: a missing argument is `undefined`, distinct from an
 # explicitly-passed `null`, so `f(null)` is one argument and `f()` is none.
 missing_arg_is_undefined = true
@@ -209,6 +208,27 @@ BigInt              = { emit = "host:ecma:bigint:BigInt",         min_args = 1, 
 
 # ── ArrayBuffer static methods ───────────────────────────────────────────────
 "ArrayBuffer.isView"  = { emit = "host:ecma:arraybuffer:isView", min_args = 1, max_args = 1 }
+
+# ── Intl static methods ──────────────────────────────────────────────────────
+
+"Intl.Collator.supportedLocalesOf"         = { emit = "host:ecma:intl/collator:supportedLocalesOf",       min_args = 1, max_args = 2 }
+"Intl.NumberFormat.supportedLocalesOf"     = { emit = "host:ecma:intl/numberformat:supportedLocalesOf",   min_args = 1, max_args = 2 }
+"Intl.DateTimeFormat.supportedLocalesOf"   = { emit = "host:ecma:intl/datetimeformat:supportedLocalesOf", min_args = 1, max_args = 2 }
+"Intl.ListFormat.supportedLocalesOf"       = { emit = "host:ecma:intl/listformat:supportedLocalesOf",     min_args = 1, max_args = 2 }
+"Intl.PluralRules.supportedLocalesOf"      = { emit = "host:ecma:intl/pluralrules:supportedLocalesOf",    min_args = 1, max_args = 2 }
+"Intl.RelativeTimeFormat.supportedLocalesOf" = { emit = "host:ecma:intl/relativetimeformat:supportedLocalesOf", min_args = 1, max_args = 2 }
+"Intl.Segmenter.supportedLocalesOf"        = { emit = "host:ecma:intl/segmenter:supportedLocalesOf",      min_args = 1, max_args = 2 }
+"Intl.DisplayNames.supportedLocalesOf"     = { emit = "host:ecma:intl/displaynames:supportedLocalesOf",   min_args = 1, max_args = 2 }
+"Intl.DurationFormat.supportedLocalesOf"   = { emit = "host:ecma:intl/durationformat:supportedLocalesOf", min_args = 1, max_args = 2 }
+__vybe_intl_collator_supported_locales_of       = { emit = "host:ecma:intl/collator:supportedLocalesOf",       min_args = 1, max_args = 2 }
+__vybe_intl_numberformat_supported_locales_of   = { emit = "host:ecma:intl/numberformat:supportedLocalesOf",   min_args = 1, max_args = 2 }
+__vybe_intl_datetimeformat_supported_locales_of = { emit = "host:ecma:intl/datetimeformat:supportedLocalesOf", min_args = 1, max_args = 2 }
+__vybe_intl_listformat_supported_locales_of     = { emit = "host:ecma:intl/listformat:supportedLocalesOf",     min_args = 1, max_args = 2 }
+__vybe_intl_pluralrules_supported_locales_of    = { emit = "host:ecma:intl/pluralrules:supportedLocalesOf",    min_args = 1, max_args = 2 }
+__vybe_intl_relativetimeformat_supported_locales_of = { emit = "host:ecma:intl/relativetimeformat:supportedLocalesOf", min_args = 1, max_args = 2 }
+__vybe_intl_segmenter_supported_locales_of      = { emit = "host:ecma:intl/segmenter:supportedLocalesOf",      min_args = 1, max_args = 2 }
+__vybe_intl_displaynames_supported_locales_of   = { emit = "host:ecma:intl/displaynames:supportedLocalesOf",   min_args = 1, max_args = 2 }
+__vybe_intl_durationformat_supported_locales_of = { emit = "host:ecma:intl/durationformat:supportedLocalesOf", min_args = 1, max_args = 2 }
 
 # ── TypedArray static methods ─────────────────────────────────────────────────
 "Int8Array.from"           = { emit = "host:ecma:int8array:from",     min_args = 1, max_args = 3 }
@@ -433,6 +453,7 @@ toFixed         = { emit = "host:ecma:number:toFixed",         min_args = 0, max
 toExponential   = { emit = "host:ecma:number:toExponential",   min_args = 0, max_args = 1 }
 toPrecision     = { emit = "host:ecma:number:toPrecision",     min_args = 0, max_args = 1 }
 toLocaleString  = { emit = "invoke:toLocaleString",  min_args = 0, max_args = 2 }
+localeCompare   = { emit = "invoke:localeCompare",   min_args = 1, max_args = 3 }
 
 # Array instance methods — mutators only; polymorphic methods go through
 # `invoke:*` above. push/pop are handled by runtime type dispatch

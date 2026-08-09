@@ -47,7 +47,8 @@ fn insert_path(root: &mut Subtree, path: &[&str], leaf: NamespaceNode) {
             NamespaceNode::Namespace(children) => current = children,
             // A leaf already occupies this segment — it cannot also be a
             // namespace, so leave the working entry alone.
-            _ => return }
+            _ => return,
+        }
     }
     current.entry((*last).to_string()).or_insert(leaf);
 }
@@ -98,7 +99,9 @@ fn register_from_profile() {
                 "Infinity" => NamespaceNode::Const(Value::F64(f64::INFINITY)),
                 "-Infinity" => NamespaceNode::Const(Value::F64(f64::NEG_INFINITY)),
                 "NaN" => NamespaceNode::Const(Value::F64(f64::NAN)),
-                _ => NamespaceNode::Const(Value::String(std::sync::Arc::from(s.as_str()))) } };
+                _ => NamespaceNode::Const(Value::String(std::sync::Arc::from(s.as_str()))),
+            },
+        };
         add(name, node);
     }
 
@@ -114,7 +117,8 @@ fn register_from_profile() {
             // tgamma/lgamma live in the libc platform tree, not ecma.
             "gamma" => "libc.math.tgamma".to_string(),
             "lgamma" => "libc.math.lgamma".to_string(),
-            _ => format!("ecma.math.{name}") };
+            _ => format!("ecma.math.{name}"),
+        };
         let root = roots.entry("math".to_string()).or_default();
         insert_path(root, &[name], NamespaceNode::Alias(target));
     }

@@ -22,7 +22,14 @@ use vybe_runtime::opcode::Op;
 
 use vybe_compiler::primitives::tuples;
 
-fn call_import(chunks: &mut [Chunk], current: usize, module: &str, name: &str, argc: u8, line: u32) {
+fn call_import(
+    chunks: &mut [Chunk],
+    current: usize,
+    module: &str,
+    name: &str,
+    argc: u8,
+    line: u32,
+) {
     // Register on the CURRENT chunk — an index taken from chunks[0] resolves
     // to the wrong host fn when the code runs inside a function chunk.
     let idx = chunks[current].add_import(module, name);
@@ -192,7 +199,14 @@ pub fn emit_gethostbyname(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     chunks[current].emit_else(line);
     {
         let list = chunks[current].alloc_scratch(1);
-        call_import(chunks, current, "wasi:sockets/instance-network", "instance-network", 0, line);
+        call_import(
+            chunks,
+            current,
+            "wasi:sockets/instance-network",
+            "instance-network",
+            0,
+            line,
+        );
         lget(chunks, current, host, line);
         call_import(
             chunks,

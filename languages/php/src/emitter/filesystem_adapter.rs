@@ -1203,7 +1203,11 @@ pub fn emit_disk_total_space(chunks: &mut [Chunk], current: usize, _argc: u8, li
 
 fn emit_stream_registry(chunks: &mut [Chunk], current: usize, line: u32) {
     // pushes the registry map, creating+storing it on first use.
-    vybe_compiler::primitives::globals::emit_read(&mut chunks[current], "__php_stream_registry", line);
+    vybe_compiler::primitives::globals::emit_read(
+        &mut chunks[current],
+        "__php_stream_registry",
+        line,
+    );
     let chunk = &mut chunks[current];
     chunk.emit_dup(line);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);

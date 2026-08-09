@@ -13,6 +13,7 @@
 //! marker as a PROP only; the key walk skips it so the two shapes compare
 //! equal.
 
+use vybe_compiler::primitives::callable;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
@@ -31,7 +32,7 @@ pub fn emit_value_eq(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     c.emit(0, line);
     c.emit_op_u16(Op::LOCAL_GET, a, line);
     c.emit_op_u16(Op::LOCAL_GET, b, line);
-    c.emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+    callable::emit_direct_invoke_chunk(c, 2, line);
 }
 
 fn ensure_value_eq_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
@@ -78,6 +79,15 @@ fn emit_is_dict(c: &mut Chunk, slot: u16, line: u32) {
     c.emit_op(Op::I32_AND, line);
 }
 
+fn emit_is_ecma_set(c: &mut Chunk, slot: u16, line: u32) {
+    let tag = c.add_import("ecma:object", "toStringTag");
+    let str_eq = c.add_import("wasm:js-string", "equals");
+    c.emit_op_u16(Op::LOCAL_GET, slot, line);
+    c.emit_call(tag, 1, line);
+    c.emit_string_const("[object Set]", line);
+    c.emit_call(str_eq, 2, line);
+}
+
 fn build_value_eq_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let self_idx = chunks.len();
     let mut c = vybe_compiler::primitives::functions::create_function_chunk(VALUE_EQ_CHUNK, 2);
@@ -89,6 +99,32 @@ fn build_value_eq_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let cast_bool = c.add_import("wasm:js-boolean", "cast");
     let json_str = c.add_import("ecma:json", "stringify");
     let str_eq = c.add_import("wasm:js-string", "equals");
+
+    // ── leg 0: class-declared equality ─────────────────────────────────
+    //
+    // `data class` equality is derived by normalize_class.rs and published by
+    // the shared class primitive under the Eq protocol slot. Sets must honor
+    // the same slot as `a == b`, not fall back to object identity. Probe the
+    // slot directly rather than keying on `__value_eq`: older constructor
+    // shapes did not stamp every structural class path consistently, while
+    // the slot itself is the source of truth for operator dispatch.
+    let method_slot = c.alloc_scratch(1);
+    c.emit_op_u16(Op::LOCAL_GET, a, line);
+    let slot_key = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
+        vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Eq),
+    )));
+    c.emit_struct_field_op(Op::STRUCT_GET, 0, slot_key, line);
+    c.emit_op_u16(Op::LOCAL_SET, method_slot, line);
+    c.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+    c.emit_op(Op::REF_IS_NULL, line);
+    c.emit_op(Op::I32_EQZ, line);
+    c.emit_if(line);
+    c.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+    c.emit_op_u16(Op::LOCAL_GET, a, line);
+    c.emit_op_u16(Op::LOCAL_GET, b, line);
+    callable::emit_direct_invoke_chunk(&mut c, 2, line);
+    c.emit_op(Op::RETURN, line);
+    c.emit_end(line);
 
     // ── leg 1: array vs array — in order, via JSON ──────────────────────
     c.emit_op_u16(Op::LOCAL_GET, a, line);
@@ -107,6 +143,14 @@ fn build_value_eq_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.emit_op(Op::RETURN, line);
     c.emit_end(line);
 
+    // ── leg 2: ECMA Set vs ECMA Set — order-independent ────────────────
+    emit_is_ecma_set(&mut c, a, line);
+    emit_is_ecma_set(&mut c, b, line);
+    c.emit_op(Op::I32_AND, line);
+    c.emit_if(line);
+    emit_ecma_set_eq_body(&mut c, self_idx, a, b, line);
+    c.emit_end(line);
+
     // ── leg 2: dict vs dict — sets AND maps, order-independent ──────────
     emit_is_dict(&mut c, a, line);
     emit_is_dict(&mut c, b, line);
@@ -123,6 +167,110 @@ fn build_value_eq_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
 
     chunks.push(c);
     self_idx
+}
+
+/// ECMA Set equality for Kotlin: same size and every left element has a
+/// recursively equal element on the right. Returns from the enclosing function.
+fn emit_ecma_set_eq_body(c: &mut Chunk, self_idx: usize, a: u16, b: u16, line: u32) {
+    let iter_for_of = c.add_import("ecma:object", "iterForOf");
+
+    let av = c.alloc_scratch(1);
+    let bv = c.alloc_scratch(1);
+    let n = c.alloc_scratch(1);
+    let m = c.alloc_scratch(1);
+    let i = c.alloc_scratch(1);
+    let j = c.alloc_scratch(1);
+    let left_value = c.alloc_scratch(1);
+    let found = c.alloc_scratch(1);
+
+    c.emit_op_u16(Op::LOCAL_GET, a, line);
+    c.emit_call(iter_for_of, 1, line);
+    c.emit_op_u16(Op::LOCAL_SET, av, line);
+    c.emit_op_u16(Op::LOCAL_GET, b, line);
+    c.emit_call(iter_for_of, 1, line);
+    c.emit_op_u16(Op::LOCAL_SET, bv, line);
+
+    c.emit_op_u16(Op::LOCAL_GET, av, line);
+    c.emit_op(Op::ARRAY_LENGTH, line);
+    c.emit_op_u16(Op::LOCAL_SET, n, line);
+    c.emit_op_u16(Op::LOCAL_GET, bv, line);
+    c.emit_op(Op::ARRAY_LENGTH, line);
+    c.emit_op_u16(Op::LOCAL_SET, m, line);
+    c.emit_op_u16(Op::LOCAL_GET, n, line);
+    c.emit_op_u16(Op::LOCAL_GET, m, line);
+    c.emit_op(Op::I32_NE, line);
+    c.emit_if(line);
+    c.emit_i32_const(0, line);
+    c.emit_op(Op::RETURN, line);
+    c.emit_end(line);
+
+    c.emit_i32_const(0, line);
+    c.emit_op_u16(Op::LOCAL_SET, i, line);
+    let outer_block = c.emit_block(line);
+    let (outer_loop, _) = c.emit_loop_s(line);
+    c.emit_op_u16(Op::LOCAL_GET, i, line);
+    c.emit_op_u16(Op::LOCAL_GET, n, line);
+    c.emit_op(Op::I32_GE_S, line);
+    c.emit_br_if(1, line);
+
+    c.emit_op_u16(Op::LOCAL_GET, av, line);
+    c.emit_op_u16(Op::LOCAL_GET, i, line);
+    c.emit_op(Op::ARRAY_GET, line);
+    c.emit_op_u16(Op::LOCAL_SET, left_value, line);
+    c.emit_i32_const(0, line);
+    c.emit_op_u16(Op::LOCAL_SET, found, line);
+    c.emit_i32_const(0, line);
+    c.emit_op_u16(Op::LOCAL_SET, j, line);
+
+    let inner_block = c.emit_block(line);
+    let (inner_loop, _) = c.emit_loop_s(line);
+    c.emit_op_u16(Op::LOCAL_GET, j, line);
+    c.emit_op_u16(Op::LOCAL_GET, m, line);
+    c.emit_op(Op::I32_GE_S, line);
+    c.emit_br_if(1, line);
+
+    c.emit_op_u16(Op::REF_FUNC, self_idx as u16, line);
+    c.emit(0, line);
+    c.emit_op_u16(Op::LOCAL_GET, left_value, line);
+    c.emit_op_u16(Op::LOCAL_GET, bv, line);
+    c.emit_op_u16(Op::LOCAL_GET, j, line);
+    c.emit_op(Op::ARRAY_GET, line);
+    callable::emit_direct_invoke_chunk(c, 2, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(c, line);
+    c.emit_if(line);
+    c.emit_i32_const(1, line);
+    c.emit_op_u16(Op::LOCAL_SET, found, line);
+    c.emit_end(line);
+
+    c.emit_op_u16(Op::LOCAL_GET, j, line);
+    c.emit_i32_const(1, line);
+    c.emit_op(Op::I32_ADD, line);
+    c.emit_op_u16(Op::LOCAL_SET, j, line);
+    c.emit_br(0, line);
+    c.emit_end(line);
+    c.patch_loop(inner_loop);
+    c.emit_end(line);
+    c.patch_block(inner_block);
+
+    c.emit_op_u16(Op::LOCAL_GET, found, line);
+    c.emit_op(Op::I32_EQZ, line);
+    c.emit_if(line);
+    c.emit_i32_const(0, line);
+    c.emit_op(Op::RETURN, line);
+    c.emit_end(line);
+
+    c.emit_op_u16(Op::LOCAL_GET, i, line);
+    c.emit_i32_const(1, line);
+    c.emit_op(Op::I32_ADD, line);
+    c.emit_op_u16(Op::LOCAL_SET, i, line);
+    c.emit_br(0, line);
+    c.emit_end(line);
+    c.patch_loop(outer_loop);
+    c.emit_end(line);
+    c.patch_block(outer_block);
+
+    c.emit_i32_const(1, line);
+    c.emit_op(Op::RETURN, line);
 }
 
 /// Every key of `a` (marker skipped) must exist in `b` with a recursively
@@ -205,7 +353,7 @@ fn emit_dict_eq_body(c: &mut Chunk, self_idx: usize, a: u16, b: u16, line: u32) 
     c.emit_op_u16(Op::LOCAL_GET, b, line);
     c.emit_op_u16(Op::LOCAL_GET, k, line);
     c.emit_call(obj_get, 2, line);
-    c.emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+    callable::emit_direct_invoke_chunk(c, 2, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(c, line);
     c.emit_op(Op::I32_EQZ, line);
     c.emit_if(line);

@@ -13,9 +13,9 @@
 //! SplFixedArray is handled entirely by the walker (→ `array_fill`).
 
 use std::sync::Arc;
+use vybe_compiler::primitives::heap;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
-use vybe_compiler::primitives::heap;
 
 fn sconst(c: &mut Chunk, s: &str) -> u16 {
     c.add_constant(Value::String(Arc::from(s)))
@@ -129,7 +129,8 @@ fn build_const_method(
         ConstMethodValue::False => c.emit_bool_const(false, line),
         ConstMethodValue::True => c.emit_bool_const(true, line),
         ConstMethodValue::Num(value) => c.emit_f64_const(value, line),
-        ConstMethodValue::Str(value) => c.emit_string_const(value, line) }
+        ConstMethodValue::Str(value) => c.emit_string_const(value, line),
+    }
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(1);
     chunks.push(c);
@@ -141,7 +142,8 @@ enum ConstMethodValue {
     False,
     True,
     Num(f64),
-    Str(&'static str) }
+    Str(&'static str),
+}
 
 fn idx_key(chunk: &mut Chunk) -> u16 {
     sconst(chunk, "__idx")

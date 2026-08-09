@@ -17,8 +17,8 @@
 //! Arguments arrive pre-pushed on the stack, left to right — the `emit_common`
 //! convention shared with `os_path_adapter` / `math_adapter`.
 
-use vybe_runtime::Chunk;
 use vybe_compiler::primitives::url;
+use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
 use vybe_compiler::primitives::tuples;
@@ -26,7 +26,14 @@ use vybe_compiler::primitives::tuples;
 /// `substring(start, END)` runs to the end of the string.
 const END: i32 = 0x7FFF_FFFF;
 
-fn call_import(chunks: &mut [Chunk], current: usize, module: &str, name: &str, argc: u8, line: u32) {
+fn call_import(
+    chunks: &mut [Chunk],
+    current: usize,
+    module: &str,
+    name: &str,
+    argc: u8,
+    line: u32,
+) {
     // Register on the CURRENT chunk — an index from chunks[0] resolves to the
     // wrong host fn when the code runs in a function chunk.
     let idx = chunks[current].add_import(module, name);
@@ -76,7 +83,14 @@ fn emit_percent(
 
 /// `quote(s)` — CPython's default `safe='/'`, so `/` survives.
 pub fn emit_quote(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_percent(chunks, current, argc, line, url::PercentOptions::path(), false);
+    emit_percent(
+        chunks,
+        current,
+        argc,
+        line,
+        url::PercentOptions::path(),
+        false,
+    );
 }
 
 /// `quote_plus(s)` — space becomes `+` AND `/` is escaped.
@@ -85,17 +99,38 @@ pub fn emit_quote(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 /// Building this on `quote` (which keeps `/` safe) made `quote_plus("a b/c")`
 /// return `a+b/c` where python gives `a+b%2Fc`.
 pub fn emit_quote_plus(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_percent(chunks, current, argc, line, url::PercentOptions::form_rfc3986(), false);
+    emit_percent(
+        chunks,
+        current,
+        argc,
+        line,
+        url::PercentOptions::form_rfc3986(),
+        false,
+    );
 }
 
 /// `unquote(s)` — `+` stays literal.
 pub fn emit_unquote(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_percent(chunks, current, argc, line, url::PercentOptions::rfc3986(), true);
+    emit_percent(
+        chunks,
+        current,
+        argc,
+        line,
+        url::PercentOptions::rfc3986(),
+        true,
+    );
 }
 
 /// `unquote_plus(s)` — `+` decodes back to a space.
 pub fn emit_unquote_plus(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_percent(chunks, current, argc, line, url::PercentOptions::form_rfc3986(), true);
+    emit_percent(
+        chunks,
+        current,
+        argc,
+        line,
+        url::PercentOptions::form_rfc3986(),
+        true,
+    );
 }
 
 // ── structural: split / unsplit / join ────────────────────────────────

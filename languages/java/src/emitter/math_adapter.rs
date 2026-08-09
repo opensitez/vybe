@@ -1,6 +1,6 @@
+use vybe_compiler::primitives::instructions::host;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
-use vybe_compiler::primitives::instructions::host;
 
 const I32_MIN_F64: f64 = i32::MIN as f64;
 const I32_MAX_F64: f64 = i32::MAX as f64;

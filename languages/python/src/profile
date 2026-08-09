@@ -215,6 +215,7 @@ __py_fmt_fixed  = { emit = "common:python.fmt_fixed",        min_args = 2, max_a
 __py_fmt_sci    = { emit = "common:python.fmt_sci",          min_args = 2, max_args = 2 }
 __py_fmt_group  = { emit = "common:python.fmt_group",        min_args = 1, max_args = 1 }
 __py_obj_entries__     = { emit = "host:ecma:object:entries",    min_args = 1, max_args = 1 }
+__py_obj_get__         = { emit = "host:ecma:object:get",        min_args = 2, max_args = 2 }
 __py_map_from_entries__ = { emit = "host:ecma:map:fromEntries",  min_args = 1, max_args = 1 }
 # `eval`/`exec` → universal compiler-as-a-service. The walker injects the
 # language ("python") + mode; trailing args are globals/locals namespace dicts.
@@ -331,6 +332,7 @@ frozenset       = { emit = "common:python.make_set",        min_args = 0, max_ar
 # Walker reroutes `frozenset(...)` here to dodge the shared-compiler hack; builds
 # a real set + a `__frozenset` tag so repr renders `frozenset({...})`.
 __py_frozenset  = { emit = "common:python.frozenset",       min_args = 0, max_args = 1 }
+__py_frozenset_key = { emit = "common:python.frozenset_key", min_args = 1, max_args = 1 }
 # `sorted(x, key=f)` → sort the (spread) array by key_fn via the shared primitive.
 __py_sort_by_key = { emit = "common:python.sort_by_key",    min_args = 2, max_args = 2 }
 __py_min        = { emit = "common:python.min",             min_args = 1, max_args = 2 }
@@ -977,18 +979,18 @@ update          = { emit = "common:python.update",         min_args = 1, max_arg
 setdefault      = { emit = "common:python.setdefault",              min_args = 1, max_args = 2 }
 
 # Set instance methods
-add             = { emit = "common:python.add",            min_args = 1, max_args = 1 }
-discard         = { emit = "common:python.discard",        min_args = 1, max_args = 1 }
-union           = { emit = "host:ecma:set:union",             min_args = 1, max_args = 255 }
-intersection    = { emit = "host:ecma:set:intersection",      min_args = 1, max_args = 255 }
-difference      = { emit = "host:ecma:set:difference",        min_args = 1, max_args = 255 }
-symmetric_difference = { emit = "host:ecma:set:symmetricDifference", min_args = 1, max_args = 1 }
+add             = { emit = "common:sets.add_mode",         min_args = 1, max_args = 1 }
+discard         = { emit = "common:sets.discard_mode",     min_args = 1, max_args = 1 }
+union           = { emit = "common:python.set_union",      min_args = 0, max_args = 255 }
+intersection    = { emit = "common:python.set_intersection", min_args = 0, max_args = 255 }
+difference      = { emit = "common:python.set_difference", min_args = 0, max_args = 255 }
+symmetric_difference = { emit = "common:python.set_symmetric_difference", min_args = 1, max_args = 1 }
 intersection_update = { emit = "common:python.intersection_update", min_args = 1, max_args = 1 }
 difference_update = { emit = "common:python.difference_update", min_args = 1, max_args = 1 }
 symmetric_difference_update = { emit = "common:python.symmetric_difference_update", min_args = 1, max_args = 1 }
-issubset        = { emit = "common:python.set_issubset",     min_args = 1, max_args = 1 }
-issuperset      = { emit = "common:python.set_issuperset",   min_args = 1, max_args = 1 }
-isdisjoint      = { emit = "common:python.set_isdisjoint",   min_args = 1, max_args = 1 }
+issubset        = { emit = "common:sets.subset_mode",      min_args = 1, max_args = 1 }
+issuperset      = { emit = "common:sets.superset_mode",    min_args = 1, max_args = 1 }
+isdisjoint      = { emit = "common:sets.disjoint_mode",    min_args = 1, max_args = 1 }
 
 # File object methods
 read            = { emit = "common:python.file_read",         min_args = 0, max_args = 1 }
@@ -1226,6 +1228,13 @@ eq = "common:python.value_eq"
 
 [builtin_slots.map]
 contains = "host:ecma:object:hasIn"
+
+[builtin_slots.set]
+len = "common:sets.size"
+contains = "common:sets.has"
+# Same value-equality fallback as arrays: sets compare order-independently
+# before falling through to Python's recursive container equality.
+eq = "common:python.value_eq"
 
 # `%` is FLOORED: the result takes the divisor's sign, so `-7 % 3` is 2 and
 # `7 % -3` is -2. The platform default truncates (C, JS), so a language whose

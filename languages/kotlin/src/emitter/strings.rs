@@ -8,7 +8,7 @@
 //! `strings`/`collections` primitives.
 
 use vybe_compiler::primitives::instructions::core_wasm;
-use vybe_compiler::primitives::{collections, ops, strings};
+use vybe_compiler::primitives::{collections, ops, sets, strings};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
@@ -419,7 +419,12 @@ pub fn emit_to_boolean(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line:
     bool_out(chunks, current, line);
 }
 
-pub fn emit_to_boolean_strict_or_null(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+pub fn emit_to_boolean_strict_or_null(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    _argc: u8,
+    line: u32,
+) {
     let s = chunks[current].alloc_scratch(1);
     set(chunks, current, s, line);
     get(chunks, current, s, line);
@@ -721,7 +726,13 @@ pub fn emit_region_matches(chunks: &mut Vec<Chunk>, current: usize, argc: u8, li
 
 /// `indexOf(needle, from)` / `lastIndexOf(needle, from)` — the offset was
 /// silently dropped by the 2-arg host path.
-pub fn emit_index_of_from(chunks: &mut Vec<Chunk>, current: usize, argc: u8, last: bool, line: u32) {
+pub fn emit_index_of_from(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    argc: u8,
+    last: bool,
+    line: u32,
+) {
     let from = if argc >= 3 {
         let f = chunks[current].alloc_scratch(1);
         set(chunks, current, f, line);
@@ -780,7 +791,9 @@ pub fn emit_chunked_windowed(
     windowed: bool,
     line: u32,
 ) {
-    emit_chunked_windowed_ex(chunks, current, argc, windowed, /*partial:*/ !windowed, line);
+    emit_chunked_windowed_ex(
+        chunks, current, argc, windowed, /*partial:*/ !windowed, line,
+    );
 }
 
 /// `partial`: keep the tail window shorter than `size` (chunked always does;
@@ -1251,14 +1264,30 @@ pub fn emit_contains_any(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, lin
     host(chunks, current, "ecma:string", "includes", 2, line);
     chunks[current].emit_else(line);
     get(chunks, current, recv, line);
+    host(chunks, current, "ecma:object", "toStringTag", 1, line);
+    chunks[current].emit_string_const("[object Set]", line);
+    host(chunks, current, "wasm:js-string", "equals", 2, line);
+    chunks[current].emit_if_value(line);
+    get(chunks, current, recv, line);
+    get(chunks, current, needle, line);
+    sets::emit_has(chunks, current, line);
+    chunks[current].emit_else(line);
+    get(chunks, current, recv, line);
     get(chunks, current, needle, line);
     collections::emit_contains(chunks, current, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
 }
 
 /// `toInt(radix)` / `toIntOrNull(radix)` — `ecma:global.parseInt` with the
 /// radix; NaN maps to null for the OrNull form and throws for `toInt`.
-pub fn emit_parse_radix(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, or_null: bool, line: u32) {
+pub fn emit_parse_radix(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    _argc: u8,
+    or_null: bool,
+    line: u32,
+) {
     let radix = chunks[current].alloc_scratch(1);
     let s = chunks[current].alloc_scratch(1);
     let v = chunks[current].alloc_scratch(1);

@@ -141,6 +141,7 @@ __jvm_map_size = { emit = "common:jvm.java.map_size", min_args = 1, max_args = 1
 __jvm_list_iterator = { emit = "common:jvm.java.list_iterator", min_args = 1, max_args = 2 }
 __jvm_iterator_next = { emit = "common:jvm.java.iterator_next", min_args = 1, max_args = 1 }
 __jvm_iterator_has_next = { emit = "common:jvm.java.iterator_has_next", min_args = 1, max_args = 1 }
+__jvm_iterator_remove = { emit = "common:jvm.java.iterator_remove", min_args = 1, max_args = 1 }
 
 # Common Dict Primitives
 __dict_size   = { emit = "common:dict.size",        min_args = 1, max_args = 1, slot = "len" }
@@ -193,12 +194,14 @@ __dict_items  = { emit = "common:dict.items",       min_args = 1, max_args = 1 }
 __kt_add      = { emit = "common:kotlin.add",       min_args = 2, max_args = 2 }
 __kt_set_add  = { emit = "common:kotlin.set_add",   min_args = 3, max_args = 3 }
 __kt_set_size = { emit = "common:kotlin.set_size",  min_args = 1, max_args = 1 }
+__kt_set_has  = { emit = "common:kotlin.set_has",   min_args = 2, max_args = 2 }
 __kt_to_set   = { emit = "common:kotlin.to_set",    min_args = 1, max_args = 1 }
+__kt_to_hash_set = { emit = "common:kotlin.to_hash_set", min_args = 1, max_args = 1 }
 __kt_to_list  = { emit = "common:kotlin.to_list",   min_args = 1, max_args = 1 }
 __kt_add_all  = { emit = "common:kotlin.add_all",   min_args = 2, max_args = 2 }
-__kt_set_union = { emit = "common:kotlin.set_union", min_args = 2, max_args = 2 }
-__kt_set_intersect = { emit = "common:kotlin.set_intersect", min_args = 2, max_args = 2 }
-__kt_set_subtract = { emit = "common:kotlin.set_subtract", min_args = 2, max_args = 2 }
+__kt_set_union = { emit = "common:sets.union", min_args = 2, max_args = 2 }
+__kt_set_intersect = { emit = "common:sets.intersection", min_args = 2, max_args = 2 }
+__kt_set_subtract = { emit = "common:sets.difference", min_args = 2, max_args = 2 }
 __kt_remove_all = { emit = "common:kotlin.remove_all", min_args = 2, max_args = 2 }
 __kt_retain_all = { emit = "common:kotlin.retain_all", min_args = 2, max_args = 2 }
 __kt_contains_all = { emit = "common:kotlin.contains_all", min_args = 2, max_args = 2 }
@@ -279,14 +282,6 @@ emptyMap        = { emit = "common:dict.new" }
 buildMap        = { emit = "common:dict.new" }
 linkedMapOf     = { emit = "common:dict.new" }
 hashMapOf       = { emit = "common:dict.new" }
-
-# Sets
-setOf           = { emit = "common:dict.new" }
-mutableSetOf    = { emit = "common:dict.new" }
-emptySet        = { emit = "common:dict.new" }
-buildSet        = { emit = "common:dict.new" }
-linkedSetOf     = { emit = "common:dict.new" }
-hashSetOf       = { emit = "common:dict.new" }
 
 # Tuples
 Pair   = { emit = "common:collections.new", min_args = 2, max_args = 2 }
@@ -538,15 +533,12 @@ toMutableMap     = { emit = "common:kotlin.copy_map", min_args = 0, max_args = 0
 toSortedMap      = { emit = "common:kotlin.to_sorted_map", min_args = 0, max_args = 1 }
 toSortedSet      = { emit = "common:kotlin.to_sorted_set", min_args = 0, max_args = 0 }
 ifEmpty          = { emit = "common:kotlin.if_empty", min_args = 1, max_args = 1 }
-toHashSet        = { emit = "common:kotlin.to_set", min_args = 0, max_args = 0 }
+toHashSet        = { emit = "common:kotlin.to_hash_set", min_args = 0, max_args = 0 }
 subList          = { emit = "common:kotlin.sub_list", min_args = 2, max_args = 2 }
 asReversed       = { emit = "common:collections.reverse", min_args = 0, max_args = 0 }
 binarySearch     = { emit = "common:kotlin.binary_search_range", min_args = 1, max_args = 3 }
 plus             = { emit = "common:kotlin.plus", min_args = 1, max_args = 1 }
 minus            = { emit = "common:kotlin.minus", min_args = 1, max_args = 1 }
-union            = { emit = "common:kotlin.set_union", min_args = 1, max_args = 1 }
-intersect        = { emit = "common:kotlin.set_intersect", min_args = 1, max_args = 1 }
-subtract         = { emit = "common:kotlin.set_subtract", min_args = 1, max_args = 1 }
 containsAll      = { emit = "common:kotlin.contains_all", min_args = 1, max_args = 1 }
 mapKeys          = { emit = "common:kotlin.map_keys_transform", min_args = 1, max_args = 1 }
 mapValues        = { emit = "common:kotlin.map_values_transform", min_args = 1, max_args = 1 }
@@ -566,6 +558,7 @@ iterator         = { emit = "common:jvm.java.list_iterator", min_args = 0, max_a
 listIterator     = { emit = "common:jvm.java.list_iterator", min_args = 0, max_args = 1 }
 hasNext          = { emit = "common:jvm.java.iterator_has_next", min_args = 0, max_args = 0 }
 next             = { emit = "common:jvm.java.iterator_next", min_args = 0, max_args = 0 }
+remove           = { emit = "common:jvm.java.iterator_remove", min_args = 0, max_args = 0 }
 previous         = { emit = "common:jvm.java.iterator_previous", min_args = 0, max_args = 0 }
 
 # Kotlin's spellings of the shared built-in types — builtinslotplan.md step 4a.
@@ -655,6 +648,11 @@ set_item = "common:kotlin.list_set_checked"
 # (`python.value_eq`); the platform fallback compares references.
 eq = "common:kotlin.value_eq"
 
+[builtin_slots.set]
+len = "common:kotlin.set_size"
+contains = "common:kotlin.set_has"
+eq = "common:kotlin.value_eq"
+
 # ── `in` is `contains()`, NOT a key/index test — NOT YET FIXED ──────────────
 #
 # `ecma_in_operator = true` above routes `in` to `ecma:object.hasIn`, which
@@ -711,6 +709,10 @@ path = "kotlin"
 [[esm_default]]
 kind = "tree-ambient"
 path = "kotlin"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "kotlin.collections"
 
 [[esm_default]]
 kind = "tree-ambient"

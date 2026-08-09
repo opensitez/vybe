@@ -164,8 +164,9 @@ fn do_start_equals_end_runs_once() {
 
 #[test]
 fn do_start_equals_end_negative_step_runs_once() {
-    let out =
-        run_prints("program t\ninteger :: i, s\ns = 0\ndo i = -3, -3, -2\ns = s + i\nend do\nprint *, s\nend program t\n");
+    let out = run_prints(
+        "program t\ninteger :: i, s\ns = 0\ndo i = -3, -3, -2\ns = s + i\nend do\nprint *, s\nend program t\n",
+    );
     assert_eq!(out, vec!["-3"]);
 }
 

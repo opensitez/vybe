@@ -45,7 +45,8 @@ fn probe(label: &str, src: &str) {
     vybe_compiler::primitives::platforms::finalize_platforms(&mut vm);
     match vm.run(chunks) {
         Ok(_) => println!("[{label}] RAN → {:?}", output.lock().unwrap()),
-        Err(e) => println!("[{label}] RUNTIME TRAP: {e}") }
+        Err(e) => println!("[{label}] RUNTIME TRAP: {e}"),
+    }
 }
 
 #[test]
@@ -228,7 +229,8 @@ fn ast_shape() {
     let src = "import java.util.ArrayList\nfun main() {\n    val a = java.util.ArrayList<Int>()\n    val b = ArrayList<Int>()\n}\n";
     match vybe_language_kotlin::parse(src) {
         Ok(m) => println!("AST: {:#?}", m.body),
-        Err(e) => println!("PARSE FAIL: {e}") }
+        Err(e) => println!("PARSE FAIL: {e}"),
+    }
 }
 
 /// Kotlin's OWN names must not be hijacked by the `java.lang` ambient. The

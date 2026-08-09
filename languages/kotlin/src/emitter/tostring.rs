@@ -36,7 +36,7 @@
 //! `loops`) rather than emitting raw opcodes wherever one exists.
 
 use vybe_compiler::primitives::functions::create_function_chunk;
-use vybe_compiler::primitives::{dict, expressions, loops, ops, strings, tuples};
+use vybe_compiler::primitives::{callable, dict, expressions, loops, ops, sets, strings, tuples};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
@@ -72,7 +72,7 @@ fn emit_call_render(chunks: &mut [Chunk], current: usize, render_idx: usize, lin
     chunks[current].emit_op_u16(Op::REF_FUNC, render_idx as u16, line);
     chunks[current].emit(0, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, tmp, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    callable::emit_direct_invoke(chunks, current, 1, line);
 }
 
 /// Push i32 `1` when the value in `slot` is an object (so `STRUCT_GET` on it
@@ -125,11 +125,25 @@ pub fn ensure_render_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     chunks[self_idx].emit_if_value(line);
     emit_object_to_string(chunks, self_idx, v, self_idx, line);
     chunks[self_idx].emit_else(line);
-    // `null` → "null", `true` → "true", numbers, strings, chars.
+    chunks[self_idx].emit_op_u16(Op::LOCAL_GET, v, line);
+    call_import(chunks, self_idx, "ecma:value", "typeof", 1, line);
+    chunks[self_idx].emit_string_const("boolean", line);
+    ops::emit_dyn_eq(&mut chunks[self_idx], line);
+    chunks[self_idx].emit_if_value(line);
+    chunks[self_idx].emit_op_u16(Op::LOCAL_GET, v, line);
+    ops::emit_dyn_to_bool(&mut chunks[self_idx], line);
+    chunks[self_idx].emit_if_value(line);
+    chunks[self_idx].emit_string_const("true", line);
+    chunks[self_idx].emit_else(line);
+    chunks[self_idx].emit_string_const("false", line);
+    chunks[self_idx].emit_end(line);
+    chunks[self_idx].emit_else(line);
+    // `null` → "null", numbers, strings, chars.
     chunks[self_idx].emit_op_u16(Op::LOCAL_GET, v, line);
     call_import(chunks, self_idx, "ecma:string", "String", 1, line);
     chunks[self_idx].emit_end(line);
 
+    chunks[self_idx].emit_end(line);
     chunks[self_idx].emit_end(line);
     chunks[self_idx].emit_op(Op::RETURN, line);
     self_idx
@@ -155,7 +169,8 @@ fn emit_has_to_string_slot(chunks: &mut [Chunk], current: usize, slot: u16, line
     chunks[current].emit_op(Op::I32_EQZ, line);
 }
 
-/// Push i32 `1` when the object in `slot` carries [`SET_MARKER`].
+/// Push i32 `1` when the object in `slot` is a real Set or carries the legacy
+/// Kotlin set marker.
 fn emit_is_set(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
     let key = chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
@@ -164,6 +179,14 @@ fn emit_is_set(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
     chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    let tag_idx = chunks[current].add_import("ecma:object", "toStringTag");
+    chunks[current].emit_call(tag_idx, 1, line);
+    chunks[current].emit_string_const("[object Set]", line);
+    let equals_idx = chunks[current].add_import("wasm:js-string", "equals");
+    chunks[current].emit_call(equals_idx, 2, line);
+    chunks[current].emit_op(Op::I32_OR, line);
 }
 
 /// An object: its own `toString`, else a `Set`, else a `Map`, else the ECMA
@@ -193,8 +216,9 @@ fn emit_object_to_string(
     // A StringBuilder renders as its TEXT — `"x$sb"` and `println(sb)` must
     // not print `[object StringBuilder]`.
     chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
-    let buf_key = chunks[current]
-        .add_constant(vybe_runtime::Value::String(std::sync::Arc::from("__buffer")));
+    let buf_key = chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
+        "__buffer",
+    )));
     chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, buf_key, line);
     let buf = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, buf, line);
@@ -247,11 +271,30 @@ fn emit_set_to_string(
 ) {
     let keys = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    let tag_idx = chunks[current].add_import("ecma:object", "toStringTag");
+    chunks[current].emit_call(tag_idx, 1, line);
+    chunks[current].emit_string_const("[object Set]", line);
+    let equals_idx = chunks[current].add_import("wasm:js-string", "equals");
+    chunks[current].emit_call(equals_idx, 2, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    sets::emit_values_array(chunks, current, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
     dict::emit_keys(chunks, current, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, keys, line);
 
     chunks[current].emit_string_const("[", line);
-    emit_join_rendered(chunks, current, keys, ", ", Some(SET_MARKER), render_idx, line);
+    emit_join_rendered(
+        chunks,
+        current,
+        keys,
+        ", ",
+        Some(SET_MARKER),
+        render_idx,
+        line,
+    );
     chunks[current].emit_string_const("]", line);
     strings::emit_concat(&mut chunks[current], 3, line);
 }

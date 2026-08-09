@@ -168,7 +168,7 @@ program attr_save_runtime_default_stable
     print *, counter
 end program attr_save_runtime_default_stable
 "#,
-);
+    );
     assert_eq!(out, vec!["1", "2"]);
 }
 

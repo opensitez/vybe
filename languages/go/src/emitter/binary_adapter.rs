@@ -23,7 +23,8 @@ pub fn emit_helper(
         "go.binary_put_uint64_parts" => emit_put_uint64_parts(chunks, current, argc, line),
         "go.binary_append_uint16" => emit_append_uint16(chunks, current, argc, line),
         "go.binary_append_uint32" => emit_append_uint32(chunks, current, argc, line),
-        _ => return false }
+        _ => return false,
+    }
     true
 }
 

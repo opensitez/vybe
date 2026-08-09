@@ -1,10 +1,11 @@
 //! Java BitSet backed by `ecma:set` members containing set bit indexes.
 
-use vybe_runtime::Chunk;
-use vybe_runtime::opcode::Op;
 use vybe_compiler::primitives::{
     collections,
-    instructions::{core_wasm, host} };
+    instructions::{core_wasm, host},
+};
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 fn get(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);

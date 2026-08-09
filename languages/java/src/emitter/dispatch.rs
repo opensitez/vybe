@@ -7,10 +7,10 @@
 //! - `strings::emit_*(chunk, line)` for string helpers (single chunk)
 //! - `core_wasm::*(&mut chunk, line, ...)` for raw WASM ops
 
-use vybe_runtime::Chunk;
-use vybe_runtime::opcode::Op;
 use vybe_compiler::primitives::instructions::{core_wasm, host};
 use vybe_compiler::primitives::{collections, strings};
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 fn emit_stdout_text(chunk: &mut Chunk, line: u32) {
     let text_slot = chunk.alloc_scratch(1);
@@ -1120,20 +1120,23 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             super::list_adapter::emit_vector_new(chunks, current, argc, line);
         }
         "java.hash_set_new" => {
-            collections::emit_array_new(chunks, current, argc as u16, line);
-            super::list_adapter::emit_mark_set_collection(chunks, current, line);
+            vybe_platform_jvm::emitter::collection_adapter::emit_hash_set_new(
+                chunks, current, argc, line,
+            );
         }
         "java.list_of" => {
             collections::emit_array_new(chunks, current, argc as u16, line);
             super::list_adapter::emit_mark_immutable_list(chunks, current, line);
         }
         "java.set_of" => {
-            super::list_adapter::emit_set_of(chunks, current, argc, line);
+            vybe_platform_jvm::emitter::collection_adapter::emit_set_of(
+                chunks, current, argc, line,
+            );
         }
         "java.set_copy_of" => {
-            collections::emit_clone(chunks, current, line);
-            super::list_adapter::emit_mark_set_collection(chunks, current, line);
-            super::list_adapter::emit_mark_immutable_list(chunks, current, line);
+            vybe_platform_jvm::emitter::collection_adapter::emit_set_copy_of(
+                chunks, current, line,
+            );
         }
         "java.list_copy_of" => {
             collections::emit_clone(chunks, current, line);
@@ -1170,6 +1173,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "java.add" => {
             super::list_adapter::emit_add(chunks, current, argc, line);
+        }
+        "java.set_add" => {
+            super::list_adapter::emit_set_add(chunks, current, argc, line);
         }
         "java.copy_on_write_add_if_absent" => {
             super::list_adapter::emit_copy_on_write_add_if_absent(chunks, current, line);
@@ -1802,13 +1808,15 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             vybe_compiler::primitives::object::emit_non_null(&mut chunks[current], line);
         }
 
-        _ => return false }
+        _ => return false,
+    }
     true
 }
 
 enum JavaArrayDefault {
     IntZero,
-    BoolFalse }
+    BoolFalse,
+}
 
 fn emit_new_array_with_default(
     chunks: &mut [Chunk],
@@ -1828,7 +1836,8 @@ fn emit_new_array_with_default(
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     match default {
         JavaArrayDefault::IntZero => chunks[current].emit_i32_const(0, line),
-        JavaArrayDefault::BoolFalse => chunks[current].emit_bool_const(false, line) }
+        JavaArrayDefault::BoolFalse => chunks[current].emit_bool_const(false, line),
+    }
     chunks[current].emit_i32_const(0, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
     collections::emit_fill(chunks, current, line);

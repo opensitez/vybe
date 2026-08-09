@@ -96,6 +96,7 @@ __vybe_type_get = { emit = "intrinsic:symbol_probe", min_args = 1, max_args = 1 
 "__csharp_str_length"      = { emit = "common:strings.length",      min_args = 1, max_args = 1 }
 "__csharp_str_char_code_at" = { emit = "common:str_char_code_at",   min_args = 2, max_args = 2 }
 "__dotnet_string_contains"  = { emit = "common:dotnet.string_contains",      min_args = 2, max_args = 3 }
+"__dotnet_hashset_contains" = { emit = "common:sets.has",                    min_args = 2, max_args = 2 }
 "__dotnet_string_compare"   = { emit = "common:dotnet.string_compare",       min_args = 2, max_args = 3 }
 "__dotnet_string_starts_with" = { emit = "common:dotnet.string_starts_with", min_args = 2, max_args = 3 }
 "__dotnet_string_ends_with" = { emit = "common:dotnet.string_ends_with",     min_args = 2, max_args = 3 }
@@ -220,9 +221,8 @@ path = "dotnet.system"
 "bool.FalseString"      = "False"
 
 [namespaces]
-# Enable .NET runtime surface semantics; namespace lookup is data-driven by
-# the common resolver through the tree mounts and ambient imports below.
-use_dotnet = true
+# Namespace lookup is data-driven by the common resolver through the tree
+# mounts and ambient imports below.
 source_imports_are_namespaces = true
 
 # Types under this namespace-tree path dispatch at RUNTIME through the type

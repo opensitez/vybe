@@ -29,6 +29,23 @@ fn common_emit(name: &str) -> NamespaceNode {
     NamespaceNode::CommonEmit(name.to_string())
 }
 
+fn kotlin_collection_type(methods: &[(&str, &str)], returns: &[(&str, &str)]) -> NamespaceNode {
+    let mut method_tree = Subtree::new();
+    for (name, emit) in methods {
+        method_tree.insert(name.to_ascii_lowercase(), common_emit(emit));
+    }
+    NamespaceNode::Type {
+        ctor: None,
+        ctor_call: None,
+        statics: Subtree::new(),
+        methods: method_tree,
+        member_returns: returns
+            .iter()
+            .map(|(name, ty)| (name.to_ascii_lowercase(), (*ty).to_string()))
+            .collect(),
+    }
+}
+
 pub fn register_namespace_tree() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
@@ -83,6 +100,74 @@ pub fn register_namespace_tree() {
             &mut root,
             "math.e",
             NamespaceNode::Const(Value::F64(std::f64::consts::E)),
+        );
+
+        for (name, emit) in [
+            ("collections.setof", "kotlin.set_literal"),
+            ("collections.mutablesetof", "kotlin.set_literal"),
+            ("collections.emptyset", "kotlin.set_literal"),
+            ("collections.buildset", "kotlin.set_literal"),
+            ("collections.linkedsetof", "kotlin.set_literal"),
+            ("collections.hashsetof", "kotlin.hash_set_literal"),
+            ("collections.union", "kotlin.set_union"),
+            ("collections.intersect", "kotlin.set_intersect"),
+            ("collections.subtract", "kotlin.set_subtract"),
+            ("collections.containsall", "kotlin.contains_all"),
+        ] {
+            insert_path(&mut root, name, common_emit(emit));
+        }
+
+        for (name, target) in [
+            ("collections.arraylist", "jvm.java.util.arraylist"),
+            ("collections.hashmap", "jvm.java.util.hashmap"),
+            ("collections.hashset", "jvm.java.util.hashset"),
+            ("collections.linkedhashmap", "jvm.java.util.linkedhashmap"),
+            ("collections.linkedhashset", "jvm.java.util.linkedhashset"),
+            ("text.stringbuilder", "jvm.java.lang.stringbuilder"),
+        ] {
+            insert_path(&mut root, name, NamespaceNode::Alias(target.to_string()));
+        }
+
+        let set_methods = [
+            ("union", "kotlin.set_union"),
+            ("intersect", "kotlin.set_intersect"),
+            ("subtract", "kotlin.set_subtract"),
+            ("containsall", "kotlin.contains_all"),
+            ("toset", "kotlin.to_set"),
+            ("tomutableset", "kotlin.to_set"),
+            ("tohashset", "kotlin.to_hash_set"),
+        ];
+        let set_returns = [
+            ("union", "Set"),
+            ("intersect", "Set"),
+            ("subtract", "Set"),
+            ("toset", "Set"),
+            ("tomutableset", "Set"),
+            ("tohashset", "Set"),
+        ];
+        insert_path(
+            &mut root,
+            "collections.set",
+            kotlin_collection_type(&set_methods, &set_returns),
+        );
+        insert_path(
+            &mut root,
+            "collections.mutableset",
+            kotlin_collection_type(
+                &[
+                    ("add", "kotlin.add"),
+                    ("remove", "kotlin.remove_any"),
+                    ("clear", "kotlin.clear_any"),
+                    ("union", "kotlin.set_union"),
+                    ("intersect", "kotlin.set_intersect"),
+                    ("subtract", "kotlin.set_subtract"),
+                    ("containsall", "kotlin.contains_all"),
+                    ("toset", "kotlin.to_set"),
+                    ("tomutableset", "kotlin.to_set"),
+                    ("tohashset", "kotlin.to_hash_set"),
+                ],
+                &set_returns,
+            ),
         );
 
         namespaces::register_namespace_tree("kotlin", NamespaceNode::Namespace(root));

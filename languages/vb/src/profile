@@ -106,6 +106,10 @@ __vybe_type_get = { emit = "intrinsic:symbol_probe", min_args = 1, max_args = 1 
 "__vb_task_when_all" = { emit = "common:dotnet.task_when_all", min_args = 1, max_args = 255 }
 "__vb_task_when_any" = { emit = "common:dotnet.task_when_any", min_args = 1, max_args = 255 }
 "__dotnet_list_add" = { emit = "common:dotnet.list_add", min_args = 2, max_args = 2 }
+"__vb_set_union" = { emit = "common:sets.union", min_args = 2, max_args = 2 }
+"__vb_set_intersection" = { emit = "common:sets.intersection", min_args = 2, max_args = 2 }
+"__vb_set_difference" = { emit = "common:sets.difference", min_args = 2, max_args = 2 }
+"__vb_set_symmetric_difference" = { emit = "common:sets.symmetric_difference", min_args = 2, max_args = 2 }
 
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
@@ -573,9 +577,8 @@ foreach       = "__array_forEach"
 # ────────────────────────────────────────────────────────────────────────────
 
 [namespaces]
-# Enable .NET runtime surface semantics; namespace lookup is data-driven by
-# the common resolver through the tree mounts and ambient imports below.
-use_dotnet = true
+# Namespace lookup is data-driven by the common resolver through the tree
+# mounts and ambient imports below.
 source_imports_are_namespaces = true
 
 # Types under this namespace-tree path dispatch at RUNTIME through the type

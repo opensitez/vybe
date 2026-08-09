@@ -2239,7 +2239,6 @@ fn emit_lua_numeric_rel_cmp(
     vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
 }
 
-
 fn emit_lua_rel_cmp(chunk: &mut Chunk, line: u32, op: Op) {
     let slots = chunk.alloc_scratch(2);
     let right = slots;
@@ -2277,7 +2276,8 @@ fn emit_lua_rel_cmp(chunk: &mut Chunk, line: u32, op: Op) {
         Op::F64_LE => Op::I32_LE_S,
         Op::F64_GT => Op::I32_GT_S,
         Op::F64_GE => Op::I32_GE_S,
-        _ => op };
+        _ => op,
+    };
     chunk.emit_op(string_op, line);
     vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
     chunk.emit_else(line);
@@ -3084,12 +3084,7 @@ pub fn emit_lua_setmetatable(chunks: &mut Vec<Chunk>, current: usize, argc: u8, 
     load(&mut chunks[current], table_slot, line);
 }
 
-pub fn emit_lua_set_class_metatable(
-    chunks: &mut Vec<Chunk>,
-    current: usize,
-    argc: u8,
-    line: u32,
-) {
+pub fn emit_lua_set_class_metatable(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     if argc != 3 {
         chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
@@ -3103,11 +3098,7 @@ pub fn emit_lua_set_class_metatable(
     save(&mut chunks[current], table_slot, line);
     emit_lua_set_metatable_for_value(chunks, current, table_slot, mt_slot, line);
     vybe_compiler::primitives::object::emit_retype_object_dynamic(
-        chunks,
-        current,
-        table_slot,
-        class_slot,
-        line,
+        chunks, current, table_slot, class_slot, line,
     );
     load(&mut chunks[current], table_slot, line);
 }
@@ -3316,7 +3307,8 @@ pub fn emit_lua_xpcall(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     vybe_compiler::primitives::errors::patch_catch(&mut chunks[current], catch);
     save(&mut chunks[current], error_slot, line);
     let handler_done = chunks[current].emit_block(line);
-    let handler_catch = vybe_compiler::primitives::errors::emit_try_start(&mut chunks[current], line);
+    let handler_catch =
+        vybe_compiler::primitives::errors::emit_try_start(&mut chunks[current], line);
     load(&mut chunks[current], base + 1, line);
     load(&mut chunks[current], error_slot, line);
     chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
@@ -3920,7 +3912,8 @@ pub fn emit_lua_table_insert(chunks: &mut Vec<Chunk>, current: usize, argc: u8, 
             chunks[current].emit_end(line);
             chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         }
-        _ => chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line) }
+        _ => chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line),
+    }
 }
 
 pub fn emit_lua_table_remove(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
@@ -3992,7 +3985,8 @@ pub fn emit_lua_table_remove(chunks: &mut Vec<Chunk>, current: usize, argc: u8, 
             emit_lua_missing_to_nil(&mut chunks[current], value, line);
             chunks[current].emit_end(line);
         }
-        _ => chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line) }
+        _ => chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line),
+    }
 }
 
 fn emit_lua_table_concat_validate(
@@ -4328,25 +4322,13 @@ pub fn emit_lua_table_move(chunks: &mut Vec<Chunk>, current: usize, argc: u8, li
     chunks[current].emit_end(line);
     save(&mut chunks[current], dest, line);
 
-    emit_lua_non_nil_object_is_slot(
-        &mut chunks[current],
-        source,
-        type_of,
-        str_compare,
-        line,
-    );
+    emit_lua_non_nil_object_is_slot(&mut chunks[current], source, type_of, str_compare, line);
     chunks[current].emit_if(line);
     chunks[current].emit_else(line);
     chunks[current].emit_string_const("bad argument #1 to 'move' (table expected)", line);
     vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
     chunks[current].emit_end(line);
-    emit_lua_non_nil_object_is_slot(
-        &mut chunks[current],
-        dest,
-        type_of,
-        str_compare,
-        line,
-    );
+    emit_lua_non_nil_object_is_slot(&mut chunks[current], dest, type_of, str_compare, line);
     chunks[current].emit_if(line);
     chunks[current].emit_else(line);
     chunks[current].emit_string_const("bad argument #5 to 'move' (table expected)", line);
@@ -4667,7 +4649,12 @@ pub fn emit_lua_print(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u
     }
     if argc == 0 {
         let log_idx = chunks[current].add_import("web:console", "log");
-        vybe_compiler::primitives::io::emit_print_with_import(&mut chunks[current], log_idx, 0, line);
+        vybe_compiler::primitives::io::emit_print_with_import(
+            &mut chunks[current],
+            log_idx,
+            0,
+            line,
+        );
         return;
     }
     let out = chunks[current].alloc_scratch(1);
@@ -4698,7 +4685,12 @@ pub fn emit_lua_print_row(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
         }
         chunks[current].emit_string_const("", line);
         let log_idx = chunks[current].add_import("web:console", "log");
-        vybe_compiler::primitives::io::emit_print_with_import(&mut chunks[current], log_idx, 1, line);
+        vybe_compiler::primitives::io::emit_print_with_import(
+            &mut chunks[current],
+            log_idx,
+            1,
+            line,
+        );
         return;
     }
 

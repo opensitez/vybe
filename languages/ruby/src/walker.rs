@@ -8,7 +8,8 @@ use vybe_ast::*;
 #[derive(Clone, Default)]
 struct RubyMethodInfo {
     arity: i64,
-    param_count: i64 }
+    param_count: i64,
+}
 
 thread_local! {
     static RUBY_METHODS: RefCell<HashMap<String, RubyMethodInfo>> = RefCell::new(HashMap::new());
@@ -2342,7 +2343,8 @@ a = [1].freeze; begin; a.delete_at(0); rescue FrozenError; puts 'err'; end"#, r#
         for pair in inner {
             match pair.as_rule() {
                 Rule::EOI | Rule::NEWLINE => continue,
-                _ => walk_stmt_into(pair, &mut body, &mut imports)? }
+                _ => walk_stmt_into(pair, &mut body, &mut imports)?,
+            }
         }
     }
 
@@ -2353,7 +2355,8 @@ a = [1].freeze; begin; a.delete_at(0); rescue FrozenError; puts 'err'; end"#, r#
         language: Lang::Ruby,
         body,
         imports,
-        directives: Default::default() })
+        directives: Default::default(),
+    })
 }
 
 fn normalize_ruby_file_dir_smoke_tests(source: &str) -> String {
@@ -3789,7 +3792,8 @@ struct RubyHeredocMarker {
     single_quoted: bool,
     backtick: bool,
     squiggly: bool,
-    preserve_newline: bool }
+    preserve_newline: bool,
+}
 
 fn normalize_ruby_heredocs(source: &str) -> String {
     let lines: Vec<&str> = source.lines().collect();
@@ -3921,7 +3925,8 @@ fn ruby_heredoc_markers(line: &str) -> Vec<RubyHeredocMarker> {
             single_quoted,
             backtick,
             squiggly,
-            preserve_newline: line[..start].contains('[') });
+            preserve_newline: line[..start].contains('['),
+        });
     }
     markers
 }
@@ -3956,7 +3961,8 @@ fn ruby_heredoc_double_quoted(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            _ => out.push(ch) }
+            _ => out.push(ch),
+        }
     }
     out.push('"');
     out
@@ -4316,7 +4322,8 @@ fn normalize_percent_array_literals(source: &str) -> String {
                     for ch in body.chars() {
                         match ch {
                             '"' => out.push_str("\\\""),
-                            _ => out.push(ch) }
+                            _ => out.push(ch),
+                        }
                     }
                     out.push('"');
                 }
@@ -4339,7 +4346,8 @@ fn ruby_double_quoted(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            _ => out.push(ch) }
+            _ => out.push(ch),
+        }
     }
     out.push('"');
     out
@@ -4351,7 +4359,8 @@ fn ruby_single_quoted(s: &str) -> String {
         match ch {
             '\\' => out.push_str("\\\\"),
             '\'' => out.push_str("\\'"),
-            _ => out.push(ch) }
+            _ => out.push(ch),
+        }
     }
     out.push('\'');
     out
@@ -4368,7 +4377,8 @@ fn ruby_percent_q_quoted(s: &str) -> String {
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
             '#' if i + 1 < chars.len() && chars[i + 1] == '{' => out.push_str("\\#"),
-            ch => out.push(ch) }
+            ch => out.push(ch),
+        }
         i += 1;
     }
     out.push('"');
@@ -4379,7 +4389,8 @@ fn is_simple_ruby_symbol_word(s: &str) -> bool {
     let mut chars = s.chars();
     match chars.next() {
         Some(ch) if ch == '_' || ch.is_ascii_alphabetic() => {}
-        _ => return false }
+        _ => return false,
+    }
     chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
 }
 
@@ -4533,7 +4544,8 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
 
         Rule::NEWLINE => StmtKind::Empty,
 
-        other => return Err(format!("Unexpected statement rule: {:?}", other)) };
+        other => return Err(format!("Unexpected statement rule: {:?}", other)),
+    };
     Ok(Statement::with_span(
         normalize_ruby_raise_stmt_kind(kind),
         span,
@@ -4545,7 +4557,8 @@ fn normalize_ruby_raise_stmt_kind(kind: StmtKind) -> StmtKind {
         kind: ExprKind::Call {
             callee,
             args,
-            optional },
+            optional,
+        },
         ..
     }) = kind
     else {
@@ -4555,25 +4568,29 @@ fn normalize_ruby_raise_stmt_kind(kind: StmtKind) -> StmtKind {
         return StmtKind::Expr(Expression::new(ExprKind::Call {
             callee,
             args,
-            optional }));
+            optional,
+        }));
     }
     let ExprKind::Ident(name) = &callee.kind else {
         return StmtKind::Expr(Expression::new(ExprKind::Call {
             callee,
             args,
-            optional }));
+            optional,
+        }));
     };
     if !matches!(name.as_str(), "raise" | "fail") {
         return StmtKind::Expr(Expression::new(ExprKind::Call {
             callee,
             args,
-            optional }));
+            optional,
+        }));
     }
     StmtKind::Throw {
         expr: Some(normalize_ruby_raise_args(
             args.into_iter().map(|arg| arg.value).collect(),
         )),
-        cause: None }
+        cause: None,
+    }
 }
 
 // ── Method def ──────────────────────────────────────────────────────────────
@@ -4625,7 +4642,8 @@ fn walk_method_def(pair: Pair<Rule>) -> Result<StmtKind, String> {
         handles: Vec::new(),
         is_async: false,
         is_generator,
-        is_sub: false })
+        is_sub: false,
+    })
 }
 
 fn walk_alias_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -4734,7 +4752,8 @@ fn walk_param_list(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                             is_rest: false,
                             is_kwargs: false,
                             is_optional: false,
-                            is_nullable: false });
+                            is_nullable: false,
+                        });
                     }
                     Rule::optional_param => {
                         let mut name = String::new();
@@ -4742,7 +4761,8 @@ fn walk_param_list(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                         for c in item.into_inner() {
                             match c.as_rule() {
                                 Rule::identifier => name = c.as_str().to_string(),
-                                _ => default = Some(walk_expression(c)?) }
+                                _ => default = Some(walk_expression(c)?),
+                            }
                         }
                         params.push(Param {
                             name,
@@ -4752,7 +4772,8 @@ fn walk_param_list(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                             is_rest: false,
                             is_kwargs: false,
                             is_optional: true,
-                            is_nullable: false });
+                            is_nullable: false,
+                        });
                     }
                     Rule::splat_param => {
                         let name = item
@@ -4768,7 +4789,8 @@ fn walk_param_list(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                             is_rest: true,
                             is_kwargs: false,
                             is_optional: false,
-                            is_nullable: false });
+                            is_nullable: false,
+                        });
                     }
                     Rule::double_splat_param => {
                         let name = item
@@ -4784,7 +4806,8 @@ fn walk_param_list(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                             is_rest: false,
                             is_kwargs: true,
                             is_optional: false,
-                            is_nullable: false });
+                            is_nullable: false,
+                        });
                     }
                     Rule::block_param => {
                         // &block — ignore for now, blocks are handled differently
@@ -4810,7 +4833,8 @@ fn walk_param_list(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                             is_rest: false,
                             is_kwargs: false,
                             is_optional,
-                            is_nullable: false });
+                            is_nullable: false,
+                        });
                     }
                     _ => {}
                 }
@@ -4850,7 +4874,8 @@ fn walk_class_def(pair: Pair<Rule>) -> Result<StmtKind, String> {
         interfaces: Vec::new(),
         members,
         modifiers: ClassModifiers::default(),
-        decorators: vec![] })
+        decorators: vec![],
+    })
 }
 
 fn walk_class_body(pair: Pair<Rule>, class_name: &str) -> Result<Vec<ClassMember>, String> {
@@ -4892,7 +4917,8 @@ fn walk_class_body(pair: Pair<Rule>, class_name: &str) -> Result<Vec<ClassMember
                             body: body.clone(),
                             base_args: None,
                             initializer_target: vybe_ast::ConstructorInitializerTarget::Base,
-                            visibility: current_visibility });
+                            visibility: current_visibility,
+                        });
                     } else {
                         let mut mods = modifiers.clone();
                         mods.visibility = current_visibility;
@@ -4960,7 +4986,7 @@ fn walk_class_body(pair: Pair<Rule>, class_name: &str) -> Result<Vec<ClassMember
                         });
                         continue;
                     }
-                    if let StmtKind::Assign { targets, value , ..} = stmt.kind {
+                    if let StmtKind::Assign { targets, value, .. } = stmt.kind {
                         if targets.len() == 1 {
                             if let ExprKind::Ident(name) = &targets[0].kind {
                                 if name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
@@ -4968,13 +4994,18 @@ fn walk_class_body(pair: Pair<Rule>, class_name: &str) -> Result<Vec<ClassMember
                                         name: name.clone(),
                                         type_hint: None,
                                         value,
-                                        visibility: current_visibility });
+                                        visibility: current_visibility,
+                                    });
                                     continue;
                                 }
                             }
                         }
                         members.push(ClassMember::Method(Box::new(Statement::new(
-                            StmtKind::Assign { targets, value , by_ref: false },
+                            StmtKind::Assign {
+                                targets,
+                                value,
+                                by_ref: false,
+                            },
                         ))));
                     } else {
                         members.push(ClassMember::Method(Box::new(stmt)));
@@ -5040,7 +5071,8 @@ fn walk_attr_decl(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
                     "attr_accessor" => "accessor",
                     "attr_reader" => "reader",
                     "attr_writer" => "writer",
-                    _ => "accessor" }
+                    _ => "accessor",
+                }
             }
             Rule::symbol_list => {
                 for s in p.into_inner() {
@@ -5072,7 +5104,8 @@ fn walk_attr_decl(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
             let field_access = Expression::new(ExprKind::Member {
                 object: Box::new(self_expr),
                 field: format!("_rb_{}", name),
-                null_safe: false });
+                null_safe: false,
+            });
             let body = vec![Statement::new(StmtKind::Return(Some(field_access)))];
             members.push(ClassMember::Method(Box::new(Statement::new(
                 StmtKind::FunctionDecl {
@@ -5084,12 +5117,14 @@ fn walk_attr_decl(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
                     handles: Vec::new(),
                     is_async: false,
                     is_generator: false,
-                    is_sub: false },
+                    is_sub: false,
+                },
             ))));
         } else if kind == "writer" {
             let body = vec![Statement::new(StmtKind::Throw {
                 expr: Some(Expression::string("NoMethodError")),
-                cause: None })];
+                cause: None,
+            })];
             members.push(ClassMember::Method(Box::new(Statement::new(
                 StmtKind::FunctionDecl {
                     name: name.clone(),
@@ -5100,7 +5135,8 @@ fn walk_attr_decl(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
                     handles: Vec::new(),
                     is_async: false,
                     is_generator: false,
-                    is_sub: false },
+                    is_sub: false,
+                },
             ))));
         }
 
@@ -5137,7 +5173,8 @@ fn walk_module_def(pair: Pair<Rule>) -> Result<StmtKind, String> {
     Ok(StmtKind::ModuleDecl {
         name,
         members,
-        visibility: Visibility::Public })
+        visibility: Visibility::Public,
+    })
 }
 
 // ── If ──────────────────────────────────────────────────────────────────────
@@ -5156,7 +5193,8 @@ fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
             cond,
             then_body: vec![Statement::new(StmtKind::Expr(body_expr))],
             elifs: Vec::new(),
-            else_body: None });
+            else_body: None,
+        });
     }
 
     // Block form: if cond then_kw? body elsif* else? end
@@ -5187,7 +5225,8 @@ fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
         cond,
         then_body,
         elifs,
-        else_body })
+        else_body,
+    })
 }
 
 // ── Unless ──────────────────────────────────────────────────────────────────
@@ -5206,7 +5245,8 @@ fn walk_unless(pair: Pair<Rule>) -> Result<StmtKind, String> {
             cond: negate(cond),
             then_body: vec![Statement::new(StmtKind::Expr(body_expr))],
             elifs: Vec::new(),
-            else_body: None });
+            else_body: None,
+        });
     }
 
     // Block form
@@ -5227,7 +5267,8 @@ fn walk_unless(pair: Pair<Rule>) -> Result<StmtKind, String> {
         cond: negate(cond),
         then_body,
         elifs: Vec::new(),
-        else_body })
+        else_body,
+    })
 }
 
 // ── While ───────────────────────────────────────────────────────────────────
@@ -5244,7 +5285,8 @@ fn walk_while(pair: Pair<Rule>) -> Result<StmtKind, String> {
         return Ok(StmtKind::While {
             cond,
             body: vec![Statement::new(StmtKind::Expr(body_expr))],
-            else_body: None });
+            else_body: None,
+        });
     }
 
     // Block form
@@ -5254,7 +5296,8 @@ fn walk_while(pair: Pair<Rule>) -> Result<StmtKind, String> {
     Ok(StmtKind::While {
         cond,
         body,
-        else_body: None })
+        else_body: None,
+    })
 }
 
 // ── Until ───────────────────────────────────────────────────────────────────
@@ -5272,7 +5315,8 @@ fn walk_until(pair: Pair<Rule>) -> Result<StmtKind, String> {
         return Ok(StmtKind::While {
             cond: negate(cond),
             body: vec![Statement::new(StmtKind::Expr(body_expr))],
-            else_body: None });
+            else_body: None,
+        });
     }
 
     // Block form: until cond → while !cond
@@ -5282,7 +5326,8 @@ fn walk_until(pair: Pair<Rule>) -> Result<StmtKind, String> {
     Ok(StmtKind::While {
         cond: negate(cond),
         body,
-        else_body: None })
+        else_body: None,
+    })
 }
 
 // ── For ─────────────────────────────────────────────────────────────────────
@@ -5316,7 +5361,10 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 value: Expression::new(ExprKind::Index {
                     object: Box::new(Expression::new(ExprKind::Ident(tmp.clone()))),
                     index: Box::new(Expression::int(i as i64)),
-                    null_safe: false }), by_ref: false }));
+                    null_safe: false,
+                }),
+                by_ref: false,
+            }));
         }
         destructure_stmts.extend(body);
         body = destructure_stmts;
@@ -5332,7 +5380,8 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
         body,
         of: true,
         else_body: None,
-        is_async: false })
+        is_async: false,
+    })
 }
 
 // ── Case / When ─────────────────────────────────────────────────────────────
@@ -5384,7 +5433,8 @@ fn walk_case(pair: Pair<Rule>) -> Result<StmtKind, String> {
     Ok(StmtKind::Switch {
         expr: subject.unwrap_or(Expression::bool(true)),
         cases,
-        default })
+        default,
+    })
 }
 
 // ── Begin / Rescue / Ensure ─────────────────────────────────────────────────
@@ -5433,7 +5483,8 @@ fn walk_begin(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     var_name,
                     stack_var: None,
                     body: catch_body,
-                    when_clause: None });
+                    when_clause: None,
+                });
             }
             Rule::else_clause => {
                 let ei = p.into_inner();
@@ -5454,7 +5505,8 @@ fn walk_begin(pair: Pair<Rule>) -> Result<StmtKind, String> {
         body,
         catches,
         else_body,
-        finally })
+        finally,
+    })
 }
 
 // ── Loop ────────────────────────────────────────────────────────────────────
@@ -5477,7 +5529,8 @@ fn walk_loop(pair: Pair<Rule>) -> Result<StmtKind, String> {
     Ok(StmtKind::While {
         cond: Expression::bool(true),
         body,
-        else_body: None })
+        else_body: None,
+    })
 }
 
 // ── Return ──────────────────────────────────────────────────────────────────
@@ -5554,7 +5607,8 @@ fn normalize_ruby_raise_expr(expr: Expression) -> Expression {
                 expr
             }
         }
-        _ => expr }
+        _ => expr,
+    }
 }
 
 fn ruby_exception_helper_name(name: &str) -> Option<&'static str> {
@@ -5583,7 +5637,8 @@ fn ruby_exception_helper_name(name: &str) -> Option<&'static str> {
         "NoMemoryError" => "__ruby_exception_no_memory_error",
         "UncaughtThrowError" => "__ruby_exception_uncaught_throw_error",
         "LocalJumpError" => "__ruby_exception_local_jump_error",
-        _ => return None })
+        _ => return None,
+    })
 }
 
 fn ruby_exception_ancestors_expr(name: &str) -> Option<Expression> {
@@ -5622,7 +5677,8 @@ fn ruby_exception_ancestors_expr(name: &str) -> Option<Expression> {
         ],
         "LocalJumpError" => &["LocalJumpError", "StandardError", "Exception"],
         "Exception" => &["Exception"],
-        _ => return None };
+        _ => return None,
+    };
     Some(ruby_array_expr(
         chain
             .iter()
@@ -5637,7 +5693,8 @@ fn ruby_expr_may_be_exception(expr: &Expression) -> bool {
         ExprKind::Call { callee, .. } => {
             matches!(&callee.kind, ExprKind::Ident(name) if name.starts_with("__ruby_exception"))
         }
-        _ => false }
+        _ => false,
+    }
 }
 
 fn is_ruby_exception_name(name: &str) -> bool {
@@ -5730,7 +5787,9 @@ fn walk_multi_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
             targets: vec![Expression::new(ExprKind::Destructure(
                 DestructurePattern::Array(patterns),
             ))],
-            value: values.into_iter().next().unwrap(), by_ref: false })
+            value: values.into_iter().next().unwrap(),
+            by_ref: false,
+        })
     } else {
         // a, b = 1, 2 — wrap RHS in array
         let value = Expression::new(ExprKind::Array(
@@ -5740,7 +5799,8 @@ fn walk_multi_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     key: None,
                     value: v,
                     spread: false,
-                    by_ref: false })
+                    by_ref: false,
+                })
                 .collect(),
         ));
         let patterns = targets
@@ -5757,7 +5817,9 @@ fn walk_multi_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
             targets: vec![Expression::new(ExprKind::Destructure(
                 DestructurePattern::Array(patterns),
             ))],
-            value, by_ref: false })
+            value,
+            by_ref: false,
+        })
     }
 }
 
@@ -5777,12 +5839,14 @@ fn fixup_assign_target(expr: Expression) -> Expression {
             if let ExprKind::Member {
                 ref object,
                 ref field,
-                null_safe } = callee.kind
+                null_safe,
+            } = callee.kind
             {
                 return Expression::new(ExprKind::Member {
                     object: object.clone(),
                     field: format!("_rb_{}", field),
-                    null_safe });
+                    null_safe,
+                });
             }
         }
     }
@@ -5832,7 +5896,8 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
             "^=" => CompoundOp::BitXor,
             "||=" => CompoundOp::Or,
             "&&=" => CompoundOp::And,
-            _ => CompoundOp::Add };
+            _ => CompoundOp::Add,
+        };
         let stmt = StmtKind::CompoundAssign { target, op, value };
         return maybe_wrap_modifier(stmt, &mut inner);
     }
@@ -5870,13 +5935,16 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
                         key: None,
                         value: v,
                         spread: false,
-                        by_ref: false })
+                        by_ref: false,
+                    })
                     .collect(),
             ))
         };
         let stmt = StmtKind::Assign {
             targets: vec![target],
-            value, by_ref: false };
+            value,
+            by_ref: false,
+        };
         return maybe_wrap_modifier(stmt, &mut remaining);
     }
 
@@ -5890,12 +5958,15 @@ fn normalize_bang_method_stmt(expr: Expression) -> Option<StmtKind> {
     if let Some(target_name) = ruby_mutating_shl_target(&expr) {
         return Some(StmtKind::Assign {
             targets: vec![Expression::ident(&target_name)],
-            value: expr, by_ref: false });
+            value: expr,
+            by_ref: false,
+        });
     }
     let ExprKind::Call {
         callee,
         args,
-        optional } = expr.kind
+        optional,
+    } = expr.kind
     else {
         return None;
     };
@@ -5907,13 +5978,15 @@ fn normalize_bang_method_stmt(expr: Expression) -> Option<StmtKind> {
             let exprs = args.into_iter().map(|arg| arg.value).collect();
             return Some(StmtKind::Throw {
                 expr: Some(normalize_ruby_raise_args(exprs)),
-                cause: None });
+                cause: None,
+            });
         }
     }
     let ExprKind::Member {
         object,
         field,
-        null_safe } = callee.kind
+        null_safe,
+    } = callee.kind
     else {
         return None;
     };
@@ -5943,7 +6016,8 @@ fn normalize_bang_method_stmt(expr: Expression) -> Option<StmtKind> {
         "replace" => "replace",
         "concat" => "concat",
         "prepend" => "prepend",
-        _ => return None };
+        _ => return None,
+    };
     let ExprKind::Ident(name) = &object.kind else {
         return None;
     };
@@ -5952,12 +6026,16 @@ fn normalize_bang_method_stmt(expr: Expression) -> Option<StmtKind> {
         callee: Box::new(Expression::new(ExprKind::Member {
             object,
             field: method.to_string(),
-            null_safe: false })),
+            null_safe: false,
+        })),
         args,
-        optional: false });
+        optional: false,
+    });
     Some(StmtKind::Assign {
         targets: vec![target],
-        value, by_ref: false })
+        value,
+        by_ref: false,
+    })
 }
 
 fn ruby_mutating_shl_target(expr: &Expression) -> Option<String> {
@@ -5973,7 +6051,8 @@ fn ruby_mutating_shl_target(expr: &Expression) -> Option<String> {
                 .and_then(|arg| ruby_mutating_shl_target(&arg.value))
         }
         ExprKind::Ident(name) => Some(name.clone()),
-        _ => None }
+        _ => None,
+    }
 }
 
 fn walk_raw_command_builtin(raw: &str) -> Result<Option<StmtKind>, String> {
@@ -5998,7 +6077,8 @@ fn walk_raw_command_builtin(raw: &str) -> Result<Option<StmtKind>, String> {
     Ok(Some(StmtKind::Expr(Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident(head)),
         args,
-        optional: false }))))
+        optional: false,
+    }))))
 }
 
 /// Handle command-style call: postfix ~ command_args ~ block_literal? ~ modifier_suffix?
@@ -6040,7 +6120,8 @@ fn walk_command_call(mut items: Vec<Pair<Rule>>) -> Result<StmtKind, String> {
     let call_expr = Expression::new(ExprKind::Call {
         callee: Box::new(callee),
         args,
-        optional: false });
+        optional: false,
+    });
 
     let stmt = StmtKind::Expr(call_expr);
     maybe_wrap_modifier(stmt, &mut items)
@@ -6053,11 +6134,13 @@ fn maybe_wrap_modifier(stmt: StmtKind, rest: &mut Vec<Pair<Rule>>) -> Result<Stm
         .position(|p| p.as_rule() == Rule::modifier_suffix);
     let mod_pair = match mod_pos {
         Some(pos) => rest.remove(pos),
-        None => return Ok(stmt) };
+        None => return Ok(stmt),
+    };
     let mut mod_inner = mod_pair.into_inner();
     let kw = match mod_inner.next() {
         Some(k) => k,
-        None => return Ok(stmt) };
+        None => return Ok(stmt),
+    };
     let cond_pair = mod_inner
         .next()
         .ok_or_else(|| "modifier_suffix missing condition".to_string())?;
@@ -6068,25 +6151,32 @@ fn maybe_wrap_modifier(stmt: StmtKind, rest: &mut Vec<Pair<Rule>>) -> Result<Stm
             cond,
             then_body: vec![body_stmt],
             elifs: vec![],
-            else_body: None }),
+            else_body: None,
+        }),
         Rule::unless_kw => Ok(StmtKind::If {
             cond: Expression::new(ExprKind::Unary {
                 op: UnaryOp::Not,
-                expr: Box::new(cond) }),
+                expr: Box::new(cond),
+            }),
             then_body: vec![body_stmt],
             elifs: vec![],
-            else_body: None }),
+            else_body: None,
+        }),
         Rule::while_kw => Ok(StmtKind::While {
             cond,
             body: vec![body_stmt],
-            else_body: None }),
+            else_body: None,
+        }),
         Rule::until_kw => Ok(StmtKind::While {
             cond: Expression::new(ExprKind::Unary {
                 op: UnaryOp::Not,
-                expr: Box::new(cond) }),
+                expr: Box::new(cond),
+            }),
             body: vec![body_stmt],
-            else_body: None }),
-        _ => Ok(StmtKind::Expr(Expression::null())) }
+            else_body: None,
+        }),
+        _ => Ok(StmtKind::Expr(Expression::null())),
+    }
 }
 
 // ── Require (import) ────────────────────────────────────────────────────────
@@ -6111,7 +6201,8 @@ fn walk_require(pair: Pair<Rule>) -> Result<Import, String> {
 
     Ok(Import {
         kind: ImportKind::Simple { path, alias: None },
-        span })
+        span,
+    })
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -6141,7 +6232,8 @@ fn print_call_args(stmt: &mut Statement) -> Option<&mut Vec<Argument>> {
             ExprKind::Call {
                 callee,
                 args,
-                optional: false },
+                optional: false,
+            },
         ..
     }) = &mut stmt.kind
     {
@@ -6272,7 +6364,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             Argument::positional(expr),
                             Argument::positional(Expression::string(part)),
                         ],
-                        optional: false });
+                        optional: false,
+                    });
                 }
                 Ok(expr.kind)
             }
@@ -6284,7 +6377,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             Ok(ExprKind::Member {
                 object: Box::new(Expression::new(ExprKind::This)),
                 field: format!("_rb_{}", name),
-                null_safe: false })
+                null_safe: false,
+            })
         }
         // Class var @@x → ident (treated as class-level variable)
         Rule::class_var => {
@@ -6338,7 +6432,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
         Rule::NEWLINE => Ok(ExprKind::Lit(Literal::Null)),
 
-        other => Err(format!("Unexpected expression rule: {:?}", other)) }
+        other => Err(format!("Unexpected expression rule: {:?}", other)),
+    }
 }
 
 // ── Expression inner (handles inline_rescue) ────────────────────────────────
@@ -6380,7 +6475,8 @@ fn walk_ternary(pair: Pair<Rule>) -> Result<ExprKind, String> {
         Ok(ExprKind::Ternary {
             cond: Box::new(cond),
             then: Box::new(then),
-            else_: Box::new(else_) })
+            else_: Box::new(else_),
+        })
     } else {
         walk_expr_kind(inner.remove(0))
     }
@@ -6399,7 +6495,8 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
             return Ok(ExprKind::Call {
                 callee: Box::new(Expression::ident("__ruby_not")),
                 args: vec![Argument::positional(operand)],
-                optional: false });
+                optional: false,
+            });
         }
         return walk_expr_kind(inner.remove(0));
     }
@@ -6412,7 +6509,8 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
             Ok(ExprKind::Call {
                 callee: Box::new(Expression::ident("__ruby_not")),
                 args: vec![Argument::positional(operand)],
-                optional: false })
+                optional: false,
+            })
         }
         Rule::comparison => {
             let mut left = walk_expression(inner.remove(0))?;
@@ -6428,7 +6526,8 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             left = Expression::new(ExprKind::Call {
                                 callee: Box::new(Expression::ident("__ruby_match_index")),
                                 args: vec![Argument::positional(left), Argument::positional(right)],
-                                optional: false });
+                                optional: false,
+                            });
                             continue;
                         }
                         let op = parse_comparison_op(op_text);
@@ -6454,16 +6553,19 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 return Ok(ExprKind::Call {
                     callee: Box::new(Expression::ident("__ruby_not")),
                     args: vec![Argument::positional(operand)],
-                    optional: false });
+                    optional: false,
+                });
             }
             let op = match op_str {
                 "-" => UnaryOp::Neg,
                 "+" => UnaryOp::Pos,
                 "~" => UnaryOp::BitNot,
-                _ => UnaryOp::Neg };
+                _ => UnaryOp::Neg,
+            };
             Ok(ExprKind::Unary {
                 op,
-                expr: Box::new(operand) })
+                expr: Box::new(operand),
+            })
         }
         _ => {
             if !inner.is_empty() {
@@ -6488,12 +6590,15 @@ fn walk_binary_chain(
                 BinOp::And => Expression::new(ExprKind::Ternary {
                     cond: Box::new(left),
                     then: Box::new(ruby_boolify_expr(right)),
-                    else_: Box::new(ruby_bool_expr(false)) }),
+                    else_: Box::new(ruby_bool_expr(false)),
+                }),
                 BinOp::Or => Expression::new(ExprKind::Ternary {
                     cond: Box::new(left),
                     then: Box::new(ruby_bool_expr(true)),
-                    else_: Box::new(ruby_boolify_expr(right)) }),
-                _ => maybe_ruby_array_binary(left, op, right) };
+                    else_: Box::new(ruby_boolify_expr(right)),
+                }),
+                _ => maybe_ruby_array_binary(left, op, right),
+            };
         }
     }
     Ok(left.kind)
@@ -6507,7 +6612,8 @@ fn ruby_boolify_expr(expr: Expression) -> Expression {
     Expression::new(ExprKind::Ternary {
         cond: Box::new(expr),
         then: Box::new(ruby_bool_expr(true)),
-        else_: Box::new(ruby_bool_expr(false)) })
+        else_: Box::new(ruby_bool_expr(false)),
+    })
 }
 
 /// Ruby `*` is dynamic (string repeat OR numeric mul), same as Python.
@@ -6574,7 +6680,8 @@ fn maybe_ruby_array_binary(left: Expression, op: BinOp, right: Expression) -> Ex
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("sprintf")),
             args,
-            optional: false });
+            optional: false,
+        });
     }
     let helper = if matches!(left.kind, ExprKind::Lit(Literal::Str(_)))
         || matches!(right.kind, ExprKind::Lit(Literal::Str(_)))
@@ -6585,7 +6692,8 @@ fn maybe_ruby_array_binary(left: Expression, op: BinOp, right: Expression) -> Ex
             BinOp::LtEq => Some("__ruby_str_lte"),
             BinOp::GtEq => Some("__ruby_str_gte"),
             BinOp::Spaceship => Some("__ruby_str_cmp"),
-            _ => None }
+            _ => None,
+        }
     } else if is_ruby_time_expr(&left) || is_ruby_time_expr(&right) {
         match op {
             BinOp::Eq => Some("__ruby_time_eq"),
@@ -6594,7 +6702,8 @@ fn maybe_ruby_array_binary(left: Expression, op: BinOp, right: Expression) -> Ex
             BinOp::LtEq => Some("__ruby_time_lte"),
             BinOp::GtEq => Some("__ruby_time_gte"),
             BinOp::Spaceship => Some("__ruby_time_cmp"),
-            _ => None }
+            _ => None,
+        }
     } else {
         None
     }
@@ -6611,17 +6720,20 @@ fn maybe_ruby_array_binary(left: Expression, op: BinOp, right: Expression) -> Ex
         BinOp::BitXor => Some("__ruby_op_xor"),
         BinOp::Eq => Some("__ruby_eq"),
         BinOp::StrictEq => Some("__ruby_proc_call"),
-        _ => None });
+        _ => None,
+    });
     if let Some(name) = helper {
         Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident(name)),
             args: vec![Argument::positional(left), Argument::positional(right)],
-            optional: false })
+            optional: false,
+        })
     } else {
         Expression::new(ExprKind::Binary {
             op,
             left: Box::new(left),
-            right: Box::new(right) })
+            right: Box::new(right),
+        })
     }
 }
 
@@ -6629,8 +6741,10 @@ fn is_ruby_time_expr(expr: &Expression) -> bool {
     match &expr.kind {
         ExprKind::Call { callee, .. } => match &callee.kind {
             ExprKind::Ident(name) => name.starts_with("__ruby_time_"),
-            _ => false },
-        _ => false }
+            _ => false,
+        },
+        _ => false,
+    }
 }
 
 fn ruby_percent_hash_literal(fmt_expr: &Expression, hash_expr: &Expression) -> Option<Expression> {
@@ -6665,7 +6779,8 @@ fn ruby_percent_hash_literal(fmt_expr: &Expression, hash_expr: &Expression) -> O
                         None
                     }
                 }
-                _ => None })?;
+                _ => None,
+            })?;
             parts.push(value);
         } else {
             lit.push(c);
@@ -6779,7 +6894,8 @@ fn walk_range(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, String> {
         Ok(ExprKind::Range {
             start: Box::new(start),
             end: Box::new(end),
-            inclusive })
+            inclusive,
+        })
     } else {
         Ok(start.kind)
     }
@@ -6822,7 +6938,8 @@ fn walk_ident_call(pair: Pair<Rule>) -> Result<ExprKind, String> {
     Ok(ExprKind::Call {
         callee: Box::new(callee),
         args,
-        optional: false })
+        optional: false,
+    })
 }
 
 fn ruby_method_name_arg(expr: &Expression) -> Option<String> {
@@ -6840,15 +6957,18 @@ fn ruby_eval_expr(source: Expression) -> Expression {
             Argument::positional(source),
             Argument::positional(Expression::string("ruby")),
         ],
-        optional: false })
+        optional: false,
+    })
 }
 
 fn ruby_receiver_class_name(expr: &Expression) -> String {
     match &expr.kind {
         ExprKind::New { class, .. } => match &class.kind {
             ExprKind::Ident(name) => name.clone(),
-            _ => "Object".to_string() },
-        _ => "Object".to_string() }
+            _ => "Object".to_string(),
+        },
+        _ => "Object".to_string(),
+    }
 }
 
 fn ruby_method_expr(
@@ -6872,7 +6992,8 @@ fn ruby_method_expr(
             Argument::positional(Expression::string(&original)),
             Argument::positional(receiver),
         ],
-        optional: false })
+        optional: false,
+    })
 }
 
 fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
@@ -6897,7 +7018,8 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         Argument::positional(expr),
                         Argument::positional(Expression::string(const_name)),
                     ],
-                    optional: false });
+                    optional: false,
+                });
             }
         }
     }
@@ -6912,7 +7034,8 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
         return Ok(Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__ruby_proc_call")),
             args: vec![Argument::positional(expr)],
-            optional: false }));
+            optional: false,
+        }));
     }
 
     let first_rule = children[0].as_rule();
@@ -6958,7 +7081,9 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
 
             if method_name == "zip"
                 && block_text.is_none()
-                && final_args.iter().all(|arg| arg.name.is_none() && !arg.spread)
+                && final_args
+                    .iter()
+                    .all(|arg| arg.name.is_none() && !arg.spread)
             {
                 let mut iterables = Vec::with_capacity(final_args.len() + 1);
                 iterables.push(expr);
@@ -6966,7 +7091,8 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                 return Ok(Expression::new(ExprKind::Zip {
                     iterables,
                     mode: ZipMode::First,
-                    strict: false }));
+                    strict: false,
+                }));
             }
 
             if matches!(
@@ -7029,12 +7155,14 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                         return Ok(Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::ident("__ruby_enum_new")),
                             args: vec![Argument::positional(gen_fn)],
-                            optional: false }));
+                            optional: false,
+                        }));
                     }
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__ruby_enum_new")),
                         args: final_args,
-                        optional: false }));
+                        optional: false,
+                    }));
                 }
                 if class_name == "Time" {
                     let builtin = match method_name.as_str() {
@@ -7043,25 +7171,29 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                         "now" => Some("__ruby_time_now"),
                         "at" => Some("__ruby_time_at"),
                         "parse" | "iso8601" | "rfc2822" | "httpdate" => Some("__ruby_time_parse"),
-                        _ => None };
+                        _ => None,
+                    };
                     if let Some(name) = builtin {
                         return Ok(Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::ident(name)),
                             args: final_args,
-                            optional: false }));
+                            optional: false,
+                        }));
                     }
                 }
                 if class_name == "Date" && method_name == "new" {
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__ruby_date_new")),
                         args: final_args,
-                        optional: false }));
+                        optional: false,
+                    }));
                 }
                 if class_name == "Symbol" && method_name == "all_symbols" {
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__ruby_symbols")),
                         args: final_args,
-                        optional: false }));
+                        optional: false,
+                    }));
                 }
                 if final_args.is_empty() && method_name == "ancestors" {
                     if let Some(ancestors) = ruby_exception_ancestors_expr(class_name) {
@@ -7075,7 +7207,8 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                 return Ok(Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__ruby_time_utc")),
                     args: final_args,
-                    optional: false }));
+                    optional: false,
+                }));
             }
 
             // Normalize .new() → ExprKind::New (constructor call)
@@ -7085,20 +7218,23 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                         return Ok(Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::ident(helper)),
                             args: final_args,
-                            optional: false }));
+                            optional: false,
+                        }));
                     }
                 }
                 if matches!(expr.kind, ExprKind::Ident(ref name) if name == "Random") {
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__ruby_random_new")),
                         args: final_args,
-                        optional: false }));
+                        optional: false,
+                    }));
                 }
                 if matches!(expr.kind, ExprKind::Ident(ref name) if name == "Array") {
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__ruby_array_new")),
                         args: final_args,
-                        optional: false }));
+                        optional: false,
+                    }));
                 }
                 // Route `Set.new` / `SortedSet.new` through direct calls so the
                 // shared `ecma_new_dispatch` `new Set(...)` intercept (which
@@ -7108,17 +7244,20 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__ruby_set_new")),
                         args: final_args,
-                        optional: false }));
+                        optional: false,
+                    }));
                 }
                 if matches!(expr.kind, ExprKind::Ident(ref name) if name == "SortedSet") {
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__ruby_sorted_set_new")),
                         args: final_args,
-                        optional: false }));
+                        optional: false,
+                    }));
                 }
                 return Ok(Expression::new(ExprKind::New {
                     class: Box::new(expr),
-                    args: final_args }));
+                    args: final_args,
+                }));
             }
 
             // Normalize .call() → direct call (lambda/proc invocation)
@@ -7128,7 +7267,8 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                 return Ok(Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__ruby_proc_call")),
                     args: call_args,
-                    optional: false }));
+                    optional: false,
+                }));
             }
 
             if method_name == "set_backtrace" && final_args.len() == 1 {
@@ -7137,7 +7277,8 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                 return Ok(Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__ruby_exception_set_backtrace")),
                     args: call_args,
-                    optional: false }));
+                    optional: false,
+                }));
             }
 
             if method_name == "exception" {
@@ -7150,7 +7291,8 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__ruby_exception_with_message")),
                         args: call_args,
-                        optional: false }));
+                        optional: false,
+                    }));
                 }
             }
 
@@ -7160,7 +7302,8 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                 return Ok(Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__ruby_proc_call")),
                     args: call_args,
-                    optional: false }));
+                    optional: false,
+                }));
             }
 
             if matches!(
@@ -7174,7 +7317,8 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                         Argument::positional(expr),
                         Argument::positional(Expression::string(&method_name)),
                     ],
-                    optional: false }));
+                    optional: false,
+                }));
             }
 
             if matches!(
@@ -7187,13 +7331,15 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                     "const_defined?" => "__ruby_const_defined",
                     "remove_const" => "__ruby_remove_const",
                     "constants" => "__ruby_constants",
-                    _ => unreachable!() };
+                    _ => unreachable!(),
+                };
                 let mut call_args = vec![Argument::positional(expr)];
                 call_args.extend(final_args);
                 return Ok(Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident(builtin)),
                     args: call_args,
-                    optional: false }));
+                    optional: false,
+                }));
             }
 
             if method_name == "method" && final_args.len() == 1 {
@@ -7203,7 +7349,8 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                     let fn_expr = Expression::new(ExprKind::Member {
                         object: Box::new(expr.clone()),
                         field: original,
-                        null_safe: false });
+                        null_safe: false,
+                    });
                     return Ok(ruby_method_expr(&name, fn_expr, &owner, &owner, expr));
                 }
             }
@@ -7217,11 +7364,13 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                 let inst = Expression::new(ExprKind::Binary {
                     op: BinOp::InstanceOf,
                     left: Box::new(expr),
-                    right: Box::new(class_arg) });
+                    right: Box::new(class_arg),
+                });
                 return Ok(Expression::new(ExprKind::Ternary {
                     cond: Box::new(inst),
                     then: Box::new(Expression::bool(true)),
-                    else_: Box::new(Expression::bool(false)) }));
+                    else_: Box::new(Expression::bool(false)),
+                }));
             }
 
             // Normalize .first → Index(expr, 0) — pure bytecode, no host call
@@ -7232,7 +7381,8 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                         Argument::positional(expr),
                         Argument::positional(Expression::int(0)),
                     ],
-                    optional: false }));
+                    optional: false,
+                }));
             }
 
             // Normalize .last → Index(expr, -1) — pure bytecode
@@ -7243,7 +7393,8 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                         Argument::positional(expr),
                         Argument::positional(Expression::int(-1)),
                     ],
-                    optional: false }));
+                    optional: false,
+                }));
             }
 
             if method_name == "integer?" && final_args.is_empty() {
@@ -7264,7 +7415,8 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident(helper)),
                         args: vec![Argument::positional(expr)],
-                        optional: false }));
+                        optional: false,
+                    }));
                 }
                 if method_name == "class" {
                     if matches!(
@@ -7277,7 +7429,8 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__ruby_class")),
                         args: vec![Argument::positional(expr)],
-                        optional: false }));
+                        optional: false,
+                    }));
                 }
                 if method_name == "name" {
                     if matches!(expr.kind, ExprKind::Lit(Literal::Str(_))) {
@@ -7286,7 +7439,8 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__ruby_name")),
                         args: vec![Argument::positional(expr)],
-                        optional: false }));
+                        optional: false,
+                    }));
                 }
                 if method_name == "message"
                     || (method_name == "to_s" && ruby_expr_may_be_exception(&expr))
@@ -7294,25 +7448,29 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                     return Ok(Expression::new(ExprKind::Member {
                         object: Box::new(expr),
                         field: "message".to_string(),
-                        null_safe }));
+                        null_safe,
+                    }));
                 }
                 if method_name == "__type" {
                     return Ok(Expression::new(ExprKind::Member {
                         object: Box::new(expr),
                         field: "__type".to_string(),
-                        null_safe }));
+                        null_safe,
+                    }));
                 }
                 if method_name == "backtrace" {
                     return Ok(Expression::new(ExprKind::Member {
                         object: Box::new(expr),
                         field: "backtrace".to_string(),
-                        null_safe }));
+                        null_safe,
+                    }));
                 }
                 if method_name == "backtrace_locations" {
                     return Ok(Expression::new(ExprKind::Member {
                         object: Box::new(expr),
                         field: "backtrace".to_string(),
-                        null_safe }));
+                        null_safe,
+                    }));
                 }
                 if method_name == "cause" {
                     return Ok(Expression::new(ExprKind::Lit(Literal::Null)));
@@ -7321,7 +7479,8 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                     return Ok(Expression::new(ExprKind::Member {
                         object: Box::new(expr),
                         field: "message".to_string(),
-                        null_safe }));
+                        null_safe,
+                    }));
                 }
             }
 
@@ -7336,12 +7495,14 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
             let member = Expression::new(ExprKind::Member {
                 object: Box::new(expr),
                 field: method_name,
-                null_safe });
+                null_safe,
+            });
 
             Ok(Expression::new(ExprKind::Call {
                 callee: Box::new(member),
                 args: final_args,
-                optional: false }))
+                optional: false,
+            }))
         }
         Rule::constant => {
             // Scope resolution: ::Constant
@@ -7363,7 +7524,8 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                         Argument::positional(Expression::ident(base)),
                         Argument::positional(Expression::string(const_name)),
                     ],
-                    optional: false }));
+                    optional: false,
+                }));
             }
             Ok(Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__ruby_const_get")),
@@ -7371,7 +7533,8 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                     Argument::positional(expr),
                     Argument::positional(Expression::string(const_name)),
                 ],
-                optional: false }))
+                optional: false,
+            }))
         }
         Rule::call_args => {
             // Bare call: expr(args)
@@ -7381,7 +7544,8 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
             Ok(Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__ruby_proc_call")),
                 args: call_args,
-                optional: false }))
+                optional: false,
+            }))
         }
         Rule::expression_list => {
             // Subscript: expr[index]
@@ -7389,7 +7553,8 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
             Ok(Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__ruby_index_get")),
                 args: vec![Argument::positional(expr), Argument::positional(index)],
-                optional: false }))
+                optional: false,
+            }))
         }
         Rule::block_literal => {
             // Trailing block on its own (e.g., `array.each { |x| ... }`)
@@ -7397,21 +7562,24 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
             if let ExprKind::Call {
                 callee,
                 mut args,
-                optional } = expr.kind
+                optional,
+            } = expr.kind
             {
                 let block_lambda = walk_block_literal(children.into_iter().next().unwrap())?;
                 args.push(Argument::positional(block_lambda));
                 Ok(Expression::new(ExprKind::Call {
                     callee,
                     args,
-                    optional }))
+                    optional,
+                }))
             } else {
                 // Bare block on expression — treat as call with block
                 let block_lambda = walk_block_literal(children.into_iter().next().unwrap())?;
                 Ok(Expression::new(ExprKind::Call {
                     callee: Box::new(expr),
                     args: vec![Argument::positional(block_lambda)],
-                    optional: false }))
+                    optional: false,
+                }))
             }
         }
         _ => {
@@ -7421,7 +7589,8 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                 Ok(Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__ruby_index_get")),
                     args: vec![Argument::positional(expr), Argument::positional(index)],
-                    optional: false }))
+                    optional: false,
+                }))
             } else {
                 Ok(expr)
             }
@@ -7463,7 +7632,8 @@ fn ruby_enumerator_generator_expr(source: &str) -> Option<Expression> {
             handles: Vec::new(),
             is_async: false,
             is_generator: true,
-            is_sub: false }),
+            is_sub: false,
+        }),
     ))))
 }
 
@@ -7501,7 +7671,8 @@ fn walk_call_args(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
                         value: val,
                         name: None,
                         by_ref: false,
-                        spread: true });
+                        spread: true,
+                    });
                 }
             } else if first_text == "*" {
                 // Splat
@@ -7511,7 +7682,8 @@ fn walk_call_args(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
                         value: val,
                         name: None,
                         by_ref: false,
-                        spread: true });
+                        spread: true,
+                    });
                 }
             } else if first_text == "&" || raw_arg.trim_start().starts_with('&') {
                 // Block arg
@@ -7532,7 +7704,8 @@ fn walk_call_args(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
                         value: val,
                         name: Some(name),
                         by_ref: false,
-                        spread: false });
+                        spread: false,
+                    });
                 } else {
                     let val = walk_expression(children.into_iter().next().unwrap())?;
                     args.push(Argument::positional(val));
@@ -7562,19 +7735,22 @@ fn ruby_block_arg_to_lambda(expr: Expression) -> Expression {
                 is_rest: false,
                 is_kwargs: false,
                 is_optional: false,
-                is_nullable: false };
+                is_nullable: false,
+            };
             let call = Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__ruby_proc_call")),
                 args: vec![
                     Argument::positional(expr),
                     Argument::positional(Expression::ident("__ruby_proc_arg")),
                 ],
-                optional: false });
+                optional: false,
+            });
             return Expression::new(ExprKind::Lambda {
                 params: vec![param],
                 body: LambdaBody::Block(vec![Statement::new(StmtKind::Return(Some(call)))]),
                 is_async: false,
-                captures: Vec::new() });
+                captures: Vec::new(),
+            });
         }
     }
     if let ExprKind::Lit(Literal::Str(method)) = &expr.kind {
@@ -7586,19 +7762,23 @@ fn ruby_block_arg_to_lambda(expr: Expression) -> Expression {
             is_rest: false,
             is_kwargs: false,
             is_optional: false,
-            is_nullable: false };
+            is_nullable: false,
+        };
         let call = Expression::new(ExprKind::Call {
             callee: Box::new(Expression::new(ExprKind::Member {
                 object: Box::new(Expression::ident("__ruby_proc_arg")),
                 field: method.clone(),
-                null_safe: false })),
+                null_safe: false,
+            })),
             args: Vec::new(),
-            optional: false });
+            optional: false,
+        });
         return Expression::new(ExprKind::Lambda {
             params: vec![param],
             body: LambdaBody::Block(vec![Statement::new(StmtKind::Return(Some(call)))]),
             is_async: false,
-            captures: Vec::new() });
+            captures: Vec::new(),
+        });
     }
     expr
 }
@@ -7640,7 +7820,8 @@ fn walk_block_literal(pair: Pair<Rule>) -> Result<Expression, String> {
         params,
         body: LambdaBody::Block(body),
         is_async: false,
-        captures: Vec::new() }))
+        captures: Vec::new(),
+    }))
 }
 
 /// Ruby implicit return: last expression in a body becomes a Return.
@@ -7672,8 +7853,10 @@ fn lambda_contains_spaceship(expr: &Expression) -> bool {
     match &expr.kind {
         ExprKind::Lambda { body, .. } => match body {
             LambdaBody::Expr(e) => expr_contains_spaceship(e),
-            LambdaBody::Block(stmts) => stmts.iter().any(stmt_contains_spaceship) },
-        _ => false }
+            LambdaBody::Block(stmts) => stmts.iter().any(stmt_contains_spaceship),
+        },
+        _ => false,
+    }
 }
 
 fn stmt_contains_spaceship(stmt: &Statement) -> bool {
@@ -7685,7 +7868,8 @@ fn stmt_contains_spaceship(stmt: &Statement) -> bool {
             cond,
             then_body,
             elifs,
-            else_body } => {
+            else_body,
+        } => {
             expr_contains_spaceship(cond)
                 || then_body.iter().any(stmt_contains_spaceship)
                 || elifs.iter().any(|(cond, body)| {
@@ -7696,7 +7880,8 @@ fn stmt_contains_spaceship(stmt: &Statement) -> bool {
                     .map(|body| body.iter().any(stmt_contains_spaceship))
                     .unwrap_or(false)
         }
-        _ => false }
+        _ => false,
+    }
 }
 
 fn expr_contains_spaceship(expr: &Expression) -> bool {
@@ -7733,14 +7918,17 @@ fn expr_contains_spaceship(expr: &Expression) -> bool {
         }),
         ExprKind::Interpolation(parts) => parts.iter().any(|part| match part {
             InterpolPart::Expr(e) | InterpolPart::Formatted(e, _) => expr_contains_spaceship(e),
-            InterpolPart::Text(_) => false }),
+            InterpolPart::Text(_) => false,
+        }),
         ExprKind::Range { start, end, .. } => {
             expr_contains_spaceship(start) || expr_contains_spaceship(end)
         }
         ExprKind::Lambda { body, .. } => match body {
             LambdaBody::Expr(e) => expr_contains_spaceship(e),
-            LambdaBody::Block(stmts) => stmts.iter().any(stmt_contains_spaceship) },
-        _ => false }
+            LambdaBody::Block(stmts) => stmts.iter().any(stmt_contains_spaceship),
+        },
+        _ => false,
+    }
 }
 
 fn walk_block_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
@@ -7766,7 +7954,8 @@ fn walk_block_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                                     is_rest: true,
                                     is_kwargs: false,
                                     is_optional: false,
-                                    is_nullable: false });
+                                    is_nullable: false,
+                                });
                             }
                             Rule::optional_param => {
                                 let mut inner = item.into_inner();
@@ -7786,7 +7975,8 @@ fn walk_block_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                                     is_rest: false,
                                     is_kwargs: false,
                                     is_optional: true,
-                                    is_nullable: false });
+                                    is_nullable: false,
+                                });
                             }
                             Rule::identifier => {
                                 params.push(Param {
@@ -7797,7 +7987,8 @@ fn walk_block_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                                     is_rest: false,
                                     is_kwargs: false,
                                     is_optional: false,
-                                    is_nullable: false });
+                                    is_nullable: false,
+                                });
                             }
                             _ => {}
                         }
@@ -7834,7 +8025,8 @@ fn walk_primary(pair: Pair<Rule>) -> Result<ExprKind, String> {
             // Hash literal {...}
             walk_hash_inner(inner.remove(0))
         }
-        _ => walk_expr_kind(inner.remove(0)) }
+        _ => walk_expr_kind(inner.remove(0)),
+    }
 }
 
 fn walk_array_inner(pair: Pair<Rule>) -> Result<ExprKind, String> {
@@ -7847,7 +8039,8 @@ fn walk_array_inner(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 key: None,
                 value: val,
                 spread: false,
-                by_ref: false })
+                by_ref: false,
+            })
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(ExprKind::Array(elements))
@@ -7912,7 +8105,8 @@ fn walk_interpolated_string(pair: Pair<Rule>) -> Result<ExprKind, String> {
             .iter()
             .map(|p| match p {
                 InterpolPart::Text(t) => t.as_str(),
-                _ => "" })
+                _ => "",
+            })
             .collect();
         return Ok(ExprKind::Lit(Literal::Str(parse_ruby_string(&s))));
     }
@@ -7965,7 +8159,8 @@ fn walk_lambda(pair: Pair<Rule>) -> Result<ExprKind, String> {
         params,
         body: LambdaBody::Block(body),
         is_async: false,
-        captures: Vec::new() });
+        captures: Vec::new(),
+    });
     Ok(ruby_proc_expr("__ruby_lambda", lambda).kind)
 }
 
@@ -7980,7 +8175,8 @@ fn walk_proc(pair: Pair<Rule>) -> Result<ExprKind, String> {
         params: Vec::new(),
         body: LambdaBody::Block(Vec::new()),
         is_async: false,
-        captures: Vec::new() });
+        captures: Vec::new(),
+    });
     Ok(ruby_proc_expr("__ruby_proc", lambda).kind)
 }
 
@@ -8014,7 +8210,8 @@ fn walk_yield(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         key: None,
                         value: a,
                         spread: false,
-                        by_ref: false })
+                        by_ref: false,
+                    })
                     .collect(),
             ),
         )))))
@@ -8031,7 +8228,8 @@ fn walk_defined(pair: Pair<Rule>) -> Result<ExprKind, String> {
             return Ok(ExprKind::Binary {
                 op: BinOp::NotEq,
                 left: Box::new(expr),
-                right: Box::new(Expression::null()) });
+                right: Box::new(Expression::null()),
+            });
         }
     }
     Ok(ExprKind::Lit(Literal::Bool(false)))
@@ -8066,7 +8264,8 @@ fn walk_if_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
         Ok(ExprKind::Ternary {
             cond: Box::new(cond),
             then: Box::new(then_val),
-            else_: Box::new(else_val) })
+            else_: Box::new(else_val),
+        })
     } else {
         Ok(ExprKind::Lit(Literal::Null))
     }
@@ -8086,7 +8285,8 @@ fn walk_unless_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
         Ok(ExprKind::Ternary {
             cond: Box::new(cond),
             then: Box::new(then_val),
-            else_: Box::new(else_val) })
+            else_: Box::new(else_val),
+        })
     } else {
         Ok(ExprKind::Lit(Literal::Null))
     }
@@ -8111,7 +8311,8 @@ fn body_to_expr(mut stmts: Vec<Statement>) -> Expression {
     match last.kind {
         StmtKind::Expr(e) => e,
         StmtKind::Return(Some(e)) => e,
-        _ => Expression::null() }
+        _ => Expression::null(),
+    }
 }
 
 // ── Expression list ─────────────────────────────────────────────────────────
@@ -8137,7 +8338,8 @@ fn walk_expr_list_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     key: None,
                     value: e,
                     spread: false,
-                    by_ref: false })
+                    by_ref: false,
+                })
                 .collect(),
         ))
     }
@@ -8164,7 +8366,8 @@ fn walk_expr_list_single(pair: Pair<Rule>) -> Result<Expression, String> {
                     key: None,
                     value: e,
                     spread: false,
-                    by_ref: false })
+                    by_ref: false,
+                })
                 .collect(),
         )))
     }
@@ -8182,13 +8385,15 @@ fn to_span(pair: &Pair<Rule>) -> Span {
         start_line: sl as u32,
         start_col: sc as u32,
         end_line: el as u32,
-        end_col: ec as u32 }
+        end_col: ec as u32,
+    }
 }
 
 fn negate(expr: Expression) -> Expression {
     Expression::new(ExprKind::Unary {
         op: UnaryOp::Not,
-        expr: Box::new(expr) })
+        expr: Box::new(expr),
+    })
 }
 
 fn next_meaningful<'a>(
@@ -8197,7 +8402,8 @@ fn next_meaningful<'a>(
     for p in iter {
         match p.as_rule() {
             Rule::NEWLINE | Rule::then_kw | Rule::do_kw | Rule::in_kw => continue,
-            _ => return Ok(p) }
+            _ => return Ok(p),
+        }
     }
     Err("No more meaningful pairs".into())
 }
@@ -8312,7 +8518,8 @@ fn parse_comparison_op(s: &str) -> BinOp {
         ">=" => BinOp::GtEq,
         "<=>" => BinOp::Spaceship,
         "===" => BinOp::StrictEq,
-        _ => BinOp::Eq }
+        _ => BinOp::Eq,
+    }
 }
 
 fn parse_binop(s: &str) -> BinOp {
@@ -8328,7 +8535,8 @@ fn parse_binop(s: &str) -> BinOp {
         "|" => BinOp::BitOr,
         "^" => BinOp::BitXor,
         "&" => BinOp::BitAnd,
-        _ => BinOp::Add }
+        _ => BinOp::Add,
+    }
 }
 
 fn ruby_int_expr(value: i64) -> Expression {
@@ -8339,7 +8547,8 @@ fn ruby_call_expr(name: &str, args: Vec<Expression>) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident(name)),
         args: args.into_iter().map(Argument::positional).collect(),
-        optional: false })
+        optional: false,
+    })
 }
 
 fn ruby_array_expr(values: Vec<Expression>) -> Expression {
@@ -8350,7 +8559,8 @@ fn ruby_array_expr(values: Vec<Expression>) -> Expression {
                 key: None,
                 value,
                 spread: false,
-                by_ref: false })
+                by_ref: false,
+            })
             .collect(),
     ))
 }
@@ -8361,10 +8571,12 @@ fn ruby_proc_expr(name: &str, lambda: Expression) -> Expression {
             params.iter().filter(|p| !p.is_rest).count() as i64,
             params.iter().any(|p| p.is_rest),
         ),
-        _ => (0, false) };
+        _ => (0, false),
+    };
     let param_count = match &lambda.kind {
         ExprKind::Lambda { params, .. } => params.len() as i64,
-        _ => arity };
+        _ => arity,
+    };
     ruby_call_expr(
         name,
         vec![
@@ -8409,14 +8621,16 @@ fn literal_int_value(expr: &Expression) -> Option<i64> {
         ExprKind::Lit(Literal::Int(v)) => Some(*v),
         ExprKind::Unary {
             op: UnaryOp::Neg,
-            expr } => {
+            expr,
+        } => {
             if let ExprKind::Lit(Literal::Int(v)) = &expr.kind {
                 Some(-*v)
             } else {
                 None
             }
         }
-        _ => None }
+        _ => None,
+    }
 }
 
 fn ruby_slice_returns_nil(receiver: &Expression, method_name: &str, args: &[Argument]) -> bool {
@@ -8454,7 +8668,8 @@ fn normalize_ruby_slice_call(method_name: &mut String, args: &mut Vec<Argument>)
         if let ExprKind::Range {
             start,
             end,
-            inclusive } = args[0].value.clone().kind
+            inclusive,
+        } = args[0].value.clone().kind
         {
             let start = *start;
             let exclusive_end = ruby_range_exclusive_end(*end, inclusive);
@@ -8675,7 +8890,8 @@ fn walk_percent_literal(s: &str) -> ExprKind {
                     Expression::new(ExprKind::Lit(Literal::Str(w)))
                 },
                 spread: false,
-                by_ref: false })
+                by_ref: false,
+            })
             .collect();
         ExprKind::Array(words)
     } else {
@@ -8699,7 +8915,8 @@ fn ruby_percent_words(body: &str, interpolate: bool) -> Vec<String> {
                 Some(' ') => cur.push(' '),
                 Some('n') if interpolate => cur.push('\n'),
                 Some(other) => cur.push(other),
-                None => cur.push('\\') }
+                None => cur.push('\\'),
+            }
         } else {
             cur.push(ch);
         }

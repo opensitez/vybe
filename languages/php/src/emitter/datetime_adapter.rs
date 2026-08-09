@@ -13,9 +13,9 @@
 //! `DateInterval` for runtime dispatch; `__time` is ms-since-epoch.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
-use vybe_compiler::primitives::instructions::core_wasm;
 
 const TYPE_KEY: &str = "__type";
 const TIME_KEY: &str = "__time";
@@ -27,7 +27,8 @@ const TZNAME_KEY: &str = "__tzname";
 // Millisecond spans come from the shared date primitive — these were one of
 // eighteen copies of `86_400_000` across eight adapter files.
 use vybe_compiler::primitives::datetime::{
-    MS_PER_DAY, MS_PER_HOUR, MS_PER_MINUTE, MS_PER_SECOND, MS_PER_WEEK };
+    MS_PER_DAY, MS_PER_HOUR, MS_PER_MINUTE, MS_PER_SECOND, MS_PER_WEEK,
+};
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
@@ -2801,7 +2802,8 @@ pub fn format_php_literal_to_ast(
             ExprKind::Member {
                 object: Box::new(obj),
                 field: field.to_string(),
-                null_safe: false },
+                null_safe: false,
+            },
             span.clone(),
         )
     }
@@ -2810,7 +2812,8 @@ pub fn format_php_literal_to_ast(
             ExprKind::Call {
                 callee: Box::new(callee),
                 args: args.into_iter().map(Argument::positional).collect(),
-                optional: false },
+                optional: false,
+            },
             span.clone(),
         )
     }
@@ -2828,7 +2831,8 @@ pub fn format_php_literal_to_ast(
                     vybe_ast::ExprKind::Lit(vybe_ast::Literal::Str(String::new())),
                     span.clone(),
                 )),
-                right: Box::new(part) },
+                right: Box::new(part),
+            },
             span.clone(),
         )
     }
@@ -2854,7 +2858,8 @@ pub fn format_php_literal_to_ast(
             ExprKind::Binary {
                 op: BinOp::Add,
                 left: Box::new(left),
-                right: Box::new(right) },
+                right: Box::new(right),
+            },
             span.clone(),
         )
     }
@@ -2863,7 +2868,8 @@ pub fn format_php_literal_to_ast(
             ExprKind::Binary {
                 op: BinOp::Concat,
                 left: Box::new(left),
-                right: Box::new(right) },
+                right: Box::new(right),
+            },
             span.clone(),
         )
     }
@@ -2876,14 +2882,16 @@ pub fn format_php_literal_to_ast(
                 key: None,
                 value: lit_str(s, span),
                 spread: false,
-                by_ref: false })
+                by_ref: false,
+            })
             .collect();
         let arr = Expression::with_span(ExprKind::Array(elems), span.clone());
         Expression::with_span(
             ExprKind::Index {
                 object: Box::new(arr),
                 index: Box::new(idx),
-                null_safe: false },
+                null_safe: false,
+            },
             span.clone(),
         )
     }
@@ -2942,7 +2950,8 @@ pub fn format_php_literal_to_ast(
                     ExprKind::Binary {
                         op: BinOp::Mod,
                         left: Box::new(yr),
-                        right: Box::new(lit_int(100, span)) },
+                        right: Box::new(lit_int(100, span)),
+                    },
                     span.clone(),
                 );
                 Some(pad(mod100, 2, span))
@@ -2968,7 +2977,8 @@ pub fn format_php_literal_to_ast(
                     ExprKind::Binary {
                         op: BinOp::Mod,
                         left: Box::new(plus11),
-                        right: Box::new(lit_int(12, span)) },
+                        right: Box::new(lit_int(12, span)),
+                    },
                     span.clone(),
                 );
                 let plus1 = add(mod12, lit_int(1, span), span);
@@ -2986,7 +2996,8 @@ pub fn format_php_literal_to_ast(
                     ExprKind::Binary {
                         op: BinOp::Lt,
                         left: Box::new(hr),
-                        right: Box::new(lit_int(12, span)) },
+                        right: Box::new(lit_int(12, span)),
+                    },
                     span.clone(),
                 );
                 let (am, pm) = if c == 'A' { ("AM", "PM") } else { ("am", "pm") };
@@ -2994,7 +3005,8 @@ pub fn format_php_literal_to_ast(
                     ExprKind::Ternary {
                         cond: Box::new(cmp),
                         then: Box::new(lit_str(am, span)),
-                        else_: Box::new(lit_str(pm, span)) },
+                        else_: Box::new(lit_str(pm, span)),
+                    },
                     span.clone(),
                 ))
             }
@@ -3025,14 +3037,16 @@ pub fn format_php_literal_to_ast(
                     ExprKind::Binary {
                         op: BinOp::StrictEq,
                         left: Box::new(dow.clone()),
-                        right: Box::new(lit_int(0, span)) },
+                        right: Box::new(lit_int(0, span)),
+                    },
                     span.clone(),
                 );
                 let n_int = Expression::with_span(
                     ExprKind::Ternary {
                         cond: Box::new(cmp_zero),
                         then: Box::new(lit_int(7, span)),
-                        else_: Box::new(dow) },
+                        else_: Box::new(dow),
+                    },
                     span.clone(),
                 );
                 Some(stringify(n_int, span))
@@ -3045,7 +3059,8 @@ pub fn format_php_literal_to_ast(
                     ExprKind::Binary {
                         op: BinOp::Div,
                         left: Box::new(time),
-                        right: Box::new(lit_int(1000, span)) },
+                        right: Box::new(lit_int(1000, span)),
+                    },
                     span.clone(),
                 );
                 let floor = call(
@@ -3111,7 +3126,8 @@ pub fn parse_relative_delta(s: &str) -> Option<(i64, &'static str)> {
         "week" => "week",
         "month" => "month",
         "year" => "year",
-        _ => return None };
+        _ => return None,
+    };
     Some((n * sign, canon))
 }
 

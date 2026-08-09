@@ -1,8 +1,8 @@
 //! Go runtime-surface helpers routed via `common:go.*`.
 
+use vybe_compiler::primitives::instructions::host;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
-use vybe_compiler::primitives::instructions::host;
 
 pub fn emit_helper(
     name: &str,
@@ -50,7 +50,8 @@ pub fn emit_helper(
             chunks[current].emit_op_u16(Op::LOCAL_GET, base, line); // pat
             host::emit(&mut chunks[current], "ecma:regexp", "split", 2, line);
         }
-        _ => return false }
+        _ => return false,
+    }
     true
 }
 

@@ -202,7 +202,8 @@ __java_bigint_test_bit   = { emit = "common:jvm.java.bigint_test_bit", min_args 
 __java_bigint_gcd        = { emit = "common:jvm.java.bigint_gcd",      min_args = 2, max_args = 2 }
 __java_bigint_is_probable_prime = { emit = "common:jvm.java.bigint_is_probable_prime", min_args = 2, max_args = 2 }
 __java_bigint_next_probable_prime = { emit = "common:jvm.java.bigint_next_probable_prime", min_args = 1, max_args = 1 }
-__java_set_add = { emit = "common:jvm.java.add", min_args = 2, max_args = 2 }
+__java_set_add = { emit = "common:java.set_add", min_args = 2, max_args = 2 }
+__java_set_contains = { emit = "common:jvm.java.contains", min_args = 2, max_args = 2 }
 __java_set_remove = { emit = "common:jvm.java.list_remove_value", min_args = 2, max_args = 2 }
 __java_queue_add = { emit = "common:jvm.java.add", min_args = 2, max_args = 2 }
 __java_queue_peek = { emit = "common:jvm.java.peek_first", min_args = 1, max_args = 1 }
@@ -552,7 +553,7 @@ longValue     = { emit = "common:java.trunc_cast",       min_args = 0, max_args 
 doubleValue   = { emit = "common:java.double_to_string", min_args = 0, max_args = 0 }
 
 # List / ArrayList methods
-add           = { emit = "common:jvm.java.add",              min_args = 1, max_args = 2 }
+add           = { emit = "common:java.set_add",              min_args = 1, max_args = 2 }
 addAll        = { emit = "common:java.add_all",          min_args = 1, max_args = 2 }
 remove        = [
     { emit = "common:java.iterator_remove_unsupported", min_args = 0, max_args = 0 },

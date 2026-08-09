@@ -7,9 +7,9 @@
 //! `exec(regexp, str)`; `match/matchAll/search/split(str, regexp)`;
 //! `replace/replaceAll(str, regexp, replacement)`.
 
+use vybe_compiler::primitives::tuples;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
-use vybe_compiler::primitives::tuples;
 
 fn lget(c: &mut Chunk, s: u16, line: u32) {
     c.emit_op_u16(Op::LOCAL_GET, s, line);
@@ -37,7 +37,8 @@ fn build_regexp(chunks: &mut [Chunk], current: usize, pat: u16, flags: Option<&s
             chunks[current].emit_string_const(f, line);
             call(chunks, current, "ecma:regexp", "new", 2, line);
         }
-        None => call(chunks, current, "ecma:regexp", "new", 1, line) }
+        None => call(chunks, current, "ecma:regexp", "new", 1, line),
+    }
 }
 
 /// `re.search(pat, s)` → `exec(new(pat), s)` → match array or null.

@@ -3,10 +3,10 @@
 //! These adapters keep Java's overloaded string APIs in the Java frontend
 //! while still targeting the existing ECMA-shaped runtime surface.
 
-use vybe_runtime::Chunk;
-use vybe_runtime::opcode::Op;
 use vybe_compiler::primitives::collections;
 use vybe_compiler::primitives::instructions::host;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 pub fn emit_index_of(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     host::emit(&mut chunks[current], "ecma:string", "indexOf", argc, line);

@@ -679,6 +679,7 @@ mod test_php_web_parse_url_invalid_url_handling;
 mod test_php_web_setrawcookie_options_array;
 
 // Verified Uncovered Web App & Framework Features Batch 12 (2026-07)
+mod test_class_exists_builtin_types;
 mod test_php_attributes_argument_forms;
 mod test_php_attributes_container_wiring;
 mod test_php_attributes_discovery_scan;
@@ -693,4 +694,3 @@ mod test_php_web_filter_var_domain_url_flags;
 mod test_php_web_http_response_headers_list_sent;
 mod test_php_web_parse_str_max_input_vars;
 mod test_php_web_session_id_custom_generator;
-mod test_class_exists_builtin_types;

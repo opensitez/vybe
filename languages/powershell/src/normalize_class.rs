@@ -3,8 +3,8 @@
 //! The walker already lowered class syntax into `ClassDecl` + `ClassMember`.
 //! This normalizer only maps members into the shared `NormalMembers` shape.
 
-use vybe_ast::{ClassMember, ClassModifiers, ConstructorInitializerTarget, Span, StmtKind};
 use vybe_ast::class_normalize::{NormalMembers, from_method_stmt, types::*};
+use vybe_ast::{ClassMember, ClassModifiers, ConstructorInitializerTarget, Span, StmtKind};
 
 pub fn normalize_class(
     span: Span,
@@ -34,7 +34,8 @@ pub fn normalize_class(
                     array_bounds: array_bounds.clone(),
                     access: Access::from(m.visibility),
                     readonly: m.is_readonly,
-                    value_type: None };
+                    value_type: None,
+                };
                 out.push_field(m.is_static || m.is_shared, field);
             }
             ClassMember::Method(stmt) => {

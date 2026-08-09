@@ -180,8 +180,13 @@ fn emit_lua_gsub_manual_replace(
     chunks[current].emit_f64_const(0.0, line);
     lset(&mut chunks[current], cursor_slot, line);
 
-    let loop_state =
-        vybe_compiler::primitives::loops::emit_for_in_start(chunks, current, matches_slot, idx_slot, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_for_in_start(
+        chunks,
+        current,
+        matches_slot,
+        idx_slot,
+        line,
+    );
     lset(&mut chunks[current], item_slot, line);
 
     lget(&mut chunks[current], item_slot, line);
@@ -646,7 +651,9 @@ fn emit_lua_pack_byte_from_slot(
     value_slot: u16,
     line: u32,
 ) {
-    vybe_compiler::primitives::packing::emit_pack_byte_from_f64_slot(chunks, current, value_slot, line);
+    vybe_compiler::primitives::packing::emit_pack_byte_from_f64_slot(
+        chunks, current, value_slot, line,
+    );
 }
 
 fn emit_lua_pack_u32_from_slot(
@@ -843,7 +850,9 @@ fn emit_lua_char_code_at_zero(
     index: f64,
     line: u32,
 ) {
-    vybe_compiler::primitives::packing::emit_char_code_at_zero_f64(chunks, current, s_slot, index, line);
+    vybe_compiler::primitives::packing::emit_char_code_at_zero_f64(
+        chunks, current, s_slot, index, line,
+    );
 }
 
 fn emit_lua_unpack_u16(
@@ -1107,7 +1116,8 @@ fn escape_for_js_regex_pattern(s: &str) -> String {
                 // In JS regex, % is not special, but we escape it for clarity.
                 out.push('%');
             }
-            _ => out.push(c) }
+            _ => out.push(c),
+        }
     }
     out
 }
@@ -1929,8 +1939,13 @@ pub fn emit_lua_string_gmatch_match_all(
     vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
     lset(&mut chunks[current], out_slot, line);
 
-    let loop_state =
-        vybe_compiler::primitives::loops::emit_for_in_start(chunks, current, matches_slot, idx_slot, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_for_in_start(
+        chunks,
+        current,
+        matches_slot,
+        idx_slot,
+        line,
+    );
     lset(&mut chunks[current], item_slot, line);
 
     lget(&mut chunks[current], item_slot, line);

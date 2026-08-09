@@ -9,9 +9,9 @@
 //! `mean([42])` is `42`, `mean([1,2,3,4])` is `2.5`, `pvariance([1,2,3])` is
 //! `0.6666666666666666` — no float-repr wrapping needed.
 
+use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
-use vybe_compiler::primitives::instructions::core_wasm;
 
 /// `sum(data)`. Stack: `[data]` → `[num]`.
 fn emit_sum(chunk: &mut Chunk, data: u16, line: u32) {

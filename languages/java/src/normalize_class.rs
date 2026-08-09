@@ -12,9 +12,8 @@
 //!   - Implicit `super()` call when subclass ctor omits it
 //!   - `toString()`, `equals()`, `hashCode()`, `compareTo()` → canonical names
 
-use vybe_ast::{
-    ClassMember, ClassModifiers, ConstructorInitializerTarget, Span, StmtKind };
 use vybe_ast::class_normalize::{NormalMembers, from_method_stmt, types::*};
+use vybe_ast::{ClassMember, ClassModifiers, ConstructorInitializerTarget, Span, StmtKind};
 
 pub fn normalize_class(
     span: Span,
@@ -44,7 +43,8 @@ pub fn normalize_class(
                     array_bounds: array_bounds.clone(),
                     access: Access::from(m.visibility),
                     readonly: m.is_readonly,
-                    value_type: None };
+                    value_type: None,
+                };
                 out.push_field(m.is_static, field);
             }
             ClassMember::Method(stmt) => {
@@ -69,7 +69,8 @@ pub fn normalize_class(
                     out.special_methods.push(SpecialMethod {
                         kind,
                         canonical_name: canonical.clone(),
-                        source_name: src_name.clone() });
+                        source_name: src_name.clone(),
+                    });
                 }
                 out.push_method(m.is_static, method);
             }
@@ -95,7 +96,8 @@ pub fn normalize_class(
                                 args.iter()
                                     .map(|e| vybe_ast::Argument::positional(e.clone()))
                                     .collect(),
-                            ) },
+                            ),
+                        },
                         None => {
                             if parents.is_empty() {
                                 BaseCall::None
@@ -104,7 +106,8 @@ pub fn normalize_class(
                             }
                         }
                     },
-                    named_name: None };
+                    named_name: None,
+                };
                 out.push_constructor(normalized);
             }
             // Java's augmentation is interface `default` methods, declared

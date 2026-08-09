@@ -85,9 +85,15 @@ fn float_nan_payloads() {
 
 #[test]
 fn float_invalid_formats() {
-    parse_err("(module (global f32 (f32.const 1.)))");
+    // A float literal must have a `num` BEFORE the dot.
     parse_err("(module (global f32 (f32.const .5)))");
-    parse_err("(module (global f32 (f32.const 0x1.5)))"); // hex float needs exponent p
+    // `1.` and `0x1.5` were asserted malformed here and are NOT: the spec's
+    // `float ::= num '.' frac?` admits an empty fraction, and `hexfloat`
+    // requires the `p` exponent only when there is no dot. The official suite
+    // declares both as plain modules — const.wast:47 `(f32.const 0123456789.)`
+    // and float_literals.wast:105 `(f32.const 0xa0_ff.f141_a59a)`.
+    parse_ok("(module (global f32 (f32.const 1.)))");
+    parse_ok("(module (global f32 (f32.const 0x1.5)))");
 }
 
 // ── Strings & Escapes ─────────────────────────────────────────────────────────

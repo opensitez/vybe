@@ -23,11 +23,11 @@
 //!   - Populates `auto_init_methods` for `InitializeComponent` (the
 //!     WinForms convention — C# ctors implicitly call it).
 
+use vybe_ast::class_normalize::{NormalMembers, build_normal_method, from_method_stmt, types::*};
 use vybe_ast::{
     ClassMember, ClassModifiers, ConstructorInitializerTarget, Modifiers, PropertySetter, Span,
-    StmtKind, Visibility };
-use vybe_ast::class_normalize::{
-    NormalMembers, build_normal_method, from_method_stmt, types::* };
+    StmtKind, Visibility,
+};
 
 pub fn normalize_class(
     span: Span,
@@ -54,8 +54,10 @@ pub fn normalize_class(
         .filter_map(|member| match member {
             ClassMember::Method(stmt) => match &stmt.kind {
                 StmtKind::FunctionDecl { modifiers, .. } => modifiers.protocol_slot,
-                _ => None },
-            _ => None })
+                _ => None,
+            },
+            _ => None,
+        })
         .collect();
 
     for member in members {
@@ -76,7 +78,8 @@ pub fn normalize_class(
                     array_bounds: array_bounds.clone(),
                     access: Access::from(m.visibility),
                     readonly: m.is_readonly,
-                    value_type: None };
+                    value_type: None,
+                };
                 out.push_field(m.is_static, field);
             }
             ClassMember::Method(stmt) => {
@@ -125,7 +128,8 @@ pub fn normalize_class(
                     out.special_methods.push(SpecialMethod {
                         kind,
                         canonical_name: canonical,
-                        source_name: src_name.clone() });
+                        source_name: src_name.clone(),
+                    });
                 }
                 out.push_method(m.is_static, method);
             }
@@ -151,7 +155,8 @@ pub fn normalize_class(
                                 args.iter()
                                     .map(|e| vybe_ast::Argument::positional(e.clone()))
                                     .collect(),
-                            ) },
+                            ),
+                        },
                         // C#: if no `: base(...)` clause and there IS a
                         // parent class, C# auto-invokes the parameterless
                         // parent ctor. Mirror with Auto.
@@ -163,7 +168,8 @@ pub fn normalize_class(
                             }
                         }
                     },
-                    named_name: None };
+                    named_name: None,
+                };
                 out.push_constructor(normalized);
             }
             ClassMember::Property {
@@ -220,7 +226,8 @@ pub fn normalize_class(
                     is_static: m.is_static,
                     getter: getter_method,
                     setter: setter_method,
-                    auto_field: if *is_auto { Some(pname.clone()) } else { None } });
+                    auto_field: if *is_auto { Some(pname.clone()) } else { None },
+                });
             }
             // C# has no augmentation in this sense: `partial` merges
             // declarations of the SAME type, and extension methods do not enter
@@ -260,7 +267,8 @@ mod tests {
             handles: vec![],
             is_async: false,
             is_generator: false,
-            is_sub: false })))
+            is_sub: false,
+        })))
     }
 
     #[test]

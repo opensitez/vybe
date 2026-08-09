@@ -9,9 +9,9 @@
 //!
 //! No new host fns.
 
+use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
-use vybe_compiler::primitives::instructions::core_wasm;
 
 /// Width in bytes of each `array` typecode, per CPython's table.
 const ITEMSIZES: &[(&str, i32)] = &[

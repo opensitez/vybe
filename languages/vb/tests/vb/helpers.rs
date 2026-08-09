@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
-use vybe_runtime::{HostContext, VM, Value};
 use vybe_platform_vybe::gui_state::GuiState;
+use vybe_runtime::{HostContext, VM, Value};
 
 fn vb_runtime_test_guard() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -139,7 +139,8 @@ pub fn dotnet_expected_one(expected: &str) -> String {
     match expected {
         "true" => "True".to_string(),
         "false" => "False".to_string(),
-        other => other.to_string() }
+        other => other.to_string(),
+    }
 }
 
 pub fn dotnet_expected_lines(expected: &[&str]) -> Vec<String> {

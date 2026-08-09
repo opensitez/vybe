@@ -5,8 +5,6 @@
 //! chunk-free (no `__vybe_*` fallback remains).
 
 use std::sync::Arc;
-use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
 use vybe_compiler::primitives::collections;
 use vybe_compiler::primitives::dict;
 use vybe_compiler::primitives::errors;
@@ -15,6 +13,8 @@ use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_compiler::primitives::math;
 use vybe_compiler::primitives::ops;
 use vybe_compiler::primitives::strings;
+use vybe_runtime::opcode::Op;
+use vybe_runtime::{Chunk, Value};
 
 /// Emit `<module>.<name>(argc args)` — receiver/args already on the stack.
 fn call_import(
@@ -7638,7 +7638,8 @@ fn emit_ruby_exception_ancestors(chunk: &mut Chunk, ty: &'static str, line: u32)
         ],
         "LocalJumpError" => vec!["LocalJumpError", "StandardError", "Exception"],
         "Exception" => vec!["Exception"],
-        _ => vec![ty, "StandardError", "Exception"] };
+        _ => vec![ty, "StandardError", "Exception"],
+    };
     chunk.emit_dup(line);
     for name in &chain {
         chunk.emit_string_const(name, line);
@@ -8132,7 +8133,8 @@ fn emit_time_compare(chunks: &mut [Chunk], current: usize, argc: u8, mode: &str,
             chunks[current].emit_end(line);
             chunks[current].emit_end(line);
         }
-        _ => chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line) }
+        _ => chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line),
+    }
     chunks[current].emit_else(line);
     match mode {
         "eq" => {
@@ -8644,7 +8646,8 @@ fn emit_ruby_complex_method(
             chunks[current].emit_op(Op::DROP, line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, arr_s, line);
         }
-        _ => chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line) }
+        _ => chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line),
+    }
 }
 
 fn emit_complex_binary_from_slots(
@@ -8985,7 +8988,8 @@ fn emit_ruby_rational_method(
     match method {
         "num" => emit_rational_part_from_slot(chunks, current, slot, "num", line),
         "den" => emit_rational_part_from_slot(chunks, current, slot, "den", line),
-        _ => emit_rational_to_s_from_slot(chunks, current, slot, line) }
+        _ => emit_rational_to_s_from_slot(chunks, current, slot, line),
+    }
 }
 
 fn emit_ruby_rationalize(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -9147,7 +9151,8 @@ fn emit_ruby_numeric_pred(chunks: &mut [Chunk], current: usize, argc: u8, kind: 
             chunks[current].emit_end(line);
             chunks[current].emit_end(line);
         }
-        _ => chunks[current].emit_bool_const(false, line) }
+        _ => chunks[current].emit_bool_const(false, line),
+    }
 }
 
 fn emit_ruby_divmod(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -10175,7 +10180,8 @@ fn emit_ruby_str_compare(chunks: &mut [Chunk], current: usize, argc: u8, mode: &
             chunks[current].emit_op(Op::I32_GE_S, line);
             ops::emit_i32_to_bool(&mut chunks[current], line);
         }
-        _ => chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line) }
+        _ => chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line),
+    }
     chunks[current].emit_else(line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_end(line);
@@ -10714,7 +10720,8 @@ fn emit_time_rounding(chunks: &mut [Chunk], current: usize, argc: u8, mode: &str
                 math::emit_floor(&mut chunks[current], line);
             }
             "ceil" => math::emit_ceil(&mut chunks[current], line),
-            _ => math::emit_floor(&mut chunks[current], line) }
+            _ => math::emit_floor(&mut chunks[current], line),
+        }
         if slots.len() >= 2 {
             chunks[current].emit_f64_const(10.0, line);
         } else {
@@ -10747,7 +10754,8 @@ fn emit_time_rounding(chunks: &mut [Chunk], current: usize, argc: u8, mode: &str
             "round_half_even" => emit_ruby_round_half_even_top(chunks, current, line),
             "ceil" => math::emit_ceil(&mut chunks[current], line),
             "truncate" => math::emit_trunc(&mut chunks[current], line),
-            _ => math::emit_floor(&mut chunks[current], line) }
+            _ => math::emit_floor(&mut chunks[current], line),
+        }
         chunks[current].emit_op_u16(Op::LOCAL_GET, scale_s, line);
         chunks[current].emit_op(Op::F64_DIV, line);
         let rounded_s = chunks[current].alloc_scratch(1);
@@ -10771,7 +10779,8 @@ fn emit_time_rounding(chunks: &mut [Chunk], current: usize, argc: u8, mode: &str
             "round_half_even" => emit_ruby_round_half_even_top(chunks, current, line),
             "ceil" => math::emit_ceil(&mut chunks[current], line),
             "truncate" => math::emit_trunc(&mut chunks[current], line),
-            _ => math::emit_floor(&mut chunks[current], line) }
+            _ => math::emit_floor(&mut chunks[current], line),
+        }
     }
     chunks[current].emit_end(line);
 }
@@ -12156,7 +12165,9 @@ fn emit_array_with_slot(chunks: &mut [Chunk], current: usize, value_s: u16, line
 }
 
 fn emit_char_code_at_slot(chunks: &mut [Chunk], current: usize, str_s: u16, idx_s: u16, line: u32) {
-    vybe_compiler::primitives::packing::emit_char_code_at_i32_slot(chunks, current, str_s, idx_s, line);
+    vybe_compiler::primitives::packing::emit_char_code_at_i32_slot(
+        chunks, current, str_s, idx_s, line,
+    );
 }
 
 fn emit_ruby_unpack_codes(chunks: &mut [Chunk], current: usize, str_s: u16, line: u32) {
@@ -12199,7 +12210,9 @@ fn emit_ruby_unpack_single_code(
     line: u32,
 ) {
     let value_s = chunks[current].alloc_scratch(1);
-    vybe_compiler::primitives::packing::emit_char_code_at_i32_const(chunks, current, str_s, idx, line);
+    vybe_compiler::primitives::packing::emit_char_code_at_i32_const(
+        chunks, current, str_s, idx, line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_s, line);
     if signed {
         chunks[current].emit_op_u16(Op::LOCAL_GET, value_s, line);
@@ -12310,7 +12323,8 @@ fn emit_ruby_unpack_string_piece(
         "m0" => {
             call_import(chunks, current, "ecma:string", "btoa", 1, line);
         }
-        _ => chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line) }
+        _ => chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line),
+    }
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_s, line);
     emit_array_with_slot(chunks, current, value_s, line);
 }
@@ -12481,7 +12495,8 @@ fn emit_ruby_binary_op(chunks: &mut [Chunk], current: usize, op: &str, line: u32
         "mul" => emit_array_repeat(chunks, current, line),
         "and" => emit_array_set_op(chunks, current, "intersection", line),
         "or" => emit_array_union(chunks, current, line),
-        _ => ops::emit_dyn_add(&mut chunks[current], line) }
+        _ => ops::emit_dyn_add(&mut chunks[current], line),
+    }
     chunks[current].emit_else(line);
     emit_ruby_is_complex_slot(chunks, current, left_s, line);
     chunks[current].emit_if_value(line);
@@ -14772,9 +14787,17 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
             let seed_g = chunks[current].add_constant(vybe_runtime::Value::String(
                 std::sync::Arc::from("__vybe_rng_seed"),
             ));
-            vybe_compiler::primitives::globals::emit_read(&mut chunks[current], "__vybe_rng_seed", line); // old seed (null if unset)
+            vybe_compiler::primitives::globals::emit_read(
+                &mut chunks[current],
+                "__vybe_rng_seed",
+                line,
+            ); // old seed (null if unset)
             chunks[current].emit_op_u16(Op::LOCAL_GET, n_s, line);
-            vybe_compiler::primitives::globals::emit_write(&mut chunks[current], "__vybe_rng_seed", line); // seed = n
+            vybe_compiler::primitives::globals::emit_write(
+                &mut chunks[current],
+                "__vybe_rng_seed",
+                line,
+            ); // seed = n
             chunks[current].emit_op_u16(Op::LOCAL_GET, n_s, line);
             vybe_compiler::primitives::random::emit_seed(chunks, current, line); // set PRNG state, pops n
         }
@@ -14939,6 +14962,7 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
             let from_entries = chunks[current].add_import("ecma:object", "fromEntries");
             chunks[current].emit_call(from_entries, 1, line);
         }
-        _ => return false }
+        _ => return false,
+    }
     true
 }

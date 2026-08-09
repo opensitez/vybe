@@ -28,7 +28,8 @@ pub enum Expect {
     /// Must be a collection or object; a bare scalar is illegal but objects
     /// (Countable, Traversable, generators) are fine (`count`,
     /// `iterator_to_array`).
-    NotScalar }
+    NotScalar,
+}
 
 /// The PHP `Throwable` ancestry for a built-in exception, most-derived first.
 /// `Error` and `Exception` are **sibling** branches of `Throwable` (unlike JS,
@@ -65,7 +66,8 @@ fn php_exception_chain(exc_name: &str) -> &'static [&'static str] {
             "Exception",
             "Throwable",
         ],
-        _ => &[] }
+        _ => &[],
+    }
 }
 
 /// Unconditionally construct and throw `exc_name(msg)` at the current point.
