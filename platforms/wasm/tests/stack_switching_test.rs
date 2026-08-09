@@ -3,11 +3,11 @@
 
 use std::sync::{Arc, Mutex};
 
+use vybe_platform_wasm as wasm;
+use vybe_platform_wasm::write_wasm;
 use vybe_runtime::chunk::StackSwitchHandler;
 use vybe_runtime::value::Object;
 use vybe_runtime::{Chunk, Op, VM, Value};
-use vybe_platform_wasm as wasm;
-use vybe_platform_wasm::write_wasm;
 
 /// Spec-`resume` generator iterator-advance, mirroring the compiler's
 /// `emitter::generators::emit_next`. Stack: `[cont]` -> `[value, has_more_i32]`.
@@ -53,7 +53,8 @@ fn emit_spec_gen_next(chunk: &mut Chunk) {
         vec![StackSwitchHandler {
             kind: 0,
             tag_index: 0,
-            label_index: handler_ip as u32 }],
+            label_index: handler_ip as u32,
+        }],
     );
 }
 
@@ -332,7 +333,8 @@ fn standard_resume_with_handler_vector_must_not_decode_as_noop() {
         &vec![StackSwitchHandler {
             kind: 0,
             tag_index: 0,
-            label_index: 0 }]
+            label_index: 0
+        }]
     );
 }
 
@@ -381,7 +383,8 @@ fn standard_resume_throw_ref_with_handler_vector_decodes_and_roundtrips() {
         &vec![StackSwitchHandler {
             kind: 1,
             tag_index: 0,
-            label_index: 0 }]
+            label_index: 0
+        }]
     );
 
     let emitted = write_wasm(&chunks);
@@ -437,7 +440,8 @@ fn standard_resume_throw_with_handler_vector_decodes_and_roundtrips() {
         &vec![StackSwitchHandler {
             kind: 0,
             tag_index: 0,
-            label_index: 0 }]
+            label_index: 0
+        }]
     );
 
     let emitted = write_wasm(&chunks);
@@ -498,9 +502,11 @@ fn cont_new_returns_continuation_object() {
             let o = obj.lock().unwrap();
             match &o.kind {
                 vybe_runtime::value::ObjectKind::Continuation(_) => {}
-                other => panic!("expected Continuation, got {other:?}") }
+                other => panic!("expected Continuation, got {other:?}"),
+            }
         }
-        other => panic!("expected Object, got {other:?}") }
+        other => panic!("expected Object, got {other:?}"),
+    }
 }
 
 #[test]
@@ -677,7 +683,8 @@ fn switch_requires_matching_on_tag_switch_handler() {
         vec![StackSwitchHandler {
             kind: 1,
             tag_index: 0,
-            label_index: 0 }],
+            label_index: 0,
+        }],
     );
 
     let err = VM::new()
@@ -726,7 +733,8 @@ fn switch_with_on_tag_switch_handler_transfers_to_target_continuation() {
         vec![StackSwitchHandler {
             kind: 1,
             tag_index: 0,
-            label_index: 0 }],
+            label_index: 0,
+        }],
     );
 
     let result = VM::new().run(vec![script, switcher, target]).unwrap();
@@ -781,11 +789,13 @@ fn cont_bind_produces_continuation_with_bound_args() {
     let result = vm.run(vec![chunk, target]).unwrap();
     let obj = match result {
         Value::Object(obj) => obj,
-        other => panic!("expected Continuation object, got {other:?}") };
+        other => panic!("expected Continuation object, got {other:?}"),
+    };
     let o = obj.lock().unwrap();
     match &o.kind {
         vybe_runtime::value::ObjectKind::Continuation(_) => {}
-        other => panic!("expected Continuation kind, got {other:?}") }
+        other => panic!("expected Continuation kind, got {other:?}"),
+    }
     let bound = o
         .properties
         .get("__bound_args")
@@ -862,7 +872,8 @@ fn resume_handler_vector_routes_suspend_to_handler_offset() {
         vec![StackSwitchHandler {
             kind: 0,
             tag_index: 0,
-            label_index: handler_ip as u32 }],
+            label_index: handler_ip as u32,
+        }],
     );
 
     let result = VM::new().run(vec![script, gen_body]).unwrap();
@@ -901,9 +912,11 @@ fn generator_chunk_returns_continuation_on_call() {
             let o = obj.lock().unwrap();
             match &o.kind {
                 vybe_runtime::value::ObjectKind::Continuation(_) => {}
-                other => panic!("expected Continuation, got {other:?}") }
+                other => panic!("expected Continuation, got {other:?}"),
+            }
         }
-        other => panic!("expected Object/Continuation, got {other:?}") }
+        other => panic!("expected Object/Continuation, got {other:?}"),
+    }
 }
 
 #[test]
@@ -921,13 +934,15 @@ fn fiber_roundtrip_preserves_label_stack_and_continuations() {
         is_loop: false,
         is_try: false,
         result_arity: 0,
-        stack_height: 0 });
+        stack_height: 0,
+    });
     vm.label_stack.push(LabelEntry {
         target: 456,
         is_loop: true,
         is_try: false,
         result_arity: 0,
-        stack_height: 0 });
+        stack_height: 0,
+    });
     // Build a dummy Continuation object so we have a Value to stash
     // in active_continuations (field is pub(crate); constructed via
     // a round-trip through CONT_NEW).
@@ -947,13 +962,15 @@ fn fiber_roundtrip_preserves_label_stack_and_continuations() {
         is_loop: true,
         is_try: false,
         result_arity: 0,
-        stack_height: 0 });
+        stack_height: 0,
+    });
     vm.active_continuations
         .push(vybe_runtime::vm::ActiveContinuation {
             cont,
             caller_fiber: vybe_runtime::fiber::Fiber::new(Vec::new(), Vec::new(), Vec::new()),
             mode: vybe_runtime::vm::ResumeMode::Iterator,
-            handlers: Vec::new() });
+            handlers: Vec::new(),
+        });
 
     let fiber = vm.save_fiber();
     assert_eq!(fiber.label_stack.len(), 1);

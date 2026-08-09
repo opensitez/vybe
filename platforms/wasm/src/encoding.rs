@@ -67,7 +67,8 @@ pub const PACKED_I16: u8 = 0x77; // -0x09
 // them — `ref.null` cannot be emitted without one — and re-exported here so
 // the binary writer and the bytecode emitter cannot disagree about a byte.
 pub use vybe_runtime::opcode::heaptype::{
-    HT_ANY, HT_ARRAY, HT_EQ, HT_EXTERN, HT_FUNC, HT_I31, HT_NOEXTERN, HT_NOFUNC, HT_NONE, HT_STRUCT };
+    HT_ANY, HT_ARRAY, HT_EQ, HT_EXTERN, HT_FUNC, HT_I31, HT_NOEXTERN, HT_NOFUNC, HT_NONE, HT_STRUCT,
+};
 
 // ── Section writing ─────────────────────────────────────────────────────
 
@@ -263,7 +264,8 @@ pub fn encode_value(out: &mut Vec<u8>, val: &Value) {
             write_leb128_u32(out, s.len() as u32);
             out.extend_from_slice(s.as_bytes());
         }
-        _ => out.push(0) }
+        _ => out.push(0),
+    }
 }
 
 pub fn decode_value(data: &[u8], pos: &mut usize) -> Value {
@@ -301,5 +303,6 @@ pub fn decode_value(data: &[u8], pos: &mut usize) -> Value {
             *pos += len as usize;
             Value::String(Arc::from(s))
         }
-        _ => Value::Null }
+        _ => Value::Null,
+    }
 }

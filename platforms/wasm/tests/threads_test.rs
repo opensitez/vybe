@@ -5,10 +5,10 @@
 
 use std::thread;
 use std::time::Duration;
+use vybe_platform_wasm as wasm;
 use vybe_runtime::shared_memory::SharedMemory;
 use vybe_runtime::value::Value;
 use vybe_runtime::{Chunk, Op, VM};
-use vybe_platform_wasm as wasm;
 
 fn write_leb_u32(out: &mut Vec<u8>, mut value: u32) {
     loop {

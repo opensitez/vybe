@@ -21,7 +21,8 @@ struct StandardSections {
     code_section: Vec<u8>,
     data_section: Vec<u8>,
     data_count_section: Vec<u8>,
-    tag_section: Vec<u8> }
+    tag_section: Vec<u8>,
+}
 
 pub fn read_wasm(data: &[u8]) -> Result<Vec<Chunk>, String> {
     if data.len() < 8 || &data[0..4] != &WASM_MAGIC {
@@ -137,7 +138,8 @@ fn section_order_rank(section_id: u8) -> u8 {
         12 => 11, // data_count is ordered before code
         SECTION_CODE => 12,
         11 => 13, // data
-        other => other }
+        other => other,
+    }
 }
 
 fn validate_standard_sections(sections: &StandardSections) -> Result<(), String> {
@@ -219,7 +221,8 @@ fn validate_standard_sections(sections: &StandardSections) -> Result<(), String>
 
 struct ImportDetail {
     kind: u8,
-    type_index: u32 }
+    type_index: u32,
+}
 
 /// Custom Descriptors adds `externtype ::= ... | 0x20 x:typeidx => func exact x`
 /// — the same payload as an ordinary function import (`0x00`), refined so a
@@ -229,7 +232,11 @@ struct ImportDetail {
 /// counts imported functions, and an unrecognised kind would shift the whole
 /// function index space.
 fn normalize_import_kind(kind: u8) -> u8 {
-    if kind == EXTERNTYPE_FUNC_EXACT { 0 } else { kind }
+    if kind == EXTERNTYPE_FUNC_EXACT {
+        0
+    } else {
+        kind
+    }
 }
 
 fn skip_import_descriptor(data: &[u8], pos: &mut usize, kind: u8) {
@@ -550,7 +557,8 @@ fn parse_data_segments(data: &[u8]) -> Result<(Vec<Vec<u8>>, Vec<ActiveDataSegme
                 let offset = read_i32_const_expr_as_u64(data, &mut pos)?;
                 active_init = Some((memidx, offset));
             }
-            _ => return Err("Invalid WASM: unsupported data segment mode".into()) }
+            _ => return Err("Invalid WASM: unsupported data segment mode".into()),
+        }
         let (len, read) = read_leb128_u32(&data[pos..]);
         pos += read;
         let end = pos
@@ -564,7 +572,8 @@ fn parse_data_segments(data: &[u8]) -> Result<(Vec<Vec<u8>>, Vec<ActiveDataSegme
             active.push(ActiveDataSegment {
                 memory_index,
                 offset,
-                data_index });
+                data_index,
+            });
         }
         pos = end;
     }
@@ -629,7 +638,8 @@ fn parse_element_segments(
                 skip_leb128(data, &mut pos); // reftype
                 true
             }
-            _ => return Err("Invalid WASM: unsupported element segment mode".into()) };
+            _ => return Err("Invalid WASM: unsupported element segment mode".into()),
+        };
         let (len, read) = read_leb128_u32(&data[pos..]);
         pos += read;
         let mut segment = Vec::with_capacity(len as usize);
@@ -646,7 +656,8 @@ fn parse_element_segments(
             active.push(ActiveElementSegment {
                 table_index,
                 offset,
-                elem_index });
+                elem_index,
+            });
         }
         segments.push(segment);
     }
@@ -734,11 +745,13 @@ struct CtrlFrame {
     param_arity: usize,
     result_arity: usize,
     is_loop: bool,
-    unreachable: bool }
+    unreachable: bool,
+}
 
 struct ArityStack {
     height: usize,
-    frames: Vec<CtrlFrame> }
+    frames: Vec<CtrlFrame>,
+}
 
 impl ArityStack {
     fn new(result_arity: usize) -> Self {
@@ -749,7 +762,9 @@ impl ArityStack {
                 param_arity: 0,
                 result_arity,
                 is_loop: false,
-                unreachable: false }] }
+                unreachable: false,
+            }],
+        }
     }
 
     fn push(&mut self, n: usize) {
@@ -793,7 +808,8 @@ impl ArityStack {
             param_arity,
             result_arity,
             is_loop,
-            unreachable: false });
+            unreachable: false,
+        });
         self.push(param_arity);
         Ok(())
     }
@@ -1212,8 +1228,7 @@ fn validate_instruction_stream(
                     // and the fallthrough drops it.
                     if arity == 0 {
                         return Err(
-                            "Invalid WASM: br_on_non_null target label expects no values"
-                                .into(),
+                            "Invalid WASM: br_on_non_null target label expects no values".into(),
                         );
                     }
                     st.pop(1, "br_on_non_null")?;
@@ -1717,7 +1732,8 @@ fn decode_standard_wasm(
 /// `end`) and the spec catch label `L` it branches to.
 struct EhClause {
     offset_pos: usize,
-    label: u32 }
+    label: u32,
+}
 
 /// Per-source-block bookkeeping for the translate pass. `emitted_span` is how
 /// many WASM blocks this one source block expands to in the emitted chunk: 1
@@ -1729,7 +1745,8 @@ struct LabelInfo {
     emitted_span: u32,
     /// Present while decoding a `try_table` body; drives trampoline emission
     /// at the matching `end`.
-    eh: Option<Vec<EhClause>> }
+    eh: Option<Vec<EhClause>>,
+}
 
 /// Translate a source `br N` (targets the label `n` levels out) into the
 /// emitted branch depth, accounting for `$skip` wrappers inserted around any
@@ -1851,7 +1868,8 @@ fn translate_wasm_to_chunk(
                     .collect();
                 label_stack.push(LabelInfo {
                     emitted_span: 2,
-                    eh: Some(clauses) });
+                    eh: Some(clauses),
+                });
             }
 
             // block blocktype — forward jump target
@@ -1860,7 +1878,8 @@ fn translate_wasm_to_chunk(
                 chunk.emit_block_params(0, params, results);
                 label_stack.push(LabelInfo {
                     emitted_span: 1,
-                    eh: None });
+                    eh: None,
+                });
             }
 
             // loop blocktype — backward jump target
@@ -1869,7 +1888,8 @@ fn translate_wasm_to_chunk(
                 chunk.emit_loop_params(0, params, results);
                 label_stack.push(LabelInfo {
                     emitted_span: 1,
-                    eh: None });
+                    eh: None,
+                });
             }
 
             // if blocktype — conditional block
@@ -1878,7 +1898,8 @@ fn translate_wasm_to_chunk(
                 chunk.emit_if_params(0, params, results);
                 label_stack.push(LabelInfo {
                     emitted_span: 1,
-                    eh: None });
+                    eh: None,
+                });
             }
 
             // else
@@ -1917,7 +1938,8 @@ fn translate_wasm_to_chunk(
                         }
                         chunk.emit_end(0); // close $skip
                     }
-                    _ => chunk.emit_end(0) }
+                    _ => chunk.emit_end(0),
+                }
             }
 
             // br N — branch to Nth enclosing label (depth remapped for $skip)
@@ -2748,7 +2770,8 @@ fn emit_gc_prefixed(chunk: &mut Chunk, sub: u32, wasm: &[u8], pos: &mut usize) {
             *pos += read;
             match op.operand_format() {
                 vybe_runtime::opcode::OperandFormat::U16 => chunk.emit_op_u16(op, idx as u16, 0),
-                _ => chunk.emit_op(op, 0) }
+                _ => chunk.emit_op(op, 0),
+            }
         }
         _ if op == Op::ARRAY_NEW_FIXED => {
             // `array.new_fixed $t N` carries BOTH immediates, and our bytecode
@@ -2825,7 +2848,8 @@ fn emit_gc_prefixed(chunk: &mut Chunk, sub: u32, wasm: &[u8], pos: &mut usize) {
             let idx = chunk.add_constant(Value::String(Arc::from("__wasm_heaptype")));
             chunk.emit_op_u16(op, idx, 0);
         }
-        _ => chunk.emit_op(op, 0) }
+        _ => chunk.emit_op(op, 0),
+    }
 }
 
 fn emit_simd_prefixed(
@@ -2879,7 +2903,8 @@ fn emit_simd_prefixed(
             *pos += 1;
             chunk.emit_op_u8(op, lane, 0);
         }
-        _ => chunk.emit_op(op, 0) }
+        _ => chunk.emit_op(op, 0),
+    }
 }
 
 fn copy_simd_memarg(wasm: &[u8], pos: &mut usize, chunk: &mut Chunk, uses_memory64: bool) {
@@ -3095,7 +3120,8 @@ fn parse_comptype(data: &[u8], pos: &mut usize, types: &mut Vec<(Vec<u8>, Vec<u8
             for _ in 0..param_count {
                 match read_value_type(data, pos) {
                     Some(byte) => params.push(byte),
-                    None => return false }
+                    None => return false,
+                }
             }
             let (result_count, read) = read_leb128_u32(&data[*pos..]);
             *pos += read;
@@ -3103,7 +3129,8 @@ fn parse_comptype(data: &[u8], pos: &mut usize, types: &mut Vec<(Vec<u8>, Vec<u8
             for _ in 0..result_count {
                 match read_value_type(data, pos) {
                     Some(byte) => results.push(byte),
-                    None => return false }
+                    None => return false,
+                }
             }
             types.push((params, results));
             true
@@ -3129,7 +3156,8 @@ fn parse_comptype(data: &[u8], pos: &mut usize, types: &mut Vec<(Vec<u8>, Vec<u8
         }
         // An unknown composite tag means the encoding moved on without us;
         // stopping beats returning a table whose indices are quietly wrong.
-        _ => false }
+        _ => false,
+    }
 }
 
 /// `fieldtype = storagetype mutability`. Storage adds the packed types `i8`
@@ -3142,7 +3170,8 @@ fn skip_field_type(data: &[u8], pos: &mut usize) -> bool {
                 return false;
             }
         }
-        None => return false }
+        None => return false,
+    }
     // Mutability byte.
     if *pos >= data.len() {
         return false;
@@ -3285,7 +3314,8 @@ fn parse_imported_memory_min_pages(data: &[u8]) -> Vec<u64> {
                 skip_leb128(data, &mut pos); // valtype
                 pos = pos.saturating_add(1).min(data.len()); // mutability
             }
-            _ => break }
+            _ => break,
+        }
     }
     memories
 }
@@ -3322,7 +3352,8 @@ fn parse_imported_memory_max_pages(data: &[u8]) -> Vec<Option<u64>> {
                 skip_leb128(data, &mut pos);
                 pos = pos.saturating_add(1).min(data.len());
             }
-            _ => break }
+            _ => break,
+        }
     }
     memories
 }
@@ -3358,7 +3389,8 @@ fn parse_imported_table_min_sizes(data: &[u8]) -> Vec<u64> {
                 skip_leb128(data, &mut pos); // valtype
                 pos = pos.saturating_add(1).min(data.len()); // mutability
             }
-            _ => break }
+            _ => break,
+        }
     }
     tables
 }
@@ -3619,7 +3651,8 @@ fn read_stack_switch_handlers(data: &[u8], pos: &mut usize) -> Vec<StackSwitchHa
         handlers.push(StackSwitchHandler {
             kind,
             tag_index,
-            label_index });
+            label_index,
+        });
     }
     handlers
 }
@@ -3758,7 +3791,8 @@ fn simd_memory_opcode_name(sub: u32) -> &'static str {
     match sub {
         0x00 => "v128.load",
         0x0B => "v128.store",
-        _ => "SIMD memory operation" }
+        _ => "SIMD memory operation",
+    }
 }
 
 #[allow(dead_code)]
@@ -3766,7 +3800,8 @@ fn atomic_opcode_name(sub: u32) -> &'static str {
     match sub {
         0x10 => "i32.atomic.load",
         0x17 => "i32.atomic.store",
-        _ => "atomic memory operation" }
+        _ => "atomic memory operation",
+    }
 }
 
 fn skip_memarg(data: &[u8], pos: &mut usize) {
@@ -3815,11 +3850,7 @@ fn skip_heaptype(data: &[u8], pos: &mut usize) {
 /// forms / s33 typeidx with full params+results), clamped to the internal
 /// u8 counts. Validation has already rejected malformed blocktypes, so a
 /// decode failure here degrades to (0, 1) rather than panicking.
-fn read_blocktype_counts(
-    data: &[u8],
-    pos: &mut usize,
-    types: &[(Vec<u8>, Vec<u8>)],
-) -> (u8, u8) {
+fn read_blocktype_counts(data: &[u8], pos: &mut usize, types: &[(Vec<u8>, Vec<u8>)]) -> (u8, u8) {
     match decode_blocktype(data, pos, types) {
         Ok((params, results)) => (params.min(255) as u8, results.min(255) as u8),
         Err(_) => (0, 1),
@@ -3902,7 +3933,8 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, String> {
             pos += nlen as usize;
             imports.push(vybe_runtime::chunk::Import {
                 module,
-                name: iname });
+                name: iname,
+            });
         }
 
         // Bytecode
@@ -3959,7 +3991,8 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, String> {
                     let descriptor = vybe_runtime::chunk::PropertyDescriptor {
                         writable: (flags & 0x01) != 0,
                         enumerable: (flags & 0x02) != 0,
-                        configurable: (flags & 0x04) != 0 };
+                        configurable: (flags & 0x04) != 0,
+                    };
                     field_descriptors.insert(field_name, descriptor);
                 }
 
@@ -4017,7 +4050,8 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, String> {
                     is_interface,
                     implements,
                     constructor_chunk,
-                    field_descriptors });
+                    field_descriptors,
+                });
             }
         }
 
@@ -4065,7 +4099,8 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, String> {
                 tags.push(vybe_runtime::chunk::TagDecl {
                     debug_name: tag_name,
                     arity,
-                    imported });
+                    imported,
+                });
             }
         }
 
@@ -4171,20 +4206,20 @@ mod custom_descriptor_encoding_tests {
         // any of these wrong decodes the next instruction's first byte as an
         // opcode, which is a silent halt rather than a trap.
         let cases: &[(u32, &[u8])] = &[
-            (0x00, &[0x03]),             // struct.new $t
-            (0x01, &[0x03]),             // struct.new_default $t
-            (0x02, &[0x03, 0x01]),       // struct.get $t i
-            (0x03, &[0x03, 0x01]),       // struct.get_s $t i
-            (0x04, &[0x03, 0x01]),       // struct.get_u $t i
-            (0x05, &[0x03, 0x01]),       // struct.set $t i
-            (0x06, &[0x03]),             // array.new $t
-            (0x08, &[0x03, 0x02]),       // array.new_fixed $t N
-            (0x0B, &[0x03]),             // array.get $t
-            (0x0F, &[]),                 // array.len — NO immediate
-            (0x10, &[0x03]),             // array.fill $t
-            (0x11, &[0x03, 0x04]),       // array.copy $t1 $t2
-            (0x20, &[0x03]),             // struct.new_desc $t
-            (0x22, &[0x03]),             // ref.get_desc $t
+            (0x00, &[0x03]),       // struct.new $t
+            (0x01, &[0x03]),       // struct.new_default $t
+            (0x02, &[0x03, 0x01]), // struct.get $t i
+            (0x03, &[0x03, 0x01]), // struct.get_s $t i
+            (0x04, &[0x03, 0x01]), // struct.get_u $t i
+            (0x05, &[0x03, 0x01]), // struct.set $t i
+            (0x06, &[0x03]),       // array.new $t
+            (0x08, &[0x03, 0x02]), // array.new_fixed $t N
+            (0x0B, &[0x03]),       // array.get $t
+            (0x0F, &[]),           // array.len — NO immediate
+            (0x10, &[0x03]),       // array.fill $t
+            (0x11, &[0x03, 0x04]), // array.copy $t1 $t2
+            (0x20, &[0x03]),       // struct.new_desc $t
+            (0x22, &[0x03]),       // ref.get_desc $t
         ];
         for (sub, immediates) in cases {
             // A trailing sentinel byte that must NOT be consumed.
@@ -4215,7 +4250,10 @@ mod custom_descriptor_encoding_tests {
 
         let details = parse_import_details(&section).expect("import section must parse");
         assert_eq!(details.len(), 1);
-        assert_eq!(details[0].kind, 0, "an exact function import is a function import");
+        assert_eq!(
+            details[0].kind, 0,
+            "an exact function import is a function import"
+        );
         assert_eq!(details[0].type_index, 7, "its type index must be read");
 
         let imports = parse_import_section(&section);

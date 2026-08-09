@@ -9,8 +9,7 @@
 //! to save TOS while unboxing the second operand.
 
 use crate::encoding::*;
-use crate::writer::sections::{
-    emit_box_f64, emit_box_i32, emit_unbox_f64, emit_unbox_i32 };
+use crate::writer::sections::{emit_box_f64, emit_box_i32, emit_unbox_f64, emit_unbox_i32};
 use crate::writer::types::WasmTypeContext;
 use vybe_runtime::opcode::{OperandFormat, read_leb_u32};
 use vybe_runtime::value::Value;
@@ -52,7 +51,8 @@ struct TryRegion {
     catch_ip: usize,
     /// Byte offset where normal control flow resumes after the whole
     /// try region (target of the skip-BR).
-    after_ip: usize }
+    after_ip: usize,
+}
 
 /// Walk the bytecode collecting try regions keyed by TRY_START offset.
 ///
@@ -143,7 +143,8 @@ fn collect_try_regions(chunk: &Chunk) -> std::collections::HashMap<usize, TryReg
                                 try_start_pos: op_pos,
                                 try_end_pos: te_pos,
                                 catch_ip,
-                                after_ip },
+                                after_ip,
+                            },
                         );
                     }
                 }
@@ -1269,7 +1270,8 @@ fn default_simd_align(op: Op) -> u32 {
         0x01 | 0x02 | 0x03 | 0x04 | 0x05 | 0x06 | 0x0A | 0x57 | 0x5B | 0x5D => 3,
         0x09 | 0x56 | 0x5A | 0x5C => 2,
         0x08 | 0x55 | 0x59 => 1,
-        _ => 0 }
+        _ => 0,
+    }
 }
 
 // ── Binary operation helpers ─────────────────────────────────────────
@@ -1423,11 +1425,14 @@ fn emit_gc_op(
             let elem_count = read_u16(&chunk.code, ip);
             body.push(0xFB);
             write_leb128_u32(body, 0x08);
-            write_leb128_u32(body, if typeidx == 0 {
-                type_ctx.array_type_idx
-            } else {
-                typeidx as u32
-            });
+            write_leb128_u32(
+                body,
+                if typeidx == 0 {
+                    type_ctx.array_type_idx
+                } else {
+                    typeidx as u32
+                },
+            );
             write_leb128_u32(body, elem_count as u32);
             emit_externalize(body); // (ref $arr) → externref
         }
@@ -1832,7 +1837,8 @@ fn read_heaptype_operand(chunk: &Chunk, ip: &mut usize, type_ctx: &WasmTypeConte
         vybe_runtime::opcode::heaptype::HeapType::Concrete(index) => {
             match type_ctx.struct_type_by_index(index) {
                 Some(wasm_idx) => write_leb128_i32(&mut buf, wasm_idx as i32),
-                None => buf.push(HT_ANY) }
+                None => buf.push(HT_ANY),
+            }
         }
     }
     buf

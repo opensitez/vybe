@@ -384,6 +384,7 @@ pub fn write_signature(out: &mut Vec<u8>, name: &str) -> bool {
             out.push(TYPE_EXTERNREF);
         }
 
-        _ => return false }
+        _ => return false,
+    }
     true
 }

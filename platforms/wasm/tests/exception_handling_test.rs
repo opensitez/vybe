@@ -13,9 +13,9 @@
 //!   catch_ip = ip-after-this-clause + offset (big-endian u16).
 
 use std::sync::Arc;
+use vybe_platform_wasm as wasm;
 use vybe_runtime::value::Value;
 use vybe_runtime::{Chunk, Op, VM};
-use vybe_platform_wasm as wasm;
 
 const KIND_CATCH: u8 = 0;
 const KIND_CATCH_ALL: u8 = 2;

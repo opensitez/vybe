@@ -6,12 +6,12 @@
 //!         br_on_cast/br_on_cast_fail.
 
 use std::sync::Arc;
+use vybe_platform_wasm::read_wasm;
+use vybe_platform_wasm::write_wasm;
 use vybe_runtime::chunk::TypeEntry;
 use vybe_runtime::opcode::heaptype::{HT_ANY, HT_STRUCT, HeapType};
 use vybe_runtime::value::Value;
 use vybe_runtime::{Chunk, Op, VM};
-use vybe_platform_wasm::read_wasm;
-use vybe_platform_wasm::write_wasm;
 
 /// Run without appending RETURN — caller is responsible for the full layout.
 fn run_raw(emit: impl FnOnce(&mut Chunk)) -> Value {
@@ -49,7 +49,8 @@ fn type_entry(name: &str, fields: &[&str]) -> TypeEntry {
         is_interface: false,
         implements: Vec::new(),
         constructor_chunk: None,
-        field_descriptors: std::collections::HashMap::new() }
+        field_descriptors: std::collections::HashMap::new(),
+    }
 }
 
 #[test]
@@ -104,9 +105,10 @@ fn gc_emission_struct_set_reorders_object_and_value_operands() {
                 0xFB, 0x1A, // any.convert_extern on object
                 0xFB, 0x17, 0x02, // ref.cast null typeidx 2
                 0x20, 0x00, // local.get temp = value
-                0xFB, 0x05, 0x02, 0x01, // struct.set typeidx 2 fieldidx 1
-                // spec struct.set pushes nothing — no reload; the internal
-                // op has the same shape now.
+                0xFB, 0x05, 0x02,
+                0x01, // struct.set typeidx 2 fieldidx 1
+                      // spec struct.set pushes nothing — no reload; the internal
+                      // op has the same shape now.
             ],
         ),
         "struct.set emission should save value, cast object, set field, and reload value"
@@ -930,7 +932,11 @@ fn ref_cast_desc_eq_traps_on_a_null_reference_but_the_nullable_form_does_not() {
         c.emit_op_u16(Op::REF_CAST_DESC_EQ_NULL, 0, 0);
         c.emit_op(Op::REF_IS_NULL, 0);
     });
-    assert_eq!(r.as_i32(), 1, "the nullable form must leave null on the stack");
+    assert_eq!(
+        r.as_i32(),
+        1,
+        "the nullable form must leave null on the stack"
+    );
 }
 
 #[test]
@@ -959,7 +965,11 @@ fn run_desc_branch(op: Op, same_descriptor: bool) -> Value {
         // The pool entry stays alive as the instruction's name immediate;
         // the descriptor VALUES ride the string-constant global route.
         let desc = c.add_constant(Value::String(Arc::from("vtable-a")));
-        let operand = if same_descriptor { "vtable-a" } else { "vtable-b" };
+        let operand = if same_descriptor {
+            "vtable-a"
+        } else {
+            "vtable-b"
+        };
 
         // Arity 1: per the proposal the label takes the reference
         // (`C.labels[l] = t* rt`), so a void block would discard it on branch.
@@ -1211,10 +1221,11 @@ fn emit_three_element_array(c: &mut Chunk) {
         is_interface: false,
         implements: Vec::new(),
         constructor_chunk: None,
-        field_descriptors: std::collections::HashMap::new() });
-    c.emit_i32_const(0, 0);   // fill value
-    c.emit_i32_const(3, 0);  // length
-    c.emit_op_u16(Op::ARRAY_NEW, 1, 0);  // 1-based type immediate
+        field_descriptors: std::collections::HashMap::new(),
+    });
+    c.emit_i32_const(0, 0); // fill value
+    c.emit_i32_const(3, 0); // length
+    c.emit_op_u16(Op::ARRAY_NEW, 1, 0); // 1-based type immediate
     c.emit_op_u16(Op::LOCAL_SET, 0, 0);
 }
 
@@ -1460,7 +1471,11 @@ fn struct_new_with_a_typeidx_stamps_rtt_and_fills_indexed_fields() {
     chunk.emit_struct_field_op(Op::STRUCT_GET_U, 0, 1, 0); // indexed read of field 1
     chunk.emit_op(Op::RETURN, 0);
     let r = VM::new().run(vec![chunk]).expect("run failed");
-    assert_eq!(r.as_i32(), 22, "field 1 must come back from indexed storage");
+    assert_eq!(
+        r.as_i32(),
+        22,
+        "field 1 must come back from indexed storage"
+    );
 }
 
 #[test]
@@ -1518,9 +1533,12 @@ fn struct_new_default_with_a_typeidx_allocates_the_declared_field_slots() {
     chunk.emit_op(Op::REF_IS_NULL, 0);
     chunk.emit_op(Op::RETURN, 0);
     let r = VM::new().run(vec![chunk]).expect("run failed");
-    assert_eq!(r.as_i32(), 1, "declared slots must be allocated and defaulted");
+    assert_eq!(
+        r.as_i32(),
+        1,
+        "declared slots must be allocated and defaulted"
+    );
 }
-
 
 #[test]
 fn struct_set_has_an_indexed_form_that_struct_get_reads_back() {
@@ -1539,7 +1557,11 @@ fn struct_set_has_an_indexed_form_that_struct_get_reads_back() {
     chunk.emit_struct_field_op(Op::STRUCT_GET, 1, 0, 0); // typed read
     chunk.emit_op(Op::RETURN, 0);
     let r = VM::new().run(vec![chunk]).expect("run failed");
-    assert_eq!(r.as_i32(), 9, "typed struct.set must write the indexed slot");
+    assert_eq!(
+        r.as_i32(),
+        9,
+        "typed struct.set must write the indexed slot"
+    );
 }
 
 #[test]

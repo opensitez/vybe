@@ -214,7 +214,8 @@ fn f64_comparison_lt() {
         Value::I32(v) => v != 0,
         Value::Bool(b) => b,
         Value::F64(f) => f != 0.0,
-        _ => false };
+        _ => false,
+    };
     assert!(truthy, "2.0 < 3.0 should be truthy");
 }
 
@@ -1983,7 +1984,8 @@ fn every_proposal_module_exposes_uniform_surface() {
     use vybe_platform_wasm::writer::builtins::{js_primitive_builtins, js_string_builtins};
     use vybe_platform_wasm::writer::proposals::{
         bulk_memory, esm_integration, exception_handling, gc, multi_value, reference_types, simd,
-        tail_call, threads };
+        tail_call, threads,
+    };
 
     // Each of these must compile — the test is the shape check.
     let mut total_imports = 0usize;
@@ -2623,7 +2625,8 @@ fn ref_eq_matches_identical_objects() {
         properties: Default::default(),
         kind: ObjectKind::Ordinary,
         type_id: 0,
-        fields: Vec::new() }));
+        fields: Vec::new(),
+    }));
     // Host-side objects reach the chunk as imported globals (spec
     // `global.get`; the embedder provides the value) — the retired CONST
     // pool is no longer a host-value injection channel.
@@ -2636,8 +2639,10 @@ fn ref_eq_matches_identical_objects() {
     chunk.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
-    vm.globals.insert("__ref_eq_same_a".into(), Value::Object(obj.clone()));
-    vm.globals.insert("__ref_eq_same_b".into(), Value::Object(obj));
+    vm.globals
+        .insert("__ref_eq_same_a".into(), Value::Object(obj.clone()));
+    vm.globals
+        .insert("__ref_eq_same_b".into(), Value::Object(obj));
     assert_eq!(vm.run(vec![chunk]).unwrap().as_i32(), 1);
 
     // Two DIFFERENT objects → ref.eq is false.
@@ -2646,12 +2651,14 @@ fn ref_eq_matches_identical_objects() {
         properties: Default::default(),
         kind: ObjectKind::Ordinary,
         type_id: 0,
-        fields: Vec::new() }));
+        fields: Vec::new(),
+    }));
     let b = Arc::new(Mutex::new(Object {
         properties: Default::default(),
         kind: ObjectKind::Ordinary,
         type_id: 0,
-        fields: Vec::new() }));
+        fields: Vec::new(),
+    }));
     let ga = chunk.intern_string_constant("__ref_eq_diff_a");
     let gb = chunk.intern_string_constant("__ref_eq_diff_b");
     chunk.emit_op_u16(Op::GLOBAL_GET, ga, 0);
@@ -2659,8 +2666,10 @@ fn ref_eq_matches_identical_objects() {
     chunk.emit_op(Op::REF_EQ, 0);
     chunk.emit_op(Op::RETURN, 0);
     let mut vm = VM::new();
-    vm.globals.insert("__ref_eq_diff_a".into(), Value::Object(a));
-    vm.globals.insert("__ref_eq_diff_b".into(), Value::Object(b));
+    vm.globals
+        .insert("__ref_eq_diff_a".into(), Value::Object(a));
+    vm.globals
+        .insert("__ref_eq_diff_b".into(), Value::Object(b));
     assert_eq!(vm.run(vec![chunk]).unwrap().as_i32(), 0);
 }
 
@@ -3040,7 +3049,9 @@ fn ref_test_null_accepts_null() {
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_ref_type_op(
         Op::REF_TEST_NULL,
-        vybe_runtime::opcode::heaptype::HeapType::Abstract(vybe_runtime::opcode::heaptype::HT_STRUCT),
+        vybe_runtime::opcode::heaptype::HeapType::Abstract(
+            vybe_runtime::opcode::heaptype::HT_STRUCT,
+        ),
         0,
     );
     chunk.emit_op(Op::RETURN, 0);

@@ -4,7 +4,8 @@ use vybe_runtime::{Chunk, Op, VM};
 fn run_chunk_expect_i32(chunk: Chunk, expected: i32) {
     match VM::new().run(vec![chunk]).expect("chunk should execute") {
         Value::I32(n) => assert_eq!(n, expected, "expected i32 {expected}"),
-        other => panic!("expected i32 {expected}, got {other:?}") }
+        other => panic!("expected i32 {expected}, got {other:?}"),
+    }
 }
 
 fn make_i32(chunk: &mut Chunk, v: i32) {

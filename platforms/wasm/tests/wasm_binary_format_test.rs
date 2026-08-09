@@ -2,9 +2,9 @@
 //! round-trip read/write, and opcode byte-value compliance per the spec.
 //! Binary I/O compliance — not execution semantics (those live in per-opcode files).
 
+use vybe_platform_wasm as wasm;
 use vybe_runtime::value::Value;
 use vybe_runtime::{Chunk, Op, VM};
-use vybe_platform_wasm as wasm;
 
 // ── WASM binary magic and version ─────────────────────────────────────────
 
@@ -1390,7 +1390,8 @@ fn roundtrip_multiple_functions() {
     main.local_count = 1;
     main.global_inits.push(GlobalInit {
         name: "__add".to_string(),
-        init: ConstExpr::RefFunc(1) });
+        init: ConstExpr::RefFunc(1),
+    });
     let fn_name = main.add_constant(Value::String(Arc::from("__add")));
     main.emit_op_u16(Op::GLOBAL_GET, fn_name, 0);
     main.emit_i32_const(20, 0);
@@ -1639,7 +1640,9 @@ fn reader_ingests_return_call_tail_recursion() {
     push_section(
         &mut bytes,
         1,
-        &[0x02, 0x60, 0x00, 0x01, 0x7F, 0x60, 0x02, 0x7F, 0x7F, 0x01, 0x7F],
+        &[
+            0x02, 0x60, 0x00, 0x01, 0x7F, 0x60, 0x02, 0x7F, 0x7F, 0x01, 0x7F,
+        ],
     );
     push_section(&mut bytes, 3, &[0x02, 0x00, 0x01]);
     let entry_body: &[u8] = &[
@@ -1733,13 +1736,16 @@ fn reader_ingests_call_ref_with_ref_func() {
     );
     call_entry_glue(&mut chunks);
     let r = VM::new().run(chunks).expect("run failed");
-    assert_eq!(r.as_i32(), 42, "40 through call_ref f -> return_call_ref g (+2)");
+    assert_eq!(
+        r.as_i32(),
+        42,
+        "40 through call_ref f -> return_call_ref g (+2)"
+    );
 }
 
 #[test]
 fn reader_ingests_return_call_ref() {
-    let chunks =
-        wasm::read_wasm(&call_ref_chain_module()).expect("call_ref module should decode");
+    let chunks = wasm::read_wasm(&call_ref_chain_module()).expect("call_ref module should decode");
     assert!(
         chunk_contains_op(&chunks[2], Op::RETURN_CALL_REF),
         "binary return_call_ref must decode to RETURN_CALL_REF"
@@ -1770,8 +1776,8 @@ fn writer_lowers_return_call_ref_to_return_call_indirect() {
     main.emit_i32_const(0, 0);
     main.emit_op(Op::RETURN, 0);
     let bytes = wasm::write_wasm(&[main, f, inc]);
-    let decoded = wasm::read_wasm(&without_custom_sections(&bytes))
-        .expect("spec-bytes read failed");
+    let decoded =
+        wasm::read_wasm(&without_custom_sections(&bytes)).expect("spec-bytes read failed");
     assert!(
         decoded
             .iter()
@@ -1802,8 +1808,8 @@ fn writer_lowers_return_call_to_return_call_indirect() {
     main.emit_i32_const(0, 0);
     main.emit_op(Op::RETURN, 0);
     let bytes = wasm::write_wasm(&[main, f, inc]);
-    let decoded = wasm::read_wasm(&without_custom_sections(&bytes))
-        .expect("spec-bytes read failed");
+    let decoded =
+        wasm::read_wasm(&without_custom_sections(&bytes)).expect("spec-bytes read failed");
     assert!(
         decoded
             .iter()
@@ -1826,8 +1832,8 @@ fn writer_emits_return_call_indirect_spec_byte() {
     main.emit_i32_const(0, 0);
     main.emit_op(Op::RETURN, 0);
     let bytes = wasm::write_wasm(&[main, f]);
-    let decoded = wasm::read_wasm(&without_custom_sections(&bytes))
-        .expect("spec-bytes read failed");
+    let decoded =
+        wasm::read_wasm(&without_custom_sections(&bytes)).expect("spec-bytes read failed");
     assert!(
         decoded
             .iter()
@@ -1874,8 +1880,8 @@ fn writer_annotates_call_indirect_with_exact_result_count() {
     main.emit_i32_const(0, 0);
     main.emit_op(Op::RETURN, 0);
     let bytes = wasm::write_wasm(&[main, f]);
-    let decoded = wasm::read_wasm(&without_custom_sections(&bytes))
-        .expect("spec-bytes read failed");
+    let decoded =
+        wasm::read_wasm(&without_custom_sections(&bytes)).expect("spec-bytes read failed");
     let operands = decoded
         .iter()
         .find_map(|c| find_op_operands(c, Op::CALL_INDIRECT))
