@@ -63,7 +63,8 @@ pub fn run_pascal(src: &str) -> Vec<String> {
                         String::new()
                     }
                 }
-                _ => String::new() };
+                _ => String::new(),
+            };
 
             let mut pending = stdout.lock().unwrap();
             pending.push_str(&text);
@@ -111,7 +112,8 @@ fn pascal_test_cwd_lock() -> &'static Mutex<()> {
 
 struct PascalTestCwd {
     previous: std::path::PathBuf,
-    current: std::path::PathBuf }
+    current: std::path::PathBuf,
+}
 
 impl PascalTestCwd {
     fn new() -> Self {
@@ -164,10 +166,11 @@ pub fn run_pascal_gui(src: &str) -> (VM, Arc<Mutex<GuiState>>, Arc<Mutex<Vec<Str
     // thread-local one persists across tests that share a worker thread, and
     // an inherited control list makes `control_names.len()` depend on which
     // test ran before it.
-    vybe_platform_web::html::clear_document_listeners(
-        vybe_platform_web::html::active_document(),
-    );
-    vybe_platform_web::html::reset_active_document();
+    // One call now, because the document and its listeners are VM-owned
+    // resources (`vybe_runtime::resources`). `VM::reset_to` drops them for a
+    // reused VM; these tests build a fresh `VM::new()` on a REUSED THREAD, so
+    // they still have to say when their tenancy starts.
+    vybe_runtime::resources::clear_all();
     let gui = vybe_platform_vybe::init_platforms_with_gui(&mut vm);
     vm.register_host_fn(
         "web:console",
@@ -223,7 +226,8 @@ fn project_document_into(gui: &Arc<Mutex<GuiState>>) {
             .collect::<Vec<_>>()
     }) {
         Some(elements) => elements,
-        None => return };
+        None => return,
+    };
 
     // `node → id`, so a listener can be reported against the control name the
     // assertions use. The document body is the form itself.

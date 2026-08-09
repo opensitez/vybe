@@ -16,8 +16,9 @@
 use std::collections::{HashMap, HashSet};
 use vybe_ast::class_normalize::{NormalMembers, build_normal_method, from_method_stmt, types::*};
 use vybe_ast::{
-    ClassMember, ClassModifiers, ExprKind, Expression, Literal, Modifiers,
-    PropertySetter, Span, Statement, StmtKind };
+    ClassMember, ClassModifiers, ExprKind, Expression, Literal, Modifiers, PropertySetter, Span,
+    Statement, StmtKind,
+};
 
 const PASCAL_NO_BASE_CTOR_MARKER: &str = "__pascal_no_base_ctor__";
 
@@ -41,8 +42,10 @@ fn property_field_name(body: &[Statement], field_names: &HashSet<String>) -> Opt
                         .contains(&field.to_ascii_lowercase())
                         .then(|| field.clone())
                 }
-                _ => None },
-            _ => None },
+                _ => None,
+            },
+            _ => None,
+        },
         StmtKind::Expr(expr) => match &expr.kind {
             ExprKind::Assign { target, value } if matches!(value.kind, ExprKind::Ident(ref name) if name.eq_ignore_ascii_case("value")) => {
                 match &target.kind {
@@ -56,7 +59,8 @@ fn property_field_name(body: &[Statement], field_names: &HashSet<String>) -> Opt
                     ExprKind::Ident(field) => field_names
                         .contains(&field.to_ascii_lowercase())
                         .then(|| field.clone()),
-                    _ => None }
+                    _ => None,
+                }
             }
             ExprKind::Call { callee, args, .. } if args.len() == 1 => match &callee.kind {
                 ExprKind::Member { object, field, .. }
@@ -67,8 +71,10 @@ fn property_field_name(body: &[Statement], field_names: &HashSet<String>) -> Opt
                         .contains(&field.to_ascii_lowercase())
                         .then(|| field.clone())
                 }
-                _ => None },
-            _ => None },
+                _ => None,
+            },
+            _ => None,
+        },
         // `property P: T write FV` — the walker writes a STATEMENT assign for a
         // FIELD target and an expression call for a `Set…` method
         // (`property_write_accessor`), so only the method shape was recognised
@@ -77,16 +83,13 @@ fn property_field_name(body: &[Statement], field_names: &HashSet<String>) -> Opt
         // then reached the field's VALUE and tried to call it —
         // `f64 is not callable`, because pascal declares
         // `bare_name_invokes_parameterless_function`.
-        StmtKind::Assign { targets, value, .. }
-            if matches!(value.kind, ExprKind::Ident(ref name) if name.eq_ignore_ascii_case("value")) =>
+        StmtKind::Assign { targets, value, .. } if matches!(value.kind, ExprKind::Ident(ref name) if name.eq_ignore_ascii_case("value")) =>
         {
             let [target] = targets.as_slice() else {
                 return None;
             };
             match &target.kind {
-                ExprKind::Member { object, field, .. }
-                    if matches!(object.kind, ExprKind::This) =>
-                {
+                ExprKind::Member { object, field, .. } if matches!(object.kind, ExprKind::This) => {
                     field_names
                         .contains(&field.to_ascii_lowercase())
                         .then(|| field.clone())
@@ -94,9 +97,11 @@ fn property_field_name(body: &[Statement], field_names: &HashSet<String>) -> Opt
                 ExprKind::Ident(field) => field_names
                     .contains(&field.to_ascii_lowercase())
                     .then(|| field.clone()),
-                _ => None }
+                _ => None,
+            }
         }
-        _ => None }
+        _ => None,
+    }
 }
 
 fn rewrite_property_getter_body(
@@ -110,7 +115,8 @@ fn rewrite_property_getter_body(
         ExprKind::Member {
             object: Box::new(Expression::new(ExprKind::This)),
             field: field_name,
-            null_safe: false },
+            null_safe: false,
+        },
     ))))]
 }
 
@@ -125,15 +131,19 @@ fn rewrite_property_setter_body(
         targets: vec![Expression::new(ExprKind::Member {
             object: Box::new(Expression::new(ExprKind::This)),
             field: field_name,
-            null_safe: false })],
-        value: Expression::ident("value"), by_ref: false })]
+            null_safe: false,
+        })],
+        value: Expression::ident("value"),
+        by_ref: false,
+    })]
 }
 
 fn self_member_expr(name: &str) -> Expression {
     Expression::new(ExprKind::Member {
         object: Box::new(Expression::new(ExprKind::This)),
         field: name.to_string(),
-        null_safe: false })
+        null_safe: false,
+    })
 }
 
 fn rewrite_implicit_self_members_in_methods(
@@ -217,7 +227,8 @@ fn normalize_destructor_inherited_calls(body: &mut [Statement], has_parent: bool
                 body,
                 catches,
                 else_body,
-                finally } => {
+                finally,
+            } => {
                 normalize_destructor_inherited_calls(body, has_parent);
                 for catch in catches {
                     normalize_destructor_inherited_calls(&mut catch.body, has_parent);
@@ -311,7 +322,7 @@ fn rewrite_implicit_self_members_stmt(
                 }
             }
         }
-        StmtKind::Assign { targets, value , ..} => {
+        StmtKind::Assign { targets, value, .. } => {
             for target in targets {
                 rewrite_implicit_self_members_expr(target, member_names, shadowed, true);
             }
@@ -329,7 +340,8 @@ fn rewrite_implicit_self_members_stmt(
             cond,
             then_body,
             elifs,
-            else_body } => {
+            else_body,
+        } => {
             rewrite_implicit_self_members_expr(cond, member_names, shadowed, false);
             let mut scoped = shadowed.clone();
             rewrite_implicit_self_members_in_body(then_body, member_names, &mut scoped);
@@ -347,7 +359,8 @@ fn rewrite_implicit_self_members_stmt(
             init,
             cond,
             update,
-            body } => {
+            body,
+        } => {
             let mut scoped = shadowed.clone();
             if let Some(init) = init {
                 rewrite_implicit_self_members_stmt(init, member_names, &mut scoped);
@@ -383,7 +396,8 @@ fn rewrite_implicit_self_members_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body } => {
+            else_body,
+        } => {
             rewrite_implicit_self_members_expr(cond, member_names, shadowed, false);
             let mut scoped = shadowed.clone();
             rewrite_implicit_self_members_in_body(body, member_names, &mut scoped);
@@ -400,7 +414,8 @@ fn rewrite_implicit_self_members_stmt(
         StmtKind::Switch {
             expr,
             cases,
-            default } => {
+            default,
+        } => {
             rewrite_implicit_self_members_expr(expr, member_names, shadowed, false);
             for case in cases {
                 for cond in &mut case.conditions {
@@ -427,7 +442,8 @@ fn rewrite_implicit_self_members_stmt(
             body,
             catches,
             else_body,
-            finally } => {
+            finally,
+        } => {
             let mut scoped = shadowed.clone();
             rewrite_implicit_self_members_in_body(body, member_names, &mut scoped);
             for catch in catches {
@@ -557,7 +573,8 @@ fn call_self_form_create_body() -> Vec<Statement> {
             args: vec![vybe_ast::Argument::positional(Expression::new(
                 ExprKind::This,
             ))],
-            optional: false },
+            optional: false,
+        },
     )))]
 }
 
@@ -576,7 +593,8 @@ fn stmt_calls_method(stmt: &Statement, method_name: &str) -> bool {
             cond,
             then_body,
             elifs,
-            else_body } => {
+            else_body,
+        } => {
             expr_calls_method(cond, method_name)
                 || then_body
                     .iter()
@@ -593,7 +611,8 @@ fn stmt_calls_method(stmt: &Statement, method_name: &str) -> bool {
             init,
             cond,
             update,
-            body } => {
+            body,
+        } => {
             init.as_ref()
                 .is_some_and(|stmt| stmt_calls_method(stmt, method_name))
                 || cond
@@ -608,7 +627,7 @@ fn stmt_calls_method(stmt: &Statement, method_name: &str) -> bool {
             expr_calls_method(iter, method_name)
                 || body.iter().any(|stmt| stmt_calls_method(stmt, method_name))
         }
-        StmtKind::Assign { targets, value , ..} => {
+        StmtKind::Assign { targets, value, .. } => {
             targets
                 .iter()
                 .any(|expr| expr_calls_method(expr, method_name))
@@ -617,7 +636,8 @@ fn stmt_calls_method(stmt: &Statement, method_name: &str) -> bool {
         StmtKind::CompoundAssign { target, value, .. } => {
             expr_calls_method(target, method_name) || expr_calls_method(value, method_name)
         }
-        _ => false }
+        _ => false,
+    }
 }
 
 fn expr_calls_method(expr: &Expression, method_name: &str) -> bool {
@@ -658,7 +678,8 @@ fn expr_calls_method(expr: &Expression, method_name: &str) -> bool {
                     .iter()
                     .any(|arg| expr_calls_method(&arg.value, method_name))
         }
-        _ => false }
+        _ => false,
+    }
 }
 
 pub fn normalize_class(
@@ -676,7 +697,8 @@ pub fn normalize_class(
             ClassMember::Field {
                 name, modifiers, ..
             } if !modifiers.is_static => Some(name.to_ascii_lowercase()),
-            _ => None })
+            _ => None,
+        })
         .collect();
     let static_value_member_names: HashSet<String> = members
         .iter()
@@ -692,8 +714,10 @@ pub fn normalize_class(
                 StmtKind::FunctionDecl {
                     name, modifiers, ..
                 } if modifiers.is_static => Some(name.to_ascii_lowercase()),
-                _ => None },
-            _ => None })
+                _ => None,
+            },
+            _ => None,
+        })
         .collect();
     // Pascal declares `implicit_self_fields: true`, and `classes.rs` ALREADY
     // answers that declaration everywhere it can:
@@ -733,7 +757,8 @@ pub fn normalize_class(
                     array_bounds: array_bounds.clone(),
                     access: Access::from(m.visibility.clone()),
                     readonly: m.is_readonly,
-                    value_type: None };
+                    value_type: None,
+                };
                 out.push_field(m.is_static, field);
             }
             ClassMember::Method(stmt) => {
@@ -811,7 +836,8 @@ pub fn normalize_class(
                     out.special_methods.push(SpecialMethod {
                         kind,
                         canonical_name: canonical,
-                        source_name: src_name.clone() });
+                        source_name: src_name.clone(),
+                    });
                 }
                 // An instance method's name used to be added here so a bare
                 // identifier could resolve to `Self.<name>`. `calls.rs:9256`
@@ -872,7 +898,8 @@ pub fn normalize_class(
                     // constructors as a different callable surface, so keep
                     // Pascal variants primary until constructor roles are
                     // represented as protocol slots.
-                    named_name: None });
+                    named_name: None,
+                });
             }
             ClassMember::Property {
                 name: pname,
@@ -927,7 +954,8 @@ pub fn normalize_class(
                     is_static: m.is_static,
                     getter: getter_method,
                     setter: setter_method,
-                    auto_field: if *is_auto { Some(pname.clone()) } else { None } });
+                    auto_field: if *is_auto { Some(pname.clone()) } else { None },
+                });
             }
             // Object Pascal has single inheritance plus interfaces; class
             // helpers extend a type from outside and are the prototype-fallback
@@ -1036,7 +1064,8 @@ pub fn normalize_class(
 #[derive(Clone)]
 struct PascalOverloadCase {
     arity: usize,
-    hidden_name: String }
+    hidden_name: String,
+}
 
 fn lower_pascal_method_overloads(methods: Vec<NormalMethod>, span: &Span) -> Vec<NormalMethod> {
     let mut groups: HashMap<String, Vec<NormalMethod>> = HashMap::new();
@@ -1076,7 +1105,8 @@ fn lower_pascal_method_overloads(methods: Vec<NormalMethod>, span: &Span) -> Vec
             );
             cases.push(PascalOverloadCase {
                 arity: method.params.len(),
-                hidden_name: hidden_name.clone() });
+                hidden_name: hidden_name.clone(),
+            });
             hidden_methods.push(build_normal_method(
                 method.span.clone(),
                 &hidden_name,
@@ -1133,7 +1163,8 @@ fn build_pascal_overload_dispatch(
     let call_expr = Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident(&first.hidden_name)),
         args: call_args,
-        optional: false });
+        optional: false,
+    });
     let invoke_stmt = if is_sub {
         Statement::new(StmtKind::Expr(call_expr))
     } else {
@@ -1148,15 +1179,18 @@ fn build_pascal_overload_dispatch(
     let is_null = Expression::new(ExprKind::Binary {
         op: vybe_ast::BinOp::Eq,
         left: Box::new(Expression::ident(gate_param)),
-        right: Box::new(Expression::null()) });
+        right: Box::new(Expression::null()),
+    });
     let is_undefined = Expression::new(ExprKind::Binary {
         op: vybe_ast::BinOp::Eq,
         left: Box::new(Expression::ident(gate_param)),
-        right: Box::new(Expression::new(ExprKind::Lit(Literal::Undefined))) });
+        right: Box::new(Expression::new(ExprKind::Lit(Literal::Undefined))),
+    });
     let cond = Expression::new(ExprKind::Binary {
         op: vybe_ast::BinOp::Or,
         left: Box::new(is_null),
-        right: Box::new(is_undefined) });
+        right: Box::new(is_undefined),
+    });
 
     vec![Statement::new(StmtKind::If {
         cond,
@@ -1166,7 +1200,8 @@ fn build_pascal_overload_dispatch(
             &cases[1..],
             wrapper_params,
             is_sub,
-        )) })]
+        )),
+    })]
 }
 
 fn has_duplicate_arities<I>(arities: I) -> bool
@@ -1212,7 +1247,8 @@ mod tests {
             handles: vec![],
             is_async: false,
             is_generator: false,
-            is_sub: false })))
+            is_sub: false,
+        })))
     }
 
     fn make_method_with_visibility(src_name: &str, visibility: Visibility) -> ClassMember {
@@ -1227,7 +1263,8 @@ mod tests {
             handles: vec![],
             is_async: false,
             is_generator: false,
-            is_sub: false })))
+            is_sub: false,
+        })))
     }
 
     fn make_field_with_visibility(src_name: &str, visibility: Visibility) -> ClassMember {
@@ -1239,7 +1276,8 @@ mod tests {
             init: None,
             modifiers,
             with_events: false,
-            array_bounds: None }
+            array_bounds: None,
+        }
     }
 
     fn make_property_with_visibility(src_name: &str, visibility: Visibility) -> ClassMember {
@@ -1253,7 +1291,8 @@ mod tests {
             )))]),
             setter: None,
             is_auto: false,
-            modifiers }
+            modifiers,
+        }
     }
 
     /// `property V: Integer read FV write FV` exactly as the walker builds it:
@@ -1275,13 +1314,17 @@ mod tests {
                     is_rest: false,
                     is_kwargs: false,
                     is_optional: false,
-                    is_nullable: false },
+                    is_nullable: false,
+                },
                 body: vec![Statement::new(StmtKind::Assign {
                     targets: vec![Expression::ident(field)],
                     value: Expression::ident("value"),
-                    by_ref: false })] }),
+                    by_ref: false,
+                })],
+            }),
             is_auto: false,
-            modifiers: Modifiers::default() }
+            modifiers: Modifiers::default(),
+        }
     }
 
     /// `property V: Integer read FV write FV` — the WRITE side names a field,
@@ -1418,7 +1461,8 @@ mod tests {
                 body: vec![],
                 base_args: None,
                 initializer_target: ConstructorInitializerTarget::Base,
-                visibility: Visibility::Public }],
+                visibility: Visibility::Public,
+            }],
             &ClassModifiers::default(),
         );
         assert_eq!(nc.constructors.len(), 1);
@@ -1462,7 +1506,8 @@ mod tests {
                 body: vec![],
                 base_args: Some(vec![Expression::new(ExprKind::Lit(Literal::Int(1)))]),
                 initializer_target: ConstructorInitializerTarget::This,
-                visibility: Visibility::Public }],
+                visibility: Visibility::Public,
+            }],
             &ClassModifiers::default(),
         );
         assert!(matches!(nc.constructors[0].base_call, BaseCall::This(_)));

@@ -214,15 +214,15 @@ concat        = { emit = "intrinsic:str_concat",            min_args = 1, max_ar
 chr           = { emit = "host:ecma:string:fromCharCode",  min_args = 1, max_args = 1 }
 ord           = { emit = "common:pascal.ord",              min_args = 1, max_args = 1 }
 __pascal_set_length = { emit = "common:pascal.set_length", min_args = 1, max_args = 1 }
-__vybe_pascal_set_contains = { emit = "host:ecma:set:has", min_args = 2, max_args = 2 }
-__vybe_pascal_set_include = { emit = "host:ecma:set:add", min_args = 2, max_args = 2 }
-__vybe_pascal_set_exclude = { emit = "host:ecma:set:delete", min_args = 2, max_args = 2 }
-__vybe_pascal_set_union = { emit = "host:ecma:set:union", min_args = 2, max_args = 2 }
-__vybe_pascal_set_intersection = { emit = "host:ecma:set:intersection", min_args = 2, max_args = 2 }
-__vybe_pascal_set_difference = { emit = "host:ecma:set:difference", min_args = 2, max_args = 2 }
-__vybe_pascal_set_symmetric_difference = { emit = "host:ecma:set:symmetricDifference", min_args = 2, max_args = 2 }
-__vybe_pascal_set_subset = { emit = "host:ecma:set:isSubsetOf", min_args = 2, max_args = 2 }
-__vybe_pascal_set_superset = { emit = "host:ecma:set:isSupersetOf", min_args = 2, max_args = 2 }
+__vybe_pascal_set_contains = { emit = "common:sets.has", min_args = 2, max_args = 2 }
+__vybe_pascal_set_include = { emit = "common:sets.add", min_args = 2, max_args = 2 }
+__vybe_pascal_set_exclude = { emit = "common:sets.delete", min_args = 2, max_args = 2 }
+__vybe_pascal_set_union = { emit = "common:sets.union", min_args = 2, max_args = 2 }
+__vybe_pascal_set_intersection = { emit = "common:sets.intersection", min_args = 2, max_args = 2 }
+__vybe_pascal_set_difference = { emit = "common:sets.difference", min_args = 2, max_args = 2 }
+__vybe_pascal_set_symmetric_difference = { emit = "common:sets.symmetric_difference", min_args = 2, max_args = 2 }
+__vybe_pascal_set_subset = { emit = "common:sets.is_subset_of", min_args = 2, max_args = 2 }
+__vybe_pascal_set_superset = { emit = "common:sets.is_superset_of", min_args = 2, max_args = 2 }
 __pascal_int_xor = { emit = "common:pascal.int_xor",       min_args = 2, max_args = 2 }
 format        = { emit = "common:sprintf.format",          min_args = 1, max_args = 255 }
 stringreplace = { emit = "common:strings.replace",         min_args = 3, max_args = 4 }
@@ -242,6 +242,11 @@ floattostr    = { emit = "common:pascal.tostring", min_args = 1, max_args = 1 }
 strtoint      = { emit = "host:ecma:number:parseInt",     min_args = 1, max_args = 1 }
 strtoint64    = { emit = "host:ecma:number:parseInt",     min_args = 1, max_args = 1 }
 strtofloat    = { emit = "host:ecma:number:parseFloat",   min_args = 1, max_args = 1 }
+# The `Def` twins fall back instead of raising. `StrToIntDef` was bound and its
+# float counterpart was not, so `StrToFloatDef` was an undefined callee — every
+# caller died at the call, which is what left the VCL calculator's operator
+# buttons inert (`DisplayValue` is one line: `StrToFloatDef(FDisplay.Text, 0)`).
+strtofloatdef = { emit = "common:pascal.str_to_float_def", min_args = 2, max_args = 2 }
 stringtoguid  = { emit = "common:pascal.string_to_guid",   min_args = 1, max_args = 1 }
 guidtostring  = { emit = "common:pascal.guid_to_string",   min_args = 1, max_args = 1 }
 isequalguid   = { emit = "common:pascal.is_equal_guid",    min_args = 2, max_args = 2 }
@@ -395,6 +400,17 @@ count         = { emit = "common:collections.length", min_args = 0, max_args = 0
 "pi"          = 3.141592653589793
 "ntelement"   = 1
 
+# TAlign — the values `Align` takes. Spelled as the ROLE's vocabulary rather
+# than Delphi's ordinals (alNone=0 … alClient=5) so that nothing downstream has
+# to know VCL's enum order: `Align := alClient` reaches `vybe_widgets` as the
+# dock keyword `fill`, which is the same word WinForms' `Dock.Fill` produces.
+"alnone"      = "none"
+"altop"       = "top"
+"albottom"    = "bottom"
+"alleft"      = "left"
+"alright"     = "right"
+"alclient"    = "fill"
+
 # ────────────────────────────────────────────────────────────────────────────
 # ESM DEFAULTS — Pascal has no ambient host module imports.
 # ────────────────────────────────────────────────────────────────────────────
@@ -450,7 +466,7 @@ string = ["char"]
 # `x in s` on a Pascal set. The shared emitter used to reach this through a
 # literal `profile.name == "pascal"` check that called the
 # `__vybe_pascal_set_contains` global; that global's entire body is
-# `ecma:set.has` with its two arguments swapped, and the shared `in` path
+# `common:sets.has` with its two arguments swapped, and the shared `in` path
 # already pushes `(collection, value)` in the order this wants.
 #
 # Declared here rather than defaulted centrally because `in` means different
@@ -470,7 +486,7 @@ string = ["char"]
 to_string = "common:pascal.to_string_slot"
 
 [builtin_slots.set]
-contains = "host:ecma:set:has"
+contains = "common:sets.has"
 
 # `x in a` where `a` is NOT a set — an array or string. Pascal's `in` means
 # VALUE membership; the ECMA profiles' `in` is a KEY test (`ecma:object.hasOwn`,

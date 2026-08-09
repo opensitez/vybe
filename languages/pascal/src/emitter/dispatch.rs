@@ -49,7 +49,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 .iter()
                 .find(|(s, _)| s.to_lowercase() == key)
             {
-                crate::emitter::runtime_adapter::emit_exception_new(chunks, current, spelling, line);
+                crate::emitter::runtime_adapter::emit_exception_new(
+                    chunks, current, spelling, line,
+                );
                 return true;
             }
             return false;
@@ -137,6 +139,10 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "pascal.str_to_int_def" => {
             crate::emitter::runtime_adapter::emit_str_to_int_def(chunks, current, line);
+            return true;
+        }
+        "pascal.str_to_float_def" => {
+            crate::emitter::runtime_adapter::emit_str_to_float_def(chunks, current, line);
             return true;
         }
         "pascal.write" => {

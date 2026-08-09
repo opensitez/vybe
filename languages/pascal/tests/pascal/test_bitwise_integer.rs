@@ -388,7 +388,9 @@ fn xor_on_boolean_variables_is_logical() {
 #[test]
 fn xor_on_integer_variables_is_bitwise() {
     assert_eq!(
-        run_pascal(r#"program T; var a, b: Integer; begin a := 12; b := 10; WriteLn(a xor b); end."#),
+        run_pascal(
+            r#"program T; var a, b: Integer; begin a := 12; b := 10; WriteLn(a xor b); end."#
+        ),
         &["6"]
     );
 }

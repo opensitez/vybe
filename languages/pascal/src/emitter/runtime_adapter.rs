@@ -1,16 +1,29 @@
 //! Pascal runtime-surface helpers routed via `common:pascal.*`.
 
-use vybe_compiler::primitives::{collections, expressions, instructions::host, ops};
+use vybe_compiler::primitives::{collections, expressions, instructions::host, ops, sets};
 use vybe_runtime::Chunk;
 use vybe_runtime::Op;
 
-pub fn emit_helper(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
+pub fn emit_helper(
+    name: &str,
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    argc: u8,
+    line: u32,
+) -> bool {
     // `IntToStr` / `FloatToStr` / `X.ToString()` — a PLAIN conversion. This key
     // must stay the plain host call: it is the hot path under every `__vs`, and
     // the slot-probing variant below allocates a scratch local, which shifts
     // the slot indices a nested Pascal function captures by index.
     if name == "pascal.tostring" {
-        let to_str = chunks[0].add_import("ecma:string", "String");
+        // The import table is PER-CHUNK (`Chunk::add_import` pushes onto
+        // `self.imports`), so the index must come from the chunk the call is
+        // emitted into. Resolving it against chunk 0 was invisible at top level
+        // — there `current` IS 0 — and inside any function or method the index
+        // landed on whatever import happened to occupy that slot, so
+        // `FloatToStr(x)` returned `0`, `true` or an output-stream handle
+        // depending on the chunk.
+        let to_str = chunks[current].add_import("ecma:string", "String");
         chunks[current].emit_call(to_str, argc, line);
         return true;
     }
@@ -56,8 +69,7 @@ pub fn emit_helper(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
     }
 
     if name == "pascal.set_length" {
-        let idx = chunks[0].add_import("ecma:set", "size");
-        chunks[current].emit_call(idx, argc, line);
+        sets::emit_size(chunks, current, line);
         return true;
     }
 
@@ -198,7 +210,8 @@ pub fn emit_helper(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
         "pascal.str_remove_range" => "__vybe_pascal_str_remove_range",
         "pascal.str_insert" => "__vybe_pascal_str_insert",
         "pascal.sort_in_place" => "__vybe_sort_in_place",
-        _ => return false };
+        _ => return false,
+    };
     collections::emit_runtime_helper_call(chunks, current, global, argc, line);
     true
 }
@@ -810,7 +823,11 @@ pub fn emit_bool_to_str(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     if argc >= 2 {
         chunks[current].emit_op(vybe_runtime::opcode::Op::DROP, line);
     }
-    let (t, f) = if argc >= 2 { ("True", "False") } else { ("true", "false") };
+    let (t, f) = if argc >= 2 {
+        ("True", "False")
+    } else {
+        ("true", "false")
+    };
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_string_const(t, line);
@@ -861,6 +878,24 @@ pub fn emit_str_to_int_def(chunks: &mut [Chunk], current: usize, line: u32) {
     let dflt = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, dflt, line);
     host(chunks, current, "ecma:number", "parseInt", 1, line);
+    let parsed = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, parsed, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, parsed, line);
+    host(chunks, current, "ecma:number", "isNaN", 1, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, dflt, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, parsed, line);
+    chunks[current].emit_end(line);
+}
+
+/// `StrToFloatDef(s, default)` — the float twin of [`emit_str_to_int_def`],
+/// differing only in which ECMA parse it delegates to.
+pub fn emit_str_to_float_def(chunks: &mut [Chunk], current: usize, line: u32) {
+    use vybe_runtime::opcode::Op;
+    let dflt = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, dflt, line);
+    host(chunks, current, "ecma:number", "parseFloat", 1, line);
     let parsed = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, parsed, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, parsed, line);
@@ -1164,12 +1199,7 @@ pub fn emit_dict_enumerate(chunks: &mut [Chunk], current: usize, which: &str, li
 ///
 /// `canonical` is the shared name this Pascal spelling maps to; `spelling` is
 /// what the source called it and what `name` keeps.
-pub fn emit_exception_new(
-    chunks: &mut [Chunk],
-    current: usize,
-    spelling: &str,
-    line: u32,
-) {
+pub fn emit_exception_new(chunks: &mut [Chunk], current: usize, spelling: &str, line: u32) {
     let msg = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, msg, line);
 
@@ -1188,4 +1218,3 @@ pub fn emit_exception_new(
         line,
     );
 }
-

@@ -700,6 +700,7 @@ primary = {
     | true_keyword
     | false_keyword
     | nil_keyword
+    | string_constant
     | string_literal
     | char_literal
     | set_literal
@@ -721,7 +722,15 @@ tuple_array_literal = { "(" ~ expression ~ ("," ~ expression)+ ~ ")" }
 inherited_expression = { ^"inherited" ~ ((identifier ~ arg_list?) | arg_list)? }
 
 // New expression: `New ClassName(args)`
-new_expression = { ^"new" ~ identifier ~ arg_list? }
+//
+// The boundary guard is not optional: unguarded, `^"new"` matches the PREFIX of
+// an ordinary identifier, so `NewValue` parsed as `New Value` and every read of
+// it constructed a class named `Value` that does not exist — "undefined is not
+// callable" at the use site, with nothing wrong at the declaration. That is why
+// the VCL calculator's `ApplyPendingOperation(const NewValue: Double)` died on
+// its first statement. `Newton` and `NewX` broke the same way.
+new_expression = { new_keyword ~ identifier ~ arg_list? }
+new_keyword = @{ ^"new" ~ !(ASCII_ALPHANUMERIC | "_") }
 
 // Type cast with builtin type name: `Integer(x)`, `String(x)`
 type_cast_builtin = { builtin_type_keyword ~ "(" ~ expression ~ ")" }
@@ -743,6 +752,20 @@ string_literal = @{ ("'" ~ ("''" | (!"'" ~ ANY))* ~ "'") | ("\"" ~ ("\\\"" | (!"
 
 // Character literal: #65, #13#10, etc.
 char_literal = @{ ("#" ~ ASCII_DIGIT+)+ }
+
+// A string CONSTANT is a juxtaposition: quoted segments and `#NN` character
+// codes written adjacently with no operator between them. `'Line'#13#10'Next'`
+// is ONE string — the standard way Delphi source spells an embedded line break,
+// and the reason a memo's text arrived truncated at the first segment.
+//
+// Two or more segments, deliberately: a lone `'a'` or `#13` keeps its own rule,
+// so every existing reader of `string_literal`/`char_literal` is untouched and
+// only the previously unparseable form takes this path.
+//
+// `$` rather than `@`: no implicit whitespace between segments (adjacency is
+// what makes it one constant), while the segments stay visible as inner pairs
+// for the walker to fold.
+string_constant = ${ (string_literal | char_literal) ~ (string_literal | char_literal)+ }
 
 // Hex literal: $FF
 hex_literal = @{ "$" ~ ASCII_HEX_DIGIT+ }
