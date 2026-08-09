@@ -8,9 +8,9 @@
 //!
 //! Wired into the C# / VB profiles via `common:dotnet.parse_*`.
 
-use vybe_runtime::opcode::Op;
-use vybe_runtime::Chunk;
 use vybe_compiler::primitives::instructions::{core_wasm, host};
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)

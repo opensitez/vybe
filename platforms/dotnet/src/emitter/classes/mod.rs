@@ -84,20 +84,18 @@ pub mod text;
 
 /// Metadata for a single .NET BCL class wrapper.
 ///
-/// The compiler walks the class table in declared order (which is also
-/// inheritance order — parents declared before children), generates one
-/// constructor chunk per class, and binds:
+/// This table is DATA, not a build plan. `winforms::component_classes`
+/// converts each row into a `component_model::ClassType` — parent, properties,
+/// methods, ctor — and `emitter::tree_register` registers that as a namespace
+/// tree `Type`, flattening the parent chain at registration (the tree resolves
+/// by flat lookup, so a class's node carries its whole inherited surface).
+/// Members then resolve through the shared resolver like any other platform
+/// type, and construction goes through the shared `CtorSpec` path.
 ///
-/// - **setters** for every property in `properties` — compiled bytecode
-///   chunks (`build_setter_chunk`) that call `vybe:gui::controlSetProperty`
-/// - **methods** for every entry in `methods` — compiled thunk chunks
-///   (`build_method_thunk_chunk`) that forward `(this, ...args)` to a host
-///   import
-///
-/// Concrete leaves (those with `widget_host_fn = Some(_)`) also call the
-/// host fn at the end of their ctor and copy the resulting backing
-/// object's identity fields (`__control_name`, `__control_type`) onto
-/// `this`. The inherited setters and methods stay intact.
+/// It used to be a build plan: the compiler walked the table in declared order
+/// and emitted a ctor chunk per class that bound a setter chunk per property
+/// and a thunk chunk per method. That machinery is gone — it reimplemented
+/// `primitives/classes.rs` inside the adapter.
 #[derive(Debug, Clone, Copy)]
 pub struct DotnetClass {
     /// Canonical .NET name (PascalCase). Used as the global name and as
@@ -159,7 +157,8 @@ pub struct DotnetClass {
     /// Defaulted to `"vybe:gui"` in family files via the
     /// [`gui_class!`] / explicit-module convention so the GUI control
     /// families don't have to repeat the module everywhere.
-    pub widget_host_module: &'static str }
+    pub widget_host_module: &'static str,
+}
 
 impl DotnetClass {
     /// `true` for value-type-style classes whose ctor should return
@@ -176,12 +175,12 @@ impl DotnetClass {
 
 /// One method on a `DotnetClass`.
 ///
-/// At registration time the compiler builds a thunk chunk per method
-/// (see `builder::build_method_thunk_chunk`) that bridges between the
-/// VM-level method call and the `target`'s underlying implementation.
-/// The thunk is bound on the class instance under `name.to_lowercase()`.
-/// When user code does `obj.MethodName(args)` the VM does
-/// `struct_get "methodname"` → method ref → call with `this` first.
+/// Registered as a `MethodDef` on the class's tree `Type` node, keyed by
+/// lowercased name and discriminated by arity, so `obj.MethodName(args)`
+/// resolves through the shared namespace resolver. `target` decides the
+/// registered body: a host call, a shared emit, or — for `Body` — a
+/// `MethodOp` template lowered at the call site by
+/// [`super::builder::emit_body_inline`].
 #[derive(Debug, Clone, Copy)]
 pub struct DotnetMethod {
     /// PascalCase method name (`"DrawLine"`, `"CreateGraphics"`). Bound
@@ -195,7 +194,8 @@ pub struct DotnetMethod {
     pub arity: u8,
 
     /// Where the method's implementation lives.
-    pub target: MethodTarget }
+    pub target: MethodTarget,
+}
 
 /// What a `DotnetMethod` thunk forwards to.
 ///
@@ -224,10 +224,13 @@ pub struct DotnetMethod {
 pub enum MethodTarget {
     Host {
         module: &'static str,
-        fn_name: &'static str },
+        fn_name: &'static str,
+    },
     DotnetCtor {
-        class: &'static str },
-    Body(&'static [MethodOp]) }
+        class: &'static str,
+    },
+    Body(&'static [MethodOp]),
+}
 
 impl MethodTarget {
     /// Convenience constructor for `Host` variant.
@@ -260,7 +263,7 @@ impl MethodTarget {
 ///
 /// `Body` sequences are small declarative bytecode templates: each op
 /// lowers to one or two real opcodes via
-/// [`super::builder::build_method_thunk_chunk`]. The lowering is
+/// [`super::builder::emit_body_inline`], at the call site. The lowering is
 /// mechanical — the same opcodes you'd write by hand, just generated
 /// from the slice.
 ///
@@ -312,7 +315,8 @@ pub enum MethodOp {
     CallHost {
         module: &'static str,
         fn_name: &'static str,
-        argc: u8 },
+        argc: u8,
+    },
     /// Call the dotnet class `class`'s ctor with `argc` arguments
     /// popped from the stack (no implicit `this`). The class's
     /// constructor global must already be installed by an earlier
@@ -327,7 +331,8 @@ pub enum MethodOp {
     /// Duplicate top of stack.
     Dup,
     /// Return top of stack. If the stack is empty, returns null.
-    Return }
+    Return,
+}
 
 impl DotnetClass {
     /// True if this class has a backing host constructor.

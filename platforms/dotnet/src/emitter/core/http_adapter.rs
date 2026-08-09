@@ -20,9 +20,9 @@
 //! every `System.Net` call used to emit an unresolvable import.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
-use vybe_compiler::primitives::instructions::core_wasm;
 
 fn call_import(chunk: &mut Chunk, module: &str, name: &str, argc: u8, line: u32) {
     let idx = chunk.add_import(module, name);
@@ -45,7 +45,8 @@ fn substring(chunk: &mut Chunk, s: u16, start: Src, end: Option<Src>, line: u32)
             e.emit(chunk, line);
             call_import(chunk, "ecma:string", "substring", 3, line);
         }
-        None => call_import(chunk, "ecma:string", "substring", 2, line) }
+        None => call_import(chunk, "ecma:string", "substring", 2, line),
+    }
 }
 
 /// A substring bound: either a constant or a local slot (optionally offset).
@@ -53,7 +54,8 @@ fn substring(chunk: &mut Chunk, s: u16, start: Src, end: Option<Src>, line: u32)
 enum Src {
     Const(i32),
     Local(u16),
-    LocalPlus(u16, i32) }
+    LocalPlus(u16, i32),
+}
 
 impl Src {
     fn emit(self, chunk: &mut Chunk, line: u32) {

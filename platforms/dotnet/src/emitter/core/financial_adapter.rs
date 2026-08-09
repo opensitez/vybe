@@ -17,7 +17,8 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
         Value::String(s) => chunk.emit_string_const(s, line),
         Value::F64(f) => chunk.emit_f64_const(*f, line),
         Value::I32(i) => chunk.emit_i32_const(*i, line),
-        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val) }
+        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val),
+    }
 }
 
 fn push_f64(chunk: &mut Chunk, value: f64, line: u32) {

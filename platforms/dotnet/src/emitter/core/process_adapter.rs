@@ -8,9 +8,9 @@
 //! work happens in `node:child_process.spawnSync` etc.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::instructions::{core_wasm, host};
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
-use vybe_compiler::primitives::instructions::{core_wasm, host};
 
 const FILENAME_KEY: &str = "filename";
 const ARGUMENTS_KEY: &str = "arguments";
@@ -22,7 +22,8 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
         Value::F64(f) => chunk.emit_f64_const(*f, line),
         Value::I32(i) => chunk.emit_i32_const(*i, line),
         Value::Bool(b) => chunk.emit_bool_const(*b, line),
-        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val) }
+        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val),
+    }
 }
 
 fn reserve_slot(chunk: &mut Chunk) -> u16 {

@@ -64,8 +64,10 @@ mod tests {
 
     #[test]
     fn test_static_method_mappings_exclude_common_application_adapters() {
-        assert!(static_method_mappings()
-            .iter()
-            .all(|mapping| mapping.type_name != "Application"));
+        assert!(
+            static_method_mappings()
+                .iter()
+                .all(|mapping| mapping.type_name != "Application")
+        );
     }
 }

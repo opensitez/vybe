@@ -3,8 +3,8 @@
 //! designer codegen. Self-contained (serde/uuid/std). Sibling GUI frameworks
 //! live in their own platform crates (e.g. Lazarus/VCL under `platforms/plib`).
 
-pub mod designer;
 pub mod control;
+pub mod designer;
 pub mod errors;
 pub mod events;
 pub mod form;

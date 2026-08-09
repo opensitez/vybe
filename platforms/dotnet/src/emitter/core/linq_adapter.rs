@@ -16,9 +16,9 @@
 //! emitters wherever possible so semantics stay aligned with the
 //! rest of the standard library.
 
-use vybe_runtime::opcode::Op;
-use vybe_runtime::Chunk;
 use vybe_compiler::primitives::instructions::core_wasm;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 use vybe_compiler::primitives::collections;
 use vybe_compiler::primitives::generators;
@@ -982,7 +982,7 @@ pub fn emit_linq_count_pred(chunks: &mut [Chunk], current: usize, line: u32) {
     let if_block = chunks[current].emit_block(line);
     vybe_compiler::primitives::ops::emit_dyn_not(&mut chunks[current], line);
     chunks[current].emit_br_if(0, line); // skip increment if false
-                                         // count++
+    // count++
     chunks[current].emit_op_u16(Op::LOCAL_GET, count_slot, line);
     chunks[current].emit_i32_const(1, line);
     vybe_compiler::primitives::ops::emit_dyn_add(&mut chunks[current], line);

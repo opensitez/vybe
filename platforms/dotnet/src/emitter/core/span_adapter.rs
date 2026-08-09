@@ -12,9 +12,9 @@
 //! array here, so these compose the same helpers `List<T>` uses.
 
 use super::array_adapter;
+use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
-use vybe_compiler::primitives::instructions::core_wasm;
 
 fn alloc_locals(chunk: &mut Chunk, n: u16) -> u16 {
     chunk.alloc_scratch(n)
@@ -57,8 +57,20 @@ fn emit_array_segment_from_slots(
     chunks[current].emit_op_u16(Op::LOCAL_SET, object_slot, line);
     set_field(&mut chunks[current], object_slot, "Array", array_slot, line);
     set_field(&mut chunks[current], object_slot, "array", array_slot, line);
-    set_field(&mut chunks[current], object_slot, "Offset", offset_slot, line);
-    set_field(&mut chunks[current], object_slot, "offset", offset_slot, line);
+    set_field(
+        &mut chunks[current],
+        object_slot,
+        "Offset",
+        offset_slot,
+        line,
+    );
+    set_field(
+        &mut chunks[current],
+        object_slot,
+        "offset",
+        offset_slot,
+        line,
+    );
     set_field(&mut chunks[current], object_slot, "Count", count_slot, line);
     set_field(&mut chunks[current], object_slot, "count", count_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, object_slot, line);
@@ -74,13 +86,7 @@ pub fn emit_array_pool_shared(chunks: &mut [Chunk], current: usize, line: u32) {
     let pool_slot = chunks[current].alloc_scratch(1);
     chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, pool_slot, line);
-    set_string_field(
-        &mut chunks[current],
-        pool_slot,
-        "__type",
-        "ArrayPool",
-        line,
-    );
+    set_string_field(&mut chunks[current], pool_slot, "__type", "ArrayPool", line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, pool_slot, line);
 }
 

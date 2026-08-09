@@ -1,8 +1,6 @@
 use super::super::super::class_exports::DotnetClassExport;
 use super::component_classes_common::constructor_class;
-use vybe_runtime::component_model::{
-    ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef,
-};
+use vybe_runtime::component_model::{ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef};
 
 pub(super) fn exports() -> Vec<DotnetClassExport> {
     vec![
@@ -223,15 +221,13 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("collections.clone".into()),
                 )),
         ),
-        // .NET `HashSet<T>` is a real ECMA-262 §24.2 `Set`. Constructor
-        // creates an `ObjectKind::Set`; methods route through the
-        // matching `ecma:set.*` host fns.
+        // .NET `HashSet<T>` is a real cross-language Set. The common primitive
+        // owns the ECMA backing, so component leaves bind to `sets.*` rather
+        // than naming `ecma:set.*` directly.
         DotnetClassExport::new(
             "dotnet.System.Collections.Generic",
             ClassType::new("HashSet")
-                .with_constructor(
-                    ConstructorDef::new(0).with_backing(HostTarget::new("ecma:set", "new")),
-                )
+                .with_constructor(ConstructorDef::new(0).with_common_backing("sets.new"))
                 .with_constructor(
                     ConstructorDef::new(1).with_common_backing("dotnet.set_new_from_iterable"),
                 )
@@ -243,22 +239,22 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new(
                     "Remove",
                     1,
-                    MethodBody::HostCall(HostTarget::new("ecma:set", "delete")),
+                    MethodBody::Common("sets.delete".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Contains",
                     1,
-                    MethodBody::HostCall(HostTarget::new("ecma:set", "has")),
+                    MethodBody::Common("sets.has".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Count",
                     0,
-                    MethodBody::HostCall(HostTarget::new("ecma:set", "size")),
+                    MethodBody::Common("sets.size".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Clear",
                     0,
-                    MethodBody::HostCall(HostTarget::new("ecma:set", "clear")),
+                    MethodBody::Common("sets.clear".into()),
                 ))
                 .with_method(MethodDef::new(
                     "UnionWith",
@@ -571,9 +567,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         DotnetClassExport::new(
             "dotnet.System.Collections.Generic",
             ClassType::new("SortedSet")
-                .with_constructor(
-                    ConstructorDef::new(0).with_backing(HostTarget::new("ecma:set", "new")),
-                )
+                .with_constructor(ConstructorDef::new(0).with_common_backing("sets.new"))
                 .with_constructor(
                     ConstructorDef::new(1).with_common_backing("dotnet.set_new_ignore_comparer"),
                 )
@@ -585,22 +579,22 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new(
                     "Remove",
                     1,
-                    MethodBody::HostCall(HostTarget::new("ecma:set", "delete")),
+                    MethodBody::Common("sets.delete".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Contains",
                     1,
-                    MethodBody::HostCall(HostTarget::new("ecma:set", "has")),
+                    MethodBody::Common("sets.has".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Count",
                     0,
-                    MethodBody::HostCall(HostTarget::new("ecma:set", "size")),
+                    MethodBody::Common("sets.size".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Clear",
                     0,
-                    MethodBody::HostCall(HostTarget::new("ecma:set", "clear")),
+                    MethodBody::Common("sets.clear".into()),
                 ))
                 .with_method(MethodDef::new(
                     "UnionWith",

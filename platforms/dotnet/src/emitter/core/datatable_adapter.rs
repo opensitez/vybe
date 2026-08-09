@@ -8,9 +8,9 @@
 //! Pattern: `emitter/dotnet/core/datetime_adapter.rs`.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
-use vybe_compiler::primitives::instructions::core_wasm;
 
 fn push_str(chunk: &mut Chunk, s: &str, line: u32) {
     chunk.emit_string_const(s, line);
@@ -62,12 +62,7 @@ pub fn emit_datatable_new(chunks: &mut [Chunk], current: usize, argc: u8, line: 
         |c, l| c.emit_array_new_fixed(0, 0, l),
         line,
     );
-    set_field(
-        chunk,
-        "rows",
-        |c, l| c.emit_array_new_fixed(0, 0, l),
-        line,
-    );
+    set_field(chunk, "rows", |c, l| c.emit_array_new_fixed(0, 0, l), line);
     set_field(chunk, "count", |c, l| push_f64(c, 0.0, l), line);
 }
 

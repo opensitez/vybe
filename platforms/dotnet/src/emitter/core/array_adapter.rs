@@ -11,9 +11,9 @@
 //!
 //! Pure WASM, zero `vybe:types` involvement.
 
-use vybe_runtime::opcode::Op;
-use vybe_runtime::Chunk;
 use vybe_compiler::primitives::instructions::{core_wasm, host};
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 fn emit_throw_dotnet_exception(chunk: &mut Chunk, exception_name: &str, message: &str, line: u32) {
     chunk.emit_struct_new(0, 0, line);

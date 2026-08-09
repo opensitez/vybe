@@ -124,12 +124,16 @@ mod tests {
 
     #[test]
     fn test_static_method_mappings_exclude_winforms_application() {
-        assert!(static_method_mappings()
-            .iter()
-            .any(|mapping| mapping.type_name == "Convert"));
-        assert!(!static_method_mappings()
-            .iter()
-            .any(|mapping| mapping.type_name == "Application"));
+        assert!(
+            static_method_mappings()
+                .iter()
+                .any(|mapping| mapping.type_name == "Convert")
+        );
+        assert!(
+            !static_method_mappings()
+                .iter()
+                .any(|mapping| mapping.type_name == "Application")
+        );
     }
 
     #[test]

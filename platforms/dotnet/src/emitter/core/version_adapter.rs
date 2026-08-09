@@ -1,11 +1,11 @@
 //! .NET `System.Version` adapter — bytecode-only.
 
 use std::sync::Arc;
-use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
 use vybe_compiler::primitives::functions::create_function_chunk;
 use vybe_compiler::primitives::instructions::{core_wasm, host};
 use vybe_compiler::primitives::object::emit_bind_method_with_slot;
+use vybe_runtime::opcode::Op;
+use vybe_runtime::{Chunk, Value};
 
 const TYPE_KEY: &str = "__type";
 const TYPES_KEY: &str = "__types";

@@ -2,8 +2,8 @@
 //! language module; the common dispatcher delegates here).
 
 use std::sync::Arc;
-use vybe_runtime::{Chunk, Value};
 use vybe_compiler::primitives::instructions::core_wasm;
+use vybe_runtime::{Chunk, Value};
 
 use vybe_runtime::opcode::Op;
 
@@ -146,7 +146,11 @@ fn emit_to_byte(chunk: &mut Chunk, line: u32) {
     chunk.emit_struct_new(0, 0, line);
     chunk.emit_dup(line);
     chunk.emit_string_const("Arithmetic operation resulted in an overflow.", line);
-    vybe_compiler::primitives::errors::emit_exception_new_finalize(chunk, "OverflowException", line);
+    vybe_compiler::primitives::errors::emit_exception_new_finalize(
+        chunk,
+        "OverflowException",
+        line,
+    );
     vybe_compiler::primitives::errors::emit_stamp_exception_ancestors(
         chunk,
         "OverflowException",
@@ -208,7 +212,8 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                     argc,
                     line,
                 ),
-                None => return false }
+                None => return false,
+            }
         }
         "dotnet.dns_get_host_addresses" => {
             crate::emitter::core::sockets_adapter::emit_dns_get_host_addresses(
@@ -610,9 +615,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.array_clear" => {
             crate::emitter::core::array_adapter::emit_array_clear(chunks, current, line)
         }
-        "dotnet.array_copy" => crate::emitter::core::array_adapter::emit_array_copy(
-            chunks, current, argc, line,
-        ),
+        "dotnet.array_copy" => {
+            crate::emitter::core::array_adapter::emit_array_copy(chunks, current, argc, line)
+        }
         "dotnet.array_get_checked" => {
             crate::emitter::core::array_adapter::emit_array_get_checked(chunks, current, line)
         }
@@ -2528,9 +2533,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::core::span_adapter::emit_span_mismatch(chunks, current, line)
         }
         "dotnet.array_segment_ctor" => {
-            crate::emitter::core::span_adapter::emit_array_segment_ctor(
-                chunks, current, argc, line,
-            )
+            crate::emitter::core::span_adapter::emit_array_segment_ctor(chunks, current, argc, line)
         }
         "dotnet.array_segment_empty" => {
             crate::emitter::core::span_adapter::emit_array_segment_empty(chunks, current, line)
@@ -2560,14 +2563,10 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::core::span_adapter::emit_array_pool_rent(chunks, current, line)
         }
         "dotnet.array_pool_rent_static" => {
-            crate::emitter::core::span_adapter::emit_array_pool_rent_static(
-                chunks, current, line,
-            )
+            crate::emitter::core::span_adapter::emit_array_pool_rent_static(chunks, current, line)
         }
         "dotnet.array_pool_return" => {
-            crate::emitter::core::span_adapter::emit_array_pool_return(
-                chunks, current, argc, line,
-            )
+            crate::emitter::core::span_adapter::emit_array_pool_return(chunks, current, argc, line)
         }
         "dotnet.memory_pool_shared" => {
             crate::emitter::core::span_adapter::emit_memory_pool_shared(chunks, current, line)
@@ -2576,9 +2575,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::core::span_adapter::emit_memory_pool_rent(chunks, current, line)
         }
         "dotnet.memory_pool_rent_static" => {
-            crate::emitter::core::span_adapter::emit_memory_pool_rent_static(
-                chunks, current, line,
-            )
+            crate::emitter::core::span_adapter::emit_memory_pool_rent_static(chunks, current, line)
         }
         "dotnet.buffer_byte_length" => {
             crate::emitter::core::span_adapter::emit_buffer_byte_length(chunks, current, line)
@@ -2959,6 +2956,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.system.math.clamp" => {
             vybe_compiler::primitives::math::emit_clamp(&mut chunks[current], line)
         }
-        _ => return false }
+        _ => return false,
+    }
     true
 }

@@ -14,10 +14,10 @@
 //! standardized.
 
 use std::sync::Arc;
-use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_compiler::primitives::object::{emit_bind_method, emit_bind_method_with_slot};
+use vybe_runtime::opcode::Op;
+use vybe_runtime::{Chunk, Value};
 
 use super::timespan_adapter;
 
@@ -29,7 +29,8 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
         Value::String(s) => chunk.emit_string_const(s, line),
         Value::F64(f) => chunk.emit_f64_const(*f, line),
         Value::I32(i) => chunk.emit_i32_const(*i, line),
-        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val) }
+        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val),
+    }
 }
 
 fn string_key(chunk: &mut Chunk, key: &str) -> u16 {
@@ -275,16 +276,7 @@ fn emit_wrap_ms_internal(
     push_const(&mut chunks[current], Value::I32(1), line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, one_slot, line);
     emit_utc_from_slots(
-        chunks,
-        current,
-        year_slot,
-        one_slot,
-        one_slot,
-        None,
-        None,
-        None,
-        None,
-        line,
+        chunks, current, year_slot, one_slot, one_slot, None, None, None, None, line,
     );
     chunks[current].emit_op_u16(Op::LOCAL_SET, year_start_slot, line);
 
@@ -336,7 +328,11 @@ fn emit_wrap_ms_internal(
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, year_start_slot, line);
     chunk.emit_op(Op::F64_SUB, line);
-    push_const(chunk, Value::F64(vybe_compiler::primitives::datetime::MS_PER_DAY), line);
+    push_const(
+        chunk,
+        Value::F64(vybe_compiler::primitives::datetime::MS_PER_DAY),
+        line,
+    );
     chunk.emit_op(Op::F64_DIV, line);
     chunk.emit_op(Op::F64_TRUNC, line);
     push_const(chunk, Value::I32(1), line);
@@ -367,7 +363,11 @@ fn emit_wrap_ms_internal(
         let chunk = &mut chunks[current];
         chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, hour_slot, line);
-        push_const(chunk, Value::F64(vybe_compiler::primitives::datetime::MS_PER_HOUR), line);
+        push_const(
+            chunk,
+            Value::F64(vybe_compiler::primitives::datetime::MS_PER_HOUR),
+            line,
+        );
         chunk.emit_op(Op::F64_MUL, line);
         chunk.emit_op_u16(Op::LOCAL_GET, minute_slot, line);
         push_const(chunk, Value::F64(60_000.0), line);
@@ -381,7 +381,11 @@ fn emit_wrap_ms_internal(
         struct_set_named_field_drop(chunk, "TimeOfDay", line);
         chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, hour_slot, line);
-        push_const(chunk, Value::F64(vybe_compiler::primitives::datetime::MS_PER_HOUR), line);
+        push_const(
+            chunk,
+            Value::F64(vybe_compiler::primitives::datetime::MS_PER_HOUR),
+            line,
+        );
         chunk.emit_op(Op::F64_MUL, line);
         chunk.emit_op_u16(Op::LOCAL_GET, minute_slot, line);
         push_const(chunk, Value::F64(60_000.0), line);
@@ -547,7 +551,11 @@ pub fn emit_datetime_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line
                 if argc >= 6 { Some(hour_slot) } else { None },
                 if argc >= 6 { Some(minute_slot) } else { None },
                 if argc >= 6 { Some(second_slot) } else { None },
-                if argc >= 7 { Some(millis_or_kind_slot) } else { None },
+                if argc >= 7 {
+                    Some(millis_or_kind_slot)
+                } else {
+                    None
+                },
                 line,
             );
             emit_wrap_ms(chunks, current, line);
@@ -572,7 +580,8 @@ pub fn emit_datetime_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line
                 struct_set_named_field_drop(chunk, "kind", line);
             }
         }
-        _ => emit_datetime_now(chunks, current, line) }
+        _ => emit_datetime_now(chunks, current, line),
+    }
 }
 
 pub fn emit_datetime_year(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -635,7 +644,11 @@ pub fn emit_datetime_add_days(chunks: &mut Vec<Chunk>, current: usize, line: u32
     chunk.emit_op_u16(Op::LOCAL_SET, date_slot, line);
     emit_datetime_time_from_obj(chunk, date_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    push_const(chunk, Value::F64(vybe_compiler::primitives::datetime::MS_PER_DAY), line);
+    push_const(
+        chunk,
+        Value::F64(vybe_compiler::primitives::datetime::MS_PER_DAY),
+        line,
+    );
     chunk.emit_op(Op::F64_MUL, line);
     chunk.emit_op(Op::F64_ADD, line);
     emit_wrap_ms(chunks, current, line);
@@ -663,7 +676,11 @@ pub fn emit_datetime_add_hours(chunks: &mut Vec<Chunk>, current: usize, line: u3
     chunk.emit_op_u16(Op::LOCAL_SET, date_slot, line);
     emit_datetime_time_from_obj(chunk, date_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    push_const(chunk, Value::F64(vybe_compiler::primitives::datetime::MS_PER_HOUR), line);
+    push_const(
+        chunk,
+        Value::F64(vybe_compiler::primitives::datetime::MS_PER_HOUR),
+        line,
+    );
     chunk.emit_op(Op::F64_MUL, line);
     chunk.emit_op(Op::F64_ADD, line);
     emit_wrap_ms(chunks, current, line);
@@ -961,7 +978,12 @@ pub fn emit_datetime_specify_kind(chunks: &mut Vec<Chunk>, current: usize, line:
     struct_set_named_field_drop(chunk, "kind", line);
 }
 
-fn emit_iso_string_from_datetime_obj(chunks: &mut [Chunk], current: usize, obj_slot: u16, line: u32) {
+fn emit_iso_string_from_datetime_obj(
+    chunks: &mut [Chunk],
+    current: usize,
+    obj_slot: u16,
+    line: u32,
+) {
     emit_datetime_time_from_obj(&mut chunks[current], obj_slot, line);
     call_import(chunks, current, "ecma:date", "toISOString", 1, line);
 }
@@ -1358,7 +1380,11 @@ pub fn emit_datetimeoffset_add_hours(chunks: &mut Vec<Chunk>, current: usize, li
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
     emit_named_field_from_obj(chunk, obj_slot, TIME_KEY, line);
     chunk.emit_op_u16(Op::LOCAL_GET, hours_slot, line);
-    push_const(chunk, Value::F64(vybe_compiler::primitives::datetime::MS_PER_HOUR), line);
+    push_const(
+        chunk,
+        Value::F64(vybe_compiler::primitives::datetime::MS_PER_HOUR),
+        line,
+    );
     chunk.emit_op(Op::F64_MUL, line);
     chunk.emit_op(Op::F64_ADD, line);
     emit_named_field_from_obj(chunk, obj_slot, "__offset_ms", line);
@@ -1507,7 +1533,11 @@ pub fn emit_datetimeoffset_to_string(chunks: &mut [Chunk], current: usize, argc:
 
     if argc >= 2 {
         chunk.emit_op_u16(Op::LOCAL_GET, format_slot, line);
-        push_const(chunk, Value::String(Arc::from("yyyy-MM-dd HH:mm zzz")), line);
+        push_const(
+            chunk,
+            Value::String(Arc::from("yyyy-MM-dd HH:mm zzz")),
+            line,
+        );
         vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
         vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);

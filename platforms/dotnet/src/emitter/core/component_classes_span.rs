@@ -12,8 +12,7 @@
 //! array, so they resolve without help.
 
 use super::super::super::class_exports::DotnetClassExport;
-use vybe_runtime::component_model::{
-    ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef };
+use vybe_runtime::component_model::{ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef};
 
 /// Members shared by every span/memory shape, as `(name, arity, module, func)`.
 ///

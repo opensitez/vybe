@@ -1,6 +1,6 @@
-use vybe_runtime::opcode::Op;
-use vybe_runtime::Chunk;
 use vybe_compiler::primitives::{collections, loops};
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 const ATTR_KIND: &str = "XAttribute";
 const KIND_KEY: &str = "__dotnet_xml_kind";

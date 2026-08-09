@@ -1,5 +1,5 @@
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 pub fn emit_gc_noop(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     for _ in 0..argc {

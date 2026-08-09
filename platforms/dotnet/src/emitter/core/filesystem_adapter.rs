@@ -95,7 +95,13 @@ pub fn emit_file_write_all_bytes(chunks: &mut [Chunk], current: usize, line: u32
     chunks[current].emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunks[current].emit_op(Op::ARRAY_GET, line);
-    host::emit(&mut chunks[current], "wasm:js-string", "fromCharCode", 1, line);
+    host::emit(
+        &mut chunks[current],
+        "wasm:js-string",
+        "fromCharCode",
+        1,
+        line,
+    );
     host::emit(&mut chunks[current], "ecma:string", "concat", 2, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, text_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);

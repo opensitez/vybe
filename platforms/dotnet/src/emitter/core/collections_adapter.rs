@@ -1,9 +1,9 @@
 use std::sync::Arc;
+use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
-use vybe_compiler::primitives::instructions::core_wasm;
 
-use vybe_compiler::primitives::collections;
+use vybe_compiler::primitives::{collections, sets};
 
 const VB_COLLECTION_ITEMS: &str = "__dotnet_vb_collection_items";
 const VB_COLLECTION_KEYS: &str = "__dotnet_vb_collection_keys";
@@ -104,7 +104,7 @@ fn emit_observable_items_slot(chunks: &mut [Chunk], current: usize, recv: u16, l
 
 pub fn emit_set_new_ignore_comparer(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
-    call_import(chunks, current, "ecma:set", "new", 0, line);
+    sets::emit_new(chunks, current, line);
 }
 
 pub fn emit_list_new_from_iterable(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -301,30 +301,11 @@ pub fn emit_notify_collection_changed_event_args_new(
 
 pub fn emit_set_new_from_iterable(chunks: &mut [Chunk], current: usize, line: u32) {
     collections::emit_spread_iterable(chunks, current, line);
-    call_import(chunks, current, "ecma:set", "new", 1, line);
+    sets::emit_from_iterable(chunks, current, line);
 }
 
 pub fn emit_hashset_add(chunks: &mut [Chunk], current: usize, line: u32) {
-    let base = stash_args(chunks, current, 2, line);
-    let recv = base;
-    let value = base + 1;
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
-    call_import(chunks, current, "ecma:set", "has", 2, line);
-    let present_slot = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, present_slot, line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, present_slot, line);
-    chunks[current].emit_if(line);
-    core_wasm::bool_const(&mut chunks[current], line, false);
-    chunks[current].emit_else(line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
-    call_import(chunks, current, "ecma:set", "add", 2, line);
-    chunks[current].emit_op(Op::DROP, line);
-    core_wasm::bool_const(&mut chunks[current], line, true);
-    chunks[current].emit_end(line);
+    sets::emit_add_changed(chunks, current, line);
 }
 
 pub fn emit_dict_new_ignore_arg(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -1115,7 +1096,7 @@ pub fn emit_observable_collection_on_changed(chunks: &mut [Chunk], current: usiz
 fn normalize_arg_to_set(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
     collections::emit_spread_iterable(chunks, current, line);
-    call_import(chunks, current, "ecma:set", "new", 1, line);
+    sets::emit_from_iterable(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
 }
 
@@ -1123,10 +1104,6 @@ fn emit_hashset_mutation(chunks: &mut [Chunk], current: usize, func: &str, line:
     let base = stash_args(chunks, current, 2, line);
     let recv = base;
     let src = base + 1;
-    let result_slot = chunks[current].alloc_scratch(4);
-    let arr_slot = result_slot + 1;
-    let idx_slot = result_slot + 2;
-    let value_slot = result_slot + 3;
 
     // C# set methods take any `IEnumerable<T>`; the ECMA set operations require
     // a set-like operand. Normalize the argument to an ECMA Set via
@@ -1136,100 +1113,18 @@ fn emit_hashset_mutation(chunks: &mut [Chunk], current: usize, func: &str, line:
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
-    call_import(chunks, current, "ecma:set", func, 2, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    call_import(chunks, current, "ecma:set", "clear", 1, line);
+    match func {
+        "intersection" => sets::emit_intersect_with(chunks, current, line),
+        "difference" => sets::emit_except_with(chunks, current, line),
+        "symmetricDifference" => sets::emit_symmetric_except_with(chunks, current, line),
+        _ => sets::emit_union_with(chunks, current, line),
+    }
     chunks[current].emit_op(Op::DROP, line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
-    collections::emit_iter_values(chunks, current, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
-
-    core_wasm::i32_const(&mut chunks[current], line, 0);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
-
-    let block = chunks[current].emit_block(line);
-    let (loop_patch, _) = chunks[current].emit_loop_s(line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
-    collections::emit_len(chunks, current, line);
-    vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    vybe_compiler::primitives::ops::emit_dyn_not(&mut chunks[current], line);
-    chunks[current].emit_br_if(1, line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
-    collections::emit_get(chunks, current, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    call_import(chunks, current, "ecma:set", "add", 2, line);
-    chunks[current].emit_op(Op::DROP, line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
-    core_wasm::i32_const(&mut chunks[current], line, 1);
-    chunks[current].emit_op(Op::I32_ADD, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
-
-    chunks[current].emit_br(0, line);
-    chunks[current].emit_end(line);
-    chunks[current].patch_loop(loop_patch);
-    chunks[current].emit_end(line);
-    chunks[current].patch_block(block);
-
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_hashset_union_with(chunks: &mut [Chunk], current: usize, line: u32) {
-    let base = stash_args(chunks, current, 2, line);
-    let recv = base;
-    let src = base + 1;
-    let arr_slot = chunks[current].alloc_scratch(3);
-    let idx_slot = arr_slot + 1;
-    let value_slot = arr_slot + 2;
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
-    collections::emit_iter_values(chunks, current, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
-
-    core_wasm::i32_const(&mut chunks[current], line, 0);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
-
-    let block = chunks[current].emit_block(line);
-    let (loop_patch, _) = chunks[current].emit_loop_s(line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
-    collections::emit_len(chunks, current, line);
-    vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    vybe_compiler::primitives::ops::emit_dyn_not(&mut chunks[current], line);
-    chunks[current].emit_br_if(1, line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
-    collections::emit_get(chunks, current, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    call_import(chunks, current, "ecma:set", "add", 2, line);
-    chunks[current].emit_op(Op::DROP, line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
-    core_wasm::i32_const(&mut chunks[current], line, 1);
-    chunks[current].emit_op(Op::I32_ADD, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
-
-    chunks[current].emit_br(0, line);
-    chunks[current].emit_end(line);
-    chunks[current].patch_loop(loop_patch);
-    chunks[current].emit_end(line);
-    chunks[current].patch_block(block);
-    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    emit_hashset_mutation(chunks, current, "union", line);
 }
 
 pub fn emit_hashset_intersect_with(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -1237,10 +1132,6 @@ pub fn emit_hashset_intersect_with(chunks: &mut [Chunk], current: usize, line: u
 }
 
 pub fn emit_hashset_except_with(chunks: &mut [Chunk], current: usize, line: u32) {
-    // `a.ExceptWith(b)` mutates in place; lower to the non-mutating ECMA
-    // `difference` (returns a NEW set) then clear+refill `a` — the mutating
-    // host `exceptWith` returns void, which the clear+refill pattern misreads
-    // as an empty result.
     emit_hashset_mutation(chunks, current, "difference", line);
 }
 
@@ -1259,7 +1150,14 @@ fn emit_hashset_predicate(chunks: &mut [Chunk], current: usize, func: &str, line
     normalize_arg_to_set(chunks, current, src, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
-    call_import(chunks, current, "ecma:set", func, 2, line);
+    match func {
+        "isSubsetOf" => sets::emit_is_subset_of(chunks, current, line),
+        "isSupersetOf" => sets::emit_is_superset_of(chunks, current, line),
+        _ => {
+            sets::emit_is_disjoint_from(chunks, current, line);
+            vybe_compiler::primitives::ops::emit_dyn_not(&mut chunks[current], line);
+        }
+    }
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
 }
 
@@ -1288,11 +1186,11 @@ fn emit_hashset_relation(chunks: &mut [Chunk], current: usize, line: u32, rel: &
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
-    call_import(chunks, current, "ecma:set", "isSubsetOf", 2, line);
+    sets::emit_is_subset_of(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, sub_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
-    call_import(chunks, current, "ecma:set", "isSupersetOf", 2, line);
+    sets::emit_is_superset_of(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, sup_slot, line);
 
     // (a && (negate ? !b : b)), lowered as `a ? <b-term> : false`.

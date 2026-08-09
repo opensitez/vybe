@@ -1,6 +1,6 @@
-use vybe_runtime::opcode::Op;
-use vybe_runtime::Chunk;
 use vybe_compiler::primitives::instructions::{core_wasm, host};
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 fn stash_two(chunk: &mut Chunk, line: u32) -> (u16, u16) {
     let first = chunk.alloc_scratch(2);

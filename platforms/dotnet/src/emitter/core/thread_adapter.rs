@@ -9,9 +9,9 @@
 
 use std::sync::Arc;
 
-use vybe_runtime::{opcode::Op, Chunk, Value};
 use vybe_compiler::primitives::collections;
 use vybe_compiler::primitives::instructions::core_wasm;
+use vybe_runtime::{Chunk, Value, opcode::Op};
 
 const CANCELLED_KEY: &str = "__dotnet_cancelled";
 const CANCEL_AT_MS_KEY: &str = "__dotnet_cancel_at_ms";
@@ -44,7 +44,8 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
         Value::F64(f) => chunk.emit_f64_const(*f, line),
         Value::I32(i) => chunk.emit_i32_const(*i, line),
         Value::Bool(b) => chunk.emit_bool_const(*b, line),
-        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val) }
+        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val),
+    }
 }
 
 fn struct_get(chunk: &mut Chunk, field: &str, line: u32) {

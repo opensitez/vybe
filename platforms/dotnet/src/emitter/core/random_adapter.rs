@@ -1,6 +1,6 @@
+use vybe_compiler::primitives::instructions::{core_wasm, host};
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
-use vybe_compiler::primitives::instructions::{core_wasm, host};
 
 const STATE_KEY: &str = "__state";
 
@@ -9,7 +9,8 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
         Value::String(s) => chunk.emit_string_const(s, line),
         Value::F64(f) => chunk.emit_f64_const(*f, line),
         Value::I32(i) => chunk.emit_i32_const(*i, line),
-        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val) }
+        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val),
+    }
 }
 
 fn reserve_slot(chunk: &mut Chunk) -> u16 {

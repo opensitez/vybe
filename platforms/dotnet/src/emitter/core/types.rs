@@ -221,11 +221,15 @@ mod tests {
 
     #[test]
     fn test_known_type_mappings_exclude_winforms_entries() {
-        assert!(known_type_mappings()
-            .iter()
-            .any(|mapping| mapping.name == "stringbuilder"));
-        assert!(!known_type_mappings()
-            .iter()
-            .any(|mapping| mapping.name == "form"));
+        assert!(
+            known_type_mappings()
+                .iter()
+                .any(|mapping| mapping.name == "stringbuilder")
+        );
+        assert!(
+            !known_type_mappings()
+                .iter()
+                .any(|mapping| mapping.name == "form")
+        );
     }
 }

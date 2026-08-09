@@ -22,7 +22,8 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
         Value::I32(i) => chunk.emit_i32_const(*i, line),
         Value::Bool(b) => chunk.emit_bool_const(*b, line),
         Value::Null => chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line),
-        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val) }
+        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val),
+    }
 }
 
 fn lset(chunk: &mut Chunk, slot: u16, line: u32) {

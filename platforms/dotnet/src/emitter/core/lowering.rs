@@ -13,14 +13,16 @@ fn call_expr(callee: Expression, args: Vec<Argument>) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(callee),
         args,
-        optional: false })
+        optional: false,
+    })
 }
 
 fn member_expr(object: Expression, field: &str) -> Expression {
     Expression::new(ExprKind::Member {
         object: Box::new(object),
         field: field.to_string(),
-        null_safe: false })
+        null_safe: false,
+    })
 }
 
 fn dotted_expr_name(expr: &Expression) -> Option<String> {
@@ -30,14 +32,16 @@ fn dotted_expr_name(expr: &Expression) -> Option<String> {
             let base = dotted_expr_name(object)?;
             Some(format!("{base}.{field}"))
         }
-        _ => None }
+        _ => None,
+    }
 }
 
 fn index_expr(object: Expression, index: Expression) -> Expression {
     Expression::new(ExprKind::Index {
         object: Box::new(object),
         index: Box::new(index),
-        null_safe: false })
+        null_safe: false,
+    })
 }
 
 fn null_lit() -> Expression {
@@ -58,9 +62,12 @@ fn assignment_truthy(target: &Expression, value: Expression) -> Expression {
             op: BinOp::NotEq,
             left: Box::new(Expression::new(ExprKind::Assign {
                 target: Box::new(target.clone()),
-                value: Box::new(value) })),
-            right: Box::new(null_lit()) })),
-        right: Box::new(Expression::bool(true)) })
+                value: Box::new(value),
+            })),
+            right: Box::new(null_lit()),
+        })),
+        right: Box::new(Expression::bool(true)),
+    })
 }
 
 pub fn is_hashset_relation_method(field: &str) -> bool {
@@ -159,7 +166,8 @@ pub fn datetime_field_name(name: &str) -> &'static str {
         "dayofweek" => "DayOfWeek",
         "ticks" => "Ticks",
         "kind" => "Kind",
-        _ => "Year" }
+        _ => "Year",
+    }
 }
 
 pub fn is_datetime_static_producer(name: &str) -> bool {
@@ -190,7 +198,8 @@ pub fn is_datetime_static_producer(name: &str) -> bool {
 pub fn encoding_static_name(expr: &Expression) -> Option<&'static str> {
     let receiver = match &expr.kind {
         ExprKind::Call { callee, args, .. } if args.is_empty() => callee.as_ref(),
-        _ => expr };
+        _ => expr,
+    };
     let path = dotted_expr_name(receiver)?;
     let name = path
         .strip_prefix("Encoding.")
@@ -202,7 +211,8 @@ pub fn encoding_static_name(expr: &Expression) -> Option<&'static str> {
         "utf32" => Some("utf32"),
         "latin1" => Some("latin1"),
         "bigendianunicode" => Some("bigendianunicode"),
-        _ => None }
+        _ => None,
+    }
 }
 
 /// Build a runtime expression that yields the .NET short type name of `expr`.
@@ -219,43 +229,51 @@ pub fn runtime_type_name_expr(expr: Expression) -> Expression {
             left: Box::new(typeof_expr.clone()),
             right: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
                 runtime_name.into(),
-            )))) })
+            )))),
+        })
     };
 
     let floor_call = Expression::new(ExprKind::Call {
         callee: Box::new(member_expr(Expression::ident("Math"), "floor")),
         args: vec![Argument::positional(expr.clone())],
-        optional: false });
+        optional: false,
+    });
     let is_int = Expression::new(ExprKind::Binary {
         op: BinOp::Eq,
         left: Box::new(floor_call),
-        right: Box::new(expr.clone()) });
+        right: Box::new(expr.clone()),
+    });
 
     let number_branch = Expression::new(ExprKind::Ternary {
         cond: Box::new(is_int),
         then: Box::new(Expression::string("Int32")),
-        else_: Box::new(Expression::string("Double")) });
+        else_: Box::new(Expression::string("Double")),
+    });
 
     let inst_type = member_expr(expr, "__type");
     let object_name = Expression::new(ExprKind::Ternary {
         cond: Box::new(inst_type.clone()),
         then: Box::new(inst_type),
-        else_: Box::new(Expression::string("Object")) });
+        else_: Box::new(Expression::string("Object")),
+    });
 
     let bool_branch = Expression::new(ExprKind::Ternary {
         cond: Box::new(type_eq("boolean")),
         then: Box::new(Expression::string("Boolean")),
-        else_: Box::new(object_name) });
+        else_: Box::new(object_name),
+    });
 
     let num_or_bool = Expression::new(ExprKind::Ternary {
         cond: Box::new(type_eq("number")),
         then: Box::new(number_branch),
-        else_: Box::new(bool_branch) });
+        else_: Box::new(bool_branch),
+    });
 
     Expression::new(ExprKind::Ternary {
         cond: Box::new(type_eq("string")),
         then: Box::new(Expression::string("String")),
-        else_: Box::new(num_or_bool) })
+        else_: Box::new(num_or_bool),
+    })
 }
 
 /// `X.TryParse(s, r)` out-param normalization.
@@ -269,7 +287,8 @@ pub fn try_parse_desugar(
     let core = call_expr(callee.clone(), vec![Argument::positional(input.clone())]);
     let assign_core = Expression::new(ExprKind::Assign {
         target: Box::new(out_target.clone()),
-        value: Box::new(core.clone()) });
+        value: Box::new(core.clone()),
+    });
 
     if recv.eq_ignore_ascii_case("Guid")
         || recv.eq_ignore_ascii_case("System.Guid")
@@ -284,15 +303,18 @@ pub fn try_parse_desugar(
         let success = Expression::new(ExprKind::Binary {
             op: BinOp::NotEq,
             left: Box::new(core.clone()),
-            right: Box::new(null_lit()) });
+            right: Box::new(null_lit()),
+        });
         let assign_success = Expression::new(ExprKind::Binary {
             op: BinOp::NotEq,
             left: Box::new(assign_core),
-            right: Box::new(null_lit()) });
+            right: Box::new(null_lit()),
+        });
         return Some(Expression::new(ExprKind::Ternary {
             cond: Box::new(success),
             then: Box::new(assign_success),
-            else_: Box::new(Expression::bool(false)) }));
+            else_: Box::new(Expression::bool(false)),
+        }));
     }
     if recv.eq_ignore_ascii_case("Integer")
         || recv.eq_ignore_ascii_case("int")
@@ -302,17 +324,21 @@ pub fn try_parse_desugar(
         let success = Expression::new(ExprKind::Binary {
             op: BinOp::NotEq,
             left: Box::new(assign_core),
-            right: Box::new(null_lit()) });
+            right: Box::new(null_lit()),
+        });
         let fallback = Expression::new(ExprKind::Binary {
             op: BinOp::Eq,
             left: Box::new(Expression::new(ExprKind::Assign {
                 target: Box::new(out_target.clone()),
-                value: Box::new(Expression::new(ExprKind::Lit(Literal::Int(0)))) })),
-            right: Box::new(null_lit()) });
+                value: Box::new(Expression::new(ExprKind::Lit(Literal::Int(0)))),
+            })),
+            right: Box::new(null_lit()),
+        });
         return Some(Expression::new(ExprKind::Binary {
             op: BinOp::Or,
             left: Box::new(success),
-            right: Box::new(fallback) }));
+            right: Box::new(fallback),
+        }));
     }
     None
 }
@@ -338,11 +364,13 @@ pub fn try_create_desugar(
     );
     let assign_core = Expression::new(ExprKind::Assign {
         target: Box::new(out_target.clone()),
-        value: Box::new(core) });
+        value: Box::new(core),
+    });
     Some(Expression::new(ExprKind::Binary {
         op: BinOp::NotEq,
         left: Box::new(assign_core),
-        right: Box::new(null_lit()) }))
+        right: Box::new(null_lit()),
+    }))
 }
 
 /// `d.TryGetValue(k, v)` out-param normalization.
@@ -366,22 +394,29 @@ pub fn try_get_value_desugar_with_default(
             op: BinOp::NotEq,
             left: Box::new(Expression::new(ExprKind::Assign {
                 target: Box::new(out_target.clone()),
-                value: Box::new(index_expr(object.clone(), key.clone())) })),
-            right: Box::new(null_lit()) })),
-        right: Box::new(Expression::new(ExprKind::Lit(Literal::Bool(true)))) });
+                value: Box::new(index_expr(object.clone(), key.clone())),
+            })),
+            right: Box::new(null_lit()),
+        })),
+        right: Box::new(Expression::new(ExprKind::Lit(Literal::Bool(true)))),
+    });
     let else_branch = Expression::new(ExprKind::Binary {
         op: BinOp::And,
         left: Box::new(Expression::new(ExprKind::Binary {
             op: BinOp::NotEq,
             left: Box::new(Expression::new(ExprKind::Assign {
                 target: Box::new(out_target.clone()),
-                value: Box::new(default_value) })),
-            right: Box::new(null_lit()) })),
-        right: Box::new(Expression::new(ExprKind::Lit(Literal::Bool(false)))) });
+                value: Box::new(default_value),
+            })),
+            right: Box::new(null_lit()),
+        })),
+        right: Box::new(Expression::new(ExprKind::Lit(Literal::Bool(false)))),
+    });
     Expression::new(ExprKind::Ternary {
         cond: Box::new(contains_key_expr(object, key)),
         then: Box::new(then_branch),
-        else_: Box::new(else_branch) })
+        else_: Box::new(else_branch),
+    })
 }
 
 pub fn get_or_add_desugar(
@@ -398,7 +433,9 @@ pub fn get_or_add_desugar(
         then: Box::new(index_expr(object.clone(), key.clone())),
         else_: Box::new(Expression::new(ExprKind::Assign {
             target: Box::new(index_expr(object.clone(), key.clone())),
-            value: Box::new(produced) })) })
+            value: Box::new(produced),
+        })),
+    })
 }
 
 pub fn add_or_update_desugar(
@@ -420,10 +457,13 @@ pub fn add_or_update_desugar(
         cond: Box::new(contains_key_expr(object, key)),
         then: Box::new(Expression::new(ExprKind::Assign {
             target: Box::new(target()),
-            value: Box::new(updated) })),
+            value: Box::new(updated),
+        })),
         else_: Box::new(Expression::new(ExprKind::Assign {
             target: Box::new(target()),
-            value: Box::new(add_value.clone()) })) })
+            value: Box::new(add_value.clone()),
+        })),
+    })
 }
 
 pub fn try_update_desugar(
@@ -438,14 +478,17 @@ pub fn try_update_desugar(
         right: Box::new(Expression::new(ExprKind::Binary {
             op: BinOp::Eq,
             left: Box::new(index_expr(object.clone(), key.clone())),
-            right: Box::new(comparison_value.clone()) })) });
+            right: Box::new(comparison_value.clone()),
+        })),
+    });
     Expression::new(ExprKind::Ternary {
         cond: Box::new(cond),
         then: Box::new(assignment_truthy(
             &index_expr(object.clone(), key.clone()),
             new_value.clone(),
         )),
-        else_: Box::new(Expression::bool(false)) })
+        else_: Box::new(Expression::bool(false)),
+    })
 }
 
 pub fn try_remove_desugar(
@@ -463,8 +506,10 @@ pub fn try_remove_desugar(
         then: Box::new(Expression::new(ExprKind::Binary {
             op: BinOp::And,
             left: Box::new(assign_out),
-            right: Box::new(remove_call) })),
-        else_: Box::new(Expression::bool(false)) })
+            right: Box::new(remove_call),
+        })),
+        else_: Box::new(Expression::bool(false)),
+    })
 }
 
 pub fn try_take_desugar(object: &Expression, method: &str, out_target: &Expression) -> Expression {
@@ -472,7 +517,8 @@ pub fn try_take_desugar(object: &Expression, method: &str, out_target: &Expressi
         cond: Box::new(Expression::new(ExprKind::Binary {
             op: BinOp::Gt,
             left: Box::new(member_expr(object.clone(), "Count")),
-            right: Box::new(Expression::int(0)) })),
+            right: Box::new(Expression::int(0)),
+        })),
         then: Box::new(assignment_truthy(
             out_target,
             call_expr(
@@ -480,5 +526,6 @@ pub fn try_take_desugar(object: &Expression, method: &str, out_target: &Expressi
                 vec![Argument::positional(out_target.clone())],
             ),
         )),
-        else_: Box::new(Expression::bool(false)) })
+        else_: Box::new(Expression::bool(false)),
+    })
 }

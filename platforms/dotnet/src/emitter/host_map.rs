@@ -84,11 +84,15 @@ mod tests {
 
     #[test]
     fn test_static_method_mappings_merge_core_and_winforms() {
-        assert!(static_method_mappings()
-            .iter()
-            .any(|mapping| mapping.type_name == "Convert"));
-        assert!(static_method_mappings()
-            .iter()
-            .all(|mapping| mapping.type_name != "Application"));
+        assert!(
+            static_method_mappings()
+                .iter()
+                .any(|mapping| mapping.type_name == "Convert")
+        );
+        assert!(
+            static_method_mappings()
+                .iter()
+                .all(|mapping| mapping.type_name != "Application")
+        );
     }
 }

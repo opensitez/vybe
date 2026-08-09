@@ -14,7 +14,8 @@ struct CtrlInfo {
     y: i32,
     width: i32,
     height: i32,
-    props: Vec<(String, String)> }
+    props: Vec<(String, String)>,
+}
 
 /// `"System.Windows.Forms.Button"` → `"Button"`
 fn last_component(name: &str) -> &str {
@@ -87,7 +88,8 @@ fn parse_designer_fast(designer: &str, user_code: &str, fallback_name: &str) -> 
                             y: 0,
                             width: 100,
                             height: 30,
-                            props: Vec::new() });
+                            props: Vec::new(),
+                        });
                     }
                 }
             }
@@ -120,7 +122,8 @@ fn parse_designer_fast(designer: &str, user_code: &str, fallback_name: &str) -> 
                                 y: 0,
                                 width: 100,
                                 height: 30,
-                                props: Vec::new() });
+                                props: Vec::new(),
+                            });
                         }
                         continue;
                     }
@@ -293,7 +296,8 @@ fn parse_databindings_add<'a>(line: &'a str) -> Option<(&'a str, String, &'a str
             ',' if !in_str && depth == 0 => {
                 parts.push(std::mem::take(&mut cur).trim().to_string());
             }
-            _ => cur.push(ch) }
+            _ => cur.push(ch),
+        }
     }
     if !cur.trim().is_empty() {
         parts.push(cur.trim().to_string());
@@ -365,7 +369,8 @@ fn parse_items_addrange<'a>(line: &'a str) -> Option<(&'a str, Vec<String>)> {
                 }
                 cur.clear();
             }
-            _ => cur.push(ch) }
+            _ => cur.push(ch),
+        }
     }
     if !cur.trim().is_empty() {
         if let Some(v) = parse_string_value(cur.trim()) {
@@ -641,7 +646,8 @@ fn vbnet_type_to_control_type(name: &str) -> Option<ControlType> {
         "printdocument" => Some(ControlType::PrintDocument),
         "printpreviewdialog" => Some(ControlType::PrintPreviewDialog),
         "pagesetupdialog" => Some(ControlType::PageSetupDialog),
-        _ => None }
+        _ => None,
+    }
 }
 
 fn event_type_from_name(name: &str) -> Option<EventType> {
@@ -677,7 +683,8 @@ fn event_type_from_name(name: &str) -> Option<EventType> {
         "scroll" => Some(EventType::Scroll),
         "cellclick" => Some(EventType::CellClick),
         "linkclicked" => Some(EventType::LinkClicked),
-        _ => None }
+        _ => None,
+    }
 }
 
 /// Extract the class name from VB.NET source (looks for "Class <Name>")
@@ -702,7 +709,8 @@ pub fn save_form_vb(form_module: &FormModule, dir: &Path) -> SaveResult<()> {
 
     if let FormFormat::VbNet {
         designer_code,
-        user_code } = &form_module.format
+        user_code,
+    } = &form_module.format
     {
         let designer_path = dir.join(format!("{}.Designer.vb", name));
         fs::write(&designer_path, designer_code)?;

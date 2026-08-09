@@ -1,8 +1,6 @@
 use super::super::super::class_exports::DotnetClassExport;
 use super::component_classes_common::constructor_class;
-use vybe_runtime::component_model::{
-    ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef,
-};
+use vybe_runtime::component_model::{ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef};
 
 pub(super) fn exports() -> Vec<DotnetClassExport> {
     vec![

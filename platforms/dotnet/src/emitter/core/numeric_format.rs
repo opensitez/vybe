@@ -14,13 +14,13 @@
 
 use std::sync::Arc;
 
-use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_compiler::primitives::ops::{
     emit_dyn_add_into, emit_dyn_eq_into, emit_dyn_ge_into, emit_dyn_gt_into, emit_dyn_lt_into,
     emit_dyn_not_into,
 };
+use vybe_runtime::opcode::Op;
+use vybe_runtime::{Chunk, Value};
 
 fn emit_str_length(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("wasm:js-string", "length");
@@ -43,7 +43,9 @@ fn emit_str_concat(imports: &mut Chunk, chunk: &mut Chunk, line: u32) {
 
 fn emit_const_index(chunk: &mut Chunk, idx: u16, line: u32) {
     match chunk.constants[idx as usize].clone() {
-        Value::Null | Value::TypedNull(_) => chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line),
+        Value::Null | Value::TypedNull(_) => {
+            chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line)
+        }
         Value::Undefined => core_wasm::undefined(chunk, line),
         Value::Bool(value) => chunk.emit_bool_const(value, line),
         Value::I32(value) => chunk.emit_i32_const(value, line),

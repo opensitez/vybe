@@ -23,7 +23,9 @@ pub fn register() {
         namespace_constants: Some(crate::emitter::namespace_constant_mappings),
         component_descriptor: Some(crate::emitter::dotnet_component_descriptor),
         is_descriptor_class: Some(crate::emitter::is_component_descriptor_class),
-        numeric_format_helper: Some(crate::emitter::core::numeric_format::build_dotnet_numeric_format),
+        numeric_format_helper: Some(
+            crate::emitter::core::numeric_format::build_dotnet_numeric_format,
+        ),
         read_binary_module: None,
     });
 }

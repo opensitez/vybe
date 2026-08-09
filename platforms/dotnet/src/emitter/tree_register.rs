@@ -35,7 +35,47 @@ pub fn register_namespace_tree() {
             let mut method_overloads: BTreeMap<String, Vec<(u8, NamespaceNode)>> = BTreeMap::new();
             let mut static_overloads: BTreeMap<String, Vec<(u8, NamespaceNode)>> = BTreeMap::new();
             let mut methods = Subtree::new();
-            for m in &class.methods {
+            let class_is_control = descends_from_control(&class.name);
+            // The WHOLE inherited surface, not just this class's own methods —
+            // the tree has no parent link, so anything left off here is
+            // unreachable. See `inherited_methods`.
+            for m in &inherited_methods(&class.name) {
+                // A control METHOD is a shared VERB, resolved through
+                // `primitives/gui.rs` like its properties — not a `vybe:gui`
+                // host call. Gated on the class actually being a control for
+                // the same reason the accessors are: `Graphics` and the value
+                // types declare methods too, and `Update`/`Refresh` are
+                // ordinary names that must not be captured off a non-control.
+                let gui_verb = if class_is_control && !m.is_static {
+                    gui_control_verb(&m.name)
+                } else {
+                    None
+                };
+                if let Some(verb) = gui_verb {
+                    // Buckets into `method_overloads` exactly like every other
+                    // method rather than inserting straight into `methods`,
+                    // because the ARITY has to travel with the node: a method
+                    // call resolves by (name, arity), so a bare `CommonEmit`
+                    // leaf is found as a name and then not called — `b.Hide()`
+                    // reached `undefined is not callable`. Same registration
+                    // path, only the target differs.
+                    let entries = method_overloads.entry(m.name.to_lowercase()).or_default();
+                    // Same "first declaration of an arity wins" rule as the
+                    // ordinary path below. `inherited_methods` yields nearest
+                    // first, so an override shadows the base declaration it
+                    // re-declares instead of appending a second entry that can
+                    // never be selected.
+                    if !entries.iter().any(|(a, _)| *a == m.arity) {
+                        entries.push((
+                            m.arity,
+                            NamespaceNode::CommonEmit(format!(
+                                "{}{verb}",
+                                vybe_compiler::primitives::gui::CTRL_METHOD_EMIT
+                            )),
+                        ));
+                    }
+                    continue;
+                }
                 let node = match &m.body {
                     MethodBody::Common(emit) => NamespaceNode::CommonEmit(emit.clone()),
                     // The descriptor knows the arity — record it, so the
@@ -46,7 +86,8 @@ pub fn register_namespace_tree() {
                     }
                     // Chunk-backed methods are per-compilation artifacts,
                     // not process-global surface.
-                    MethodBody::UserChunk(_) => continue };
+                    MethodBody::UserChunk(_) => continue,
+                };
                 let bucket = if m.is_static {
                     &mut static_overloads
                 } else {
@@ -70,11 +111,29 @@ pub fn register_namespace_tree() {
             // parent link and `Button.Text` is declared on `Control` — a flat
             // registration would leave every inherited property unreachable.
             // Nearest declaration wins, so an override shadows its base.
+            let mut property_returns: BTreeMap<String, String> = BTreeMap::new();
+            let is_control = descends_from_control(&class.name);
             for p in inherited_properties(&class.name) {
                 let node = namespaces::property(
-                    p.getter.as_ref().map(|t| accessor_node(t, &p.name)),
-                    p.setter.as_ref().map(|t| accessor_node(t, &p.name)),
+                    p.getter.as_ref().map(|t| accessor_node(t, &p.name, is_control)),
+                    p.setter.as_ref().map(|t| accessor_node(t, &p.name, is_control)),
                 );
+                // What the property READS BACK as, declared from its ROLE so
+                // the one answer serves every frontend registered this way.
+                // Not decoration: a property whose type is undeclared reads as
+                // `null` to the expression machinery, so `btn.Text.Length` or
+                // `if (c.Enabled)` had nothing to work on.
+                if is_control {
+                    if let Some(value_type) = vybe_compiler::primitives::gui::property_value_type(
+                        match gui_property_role(&p.name) {
+                            "" => p.name.to_ascii_lowercase(),
+                            r => r.to_string(),
+                        }
+                        .as_str(),
+                    ) {
+                        property_returns.insert(p.name.to_lowercase(), value_type.to_string());
+                    }
+                }
                 methods
                     .entry(p.name.to_lowercase())
                     .or_insert_with(|| node.clone());
@@ -130,6 +189,13 @@ pub fn register_namespace_tree() {
                     member_returns.insert(m.name.to_lowercase(), rt);
                 }
             }
+            // Property roles fill in what the method scan does not cover. A
+            // method's declared return wins on a name collision — it was
+            // resolved from the descriptor's own signature, which is the more
+            // specific statement.
+            for (name, ty) in property_returns {
+                member_returns.entry(name).or_insert(ty);
+            }
 
             // The descriptor's backing constructor, as a tree node. dotnet
             // classes are not generic field-capture constructions (no
@@ -142,15 +208,34 @@ pub fn register_namespace_tree() {
                 .map(|backing| {
                     Box::new(match backing {
                         ConstructorTarget::Host(t) => namespaces::host_fn(&t.module, &t.name),
-                        ConstructorTarget::Common(emit) => NamespaceNode::CommonEmit(emit.clone()) })
+                        ConstructorTarget::Common(emit) => NamespaceNode::CommonEmit(emit.clone()),
+                    })
                 });
 
+            // A converted control DECLARES the element it is, the same way
+            // plib and flutter do — which is what finally lets
+            // `registered_control_element` answer for dotnet instead of
+            // falling back to a `<vybe-*>` custom element.
+            //
+            // Registered ONLY for classes with a real HTML counterpart, so an
+            // unconverted control keeps today's path exactly. A spec with
+            // `control_fn` set routes construction through
+            // `emit_tree_ctor_construction`, which creates the element AND
+            // stamps `__type`/`__types` — identity these controls never had.
+            // That is safe now only because properties and methods resolve
+            // from the TREE (see `accessor_node` above and the `MethodBody`
+            // registration); while they lived on ctor-bound thunks, taking
+            // this path would have dropped them.
+            let ctor = html_element_for_control(&class.name)
+                .map(|element| control_ctor_spec(&class.name, element));
+
             let ty = NamespaceNode::Type {
-                ctor: None,
+                ctor,
                 ctor_call,
                 statics,
                 methods,
-                member_returns };
+                member_returns,
+            };
 
             // "dotnet.System" + "Math" → dotnet.system.math
             let mut segments: Vec<String> =
@@ -173,41 +258,321 @@ pub fn register_namespace_tree() {
     });
 }
 
-/// One accessor leaf. The generic `vybe:gui` property host functions take the
-/// property NAME as an argument, so those bind it; a dedicated per-property
-/// host function (`Environment.NewLine` → `node:os.EOL`) does not.
-fn accessor_node(target: &vybe_runtime::component_model::HostTarget, prop: &str) -> NamespaceNode {
-    if target.name == vybe_compiler::primitives::gui::HOST_FN_GET_PROPERTY
+/// A WinForms property spelling → the shared GUI ROLE it fills.
+///
+/// **A property is a role, not a name.** This function is the whole of dotnet's
+/// job here: the WinForms word stops at this line and nothing downstream knows
+/// WinForms exists — the same contract `platforms/plib` states for VCL, where
+/// `Caption` and `Text` are one role.
+///
+/// Most WinForms spellings ARE the canonical role already (`Text`, `Name`,
+/// `Enabled`, `Visible`, `Left`/`Top`/`Width`/`Height`), which is why this is
+/// close to the identity: `vybe:gui`'s property vocabulary was modelled on
+/// WinForms in the first place. Only the names that disagree are listed.
+///
+/// Everything unlisted keeps its own spelling and lands on an ATTRIBUTE, which
+/// is where unknown properties belong on the web. That is the correct
+/// destination, not a gap: `Anchor`, `Dock`, `BackColor`, `Font`, `Cursor` and
+/// the rest have no IDL counterpart, and inventing a role for each would grow
+/// the shared table per control — exactly what `property_op` is written to
+/// avoid.
+fn gui_property_role(prop: &str) -> &'static str {
+    match prop.to_ascii_lowercase().as_str() {
+        // `Text` is the text role for EVERY control: the widget resolves what
+        // it means for the element it is — a caption on a Label, the value on
+        // a TextBox — so no element test belongs here.
+        "text" | "caption" => "text",
+        "name" => "name",
+        // CheckBox / RadioButton. `CheckState` is the tri-state spelling of
+        // the same role; the widget reads its value.
+        "checked" | "checkstate" => "checked",
+        "enabled" => "enabled",
+        "visible" => "visible",
+        "left" => "left",
+        "top" => "top",
+        "width" | "clientwidth" => "width",
+        "height" | "clientheight" => "height",
+        // ComboBox / ListBox selection, the same role plib maps `ItemIndex` to.
+        "selectedindex" => "selectedindex",
+        "items" => "items",
+        "readonly" => "readonly",
+        "maxlength" => "maxlength",
+        _ => "",
+    }
+}
+
+/// A WinForms control METHOD → the shared GUI verb it IS.
+///
+/// The mirror of `gui_property_role`, and the same contract: the WinForms word
+/// stops here. `Show`/`Hide`/`Focus`/`BringToFront` are the same verbs the VCL
+/// spells on `TControl`, so both frontends reach one implementation in
+/// `primitives/gui.rs` instead of each calling its own `vybe:gui` host fn.
+///
+/// `Refresh`/`Invalidate`/`Update` map to real verbs that lower to NOTHING —
+/// a document repaints itself, so there is nothing for an author to ask for.
+/// That is deliberate and is explained at `emit_gui_control_method`.
+fn gui_control_verb(method: &str) -> Option<&'static str> {
+    Some(match method.to_ascii_lowercase().as_str() {
+        "show" => "show",
+        "hide" => "hide",
+        "focus" => "focus",
+        "refresh" => "refresh",
+        "invalidate" => "invalidate",
+        "update" => "update",
+        // ⛔ `BringToFront`/`SendToBack` are NOT converted yet, on purpose.
+        // Z-order is document order, so they are `appendChild` /
+        // `insertBefore(firstChild)` — but `web:dom` exports neither
+        // `parentNode`, `insertBefore` nor `firstChild` today (it has
+        // `appendChild`/`removeChild` and the attribute/text surface, nothing
+        // for reading a parent or a first child). All three are standard DOM
+        // and belong in `web:*`; adding them is a `platforms/web` decision.
+        //
+        // Until then these keep their existing `vybe:gui` target, which WORKS.
+        // Mapping them now would trade a working call for an
+        // `Unresolved import` — and lowering them to a no-op would be a silent
+        // shim, which is worse than either.
+        _ => return None,
+    })
+}
+
+/// One accessor leaf.
+///
+/// The two generic `vybe:gui` property host functions take the property NAME as
+/// an argument, so they are the CONTROL property path — and they are what this
+/// platform is being converted off. They now bind to the shared role emits
+/// (`gui.prop_get.<role>` / `gui.prop_set.<role>`) that `primitives/gui.rs`
+/// lowers to `web:dom` / `web:html` / `web:cssom`, which is the same target
+/// plib already reaches. Under the hood both still drive `vybe_widgets`; only
+/// the route changed, from a bespoke host function to a DOM operation.
+///
+/// A dedicated per-property host function (`Environment.NewLine` →
+/// `node:os.EOL`) is NOT a control property and is left exactly as it was.
+///
+/// `is_control` is what keeps the value types out. `Point`/`Size`/`Font` bind
+/// the same two generic host functions, so the target name alone cannot tell
+/// them apart from a `Button` — only the class can, and it does it by whether
+/// it descends from `Control`.
+fn accessor_node(
+    target: &vybe_runtime::component_model::HostTarget,
+    prop: &str,
+    is_control: bool,
+) -> NamespaceNode {
+    let setting = target.name == vybe_compiler::primitives::gui::HOST_FN_SET_PROPERTY;
+    if is_control
+        && (setting || target.name == vybe_compiler::primitives::gui::HOST_FN_GET_PROPERTY)
+    {
+        let role = match gui_property_role(prop) {
+            "" => prop.to_ascii_lowercase(),
+            r => r.to_string(),
+        };
+        let prefix = if setting {
+            vybe_compiler::primitives::gui::PROP_SET_EMIT
+        } else {
+            vybe_compiler::primitives::gui::PROP_GET_EMIT
+        };
+        NamespaceNode::CommonEmit(format!("{prefix}{role}"))
+    } else if target.name == vybe_compiler::primitives::gui::HOST_FN_GET_PROPERTY
         || target.name == vybe_compiler::primitives::gui::HOST_FN_SET_PROPERTY
     {
+        // Not a control: keep the keyed host-function accessor exactly as it
+        // was. `vybe:gui` still answers for the value types and the drawing
+        // surface, which is why this arm survives the control conversion.
         namespaces::host_fn_keyed(&target.module, &target.name, prop)
     } else {
         namespaces::host_fn(&target.module, &target.name)
     }
 }
 
+/// The HTML element a WinForms control IS — `tag`, or `tag:input-type` for the
+/// `<input>` family. `None` means "not converted yet".
+///
+/// **Only controls with a genuine, conforming HTML counterpart are listed.**
+/// A `Button` IS `<button>` and a `CheckBox` IS `<input type="checkbox">` —
+/// same element plib maps `TButton`/`TCheckBox` to, which is what makes a
+/// Delphi and a WinForms checkbox the same control rather than two lookalikes.
+/// These get real form association, native keyboard semantics and a real
+/// `value`, none of which a `<vybe-checkbox>` has.
+///
+/// Everything unlisted keeps falling through to `ControlElement::custom` →
+/// `<vybe-listview>`, exactly as before. That is deliberate: a `ListView`,
+/// `TreeView` or `DataGridView` has no HTML counterpart, and forcing one onto
+/// `<table>` or `<div>` would claim semantics it does not have. Converting one
+/// class at a time is what keeps this measurable — there is no flag day.
+///
+/// Kept in step with `platforms/plib/src/emitter/gcl/mod.rs`: a control that
+/// both frameworks name must land on the SAME element, or the two frontends
+/// quietly diverge on what is supposed to be one control.
+fn html_element_for_control(class_name: &str) -> Option<&'static str> {
+    Some(match class_name.to_ascii_lowercase().as_str() {
+        // ── Real HTML, same elements plib maps the VCL twins to ────────────
+        // A form IS the document's body, not a child element.
+        // `emit_control_element` special-cases this: `createElement("body")`
+        // is legal but yields a DETACHED second body that renders nothing, so
+        // it takes `document.body` instead.
+        "form" => "body",
+        "button" => "button",
+        "checkbox" => "input:checkbox",
+        "radiobutton" => "input:radio",
+        "textbox" => "input:text",
+        "maskedtextbox" => "input:text",
+        "richtextbox" => "textarea",
+        "label" => "label",
+        // A LinkLabel IS a hyperlink.
+        "linklabel" => "a",
+        "groupbox" => "fieldset",
+        "combobox" => "select",
+        "listbox" => "ul",
+        "treeview" => "ul",
+        // HTML has these outright, and they carry real semantics a `<div>`
+        // cannot: a range input is keyboard-operable and `<progress>` is
+        // announced as a progress indicator.
+        "progressbar" => "progress",
+        "trackbar" => "input:range",
+        "numericupdown" => "input:number",
+
+        // ── No HTML counterpart: a DECLARED custom element ─────────────────
+        // Declaring `vybe-*` explicitly is better than letting it fall through
+        // to `ControlElement::custom`, because the choice becomes visible here
+        // instead of being implied by absence — and it keeps these names in
+        // step with plib, which spells the same controls the same way
+        // (`TImage`, `TSplitter`, `TPageControl`, `TTabSheet`, `TTimer`).
+        "picturebox" => "vybe-picturebox",
+        "splitcontainer" => "vybe-splitter",
+        "tabcontrol" => "vybe-tabcontrol",
+        "tabpage" => "vybe-tabpage",
+        "timer" => "vybe-timer",
+
+        // ── Deliberately NOT converted yet ─────────────────────────────────
+        // `Panel`/`FlowLayoutPanel`/`TableLayoutPanel` are `<div>` and plib
+        // already maps `TPanel` that way — but `<div>` containers currently
+        // lay out wrong in the shared `vybe_widgets` engine (children carry
+        // scaled CSS and never get a laid-out rect, while body-parented
+        // siblings do). That is a shared layout defect, not a mapping
+        // question, so importing the mapping now would import the bug.
+        // Convert these once it is fixed.
+        //
+        // `ListView`/`DataGridView`/`WebBrowser` have no counterpart at all;
+        // forcing them onto `<table>` would claim semantics they do not have.
+        _ => return None,
+    })
+}
+
+/// The declared parent of a descriptor class — the ONE place this registrar
+/// reads the inheritance link.
+///
+/// Every derivation below (identity chain, flattened methods, flattened
+/// properties, "is this a control") is the same self-first walk over this
+/// link, so they share `namespaces::ancestry_of` / `namespaces::inherits`
+/// instead of each re-writing the walk with its own cycle guard. There were
+/// four copies of it in this file.
+fn descriptor_parent(class_name: &str) -> Option<String> {
+    crate::emitter::surface()
+        .component_descriptor()
+        .classes
+        .iter()
+        .find(|c| c.name.eq_ignore_ascii_case(class_name))
+        .and_then(|c| c.parent.clone())
+}
+
+/// The identity chain for a control, self first — `["Button", "ButtonBase",
+/// "Control", …]`. Stamped as `__type` (first) + `__types` (all), so `is` /
+/// `instanceof` answer for every ancestor from the shared reflection path
+/// rather than a per-language fallback.
+fn control_ancestry(class_name: &str) -> Vec<String> {
+    namespaces::ancestry_of(class_name, descriptor_parent)
+}
+
+/// The generic-construction spec for a converted control — the same shape plib
+/// and flutter register, which is what lets `registered_control_element` answer
+/// for dotnet at last.
+///
+/// `params`/`fields` are deliberately EMPTY: a WinForms control is constructed
+/// bare (`new Button()`) and configured by property assignment afterwards,
+/// unlike a Flutter widget whose children arrive as constructor arguments. So
+/// `control_fn` is the only thing making this a construction, and the object
+/// IS the element.
+fn control_ctor_spec(class_name: &str, element: &str) -> vybe_runtime::namespaces::CtorSpec {
+    vybe_runtime::namespaces::CtorSpec {
+        params: Vec::new(),
+        fields: Vec::new(),
+        field_gui: Vec::new(),
+        ancestry: control_ancestry(class_name),
+        control_fn: Some(element.to_string()),
+        value_equality: false,
+    }
+}
+
+/// Does this class DESCEND FROM `Control` — i.e. is it a control at all?
+///
+/// The element model applies to controls and nothing else. `Point`, `Size`,
+/// `Font`, `Pen`, `Brush` and `Graphics` are value types and a drawing surface:
+/// they are bound to `vybe:gui` constructors for historical reasons but they
+/// are not elements, have no DOM counterpart, and must keep their host-function
+/// accessors until canvas/CSSOM answers for them separately.
+///
+/// Getting this wrong is not subtle. Routing them through the roles turned
+/// `Size.Width` into a CSS geometry write and `Point.X` into an attribute, so
+/// `new Point(100, 200).x` stopped reading back — caught by
+/// `winforms/new_point_properties` and `new_point_and_size`, which is exactly
+/// what those tests are for.
+fn descends_from_control(class_name: &str) -> bool {
+    namespaces::inherits(class_name, "Control", descriptor_parent)
+}
+
+/// A class's own methods followed by every inherited one, nearest first.
+///
+/// Registration-time expansion is the tree's DECLARED contract, not a
+/// workaround for a missing edge: `lookup_type_instance_member` is a flat map
+/// get by design, and `plib`'s registrar states the rule — "the adapter knows
+/// its own inheritance, nothing downstream should". A namespace tree resolves
+/// PATHS; class inheritance is a different relation, and the adapter owns it
+/// because only the adapter has the descriptor's `parent` chain.
+///
+/// So a class's node must carry its whole inherited surface or the member is
+/// simply unreachable. `inherited_properties`
+/// below already did this for properties; methods were left flat, and that is
+/// why `Button.Hide()` resolved to nothing: `Show`/`Hide`/`Focus` are declared
+/// on `Control`, so `Button`'s node had no `hide` for
+/// `lookup_type_instance_member` to find, the shared resolver answered `None`,
+/// and the call fell back to a name-keyed `struct.get "Hide"` expecting a
+/// ctor-bound thunk that the DOM construction path no longer builds.
+///
+/// `StringBuilder.Append()` worked throughout precisely because `Append` is
+/// declared on `StringBuilder` itself — the same resolver, reached because the
+/// member happened to be flat.
+///
+/// Nearest declaration first, so the `or_insert` folds at the call site give
+/// override-shadows-base — the same rule real .NET virtual dispatch uses.
+fn inherited_methods(class_name: &str) -> Vec<vybe_runtime::component_model::MethodDef> {
+    declared_up_the_chain(class_name, |class| class.methods.clone())
+}
+
 /// A class's own properties followed by every inherited one, nearest first, so
 /// an `or_insert` fold gives override-shadows-base.
 fn inherited_properties(class_name: &str) -> Vec<vybe_runtime::component_model::PropertyDef> {
+    declared_up_the_chain(class_name, |class| class.properties.clone())
+}
+
+/// Everything `select` declares on `class_name` and then on each ancestor, in
+/// nearest-first order.
+///
+/// The chain comes from the shared `ancestry_of` walk, so methods, properties
+/// and any future member kind agree on ordering and on what a cyclic `parent`
+/// does — they used to be separate loops that happened to match.
+fn declared_up_the_chain<T, F>(class_name: &str, select: F) -> Vec<T>
+where
+    F: Fn(&vybe_runtime::component_model::ClassType) -> Vec<T>,
+{
     let descriptor = crate::emitter::surface().component_descriptor();
     let mut out = Vec::new();
-    let mut current = descriptor
-        .classes
-        .iter()
-        .find(|c| c.name.eq_ignore_ascii_case(class_name));
-    let mut seen: Vec<String> = Vec::new();
-    while let Some(class) = current {
-        if seen.iter().any(|n| n.eq_ignore_ascii_case(&class.name)) {
-            break; // cyclic parent chain — refuse to spin
+    for name in namespaces::ancestry_of(class_name, descriptor_parent) {
+        if let Some(class) = descriptor
+            .classes
+            .iter()
+            .find(|c| c.name.eq_ignore_ascii_case(&name))
+        {
+            out.extend(select(class));
         }
-        seen.push(class.name.clone());
-        out.extend(class.properties.iter().cloned());
-        current = class.parent.as_deref().and_then(|parent| {
-            descriptor
-                .classes
-                .iter()
-                .find(|c| c.name.eq_ignore_ascii_case(parent))
-        });
     }
     out
 }
@@ -248,7 +613,8 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
             ("iscanceled", ro("dotnet.task_is_canceled")),
         ],
         "list" | "arraylist" => vec![("capacity", ro("dotnet.list_capacity"))],
-        _ => vec![] };
+        _ => vec![],
+    };
     entries
         .iter()
         .map(|(n, node)| ((*n).to_string(), node.clone()))
@@ -290,7 +656,7 @@ fn console_stderr_writer_node() -> NamespaceNode {
 
 #[cfg(test)]
 mod resolve_gap_tests {
-    use vybe_runtime::namespaces::{registry_read, NamespaceNode};
+    use vybe_runtime::namespaces::{NamespaceNode, registry_read};
 
     /// These assert what this file is responsible for — that the entries are
     /// REGISTERED — rather than resolving through them. Resolution moved to
@@ -306,7 +672,8 @@ mod resolve_gap_tests {
                 NamespaceNode::Type {
                     statics, methods, ..
                 } => statics.get(*seg).or_else(|| methods.get(*seg)).cloned()?,
-                _ => return None };
+                _ => return None,
+            };
         }
         Some(node)
     }
@@ -316,7 +683,8 @@ mod resolve_gap_tests {
         super::register_namespace_tree();
         match registered_leaf(&["dotnet", "system", "delegate", "combine"]) {
             Some(NamespaceNode::CommonEmit(name)) => assert_eq!(name, "delegates.combine"),
-            other => panic!("expected CommonEmit(delegates.combine), got {other:?}") }
+            other => panic!("expected CommonEmit(delegates.combine), got {other:?}"),
+        }
     }
 
     #[test]
@@ -347,8 +715,7 @@ mod ctor_parity_tests {
             else {
                 continue;
             };
-            let got =
-                vybe_runtime::namespaces::lookup_type_ctor_target(&scope, &export.class.name);
+            let got = vybe_runtime::namespaces::lookup_type_ctor_target(&scope, &export.class.name);
             if got.as_ref() != Some(&want) {
                 gaps.push(format!(
                     "{}: want {:?} got {:?}",

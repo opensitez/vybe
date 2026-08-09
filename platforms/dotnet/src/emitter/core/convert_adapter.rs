@@ -1,6 +1,6 @@
-use vybe_runtime::opcode::Op;
-use vybe_runtime::Chunk;
 use vybe_compiler::primitives::instructions::host;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 fn reserve_slot(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)

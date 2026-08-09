@@ -251,7 +251,8 @@ pub fn load_project_vbproj(path: impl AsRef<Path>) -> SaveResult<Project> {
             }
             Ok(Event::Eof) => break,
             Err(e) => return Err(SaveError::Parse(format!("XML error: {}", e))),
-            _ => () }
+            _ => (),
+        }
     }
 
     if project_name.is_empty() {
@@ -332,7 +333,8 @@ pub fn load_project_vbproj(path: impl AsRef<Path>) -> SaveResult<Project> {
                             if rel.to_lowercase().ends_with(".designer.vb") {
                                 continue;
                             }
-                            if let Ok(raw) = crate::winforms::designer::encoding::read_text_file(&p) {
+                            if let Ok(raw) = crate::winforms::designer::encoding::read_text_file(&p)
+                            {
                                 let upper = raw.to_uppercase();
                                 if upper.contains("INHERITS SYSTEM.WINDOWS.FORMS.FORM")
                                     || upper.contains("INHERITS FORM")
@@ -414,7 +416,8 @@ pub fn load_project_vbproj(path: impl AsRef<Path>) -> SaveResult<Project> {
             };
             project.add_code_file(super::project::CodeFile {
                 name,
-                code: content });
+                code: content,
+            });
         }
     }
 

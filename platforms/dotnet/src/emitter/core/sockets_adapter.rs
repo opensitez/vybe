@@ -18,9 +18,9 @@
 //! shared with the rest of `compiler_common::dispatch`).
 
 use std::sync::Arc;
+use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
-use vybe_compiler::primitives::instructions::core_wasm;
 
 /// Emit `CONST <idx>` for a literal value — `Chunk` doesn't expose
 /// this directly the way the compiler's `emit_const` helper does,
@@ -30,7 +30,8 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
         Value::String(s) => chunk.emit_string_const(s, line),
         Value::F64(f) => chunk.emit_f64_const(*f, line),
         Value::I32(i) => chunk.emit_i32_const(*i, line),
-        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val) }
+        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val),
+    }
 }
 
 /// Build a `"host:port"` IP-socket-address string on the stack.
