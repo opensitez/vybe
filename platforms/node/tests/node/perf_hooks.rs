@@ -20,10 +20,10 @@
 //! Deferred:
 //!   - `PerformanceObserver` callback invocation (requires event loop)
 
+use vybe_compiler::primitives::platforms::register_platforms;
+use vybe_runtime::capabilities::Capabilities;
 use vybe_runtime::value::{ObjectKind, Value};
 use vybe_runtime::{Chunk, Op, VM};
-use vybe_runtime::capabilities::Capabilities;
-use vybe_compiler::primitives::platforms::register_platforms;
 
 static TEST_GLOBAL_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -77,7 +77,8 @@ fn as_f64(v: &Value) -> f64 {
     match v {
         Value::F64(f) => *f,
         Value::I32(n) => *n as f64,
-        _ => f64::NAN }
+        _ => f64::NAN,
+    }
 }
 
 fn prop(obj: &Value, key: &str) -> Value {
@@ -86,7 +87,8 @@ fn prop(obj: &Value, key: &str) -> Value {
             let o = o.lock().unwrap();
             o.properties.get(key).cloned().unwrap_or(Value::Undefined)
         }
-        _ => Value::Undefined }
+        _ => Value::Undefined,
+    }
 }
 
 // ── performance.now ───────────────────────────────────────────────────────────
@@ -220,7 +222,8 @@ fn performance_get_entries_returns_array() {
             let obj = obj.lock().unwrap();
             assert!(matches!(&obj.kind, ObjectKind::Array(_)));
         }
-        _ => panic!("expected array") }
+        _ => panic!("expected array"),
+    }
 }
 
 #[test]

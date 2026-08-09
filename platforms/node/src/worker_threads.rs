@@ -5,8 +5,8 @@
 //! In a synchronous VM, workers can't actually run. This module provides
 //! the correct surface so code that imports it doesn't crash.
 
-use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI32, Ordering};
 use vybe_runtime::VM;
 use vybe_runtime::value::{Object, Value};
 

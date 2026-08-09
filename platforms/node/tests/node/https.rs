@@ -17,10 +17,10 @@
 //!   - `globalAgent` value with Agent properties
 
 use std::sync::Arc;
+use vybe_compiler::primitives::platforms::register_platforms;
+use vybe_runtime::capabilities::Capabilities;
 use vybe_runtime::value::{Object, Value};
 use vybe_runtime::{Chunk, Op, VM};
-use vybe_runtime::capabilities::Capabilities;
-use vybe_compiler::primitives::platforms::register_platforms;
 
 static TEST_GLOBAL_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -87,13 +87,15 @@ fn prop(v: &Value, key: &str) -> Value {
             .get(key)
             .cloned()
             .unwrap_or(Value::Undefined),
-        _ => Value::Undefined }
+        _ => Value::Undefined,
+    }
 }
 
 fn has_method(v: &Value, key: &str) -> bool {
     match v {
         Value::Object(o) => o.lock().unwrap().properties.contains_key(key),
-        _ => false }
+        _ => false,
+    }
 }
 
 // ── createServer ──────────────────────────────────────────────────────────────
@@ -270,7 +272,8 @@ fn request_method_reflects_option() {
     match method {
         Value::String(m) => assert_eq!(m.as_ref(), "POST", "method must reflect option"),
         Value::Undefined => {} // TDD: not yet implemented
-        other => panic!("method expected string, got {:?}", other) }
+        other => panic!("method expected string, got {:?}", other),
+    }
 }
 
 #[test]
@@ -285,7 +288,8 @@ fn request_protocol_is_https() {
             "https.request.protocol must be 'https:'"
         ),
         Value::Undefined => {} // TDD
-        other => panic!("protocol expected string, got {:?}", other) }
+        other => panic!("protocol expected string, got {:?}", other),
+    }
 }
 
 #[test]

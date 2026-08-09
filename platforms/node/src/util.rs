@@ -77,7 +77,8 @@ fn format_impl(_ctx: &mut HostContext, args: &[Value]) -> Value {
     let fmt = match args.first() {
         Some(Value::String(s)) => s.to_string(),
         Some(other) => return Value::String(Arc::from(format!("{}", other).as_str())),
-        None => return Value::String(Arc::from("")) };
+        None => return Value::String(Arc::from("")),
+    };
     let extra = &args[1..];
     let mut out = String::with_capacity(fmt.len());
     let mut consumed = 0usize;
@@ -102,7 +103,8 @@ fn format_impl(_ctx: &mut HostContext, args: &[Value]) -> Value {
                             'j' => out.push_str(&format_j(arg)),
                             'o' | 'O' => out.push_str(&inspect_value(arg, false)),
                             'c' => {} // CSS — consumed but no output
-                            _ => unreachable!() }
+                            _ => unreachable!(),
+                        }
                         consumed += 1;
                         i += 2;
                         continue;
@@ -126,7 +128,8 @@ fn format_s(v: &Value) -> String {
     match v {
         Value::String(s) => s.to_string(),
         Value::Object(_) => inspect_value(v, false),
-        _ => format!("{}", v) }
+        _ => format!("{}", v),
+    }
 }
 
 fn format_d(v: &Value) -> String {
@@ -140,7 +143,8 @@ fn format_d(v: &Value) -> String {
                 format!("{}", n)
             }
         }
-        _ => "NaN".to_string() }
+        _ => "NaN".to_string(),
+    }
 }
 
 fn format_i(v: &Value) -> String {
@@ -153,7 +157,8 @@ fn format_i(v: &Value) -> String {
             .parse::<i64>()
             .map(|n| n.to_string())
             .unwrap_or_else(|_| "NaN".into()),
-        _ => "NaN".to_string() }
+        _ => "NaN".to_string(),
+    }
 }
 
 fn format_f(v: &Value) -> String {
@@ -166,7 +171,8 @@ fn format_f(v: &Value) -> String {
             .parse::<f64>()
             .map(|n| format!("{}", n))
             .unwrap_or_else(|_| "NaN".into()),
-        _ => "NaN".to_string() }
+        _ => "NaN".to_string(),
+    }
 }
 
 fn format_j(v: &Value) -> String {
@@ -278,7 +284,8 @@ fn inspect_inner(v: &Value, quote_strings: bool, depth: usize, max_depth: usize)
                 }
             }
         }
-        _ => format!("{}", v) }
+        _ => format!("{}", v),
+    }
 }
 
 // ── isDeepStrictEqual ────────────────────────────────────────────────
@@ -340,7 +347,8 @@ fn deep_strict_equal(a: &Value, b: &Value) -> bool {
                 }
             }
         }
-        _ => false }
+        _ => false,
+    }
 }
 
 // ── stripVTControlCharacters ─────────────────────────────────────────
@@ -353,7 +361,8 @@ fn register_strip_vt(vm: &mut VM) {
             let s = match args.first() {
                 Some(Value::String(s)) => s.to_string(),
                 Some(other) => format!("{}", other),
-                None => return Value::String(Arc::from("")) };
+                None => return Value::String(Arc::from("")),
+            };
             let mut out = String::with_capacity(s.len());
             let chars: Vec<char> = s.chars().collect();
             let mut i = 0;
@@ -395,7 +404,8 @@ fn register_to_usv(vm: &mut VM) {
             let s = match args.first() {
                 Some(Value::String(s)) => s.clone(),
                 Some(other) => Arc::from(format!("{}", other).as_str()),
-                None => Arc::from("") };
+                None => Arc::from(""),
+            };
             Value::String(s)
         }),
     );
@@ -420,7 +430,8 @@ fn register_parse_args(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let cfg = match args.first() {
                 Some(Value::Object(c)) => c.clone(),
-                _ => return new_parse_args_result(Vec::new(), Vec::new()) };
+                _ => return new_parse_args_result(Vec::new(), Vec::new()),
+            };
 
             let cfg_lock = cfg.lock().unwrap();
             let cli_args: Vec<String> = match cfg_lock.properties.get("args") {
@@ -431,13 +442,15 @@ fn register_parse_args(vm: &mut VM) {
                             .iter()
                             .map(|v| match v {
                                 Value::String(s) => s.to_string(),
-                                other => format!("{}", other) })
+                                other => format!("{}", other),
+                            })
                             .collect()
                     } else {
                         Vec::new()
                     }
                 }
-                _ => Vec::new() };
+                _ => Vec::new(),
+            };
 
             // Collect option specs: name → (type, short?, multiple, default)
             let mut option_specs: indexmap::IndexMap<String, OptionSpec> =
@@ -481,7 +494,8 @@ fn register_parse_args(vm: &mut VM) {
                     // Long option: --name=value or --name value
                     let (name, inline_value) = match rest.find('=') {
                         Some(eq) => (rest[..eq].to_string(), Some(rest[eq + 1..].to_string())),
-                        None => (rest.to_string(), None) };
+                        None => (rest.to_string(), None),
+                    };
                     if let Some(spec) = option_specs.get(&name) {
                         if spec.is_boolean {
                             values.insert(name, Value::Bool(true));
@@ -541,7 +555,8 @@ fn register_parse_args(vm: &mut VM) {
 struct OptionSpec {
     is_boolean: bool,
     short: Option<String>,
-    multiple: bool }
+    multiple: bool,
+}
 
 fn new_parse_args_result(values: Vec<(String, Value)>, positionals: Vec<Value>) -> Value {
     let mut values_obj = Object::new();
@@ -900,7 +915,8 @@ fn register_legacy_predicates(vm: &mut VM) {
                             |t| matches!(t, Value::String(s) if s.as_ref() == "Buffer"),
                         )
                 }
-                _ => false })
+                _ => false,
+            })
         }),
     );
 }
@@ -946,7 +962,8 @@ fn json_stringify(v: &Value) -> String {
                                 "\"{}\":{}",
                                 match k {
                                     Value::String(s) => s.to_string(),
-                                    o => format!("{}", o) },
+                                    o => format!("{}", o),
+                                },
                                 json_stringify(v)
                             )
                         })
@@ -964,7 +981,8 @@ fn json_stringify(v: &Value) -> String {
                 }
             }
         }
-        _ => "null".into() }
+        _ => "null".into(),
+    }
 }
 
 fn errno_name(code: i32) -> &'static str {
@@ -1003,7 +1021,8 @@ fn errno_name(code: i32) -> &'static str {
         40 => "ELOOP",
         41 => "ENOMSG",
         61 => "ENODATA",
-        _ => "EUNKNOWN" }
+        _ => "EUNKNOWN",
+    }
 }
 
 fn register_extras(vm: &mut VM) {
@@ -1026,7 +1045,8 @@ fn register_extras(vm: &mut VM) {
             // args: [encoder, string]
             let text = match args.get(1) {
                 Some(Value::String(s)) => s.to_string(),
-                _ => String::new() };
+                _ => String::new(),
+            };
             let bytes: Vec<Value> = text
                 .as_bytes()
                 .iter()
@@ -1047,7 +1067,8 @@ fn register_extras(vm: &mut VM) {
                 .get("encoding")
                 .cloned()
                 .unwrap_or(Value::String(Arc::from("utf-8"))),
-            _ => Value::String(Arc::from("utf-8")) }),
+            _ => Value::String(Arc::from("utf-8")),
+        }),
     );
 
     vm.register_host_fn(
@@ -1056,7 +1077,8 @@ fn register_extras(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let enc = match args.first() {
                 Some(Value::String(s)) => s.to_string(),
-                _ => "utf-8".to_string() };
+                _ => "utf-8".to_string(),
+            };
             let mut o = Object::new();
             o.properties
                 .insert("encoding".into(), Value::String(Arc::from(enc.as_str())));
@@ -1078,11 +1100,14 @@ fn register_extras(vm: &mut VM) {
                             .map(|v| match v {
                                 Value::I32(n) => *n as u8,
                                 Value::F64(f) => *f as u8,
-                                _ => 0 })
+                                _ => 0,
+                            })
                             .collect(),
-                        _ => vec![] }
+                        _ => vec![],
+                    }
                 }
-                _ => vec![] };
+                _ => vec![],
+            };
             Value::String(Arc::from(String::from_utf8_lossy(&bytes).as_ref()))
         }),
     );
@@ -1098,7 +1123,8 @@ fn register_extras(vm: &mut VM) {
                 .get("encoding")
                 .cloned()
                 .unwrap_or(Value::String(Arc::from("utf-8"))),
-            _ => Value::String(Arc::from("utf-8")) }),
+            _ => Value::String(Arc::from("utf-8")),
+        }),
     );
 
     // ── getSystemErrorName / getSystemErrorMap ─────────────────────────
@@ -1109,7 +1135,8 @@ fn register_extras(vm: &mut VM) {
             let code = match args.first() {
                 Some(Value::I32(n)) => *n,
                 Some(Value::F64(f)) => *f as i32,
-                _ => 0 };
+                _ => 0,
+            };
             Value::String(Arc::from(errno_name(code)))
         }),
     );
@@ -1187,7 +1214,8 @@ fn register_extras(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let mime_str = match args.first() {
                 Some(Value::String(s)) => s.to_string(),
-                _ => return Value::Undefined };
+                _ => return Value::Undefined,
+            };
             // Parse "type/subtype; param=value"
             let (type_sub, _params_str) = mime_str.split_once(';').unwrap_or((&mime_str, ""));
             let (ty, subtype) = type_sub
@@ -1223,7 +1251,8 @@ fn register_extras(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let text = match args.get(1) {
                 Some(Value::String(s)) => s.to_string(),
-                _ => String::new() };
+                _ => String::new(),
+            };
             Value::String(Arc::from(text.as_str()))
         }),
     );

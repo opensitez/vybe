@@ -6,8 +6,8 @@
 //! AsyncLocalStorage state is stored on the object itself, and async IDs
 //! are monotonically assigned counters (no true async propagation).
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use vybe_runtime::VM;
 use vybe_runtime::value::{Object, Value};
 

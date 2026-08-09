@@ -200,9 +200,7 @@ pub fn register(vm: &mut VM) {
                                 env.properties
                                     .iter()
                                     .filter_map(|(k, v)| match v {
-                                        Value::String(s) => {
-                                            Some((k.to_string(), s.to_string()))
-                                        }
+                                        Value::String(s) => Some((k.to_string(), s.to_string())),
                                         _ => None,
                                     })
                                     .collect(),

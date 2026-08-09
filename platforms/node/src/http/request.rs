@@ -82,12 +82,6 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-
-
-
-
-
-
     vm.register_host_fn(
         "node:http",
         "remote_addr",
@@ -152,18 +146,7 @@ pub fn register(vm: &mut VM) {
             .unwrap_or_else(|| array_value(Vec::new()))
         }),
     );
-
-
-
-
-
-
-
-
-
 }
-
-
 
 // Helpers ──────────────────────────────────────────────────────────────────
 

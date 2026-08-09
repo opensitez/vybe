@@ -25,8 +25,8 @@ pub mod client;
 pub mod context;
 pub mod request;
 pub mod response;
-pub mod tables;
 pub mod server;
+pub mod tables;
 pub mod validate;
 
 pub use context::{

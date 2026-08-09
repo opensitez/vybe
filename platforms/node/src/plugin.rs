@@ -14,6 +14,11 @@ impl vybe_runtime::Plugin for Plugin {
         "node"
     }
 
+    /// Descriptors opened by the program that just ran. The request context is
+    /// a thread-local guard cleared on drop, so it needs nothing here.
+    // No `reset`: the open-descriptor table is VM-owned storage
+    // (`vybe_runtime::resources`), dropped by `reset_to`.
+
     fn init(&self, fw: &mut vybe_runtime::Framework<'_>) {
         use vybe_runtime::capabilities::Capability;
 

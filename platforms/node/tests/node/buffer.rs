@@ -34,10 +34,10 @@
 //!   - `Blob` integration, `resolveObjectURL`, `transcode`
 
 use std::sync::Arc;
+use vybe_compiler::primitives::platforms::register_platforms;
+use vybe_runtime::capabilities::Capabilities;
 use vybe_runtime::value::{Object, ObjectKind, Value};
 use vybe_runtime::{Chunk, Op, VM};
-use vybe_runtime::capabilities::Capabilities;
-use vybe_compiler::primitives::platforms::register_platforms;
 
 static TEST_GLOBAL_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -105,11 +105,14 @@ fn array_bytes(value: &Value) -> Vec<u8> {
                     .map(|v| match v {
                         Value::I32(n) => *n as u8,
                         Value::F64(f) => *f as u8,
-                        _ => 0 })
+                        _ => 0,
+                    })
                     .collect(),
-                _ => vec![] }
+                _ => vec![],
+            }
         }
-        _ => vec![] }
+        _ => vec![],
+    }
 }
 
 fn buf_length(value: &Value) -> usize {
@@ -118,9 +121,11 @@ fn buf_length(value: &Value) -> usize {
             let obj = obj.lock().unwrap();
             match &obj.kind {
                 ObjectKind::Array(elems) => elems.len(),
-                _ => 0 }
+                _ => 0,
+            }
         }
-        _ => 0 }
+        _ => 0,
+    }
 }
 
 fn make_arr(elems: Vec<Value>) -> Value {
@@ -128,7 +133,8 @@ fn make_arr(elems: Vec<Value>) -> Value {
         kind: ObjectKind::Array(elems),
         properties: Default::default(),
         type_id: 0,
-        fields: Vec::new() })))
+        fields: Vec::new(),
+    })))
 }
 
 // ── Buffer.alloc ──────────────────────────────────────────────────────────────

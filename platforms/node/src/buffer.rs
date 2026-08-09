@@ -79,7 +79,8 @@ fn base64_decode(s: &str) -> Vec<u8> {
             '0'..='9' => c as u8 - b'0' + 52,
             '+' | '-' => 62,
             '/' | '_' => 63,
-            _ => 255 }
+            _ => 255,
+        }
     };
     let chars: Vec<u8> = s
         .chars()
@@ -125,7 +126,8 @@ fn base64_decode_strict(s: &str) -> Option<Vec<u8>> {
             b'0'..=b'9' => Some((b - b'0' + 52) as u32),
             b'+' => Some(62),
             b'/' => Some(63),
-            _ => None }
+            _ => None,
+        }
     };
 
     let mut out = Vec::new();
@@ -167,7 +169,8 @@ fn decode_with_encoding(s: &str, enc: &str) -> Vec<u8> {
             let chars: Vec<u8> = s.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
             chars
         }
-        _ => s.as_bytes().to_vec() }
+        _ => s.as_bytes().to_vec(),
+    }
 }
 
 fn encode_with_encoding(bytes: &[u8], enc: &str) -> String {
@@ -179,20 +182,23 @@ fn encode_with_encoding(bytes: &[u8], enc: &str) -> String {
             .replace('/', "_")
             .replace('=', ""),
         "latin1" | "binary" | "ascii" => bytes.iter().map(|&b| b as char).collect(),
-        _ => String::from_utf8_lossy(bytes).into_owned() }
+        _ => String::from_utf8_lossy(bytes).into_owned(),
+    }
 }
 
 fn get_encoding(args: &[Value], idx: usize) -> String {
     match args.get(idx) {
         Some(Value::String(s)) => s.to_string(),
-        _ => "utf8".to_string() }
+        _ => "utf8".to_string(),
+    }
 }
 
 fn get_i32(args: &[Value], idx: usize, default: i32) -> i32 {
     match args.get(idx) {
         Some(Value::I32(n)) => *n,
         Some(Value::F64(f)) => *f as i32,
-        _ => default }
+        _ => default,
+    }
 }
 
 pub fn register(vm: &mut VM) {
@@ -205,7 +211,8 @@ pub fn register(vm: &mut VM) {
             let fill = match args.get(1) {
                 Some(Value::I32(n)) => (*n & 0xff) as u8,
                 Some(Value::F64(f)) => (*f as i32 & 0xff) as u8,
-                _ => 0 };
+                _ => 0,
+            };
             bytes_to_buf(vec![fill; size])
         }),
     );
@@ -228,14 +235,17 @@ pub fn register(vm: &mut VM) {
                             .map(|e| match e {
                                 Value::I32(n) => (*n & 0xff) as u8,
                                 Value::F64(f) => (*f as i32 & 0xff) as u8,
-                                _ => 0 })
+                                _ => 0,
+                            })
                             .collect();
                         drop(obj);
                         bytes_to_buf(bytes)
                     }
-                    _ => bytes_to_buf(Vec::new()) }
+                    _ => bytes_to_buf(Vec::new()),
+                }
             }
-            _ => bytes_to_buf(Vec::new()) }),
+            _ => bytes_to_buf(Vec::new()),
+        }),
     );
 
     // fromBase64Strict(string) -> Buffer | null. Node's `Buffer.from(s,
@@ -250,7 +260,8 @@ pub fn register(vm: &mut VM) {
             };
             match base64_decode_strict(text) {
                 Some(bytes) => bytes_to_buf(bytes),
-                None => Value::Null }
+                None => Value::Null,
+            }
         }),
     );
 
@@ -261,7 +272,8 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let s = match args.first() {
                 Some(Value::String(s)) => s.to_string(),
-                _ => return Value::I32(0) };
+                _ => return Value::I32(0),
+            };
             let enc = get_encoding(args, 1);
             let len = decode_with_encoding(&s, &enc).len();
             Value::I32(len as i32)
@@ -287,7 +299,8 @@ pub fn register(vm: &mut VM) {
                 let len = match limit {
                     Value::I32(n) => *n as usize,
                     Value::F64(f) => *f as usize,
-                    _ => all.len() };
+                    _ => all.len(),
+                };
                 all.truncate(len);
             }
             bytes_to_buf(all)
@@ -304,7 +317,8 @@ pub fn register(vm: &mut VM) {
                     let obj = obj.lock().unwrap();
                     matches!(obj.kind, ObjectKind::Array(_))
                 }
-                _ => false };
+                _ => false,
+            };
             Value::Bool(result)
         }),
     );
@@ -316,7 +330,8 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let enc = match args.first() {
                 Some(Value::String(s)) => s.to_lowercase(),
-                _ => return Value::Bool(false) };
+                _ => return Value::Bool(false),
+            };
             let valid = [
                 "utf8",
                 "utf-8",
@@ -345,7 +360,8 @@ pub fn register(vm: &mut VM) {
             Value::I32(match a.cmp(&b) {
                 std::cmp::Ordering::Less => -1,
                 std::cmp::Ordering::Equal => 0,
-                std::cmp::Ordering::Greater => 1 })
+                std::cmp::Ordering::Greater => 1,
+            })
         }),
     );
 
@@ -360,7 +376,8 @@ pub fn register(vm: &mut VM) {
             let end = match args.get(3) {
                 Some(Value::I32(n)) => (*n as usize).min(bytes.len()),
                 Some(Value::F64(f)) => (*f as usize).min(bytes.len()),
-                _ => bytes.len() };
+                _ => bytes.len(),
+            };
             let slice = if start < bytes.len() {
                 &bytes[start..end]
             } else {
@@ -468,7 +485,8 @@ pub fn register(vm: &mut VM) {
                 Some(Value::F64(f)) => vec![(*f as i32 & 0xff) as u8],
                 Some(Value::String(s)) => s.as_bytes().to_vec(),
                 Some(v) => bytes_from_value(v),
-                None => return Value::I32(-1) };
+                None => return Value::I32(-1),
+            };
             let offset = get_i32(args, 2, 0).max(0) as usize;
             if needle.is_empty() {
                 return Value::I32(offset as i32);
@@ -493,7 +511,8 @@ pub fn register(vm: &mut VM) {
                 Some(Value::F64(f)) => vec![(*f as i32 & 0xff) as u8],
                 Some(Value::String(s)) => s.as_bytes().to_vec(),
                 Some(v) => bytes_from_value(v),
-                None => return Value::Bool(false) };
+                None => return Value::Bool(false),
+            };
             if needle.is_empty() {
                 return Value::Bool(true);
             }
@@ -525,7 +544,8 @@ pub fn register(vm: &mut VM) {
             let fill_byte = match args.get(1) {
                 Some(Value::I32(n)) => (*n & 0xff) as u8,
                 Some(Value::F64(f)) => (*f as i32 & 0xff) as u8,
-                _ => 0 };
+                _ => 0,
+            };
             if let Some(Value::Object(obj)) = args.first() {
                 let mut obj = obj.lock().unwrap();
                 if let ObjectKind::Array(ref mut elems) = obj.kind {
@@ -752,7 +772,8 @@ pub fn register(vm: &mut VM) {
             let val = match args.get(1) {
                 Some(Value::I32(n)) => (*n as u32).to_be_bytes(),
                 Some(Value::F64(f)) => (*f as u32).to_be_bytes(),
-                _ => 0u32.to_be_bytes() };
+                _ => 0u32.to_be_bytes(),
+            };
             let off = get_i32(args, 2, 0) as usize;
             if let Some(Value::Object(obj)) = args.first() {
                 let mut obj = obj.lock().unwrap();
@@ -776,7 +797,8 @@ pub fn register(vm: &mut VM) {
             let val = match args.get(1) {
                 Some(Value::I32(n)) => (*n as u32).to_le_bytes(),
                 Some(Value::F64(f)) => (*f as u32).to_le_bytes(),
-                _ => 0u32.to_le_bytes() };
+                _ => 0u32.to_le_bytes(),
+            };
             let off = get_i32(args, 2, 0) as usize;
             if let Some(Value::Object(obj)) = args.first() {
                 let mut obj = obj.lock().unwrap();
@@ -1074,7 +1096,8 @@ pub fn register(vm: &mut VM) {
             let f = match args.get(1) {
                 Some(Value::F64(f)) => *f as f32,
                 Some(Value::I32(n)) => *n as f32,
-                _ => 0.0f32 };
+                _ => 0.0f32,
+            };
             let val = f.to_be_bytes();
             let off = get_i32(args, 2, 0) as usize;
             if let Some(Value::Object(obj)) = args.first() {
@@ -1097,7 +1120,8 @@ pub fn register(vm: &mut VM) {
             let f = match args.get(1) {
                 Some(Value::F64(f)) => *f as f32,
                 Some(Value::I32(n)) => *n as f32,
-                _ => 0.0f32 };
+                _ => 0.0f32,
+            };
             let val = f.to_le_bytes();
             let off = get_i32(args, 2, 0) as usize;
             if let Some(Value::Object(obj)) = args.first() {
@@ -1122,7 +1146,8 @@ pub fn register(vm: &mut VM) {
             let f = match args.get(1) {
                 Some(Value::F64(f)) => *f,
                 Some(Value::I32(n)) => *n as f64,
-                _ => 0.0f64 };
+                _ => 0.0f64,
+            };
             let val = f.to_be_bytes();
             let off = get_i32(args, 2, 0) as usize;
             if let Some(Value::Object(obj)) = args.first() {
@@ -1145,7 +1170,8 @@ pub fn register(vm: &mut VM) {
             let f = match args.get(1) {
                 Some(Value::F64(f)) => *f,
                 Some(Value::I32(n)) => *n as f64,
-                _ => 0.0f64 };
+                _ => 0.0f64,
+            };
             let val = f.to_le_bytes();
             let off = get_i32(args, 2, 0) as usize;
             if let Some(Value::Object(obj)) = args.first() {

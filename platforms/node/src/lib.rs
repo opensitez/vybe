@@ -83,4 +83,3 @@ pub fn register_always_on(vm: &mut VM) {
 
 pub mod plugin;
 pub use plugin::Plugin;
-

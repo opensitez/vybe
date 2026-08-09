@@ -58,11 +58,7 @@ pub fn register(vm: &mut VM) {
         "write_continue",
         Box::new(|_ctx, _args| {
             with_context(|c| {
-                c.response
-                    .lock()
-                    .unwrap()
-                    .interim
-                    .push((100, Vec::new()));
+                c.response.lock().unwrap().interim.push((100, Vec::new()));
             });
             Value::Null
         }),
@@ -339,7 +335,6 @@ pub fn register(vm: &mut VM) {
             Value::Null
         }),
     );
-
 }
 
 fn string_arg(args: &[Value], idx: usize) -> String {

@@ -24,10 +24,10 @@
 //!   - Async iterator protocol (`on(ee, event)` → AsyncIterator)
 
 use std::sync::Arc;
+use vybe_compiler::primitives::platforms::register_platforms;
+use vybe_runtime::capabilities::Capabilities;
 use vybe_runtime::value::{ObjectKind, Value};
 use vybe_runtime::{Chunk, Op, VM};
-use vybe_runtime::capabilities::Capabilities;
-use vybe_compiler::primitives::platforms::register_platforms;
 
 static TEST_GLOBAL_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -85,7 +85,8 @@ fn listener_count(emitter: Value, event: &str) -> i64 {
     match call_events("listenerCount", vec![emitter, s(event)]) {
         Value::I32(n) => n as i64,
         Value::F64(f) => f as i64,
-        _ => -1 }
+        _ => -1,
+    }
 }
 
 fn emit_event(emitter: Value, event: &str) -> Value {
@@ -95,7 +96,8 @@ fn emit_event(emitter: Value, event: &str) -> Value {
 fn has_method(v: &Value, key: &str) -> bool {
     match v {
         Value::Object(o) => o.lock().unwrap().properties.contains_key(key),
-        _ => false }
+        _ => false,
+    }
 }
 
 // ── Constructor ────────────────────────────────────────────────────────────────
@@ -415,7 +417,8 @@ fn listeners_returns_array() {
             let obj = obj.lock().unwrap();
             assert!(matches!(&obj.kind, ObjectKind::Array(_)));
         }
-        _ => panic!("expected array from listeners()") }
+        _ => panic!("expected array from listeners()"),
+    }
 }
 
 #[test]
@@ -429,7 +432,8 @@ fn listeners_returns_empty_array_for_unknown_event() {
                 assert!(elems.is_empty());
             }
         }
-        _ => panic!("expected empty array") }
+        _ => panic!("expected empty array"),
+    }
 }
 
 #[test]
@@ -495,7 +499,8 @@ fn event_names_empty_for_new_emitter() {
                 assert!(elems.is_empty());
             }
         }
-        _ => panic!("expected array") }
+        _ => panic!("expected array"),
+    }
 }
 
 #[test]
@@ -513,7 +518,8 @@ fn event_names_contains_registered_event() {
                 assert!(has_click, "eventNames must include 'click'");
             }
         }
-        _ => panic!("expected array") }
+        _ => panic!("expected array"),
+    }
 }
 
 // ── defaultMaxListeners ───────────────────────────────────────────────────────

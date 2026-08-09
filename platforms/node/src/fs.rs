@@ -12,17 +12,44 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 use vybe_runtime::value::{Object, ObjectKind};
 use vybe_runtime::{HostContext, VM, Value};
 
-// ── Global FD table — maps host-fd-number → (path, mode, position) ──
-static FD_TABLE: OnceLock<Mutex<HashMap<i32, (String, String, u64)>>> = OnceLock::new();
+// ── FD table — maps host-fd-number → (path, mode, position) ──
+/// A named type, not a bare `HashMap`: [`vybe_runtime::resources`] keys by
+/// `TypeId`, so two plugins storing the same std type would share one cell.
+#[derive(Default)]
+struct FdTable(HashMap<i32, (String, String, u64)>);
+
+impl std::ops::Deref for FdTable {
+    type Target = HashMap<i32, (String, String, u64)>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl std::ops::DerefMut for FdTable {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
 static NEXT_FD: AtomicI32 = AtomicI32::new(3);
 
-fn fd_table() -> &'static Mutex<HashMap<i32, (String, String, u64)>> {
-    FD_TABLE.get_or_init(|| Mutex::new(HashMap::new()))
+/// Every descriptor this program has open, with its path, mode and read
+/// position.
+///
+/// VM-owned ([`vybe_runtime::resources`]): the VM drops it on `reset_to`, so
+/// this module has no `reset` of its own. While it was a process-global static
+/// the next program in a reused VM inherited open files — it could read from a
+/// descriptor it never opened, at the offset the previous program left it at.
+///
+/// `NEXT_FD` sits outside the table, and so is never rewound: reissuing a
+/// number a previous program still believes it holds is how a stale descriptor
+/// silently starts addressing a different file.
+fn fd_table() -> &'static Mutex<FdTable> {
+    vybe_runtime::resources::get::<FdTable>()
 }
 
 // ── Stats type tags ───────────────────────────────────────────────
@@ -40,7 +67,8 @@ fn s_arg(args: &[Value], idx: usize, default: &str) -> String {
     match args.get(idx) {
         Some(Value::String(text)) => text.to_string(),
         Some(other) => format!("{}", other),
-        None => default.to_string() }
+        None => default.to_string(),
+    }
 }
 
 fn opt_obj_bool(args: &[Value], idx: usize, key: &str) -> bool {
@@ -204,9 +232,11 @@ pub fn register(vm: &mut VM) {
                     let o = opts.lock().unwrap();
                     match o.properties.get("encoding") {
                         Some(Value::String(enc)) => Some(enc.to_string()),
-                        _ => None }
+                        _ => None,
+                    }
                 }
-                _ => None };
+                _ => None,
+            };
             match std::fs::read(&path) {
                 Ok(bytes) => match encoding.as_deref() {
                     Some("utf8") | Some("utf-8") | Some("UTF-8") => {
@@ -218,7 +248,8 @@ pub fn register(vm: &mut VM) {
                         Value::Object(vybe_runtime::heap::alloc(Object::new_array(elems)))
                     }
                 },
-                Err(e) => Value::String(Arc::from(format!("ENOENT: {}", e).as_str())) }
+                Err(e) => Value::String(Arc::from(format!("ENOENT: {}", e).as_str())),
+            }
         }),
     );
 
@@ -234,10 +265,12 @@ pub fn register(vm: &mut VM) {
                     let o = opts.lock().unwrap();
                     match o.properties.get("flag") {
                         Some(Value::String(f)) => f.to_string(),
-                        _ => "w".to_string() }
+                        _ => "w".to_string(),
+                    }
                 }
                 Some(Value::String(s)) => s.to_string(),
-                _ => "w".to_string() };
+                _ => "w".to_string(),
+            };
             if flag == "a" || flag == "ax" || flag == "a+" {
                 use std::io::Write;
                 if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -411,7 +444,8 @@ pub fn register(vm: &mut VM) {
             let path = s_arg(args, 0, "");
             match std::fs::metadata(&path) {
                 Ok(meta) => build_stats_with_idxs(&meta),
-                Err(_) => Value::Null }
+                Err(_) => Value::Null,
+            }
         }),
     );
 
@@ -423,7 +457,8 @@ pub fn register(vm: &mut VM) {
             let path = s_arg(args, 0, "");
             match std::fs::symlink_metadata(&path) {
                 Ok(meta) => build_stats_clone(&meta),
-                Err(_) => Value::Null }
+                Err(_) => Value::Null,
+            }
         }),
     );
 
@@ -435,7 +470,8 @@ pub fn register(vm: &mut VM) {
             let fd = match args.first() {
                 Some(Value::I32(n)) => *n,
                 Some(Value::F64(f)) => *f as i32,
-                _ => return Value::Null };
+                _ => return Value::Null,
+            };
             let path = fd_table()
                 .lock()
                 .unwrap()
@@ -444,8 +480,10 @@ pub fn register(vm: &mut VM) {
             match path {
                 Some(p) => match std::fs::metadata(&p) {
                     Ok(meta) => build_stats_fstat(&meta),
-                    Err(_) => Value::Null },
-                None => Value::Null }
+                    Err(_) => Value::Null,
+                },
+                None => Value::Null,
+            }
         }),
     );
 
@@ -483,7 +521,8 @@ pub fn register(vm: &mut VM) {
                         .collect();
                     Value::Object(vybe_runtime::heap::alloc(Object::new_array(items)))
                 }
-                Err(_) => Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new()))) }
+                Err(_) => Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new()))),
+            }
         }),
     );
 
@@ -579,7 +618,8 @@ pub fn register(vm: &mut VM) {
             let path = s_arg(args, 0, "");
             match std::fs::canonicalize(&path) {
                 Ok(p) => Value::String(Arc::from(p.to_string_lossy().as_ref())),
-                Err(_) => Value::Null }
+                Err(_) => Value::Null,
+            }
         }),
     );
 
@@ -591,7 +631,8 @@ pub fn register(vm: &mut VM) {
             let path = s_arg(args, 0, "");
             match std::fs::read_link(&path) {
                 Ok(p) => Value::String(Arc::from(p.to_string_lossy().as_ref())),
-                Err(_) => Value::Null }
+                Err(_) => Value::Null,
+            }
         }),
     );
 
@@ -621,7 +662,8 @@ pub fn register(vm: &mut VM) {
             let len = match args.get(1) {
                 Some(Value::F64(n)) => *n as u64,
                 Some(Value::I32(n)) => *n as u64,
-                _ => 0 };
+                _ => 0,
+            };
             if let Ok(f) = std::fs::OpenOptions::new().write(true).open(&path) {
                 let _ = f.set_len(len);
             }
@@ -658,7 +700,8 @@ pub fn register(vm: &mut VM) {
             let fd = match args.first() {
                 Some(Value::I32(n)) => *n,
                 Some(Value::F64(f)) => *f as i32,
-                _ => return Value::Undefined };
+                _ => return Value::Undefined,
+            };
             fd_table().lock().unwrap().remove(&fd);
             Value::Undefined
         }),
@@ -673,7 +716,8 @@ pub fn register(vm: &mut VM) {
             let fd = match args.first() {
                 Some(Value::I32(n)) => *n,
                 Some(Value::F64(f)) => *f as i32,
-                _ => return Value::I32(0) };
+                _ => return Value::I32(0),
+            };
             let data: Vec<u8> = match args.get(1) {
                 Some(Value::String(s)) => s.as_bytes().to_vec(),
                 Some(Value::Object(obj)) => {
@@ -683,19 +727,22 @@ pub fn register(vm: &mut VM) {
                             .iter()
                             .map(|e| match e {
                                 Value::I32(n) => *n as u8,
-                                _ => 0 })
+                                _ => 0,
+                            })
                             .collect()
                     } else {
                         Vec::new()
                     }
                 }
-                _ => Vec::new() };
+                _ => Vec::new(),
+            };
             let n = data.len();
             let (path, _flags, pos) = {
                 let t = fd_table().lock().unwrap();
                 match t.get(&fd) {
                     Some(e) => e.clone(),
-                    None => return Value::I32(0) }
+                    None => return Value::I32(0),
+                }
             };
             if let Ok(mut f) = std::fs::OpenOptions::new()
                 .write(true)
@@ -723,20 +770,24 @@ pub fn register(vm: &mut VM) {
             let fd = match args.first() {
                 Some(Value::I32(n)) => *n,
                 Some(Value::F64(f)) => *f as i32,
-                _ => return Value::I32(0) };
+                _ => return Value::I32(0),
+            };
             let length = match args.get(3) {
                 Some(Value::I32(n)) => *n as usize,
                 Some(Value::F64(f)) => *f as usize,
-                _ => 0 };
+                _ => 0,
+            };
             let position = match args.get(4) {
                 Some(Value::I32(n)) => *n as i64,
                 Some(Value::F64(f)) => *f as i64,
-                _ => -1 };
+                _ => -1,
+            };
             let path = {
                 let t = fd_table().lock().unwrap();
                 match t.get(&fd) {
                     Some((p, _, _)) => p.clone(),
-                    None => return Value::I32(0) }
+                    None => return Value::I32(0),
+                }
             };
             let mut buf = vec![0u8; length];
             let n = if let Ok(mut f) = std::fs::File::open(&path) {
@@ -752,7 +803,8 @@ pub fn register(vm: &mut VM) {
                 let offset = match args.get(2) {
                     Some(Value::I32(o)) => *o as usize,
                     Some(Value::F64(f)) => *f as usize,
-                    _ => 0 };
+                    _ => 0,
+                };
                 let mut bo = buf_obj.lock().unwrap();
                 if let ObjectKind::Array(ref mut elems) = bo.kind {
                     for (i, &b) in buf[..n].iter().enumerate() {
@@ -786,11 +838,13 @@ pub fn register(vm: &mut VM) {
             let fd = match args.first() {
                 Some(Value::I32(n)) => *n,
                 Some(Value::F64(f)) => *f as i32,
-                _ => return Value::Undefined };
+                _ => return Value::Undefined,
+            };
             let len = match args.get(1) {
                 Some(Value::I32(n)) => *n as u64,
                 Some(Value::F64(f)) => *f as u64,
-                _ => 0 };
+                _ => 0,
+            };
             let path = {
                 let t = fd_table().lock().unwrap();
                 t.get(&fd).map(|(p, _, _)| p.clone())
@@ -816,7 +870,8 @@ pub fn register(vm: &mut VM) {
                 let mode = match args.get(1) {
                     Some(Value::I32(n)) => *n as u32,
                     Some(Value::F64(f)) => *f as u32,
-                    _ => 0o644 };
+                    _ => 0o644,
+                };
                 let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode));
             }
             let _ = path;

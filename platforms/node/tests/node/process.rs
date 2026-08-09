@@ -6,11 +6,11 @@
 //! `chdir`, `exit`-test-deferred). Streams (`stdin`/`stdout`/`stderr`),
 //! event listeners (`on('exit', ...)`), and `nextTick` come later.
 
+use vybe_compiler::primitives::platforms::register_platforms;
+use vybe_runtime::capabilities::Capabilities;
 use vybe_runtime::module_record::ExportEntry;
 use vybe_runtime::value::{Object, ObjectKind, Value};
 use vybe_runtime::{Chunk, Op, VM};
-use vybe_runtime::capabilities::Capabilities;
-use vybe_compiler::primitives::platforms::register_platforms;
 
 static TEST_GLOBAL_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -29,7 +29,8 @@ fn call_proc(name: &str, args: Vec<Value>) -> Value {
         }
         Some(ExportEntry::Function { .. }) => {}
         Some(other) => panic!("unexpected node:process export kind for {name}: {other:?}"),
-        None => panic!("missing node:process export: {name}") }
+        None => panic!("missing node:process export: {name}"),
+    }
 
     let mut chunk = Chunk::new("<node-process-test>");
     let import_idx = chunk.add_import("node:process", name);
@@ -75,7 +76,8 @@ fn s(text: &str) -> Value {
 fn as_string(value: &Value) -> String {
     match value {
         Value::String(text) => text.to_string(),
-        other => format!("{}", other) }
+        other => format!("{}", other),
+    }
 }
 
 fn array_strings(value: &Value) -> Vec<String> {
@@ -86,7 +88,8 @@ fn array_strings(value: &Value) -> Vec<String> {
                 .iter()
                 .map(|element| match element {
                     Value::String(text) => text.to_string(),
-                    other => format!("{}", other) })
+                    other => format!("{}", other),
+                })
                 .collect();
         }
     }
@@ -332,7 +335,8 @@ fn ppid_returns_positive_integer() {
         ),
         Value::I32(n) => assert!(n > 0, "process.ppid must be positive, got {n}"),
         Value::I64(n) => assert!(n > 0, "process.ppid must be positive, got {n}"),
-        other => panic!("process.ppid expected number, got {:?}", other) }
+        other => panic!("process.ppid expected number, got {:?}", other),
+    }
 }
 
 // ── title ─────────────────────────────────────────────────────────────────────
@@ -398,7 +402,8 @@ fn cpu_usage_values_are_non_negative() {
                 Value::F64(n) => assert!(n >= 0.0, "{key} must be >= 0, got {n}"),
                 Value::I32(n) => assert!(n >= 0, "{key} must be >= 0, got {n}"),
                 Value::I64(n) => assert!(n >= 0, "{key} must be >= 0, got {n}"),
-                _ => panic!("{key} must be a number, got {:?}", val) }
+                _ => panic!("{key} must be a number, got {:?}", val),
+            }
         }
         return;
     }

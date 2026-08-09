@@ -20,7 +20,8 @@ fn loose_eq(a: &Value, b: &Value) -> bool {
             s.parse::<f64>().ok() == Some(*f)
         }
         (Value::Null, Value::Undefined) | (Value::Undefined, Value::Null) => true,
-        _ => false }
+        _ => false,
+    }
 }
 
 fn strict_eq(a: &Value, b: &Value) -> bool {
@@ -31,7 +32,8 @@ fn strict_eq(a: &Value, b: &Value) -> bool {
         (Value::String(x), Value::String(y)) => x == y,
         (Value::Null, Value::Null) => true,
         (Value::Undefined, Value::Undefined) => true,
-        _ => false }
+        _ => false,
+    }
 }
 
 fn is_truthy(v: &Value) -> bool {
@@ -40,7 +42,8 @@ fn is_truthy(v: &Value) -> bool {
         Value::I32(0) => false,
         Value::F64(f) => *f != 0.0 && !f.is_nan(),
         Value::String(s) => !s.is_empty(),
-        _ => true }
+        _ => true,
+    }
 }
 
 fn throw_assert(ctx: &mut vybe_runtime::vm::HostContext, msg: &str) {
@@ -199,7 +202,8 @@ pub fn register(vm: &mut VM) {
         Box::new(|ctx, args| {
             let msg = match args.first() {
                 Some(Value::String(s)) => format!("AssertionError: {s}"),
-                _ => "AssertionError: Failed".to_string() };
+                _ => "AssertionError: Failed".to_string(),
+            };
             throw_assert(ctx, &msg);
             Value::Undefined
         }),

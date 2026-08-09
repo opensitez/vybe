@@ -52,7 +52,8 @@ fn bytes_from_value(v: &Value) -> Vec<u8> {
 fn str_arg(args: &[Value], idx: usize) -> String {
     match args.get(idx) {
         Some(Value::String(s)) => s.to_string(),
-        _ => String::new() }
+        _ => String::new(),
+    }
 }
 
 /// Every digest `crypto.getHashes()` advertises, in OpenSSL spelling — the
@@ -106,7 +107,8 @@ fn hash_algorithm(algo: &str) -> Option<HashAlgorithm> {
         "blake2b512" | "blake2b" => HashAlgorithm::Blake2b512,
         "blake2s256" | "blake2s" => HashAlgorithm::Blake2s256,
         "ripemd160" | "rmd160" | "ripemd-160" => HashAlgorithm::Ripemd160,
-        _ => return None })
+        _ => return None,
+    })
 }
 
 fn digest_bytes(algo: &str, data: &[u8]) -> Option<Vec<u8>> {
@@ -165,7 +167,8 @@ fn encode_digest(bytes: &[u8], enc: &str) -> String {
     match enc.to_lowercase().as_str() {
         "hex" => bytes.iter().map(|b| format!("{:02x}", b)).collect(),
         "base64" => base64_encode(bytes),
-        _ => bytes.iter().map(|b| format!("{:02x}", b)).collect() }
+        _ => bytes.iter().map(|b| format!("{:02x}", b)).collect(),
+    }
 }
 
 // PBKDF2 with HMAC-SHA256/SHA1
@@ -304,7 +307,8 @@ pub fn register(vm: &mut VM) {
             let n = match args.first() {
                 Some(Value::I32(n)) => *n as usize,
                 Some(Value::F64(f)) => *f as usize,
-                _ => 0 };
+                _ => 0,
+            };
             bytes_to_array(random_bytes_vec(n))
         }),
     );
@@ -342,7 +346,8 @@ pub fn register(vm: &mut VM) {
                 (Some(Value::F64(a)), Some(Value::F64(b))) => (*a as i64, *b as i64),
                 (Some(Value::I32(m)), None) => (0, *m as i64),
                 (Some(Value::F64(m)), None) => (0, *m as i64),
-                _ => (0, 100) };
+                _ => (0, 100),
+            };
             let range = (max - min).max(1) as u64;
             let rnd = u64::from_le_bytes(random_bytes_vec(8).try_into().unwrap_or([0u8; 8]));
             Value::I32((min + (rnd % range) as i64) as i32)
@@ -387,7 +392,8 @@ pub fn register(vm: &mut VM) {
                 } else {
                     let new_arr: Vec<Value> =
                         new_data.iter().map(|b| Value::I32(*b as i32)).collect();
-                    let arr_val = Value::Object(vybe_runtime::heap::alloc(Object::new_array(new_arr)));
+                    let arr_val =
+                        Value::Object(vybe_runtime::heap::alloc(Object::new_array(new_arr)));
                     obj.properties.insert("__data_arr".into(), arr_val);
                 }
             }
@@ -416,7 +422,8 @@ pub fn register(vm: &mut VM) {
                             .iter()
                             .map(|e| match e {
                                 Value::I32(n) => *n as u8,
-                                _ => 0 })
+                                _ => 0,
+                            })
                             .collect()
                     } else {
                         Vec::new()
@@ -472,7 +479,8 @@ pub fn register(vm: &mut VM) {
                 } else {
                     let new_arr: Vec<Value> =
                         new_data.iter().map(|b| Value::I32(*b as i32)).collect();
-                    let arr_val = Value::Object(vybe_runtime::heap::alloc(Object::new_array(new_arr)));
+                    let arr_val =
+                        Value::Object(vybe_runtime::heap::alloc(Object::new_array(new_arr)));
                     obj.properties.insert("__data_arr".into(), arr_val);
                 }
             }
@@ -496,7 +504,8 @@ pub fn register(vm: &mut VM) {
                 match obj.properties.get("__key") {
                     Some(Value::String(s)) => s.as_bytes().to_vec(),
                     Some(v) => bytes_from_value(v),
-                    None => Vec::new() }
+                    None => Vec::new(),
+                }
             } else {
                 Vec::new()
             };
@@ -509,7 +518,8 @@ pub fn register(vm: &mut VM) {
                             .iter()
                             .map(|e| match e {
                                 Value::I32(n) => *n as u8,
-                                _ => 0 })
+                                _ => 0,
+                            })
                             .collect()
                     } else {
                         Vec::new()
@@ -589,12 +599,16 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "node:crypto",
         "_cipherUpdate",
-        Box::new(|_ctx, _args| Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new())))),
+        Box::new(|_ctx, _args| {
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new())))
+        }),
     );
     vm.register_host_fn(
         "node:crypto",
         "_cipherFinal",
-        Box::new(|_ctx, _args| Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new())))),
+        Box::new(|_ctx, _args| {
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new())))
+        }),
     );
     let cipher_update_idx = *vm
         .host_registry
@@ -720,11 +734,13 @@ pub fn register(vm: &mut VM) {
             let iterations = match args.get(2) {
                 Some(Value::I32(n)) => *n as u32,
                 Some(Value::F64(f)) => *f as u32,
-                _ => 1 };
+                _ => 1,
+            };
             let keylen = match args.get(3) {
                 Some(Value::I32(n)) => *n as usize,
                 Some(Value::F64(f)) => *f as usize,
-                _ => 32 };
+                _ => 32,
+            };
             let algo = str_arg(args, 4);
             let algo = if algo.is_empty() {
                 "sha256".to_string()
@@ -745,7 +761,8 @@ pub fn register(vm: &mut VM) {
             let keylen = match args.get(2) {
                 Some(Value::I32(n)) => *n as usize,
                 Some(Value::F64(f)) => *f as usize,
-                _ => 32 };
+                _ => 32,
+            };
             bytes_to_array(pbkdf2_hmac("sha256", &password, &salt, 16384, keylen))
         }),
     );
@@ -761,7 +778,8 @@ pub fn register(vm: &mut VM) {
             let keylen = match args.get(4) {
                 Some(Value::I32(n)) => *n as usize,
                 Some(Value::F64(f)) => *f as usize,
-                _ => 32 };
+                _ => 32,
+            };
             bytes_to_array(hkdf(&algo, &ikm, &salt, &info, keylen))
         }),
     );
@@ -774,7 +792,8 @@ pub fn register(vm: &mut VM) {
             let n = match args.first() {
                 Some(Value::I32(n)) => *n as u64,
                 Some(Value::F64(f)) => *f as u64,
-                _ => return Value::Bool(false) };
+                _ => return Value::Bool(false),
+            };
             Value::Bool(is_prime(n))
         }),
     );
@@ -785,7 +804,8 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let bits = match args.first() {
                 Some(Value::I32(n)) => *n as usize,
-                _ => 64 };
+                _ => 64,
+            };
             let bytes = (bits + 7) / 8;
             // Return random bytes as the "prime" buffer (tests only check it's an object)
             bytes_to_array(random_bytes_vec(bytes))

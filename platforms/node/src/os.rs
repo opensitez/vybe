@@ -36,7 +36,8 @@ fn node_arch() -> &'static str {
         "mips" => "mips",
         "mips64" => "mipsel",
         "riscv64" => "riscv64",
-        other => other }
+        other => other,
+    }
 }
 
 /// Node `os.type()` historical names.
@@ -50,7 +51,8 @@ fn node_type() -> &'static str {
         "netbsd" => "NetBSD",
         "dragonfly" => "DragonFly",
         "solaris" => "SunOS",
-        other => other }
+        other => other,
+    }
 }
 
 fn hostname() -> String {
@@ -206,8 +208,10 @@ pub fn register(vm: &mut VM) {
                 let mut o = Object::new();
                 o.properties.insert("model".into(), s_val(&model));
                 o.properties.insert("speed".into(), Value::F64(speed));
-                o.properties
-                    .insert("times".into(), Value::Object(vybe_runtime::heap::alloc(times)));
+                o.properties.insert(
+                    "times".into(),
+                    Value::Object(vybe_runtime::heap::alloc(times)),
+                );
                 items.push(Value::Object(vybe_runtime::heap::alloc(o)));
             }
             Value::Object(vybe_runtime::heap::alloc(Object::new_array(items)))

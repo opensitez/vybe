@@ -28,10 +28,10 @@
 //!   - `pipeline` async execution
 
 use std::sync::Arc;
+use vybe_compiler::primitives::platforms::register_platforms;
+use vybe_runtime::capabilities::Capabilities;
 use vybe_runtime::value::{Object, ObjectKind, Value};
 use vybe_runtime::{Chunk, Op, VM};
-use vybe_runtime::capabilities::Capabilities;
-use vybe_compiler::primitives::platforms::register_platforms;
 
 static TEST_GLOBAL_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -80,7 +80,8 @@ fn has_import(name: &str) -> bool {
 fn has_method(v: &Value, key: &str) -> bool {
     match v {
         Value::Object(o) => o.lock().unwrap().properties.contains_key(key),
-        _ => false }
+        _ => false,
+    }
 }
 
 fn prop(v: &Value, key: &str) -> Value {
@@ -92,7 +93,8 @@ fn prop(v: &Value, key: &str) -> Value {
             .get(key)
             .cloned()
             .unwrap_or(Value::Undefined),
-        _ => Value::Undefined }
+        _ => Value::Undefined,
+    }
 }
 
 fn arr(elems: Vec<Value>) -> Value {
@@ -100,7 +102,8 @@ fn arr(elems: Vec<Value>) -> Value {
         kind: ObjectKind::Array(elems),
         properties: Default::default(),
         type_id: 0,
-        fields: Vec::new() })))
+        fields: Vec::new(),
+    })))
 }
 
 // ── Constructor surface ───────────────────────────────────────────────────────

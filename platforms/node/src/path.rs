@@ -15,14 +15,16 @@ fn s_arg(args: &[Value], idx: usize, default: &str) -> String {
     match args.get(idx) {
         Some(Value::String(text)) => text.to_string(),
         Some(other) => format!("{}", other),
-        None => default.to_string() }
+        None => default.to_string(),
+    }
 }
 
 fn collect_string_args(args: &[Value]) -> Vec<String> {
     args.iter()
         .map(|value| match value {
             Value::String(text) => text.to_string(),
-            other => format!("{}", other) })
+            other => format!("{}", other),
+        })
         .collect()
 }
 
@@ -45,7 +47,8 @@ fn basename(path: &str, ext: Option<&str>) -> String {
     let trimmed = path.trim_end_matches(['/', '\\'].as_ref());
     let raw = match trimmed.rsplit_once(|c| c == '/' || c == '\\') {
         Some((_, last)) => last,
-        None => trimmed };
+        None => trimmed,
+    };
     if let Some(e) = ext {
         if !e.is_empty() && raw.ends_with(e) && raw.len() > e.len() {
             return raw[..raw.len() - e.len()].to_string();
@@ -61,7 +64,8 @@ fn dirname(path: &str) -> String {
     match trimmed.rsplit_once(|c| c == '/' || c == '\\') {
         Some(("", _)) => sep().to_string(),
         Some((dir, _)) => dir.to_string(),
-        None => ".".to_string() }
+        None => ".".to_string(),
+    }
 }
 
 /// Node `extname(path)` — `.ext` of the last segment, including the dot.
@@ -72,7 +76,8 @@ fn extname(path: &str) -> String {
     match base.rfind('.') {
         Some(0) => String::new(), // ".bashrc" → ""
         Some(idx) => base[idx..].to_string(),
-        None => String::new() }
+        None => String::new(),
+    }
 }
 
 /// Node `join(...paths)` — concatenate with the platform separator and
@@ -128,7 +133,8 @@ fn normalize(path: &str) -> String {
                     stack.push("..");
                 }
             }
-            other => stack.push(other) }
+            other => stack.push(other),
+        }
     }
     let mut joined = stack.join(sep());
     if is_abs {
@@ -246,16 +252,20 @@ fn format(obj: &Value) -> String {
         Some(Value::String(text)) => text.to_string(),
         _ => match object.properties.get("root") {
             Some(Value::String(text)) => text.to_string(),
-            _ => String::new() } };
+            _ => String::new(),
+        },
+    };
     let base = match object.properties.get("base") {
         Some(Value::String(text)) => text.to_string(),
         _ => {
             let name = match object.properties.get("name") {
                 Some(Value::String(text)) => text.to_string(),
-                _ => String::new() };
+                _ => String::new(),
+            };
             let ext = match object.properties.get("ext") {
                 Some(Value::String(text)) => text.to_string(),
-                _ => String::new() };
+                _ => String::new(),
+            };
             format!("{}{}", name, ext)
         }
     };
@@ -276,7 +286,8 @@ pub fn register(vm: &mut VM) {
             let path = s_arg(args, 0, "");
             let ext = match args.get(1) {
                 Some(Value::String(text)) => Some(text.to_string()),
-                _ => None };
+                _ => None,
+            };
             s_val(&basename(&path, ext.as_deref()))
         }),
     );
@@ -435,7 +446,8 @@ fn glob_matches(pattern: &str, path: &str) -> bool {
                 re.push('\\');
                 re.push(c);
             }
-            other => re.push(other) }
+            other => re.push(other),
+        }
     }
     re.push('$');
     regex::Regex::new(&re)
