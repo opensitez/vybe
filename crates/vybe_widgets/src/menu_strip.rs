@@ -2,8 +2,8 @@
 
 use super::WidgetColors;
 use super::layout::{
-    KeyEvent, LayoutRect, MouseButton as LayoutMouseButton, MouseEvent, MouseEventKind,
-    PanelWidget, RenderContext, WidgetEvent, WidgetId,
+    CommandValue, KeyEvent, LayoutRect, MouseButton as LayoutMouseButton, MouseEvent,
+    MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, WidgetId,
 };
 use tiny_skia::*;
 
@@ -18,6 +18,21 @@ pub struct MenuStrip {
     pub colors: WidgetColors,
     pub id: WidgetId,
     pub name: String,
+    /// This strip's own text, when it is an ITEM in another strip rather than
+    /// the bar. `File` is a menu that has a caption; the bar it sits in draws
+    /// that caption, and opening it would draw this strip's own items.
+    pub caption: String,
+    /// The entries, as elements. A menu's contents are its child elements, so
+    /// they live here and [`Self::items`] is DERIVED from them at paint time —
+    /// the same shape as `Lines.Count` reading `textContent`. Keeping a
+    /// separate authored `items` list in step with the tree would be two
+    /// sources for one fact.
+    ///
+    /// A child is held, never painted: an entry is either a word on the bar
+    /// (drawn from its caption, by the bar) or an entry in a drop-down, and
+    /// drop-downs do not open yet. Dropping them instead would lose the
+    /// captions the bar is drawn from.
+    children: Vec<Box<dyn PanelWidget>>,
     rect: LayoutRect,
     pending_events: Vec<WidgetEvent>,
 }
@@ -37,6 +52,8 @@ impl MenuStrip {
             },
             id: WidgetId::next(),
             name: String::new(),
+            caption: String::new(),
+            children: Vec::new(),
             rect: LayoutRect::zero(),
             pending_events: Vec::new(),
         }
@@ -143,6 +160,35 @@ impl MenuStrip {
     pub fn mouse_move(&mut self, mx: f32, my: f32) {
         self.hover_index = self.hit_test(mx, my);
     }
+
+    /// Take the bar's words from the child elements, measured with the font
+    /// that will draw them.
+    ///
+    /// Done at paint time because that is when a font system exists and when
+    /// the tree is final: a caption can be set before or after the item joins
+    /// the menu, and both orders have to end up on the bar. A strip built by a
+    /// caller that sets `items` directly keeps working — there are no children
+    /// to take them from.
+    fn adopt_child_captions(&mut self, ctx: &mut RenderContext) {
+        if self.children.is_empty() {
+            return;
+        }
+        self.items = self
+            .children
+            .iter_mut()
+            .map(|c| match c.handle_command(&WidgetCommand::GetText) {
+                CommandValue::Text(s) => s,
+                _ => String::new(),
+            })
+            .collect();
+        self.item_widths = self
+            .items
+            .iter()
+            .map(|item| {
+                super::ide_text::measure_text(ctx.font_system, item, 12.0, ctx.scale) + 16.0
+            })
+            .collect();
+    }
 }
 
 impl PanelWidget for MenuStrip {
@@ -166,6 +212,7 @@ impl PanelWidget for MenuStrip {
         if r.w <= 0.0 || r.h <= 0.0 {
             return;
         }
+        self.adopt_child_captions(ctx);
         self.paint(ctx.pixmap, r.x, r.y, ctx.scale);
         // Draw item text
         let (fr, fg, fb, _) = self.colors.foreground;
@@ -216,5 +263,57 @@ impl PanelWidget for MenuStrip {
     }
     fn drain_events(&mut self) -> Vec<WidgetEvent> {
         std::mem::take(&mut self.pending_events)
+    }
+
+    fn add_child(&mut self, child: Box<dyn PanelWidget>) -> Option<Box<dyn PanelWidget>> {
+        self.children.push(child);
+        None
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut Box<dyn PanelWidget>> {
+        self.children.iter_mut().collect()
+    }
+
+    fn detach(&mut self, name: &str) -> Option<Box<dyn PanelWidget>> {
+        let at = self.children.iter().position(|c| c.name() == name)?;
+        Some(self.children.remove(at))
+    }
+
+    fn send_command_named(&mut self, name: &str, cmd: &WidgetCommand) -> Option<CommandValue> {
+        if self.name == name {
+            return Some(self.handle_command(cmd));
+        }
+        self.children
+            .iter_mut()
+            .find_map(|c| c.send_command_named(name, cmd))
+    }
+
+    fn add_child_to(
+        &mut self,
+        parent_name: &str,
+        child: Box<dyn PanelWidget>,
+    ) -> Option<Box<dyn PanelWidget>> {
+        if self.name == parent_name {
+            return self.add_child(child);
+        }
+        let mut child = Some(child);
+        for existing in &mut self.children {
+            let Some(c) = child.take() else { break };
+            child = existing.add_child_to(parent_name, c);
+        }
+        child
+    }
+
+    /// A strip's text is its own caption — the word the PARENT bar draws for
+    /// it. It is not the bar's contents: those are the child elements.
+    fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
+        match cmd {
+            WidgetCommand::SetText(text) => {
+                self.caption = text.clone();
+                CommandValue::None
+            }
+            WidgetCommand::GetText => CommandValue::Text(self.caption.clone()),
+            _ => CommandValue::None,
+        }
     }
 }

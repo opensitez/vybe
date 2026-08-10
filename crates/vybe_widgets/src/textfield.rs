@@ -703,9 +703,7 @@ impl PanelWidget for TextInput {
                 ));
                 true
             }
-            Key::Named(NamedKey::ArrowUp) | Key::Named(NamedKey::ArrowDown)
-                if self.multiline =>
-            {
+            Key::Named(NamedKey::ArrowUp) | Key::Named(NamedKey::ArrowDown) if self.multiline => {
                 if is_shift {
                     if self.selection_anchor.is_none() {
                         self.selection_anchor = Some(self.cursor);

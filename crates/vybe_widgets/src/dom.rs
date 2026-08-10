@@ -31,6 +31,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use crate::controls::make_widget;
+use crate::css::Style;
 use crate::layout::{
     Dock, LayoutRect, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, find_widget_mut,
     take_widget,
@@ -65,6 +66,15 @@ pub struct DomNode {
     ///
     /// This is what VCL's `Align` and WinForms' `Dock` both mean.
     pub dock: Option<Dock>,
+    /// `element.style` — the inline declarations, as they were set.
+    ///
+    /// The element's own record of its CSS, kept because a style write is
+    /// observable: `el.style.color = 'red'` has to read back `'red'`. Before
+    /// this existed, a write was translated into a `WidgetCommand` and the
+    /// declaration was forgotten, so the read side could only answer for
+    /// geometry it could recover from the widget's rect and returned `""` for
+    /// everything else — including properties the write side accepted.
+    pub style: Style,
 }
 
 /// One DOM event, ready for dispatch: which node, and the spec's event name.
@@ -87,6 +97,9 @@ pub struct Document {
     next_id: NodeId,
     /// Created but not yet inserted. The state a toolkit has no place for.
     detached: HashMap<NodeId, Box<dyn PanelWidget>>,
+    /// The document element's own `style`. `DOCUMENT` is not in `nodes` — it is
+    /// the form — so its declarations live beside them.
+    document_style: Style,
 }
 
 impl Document {
@@ -102,6 +115,7 @@ impl Document {
             order: Vec::new(),
             next_id: 0,
             detached: HashMap::new(),
+            document_style: Style::new(),
         }
     }
 
@@ -172,6 +186,13 @@ impl Document {
                 id,
                 tag,
                 input_type,
+                // A menu bar takes the top edge of whatever holds it. This is
+                // WinForms' own `MenuStrip.Dock` default and what a block-level
+                // bar does at the head of the flow — a starting dock, exactly
+                // as `default_size` is a starting geometry, and `Align`/`Dock`
+                // overwrite it. Without it a form's menu sat at 0,0 on top of
+                // the control that had already claimed the client area.
+                dock: (kind == "menustrip").then_some(Dock::Top),
                 ..DomNode::default()
             },
         );
@@ -577,8 +598,15 @@ impl Document {
 
     /// `element.style.setProperty(property, value)` — CSS text, units and all.
     /// Geometry lands on the widget's rect, which is where geometry lives.
+    ///
+    /// The declaration is **recorded first, unconditionally**, and only then
+    /// translated into whatever the widget can act on. The two steps answer
+    /// different questions — what did the author say, and what does the toolkit
+    /// do about it — and conflating them is why a property the write side
+    /// accepted could still read back empty.
     pub fn set_style_property(&mut self, node: NodeId, property: &str, value: &str) {
         let property = property.to_ascii_lowercase();
+        self.record_style(node, &property, value);
         let px = parse_px(value);
         match property.as_str() {
             "left" | "top" | "width" | "height" => {
@@ -659,7 +687,38 @@ impl Document {
         }
     }
 
-    /// The computed geometry, as CSS text — read off the control.
+    /// An element's `style`. A node that does not exist has no declarations,
+    /// which is what the CSSOM says an absent element's style reads as.
+    pub fn style(&self, node: NodeId) -> Option<&Style> {
+        if node == DOCUMENT {
+            return Some(&self.document_style);
+        }
+        self.nodes.get(&node).map(|n| &n.style)
+    }
+
+    /// Record a declaration. Creates nothing — an id with no node is a no-op,
+    /// not a phantom element.
+    fn record_style(&mut self, node: NodeId, property: &str, value: &str) {
+        if node == DOCUMENT {
+            self.document_style.set(property, value);
+        } else if let Some(n) = self.nodes.get_mut(&node) {
+            n.style.set(property, value);
+        }
+    }
+
+    /// The typed view of an element's declarations, for layout to read.
+    pub fn style_properties(&self, node: NodeId) -> crate::css::CssProperties {
+        self.style(node).map(Style::properties).unwrap_or_default()
+    }
+
+    /// `element.style.getPropertyValue(property)`.
+    ///
+    /// Geometry answers from the **control**, not from the declaration: a rect
+    /// is computed, and a docked or laid-out element is not where its own
+    /// `left` said it would be. Everything else answers from the declaration
+    /// store, which is what makes a property the write side accepts readable —
+    /// `color`, `background-color` and `font-size` all returned `""` before,
+    /// having been consumed into widget commands and forgotten.
     pub fn style_property(&mut self, node: NodeId, property: &str) -> String {
         let property = property.to_ascii_lowercase();
         let rect = if node == DOCUMENT {
@@ -667,7 +726,7 @@ impl Document {
         } else {
             match self.widget_mut(node) {
                 Some(w) => w.rect(),
-                None => return String::new(),
+                None => return self.declared_style(node, &property),
             }
         };
         match property.as_str() {
@@ -675,8 +734,14 @@ impl Document {
             "top" => format!("{}px", rect.y),
             "width" => format!("{}px", rect.w),
             "height" => format!("{}px", rect.h),
-            _ => String::new(),
+            _ => self.declared_style(node, &property),
         }
+    }
+
+    fn declared_style(&self, node: NodeId, property: &str) -> String {
+        self.style(node)
+            .map(|s| s.get(property).to_string())
+            .unwrap_or_default()
     }
 
     // ── IDL properties ──────────────────────────────────────────────────
@@ -1171,6 +1236,81 @@ mod tests {
         assert_eq!(doc.style_property(b, "left"), "10px");
         assert_eq!(doc.style_property(b, "top"), "20px");
         assert_eq!(doc.style_property(b, "width"), "80px");
+    }
+
+    #[test]
+    fn a_style_the_write_side_accepts_reads_back() {
+        // These three were WRITTEN (they issue widget commands) and read back
+        // `""`, because the declaration was consumed into the command and
+        // forgotten. Nothing recorded what the author actually said.
+        let mut doc = Document::new("t");
+        let b = doc.create_element("button", "");
+        doc.append_child(DOCUMENT, b);
+        doc.set_style_property(b, "color", "red");
+        doc.set_style_property(b, "background-color", "#fff");
+        doc.set_style_property(b, "font-size", "18px");
+        assert_eq!(doc.style_property(b, "color"), "red");
+        assert_eq!(doc.style_property(b, "background-color"), "#fff");
+        assert_eq!(doc.style_property(b, "font-size"), "18px");
+    }
+
+    #[test]
+    fn a_style_nothing_renders_still_round_trips() {
+        // The store accepts anything; layout consumes what it understands. An
+        // unimplemented property is a rendering gap, not data loss.
+        let mut doc = Document::new("t");
+        let b = doc.create_element("div", "");
+        doc.append_child(DOCUMENT, b);
+        doc.set_style_property(b, "mix-blend-mode", "multiply");
+        assert_eq!(doc.style_property(b, "mix-blend-mode"), "multiply");
+    }
+
+    #[test]
+    fn geometry_answers_from_the_control_not_the_declaration() {
+        // A rect is COMPUTED. A docked element is not where its own `left`
+        // said, so geometry must keep coming off the widget even though the
+        // declaration is now recorded beside it.
+        let mut doc = Document::new("t");
+        let bar = doc.create_element("div", "");
+        doc.append_child(DOCUMENT, bar);
+        doc.set_style_property(bar, "left", "300px");
+        doc.set_style_property(bar, "dock", "top");
+        assert_eq!(doc.style_property(bar, "left"), "0px");
+        // …while the declaration itself is intact underneath.
+        assert_eq!(doc.style(bar).map(|s| s.get("left")), Some("300px"));
+    }
+
+    #[test]
+    fn layout_can_read_the_declarations_it_will_need() {
+        use crate::css::{Display, FlexDirection, Position};
+        let mut doc = Document::new("t");
+        let row = doc.create_element("div", "");
+        doc.append_child(DOCUMENT, row);
+        doc.set_style_property(row, "display", "flex");
+        doc.set_style_property(row, "flex-direction", "row");
+        let props = doc.style_properties(row);
+        assert!(props.is_flex_container());
+        assert_eq!(props.display, Some(Display::Flex));
+        assert_eq!(props.flex_direction, Some(FlexDirection::Row));
+
+        let child = doc.create_element("button", "");
+        doc.append_child(row, child);
+        doc.set_style_property(child, "position", "absolute");
+        let child_props = doc.style_properties(child);
+        assert_eq!(child_props.position, Some(Position::Absolute));
+        assert!(child_props.is_out_of_flow());
+    }
+
+    #[test]
+    fn display_none_still_hides_now_that_display_carries_a_layout_mode() {
+        // `display` meant visibility and nothing else. It now also selects a
+        // layout mode, and `none` must not have quietly stopped hiding.
+        let mut doc = Document::new("t");
+        let b = doc.create_element("button", "");
+        doc.append_child(DOCUMENT, b);
+        doc.set_style_property(b, "display", "none");
+        assert!(doc.style_properties(b).display_none);
+        assert_eq!(doc.style_property(b, "display"), "none");
     }
 
     #[test]

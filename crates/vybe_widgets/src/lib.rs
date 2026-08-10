@@ -24,6 +24,7 @@ pub mod code_editor_widget;
 pub mod color_picker;
 pub mod context_menu;
 pub mod controls;
+pub mod css;
 pub mod datetime;
 pub mod dialogs;
 pub mod dock_panel;
