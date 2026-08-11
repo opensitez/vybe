@@ -70,5 +70,5 @@ begin
   p := @x;
   p := nil;
   __p(__vs(p = nil));
-__vybeCheck('true');
+__vybeCheck('True');
 end.

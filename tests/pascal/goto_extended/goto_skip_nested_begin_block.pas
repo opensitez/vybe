@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; label out; begin begin goto out; __p(__vs('in')); end; out: __p(__vs('out')); __vybeCheck('out');
+end; label out_label; begin begin goto out_label; __p(__vs('in')); end; out_label: __p(__vs('out')); __vybeCheck('out');
 end.

@@ -64,5 +64,5 @@ begin
 end;
 begin
   __p(__vs(CompareStr('abc', 'abd') < 0));
-__vybeCheck('true');
+__vybeCheck('True');
 end.

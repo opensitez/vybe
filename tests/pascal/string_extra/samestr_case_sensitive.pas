@@ -65,5 +65,5 @@ end;
 begin
   __p(__vs(SameStr('Hello', 'Hello')));
   __p(__vs(SameStr('Hello', 'hello')));
-__vybeCheck('true' + #10 + 'false');
+__vybeCheck('True' + #10 + 'False');
 end.

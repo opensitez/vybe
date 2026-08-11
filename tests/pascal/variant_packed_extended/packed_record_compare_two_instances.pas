@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type TP=packed record V:Byte; end; var a,b:TP; begin a.V:=3; b.V:=3; __p(__vs(a.V=b.V)); __vybeCheck('true');
+end; type TP=packed record V:Byte; end; var a,b:TP; begin a.V:=3; b.V:=3; __p(__vs(a.V=b.V)); __vybeCheck('True');
 end.

@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; var f:function(n:Integer):Boolean; begin f:=function(n:Integer):Boolean begin Result:=n>0; end; __p(__vs(f(1))); __p(__vs(f(-1))); __vybeCheck('true' + #10 + 'false');
+end; var f:function(n:Integer):Boolean; begin f:=function(n:Integer):Boolean begin Result:=n>0; end; __p(__vs(f(1))); __p(__vs(f(-1))); __vybeCheck('True' + #10 + 'False');
 end.

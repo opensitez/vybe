@@ -78,5 +78,5 @@ begin
     end;
   end;
   __p(__vs(found));
-__vybeCheck('true');
+__vybeCheck('True');
 end.

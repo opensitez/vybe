@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; begin __p(__vs(CompareStr('abc','abd') < 0)); __vybeCheck('true');
+end; begin __p(__vs(CompareStr('abc','abd') < 0)); __vybeCheck('True');
 end.

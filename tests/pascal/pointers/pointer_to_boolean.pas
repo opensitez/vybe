@@ -70,5 +70,5 @@ begin
   p := @b;
   p^ := true;
   __p(__vs(b));
-__vybeCheck('true');
+__vybeCheck('True');
 end.

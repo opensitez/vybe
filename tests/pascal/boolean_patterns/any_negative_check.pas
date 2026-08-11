@@ -72,5 +72,5 @@ begin
   for i := 0 to 3 do
     if arr[i] < 0 then anyNeg := True;
   __p(__vs(anyNeg));
-__vybeCheck('true');
+__vybeCheck('True');
 end.

@@ -2,7 +2,7 @@
 // origin: languages/pascal/tests/pascal/test_time.rs
 program T;
 {$mode delphi}
-uses SysUtils;
+uses SysUtils, DateUtils;
 // Vybe test harness — Pascal.
 //
 // Real Pascal: this compiles with `fpc` on its own, which is what lets an
@@ -67,5 +67,5 @@ begin
   a := EncodeDate(2001, 6, 15);
   b := EncodeDate(2001, 6, 15);
   __p(__vs(SameDate(a, b)));
-__vybeCheck('true');
+__vybeCheck('True');
 end.

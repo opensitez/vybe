@@ -66,5 +66,5 @@ const Pi = 3.14159265;
 begin
   __p(__vs(Pi > 3.0));
   __p(__vs(Pi < 4.0));
-__vybeCheck('true' + #10 + 'true');
+__vybeCheck('True' + #10 + 'True');
 end.

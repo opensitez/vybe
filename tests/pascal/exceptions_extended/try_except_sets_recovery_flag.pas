@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; var ok:Boolean; begin ok:=false; try raise Exception.Create('x'); except ok:=true; end; __p(__vs(ok)); __vybeCheck('true');
+end; var ok:Boolean; begin ok:=false; try raise Exception.Create('x'); except ok:=true; end; __p(__vs(ok)); __vybeCheck('True');
 end.

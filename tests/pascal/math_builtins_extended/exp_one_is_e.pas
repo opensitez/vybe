@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; begin __p(__vs(Exp(1.0)>2.7)); __p(__vs(Exp(1.0)<2.8)); __vybeCheck('true' + #10 + 'true');
+end; begin __p(__vs(Exp(1.0)>2.7)); __p(__vs(Exp(1.0)<2.8)); __vybeCheck('True' + #10 + 'True');
 end.

@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; var p:^Double; begin New(p); p^:=2.5; __p(__vs(p^>2.0)); Dispose(p); __vybeCheck('true');
+end; var p:^Double; begin New(p); p^:=2.5; __p(__vs(p^>2.0)); Dispose(p); __vybeCheck('True');
 end.

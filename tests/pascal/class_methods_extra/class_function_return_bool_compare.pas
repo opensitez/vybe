@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type TCmp=class class function Eq(a,b:Integer):Boolean; end; class function TCmp.Eq(a,b:Integer):Boolean; begin Result:=a=b; end; begin __p(__vs(TCmp.Eq(3,3))); __p(__vs(TCmp.Eq(1,2))); __vybeCheck('true' + #10 + 'false');
+end; type TCmp=class class function Eq(a,b:Integer):Boolean; end; class function TCmp.Eq(a,b:Integer):Boolean; begin Result:=a=b; end; begin __p(__vs(TCmp.Eq(3,3))); __p(__vs(TCmp.Eq(1,2))); __vybeCheck('True' + #10 + 'False');
 end.

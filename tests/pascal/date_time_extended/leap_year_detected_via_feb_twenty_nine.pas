@@ -2,7 +2,7 @@
 // origin: languages/pascal/tests/pascal/test_date_time_extended.rs
 program T;
 {$mode delphi}
-uses SysUtils;
+uses SysUtils, DateUtils;
 // Vybe test harness — Pascal.
 //
 // Real Pascal: this compiles with `fpc` on its own, which is what lets an
@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; var d:TDateTime; begin d:=EncodeDate(2000,2,29); __p(__vs(DayOf(d)=29)); __vybeCheck('true');
+end; var d:TDateTime; begin d:=EncodeDate(2000,2,29); __p(__vs(DayOf(d)=29)); __vybeCheck('True');
 end.

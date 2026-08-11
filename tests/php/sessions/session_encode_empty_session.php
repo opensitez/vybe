@@ -24,4 +24,4 @@ ob_start();
 session_start();
 echo session_encode() === '' ? 'empty' : 'data';
 
-__vybe_check(ob_get_clean(), "data");
+__vybe_check(ob_get_clean(), "empty");

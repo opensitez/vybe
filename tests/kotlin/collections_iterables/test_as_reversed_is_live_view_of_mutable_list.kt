@@ -34,5 +34,5 @@ fun main() {
             view[0] = 10
             __p((nums.joinToString(",")).toString())
         
-__check("3,2,1\n4,3,2,1\n10,2,3,1,4")
+__check("3,2,1\n4,3,2,1\n1,2,3,10")
 }

@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; function Flip(b:Boolean):Boolean; overload; begin Result:=not b; end; function Flip(n:Integer):Integer; overload; begin Result:=-n; end; begin __p(__vs(Flip(true))); __p(__vs(Flip(7))); __vybeCheck('false' + #10 + '-7');
+end; function Flip(b:Boolean):Boolean; overload; begin Result:=not b; end; function Flip(n:Integer):Integer; overload; begin Result:=-n; end; begin __p(__vs(Flip(true))); __p(__vs(Flip(7))); __vybeCheck('False' + #10 + '-7');
 end.

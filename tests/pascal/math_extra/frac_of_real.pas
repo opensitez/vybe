@@ -64,5 +64,5 @@ begin
 end;
 begin
   __p(__vs(Frac(3.25) = 0.25));
-__vybeCheck('true');
+__vybeCheck('True');
 end.

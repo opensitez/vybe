@@ -76,5 +76,5 @@ end;
 begin
   __p(__vs(IsPrime(2))); __p(__vs(IsPrime(4))); __p(__vs(IsPrime(7)));
   __p(__vs(IsPrime(9))); __p(__vs(IsPrime(13)));
-__vybeCheck('true' + #10 + 'false' + #10 + 'true' + #10 + 'false' + #10 + 'true');
+__vybeCheck('True' + #10 + 'False' + #10 + 'True' + #10 + 'False' + #10 + 'True');
 end.

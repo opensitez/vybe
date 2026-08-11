@@ -23,7 +23,7 @@ void __check(String want) {
 import 'dart:io';
 void __vybeMain() {
   // It returns a boolean. We just ensure it doesn't crash.
-  print(FileSystemEntity.isWatchSupported is bool);
+  __p(FileSystemEntity.isWatchSupported is bool);
 }
 
 void main() {

@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; var price,qty,total:Currency; begin price:=9.99; qty:=3; total:=price*qty; __p(__vs(total>29.0)); __vybeCheck('true');
+end; var price,qty,total:Currency; begin price:=9.99; qty:=3; total:=price*qty; __p(__vs(total>29.0)); __vybeCheck('True');
 end.

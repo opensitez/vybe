@@ -71,5 +71,5 @@ begin
   c := TChild.Create;
   __p(__vs(c.InheritsFrom(TBase)));
   __p(__vs(c.InheritsFrom(TChild)));
-__vybeCheck('true' + #10 + 'true');
+__vybeCheck('True' + #10 + 'True');
 end.

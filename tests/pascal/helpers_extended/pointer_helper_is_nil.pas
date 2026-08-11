@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type PInt=^Integer; PIntHelper=record helper for PInt function IsNil:Boolean; end; function PIntHelper.IsNil:Boolean; begin Result:=Self=nil; end; var p:PInt; begin __p(__vs(p.IsNil)); __vybeCheck('true');
+end; type PInt=^Integer; PIntHelper=record helper for PInt function IsNil:Boolean; end; function PIntHelper.IsNil:Boolean; begin Result:=Self=nil; end; var p:PInt; begin __p(__vs(p.IsNil)); __vybeCheck('True');
 end.

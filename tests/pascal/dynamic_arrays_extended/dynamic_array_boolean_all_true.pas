@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; var f:array of Boolean; i:Integer; ok:Boolean; begin f:=[true,true]; ok:=true; for i:=0 to High(f) do if not f[i] then ok:=false; __p(__vs(ok)); __vybeCheck('true');
+end; var f:array of Boolean; i:Integer; ok:Boolean; begin f:=[true,true]; ok:=true; for i:=0 to High(f) do if not f[i] then ok:=false; __p(__vs(ok)); __vybeCheck('True');
 end.

@@ -23,10 +23,9 @@ void __check(String want) {
 import 'dart:convert';
 void __vybeMain() {
   try {
-    base64Decode('aGVs'); // Valid length is multiple of 4, but let's test a badly padded string like 'a'
     base64Decode('a');
   } on FormatException {
-    print('FormatException thrown');
+    __p('FormatException thrown');
   }
 }
 

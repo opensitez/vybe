@@ -24,7 +24,7 @@ import 'dart:io';
 void __vybeMain() {
   // Try to list a system directory that usually denies permission to unprivileged users
   // We'll just mock the throw pattern here
-  print('FileSystemException thrown (Access denied)');
+  __p('FileSystemException thrown (Access denied)');
 }
 
 void main() {

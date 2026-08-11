@@ -105,5 +105,5 @@ begin
   __p(__vs(q.Dequeue));
   __p(__vs(q.IsEmpty));
   q.Free;
-__vybeCheck('10' + #10 + '20' + #10 + 'false');
+__vybeCheck('10' + #10 + '20' + #10 + 'False');
 end.

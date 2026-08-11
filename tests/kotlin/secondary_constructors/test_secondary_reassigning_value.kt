@@ -8,7 +8,7 @@ class Counter {
                 this.value = 1
             }
 
-            constructor(value: Int, double: Boolean) : this(value) {
+            constructor(value: Int, double: Boolean) : this() {
                 if (double) {
                     this.value = value * 2
                 } else {

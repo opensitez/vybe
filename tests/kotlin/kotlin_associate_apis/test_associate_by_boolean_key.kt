@@ -28,7 +28,7 @@ fun __check(want: String) {
 fun main() {
             val map = listOf(1, 2, 3, 4).associateBy { it % 2 == 0 }
             __p((map.keys.joinToString(",")).toString())
-            __p((map[true]?.size).toString())
+            __p((map[true]).toString())
         
-__check("false,true\n2")
+__check("false,true\n4")
 }

@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; var n: Integer; begin n := 5; __p(__vs((n > 1) and (n < 10))); __vybeCheck('true');
+end; var n: Integer; begin n := 5; __p(__vs((n > 1) and (n < 10))); __vybeCheck('True');
 end.

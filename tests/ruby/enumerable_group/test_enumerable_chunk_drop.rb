@@ -49,6 +49,6 @@ def __vybe_check(want)
   end
 end
 
-puts [1, 2, 2, 3].chunk { |x| x.even? ? x : :_drop }.map{|k, v| "#{k}:#{v.join('-')}"}.join('|')
+puts [1, 2, 2, 3].chunk { |x| x.even? ? true : nil }.map{|k, v| "#{k}:#{v.join('-')}"}.join('|')
 
 __vybe_check("true:2-2")

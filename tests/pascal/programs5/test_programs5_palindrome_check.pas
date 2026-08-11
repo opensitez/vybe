@@ -79,5 +79,5 @@ begin
   __p(__vs(IsPalindrome('hello')));
   __p(__vs(IsPalindrome('level')));
   __p(__vs(IsPalindrome('a')));
-__vybeCheck('true' + #10 + 'false' + #10 + 'true' + #10 + 'true');
+__vybeCheck('True' + #10 + 'False' + #10 + 'True' + #10 + 'True');
 end.

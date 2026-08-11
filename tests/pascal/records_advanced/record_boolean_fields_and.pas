@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type TFlags=record A,B:Boolean; end; var f:TFlags; begin f.A:=true; f.B:=false; __p(__vs(f.A and f.B)); __vybeCheck('false');
+end; type TFlags=record A,B:Boolean; end; var f:TFlags; begin f.A:=true; f.B:=false; __p(__vs(f.A and f.B)); __vybeCheck('False');
 end.

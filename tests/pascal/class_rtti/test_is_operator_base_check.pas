@@ -75,5 +75,5 @@ begin
   __p(__vs(c is TBase));
   __p(__vs(c is TChild));
   __p(__vs(b is TChild));
-__vybeCheck('true' + #10 + 'true' + #10 + 'true' + #10 + 'false');
+__vybeCheck('True' + #10 + 'True' + #10 + 'True' + #10 + 'False');
 end.

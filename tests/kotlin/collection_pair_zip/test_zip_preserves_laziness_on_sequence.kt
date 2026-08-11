@@ -30,5 +30,5 @@ fun main() {
             val zipped = counted.zip(sequenceOf(4, 5, 6)) { a, b -> a + b }
             __p((zipped.joinToString(",")).toString())
         
-__check("5,7")
+__check("6,8")
 }

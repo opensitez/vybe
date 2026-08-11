@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type TOpt<T>=class public Has:Boolean; Value:T; constructor Create; end; constructor TOpt<T>.Create; begin Has:=false; end; var o:TOpt<Integer>; begin o:=TOpt<Integer>.Create; __p(__vs(o.Has)); o.Free; __vybeCheck('false');
+end; type TOpt<T>=class public Has:Boolean; Value:T; constructor Create; end; constructor TOpt<T>.Create; begin Has:=false; end; var o:TOpt<Integer>; begin o:=TOpt<Integer>.Create; __p(__vs(o.Has)); o.Free; __vybeCheck('False');
 end.

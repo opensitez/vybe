@@ -64,5 +64,5 @@ begin
 end;
 function IsEven(n: Integer): Boolean;
 begin Result := (n mod 2) = 0; end;
-begin __p(__vs(IsEven(4))); __p(__vs(IsEven(7))); __vybeCheck('true' + #10 + 'false');
+begin __p(__vs(IsEven(4))); __p(__vs(IsEven(7))); __vybeCheck('True' + #10 + 'False');
 end.

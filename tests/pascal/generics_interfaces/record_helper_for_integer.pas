@@ -76,5 +76,5 @@ begin
   __p(__vs(n.IsEven()));
   n := 7;
   __p(__vs(n.IsEven()));
-__vybeCheck('true' + #10 + 'false');
+__vybeCheck('True' + #10 + 'False');
 end.

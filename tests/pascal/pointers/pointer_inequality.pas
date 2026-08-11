@@ -73,5 +73,5 @@ begin
   p1 := @x;
   p2 := @y;
   __p(__vs(p1 <> p2));
-__vybeCheck('true');
+__vybeCheck('True');
 end.

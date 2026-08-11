@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type TR=record A,B:Integer; end; TRHelper=record helper for TR function Equals(other:TR):Boolean; end; function TRHelper.Equals(other:TR):Boolean; begin Result:=(A=other.A) and (B=other.B); end; var x,y:TR; begin x.A:=1; x.B:=2; y:=x; __p(__vs(x.Equals(y))); __vybeCheck('true');
+end; type TR=record A,B:Integer; end; TRHelper=record helper for TR function Equals(other:TR):Boolean; end; function TRHelper.Equals(other:TR):Boolean; begin Result:=(A=other.A) and (B=other.B); end; var x,y:TR; begin x.A:=1; x.B:=2; y:=x; __p(__vs(x.Equals(y))); __vybeCheck('True');
 end.

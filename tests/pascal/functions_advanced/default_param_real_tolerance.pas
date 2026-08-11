@@ -67,5 +67,5 @@ begin Result := Abs(a - b) <= eps; end;
 begin
   __p(__vs(NearEqual(1.0, 1.0005)));
   __p(__vs(NearEqual(1.0, 1.01, 0.1)));
-__vybeCheck('true' + #10 + 'true');
+__vybeCheck('True' + #10 + 'True');
 end.

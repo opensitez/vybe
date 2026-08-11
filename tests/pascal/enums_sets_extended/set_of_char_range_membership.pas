@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type TD='0'..'9'; var s: set of TD; begin s:=['1','3','5']; __p(__vs('3' in s)); __p(__vs('2' in s)); __vybeCheck('true' + #10 + 'false');
+end; type TD='0'..'9'; var s: set of TD; begin s:=['1','3','5']; __p(__vs('3' in s)); __p(__vs('2' in s)); __vybeCheck('True' + #10 + 'False');
 end.

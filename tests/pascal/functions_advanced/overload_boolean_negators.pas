@@ -62,12 +62,10 @@ begin
     Halt(1);
   end;
 end;
-function Flip(v: Boolean): Boolean; overload;
-function Flip(v: Integer): Integer; overload;
-function Flip(v: Boolean): Boolean; begin Result := not v; end;
-function Flip(v: Integer): Integer; begin Result := -v; end;
+function Flip(v: Boolean): Boolean; overload; begin Result := not v; end;
+function Flip(v: Integer): Integer; overload; begin Result := -v; end;
 begin
   __p(__vs(Flip(true)));
   __p(__vs(Flip(9)));
-__vybeCheck('false' + #10 + '-9');
+__vybeCheck('False' + #10 + '-9');
 end.

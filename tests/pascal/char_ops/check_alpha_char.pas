@@ -70,5 +70,5 @@ end;
 begin
   __p(__vs(IsLetter('G')));
   __p(__vs(IsLetter('3')));
-__vybeCheck('true' + #10 + 'false');
+__vybeCheck('True' + #10 + 'False');
 end.

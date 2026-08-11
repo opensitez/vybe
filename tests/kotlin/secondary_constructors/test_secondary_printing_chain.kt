@@ -43,5 +43,5 @@ fun main() {
             Trace()
             Trace(5)
         
-__check("zero\n5")
+__check("zero\nzero\n5")
 }

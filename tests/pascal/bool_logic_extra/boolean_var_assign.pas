@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; var f:Boolean; begin f:=3>2; __p(__vs(f)); __vybeCheck('true');
+end; var f:Boolean; begin f:=3>2; __p(__vs(f)); __vybeCheck('True');
 end.

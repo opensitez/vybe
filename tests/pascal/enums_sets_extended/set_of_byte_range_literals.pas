@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; var s: set of Byte; begin s:=[1,2,3]; __p(__vs(2 in s)); __vybeCheck('true');
+end; var s: set of Byte; begin s:=[1,2,3]; __p(__vs(2 in s)); __vybeCheck('True');
 end.

@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; function Eq<T>(a,b:T):Boolean; begin Result:=a=b; end; begin __p(__vs(Eq<String>('x','x'))); __vybeCheck('true');
+end; function Eq<T>(a,b:T):Boolean; begin Result:=a=b; end; begin __p(__vs(Eq<String>('x','x'))); __vybeCheck('True');
 end.

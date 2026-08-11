@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type TD=(A,B); function Has(v:TD):Boolean; overload; begin Result:=v=B; end; function Has(n:Integer):Boolean; overload; begin Result:=n>0; end; begin __p(__vs(Has(B))); __p(__vs(Has(-1))); __vybeCheck('true' + #10 + 'false');
+end; type TD=(A,B); function Has(v:TD):Boolean; overload; begin Result:=v=B; end; function Has(n:Integer):Boolean; overload; begin Result:=n>0; end; begin __p(__vs(Has(B))); __p(__vs(Has(-1))); __vybeCheck('True' + #10 + 'False');
 end.

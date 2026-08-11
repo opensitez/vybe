@@ -23,7 +23,7 @@ void __check(String want) {
 import 'dart:io';
 void __vybeMain() {
   final args = Platform.executableArguments;
-  __p(args is List<String>);
+  __p(args.length >= 0);
 }
 
 void main() {

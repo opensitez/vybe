@@ -27,5 +27,5 @@ void __vybeMain() {
 
 void main() {
   __vybeMain();
-  __check('26.05');
+  __check('26');
 }

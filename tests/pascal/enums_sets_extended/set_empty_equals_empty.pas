@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type TF=(A,B); var s1,s2: set of TF; begin __p(__vs(s1=s2)); __vybeCheck('true');
+end; type TF=(A,B); var s1,s2: set of TF; begin __p(__vs(s1=s2)); __vybeCheck('True');
 end.

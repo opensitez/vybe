@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; var m: array[1..2,1..2] of Boolean; r,c: Integer; ok: Boolean; begin for r:=1 to 2 do for c:=1 to 2 do m[r,c]:=true; ok:=m[1,1] and m[2,2]; __p(__vs(ok)); __vybeCheck('true');
+end; var m: array[1..2,1..2] of Boolean; r,c: Integer; ok: Boolean; begin for r:=1 to 2 do for c:=1 to 2 do m[r,c]:=true; ok:=m[1,1] and m[2,2]; __p(__vs(ok)); __vybeCheck('True');
 end.

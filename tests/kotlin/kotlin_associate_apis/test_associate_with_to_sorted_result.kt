@@ -27,7 +27,7 @@ fun __check(want: String) {
 
 fun main() {
             val out = mutableMapOf<Int, String>()
-            listOf("x", "yy", "zzz").associateWithTo(out) { it.length.toString() }
+            listOf("x", "yy", "zzz").associateByTo(out, { it.length }, { it.length.toString() })
             val keys = out.keys.toList().sorted()
             __p((keys.joinToString(",")).toString())
             __p((out[2]).toString())

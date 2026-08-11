@@ -64,5 +64,5 @@ begin
 end;
 function Ratio(a, b: Integer): Double;
 begin Result := a / b; end;
-begin __p(__vs(Ratio(7, 2) > 3.0)); __vybeCheck('true');
+begin __p(__vs(Ratio(7, 2) > 3.0)); __vybeCheck('True');
 end.

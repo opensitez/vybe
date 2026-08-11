@@ -63,7 +63,6 @@ begin
   end;
 end;
 type TSing=class public class var Inst:TSing; class function Instance:TSing; end;
-class var TSing.Inst:TSing;
 class function TSing.Instance:TSing; begin if Inst=nil then Inst:=TSing.Create; Result:=Inst; end;
-var a,b:TSing; begin a:=TSing.Instance; b:=TSing.Instance; __p(__vs(a=b)); a.Free; TSing.Inst:=nil; __vybeCheck('true');
+var a,b:TSing; begin a:=TSing.Instance; b:=TSing.Instance; __p(__vs(a=b)); a.Free; TSing.Inst:=nil; __vybeCheck('True');
 end.

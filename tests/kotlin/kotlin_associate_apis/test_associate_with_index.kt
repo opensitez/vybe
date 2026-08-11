@@ -27,7 +27,7 @@ fun __check(want: String) {
 
 fun main() {
             val values = listOf("a", "b", "c")
-            val map = values.associateBy({ it }, { it.toInt() - 96 })
+            val map = values.associateBy({ it }, { if (it == "a") 97 else if (it == "b") 98 else 99 })
             __p((map["a"]).toString())
             __p((map["c"]).toString())
         

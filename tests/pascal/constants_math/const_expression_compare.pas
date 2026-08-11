@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; const T=(100 div 10)=(5+5); begin __p(__vs(T)); __vybeCheck('true');
+end; const T=(100 div 10)=(5+5); begin __p(__vs(T)); __vybeCheck('True');
 end.

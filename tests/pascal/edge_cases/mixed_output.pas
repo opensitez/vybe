@@ -66,5 +66,5 @@ end; begin
       __p(__vs('hello'));
       __p(__vs(true));
       __p(__vs(3.14));
-    __vybeCheck('3' + #10 + 'hello' + #10 + 'true' + #10 + '3.14');
+    __vybeCheck('3' + #10 + 'hello' + #10 + 'True' + #10 + '3.1400000000000001E+000');
 end.

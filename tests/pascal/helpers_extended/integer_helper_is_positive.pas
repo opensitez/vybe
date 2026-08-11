@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type TIntHelper=record helper for Integer function IsPositive:Boolean; end; function TIntHelper.IsPositive:Boolean; begin Result:=Self>0; end; var n:Integer; begin n:=5; __p(__vs(n.IsPositive)); n:=-1; __p(__vs(n.IsPositive)); __vybeCheck('true' + #10 + 'false');
+end; type TIntHelper=record helper for Integer function IsPositive:Boolean; end; function TIntHelper.IsPositive:Boolean; begin Result:=Self>0; end; var n:Integer; begin n:=5; __p(__vs(n.IsPositive)); n:=-1; __p(__vs(n.IsPositive)); __vybeCheck('True' + #10 + 'False');
 end.

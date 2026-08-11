@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type TVal=record case K:Integer of 0:(I:Integer); 1:(R:Double); end; var v:TVal; begin v.K:=1; v.R:=1.25; __p(__vs(Frac(v.R)=0.25)); __vybeCheck('true');
+end; type TVal=record case K:Integer of 0:(I:Integer); 1:(R:Double); end; var v:TVal; begin v.K:=1; v.R:=1.25; __p(__vs(Frac(v.R)=0.25)); __vybeCheck('True');
 end.

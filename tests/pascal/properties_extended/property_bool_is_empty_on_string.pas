@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type TName=class private F:string; function GetEmpty:Boolean; public property Value:string read F write F; property IsEmpty:Boolean read GetEmpty; end; function TName.GetEmpty:Boolean; begin Result:=F=''; end; var n:TName; begin n:=TName.Create; __p(__vs(n.IsEmpty)); n.Value:='x'; __p(__vs(n.IsEmpty)); __vybeCheck('true' + #10 + 'false');
+end; type TName=class private F:string; function GetEmpty:Boolean; public property Value:string read F write F; property IsEmpty:Boolean read GetEmpty; end; function TName.GetEmpty:Boolean; begin Result:=F=''; end; var n:TName; begin n:=TName.Create; __p(__vs(n.IsEmpty)); n.Value:='x'; __p(__vs(n.IsEmpty)); __vybeCheck('True' + #10 + 'False');
 end.

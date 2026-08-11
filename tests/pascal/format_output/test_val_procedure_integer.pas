@@ -71,5 +71,5 @@ begin
   __p(__vs(code));
   Val('bad', n, code);
   __p(__vs(code > 0));
-__vybeCheck('123' + #10 + '0' + #10 + 'true');
+__vybeCheck('123' + #10 + '0' + #10 + 'True');
 end.

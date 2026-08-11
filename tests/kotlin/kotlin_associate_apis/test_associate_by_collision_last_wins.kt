@@ -31,5 +31,5 @@ fun main() {
             __p((map.size).toString())
             __p((map["k1"]).toString())
         
-__check("2\n2")
+__check("2\n(k1, 2)")
 }

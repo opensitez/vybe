@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type TCharHelper=record helper for Char function IsDigit:Boolean; end; function TCharHelper.IsDigit:Boolean; begin Result:=(Self>='0') and (Self<='9'); end; begin __p(__vs('7'.IsDigit)); __p(__vs('a'.IsDigit)); __vybeCheck('true' + #10 + 'false');
+end; type TCharHelper=record helper for Char function IsDigit:Boolean; end; function TCharHelper.IsDigit:Boolean; begin Result:=(Self>='0') and (Self<='9'); end; begin __p(__vs('7'.IsDigit)); __p(__vs('a'.IsDigit)); __vybeCheck('True' + #10 + 'False');
 end.

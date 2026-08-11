@@ -32,5 +32,5 @@ fun main() {
             __p((out[1]).toString())
             __p((out[2]).toString())
         
-__check("x\nbb!")
+__check("a!\nbb!")
 }

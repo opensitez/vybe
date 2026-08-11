@@ -26,7 +26,7 @@ void __vybeMain() {
   // Usually every OS has some form of PATH or Path
   final hasPath = env.containsKey('PATH') || env.containsKey('Path');
   // We'll just verify we can access keys
-  print(env.keys.isNotEmpty);
+  __p(env.keys.isNotEmpty);
 }
 
 void main() {

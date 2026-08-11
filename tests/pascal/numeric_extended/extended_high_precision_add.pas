@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; var e:Extended; begin e:=1.23456789; e:=e+0.00000001; __p(__vs(e>1.234567)); __vybeCheck('true');
+end; var e:Extended; begin e:=1.23456789; e:=e+0.00000001; __p(__vs(e>1.234567)); __vybeCheck('True');
 end.

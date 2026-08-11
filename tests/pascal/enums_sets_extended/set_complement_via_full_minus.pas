@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type TF=(A,B,C); var full,part,rest: set of TF; begin full:=[A,B,C]; part:=[B]; rest:=full-part; __p(__vs(A in rest)); __p(__vs(C in rest)); __vybeCheck('true' + #10 + 'true');
+end; type TF=(A,B,C); var full,part,rest: set of TF; begin full:=[A,B,C]; part:=[B]; rest:=full-part; __p(__vs(A in rest)); __p(__vs(C in rest)); __vybeCheck('True' + #10 + 'True');
 end.

@@ -21,10 +21,10 @@ void __check(String want) {
 }
 
 void __vybeMain() {
-  var s = {for (var i = 1; i <= 10; i++) i};
-  var d = s.difference(s);
-  __p(d.isEmpty);
-  __p(d.length);
+  var s = {for (var i = 1; i <= 5; i++) i};
+  var r = s.difference(s);
+  __p(r.isEmpty);
+  __p(r.length);
 }
 
 void main() {

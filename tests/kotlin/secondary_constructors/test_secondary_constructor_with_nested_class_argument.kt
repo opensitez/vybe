@@ -43,5 +43,5 @@ fun main() {
             __p((Host("root").name).toString())
             __p((Host(Host.Config(), "inner").name).toString())
         
-__check("true\nroot\ninner")
+__check("root\ntrue\ninner")
 }

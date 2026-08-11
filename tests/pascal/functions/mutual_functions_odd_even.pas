@@ -69,5 +69,5 @@ function IsOdd(n: Integer): Boolean; begin Result := (n <> 0) and IsEven(n - 1);
 begin
   __p(__vs(IsEven(4)));
   __p(__vs(IsOdd(4)));
-__vybeCheck('true' + #10 + 'false');
+__vybeCheck('True' + #10 + 'False');
 end.

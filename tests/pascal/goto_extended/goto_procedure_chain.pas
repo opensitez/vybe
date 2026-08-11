@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; label step2; procedure Step1; begin goto step2; end; begin Step1; __p(__vs('skip')); step2: __p(__vs('step2')); __vybeCheck('step2');
+end; procedure Step1; label step2; begin goto step2; __p(__vs('skip')); step2: __p(__vs('step2')); end; begin Step1; __vybeCheck('step2');
 end.

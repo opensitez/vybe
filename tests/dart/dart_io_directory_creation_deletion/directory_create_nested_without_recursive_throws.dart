@@ -22,11 +22,19 @@ void __check(String want) {
 
 import 'dart:io';
 void __vybeMain() {
+  final root = Directory('test_nested_1');
+  if (root.existsSync()) {
+    root.deleteSync(recursive: true);
+  }
   final dir = Directory('test_nested_1/test_nested_2');
   try {
     dir.createSync();
   } on FileSystemException {
     __p('FileSystemException thrown');
+  } finally {
+    if (root.existsSync()) {
+      root.deleteSync(recursive: true);
+    }
   }
 }
 

@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type TNum=class class function Even(n:Integer):Boolean; end; class function TNum.Even(n:Integer):Boolean; begin Result:=(n mod 2)=0; end; begin __p(__vs(TNum.Even(8))); __p(__vs(TNum.Even(7))); __vybeCheck('true' + #10 + 'false');
+end; type TNum=class class function Even(n:Integer):Boolean; end; class function TNum.Even(n:Integer):Boolean; begin Result:=(n mod 2)=0; end; begin __p(__vs(TNum.Even(8))); __p(__vs(TNum.Even(7))); __vybeCheck('True' + #10 + 'False');
 end.

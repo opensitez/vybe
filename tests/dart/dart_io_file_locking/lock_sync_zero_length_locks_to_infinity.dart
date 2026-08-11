@@ -30,7 +30,7 @@ void __vybeMain() {
   // Wait, Dart API doesn't mention special meaning for 0.
   // Let's just pass it and see it doesn't crash.
   raf.lockSync(FileLock.exclusive, 0, 0);
-  print('locked zero len');
+  __p('locked zero len');
   
   raf.closeSync();
   file.deleteSync();

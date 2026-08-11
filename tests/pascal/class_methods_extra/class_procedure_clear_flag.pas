@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type TFlag=class class var On:Boolean; class procedure Off; end; class var TFlag.On:Boolean; class procedure TFlag.Off; begin On:=false; end; begin TFlag.On:=true; TFlag.Off; __p(__vs(TFlag.On)); __vybeCheck('false');
+end; type TFlag=class class var On:Boolean; class procedure Off; end; class procedure TFlag.Off; begin On:=false; end; begin TFlag.On:=true; TFlag.Off; __p(__vs(TFlag.On)); __vybeCheck('False');
 end.

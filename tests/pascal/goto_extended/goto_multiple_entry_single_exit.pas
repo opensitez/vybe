@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; label exit; var r:Integer; begin r:=1; if r=1 then goto exit; if r=2 then goto exit; __p(__vs('nope')); exit: __p(__vs('exit')); __vybeCheck('exit');
+end; label exit_label; var r:Integer; begin r:=1; if r=1 then goto exit_label; if r=2 then goto exit_label; __p(__vs('nope')); exit_label: __p(__vs('exit')); __vybeCheck('exit');
 end.

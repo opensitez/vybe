@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; var s: set of Char; begin s := ['a'..'c']; __p(__vs('b' in s)); __vybeCheck('true');
+end; var s: set of Char; begin s := ['a'..'c']; __p(__vs('b' in s)); __vybeCheck('True');
 end.

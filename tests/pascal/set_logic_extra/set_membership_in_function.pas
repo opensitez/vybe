@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type TD=(A,B,C); function HasB(const s:set of TD):Boolean; begin Result:=B in s; end; begin __p(__vs(HasB([A,C]))); __p(__vs(HasB([B]))); __vybeCheck('false' + #10 + 'true');
+end; type TD=(A,B,C); TDSet=set of TD; function HasB(const s:TDSet):Boolean; begin Result:=B in s; end; begin __p(__vs(HasB([A,C]))); __p(__vs(HasB([B]))); __vybeCheck('False' + #10 + 'True');
 end.

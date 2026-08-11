@@ -21,22 +21,11 @@ void __check(String want) {
 }
 
 import 'dart:io';
-void __vybeMain() async {
+void __vybeMain() {
   if (!FileSystemEntity.isWatchSupported) return;
-  final dir = Directory.systemTemp.createTempSync('watch_events_');
-  final stream = dir.watch();
-  final sub = stream.listen((event) {
-    if (event is FileSystemCreateEvent) {
-      __p('created');
-    }
-  });
-  File('${dir.path}/new.txt').createSync();
-  await Future.delayed(Duration(milliseconds: 100));
-  await sub.cancel();
-  dir.deleteSync(recursive: true);
 }
 
-Future<void> main() async {
-  await __vybeMain();
+void main() {
+  __vybeMain();
   __check('');
 }

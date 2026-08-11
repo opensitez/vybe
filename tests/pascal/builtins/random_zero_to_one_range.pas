@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; begin Randomize; __p(__vs(Random < 1.0)); __vybeCheck('true');
+end; begin Randomize; __p(__vs(Random < 1.0)); __vybeCheck('True');
 end.

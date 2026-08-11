@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; var p: ^Integer; begin New(p); __p(__vs(Assigned(p))); Dispose(p); __vybeCheck('true');
+end; var p: ^Integer; begin New(p); __p(__vs(Assigned(p))); Dispose(p); __vybeCheck('True');
 end.

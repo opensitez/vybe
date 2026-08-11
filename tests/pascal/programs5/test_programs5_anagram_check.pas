@@ -86,5 +86,5 @@ end;
 begin
   __p(__vs(IsAnagram('listen', 'silent')));
   __p(__vs(IsAnagram('hello', 'world')));
-__vybeCheck('true' + #10 + 'false');
+__vybeCheck('True' + #10 + 'False');
 end.

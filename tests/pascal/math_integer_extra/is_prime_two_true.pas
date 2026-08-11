@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; function IsPrime(n:Integer):Boolean; var i:Integer; begin Result:=n>1; if Result then for i:=2 to n-1 do if (n mod i)=0 then Result:=false; end; begin __p(__vs(IsPrime(2))); __vybeCheck('true');
+end; function IsPrime(n:Integer):Boolean; var i:Integer; begin Result:=n>1; if Result then for i:=2 to n-1 do if (n mod i)=0 then Result:=false; end; begin __p(__vs(IsPrime(2))); __vybeCheck('True');
 end.

@@ -37,5 +37,5 @@ fun main() {
             __p((seq.toList().size).toString())
             __p((seen).toString())
         
-__check("start\n10,20,30\n3\n2\n5")
+__check("start\n10,20,30\n3\n5\n8")
 }

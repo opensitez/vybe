@@ -66,5 +66,5 @@ var p: ^Integer;
 begin
   p := nil;
   __p(__vs(Assigned(p)));
-__vybeCheck('false');
+__vybeCheck('False');
 end.

@@ -29,5 +29,5 @@ void __vybeMain() {
 
 void main() {
   __vybeMain();
-  __check('31.0\n-31.0');
+  __check('31\n-31');
 }

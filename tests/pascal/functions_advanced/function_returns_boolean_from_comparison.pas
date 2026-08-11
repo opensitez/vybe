@@ -67,5 +67,5 @@ begin Result := (n >= lo) and (n <= hi); end;
 begin
   __p(__vs(Between(5, 1, 10)));
   __p(__vs(Between(11, 1, 10)));
-__vybeCheck('true' + #10 + 'false');
+__vybeCheck('True' + #10 + 'False');
 end.

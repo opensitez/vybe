@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type TSign=class class function Pos(n:Integer):Boolean; end; class function TSign.Pos(n:Integer):Boolean; begin Result:=n>0; end; begin __p(__vs(TSign.Pos(1))); __p(__vs(TSign.Pos(0))); __vybeCheck('true' + #10 + 'false');
+end; type TSign=class class function Pos(n:Integer):Boolean; end; class function TSign.Pos(n:Integer):Boolean; begin Result:=n>0; end; begin __p(__vs(TSign.Pos(1))); __p(__vs(TSign.Pos(0))); __vybeCheck('True' + #10 + 'False');
 end.

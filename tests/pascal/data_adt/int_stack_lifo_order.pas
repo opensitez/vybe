@@ -115,5 +115,5 @@ begin
   __p(__vs(s.Pop));
   __p(__vs(s.IsEmpty));
   s.Free;
-__vybeCheck('3' + #10 + '15' + #10 + '15' + #10 + '10' + #10 + 'false');
+__vybeCheck('3' + #10 + '15' + #10 + '15' + #10 + '10' + #10 + 'False');
 end.

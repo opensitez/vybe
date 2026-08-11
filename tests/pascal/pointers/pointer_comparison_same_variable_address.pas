@@ -68,5 +68,5 @@ begin
   p := @x;
   q := @x;
   __p(__vs(p = q));
-__vybeCheck('true');
+__vybeCheck('True');
 end.

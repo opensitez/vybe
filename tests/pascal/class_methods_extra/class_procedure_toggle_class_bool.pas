@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type TToggle=class class var On:Boolean; class procedure Flip; end; class var TToggle.On:Boolean; class procedure TToggle.Flip; begin On:=not On; end; begin TToggle.On:=false; TToggle.Flip; __p(__vs(TToggle.On)); __vybeCheck('true');
+end; type TToggle=class class var On:Boolean; class procedure Flip; end; class procedure TToggle.Flip; begin On:=not On; end; begin TToggle.On:=false; TToggle.Flip; __p(__vs(TToggle.On)); __vybeCheck('True');
 end.

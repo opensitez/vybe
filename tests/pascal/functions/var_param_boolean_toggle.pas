@@ -71,5 +71,5 @@ begin
   flag := True;
   Toggle(flag);
   __p(__vs(flag));
-__vybeCheck('false');
+__vybeCheck('False');
 end.

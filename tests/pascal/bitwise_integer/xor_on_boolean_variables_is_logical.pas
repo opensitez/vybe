@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; var p, q: Boolean; begin p := True; q := False; __p(__vs(p xor q)); __vybeCheck('true');
+end; var p, q: Boolean; begin p := True; q := False; __p(__vs(p xor q)); __vybeCheck('True');
 end.

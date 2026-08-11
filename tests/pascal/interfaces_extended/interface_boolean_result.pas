@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type ICheck=interface function Ok(v:Integer):Boolean; end; TCheck=class(TInterfacedObject,ICheck) function Ok(v:Integer):Boolean; end; function TCheck.Ok(v:Integer):Boolean; begin Result:=v>0; end; var c:ICheck; begin c:=TCheck.Create; __p(__vs(c.Ok(1))); __p(__vs(c.Ok(-1))); __vybeCheck('true' + #10 + 'false');
+end; type ICheck=interface function Ok(v:Integer):Boolean; end; TCheck=class(TInterfacedObject,ICheck) function Ok(v:Integer):Boolean; end; function TCheck.Ok(v:Integer):Boolean; begin Result:=v>0; end; var c:ICheck; begin c:=TCheck.Create; __p(__vs(c.Ok(1))); __p(__vs(c.Ok(-1))); __vybeCheck('True' + #10 + 'False');
 end.

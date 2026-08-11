@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type TR=record Total:Int64; end; var r:TR; begin r.Total:=5000000000; __p(__vs(r.Total>4000000000)); __vybeCheck('true');
+end; type TR=record Total:Int64; end; var r:TR; begin r.Total:=5000000000; __p(__vs(r.Total>4000000000)); __vybeCheck('True');
 end.

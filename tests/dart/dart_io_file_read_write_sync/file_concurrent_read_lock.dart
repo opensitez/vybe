@@ -25,7 +25,7 @@ void __vybeMain() {
   final file = File('test_lock.txt');
   file.writeAsStringSync('locked');
   final raf = file.openSync(mode: FileMode.read);
-  raf.lockSync(FileLock.exclusive);
+  raf.lockSync(FileLock.shared);
   __p('Locked successfully');
   raf.closeSync();
   file.deleteSync();

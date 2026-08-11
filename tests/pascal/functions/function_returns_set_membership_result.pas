@@ -63,11 +63,12 @@ begin
   end;
 end;
 type TDigit = '0'..'9';
-function HasFive(const s: set of TDigit): Boolean;
+     TDigits = set of TDigit;
+function HasFive(const s: TDigits): Boolean;
 begin
   Result := '5' in s;
 end;
 begin
   __p(__vs(HasFive(['1', '5', '9'])));
-__vybeCheck('true');
+__vybeCheck('True');
 end.

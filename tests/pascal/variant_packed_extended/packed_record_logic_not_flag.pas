@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type TF=packed record On:Boolean; end; var f:TF; begin f.On:=true; f.On:=not f.On; __p(__vs(f.On)); __vybeCheck('false');
+end; type TF=packed record On:Boolean; end; var f:TF; begin f.On:=true; f.On:=not f.On; __p(__vs(f.On)); __vybeCheck('False');
 end.

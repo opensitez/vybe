@@ -70,5 +70,5 @@ begin
   __p(__vs(Identity<Integer>(42)));
   __p(__vs(Identity<String>('hello')));
   __p(__vs(Identity<Boolean>(True)));
-__vybeCheck('42' + #10 + 'hello' + #10 + 'true');
+__vybeCheck('42' + #10 + 'hello' + #10 + 'True');
 end.

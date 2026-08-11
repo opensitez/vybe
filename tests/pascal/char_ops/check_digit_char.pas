@@ -69,5 +69,5 @@ end;
 begin
   __p(__vs(IsDigit('5')));
   __p(__vs(IsDigit('x')));
-__vybeCheck('true' + #10 + 'false');
+__vybeCheck('True' + #10 + 'False');
 end.

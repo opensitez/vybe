@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; var c:Currency; begin c:=-5.50; __p(__vs(c<0)); __vybeCheck('true');
+end; var c:Currency; begin c:=-5.50; __p(__vs(c<0)); __vybeCheck('True');
 end.

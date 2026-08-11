@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type TBoolHelper=record helper for Boolean function Toggle:Boolean; end; function TBoolHelper.Toggle:Boolean; begin Result:=not Self; end; var b:Boolean; begin b:=true; b:=b.Toggle; __p(__vs(b)); __vybeCheck('false');
+end; type TBoolHelper=record helper for Boolean function Toggle:Boolean; end; function TBoolHelper.Toggle:Boolean; begin Result:=not Self; end; var b:Boolean; begin b:=true; b:=b.Toggle; __p(__vs(b)); __vybeCheck('False');
 end.

@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; var a,b:Integer; p,q:^Integer; begin a:=1; b:=1; p:=@a; q:=@b; __p(__vs(p<>q)); __vybeCheck('true');
+end; var a,b:Integer; p,q:^Integer; begin a:=1; b:=1; p:=@a; q:=@b; __p(__vs(p<>q)); __vybeCheck('True');
 end.

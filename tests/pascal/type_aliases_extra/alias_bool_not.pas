@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type TSwitch=Boolean; var s:TSwitch; begin s:=false; __p(__vs(not s)); __vybeCheck('true');
+end; type TSwitch=Boolean; var s:TSwitch; begin s:=false; __p(__vs(not s)); __vybeCheck('True');
 end.

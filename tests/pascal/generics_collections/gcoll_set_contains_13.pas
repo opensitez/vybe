@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type TSet<T>=class private F:array of T; public constructor Create; procedure Insert(v:T); function Contains(v:T):Boolean; end; constructor TSet<T>.Create; begin SetLength(F,0); end; procedure TSet<T>.Insert(v:T); var l:Integer; begin l:=Length(F); SetLength(F,l+1); F[l]:=v; end; function TSet<T>.Contains(v:T):Boolean; var j:Integer; begin Result:=false; for j:=0 to High(F) do if F[j]=v then Result:=true; end; var S:TSet<Integer>; begin S:=TSet<Integer>.Create; S.Insert(13); S.Insert(14); __p(__vs(S.Contains(13))); __p(__vs(S.Contains(112))); S.Free; __vybeCheck('true' + #10 + 'false');
+end; type TSet<T>=class private F:array of T; public constructor Create; procedure Insert(v:T); function Contains(v:T):Boolean; end; constructor TSet<T>.Create; begin SetLength(F,0); end; procedure TSet<T>.Insert(v:T); var l:Integer; begin l:=Length(F); SetLength(F,l+1); F[l]:=v; end; function TSet<T>.Contains(v:T):Boolean; var j:Integer; begin Result:=false; for j:=0 to High(F) do if F[j]=v then Result:=true; end; var S:TSet<Integer>; begin S:=TSet<Integer>.Create; S.Insert(13); S.Insert(14); __p(__vs(S.Contains(13))); __p(__vs(S.Contains(112))); S.Free; __vybeCheck('True' + #10 + 'False');
 end.

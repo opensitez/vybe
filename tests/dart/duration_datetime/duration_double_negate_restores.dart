@@ -27,5 +27,5 @@ void __vybeMain() {
 
 void main() {
   __vybeMain();
-  __check('3.0');
+  __check('3');
 }

@@ -67,7 +67,7 @@ type
   public
     X, Y: Real;
     class function Origin: TPoint;
-    class function Create(aX, aY: Real): TPoint;
+    class function Make(aX, aY: Real): TPoint;
   end;
 class function TPoint.Origin: TPoint;
 begin
@@ -75,7 +75,7 @@ begin
   Result.X := 0;
   Result.Y := 0;
 end;
-class function TPoint.Create(aX, aY: Real): TPoint;
+class function TPoint.Make(aX, aY: Real): TPoint;
 begin
   Result := TPoint.Create;
   Result.X := aX;
@@ -87,5 +87,5 @@ begin
   __p(__vs(p.X));
   __p(__vs(p.Y));
   p.Free;
-__vybeCheck('0' + #10 + '0');
+__vybeCheck('0.0000000000000000E+000' + #10 + '0.0000000000000000E+000');
 end.

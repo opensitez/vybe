@@ -82,5 +82,5 @@ begin
   TApp.Instance.FName := 'MyApp';
   __p(__vs(TApp.Instance.FName));
   __p(__vs(TApp.Instance = TApp.Instance));
-__vybeCheck('MyApp' + #10 + 'true');
+__vybeCheck('MyApp' + #10 + 'True');
 end.

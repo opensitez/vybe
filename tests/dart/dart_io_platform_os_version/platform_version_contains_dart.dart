@@ -24,7 +24,7 @@ import 'dart:io';
 void __vybeMain() {
   // Usually Platform.version looks like "3.1.0 (stable) ..."
   // We just check it's not null.
-  print(Platform.version != null);
+  __p(Platform.version != null);
 }
 
 void main() {

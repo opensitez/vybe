@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; var a: array[1..3] of Boolean; i: Integer; ok: Boolean; begin for i:=1 to 3 do a[i]:=true; ok:=a[1] and a[2] and a[3]; __p(__vs(ok)); __vybeCheck('true');
+end; var a: array[1..3] of Boolean; i: Integer; ok: Boolean; begin for i:=1 to 3 do a[i]:=true; ok:=a[1] and a[2] and a[3]; __p(__vs(ok)); __vybeCheck('True');
 end.

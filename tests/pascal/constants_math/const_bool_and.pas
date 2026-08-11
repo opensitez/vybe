@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; const T=True and False; begin __p(__vs(T)); __vybeCheck('false');
+end; const T=True and False; begin __p(__vs(T)); __vybeCheck('False');
 end.

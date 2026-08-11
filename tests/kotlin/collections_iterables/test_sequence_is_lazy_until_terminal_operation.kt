@@ -40,5 +40,5 @@ fun main() {
             __p((rest.joinToString(",")).toString())
             __p((called).toString())
         
-__check("0\n1\n2\n4,6\n3")
+__check("0\n1\n2\n2,4\n3")
 }

@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type TStrHelper=record helper for String function Starts(prefix:string):Boolean; end; function TStrHelper.Starts(prefix:string):Boolean; begin Result:=Copy(Self,1,Length(prefix))=prefix; end; var s:string; begin s:='hello'; __p(__vs(s.Starts('he'))); __p(__vs(s.Starts('zz'))); __vybeCheck('true' + #10 + 'false');
+end; type TStrHelper=record helper for String function Starts(prefix:string):Boolean; end; function TStrHelper.Starts(prefix:string):Boolean; begin Result:=Copy(Self,1,Length(prefix))=prefix; end; var s:string; begin s:='hello'; __p(__vs(s.Starts('he'))); __p(__vs(s.Starts('zz'))); __vybeCheck('True' + #10 + 'False');
 end.

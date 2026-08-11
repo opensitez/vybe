@@ -68,5 +68,5 @@ begin
   __p(__vs((x < y) and (y < z) and (x < z)));
   z := 3;
   __p(__vs((x < y) and (y < z) and (x < z)));
-__vybeCheck('true' + #10 + 'false');
+__vybeCheck('True' + #10 + 'False');
 end.

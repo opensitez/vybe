@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; var a:array[0..2] of Integer; p,q:^Integer; begin a[0]:=1; a[2]:=3; p:=@a[0]; q:=@a[2]; __p(__vs((q-p)>=0)); __vybeCheck('true');
+end; var a:array[0..2] of Integer; p,q:^Integer; begin a[0]:=1; a[2]:=3; p:=@a[0]; q:=@a[2]; __p(__vs((q-p)>=0)); __vybeCheck('True');
 end.

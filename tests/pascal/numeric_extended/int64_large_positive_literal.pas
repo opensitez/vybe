@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; var i:Int64; begin i:=9223372036854775807; __p(__vs(i>0)); __vybeCheck('true');
+end; var i:Int64; begin i:=9223372036854775807; __p(__vs(i>0)); __vybeCheck('True');
 end.

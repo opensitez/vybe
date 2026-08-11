@@ -31,5 +31,5 @@ fun main() {
             __p((out.keys.joinToString(",")).toString())
             __p((out[3]).toString())
         
-__check("3,\nt")
+__check("3\nt")
 }

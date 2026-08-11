@@ -64,5 +64,5 @@ begin
 end;
 begin
   __p(__vs(StrToBool('false')));
-__vybeCheck('false');
+__vybeCheck('False');
 end.

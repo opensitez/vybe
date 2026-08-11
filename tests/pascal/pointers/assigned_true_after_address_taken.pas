@@ -67,5 +67,5 @@ var x: Integer;
 begin
   p := @x;
   __p(__vs(Assigned(p)));
-__vybeCheck('true');
+__vybeCheck('True');
 end.

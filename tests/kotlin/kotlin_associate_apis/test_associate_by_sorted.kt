@@ -30,5 +30,5 @@ fun main() {
             val keys = map.keys.toList().sorted()
             __p((keys.joinToString(",")).toString())
         
-__check("3,4")
+__check("3")
 }

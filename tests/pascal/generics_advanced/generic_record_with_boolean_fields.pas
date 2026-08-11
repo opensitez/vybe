@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type TFlags<T>=record On,Off:T; end; var f:TFlags<Boolean>; begin f.On:=true; f.Off:=false; __p(__vs(f.On)); __p(__vs(f.Off)); __vybeCheck('true' + #10 + 'false');
+end; type TFlags<T>=record On,Off:T; end; var f:TFlags<Boolean>; begin f.On:=true; f.Off:=false; __p(__vs(f.On)); __p(__vs(f.Off)); __vybeCheck('True' + #10 + 'False');
 end.

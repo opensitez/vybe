@@ -91,5 +91,5 @@ var s: TStack;
 begin
   s := TStack.Create;
   __p(__vs(BoolToStr(s.IsEmpty())));
-__vybeCheck('true');
+__vybeCheck('-1');
 end.

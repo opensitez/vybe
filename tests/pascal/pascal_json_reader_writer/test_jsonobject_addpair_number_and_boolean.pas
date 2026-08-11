@@ -2,6 +2,7 @@
 // origin: languages/pascal/tests/pascal/test_pascal_json_reader_writer.rs
 program Test;
 {$mode delphi}
+uses SysUtils, System.JSON;
 // Vybe test harness — Pascal.
 //
 // Real Pascal: this compiles with `fpc` on its own, which is what lets an
@@ -61,7 +62,6 @@ begin
     Halt(1);
   end;
 end;
-uses System.JSON;
 var json: TJSONObject;
 begin
   json := TJSONObject.Create;

@@ -39,5 +39,5 @@ fun main() {
             __p((VarArgProbe("v", 1, 2, 3).text).toString())
             __p((VarArgProbe(4).text).toString())
         
-__check("v:1:2:3\nn:4:5")
+__check("v1:2:3\nn4:5")
 }

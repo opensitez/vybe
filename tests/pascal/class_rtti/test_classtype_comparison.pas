@@ -74,5 +74,5 @@ begin
   __p(__vs(f.ClassType = TFoo));
   __p(__vs(b.ClassType = TFoo));
   __p(__vs(b.ClassType = TBar));
-__vybeCheck('true' + #10 + 'false' + #10 + 'true');
+__vybeCheck('True' + #10 + 'False' + #10 + 'True');
 end.

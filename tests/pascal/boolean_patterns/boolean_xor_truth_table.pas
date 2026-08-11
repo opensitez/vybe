@@ -67,5 +67,5 @@ begin
   __p(__vs(False xor True));
   __p(__vs(True xor False));
   __p(__vs(True xor True));
-__vybeCheck('false' + #10 + 'true' + #10 + 'true' + #10 + 'false');
+__vybeCheck('False' + #10 + 'True' + #10 + 'True' + #10 + 'False');
 end.

@@ -25,10 +25,10 @@ void __vybeMain() {
   // Can't easily trigger signals in this test, but we can verify the stream is returned
   try {
     final stream = ProcessSignal.sighup.watch();
-    print(stream is Stream<ProcessSignal>);
+    __p(stream is Stream<ProcessSignal>);
   } catch (e) {
     // Windows might throw SignalException for unsupported signals
-    print('SignalException');
+    __p('SignalException');
   }
 }
 

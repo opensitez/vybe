@@ -12,7 +12,7 @@ class Counter {
                 this.value = v
             }
 
-            constructor(v: Int, inc: Int, dec: Int) : this(v, inc) {
+            constructor(v: Int, inc: Int, dec: Int) : this(v) {
                 this.value = this.value + inc - dec
             }
         }

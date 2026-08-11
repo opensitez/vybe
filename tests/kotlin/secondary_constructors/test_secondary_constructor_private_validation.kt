@@ -42,5 +42,5 @@ fun main() {
             __p((PositiveCounter(5, false).value).toString())
             __p((PositiveCounter(5, true).value).toString())
         
-__check("built\nbuilt\nbuilt\n0\n0\n5")
+__check("built\n0\nbuilt\n0\nbuilt\n5")
 }

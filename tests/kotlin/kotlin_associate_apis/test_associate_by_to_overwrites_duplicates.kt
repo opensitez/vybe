@@ -31,5 +31,5 @@ fun main() {
             __p((out.size).toString())
             __p((out[2]).toString())
         
-__check("2\nb")
+__check("2\nac")
 }

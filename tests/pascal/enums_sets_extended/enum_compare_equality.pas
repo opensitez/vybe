@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type TS=(On,Off); var a,b:TS; begin a:=On; b:=On; __p(__vs(a=b)); __vybeCheck('true');
+end; type TS=(On,Off); var a,b:TS; begin a:=On; b:=On; __p(__vs(a=b)); __vybeCheck('True');
 end.

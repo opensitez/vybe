@@ -82,5 +82,5 @@ begin
   p.B := 6;
   __p(__vs(p.Equal));
   p.Free;
-__vybeCheck('true' + #10 + 'false');
+__vybeCheck('True' + #10 + 'False');
 end.

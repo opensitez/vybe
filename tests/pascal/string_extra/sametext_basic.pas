@@ -65,5 +65,5 @@ end;
 begin
   __p(__vs(SameText('ABC', 'abc')));
   __p(__vs(SameText('abc', 'xyz')));
-__vybeCheck('true' + #10 + 'false');
+__vybeCheck('True' + #10 + 'False');
 end.

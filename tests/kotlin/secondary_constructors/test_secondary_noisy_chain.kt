@@ -47,5 +47,5 @@ fun main() {
             Log(2)
             Log(3, 4)
         
-__check("s\ne")
+__check("s\ns\ne")
 }

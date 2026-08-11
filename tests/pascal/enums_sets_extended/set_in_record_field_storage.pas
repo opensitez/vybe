@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type TF=(Read,Write); type TMode=record Flags: set of TF; end; var m:TMode; begin m.Flags:=[Read,Write]; __p(__vs(Write in m.Flags)); __vybeCheck('true');
+end; type TF=(Read,Write); type TMode=record Flags: set of TF; end; var m:TMode; begin m.Flags:=[Read,Write]; __p(__vs(Write in m.Flags)); __vybeCheck('True');
 end.

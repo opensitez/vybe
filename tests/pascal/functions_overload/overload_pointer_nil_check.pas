@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; function Ok(p:Pointer):Boolean; overload; begin Result:=p=nil; end; function Ok(n:Integer):Boolean; overload; begin Result:=n=0; end; begin __p(__vs(Ok(nil))); __p(__vs(Ok(1))); __vybeCheck('true' + #10 + 'false');
+end; function Ok(p:Pointer):Boolean; overload; begin Result:=p=nil; end; function Ok(n:Integer):Boolean; overload; begin Result:=n=0; end; begin __p(__vs(Ok(nil))); __p(__vs(Ok(1))); __vybeCheck('True' + #10 + 'False');
 end.

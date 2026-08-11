@@ -33,9 +33,9 @@ void __vybeMain() {
     raf2.lockSync(FileLock.blockingExclusive);
     // Since we're in the same isolate/process in testing, behaviour might vary
     // Typically it would block or throw if we try non-blocking
-    print('blocking...');
+    __p('blocking...');
   } catch (e) {
-    print('error');
+    __p('error');
   } finally {
     raf1.closeSync();
     raf2.closeSync();

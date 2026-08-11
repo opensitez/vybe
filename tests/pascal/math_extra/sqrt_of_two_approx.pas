@@ -65,5 +65,5 @@ end;
 begin
   __p(__vs(Sqrt(2.0) > 1.4));
   __p(__vs(Sqrt(2.0) < 1.5));
-__vybeCheck('true' + #10 + 'true');
+__vybeCheck('True' + #10 + 'True');
 end.

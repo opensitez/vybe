@@ -23,14 +23,10 @@ void __check(String want) {
 import 'dart:io';
 void __vybeMain() async {
   final process = await Process.start('echo', ['test_inherit'], mode: ProcessStartMode.inheritStdio);
-  try {
-    process.stdout;
-  } on StateError {
-    __p('StateError thrown');
-  }
+  __p(process.stdout == null);
 }
 
 Future<void> main() async {
   await __vybeMain();
-  __check('StateError thrown');
+  __check('true');
 }

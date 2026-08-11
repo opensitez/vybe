@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type TPar=class private FN:Integer; function GetOdd:Boolean; public property N:Integer read FN write FN; property IsOdd:Boolean read GetOdd; end; function TPar.GetOdd:Boolean; begin Result:=FN mod 2<>0; end; var p:TPar; begin p:=TPar.Create; p.N:=5; __p(__vs(p.IsOdd)); p.N:=6; __p(__vs(p.IsOdd)); __vybeCheck('true' + #10 + 'false');
+end; type TPar=class private FN:Integer; function GetOdd:Boolean; public property N:Integer read FN write FN; property IsOdd:Boolean read GetOdd; end; function TPar.GetOdd:Boolean; begin Result:=FN mod 2<>0; end; var p:TPar; begin p:=TPar.Create; p.N:=5; __p(__vs(p.IsOdd)); p.N:=6; __p(__vs(p.IsOdd)); __vybeCheck('True' + #10 + 'False');
 end.

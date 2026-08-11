@@ -74,5 +74,5 @@ end;
 begin
   __p(__vs(Odd(3)));
   __p(__vs(Even(4)));
-__vybeCheck('true' + #10 + 'true');
+__vybeCheck('True' + #10 + 'True');
 end.

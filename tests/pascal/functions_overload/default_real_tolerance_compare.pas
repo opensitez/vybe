@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; function Near(a,b:Real; eps:Real=0.01):Boolean; begin Result:=Abs(a-b)<=eps; end; begin __p(__vs(Near(1.0,1.005))); __p(__vs(Near(1.0,1.1,0.05))); __vybeCheck('true' + #10 + 'false');
+end; function Near(a,b:Real; eps:Real=0.01):Boolean; begin Result:=Abs(a-b)<=eps; end; begin __p(__vs(Near(1.0,1.005))); __p(__vs(Near(1.0,1.1,0.05))); __vybeCheck('True' + #10 + 'False');
 end.

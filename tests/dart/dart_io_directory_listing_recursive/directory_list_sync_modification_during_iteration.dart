@@ -29,7 +29,7 @@ void __vybeMain() {
   // listSync returns a list, so modification doesn't affect the already-returned list
   final items = dir.listSync();
   File('${dir.path}/2.txt').createSync();
-  print(items.length);
+  __p(items.length);
   dir.deleteSync(recursive: true);
 }
 

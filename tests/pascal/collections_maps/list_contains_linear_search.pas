@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; function Contains(const a:array of Integer; v:Integer):Boolean; var i:Integer; begin Result:=false; for i:=Low(a) to High(a) do if a[i]=v then Result:=true; end; begin __p(__vs(Contains([1,3,5],3))); __p(__vs(Contains([1,3,5],9))); __vybeCheck('true' + #10 + 'false');
+end; function Contains(const a:array of Integer; v:Integer):Boolean; var i:Integer; begin Result:=false; for i:=Low(a) to High(a) do if a[i]=v then Result:=true; end; begin __p(__vs(Contains([1,3,5],3))); __p(__vs(Contains([1,3,5],9))); __vybeCheck('True' + #10 + 'False');
 end.

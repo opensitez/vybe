@@ -25,7 +25,7 @@ void __vybeMain() {
   // On Windows environment keys are case-insensitive, on Unix they are sensitive.
   // We'll just verify the map respects standard Dart map semantics.
   final env = Platform.environment;
-  print(env.containsKey('NO_SUCH_KEY_123') == false);
+  __p(env.containsKey('NO_SUCH_KEY_123') == false);
 }
 
 void main() {

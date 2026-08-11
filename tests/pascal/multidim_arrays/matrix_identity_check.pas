@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; var m: array[1..2,1..2] of Integer; r,c: Integer; ok: Boolean; begin for r:=1 to 2 do for c:=1 to 2 do if r=c then m[r,c]:=1 else m[r,c]:=0; ok:=(m[1,1]=1) and (m[2,2]=1) and (m[1,2]=0); __p(__vs(ok)); __vybeCheck('true');
+end; var m: array[1..2,1..2] of Integer; r,c: Integer; ok: Boolean; begin for r:=1 to 2 do for c:=1 to 2 do if r=c then m[r,c]:=1 else m[r,c]:=0; ok:=(m[1,1]=1) and (m[2,2]=1) and (m[1,2]=0); __p(__vs(ok)); __vybeCheck('True');
 end.

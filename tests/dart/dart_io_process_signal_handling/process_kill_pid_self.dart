@@ -23,7 +23,7 @@ void __check(String want) {
 import 'dart:io';
 void __vybeMain() {
   // We shouldn't actually kill the VM during test
-  print('safe');
+  __p('safe');
 }
 
 void main() {

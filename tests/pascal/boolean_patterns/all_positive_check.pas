@@ -77,5 +77,5 @@ begin
   for i := 0 to 3 do
     if arr[i] <= 0 then allPos := False;
   __p(__vs(allPos));
-__vybeCheck('true' + #10 + 'false');
+__vybeCheck('True' + #10 + 'False');
 end.

@@ -29,7 +29,7 @@ fun main() {
             val file = java.io.File(java.lang.System.getProperty("java.io.tmpdir") + "/vybe_io_name_" + System.nanoTime() + ".txt")
             file.writeText("x")
             __p((file.path.contains(file.name)).toString())
-            __p((file.absoluteFile.name).toString())
+            __p((file.absoluteFile.name == file.name).toString())
             __p((file.toPath().fileName.toString().endsWith(".txt")).toString())
             file.delete()
         

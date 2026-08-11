@@ -62,12 +62,10 @@ begin
     Halt(1);
   end;
 end;
-function MyAbs(v: Integer): Integer; overload;
-function MyAbs(v: Double): Double; overload;
-function MyAbs(v: Integer): Integer; begin Result := Abs(v); end;
-function MyAbs(v: Double): Double; begin Result := Abs(v); end;
+function MyAbs(v: Integer): Integer; overload; begin Result := Abs(v); end;
+function MyAbs(v: Double): Double; overload; begin Result := Abs(v); end;
 begin
   __p(__vs(MyAbs(-7)));
   __p(__vs(MyAbs(-2.5) > 2.0));
-__vybeCheck('7' + #10 + 'true');
+__vybeCheck('7' + #10 + 'True');
 end.

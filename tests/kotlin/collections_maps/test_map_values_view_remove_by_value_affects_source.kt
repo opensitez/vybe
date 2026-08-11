@@ -32,5 +32,5 @@ fun main() {
             __p((source.size).toString())
             __p((source["c"] ?: -1).toString())
         
-__check("true\n2\n-1")
+__check("true\n2\n2")
 }

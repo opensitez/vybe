@@ -73,5 +73,5 @@ begin
   isPaused := False;
   isDone := True;
   __p(__vs(isRunning and not isPaused and not isDone));
-__vybeCheck('true' + #10 + 'false' + #10 + 'false');
+__vybeCheck('True' + #10 + 'False' + #10 + 'False');
 end.

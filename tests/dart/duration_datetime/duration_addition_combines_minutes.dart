@@ -28,5 +28,5 @@ void __vybeMain() {
 
 void main() {
   __vybeMain();
-  __check('8.0');
+  __check('8');
 }

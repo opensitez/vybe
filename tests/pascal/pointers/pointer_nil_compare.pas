@@ -72,5 +72,5 @@ begin
   p2 := @x;
   __p(__vs(p1 = nil));
   __p(__vs(p2 = nil));
-__vybeCheck('true' + #10 + 'false');
+__vybeCheck('True' + #10 + 'False');
 end.

@@ -97,5 +97,5 @@ begin
   __p(__vs(lst.Contains(20)));
   __p(__vs(lst.Contains(99)));
   lst.Free;
-__vybeCheck('true' + #10 + 'false');
+__vybeCheck('True' + #10 + 'False');
 end.

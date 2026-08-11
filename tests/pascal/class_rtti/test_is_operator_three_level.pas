@@ -73,5 +73,5 @@ begin
   __p(__vs(obj is TL1));
   __p(__vs(obj is TL2));
   __p(__vs(obj is TL3));
-__vybeCheck('true' + #10 + 'true' + #10 + 'true');
+__vybeCheck('True' + #10 + 'True' + #10 + 'True');
 end.

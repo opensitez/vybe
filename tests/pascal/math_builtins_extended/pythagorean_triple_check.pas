@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; begin __p(__vs(Sqr(3)+Sqr(4)=Sqr(5))); __vybeCheck('true');
+end; begin __p(__vs(Sqr(3)+Sqr(4)=Sqr(5))); __vybeCheck('True');
 end.

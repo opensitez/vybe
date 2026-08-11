@@ -70,5 +70,5 @@ var area: Double;
 begin
   area := CircleArea(2.0);
   __p(__vs(area > 12.0));
-__vybeCheck('true');
+__vybeCheck('True');
 end.

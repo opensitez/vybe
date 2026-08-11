@@ -32,5 +32,5 @@ fun main() {
             __p((out[5]).toString())
             __p((out.size).toString())
         
-__check("bee\n2")
+__check("alpha\n3")
 }

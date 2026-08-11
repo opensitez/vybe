@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; label top; var n:Integer; begin n:=0; top: Inc(n); if n mod 2=0 then if n<5 then goto top; __p(__vs(n)); __vybeCheck('5');
+end; label top; var n:Integer; begin n:=0; top: Inc(n); if (n mod 2=0) or (n<5) then goto top; __p(__vs(n)); __vybeCheck('5');
 end.

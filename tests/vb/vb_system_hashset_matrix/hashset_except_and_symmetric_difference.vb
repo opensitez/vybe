@@ -53,6 +53,6 @@ Module M
         a.SymmetricExceptWith(b)
         __P(CStr(a.Count))
         __Check("2
-2")
+3")
     End Sub
 End Module

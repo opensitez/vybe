@@ -49,5 +49,5 @@ fun main() {
             __p((SequenceTracker(3).value).toString())
             __p((SequenceTracker(3, 4).value).toString())
         
-__check("base\n0\nfromStart\n3\nfromStep\n7")
+__check("base\n0\nbase\nfromStart\n3\nbase\nfromStart\nfromStep\n7")
 }

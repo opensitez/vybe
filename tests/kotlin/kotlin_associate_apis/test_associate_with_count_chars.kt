@@ -32,5 +32,5 @@ fun main() {
             __p((map.size).toString())
             __p((total).toString())
         
-__check("4\n7")
+__check("4\n6")
 }

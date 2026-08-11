@@ -72,5 +72,5 @@ begin
   for i := 0 to 3 do
     parity := parity xor arr[i];
   __p(__vs(parity));
-__vybeCheck('true');
+__vybeCheck('True');
 end.

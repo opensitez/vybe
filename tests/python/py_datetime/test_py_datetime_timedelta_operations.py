@@ -75,4 +75,4 @@ td2 = timedelta(hours=6)
 __p(__line((td1 + td2).total_seconds()))
 __p(__line(td1.days))
 __p(__line(td1.seconds))  # only the time portion in seconds
-__check(__buf, "84600.0\n2\n12600")
+__check(__buf, "207000.0\n2\n12600")

@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type TSing<T>=class public class var Inst:TSing<T>; class function Get:TSing<T>; end; class var TSing<Integer>.Inst:TSing<Integer>; class function TSing<T>.Get:TSing<T>; begin if Inst=nil then Inst:=TSing<T>.Create; Result:=Inst; end; var s:TSing<Integer>; begin s:=TSing<Integer>.Get; __p(__vs(s<>nil)); s.Free; TSing<Integer>.Inst:=nil; __vybeCheck('true');
+end; type TSing<T>=class public class var Inst:TSing<T>; class function Get:TSing<T>; end; class function TSing<T>.Get:TSing<T>; begin if Inst=nil then Inst:=TSing<T>.Create; Result:=Inst; end; var s:TSing<Integer>; begin s:=TSing<Integer>.Get; __p(__vs(s<>nil)); s.Free; __vybeCheck('True');
 end.

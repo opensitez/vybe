@@ -32,7 +32,7 @@ void __vybeMain() {
     raf.lockSync(FileLock.exclusive);
     __p('locked'); // shouldn't happen on strict OS, but may on some.
   } on FileSystemException {
-    print('FileSystemException thrown');
+    __p('FileSystemException thrown');
   } finally {
     raf.closeSync();
     file.deleteSync();

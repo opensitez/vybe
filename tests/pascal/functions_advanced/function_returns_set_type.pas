@@ -63,11 +63,12 @@ begin
   end;
 end;
 type TD = '0'..'9';
-function Digits: set of TD;
+     TDSet = set of TD;
+function Digits: TDSet;
 begin Result := ['1', '3', '5']; end;
-var s: set of TD;
+var s: TDSet;
 begin
   s := Digits;
   __p(__vs('3' in s));
-__vybeCheck('true');
+__vybeCheck('True');
 end.

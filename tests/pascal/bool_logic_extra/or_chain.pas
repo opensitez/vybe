@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; begin __p(__vs((1>2) or (3>4) or (5<6))); __vybeCheck('true');
+end; begin __p(__vs((1>2) or (3>4) or (5<6))); __vybeCheck('True');
 end.

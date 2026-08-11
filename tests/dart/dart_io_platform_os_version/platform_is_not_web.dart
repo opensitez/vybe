@@ -24,7 +24,7 @@ import 'dart:io';
 void __vybeMain() {
   // If dart:io is available, we are definitely not on the web.
   // We can't directly check isWeb from dart:io, but this confirms we compiled dart:io.
-  print('dart_io_loaded');
+  __p('dart_io_loaded');
 }
 
 void main() {

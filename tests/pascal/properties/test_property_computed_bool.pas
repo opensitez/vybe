@@ -85,5 +85,5 @@ begin
   __p(__vs(acc.IsPositive));
   acc.Balance := -50;
   __p(__vs(acc.IsPositive));
-__vybeCheck('true' + #10 + 'false');
+__vybeCheck('True' + #10 + 'False');
 end.

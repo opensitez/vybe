@@ -81,5 +81,5 @@ begin
   __p(__vs(c.Area > 78.0));
   __p(__vs(c.Area < 79.0));
   c.Free;
-__vybeCheck('true' + #10 + 'true');
+__vybeCheck('True' + #10 + 'True');
 end.

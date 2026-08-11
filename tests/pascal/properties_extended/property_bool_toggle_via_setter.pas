@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type TSwitch=class private F:Boolean; procedure Flip; public property On:Boolean read F; procedure Toggle; begin Flip; end; end; procedure TSwitch.Flip; begin F:=not F; end; var s:TSwitch; begin s:=TSwitch.Create; __p(__vs(s.On)); s.Toggle; __p(__vs(s.On)); __vybeCheck('false' + #10 + 'true');
+end; type TSwitch=class private F:Boolean; procedure Flip; public property IsOn:Boolean read F; procedure Toggle; end; procedure TSwitch.Flip; begin F:=not F; end; procedure TSwitch.Toggle; begin Flip; end; var s:TSwitch; begin s:=TSwitch.Create; __p(__vs(s.IsOn)); s.Toggle; __p(__vs(s.IsOn)); __vybeCheck('False' + #10 + 'True');
 end.

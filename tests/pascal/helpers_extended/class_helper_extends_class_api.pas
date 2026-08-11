@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type TList=class public Count:Integer; end; TListHelper=class helper for TList function IsEmpty:Boolean; end; function TListHelper.IsEmpty:Boolean; begin Result:=Count=0; end; var L:TList; begin L:=TList.Create; __p(__vs(L.IsEmpty)); L.Count:=1; __p(__vs(L.IsEmpty)); L.Free; __vybeCheck('true' + #10 + 'false');
+end; type TList=class public Count:Integer; end; TListHelper=class helper for TList function IsEmpty:Boolean; end; function TListHelper.IsEmpty:Boolean; begin Result:=Count=0; end; var L:TList; begin L:=TList.Create; __p(__vs(L.IsEmpty)); L.Count:=1; __p(__vs(L.IsEmpty)); L.Free; __vybeCheck('True' + #10 + 'False');
 end.

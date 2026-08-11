@@ -29,7 +29,7 @@ void __vybeMain() {
   
   // Resolving on the link gives the file's absolute path
   final resolved = link.resolveSymbolicLinksSync();
-  print(resolved == file.absolute.path);
+  __p(resolved == file.absolute.path);
   
   link.deleteSync();
   file.deleteSync();

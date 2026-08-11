@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; begin __p(__vs(BoolToStr(true, true))); __p(__vs(BoolToStr(false, true))); __vybeCheck('true' + #10 + 'false');
+end; begin __p(__vs(BoolToStr(true, true))); __p(__vs(BoolToStr(false, true))); __vybeCheck('True' + #10 + 'False');
 end.

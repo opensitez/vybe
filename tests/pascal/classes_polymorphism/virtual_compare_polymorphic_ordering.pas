@@ -67,5 +67,5 @@ THigh = class(TOrdered) public function Key: Integer; override; end;
 function TOrdered.Key: Integer; begin Result := 1; end;
 function THigh.Key: Integer; begin Result := 99; end;
 var o: TOrdered;
-begin o := THigh.Create; __p(__vs(o.Key > 10)); o.Free; __vybeCheck('true');
+begin o := THigh.Create; __p(__vs(o.Key > 10)); o.Free; __vybeCheck('True');
 end.

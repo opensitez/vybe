@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type TFlag=Boolean; var v:TFlag; begin v:=true; __p(__vs(v)); __vybeCheck('true');
+end; type TFlag=Boolean; var v:TFlag; begin v:=true; __p(__vs(v)); __vybeCheck('True');
 end.

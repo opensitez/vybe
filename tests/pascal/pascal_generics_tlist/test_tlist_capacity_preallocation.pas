@@ -2,6 +2,7 @@
 // origin: languages/pascal/tests/pascal/test_pascal_generics_tlist.rs
 program Test;
 {$mode delphi}
+uses SysUtils, Generics.Collections;
 // Vybe test harness — Pascal.
 //
 // Real Pascal: this compiles with `fpc` on its own, which is what lets an
@@ -61,12 +62,11 @@ begin
     Halt(1);
   end;
 end;
-uses Generics.Collections;
 var list: TList<Integer>;
 begin
   list := TList<Integer>.Create;
   list.Capacity := 100;
   __p(__vs(list.Capacity >= 100));
   list.Free;
-__vybeCheck('true');
+__vybeCheck('True');
 end.

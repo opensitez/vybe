@@ -77,5 +77,5 @@ begin
     end;
   __p(__vs(arr[0] <= pivot));
   __p(__vs(arr[5] >= pivot));
-__vybeCheck('true' + #10 + 'true');
+__vybeCheck('True' + #10 + 'True');
 end.

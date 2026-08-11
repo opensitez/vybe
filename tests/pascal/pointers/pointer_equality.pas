@@ -76,5 +76,5 @@ begin
   p3 := @y;
   __p(__vs(p1 = p2));
   __p(__vs(p1 = p3));
-__vybeCheck('true' + #10 + 'false');
+__vybeCheck('True' + #10 + 'False');
 end.

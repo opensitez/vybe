@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type TEv=procedure; var raised:Boolean; p:TEv; begin raised:=false; p:=procedure begin raised:=true; end; p; __p(__vs(raised)); __vybeCheck('true');
+end; type TEv=procedure; var raised:Boolean; p:TEv; begin raised:=false; p:=procedure begin raised:=true; end; p; __p(__vs(raised)); __vybeCheck('True');
 end.

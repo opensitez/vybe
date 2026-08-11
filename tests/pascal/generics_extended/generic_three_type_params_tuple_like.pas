@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; type TTrip<A,B,C>=record X:A; Y:B; Z:C; end; var t:TTrip<Integer,String,Boolean>; begin t.X:=1; t.Y:='y'; t.Z:=true; __p(__vs(t.X)); __p(__vs(t.Y)); __p(__vs(t.Z)); __vybeCheck('1' + #10 + 'y' + #10 + 'true');
+end; type TTrip<A,B,C>=record X:A; Y:B; Z:C; end; var t:TTrip<Integer,String,Boolean>; begin t.X:=1; t.Y:='y'; t.Z:=true; __p(__vs(t.X)); __p(__vs(t.Y)); __p(__vs(t.Z)); __vybeCheck('1' + #10 + 'y' + #10 + 'True');
 end.

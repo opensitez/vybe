@@ -68,5 +68,5 @@ begin
   b := False;
   __p(__vs(not (a or b)));
   __p(__vs((not a) and (not b)));
-__vybeCheck('true' + #10 + 'true');
+__vybeCheck('True' + #10 + 'True');
 end.

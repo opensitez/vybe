@@ -95,5 +95,5 @@ begin
   __p(__vs(box.IsZero));
   __p(__vs(box.GetValue));
   box.Free;
-__vybeCheck('true' + #10 + 'false' + #10 + '5');
+__vybeCheck('True' + #10 + 'False' + #10 + '5');
 end.

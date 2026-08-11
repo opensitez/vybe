@@ -71,5 +71,5 @@ begin
     flags[i] := not flags[i];
   for i := 0 to 2 do
     __p(__vs(flags[i]));
-__vybeCheck('false' + #10 + 'true' + #10 + 'false');
+__vybeCheck('False' + #10 + 'True' + #10 + 'False');
 end.

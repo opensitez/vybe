@@ -26,7 +26,7 @@ fun __check(want: String) {
 }
 
 fun main() {
-            val pick = String?.orEmpty
+            val pick = (String?)::orEmpty
             __p((pick(null)).toString())
             __p((pick("x")).toString())
         

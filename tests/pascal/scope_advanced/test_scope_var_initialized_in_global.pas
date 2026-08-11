@@ -71,5 +71,5 @@ begin
   __p(__vs(count));
   count := count + 1;
   __p(__vs(count));
-__vybeCheck('true' + #10 + '0' + #10 + '1');
+__vybeCheck('True' + #10 + '0' + #10 + '1');
 end.

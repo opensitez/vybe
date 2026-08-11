@@ -69,5 +69,5 @@ end;
 begin
   __p(__vs(IsEven(8)));
   __p(__vs(IsEven(9)));
-__vybeCheck('true' + #10 + 'false');
+__vybeCheck('True' + #10 + 'False');
 end.

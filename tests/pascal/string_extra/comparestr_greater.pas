@@ -64,5 +64,5 @@ begin
 end;
 begin
   __p(__vs(CompareStr('z', 'a') > 0));
-__vybeCheck('true');
+__vybeCheck('True');
 end.

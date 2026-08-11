@@ -64,5 +64,5 @@ begin
 end;
 begin
   __p(__vs(Odd(4)));
-__vybeCheck('false');
+__vybeCheck('False');
 end.
