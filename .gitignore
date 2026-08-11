@@ -1,11 +1,11 @@
 # Rust
 target/
-Cargo.lock
 snapshot_cache
 
 # IDE
 .vscode/
 .idea/
+.github
 *.swp
 *.swo
 *~
@@ -18,3 +18,7 @@ temp
 data
 # Project files
 *.vbp.user
+.claude
+tmp
+results
+.agents
