@@ -5566,6 +5566,7 @@ dependencies = [
  "vybe_compiler",
  "vybe_platform_plib",
  "vybe_platform_vybe",
+ "vybe_platform_web",
  "vybe_runtime",
 ]
 
@@ -5580,6 +5581,20 @@ dependencies = [
  "vybe_ast",
  "vybe_compiler",
  "vybe_language_c",
+ "vybe_platform_vybe",
+ "vybe_runtime",
+]
+
+[[package]]
+name = "vybe_language_powershell"
+version = "0.6.0"
+dependencies = [
+ "inventory",
+ "pest",
+ "pest_derive",
+ "vybe_ast",
+ "vybe_compiler",
+ "vybe_platform_dotnet",
  "vybe_platform_vybe",
  "vybe_runtime",
 ]
@@ -5696,6 +5711,7 @@ name = "vybe_platform_jvm"
 version = "0.6.0"
 dependencies = [
  "inventory",
+ "vybe_ast",
  "vybe_compiler",
  "vybe_runtime",
 ]
@@ -5726,6 +5742,7 @@ dependencies = [
  "sha2 0.10.9",
  "url",
  "vybe_compiler",
+ "vybe_platform_ecma",
  "vybe_platform_wasi",
  "vybe_runtime",
 ]
@@ -5746,6 +5763,8 @@ version = "0.6.0"
 dependencies = [
  "inventory",
  "vybe_compiler",
+ "vybe_platform_ecma",
+ "vybe_platform_web",
  "vybe_runtime",
  "vybe_widgets",
 ]
@@ -5768,6 +5787,7 @@ dependencies = [
  "sha3",
  "socket2 0.5.10",
  "vybe_compiler",
+ "vybe_platform_ecma",
  "vybe_runtime",
 ]
 
@@ -5791,6 +5811,7 @@ dependencies = [
  "url",
  "vybe_platform_ecma",
  "vybe_runtime",
+ "vybe_widgets",
 ]
 
 [[package]]
@@ -5850,6 +5871,7 @@ dependencies = [
  "vybe_language_lua",
  "vybe_language_pascal",
  "vybe_language_php",
+ "vybe_language_powershell",
  "vybe_language_python",
  "vybe_language_ruby",
  "vybe_language_vb",

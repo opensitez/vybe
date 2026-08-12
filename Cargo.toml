@@ -24,6 +24,7 @@ members = [
     "languages/lua",
     "languages/go",
     "languages/kotlin",
+    "languages/powershell",
     "platforms/dotnet",
     "platforms/ecma",
     "platforms/flutter",
@@ -141,6 +142,7 @@ vybe_language_wast = { path = "languages/wast" }
 vybe_language_lua = { path = "languages/lua" }
 vybe_language_go = { path = "languages/go" }
 vybe_language_kotlin = { path = "languages/kotlin" }
+vybe_language_powershell = { path = "languages/powershell" }
 vybe_platform_wasm = { path = "platforms/wasm" }
 vybe_platform_ecma = { path = "platforms/ecma" }
 vybe_platform_web = { path = "platforms/web" }
