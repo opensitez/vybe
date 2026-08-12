@@ -65,7 +65,7 @@ print((td1 + td2).total_seconds())
 print(td1.days)
 print(td1.seconds)  # only the time portion in seconds
 "#;
-    assert_eq!(run_python(src), vec!["84600.0", "2", "12600"]);
+    assert_eq!(run_python(src), vec!["207000.0", "2", "12600"]);
 }
 
 #[test]

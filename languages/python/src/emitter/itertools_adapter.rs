@@ -207,7 +207,7 @@ fn emit_pred_filter(chunks: &mut [Chunk], current: usize, spec: Filter, line: u3
     chunk.emit_op_u16(Op::LOCAL_GET, xs, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i, line);
     chunk.emit_op(Op::ARRAY_GET, line);
-    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, p, line);
 
@@ -522,25 +522,39 @@ pub fn emit_cycle(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
 /// `itertools.islice(iterable, stop)` / `(iterable, start, stop[, step])`.
 /// Stack: `[data, …]` → `[array]`.
 pub fn emit_islice(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    let chunk = &mut chunks[current];
-    let b = chunk.alloc_scratch(1);
-    let a = chunk.alloc_scratch(1);
-    let data = chunk.alloc_scratch(1);
+    let b = chunks[current].alloc_scratch(1);
+    let a = chunks[current].alloc_scratch(1);
+    let data = chunks[current].alloc_scratch(1);
     if argc >= 3 {
-        chunk.emit_op_u16(Op::LOCAL_SET, b, line);
-        chunk.emit_op_u16(Op::LOCAL_SET, a, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, b, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, a, line);
     } else {
         // islice(it, stop) — one bound, which is the stop.
-        chunk.emit_op_u16(Op::LOCAL_SET, b, line);
-        core_wasm::i32_const(chunk, line, 0);
-        chunk.emit_op_u16(Op::LOCAL_SET, a, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, b, line);
+        core_wasm::i32_const(&mut chunks[current], line, 0);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, a, line);
     }
-    chunk.emit_op_u16(Op::LOCAL_SET, data, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, data, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, a, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, b, line);
-    let slice = chunk.add_import("ecma:array", "slice");
-    chunk.emit_call(slice, 3, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, data, line);
+
+    // Generator continuations are not arrays, and host `Array.slice` cannot
+    // resume them. Keep this on the shared WASM generator primitive: for the
+    // common bounded form `islice(gen, stop)`, take exactly `stop` yielded
+    // values without draining an infinite generator.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, data, line);
+    let is_gen = chunks[current].add_import("ecma:value", "isGenerator");
+    chunks[current].emit_call(is_gen, 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, data, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, b, line);
+    vybe_compiler::primitives::generators::emit_take_into_array(chunks, current, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, data, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, a, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, b, line);
+    let slice = chunks[current].add_import("ecma:array", "slice");
+    chunks[current].emit_call(slice, 3, line);
+    chunks[current].emit_end(line);
 }
 
 /// `itertools.accumulate(data)` — running sums. Stack: `[data]` → `[array]`.

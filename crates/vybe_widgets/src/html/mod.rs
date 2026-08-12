@@ -27,6 +27,7 @@ pub mod panel;
 pub mod progress;
 pub mod radio;
 pub mod rich;
+pub mod serialize;
 pub mod tabs;
 pub mod textbox;
 

@@ -795,11 +795,18 @@ fn cmd_summary(args: &[String]) -> Result<()> {
 /// the directory.
 fn resolve_saved(saved_dir: &Path, target: &str) -> Vec<PathBuf> {
     let dotted = target.trim_matches('/').replace('/', ".");
+    let canonical = if dotted == "tests" || dotted.starts_with("tests.") {
+        dotted.clone()
+    } else {
+        format!("tests.{dotted}")
+    };
+    let legacy = dotted.strip_prefix("tests.").unwrap_or(&dotted);
     let exact = [
         PathBuf::from(target),
-        saved_dir.join(format!("{dotted}.txt")),
-        saved_dir.join(format!("tests.{dotted}.txt")),
-        saved_dir.join(&dotted),
+        saved_dir.join(format!("{canonical}.txt")),
+        saved_dir.join(format!("{legacy}.txt")),
+        saved_dir.join(&canonical),
+        saved_dir.join(legacy),
     ];
     if let Some(hit) = exact.into_iter().find(|p| p.is_file()) {
         return vec![hit];

@@ -157,7 +157,7 @@ impl Compiler {
                 }
             };
             self.emit_global_read(&ctor_global);
-            self.emit_u8_u8(Op::CALL_REF, 0, 1);
+            self.emit_direct_callable_invoke(0);
         } else if is_value_type {
             self.emit_default_value_for_type_hint(type_hint);
         } else if self.profile.has_undefined_value {
@@ -252,6 +252,52 @@ impl Compiler {
     /// null and silently breaks the prototype chain.
     fn emit_parent_ctor_value(&mut self, parent_name: &str) {
         self.emit_parent_value(parent_name, false);
+    }
+
+    fn parent_ctor_needs_ecma_construct_dispatch(&mut self, parent_name: &str) -> bool {
+        if !self.profile.ecma_new_dispatch
+            || self.defined_classes.contains(&self.canon(parent_name))
+        {
+            return false;
+        }
+        self.scope().resolve(parent_name).is_some()
+            || (self.scopes.len() > 1
+                && self
+                    .resolve_upvalue(self.scopes.len() - 1, parent_name)
+                    .is_some())
+            || self.static_local_binding(parent_name).is_some()
+            || self.defined_globals.contains(&self.canon(parent_name))
+    }
+
+    fn emit_ecma_reflect_construct_from_stack_arg_locals(&mut self, arg_count: u16) {
+        for arg_index in 0..arg_count {
+            self.emit_u16(Op::LOCAL_GET, arg_index);
+        }
+        let line = self.line;
+        common::collections::emit_array_new(&mut self.chunks, self.current, arg_count, line);
+        self.emit_global_read("__js_new_target");
+        fn_call!(self, "ecma:reflect", "construct", 3);
+    }
+
+    fn emit_ecma_reflect_construct_parent(
+        &mut self,
+        parent_name: &str,
+        args: &[Expression],
+    ) -> Result<(), String> {
+        self.emit_parent_ctor_value(parent_name);
+        for arg in args {
+            self.compile_expr(arg)?;
+        }
+        let line = self.line;
+        common::collections::emit_array_new(
+            &mut self.chunks,
+            self.current,
+            args.len() as u16,
+            line,
+        );
+        self.emit_global_read("__js_new_target");
+        fn_call!(self, "ecma:reflect", "construct", 3);
+        Ok(())
     }
 
     /// Emit the parent CLASS OBJECT for prototype-chain wiring.
@@ -567,6 +613,12 @@ impl Compiler {
                     .get(mci)
                     .map(Vec::as_slice)
                     .unwrap_or(&[]);
+                if self.class_prototype_dispatch()
+                    && capture_names.is_empty()
+                    && !mname.starts_with("__js_private_")
+                {
+                    continue;
+                }
                 self.emit_bind_instance_method_with_aliases(
                     this_slot,
                     mname,
@@ -772,8 +824,14 @@ impl Compiler {
         if !self.profile.ecma_new_dispatch {
             return;
         }
+        let nt_slot = self.define_local("__js_default_new_target_probe");
         self.emit_global_read("__js_new_target");
+        self.emit_u16(Op::LOCAL_SET, nt_slot);
+        self.emit_u16(Op::LOCAL_GET, nt_slot);
         self.emit(Op::REF_IS_NULL);
+        self.emit_u16(Op::LOCAL_GET, nt_slot);
+        fn_call!(self, "wasm:js-undefined", "test", 1);
+        self.emit(Op::I32_OR);
         let line = self.line;
         self.chunks[self.current].emit_if(line);
         self.emit_var_get(name);
@@ -1339,9 +1397,7 @@ impl Compiler {
             self.active_async_try_depth += 1;
         }
 
-        if self.ambient_this()
-            && crate::primitives::closures_in_body_reference_this(body)
-        {
+        if self.ambient_this() && crate::primitives::closures_in_body_reference_this(body) {
             self.emit_global_read("__js_this");
             let this_local = self.define_local("__js_this");
             self.emit_u16(Op::LOCAL_SET, this_local);
@@ -2677,7 +2733,7 @@ impl Compiler {
                     .is_some_and(|rt| rt.eq_ignore_ascii_case(&class.name));
                 if returns_self_type && body_has_result_member_assign(&m.body) {
                     cc.emit_var_get(&class.name);
-                    cc.emit_u8_u8(Op::CALL_REF, 0, 1);
+                    cc.emit_direct_callable_invoke(0);
                 } else {
                     cc.emit_null();
                 }
@@ -3292,7 +3348,7 @@ impl Compiler {
                 for expr in &this_args {
                     self.compile_expr(expr)?;
                 }
-                self.emit_u8_u8(Op::CALL_REF, this_args.len() as u8, 1);
+                self.emit_direct_callable_invoke(this_args.len() as u8);
                 self.emit_u16(Op::LOCAL_SET, this_slot);
                 if let Some((body, _, _)) = ctor_body {
                     for stmt in body {
@@ -3414,7 +3470,11 @@ impl Compiler {
                     } else if let Some((_, _, base_args)) = &ctor_body {
                         if let Some(bargs) = base_args {
                             if let Some(parent_name) = parent {
-                                if parent_ctor_is_bound {
+                                if self.parent_ctor_needs_ecma_construct_dispatch(parent_name) {
+                                    self.emit_default_js_new_target(name);
+                                    self.emit_ecma_reflect_construct_parent(parent_name, bargs)?;
+                                    self.emit_u16(Op::LOCAL_SET, this_slot);
+                                } else if parent_ctor_is_bound {
                                     // Allocate with THIS class's type before the
                                     // base ctor runs, then hand it down as the
                                     // trailing receiver. WASM GC fixes type at
@@ -3435,7 +3495,7 @@ impl Compiler {
                                         self.compile_expr(a)?;
                                     }
                                     self.emit_u16(Op::LOCAL_GET, this_slot);
-                                    self.emit_u8_u8(Op::CALL_REF, bargs.len() as u8 + 1, 1);
+                                    self.emit_direct_callable_invoke(bargs.len() as u8 + 1);
                                     self.emit_u16(Op::LOCAL_SET, this_slot);
                                 } else {
                                     let canon_name = self.canon(name);
@@ -3450,7 +3510,11 @@ impl Compiler {
                             }
                         } else if auto_base_needed {
                             if let Some(parent_name) = parent {
-                                if parent_ctor_is_bound {
+                                if self.parent_ctor_needs_ecma_construct_dispatch(parent_name) {
+                                    self.emit_default_js_new_target(name);
+                                    self.emit_ecma_reflect_construct_parent(parent_name, &[])?;
+                                    self.emit_u16(Op::LOCAL_SET, this_slot);
+                                } else if parent_ctor_is_bound {
                                     // Same inversion as the explicit-base-args
                                     // path: derived allocates, base initialises.
                                     let canon_name = self.canon(name);
@@ -3464,7 +3528,7 @@ impl Compiler {
                                     self.emit_default_js_new_target(name);
                                     self.emit_parent_ctor_value(parent_name);
                                     self.emit_u16(Op::LOCAL_GET, this_slot);
-                                    self.emit_u8_u8(Op::CALL_REF, 1, 1);
+                                    self.emit_direct_callable_invoke(1);
                                     self.emit_u16(Op::LOCAL_SET, this_slot);
                                 } else {
                                     let canon_name = self.canon(name);
@@ -3479,7 +3543,47 @@ impl Compiler {
                             }
                         }
                     } else if let Some(parent_name) = parent {
-                        if parent_ctor_is_bound {
+                        if self.parent_ctor_needs_ecma_construct_dispatch(parent_name) {
+                            self.emit_default_js_new_target(name);
+                            if synthesized_forward_args {
+                                self.emit_parent_ctor_value(parent_name);
+                                let parent_ctor_slot =
+                                    self.define_local(&format!("__{}_parent_ctor", helper_name));
+                                self.emit_u16(Op::LOCAL_SET, parent_ctor_slot);
+                                let parent_called_slot =
+                                    self.define_local(&format!("__{}_parent_called", helper_name));
+                                inst!(self, core_wasm::i32_const, 0);
+                                self.emit_u16(Op::LOCAL_SET, parent_called_slot);
+                                for count in (1..=IMPLICIT_CTOR_FORWARD_ARGS).rev() {
+                                    self.emit_u16(Op::LOCAL_GET, parent_called_slot);
+                                    self.emit(Op::I32_EQZ);
+                                    self.chunks[self.current].emit_if(line);
+                                    self.emit_u16(Op::LOCAL_GET, (count - 1) as u16);
+                                    self.emit(Op::REF_IS_NULL);
+                                    self.emit(Op::I32_EQZ);
+                                    self.chunks[self.current].emit_if(line);
+                                    self.emit_u16(Op::LOCAL_GET, parent_ctor_slot);
+                                    self.emit_ecma_reflect_construct_from_stack_arg_locals(
+                                        count as u16,
+                                    );
+                                    self.emit_u16(Op::LOCAL_SET, this_slot);
+                                    inst!(self, core_wasm::i32_const, 1);
+                                    self.emit_u16(Op::LOCAL_SET, parent_called_slot);
+                                    self.chunks[self.current].emit_end(line);
+                                    self.chunks[self.current].emit_end(line);
+                                }
+                                self.emit_u16(Op::LOCAL_GET, parent_called_slot);
+                                self.emit(Op::I32_EQZ);
+                                self.chunks[self.current].emit_if(line);
+                                self.emit_u16(Op::LOCAL_GET, parent_ctor_slot);
+                                self.emit_ecma_reflect_construct_from_stack_arg_locals(0);
+                                self.emit_u16(Op::LOCAL_SET, this_slot);
+                                self.chunks[self.current].emit_end(line);
+                            } else {
+                                self.emit_ecma_reflect_construct_parent(parent_name, &[])?;
+                                self.emit_u16(Op::LOCAL_SET, this_slot);
+                            }
+                        } else if parent_ctor_is_bound {
                             // Derived allocates, base initialises — see the
                             // explicit-base-args path above. Done once here for
                             // every forwarding shape below.
@@ -3514,7 +3618,7 @@ impl Compiler {
                                         self.emit_u16(Op::LOCAL_GET, arg_index as u16);
                                     }
                                     self.emit_u16(Op::LOCAL_GET, this_slot);
-                                    self.emit_u8_u8(Op::CALL_REF, count + 1, 1);
+                                    self.emit_direct_callable_invoke(count + 1);
                                     self.emit_u16(Op::LOCAL_SET, this_slot);
                                     inst!(self, core_wasm::i32_const, 1);
                                     self.emit_u16(Op::LOCAL_SET, parent_called_slot);
@@ -3526,7 +3630,7 @@ impl Compiler {
                                 self.chunks[self.current].emit_if(line);
                                 self.emit_u16(Op::LOCAL_GET, parent_ctor_slot);
                                 self.emit_u16(Op::LOCAL_GET, this_slot);
-                                self.emit_u8_u8(Op::CALL_REF, 1, 1);
+                                self.emit_direct_callable_invoke(1);
                                 self.emit_u16(Op::LOCAL_SET, this_slot);
                                 self.chunks[self.current].emit_end(line);
                             } else {
@@ -3534,7 +3638,7 @@ impl Compiler {
                                     self.emit_u16(Op::LOCAL_GET, i as u16);
                                 }
                                 self.emit_u16(Op::LOCAL_GET, this_slot);
-                                self.emit_u8_u8(Op::CALL_REF, user_arity + 1, 1);
+                                self.emit_direct_callable_invoke(user_arity + 1);
                                 self.emit_u16(Op::LOCAL_SET, this_slot);
                             }
                         } else if self.profile.ecma_error_object_shape
@@ -4137,14 +4241,14 @@ impl Compiler {
                 for arg_index in 0..count {
                     self.emit_u16(Op::LOCAL_GET, arg_index as u16);
                 }
-                self.emit_u8_u8(Op::CALL_REF, count as u8, 1);
+                self.emit_direct_callable_invoke(count as u8);
                 self.emit_return_through_finally(1)?;
             }
             self.chunks[self.current].emit_end(line);
         }
         if let Some((_, _, helper_idx, helper_captures, _)) = helper_for_count(0) {
             emit_helper_ref(self, *helper_idx, helper_captures)?;
-            self.emit_u8_u8(Op::CALL_REF, 0, 1);
+            self.emit_direct_callable_invoke(0);
         } else {
             self.emit_null();
         }
@@ -4662,7 +4766,7 @@ impl Compiler {
             self.set_js_this_from_stack();
             self.emit_u16(Op::REF_FUNC, *static_init_ci as u16);
             self.chunk().emit(0, line);
-            self.emit_u8_u8(Op::CALL_REF, 0, 1);
+            self.emit_direct_callable_invoke(0);
             let result_slot = self.define_local("__js_static_init_result");
             self.emit_u16(Op::LOCAL_SET, result_slot);
             self.restore_js_this(saved_js_this);
@@ -6138,7 +6242,7 @@ pub fn emit_auto_init_call(chunk: &mut Chunk, this_slot: u16, method_name: &str,
     let name_idx = chunk.add_constant(Value::String(Arc::from(method_name.to_lowercase())));
     chunk.emit_struct_field_op(Op::STRUCT_GET, 0, name_idx, line); // [method_ref]
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line); // [method_ref, this]
-    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line); // call(1) → [result]
+    crate::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line); // call(1) → [result]
     chunk.emit_op(Op::DROP, line); // []
 }
 

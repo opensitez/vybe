@@ -21,6 +21,86 @@ use std::sync::Once;
 use vybe_runtime::namespaces::{self, NamespaceNode, Subtree};
 use vybe_runtime::profile::{BuiltinEmit, EsmDefault, parse_profile};
 
+#[derive(Clone, Copy)]
+enum AdapterCtor {
+    Common(&'static str),
+    Host(&'static str, &'static str),
+}
+
+#[derive(Clone, Copy)]
+struct AdapterType {
+    library: &'static str,
+    name: &'static str,
+    ctor: AdapterCtor,
+}
+
+/// Dart library classes whose runtime value is backed by an adapter/common
+/// emit rather than by an AST class body.
+///
+/// This is DATA for the namespace tree: construction still goes through the
+/// common `ExprKind::New` -> `lookup_type_ctor_target` path, which stamps
+/// identity and keeps these reachable as `dart.core.RegExp`,
+/// `dart.collection.Queue`, etc. The walker reads the same table only to
+/// normalize Dart's constructor syntax (`RegExp(...)`, no `new`) into `New`.
+const ADAPTER_TYPES: &[AdapterType] = &[
+    AdapterType {
+        library: "core",
+        name: "RegExp",
+        ctor: AdapterCtor::Common("dart.regexp_new"),
+    },
+    AdapterType {
+        library: "core",
+        name: "Map",
+        ctor: AdapterCtor::Common("dart.map_new"),
+    },
+    AdapterType {
+        library: "core",
+        name: "MapEntry",
+        ctor: AdapterCtor::Common("dart.map_entry"),
+    },
+    AdapterType {
+        library: "core",
+        name: "Expando",
+        ctor: AdapterCtor::Common("dart.map_new"),
+    },
+    AdapterType {
+        library: "core",
+        name: "Stopwatch",
+        ctor: AdapterCtor::Common("dart.stopwatch_new"),
+    },
+    AdapterType {
+        library: "collection",
+        name: "Queue",
+        ctor: AdapterCtor::Common("dart.stream_empty"),
+    },
+    AdapterType {
+        library: "collection",
+        name: "SplayTreeMap",
+        ctor: AdapterCtor::Common("dart.sorted_map_new"),
+    },
+    AdapterType {
+        library: "collection",
+        name: "SplayTreeSet",
+        ctor: AdapterCtor::Common("dart.set_new"),
+    },
+    AdapterType {
+        library: "math",
+        name: "Random",
+        ctor: AdapterCtor::Host("wasi:random/insecure", "get-insecure-random-u64"),
+    },
+];
+
+pub(crate) fn is_adapter_type(name: &str) -> bool {
+    ADAPTER_TYPES.iter().any(|ty| ty.name == name)
+}
+
+fn adapter_ctor_node(ctor: AdapterCtor) -> NamespaceNode {
+    match ctor {
+        AdapterCtor::Common(name) => NamespaceNode::CommonEmit(name.to_string()),
+        AdapterCtor::Host(module, func) => namespaces::host_fn(module, func),
+    }
+}
+
 /// Insert `node` at the dotted `path` under `root`, creating interior
 /// namespaces as needed. Keys are lowercase-canonical.
 fn insert_path(root: &mut Subtree, path: &str, node: NamespaceNode) {
@@ -205,6 +285,30 @@ fn insert_static(libraries: &mut Subtree, owner: &str, member: &str, node: Names
     statics.entry(member.to_lowercase()).or_insert(node);
 }
 
+fn insert_adapter_type(libraries: &mut Subtree, adapter: AdapterType) {
+    let library = libraries
+        .entry(adapter.library.to_string())
+        .or_insert_with(|| NamespaceNode::Namespace(Subtree::new()));
+    let NamespaceNode::Namespace(types) = library else {
+        return;
+    };
+    let entry = types
+        .entry(adapter.name.to_lowercase())
+        .or_insert_with(|| NamespaceNode::Type {
+            ctor: None,
+            ctor_call: None,
+            statics: Subtree::new(),
+            methods: Subtree::new(),
+            member_returns: BTreeMap::new(),
+        });
+    let NamespaceNode::Type { ctor_call, .. } = entry else {
+        return;
+    };
+    if ctor_call.is_none() {
+        *ctor_call = Some(Box::new(adapter_ctor_node(adapter.ctor)));
+    }
+}
+
 /// Register the Dart surface under the `dart` root. Idempotent; first
 /// call wins.
 pub fn register_namespace_tree() {
@@ -244,6 +348,9 @@ pub fn register_namespace_tree() {
         // empty one under the same name.
         let mut libraries = Subtree::new();
         libraries.insert("core".to_string(), NamespaceNode::Namespace(core_types()));
+        for adapter in ADAPTER_TYPES {
+            insert_adapter_type(&mut libraries, *adapter);
+        }
         for (name, def) in &profile.builtins {
             let Some((owner, member)) = name.split_once('.') else {
                 continue;

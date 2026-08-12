@@ -21,15 +21,13 @@ ruby_test!(test_include_nil, "puts [1, nil, 2].include?(nil)", "true");
 ruby_test!(
     test_include_hash_key,
     "puts ({a: 1}.include?([:a, 1]))",
-    "true"
-); // include? on hash uses pairs
+    "false"
+); // Hash#include? checks keys, not key/value entry arrays.
 ruby_test!(
     test_member_hash_key,
     "puts ({a: 1}.member?([:a, 1]))",
-    "true"
-); // Hash overrides include?/member? to check keys instead of pairs, WAIT
-// Actually, Hash#include? and Hash#member? check keys! Enumerable#include? checks elements.
-// Let's test what Hash#include? does: it checks keys.
+    "false"
+); // Hash#member? is also key membership.
 ruby_test!(
     test_hash_include_overridden,
     "puts ({a: 1}.include?(:a))",

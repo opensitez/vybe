@@ -126,8 +126,8 @@ eval                = { emit = "host:ecma:global:eval",               min_args =
 
 # ── Encoding ─────────────────────────────────────────────────────────────────
 
-btoa                    = { emit = "host:ecma:string:btoa",                  min_args = 1, max_args = 1 }
-atob                    = { emit = "host:ecma:string:atob",                  min_args = 1, max_args = 1 }
+btoa                    = { emit = "common:base64.encode_binary_string",     min_args = 1, max_args = 1 }
+atob                    = { emit = "common:base64.decode_binary_string",     min_args = 1, max_args = 1 }
 encodeURIComponent      = { emit = "host:ecma:string:encodeURIComponent",    min_args = 1, max_args = 1 }
 decodeURIComponent      = { emit = "host:ecma:string:decodeURIComponent",    min_args = 1, max_args = 1 }
 encodeURI               = { emit = "host:ecma:string:encodeURI",             min_args = 1, max_args = 1 }
@@ -704,7 +704,7 @@ kind = "namespace"
 alias = "Reflect"
 module = "ecma:reflect"
 
-# `new Proxy(...)` is special-cased in the compiler; this alias covers
+# `new Proxy(...)` normalizes to the common proxy primitive; this alias covers
 # the static side (Proxy.revocable).
 [[esm_default]]
 kind = "namespace"

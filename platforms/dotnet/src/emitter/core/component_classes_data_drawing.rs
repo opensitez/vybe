@@ -555,6 +555,50 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.adodb_command_create_parameter".into()),
                 )),
         ),
+        // The parameter collection every command already carries.
+        //
+        // `wasi:sql` has had `params.add-with-value`, `params.clear` and
+        // `params.count` all along, and `make_command_obj` puts a params object
+        // on every command it creates — but nothing DECLARED the collection, so
+        // `cmd.Parameters.AddWithValue("@name", "Dave")` resolved against
+        // nothing. The parameters never reached the query and the host answered
+        // "Wrong number of parameters passed to query. Got 0, needed 2".
+        DotnetClassExport::new(
+            "dotnet.System.Data.SqlClient",
+            ClassType::new("SqlParameterCollection")
+                .with_method(MethodDef::new(
+                    "AddWithValue",
+                    2,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]params.add-with-value",
+                    )),
+                ))
+                .with_method(MethodDef::new(
+                    "Add",
+                    2,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]params.add-with-value",
+                    )),
+                ))
+                .with_method(MethodDef::new(
+                    "Clear",
+                    0,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]params.clear",
+                    )),
+                ))
+                .with_method(MethodDef::new(
+                    "Count",
+                    0,
+                    MethodBody::HostCall(HostTarget::new(
+                        "wasi:sql/types",
+                        "[method]params.count",
+                    )),
+                )),
+        ),
         DotnetClassExport::new(
             "dotnet.ADODB",
             ClassType::new("Recordset")

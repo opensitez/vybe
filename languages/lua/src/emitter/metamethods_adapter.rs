@@ -22,8 +22,8 @@ fn call3(chunk: &mut Chunk, import_idx: u16, line: u32) {
     chunk.emit_call(import_idx, 3, line);
 }
 
-fn call4(chunk: &mut Chunk, import_idx: u16, line: u32) {
-    chunk.emit_call(import_idx, 4, line);
+fn call_ref(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], argc, line);
 }
 
 fn i32_const(chunk: &mut Chunk, value: i32, line: u32) {
@@ -783,7 +783,7 @@ pub fn emit_lua_debug_getupvalue(chunks: &mut Vec<Chunk>, current: usize, argc: 
     chunks[current].emit_string_const("up", line);
     save(&mut chunks[current], name, line);
     load(&mut chunks[current], func, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 0, 1, line);
+    call_ref(chunks, current, 0, line);
     save(&mut chunks[current], value, line);
     emit_lua_first_if_multi_row(chunks, current, value, line);
     save(&mut chunks[current], value, line);
@@ -859,7 +859,7 @@ pub fn emit_lua_debug_sethook(chunks: &mut Vec<Chunk>, current: usize, argc: u8,
     vybe_compiler::primitives::reflection::emit_is_callable(chunks, current, line);
     chunks[current].emit_if(line);
     load(&mut chunks[current], base, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 0, 1, line);
+    call_ref(chunks, current, 0, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_end(line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
@@ -1219,7 +1219,7 @@ pub fn emit_lua_coroutine_resume(chunks: &mut Vec<Chunk>, current: usize, argc: 
     for i in 1..argc {
         load(&mut chunks[current], base + i as u16, line);
     }
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, argc - 1, 1, line);
+    call_ref(chunks, current, argc - 1, line);
     save(&mut chunks[current], cont_slot, line);
     load(&mut chunks[current], cont_slot, line);
     chunks[current].emit_call(is_gen, 1, line);
@@ -1803,26 +1803,29 @@ fn emit_lua_first_if_multi_row(
 }
 
 fn emit_call_binary_metamethod(
-    chunk: &mut Chunk,
+    chunks: &mut [Chunk],
+    current: usize,
     method_slot: u16,
     left: u16,
     right: u16,
     line: u32,
 ) {
-    let fn_call = chunk.add_import("ecma:function", "call");
-    load(chunk, method_slot, line);
-    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
-    load(chunk, left, line);
-    load(chunk, right, line);
-    call4(chunk, fn_call, line);
+    load(&mut chunks[current], method_slot, line);
+    load(&mut chunks[current], left, line);
+    load(&mut chunks[current], right, line);
+    call_ref(chunks, current, 2, line);
 }
 
-fn emit_call_unary_metamethod(chunk: &mut Chunk, method_slot: u16, value: u16, line: u32) {
-    let fn_call = chunk.add_import("ecma:function", "call");
-    load(chunk, method_slot, line);
-    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
-    load(chunk, value, line);
-    call3(chunk, fn_call, line);
+fn emit_call_unary_metamethod(
+    chunks: &mut [Chunk],
+    current: usize,
+    method_slot: u16,
+    value: u16,
+    line: u32,
+) {
+    load(&mut chunks[current], method_slot, line);
+    load(&mut chunks[current], value, line);
+    call_ref(chunks, current, 1, line);
 }
 
 fn emit_binary_metamethod_or_raw(
@@ -1852,11 +1855,11 @@ fn emit_binary_metamethod_or_raw(
     load(&mut chunks[current], right, line);
     raw(&mut chunks[current], line);
     chunks[current].emit_else(line);
-    emit_call_binary_metamethod(&mut chunks[current], method, left, right, line);
+    emit_call_binary_metamethod(chunks, current, method, left, right, line);
     chunks[current].emit_end(line);
 
     chunks[current].emit_else(line);
-    emit_call_binary_metamethod(&mut chunks[current], method, left, right, line);
+    emit_call_binary_metamethod(chunks, current, method, left, right, line);
     chunks[current].emit_end(line);
 }
 
@@ -1879,7 +1882,7 @@ fn emit_unary_metamethod_or_raw(
     load(&mut chunks[current], value, line);
     raw(&mut chunks[current], line);
     chunks[current].emit_else(line);
-    emit_call_unary_metamethod(&mut chunks[current], method, value, line);
+    emit_call_unary_metamethod(chunks, current, method, value, line);
     chunks[current].emit_end(line);
 }
 
@@ -2732,7 +2735,6 @@ pub fn emit_metamethod_index(chunks: &mut Vec<Chunk>, current: usize, argc: u8, 
         let current_slot = chunks[current].alloc_scratch(1);
         let depth_slot = chunks[current].alloc_scratch(1);
         let done_slot = chunks[current].alloc_scratch(1);
-        let fn_call = chunks[current].add_import("ecma:function", "call");
         let type_of = chunks[current].add_import("ecma:value", "typeof");
         let str_compare = chunks[current].add_import("wasm:js-string", "compare");
 
@@ -2805,10 +2807,9 @@ pub fn emit_metamethod_index(chunks: &mut Vec<Chunk>, current: usize, argc: u8, 
         vybe_compiler::primitives::reflection::emit_is_callable(chunks, current, line);
         chunks[current].emit_if(line);
         load(&mut chunks[current], method_slot, line);
-        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         load(&mut chunks[current], current_slot, line);
         load(&mut chunks[current], key_slot, line);
-        call4(&mut chunks[current], fn_call, line);
+        call_ref(chunks, current, 2, line);
         save(&mut chunks[current], value_slot, line);
         emit_lua_first_if_multi_row(chunks, current, value_slot, line);
         save(&mut chunks[current], value_slot, line);
@@ -2872,7 +2873,6 @@ pub fn emit_metamethod_newindex(chunks: &mut Vec<Chunk>, current: usize, argc: u
         let current_slot = chunks[current].alloc_scratch(1);
         let depth_slot = chunks[current].alloc_scratch(1);
         let done_slot = chunks[current].alloc_scratch(1);
-        let fn_call = chunks[current].add_import("ecma:function", "call");
         let type_of = chunks[current].add_import("ecma:value", "typeof");
         let str_compare = chunks[current].add_import("wasm:js-string", "compare");
         let active_key =
@@ -2960,11 +2960,10 @@ pub fn emit_metamethod_newindex(chunks: &mut Vec<Chunk>, current: usize, argc: u
         load(&mut chunks[current], key_slot, line);
         chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, active_key, line);
         load(&mut chunks[current], method_slot, line);
-        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         load(&mut chunks[current], current_slot, line);
         load(&mut chunks[current], key_slot, line);
         load(&mut chunks[current], value_slot, line);
-        chunks[current].emit_call(fn_call, 5, line);
+        call_ref(chunks, current, 3, line);
         chunks[current].emit_op(Op::DROP, line);
         load(&mut chunks[current], current_slot, line);
         chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
@@ -3170,7 +3169,7 @@ pub fn emit_lua_pcall(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u
     for i in 1..argc {
         load(&mut chunks[current], base + i as u16, line);
     }
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, argc - 1, 1, line);
+    call_ref(chunks, current, argc - 1, line);
     save(&mut chunks[current], value_slot, line);
     vybe_compiler::primitives::errors::emit_try_end(&mut chunks[current], line);
     i32_const(&mut chunks[current], 1, line);
@@ -3296,7 +3295,7 @@ pub fn emit_lua_xpcall(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     for i in 2..argc {
         load(&mut chunks[current], base + i as u16, line);
     }
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, argc - 2, 1, line);
+    call_ref(chunks, current, argc - 2, line);
     save(&mut chunks[current], value_slot, line);
     vybe_compiler::primitives::errors::emit_try_end(&mut chunks[current], line);
     i32_const(&mut chunks[current], 1, line);
@@ -3311,7 +3310,7 @@ pub fn emit_lua_xpcall(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
         vybe_compiler::primitives::errors::emit_try_start(&mut chunks[current], line);
     load(&mut chunks[current], base + 1, line);
     load(&mut chunks[current], error_slot, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    call_ref(chunks, current, 1, line);
     save(&mut chunks[current], value_slot, line);
     vybe_compiler::primitives::errors::emit_try_end(&mut chunks[current], line);
     chunks[current].emit_br(0, line);
@@ -3584,7 +3583,6 @@ pub fn emit_metamethod_len(chunks: &mut Vec<Chunk>, current: usize, argc: u8, li
     let arr_test = chunks[current].add_import("ecma:array", "isArray");
     let type_of = chunks[current].add_import("ecma:value", "typeof");
     let str_compare = chunks[current].add_import("wasm:js-string", "compare");
-    let fn_call = chunks[current].add_import("ecma:function", "call");
 
     save(&mut chunks[current], value_slot, line);
 
@@ -3639,9 +3637,8 @@ pub fn emit_metamethod_len(chunks: &mut Vec<Chunk>, current: usize, argc: u8, li
     emit_lua_raw_sequence_len(chunks, current, value_slot, line);
     chunks[current].emit_else(line);
     load(&mut chunks[current], len_fn_slot, line);
-    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     load(&mut chunks[current], value_slot, line);
-    call3(&mut chunks[current], fn_call, line);
+    call_ref(chunks, current, 1, line);
     chunks[current].emit_end(line);
 
     chunks[current].emit_end(line);
@@ -4547,7 +4544,6 @@ pub fn emit_lua_tostring(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, lin
     let tostring_fn = chunks[current].alloc_scratch(1);
     let test_num = chunks[current].add_import("wasm:js-number", "test");
     let test_i32 = chunks[current].add_import("wasm:js-number", "testI32");
-    let fn_call = chunks[current].add_import("ecma:function", "call");
 
     save(&mut chunks[current], value, line);
     load(&mut chunks[current], value, line);
@@ -4591,9 +4587,8 @@ pub fn emit_lua_tostring(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, lin
 
     chunks[current].emit_else(line);
     load(&mut chunks[current], tostring_fn, line);
-    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     load(&mut chunks[current], value, line);
-    call3(&mut chunks[current], fn_call, line);
+    call_ref(chunks, current, 1, line);
     chunks[current].emit_end(line);
 
     chunks[current].emit_end(line);
@@ -4832,7 +4827,7 @@ pub fn emit_metamethod_call(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     for i in 1..argc {
         load(&mut chunks[current], base + i as u16, line);
     }
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, argc, 1, line);
+    call_ref(chunks, current, argc, line);
     save(&mut chunks[current], result, line);
     chunks[current].emit_else(line);
     emit_lua_get_metamethod(chunks, current, method, "__call", line);
@@ -4845,7 +4840,7 @@ pub fn emit_metamethod_call(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     for i in 1..argc {
         load(&mut chunks[current], base + i as u16, line);
     }
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, argc, 1, line);
+    call_ref(chunks, current, argc, line);
     save(&mut chunks[current], result, line);
     chunks[current].emit_else(line);
     chunks[current].emit_string_const("attempt to call a non-function value", line);
@@ -4963,7 +4958,7 @@ fn emit_lua_call_fixed(chunks: &mut Vec<Chunk>, current: usize, base: u16, argc:
     for i in 1..argc {
         load(&mut chunks[current], base + i as u16, line);
     }
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, argc - 1, 1, line);
+    call_ref(chunks, current, argc - 1, line);
 }
 
 fn emit_lua_call_rest_dispatch(
@@ -5024,5 +5019,5 @@ fn emit_lua_call_rest_fixed(
         }
     }
     load(&mut chunks[current], rest, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, fixed + 1, 1, line);
+    call_ref(chunks, current, fixed + 1, line);
 }

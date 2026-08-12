@@ -270,6 +270,16 @@ fn as_bool(v: DomValue) -> Value {
     Value::Bool(matches!(v, DomValue::Bool(true)))
 }
 
+/// A numeric IDL attribute. `selectedIndex` is a `long`, so this answers an
+/// integer — `-1` is the IDL's own "nothing selected", and it is also the right
+/// answer for an element that has no selection concept at all.
+fn as_number(v: DomValue) -> Value {
+    match v {
+        DomValue::Number(n) => Value::I32(n as i32),
+        _ => Value::I32(-1),
+    }
+}
+
 pub fn register(vm: &mut VM) {
     // ── Document ────────────────────────────────────────────────────────
     vm.register_host_fn(
@@ -534,6 +544,60 @@ pub fn register(vm: &mut VM) {
         "focus",
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             apply(doc_arg(args, 0), DomOp::Focus(node_arg(args, 1)));
+            Value::Null
+        }),
+    );
+
+    // `select.selectedIndex` — `-1` when nothing is selected, which is the
+    // IDL's own answer and what every caller tests against.
+    vm.register_host_fn(
+        "web:html",
+        "selectedIndex",
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            as_number(apply(
+                doc_arg(args, 0),
+                DomOp::SelectedIndex(node_arg(args, 1)),
+            ))
+        }),
+    );
+    vm.register_host_fn(
+        "web:html",
+        "setSelectedIndex",
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            apply(
+                doc_arg(args, 0),
+                DomOp::SetSelectedIndex(node_arg(args, 1), num_arg(args, 2) as i32),
+            );
+            Value::Null
+        }),
+    );
+
+    // `select.options[i].text` — the option list read and written BY INDEX,
+    // which is what a toolkit's `Items[i]` is. `value` cannot stand in: it
+    // answers only for the SELECTED option, so every other row is unreachable
+    // through it.
+    vm.register_host_fn(
+        "web:html",
+        "itemText",
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            as_text(apply(
+                doc_arg(args, 0),
+                DomOp::ItemText(node_arg(args, 1), num_arg(args, 2).max(0.0) as usize),
+            ))
+        }),
+    );
+    vm.register_host_fn(
+        "web:html",
+        "setItemText",
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            apply(
+                doc_arg(args, 0),
+                DomOp::SetItemText(
+                    node_arg(args, 1),
+                    num_arg(args, 2).max(0.0) as usize,
+                    str_arg(args, 3),
+                ),
+            );
             Value::Null
         }),
     );

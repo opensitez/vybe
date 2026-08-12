@@ -38,6 +38,7 @@ pub const TYPE_TIMEZONE: &str = "timezone";
 const US_KEY: &str = "__us";
 
 const US_PER_SECOND: f64 = 1_000_000.0;
+const US_PER_MS: f64 = 1_000.0;
 const US_PER_DAY: f64 = 86_400_000_000.0;
 
 /// The component properties materialized onto every point-in-time value,
@@ -116,6 +117,10 @@ fn emit_materialize_tag(chunk: &mut Chunk, tag: Tag, line: u32) {
     core_wasm::f64_const(chunk, line, 1000.0);
     chunk.emit_op(Op::F64_MUL, line);
     struct_set(chunk, "microsecond", line);
+
+    chunk.emit_dup(line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    struct_set(chunk, "tzinfo", line);
 }
 
 /// Push `ecma:date.UTC(y, m-1, d, h, mi, s)` from six locals. Stack: `[]` → `[ms]`.
@@ -144,6 +149,12 @@ const EPOCH_DEFAULTS: [f64; 6] = [1970.0, 1.0, 1.0, 0.0, 0.0, 0.0];
 fn emit_components_new(chunk: &mut Chunk, argc: u8, first: usize, type_tag: &str, line: u32) {
     let base = chunk.alloc_scratch(6);
     let slots = [base, base + 1, base + 2, base + 3, base + 4, base + 5];
+    let micro = chunk.alloc_scratch(1);
+    let tz = chunk.alloc_scratch(1);
+    core_wasm::f64_const(chunk, line, 0.0);
+    chunk.emit_op_u16(Op::LOCAL_SET, micro, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, tz, line);
 
     // Defaults first: any component the call omits keeps these.
     for (i, slot) in slots.iter().enumerate() {
@@ -155,12 +166,20 @@ fn emit_components_new(chunk: &mut Chunk, argc: u8, first: usize, type_tag: &str
     for i in (0..argc as usize).rev() {
         match slots.get(first + i) {
             Some(slot) => chunk.emit_op_u16(Op::LOCAL_SET, *slot, line),
+            None if first + i == 6 => chunk.emit_op_u16(Op::LOCAL_SET, micro, line),
+            None if first + i == 7 => chunk.emit_op_u16(Op::LOCAL_SET, tz, line),
             None => chunk.emit_op(Op::DROP, line),
         }
     }
 
     emit_utc_from_locals(chunk, &slots, line);
     emit_materialize(chunk, type_tag, line);
+    chunk.emit_dup(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, micro, line);
+    struct_set(chunk, "microsecond", line);
+    chunk.emit_dup(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, tz, line);
+    struct_set(chunk, "tzinfo", line);
 }
 
 /// `datetime.date(y, m, d)`. Stack: `[y, m, d]` → `[date]`.
@@ -387,7 +406,148 @@ pub fn emit_utcoffset(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     for _ in 1..argc {
         chunk.emit_op(Op::DROP, line);
     }
+    let recv = chunk.alloc_scratch(1);
+    let off = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, recv, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, recv, line);
     struct_get(chunk, "__offset", line);
+    chunk.emit_op_u16(Op::LOCAL_SET, off, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, off, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, recv, line);
+    struct_get(chunk, "tzinfo", line);
+    struct_get(chunk, "__offset", line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, off, line);
+    chunk.emit_end(line);
+}
+
+fn emit_offset_us_from_tz(chunk: &mut Chunk, tz: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, tz, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if_value(line);
+    core_wasm::f64_const(chunk, line, 0.0);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, tz, line);
+    struct_get(chunk, "__offset", line);
+    struct_get(chunk, US_KEY, line);
+    chunk.emit_end(line);
+}
+
+fn emit_offset_us_from_datetime(chunk: &mut Chunk, dt: u16, line: u32) {
+    let tz = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_GET, dt, line);
+    struct_get(chunk, "tzinfo", line);
+    chunk.emit_op_u16(Op::LOCAL_SET, tz, line);
+    emit_offset_us_from_tz(chunk, tz, line);
+}
+
+fn emit_signed_offset_string(chunk: &mut Chunk, us_slot: u16, colon: bool, line: u32) {
+    let secs = chunk.alloc_scratch(1);
+    let abs = chunk.alloc_scratch(1);
+    let hours = chunk.alloc_scratch(1);
+    let minutes = chunk.alloc_scratch(1);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, us_slot, line);
+    core_wasm::f64_const(chunk, line, US_PER_SECOND);
+    chunk.emit_op(Op::F64_DIV, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, secs, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, secs, line);
+    core_wasm::f64_const(chunk, line, 0.0);
+    chunk.emit_op(Op::F64_LT, line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const("-", line);
+    core_wasm::f64_const(chunk, line, 0.0);
+    chunk.emit_op_u16(Op::LOCAL_GET, secs, line);
+    chunk.emit_op(Op::F64_SUB, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, abs, line);
+    chunk.emit_else(line);
+    chunk.emit_string_const("+", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, secs, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, abs, line);
+    chunk.emit_end(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, abs, line);
+    core_wasm::f64_const(chunk, line, 3600.0);
+    chunk.emit_op(Op::F64_DIV, line);
+    chunk.emit_op(Op::F64_FLOOR, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, hours, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, abs, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, hours, line);
+    core_wasm::f64_const(chunk, line, 3600.0);
+    chunk.emit_op(Op::F64_MUL, line);
+    chunk.emit_op(Op::F64_SUB, line);
+    core_wasm::f64_const(chunk, line, 60.0);
+    chunk.emit_op(Op::F64_DIV, line);
+    chunk.emit_op(Op::F64_FLOOR, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, minutes, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, hours, line);
+    emit_pad(chunk, 2, line);
+    let concat = chunk.add_import("wasm:js-string", "concat");
+    chunk.emit_call(concat, 2, line);
+    if colon {
+        emit_concat_const(chunk, ":", line);
+    }
+    chunk.emit_op_u16(Op::LOCAL_GET, minutes, line);
+    emit_pad(chunk, 2, line);
+    let concat = chunk.add_import("wasm:js-string", "concat");
+    chunk.emit_call(concat, 2, line);
+}
+
+pub fn emit_tz_offset_str(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let dt = chunk.alloc_scratch(1);
+    let us = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, dt, line);
+    emit_offset_us_from_datetime(chunk, dt, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, us, line);
+    emit_signed_offset_string(chunk, us, false, line);
+}
+
+pub fn emit_tzname(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let dt = chunk.alloc_scratch(1);
+    let us = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, dt, line);
+    emit_offset_us_from_datetime(chunk, dt, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, us, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, us, line);
+    core_wasm::f64_const(chunk, line, 0.0);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const("UTC", line);
+    chunk.emit_else(line);
+    emit_signed_offset_string(chunk, us, true, line);
+    chunk.emit_end(line);
+}
+
+pub fn emit_astimezone(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let tz = chunk.alloc_scratch(1);
+    let dt = chunk.alloc_scratch(1);
+    let old_us = chunk.alloc_scratch(1);
+    let new_us = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, tz, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, dt, line);
+    emit_offset_us_from_datetime(chunk, dt, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, old_us, line);
+    emit_offset_us_from_tz(chunk, tz, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, new_us, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, dt, line);
+    struct_get(chunk, TIME_KEY, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, new_us, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, old_us, line);
+    chunk.emit_op(Op::F64_SUB, line);
+    core_wasm::f64_const(chunk, line, US_PER_MS);
+    chunk.emit_op(Op::F64_DIV, line);
+    chunk.emit_op(Op::F64_ADD, line);
+    emit_materialize(chunk, TYPE_DATETIME, line);
+    chunk.emit_dup(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, tz, line);
+    struct_set(chunk, "tzinfo", line);
 }
 
 /// Drop every argument past the first `keep`. Builtin `argc` counts only
@@ -401,6 +561,18 @@ fn drop_extra_args(chunk: &mut Chunk, argc: u8, keep: u8, line: u32) {
 /// `datetime.fromtimestamp(seconds)`. Stack: `[sec, tz?]` → `[datetime]`.
 pub fn emit_fromtimestamp(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
+    if argc >= 2 {
+        drop_extra_args(chunk, argc, 2, line);
+        let tz = chunk.alloc_scratch(1);
+        chunk.emit_op_u16(Op::LOCAL_SET, tz, line);
+        core_wasm::f64_const(chunk, line, MS_PER_SECOND);
+        chunk.emit_op(Op::F64_MUL, line);
+        emit_materialize(chunk, TYPE_DATETIME, line);
+        chunk.emit_dup(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, tz, line);
+        struct_set(chunk, "tzinfo", line);
+        return;
+    }
     drop_extra_args(chunk, argc, 1, line);
     core_wasm::f64_const(chunk, line, MS_PER_SECOND);
     chunk.emit_op(Op::F64_MUL, line);
@@ -738,7 +910,7 @@ pub fn emit_dt_binop(chunk: &mut Chunk, a: u16, b: u16, op: DtOp, line: u32) {
             struct_get(chunk, TIME_KEY, line);
             chunk.emit_op_u16(Op::LOCAL_GET, b, line);
             struct_get(chunk, US_KEY, line);
-            core_wasm::f64_const(chunk, line, MS_PER_SECOND);
+            core_wasm::f64_const(chunk, line, US_PER_MS);
             chunk.emit_op(Op::F64_DIV, line);
             chunk.emit_op(dt_op_code(&op), line);
             emit_materialize_tag(chunk, Tag::Local(tag), line);
@@ -877,10 +1049,29 @@ fn emit_append_part(chunk: &mut Chunk, obj: u16, sep: &str, prop: &str, width: i
 /// by name alone), so the receiver's `__type` selects the format:
 /// date → `YYYY-MM-DD`, time → `HH:MM:SS`, datetime → both, `T`-joined.
 pub fn emit_isoformat(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    emit_point_string(&mut chunks[current], "T", line);
+}
+
+pub fn emit_str(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     let obj = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, obj, line);
 
+    emit_has_key(chunk, obj, US_KEY, line);
+    chunk.emit_if_value(line);
+    emit_timedelta_string(chunk, obj, line);
+    chunk.emit_else(line);
+    emit_point_string_from_slot(chunk, obj, " ", line);
+    chunk.emit_end(line);
+}
+
+fn emit_point_string(chunk: &mut Chunk, sep: &str, line: u32) {
+    let obj = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, obj, line);
+    emit_point_string_from_slot(chunk, obj, sep, line);
+}
+
+fn emit_point_string_from_slot(chunk: &mut Chunk, obj: u16, sep: &str, line: u32) {
     emit_is_type(chunk, obj, TYPE_TIME, line);
     chunk.emit_if_value(line);
     emit_time_part(chunk, obj, line);
@@ -888,13 +1079,142 @@ pub fn emit_isoformat(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     emit_date_part(chunk, obj, line);
     emit_is_type(chunk, obj, TYPE_DATETIME, line);
     chunk.emit_if_value(line);
-    chunk.emit_string_const("T", line);
+    chunk.emit_string_const(sep, line);
     let concat = chunk.add_import("wasm:js-string", "concat");
     chunk.emit_call(concat, 2, line);
     emit_time_part(chunk, obj, line);
     let concat = chunk.add_import("wasm:js-string", "concat");
     chunk.emit_call(concat, 2, line);
+    emit_append_tz_offset_if_present(chunk, obj, line);
     chunk.emit_end(line);
+    chunk.emit_end(line);
+}
+
+fn emit_append_tz_offset_if_present(chunk: &mut Chunk, obj: u16, line: u32) {
+    let tz = chunk.alloc_scratch(1);
+    let us = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
+    struct_get(chunk, "tzinfo", line);
+    chunk.emit_op_u16(Op::LOCAL_SET, tz, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, tz, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if_value(line);
+    emit_offset_us_from_tz(chunk, tz, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, us, line);
+    emit_signed_offset_string(chunk, us, true, line);
+    let concat = chunk.add_import("wasm:js-string", "concat");
+    chunk.emit_call(concat, 2, line);
+    chunk.emit_end(line);
+}
+
+fn emit_number_string(chunk: &mut Chunk, line: u32) {
+    let to_str = chunk.add_import("ecma:number", "toString");
+    chunk.emit_call(to_str, 1, line);
+}
+
+fn emit_concat_const(chunk: &mut Chunk, value: &str, line: u32) {
+    chunk.emit_string_const(value, line);
+    let concat = chunk.add_import("wasm:js-string", "concat");
+    chunk.emit_call(concat, 2, line);
+}
+
+fn emit_timedelta_time_part(chunk: &mut Chunk, seconds: u16, micros: u16, line: u32) {
+    let hours = chunk.alloc_scratch(1);
+    let rem = chunk.alloc_scratch(1);
+    let minutes = chunk.alloc_scratch(1);
+    let secs = chunk.alloc_scratch(1);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, seconds, line);
+    core_wasm::f64_const(chunk, line, 3600.0);
+    chunk.emit_op(Op::F64_DIV, line);
+    chunk.emit_op(Op::F64_FLOOR, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, hours, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, seconds, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, hours, line);
+    core_wasm::f64_const(chunk, line, 3600.0);
+    chunk.emit_op(Op::F64_MUL, line);
+    chunk.emit_op(Op::F64_SUB, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, rem, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, rem, line);
+    core_wasm::f64_const(chunk, line, 60.0);
+    chunk.emit_op(Op::F64_DIV, line);
+    chunk.emit_op(Op::F64_FLOOR, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, minutes, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, rem, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, minutes, line);
+    core_wasm::f64_const(chunk, line, 60.0);
+    chunk.emit_op(Op::F64_MUL, line);
+    chunk.emit_op(Op::F64_SUB, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, secs, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, hours, line);
+    emit_number_string(chunk, line);
+    emit_concat_const(chunk, ":", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, minutes, line);
+    emit_pad(chunk, 2, line);
+    let concat = chunk.add_import("wasm:js-string", "concat");
+    chunk.emit_call(concat, 2, line);
+    emit_concat_const(chunk, ":", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, secs, line);
+    emit_pad(chunk, 2, line);
+    let concat = chunk.add_import("wasm:js-string", "concat");
+    chunk.emit_call(concat, 2, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, micros, line);
+    core_wasm::f64_const(chunk, line, 0.0);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if_value(line);
+    emit_concat_const(chunk, ".", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, micros, line);
+    emit_pad(chunk, 6, line);
+    let concat = chunk.add_import("wasm:js-string", "concat");
+    chunk.emit_call(concat, 2, line);
+    chunk.emit_end(line);
+}
+
+fn emit_timedelta_string(chunk: &mut Chunk, obj: u16, line: u32) {
+    let days = chunk.alloc_scratch(1);
+    let seconds = chunk.alloc_scratch(1);
+    let micros = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
+    struct_get(chunk, "days", line);
+    chunk.emit_op_u16(Op::LOCAL_SET, days, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
+    struct_get(chunk, "seconds", line);
+    chunk.emit_op_u16(Op::LOCAL_SET, seconds, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
+    struct_get(chunk, "microseconds", line);
+    chunk.emit_op_u16(Op::LOCAL_SET, micros, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, days, line);
+    core_wasm::f64_const(chunk, line, 0.0);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, days, line);
+    emit_number_string(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, days, line);
+    core_wasm::f64_const(chunk, line, 1.0);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, days, line);
+    core_wasm::f64_const(chunk, line, -1.0);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_if_value(line);
+    emit_concat_const(chunk, " day, ", line);
+    chunk.emit_else(line);
+    emit_concat_const(chunk, " days, ", line);
+    chunk.emit_end(line);
+    emit_timedelta_time_part(chunk, seconds, micros, line);
+    let concat = chunk.add_import("wasm:js-string", "concat");
+    chunk.emit_call(concat, 2, line);
+    chunk.emit_else(line);
+    emit_timedelta_time_part(chunk, seconds, micros, line);
     chunk.emit_end(line);
 }
 

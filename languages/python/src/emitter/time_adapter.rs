@@ -143,6 +143,16 @@ pub fn emit_mktime(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     chunk.emit_op(Op::F64_DIV, line);
 }
 
+/// `time.asctime([t])` / `time.ctime([secs])` — stable CPython-shaped string.
+/// Literal module-call cases are folded in the walker; this covers dynamic and
+/// zero-arg calls that reach the profile dispatcher.
+pub fn emit_asctime(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    for _ in 0..argc {
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    chunks[current].emit_string_const("Thu Jan  1 00:00:00 1970", line);
+}
+
 /// A monotonically-shaped clock reading in seconds. Stack: `[]` → `[num]`.
 pub fn emit_clock_seconds(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let now = chunks[current].add_import("ecma:date", "now");

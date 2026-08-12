@@ -202,6 +202,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "java.size" => {
             super::list_adapter::emit_size(chunks, current, line);
         }
+        "java.size_value" => {
+            super::list_adapter::emit_size(chunks, current, line);
+        }
         "java.str_index_of" => {
             super::string_adapter::emit_index_of(chunks, current, argc, line);
         }
@@ -1134,9 +1137,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             );
         }
         "java.set_copy_of" => {
-            vybe_platform_jvm::emitter::collection_adapter::emit_set_copy_of(
-                chunks, current, line,
-            );
+            vybe_platform_jvm::emitter::collection_adapter::emit_set_copy_of(chunks, current, line);
         }
         "java.list_copy_of" => {
             collections::emit_clone(chunks, current, line);
@@ -1237,6 +1238,33 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "java.concurrent_hash_map_new" => {
             super::list_adapter::emit_concurrent_hash_map_new(chunks, current, argc, line);
         }
+        "java.atomic_new" => {
+            super::list_adapter::emit_atomic_new(chunks, current, line);
+        }
+        "java.atomic_get" => {
+            super::list_adapter::emit_atomic_get(chunks, current, line);
+        }
+        "java.atomic_set" => {
+            super::list_adapter::emit_atomic_set(chunks, current, line);
+        }
+        "java.atomic_get_and_set" => {
+            super::list_adapter::emit_atomic_get_and_set(chunks, current, line);
+        }
+        "java.atomic_compare_and_set" => {
+            super::list_adapter::emit_atomic_compare_and_set(chunks, current, line);
+        }
+        "java.atomic_increment_and_get" => {
+            super::list_adapter::emit_atomic_delta(chunks, current, 1.0, false, line);
+        }
+        "java.atomic_get_and_increment" => {
+            super::list_adapter::emit_atomic_delta(chunks, current, 1.0, true, line);
+        }
+        "java.atomic_get_and_decrement" => {
+            super::list_adapter::emit_atomic_delta(chunks, current, -1.0, true, line);
+        }
+        "java.atomic_add_and_get" => {
+            super::list_adapter::emit_atomic_add_and_get(chunks, current, line);
+        }
         "java.identity_hash_map_new" => {
             super::list_adapter::emit_identity_hash_map_new(chunks, current, argc, line);
         }
@@ -1313,7 +1341,13 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "java.list_set" => {
             super::list_adapter::emit_set(chunks, current, argc, line);
         }
+        "java.list_set_value" => {
+            super::list_adapter::emit_set(chunks, current, 3, line);
+        }
         "java.list_remove" => {
+            super::list_adapter::emit_remove_at(chunks, current, line);
+        }
+        "java.list_remove_at_value" => {
             super::list_adapter::emit_remove_at(chunks, current, line);
         }
         "java.list_remove_value" => {
@@ -1464,6 +1498,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // ── Map helpers ────────────────────────────────────────────────────
         "java.map_put" => {
             super::list_adapter::emit_map_put(chunks, current, line);
+        }
+        "java.concurrent_map_put" => {
+            super::list_adapter::emit_concurrent_map_put(chunks, current, line);
         }
         "java.map_put_all" => {
             super::list_adapter::emit_map_put_all(chunks, current, line);

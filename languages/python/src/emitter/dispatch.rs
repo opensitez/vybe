@@ -42,8 +42,95 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.hmac_compare_digest" => {
             crate::emitter::hash_adapter::emit_compare_digest(chunks, current, argc, line)
         }
+        "python.base64_b64encode" => {
+            crate::emitter::base64_adapter::emit_b64encode(chunks, current, argc, line)
+        }
+        "python.base64_b64decode" => {
+            crate::emitter::base64_adapter::emit_b64decode(chunks, current, argc, line)
+        }
+        "python.base64_urlsafe_b64encode" => {
+            crate::emitter::base64_adapter::emit_urlsafe_b64encode(chunks, current, argc, line)
+        }
+        "python.base64_urlsafe_b64decode" => {
+            crate::emitter::base64_adapter::emit_urlsafe_b64decode(chunks, current, argc, line)
+        }
+        "python.base64_encodebytes" => {
+            crate::emitter::base64_adapter::emit_encodebytes(chunks, current, argc, line)
+        }
+        "python.base64_b16encode" => {
+            crate::emitter::base64_adapter::emit_b16encode(chunks, current, argc, line)
+        }
+        "python.base64_b16decode" => {
+            crate::emitter::base64_adapter::emit_b16decode(chunks, current, argc, line)
+        }
+        "python.base64_b32encode" => {
+            crate::emitter::base64_adapter::emit_b32encode(chunks, current, argc, line)
+        }
+        "python.base64_b32decode" => {
+            crate::emitter::base64_adapter::emit_b32decode(chunks, current, argc, line)
+        }
+        "python.base64_a85encode" => {
+            crate::emitter::base64_adapter::emit_a85encode(chunks, current, argc, line)
+        }
+        "python.base64_a85decode" => {
+            crate::emitter::base64_adapter::emit_a85decode(chunks, current, argc, line)
+        }
+        "python.base64_b85encode" => {
+            crate::emitter::base64_adapter::emit_b85encode(chunks, current, argc, line)
+        }
+        "python.base64_b85decode" => {
+            crate::emitter::base64_adapter::emit_b85decode(chunks, current, argc, line)
+        }
+        "python.binascii_b2a_base64" => {
+            crate::emitter::base64_adapter::emit_b2a_base64(chunks, current, argc, line)
+        }
+        "python.binascii_a2b_base64" => {
+            crate::emitter::base64_adapter::emit_a2b_base64(chunks, current, argc, line)
+        }
+        "python.binascii_hexlify" => {
+            crate::emitter::base64_adapter::emit_hexlify(chunks, current, argc, line)
+        }
+        "python.binascii_unhexlify" => {
+            crate::emitter::base64_adapter::emit_unhexlify(chunks, current, argc, line)
+        }
+        "python.binascii_crc32" => {
+            crate::emitter::base64_adapter::emit_crc32(chunks, current, argc, line)
+        }
+        "python.codecs_encode" => {
+            crate::emitter::base64_adapter::emit_codecs_encode(chunks, current, argc, line)
+        }
+        "python.codecs_decode" => {
+            crate::emitter::base64_adapter::emit_codecs_decode(chunks, current, argc, line)
+        }
+        "python.codecs_lookup" => {
+            crate::emitter::base64_adapter::emit_codecs_lookup(chunks, current, argc, line)
+        }
+        "python.codecs_escape_decode" => {
+            crate::emitter::base64_adapter::emit_codecs_escape_decode(chunks, current, argc, line)
+        }
+        "python.codecs_escape_encode" => {
+            crate::emitter::base64_adapter::emit_codecs_escape_encode(chunks, current, argc, line)
+        }
+        "python.codecs_iterencode" => {
+            crate::emitter::base64_adapter::emit_codecs_iterencode(chunks, current, argc, line)
+        }
+        "python.codecs_iterdecode" => {
+            crate::emitter::base64_adapter::emit_codecs_iterdecode(chunks, current, argc, line)
+        }
+        "python.unicodedata_normalize" => {
+            crate::emitter::base64_adapter::emit_unicodedata_normalize(chunks, current, argc, line)
+        }
+        "python.first_arg" => {
+            crate::emitter::base64_adapter::emit_first_arg(chunks, current, argc, line)
+        }
         "python.json_dumps" => {
             crate::emitter::json_adapter::emit_json_dumps(chunks, current, argc, line);
+        }
+        "python.thread_start_with" => {
+            crate::emitter::thread_adapter::emit_thread_start_with(chunks, current, line)
+        }
+        "python.thread_join" => {
+            crate::emitter::thread_adapter::emit_thread_join(chunks, current, line)
         }
         "python.int_bit_length" => {
             crate::emitter::collections_adapter::emit_int_bit_length(chunks, current, argc, line)
@@ -64,6 +151,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "python.enumerate" => {
             crate::emitter::collections_adapter::emit_enumerate(chunks, current, argc, line)
+        }
+        "python.tuple_from_iter" => {
+            crate::emitter::collections_adapter::emit_tuple_from_iter(chunks, current, argc, line)
         }
         "python.sql_connect" => {
             crate::emitter::sql_adapter::emit_connect(chunks, current, argc, line)
@@ -262,6 +352,15 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.attr_read" => {
             crate::emitter::collections_adapter::emit_attr_read(chunks, current, line)
         }
+        "python.attr_write" => {
+            crate::emitter::collections_adapter::emit_attr_write(chunks, current, line)
+        }
+        "python.attr_raw_write" => {
+            crate::emitter::collections_adapter::emit_attr_raw_write(chunks, current, line)
+        }
+        "python.attr_delete" => {
+            crate::emitter::collections_adapter::emit_attr_delete(chunks, current, line)
+        }
         "python.getitem" => {
             crate::emitter::collections_adapter::emit_getitem(chunks, current, line)
         }
@@ -361,6 +460,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "python.time_mktime" => {
             crate::emitter::time_adapter::emit_mktime(chunks, current, argc, line)
+        }
+        "python.time_asctime" => {
+            crate::emitter::time_adapter::emit_asctime(chunks, current, argc, line)
         }
         "python.time_clock_seconds" => {
             crate::emitter::time_adapter::emit_clock_seconds(chunks, current, argc, line)
@@ -479,6 +581,15 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.utcoffset" => {
             crate::emitter::datetime_adapter::emit_utcoffset(chunks, current, argc, line)
         }
+        "python.astimezone" => {
+            crate::emitter::datetime_adapter::emit_astimezone(chunks, current, argc, line)
+        }
+        "python.tzname" => {
+            crate::emitter::datetime_adapter::emit_tzname(chunks, current, argc, line)
+        }
+        "python.tz_offset_str" => {
+            crate::emitter::datetime_adapter::emit_tz_offset_str(chunks, current, argc, line)
+        }
         "python.timezone_utc" => {
             crate::emitter::datetime_adapter::emit_timezone_utc(chunks, current, argc, line)
         }
@@ -548,6 +659,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.dt_isoformat" => {
             crate::emitter::datetime_adapter::emit_isoformat(chunks, current, argc, line)
         }
+        "python.dt_str" => crate::emitter::datetime_adapter::emit_str(chunks, current, argc, line),
         "python.date_weekday" => {
             crate::emitter::datetime_adapter::emit_date_weekday(chunks, current, argc, line)
         }
@@ -781,6 +893,53 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "python.url_unquote_plus" => {
             crate::emitter::url_adapter::emit_unquote_plus(chunks, current, argc, line)
+        }
+        "python.calendar_new" => {
+            crate::emitter::calendar_adapter::emit_calendar_new(chunks, current, argc, line)
+        }
+        "python.calendar_html_new" => crate::emitter::calendar_adapter::emit_calendar_typed_new(
+            chunks,
+            current,
+            argc,
+            "HTMLCalendar",
+            line,
+        ),
+        "python.calendar_text_new" => crate::emitter::calendar_adapter::emit_calendar_typed_new(
+            chunks,
+            current,
+            argc,
+            "TextCalendar",
+            line,
+        ),
+        "python.calendar_leapdays" => {
+            crate::emitter::calendar_adapter::emit_leapdays(chunks, current, argc, line)
+        }
+        "python.calendar_timegm" => {
+            crate::emitter::calendar_adapter::emit_timegm(chunks, current, argc, line)
+        }
+        "python.calendar_monthcalendar" => {
+            crate::emitter::calendar_adapter::emit_monthcalendar(chunks, current, argc, line)
+        }
+        "python.calendar_itermonthdays" => {
+            crate::emitter::calendar_adapter::emit_itermonthdays(chunks, current, argc, line)
+        }
+        "python.calendar_itermonthdays2" => {
+            crate::emitter::calendar_adapter::emit_itermonthdays2(chunks, current, argc, line)
+        }
+        "python.calendar_yeardayscalendar" => {
+            crate::emitter::calendar_adapter::emit_yeardayscalendar(chunks, current, argc, line)
+        }
+        "python.calendar_text_formatmonth" => {
+            crate::emitter::calendar_adapter::emit_text_formatmonth(chunks, current, argc, line)
+        }
+        "python.calendar_html_formatmonth" => {
+            crate::emitter::calendar_adapter::emit_html_formatmonth(chunks, current, argc, line)
+        }
+        "python.calendar_setfirstweekday" => {
+            crate::emitter::calendar_adapter::emit_setfirstweekday(chunks, current, argc, line)
+        }
+        "python.calendar_firstweekday" => {
+            crate::emitter::calendar_adapter::emit_firstweekday(chunks, current, argc, line)
         }
         "python.vars" => crate::emitter::runtime_adapter::emit_vars(chunks, current, argc, line),
         "python.is_dataclass" => {

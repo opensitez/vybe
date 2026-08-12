@@ -105,6 +105,20 @@ impl Compiler {
         let tk = self.str_const("__types");
         self.emit_struct_field_op(Op::STRUCT_SET, 0, tk);
 
+        // __control_type — the control's own class name, `Button`, not the tag.
+        // The `vybe:gui` `new_*` factory used to stamp it and the DOM path did
+        // not, so it silently became `undefined` for every converted control —
+        // and it is READ: `platforms/vybe/src/gui.rs`, `gui_launch.rs` and
+        // `simd.rs` all ask an object what control it is. Same key
+        // `gui::CONTROL_TYPE_FIELD` names, stamped on every frontend at once
+        // because it is stamped here.
+        if is_control && !control_type.is_empty() {
+            self.emit_u16(Op::LOCAL_GET, this_slot);
+            self.emit_const(Value::String(std::sync::Arc::from(control_type.as_str())));
+            let ctk = self.str_const(crate::primitives::gui::CONTROL_TYPE_FIELD);
+            self.emit_struct_field_op(Op::STRUCT_SET, 0, ctk);
+        }
+
         // __controlfn — the `vybe:gui` factory for this widget (`new_Label`…),
         // or null for a plain tree type. Marks a GUI-adapter widget.
         self.emit_u16(Op::LOCAL_GET, this_slot);
@@ -194,71 +208,6 @@ impl Compiler {
         self.chunk().emit_end(line);
 
         self.emit_getattr_slot_probe(obj_slot, field_name);
-    }
-
-    /// The `GetAttr` role — the attribute-miss interceptor (Python
-    /// `__getattr__`, PHP `__get`, JS Proxy get). Resolved by SLOT, so the
-    /// spelling each language used is irrelevant here; both frontends already
-    /// bind it to `ProtocolSlot::GetAttr`.
-    ///
-    /// ADDED after the normal read, never substituted for it: this site also
-    /// serves plain maps, host objects and primitives, which carry no slot, and
-    /// flexclassplan records that substituting at such a site is what broke
-    /// `Len` and `Iterator`. So the read happens first and only an `undefined`
-    /// result consults the slot.
-    ///
-    /// Whole thing is skipped unless some class in the program binds the role,
-    /// so programs without it emit exactly what they did before.
-    ///
-    /// Stack: `[value] -> [value]`.
-    fn emit_getattr_slot_probe(&mut self, obj_slot: u16, field_name: &str) {
-        if !self.program_has_getattr {
-            return;
-        }
-        // The slot's implementation is published under a key derived from the
-        // slot NUMBER, so this never mentions `__getattr__` or `__get`.
-        let slot_key = vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::GetAttr);
-        let line = self.line;
-        let value_slot = self.define_local("__getattr_value");
-        let handler_slot = self.define_local("__getattr_handler");
-
-        self.emit_u16(Op::LOCAL_SET, value_slot);
-        self.emit_u16(Op::LOCAL_GET, value_slot);
-        {
-            let undef = self.chunk().add_import("wasm:js-undefined", "test");
-            self.chunk().emit_call(undef, 1, line);
-        }
-        self.chunk().emit_if(line);
-
-        // Only an object can carry the slot; `Reflect.get` throws otherwise.
-        self.emit_u16(Op::LOCAL_GET, obj_slot);
-        inst!(self, recipes::is_object);
-        self.chunk().emit_if(line);
-        let get = self.import("ecma:reflect", "get");
-        self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.emit_const(Value::String(Arc::from(slot_key.as_str())));
-        self.emit_host_call(get, 2);
-        self.emit_u16(Op::LOCAL_SET, handler_slot);
-
-        self.emit_u16(Op::LOCAL_GET, handler_slot);
-        {
-            let undef = self.chunk().add_import("wasm:js-undefined", "test");
-            self.chunk().emit_call(undef, 1, line);
-        }
-        self.chunk().emit_op(Op::I32_EQZ, line);
-        self.chunk().emit_if(line);
-        // handler(receiver, name)
-        self.emit_u16(Op::LOCAL_GET, handler_slot);
-        self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.emit_const(Value::String(Arc::from(field_name)));
-        self.chunk().emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
-        self.emit_u16(Op::LOCAL_SET, value_slot);
-        self.chunk().emit_end(line);
-
-        self.chunk().emit_end(line);
-        self.chunk().emit_end(line);
-
-        self.emit_u16(Op::LOCAL_GET, value_slot);
     }
 
     /// §7.3.2 GetV on a PRIMITIVE receiver: look `field_name` up on the
@@ -898,7 +847,7 @@ impl Compiler {
                         .is_none_or(|arity| *arity == 0)
                 {
                     self.emit_var_get(name);
-                    self.emit_u8_u8(Op::CALL_REF, 0, 1);
+                    self.emit_direct_callable_invoke(0);
                     return Ok(());
                 }
 
@@ -1807,7 +1756,7 @@ impl Compiler {
                     for a in args {
                         self.compile_expr(&a.value)?;
                     }
-                    self.emit_u8_u8(Op::CALL_REF, args.len() as u8, 1);
+                    self.emit_direct_callable_invoke(args.len() as u8);
                     self.chunk().emit_end(undef_line);
                     self.chunk().emit_end(line);
                 } else {
@@ -2375,7 +2324,7 @@ impl Compiler {
                         && self.scope().resolve(obj_name).is_none();
                     if is_ctor && is_known_class {
                         self.emit_var_get(obj_name);
-                        self.emit_u8_u8(Op::CALL_REF, 0, 1);
+                        self.emit_direct_callable_invoke(0);
                         return Ok(());
                     }
 
@@ -2410,7 +2359,7 @@ impl Compiler {
                                 self.emit_u16(Op::LOCAL_SET, cls_tmp);
                                 self.emit_u16(Op::LOCAL_GET, fn_tmp);
                                 self.emit_u16(Op::LOCAL_GET, cls_tmp);
-                                self.emit_u8_u8(Op::CALL_REF, 1, 1);
+                                self.emit_direct_callable_invoke(1);
                                 return Ok(());
                             }
                         }
@@ -2601,7 +2550,7 @@ impl Compiler {
                         self.chunk().emit_else(line);
                         self.emit_u16(Op::LOCAL_GET, getter_slot);
                         self.emit_js_current_this_value();
-                        self.emit_u8_u8(Op::CALL_REF, 1, 1);
+                        self.emit_direct_callable_invoke(1);
                         self.chunk().emit_end(line);
                         self.emit_u16(Op::LOCAL_SET, result_slot);
                         self.restore_js_this(saved_this);
@@ -2661,7 +2610,7 @@ impl Compiler {
                     self.set_js_this_from_stack();
                     self.emit_u16(Op::LOCAL_GET, getter_slot);
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
-                    self.emit_u8_u8(Op::CALL_REF, 1, 1);
+                    self.emit_direct_callable_invoke(1);
                     let result_slot = self.define_local("__js_private_member_result");
                     self.emit_u16(Op::LOCAL_SET, result_slot);
                     self.restore_js_this(saved_this);
@@ -2879,7 +2828,7 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_SET, fn_slot);
                             self.emit_u16(Op::LOCAL_GET, fn_slot);
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
-                            self.emit_u8_u8(Op::CALL_REF, 1, 1);
+                            self.emit_direct_callable_invoke(1);
                             return Ok(());
                         }
                     }
@@ -3177,6 +3126,14 @@ impl Compiler {
                             return Ok(());
                         }
                     }
+                } else if !*null_safe && self.member_access_is_late_bound(object, field) {
+                    // The receiver's type says nothing, so ask the object.
+                    // Mirror of the write side — `If btn.Text <> ""` read
+                    // `undefined` off a real element and took the wrong branch
+                    // before any write was attempted.
+                    let line = self.line;
+                    self.emit_late_bound_property_get(object, field, line)?;
+                    return Ok(());
                 } else {
                     self.compile_expr(object)?;
                     if !Self::is_pointer_runtime_field(field) {
@@ -3302,7 +3259,7 @@ impl Compiler {
 
                     self.emit_u16(Op::LOCAL_GET, value_slot);
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
-                    self.emit_u8_u8(Op::CALL_REF, 1, 1);
+                    self.emit_direct_callable_invoke(1);
                     self.chunk().emit_else(line);
                     self.emit_u16(Op::LOCAL_GET, value_slot);
                     self.chunk().emit_end(line);
@@ -3471,7 +3428,7 @@ impl Compiler {
                     self.emit_struct_field_op(Op::STRUCT_GET, 0, getter);
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     self.emit_u16(Op::LOCAL_GET, key_slot);
-                    self.chunk().emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+                    crate::primitives::callable::emit_direct_invoke_chunk(self.chunk(), 2, line);
                     return Ok(());
                 }
                 // A Range used as the index is a slice operation
@@ -3964,7 +3921,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, getter_slot);
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     self.compile_collection_key(object, index)?;
-                    self.emit_u8_u8(Op::CALL_REF, 2, 1);
+                    self.emit_direct_callable_invoke(2);
                     self.chunk().emit_end(getter_line);
                     if let Some(line) = null_safe_if {
                         self.chunk().emit_end(line);
@@ -4252,7 +4209,6 @@ impl Compiler {
                             self.emit_host_call(idx, 1);
                             return Ok(());
                         }
-
                     }
                 }
                 let class_parts = self.flatten_member_chain(class);
@@ -4260,7 +4216,13 @@ impl Compiler {
                     ExprKind::Ident(name) => {
                         let resolved = self.resolve_source_type_alias(name);
                         let canon_resolved = self.canon(&resolved);
-                        if self.profile.uses_common_resolver
+                        if self.profile.ecma_new_dispatch
+                            && self.is_variable_name(name)
+                            && !self.defined_classes.contains(&canon_resolved)
+                            && !self.defined_functions.contains(&canon_resolved)
+                        {
+                            None
+                        } else if self.profile.uses_common_resolver
                             && self.canon(&resolved) == self.canon(name)
                         {
                             if let Some(qualified) = self
@@ -4393,7 +4355,7 @@ impl Compiler {
                         // receiver live made a construction inside an instance
                         // method write into that receiver and hand it back.
                         self.clear_js_this();
-                        self.emit_u8_u8(Op::CALL_REF, effective_len as u8, 1);
+                        self.emit_direct_callable_invoke(effective_len as u8);
                         self.restore_js_this(saved_this);
                         self.restore_js_new_target(saved_nt);
                         return Ok(());
@@ -4413,13 +4375,17 @@ impl Compiler {
                         let (args_slot, _) = self.compile_call_args_array(args, "js_new")?;
                         self.emit_u16(Op::LOCAL_GET, ctor_slot);
                         self.emit_u16(Op::LOCAL_GET, args_slot);
-                        common::reflection::emit_reflect_op(
-                            &mut self.chunks,
-                            self.current,
-                            common::reflection::ReflectOp::Construct,
-                            2,
-                            line,
-                        );
+                        if self.uses_proxy {
+                            self.emit_proxy_construct()?;
+                        } else {
+                            common::reflection::emit_reflect_op(
+                                &mut self.chunks,
+                                self.current,
+                                common::reflection::ReflectOp::Construct,
+                                2,
+                                line,
+                            );
+                        }
                         self.restore_js_new_target(saved_js_new_target);
                         return Ok(());
                     }
@@ -4443,7 +4409,7 @@ impl Compiler {
                                     for a in args {
                                         self.compile_expr(&a.value)?;
                                     }
-                                    self.emit_u8_u8(Op::CALL_REF, args.len() as u8, 1);
+                                    self.emit_direct_callable_invoke(args.len() as u8);
                                     return Ok(());
                                 }
                             }
@@ -4463,7 +4429,7 @@ impl Compiler {
                             for a in args {
                                 self.compile_expr(&a.value)?;
                             }
-                            self.emit_u8_u8(Op::CALL_REF, args.len() as u8, 1);
+                            self.emit_direct_callable_invoke(args.len() as u8);
                             return Ok(());
                         }
                     }
@@ -4540,12 +4506,50 @@ impl Compiler {
                         && !self.defined_classes.contains(bare_str)
                         && !self.defined_classes.contains(&self.canon(type_name))
                     {
+                        // A QUALIFIED spelling is the same construction.
+                        //
+                        // The chain used to be built as a single segment holding
+                        // the whole spelling, so only a bare name could reach a
+                        // `CtorSpec` — `new ToolStripMenuItem()` constructed and
+                        // `new System.Windows.Forms.ToolStripMenuItem()` did not,
+                        // even though they name one class. That is not a corner
+                        // case: VB's `Imports System.Windows.Forms` REWRITES every
+                        // bare name to the qualified form, so the working spelling
+                        // disappears the moment a program imports the namespace it
+                        // is using.
+                        //
+                        // It only stayed hidden because a class that also carries a
+                        // `vybe:gui` `ctor_call` has a second route — so the bug
+                        // surfaced exactly on the classes that have been CONVERTED
+                        // to pure element construction, and would have surfaced on
+                        // plib and flutter the same way at their first qualified
+                        // spelling.
+                        //
+                        // `canon_type_global` before splitting, so `::` (Pascal,
+                        // C++, Ruby) and `\` (PHP) count as the separators they
+                        // are. The bare spelling is still tried FIRST and
+                        // unchanged, so nothing that resolves today resolves
+                        // differently — this only adds an answer where there was
+                        // none.
+                        let qualified_chain: Vec<String> = self
+                            .canon_type_global(type_name)
+                            .split('.')
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_string)
+                            .collect();
+                        let tree_ctor = self
+                            .resolve_profile_namespace_chain(&[type_name.to_string()])
+                            .or_else(|| {
+                                (qualified_chain.len() > 1)
+                                    .then(|| self.resolve_profile_namespace_chain(&qualified_chain))
+                                    .flatten()
+                            });
                         if let Some(super::resolver::Resolution::Tree(
                             crate::primitives::namespaces::ResolutionTarget::Ctor {
                                 spec: Some(spec),
                                 ..
                             },
-                        )) = self.resolve_profile_namespace_chain(&[type_name.to_string()])
+                        )) = tree_ctor
                         {
                             // Generic field-capture construction only when the
                             // spec actually DESCRIBES a construction — captured
@@ -4742,6 +4746,40 @@ impl Compiler {
                         }
                     }
 
+                    if self.profile.ecma_new_dispatch {
+                        if let ExprKind::Ident(name) = &class.kind {
+                            if name.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+                                && !self.defined_classes.contains(&self.canon(name))
+                                && !self.defined_functions.contains(&self.canon(name))
+                            {
+                                self.compile_expr(class)?;
+                                let ctor_slot = self.define_local("__js_ctor");
+                                self.emit_u16(Op::LOCAL_SET, ctor_slot);
+                                let saved_js_new_target =
+                                    self.save_js_new_target("__js_prev_new_target_new");
+                                self.emit_u16(Op::LOCAL_GET, ctor_slot);
+                                self.set_js_new_target_from_stack();
+                                let (args_slot, _) =
+                                    self.compile_call_args_array(args, "js_new")?;
+                                self.emit_u16(Op::LOCAL_GET, ctor_slot);
+                                self.emit_u16(Op::LOCAL_GET, args_slot);
+                                if self.uses_proxy {
+                                    self.emit_proxy_construct()?;
+                                } else {
+                                    common::reflection::emit_reflect_op(
+                                        &mut self.chunks,
+                                        self.current,
+                                        common::reflection::ReflectOp::Construct,
+                                        2,
+                                        self.line,
+                                    );
+                                }
+                                self.restore_js_new_target(saved_js_new_target);
+                                return Ok(());
+                            }
+                        }
+                    }
+
                     if dotnet_ctor_registered {
                         let ctor_name = if self.defined_globals.contains(bare_str) {
                             bare_str.to_string()
@@ -4753,7 +4791,7 @@ impl Compiler {
                         for a in args {
                             self.compile_expr(&a.value)?;
                         }
-                        self.emit_u8_u8(Op::CALL_REF, args.len() as u8, 1);
+                        self.emit_direct_callable_invoke(args.len() as u8);
 
                         if bare_str.eq_ignore_ascii_case("list")
                             || bare_str.eq_ignore_ascii_case("arraylist")
@@ -4797,7 +4835,7 @@ impl Compiler {
                                 for a in args {
                                     self.compile_expr(&a.value)?;
                                 }
-                                self.emit_u8_u8(Op::CALL_REF, args.len() as u8, 1);
+                                self.emit_direct_callable_invoke(args.len() as u8);
                                 return Ok(());
                             }
                         }
@@ -4813,13 +4851,17 @@ impl Compiler {
                     let (args_slot, _) = self.compile_call_args_array(args, "js_new")?;
                     self.emit_u16(Op::LOCAL_GET, ctor_slot);
                     self.emit_u16(Op::LOCAL_GET, args_slot);
-                    common::reflection::emit_reflect_op(
-                        &mut self.chunks,
-                        self.current,
-                        common::reflection::ReflectOp::Construct,
-                        2,
-                        self.line,
-                    );
+                    if self.uses_proxy {
+                        self.emit_proxy_construct()?;
+                    } else {
+                        common::reflection::emit_reflect_op(
+                            &mut self.chunks,
+                            self.current,
+                            common::reflection::ReflectOp::Construct,
+                            2,
+                            self.line,
+                        );
+                    }
                     self.restore_js_new_target(saved_js_new_target);
                     return Ok(());
                 }
@@ -4827,7 +4869,7 @@ impl Compiler {
                 for a in args {
                     self.compile_expr(&a.value)?;
                 }
-                self.emit_u8_u8(Op::CALL_REF, args.len() as u8, 1);
+                self.emit_direct_callable_invoke(args.len() as u8);
             }
 
             // ── Assignment as expression ────────────────────────────────
@@ -6307,7 +6349,7 @@ impl Compiler {
 
                             let value_slot = self.define_local("__cast_struct_value");
                             self.emit_global_read(&ctor_global);
-                            self.emit_u8_u8(Op::CALL_REF, 0, 1);
+                            self.emit_direct_callable_invoke(0);
                             self.emit_u16(Op::LOCAL_SET, value_slot);
 
                             if let Some(fields) = self
@@ -6348,7 +6390,7 @@ impl Compiler {
                     if shadows_cast {
                         self.emit_var_get(type_name);
                         self.compile_expr(inner)?;
-                        self.emit_u8_u8(Op::CALL_REF, 1, 1);
+                        self.emit_direct_callable_invoke(1);
                         return Ok(());
                     }
                 }
@@ -6752,7 +6794,7 @@ impl Compiler {
                                 for a in args {
                                     self.compile_expr(&a.value)?;
                                 }
-                                self.emit_u8_u8(Op::CALL_REF, args.len() as u8, 1);
+                                self.emit_direct_callable_invoke(args.len() as u8);
                             }
                             if let Some(slot) = self.scope().resolve(&self_kw) {
                                 inst!(self, core_wasm::dup);
@@ -6788,7 +6830,7 @@ impl Compiler {
                             for a in args {
                                 self.compile_expr(&a.value)?;
                             }
-                            self.emit_u8_u8(Op::CALL_REF, args.len() as u8, 1);
+                            self.emit_direct_callable_invoke(args.len() as u8);
                             let result_slot = self.define_local("__js_super_expr_result");
                             self.emit_u16(Op::LOCAL_SET, result_slot);
                             self.restore_js_this(saved_js_this);
@@ -6798,7 +6840,7 @@ impl Compiler {
                             for a in args {
                                 self.compile_expr(&a.value)?;
                             }
-                            self.emit_u8_u8(Op::CALL_REF, (args.len() + 1) as u8, 1);
+                            self.emit_direct_callable_invoke((args.len() + 1) as u8);
                         } else {
                             self.emit_null();
                         }
@@ -7074,8 +7116,8 @@ impl Compiler {
             // ── Delete (JS expression) ──────────────────────────────────
             ExprKind::Delete(inner) => {
                 // delete obj.prop → ecma:object.delete(obj, key), returns true.
-                // Proxy modules route through ecma:proxy.deleteProperty so the
-                // deleteProperty trap fires (non-proxy targets fall through).
+                // Proxy-capable profiles route through their deleteProperty
+                // hook so the trap fires (non-proxy targets fall through).
                 if matches!(
                     inner.as_ref(),
                     Expression {
@@ -7099,7 +7141,7 @@ impl Compiler {
                     self.compile_expr(object)?;
                     self.emit_const(Value::String(Arc::from(field.as_str())));
                     if self.uses_proxy {
-                        self.emit_proxy_delete_property();
+                        self.emit_proxy_delete_property()?;
                     } else {
                         let idx = self.import("ecma:object", "delete");
                         self.emit_host_call(idx, 2);
@@ -7124,7 +7166,7 @@ impl Compiler {
                     self.compile_expr(object)?;
                     self.compile_expr(index)?;
                     if self.uses_proxy {
-                        self.emit_proxy_delete_property();
+                        self.emit_proxy_delete_property()?;
                     } else {
                         let idx = self.import("ecma:object", "delete");
                         self.emit_host_call(idx, 2);
@@ -7354,7 +7396,7 @@ impl Compiler {
                         let getter_key = self.str_const(&getter_name);
                         self.emit_struct_field_op(Op::STRUCT_GET, 0, getter_key);
                         self.emit_u16(Op::LOCAL_GET, class_slot);
-                        self.emit_u8_u8(Op::CALL_REF, 1, 1);
+                        self.emit_direct_callable_invoke(1);
 
                         self.chunk().emit_else(line);
                         self.emit_js_private_brand_check(class_slot, &field_name)?;
@@ -7457,7 +7499,7 @@ impl Compiler {
                 self.emit_global_read(helper);
                 self.compile_expr(left)?;
                 self.compile_expr(right)?;
-                self.emit_u8_u8(Op::CALL_REF, 2, 1);
+                self.emit_direct_callable_invoke(2);
                 return Ok(true);
             }
         }

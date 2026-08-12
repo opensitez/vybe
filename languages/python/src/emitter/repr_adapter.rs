@@ -8,7 +8,7 @@
 //!
 //! Pattern mirrors PHP's `build_php_json_normalize_helper`
 //! (`languages/php/src/emitter/misc_adapter.rs`): a `create_function_chunk`
-//! that recurses on itself via `REF_FUNC` + `CALL_REF`. NO addition to the
+//! that recurses on itself via `REF_FUNC` + shared callable invoke. NO addition to the
 //! retiring `__vybe_*`/`__stdlib_*` bundle, and NO Python semantics in the
 //! host — Python's display stays in the Python crate.
 //!
@@ -47,7 +47,7 @@ fn recurse(chunk: &mut Chunk, self_idx: usize, line: u32) {
     chunk.emit_op_u16(Op::REF_FUNC, self_idx as u16, line);
     chunk.emit(0, line);
     lget(chunk, tmp, line);
-    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
 }
 
 /// Return the index of the `__py_repr` chunk, building it once per module.
@@ -153,6 +153,18 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         c.emit_end(line);
         c.emit_op(Op::RETURN, line);
     }
+    c.emit_end(line);
+
+    // ── generator continuation ──────────────────────────────────────────
+    lget(&mut c, value, line);
+    {
+        let idx = c.add_import("ecma:value", "isGenerator");
+        c.emit_call(idx, 1, line);
+    }
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut c, line);
+    c.emit_if(line);
+    str_const(&mut c, "[continuation]", line);
+    c.emit_op(Op::RETURN, line);
     c.emit_end(line);
 
     // ── number → its string form ────────────────────────────────────────
@@ -359,7 +371,7 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         vybe_compiler::primitives::globals::emit_read(&mut c, "__vybe_js_get_method", line);
         lget(&mut c, value, line);
         str_const(&mut c, method, line);
-        c.emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+        vybe_compiler::primitives::callable::emit_direct_invoke_chunk(&mut c, 2, line);
         lset(&mut c, m, line);
         lget(&mut c, m, line);
         c.emit_call(test_undef, 1, line); // 1 if undefined
@@ -367,7 +379,7 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         c.emit_if(line);
         lget(&mut c, m, line);
         lget(&mut c, value, line);
-        c.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+        vybe_compiler::primitives::callable::emit_direct_invoke_chunk(&mut c, 1, line);
         c.emit_op(Op::RETURN, line);
         c.emit_end(line);
     }
@@ -431,6 +443,85 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
             emit_join(&mut c, self_idx, set_arr, out, i, n, "{", "}", line);
             c.emit_end(line);
             lget(&mut c, out, line);
+            c.emit_op(Op::RETURN, line);
+        }
+        c.emit_end(line);
+    }
+
+    // ── complex → `1j` / `(1+2j)` ───────────────────────────────────────
+    // Python's complex adapter keeps the shared `{real, imag}` shape and stamps
+    // `__type = "complex"` so display/type semantics stay in the Python crate.
+    {
+        lget(&mut c, value, line);
+        struct_get(&mut c, "__type", line);
+        str_const(&mut c, "complex", line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(&mut c, line);
+        c.emit_if(line);
+        {
+            let real = c.alloc_scratch(1);
+            let imag = c.alloc_scratch(1);
+            let real_s = c.alloc_scratch(1);
+            let imag_s = c.alloc_scratch(1);
+            let to_f64 = c.add_import("wasm:js-number", "toF64");
+            let to_str = c.add_import("ecma:string", "String");
+            let abs = c.add_import("ecma:math", "abs");
+
+            lget(&mut c, value, line);
+            struct_get(&mut c, "real", line);
+            lset(&mut c, real, line);
+            lget(&mut c, value, line);
+            struct_get(&mut c, "imag", line);
+            lset(&mut c, imag, line);
+
+            lget(&mut c, real, line);
+            c.emit_call(to_str, 1, line);
+            lset(&mut c, real_s, line);
+            lget(&mut c, imag, line);
+            c.emit_call(abs, 1, line);
+            c.emit_call(to_str, 1, line);
+            lset(&mut c, imag_s, line);
+
+            lget(&mut c, real, line);
+            c.emit_call(to_f64, 1, line);
+            c.emit_f64_const(0.0, line);
+            c.emit_op(Op::F64_EQ, line);
+            c.emit_if(line);
+            {
+                lget(&mut c, imag, line);
+                c.emit_call(to_f64, 1, line);
+                c.emit_f64_const(0.0, line);
+                c.emit_op(Op::F64_LT, line);
+                c.emit_if(line);
+                str_const(&mut c, "-", line);
+                lget(&mut c, imag_s, line);
+                concat(&mut c, line);
+                c.emit_else(line);
+                lget(&mut c, imag_s, line);
+                c.emit_end(line);
+                str_const(&mut c, "j", line);
+                concat(&mut c, line);
+            }
+            c.emit_else(line);
+            {
+                str_const(&mut c, "(", line);
+                lget(&mut c, real_s, line);
+                concat(&mut c, line);
+                lget(&mut c, imag, line);
+                c.emit_call(to_f64, 1, line);
+                c.emit_f64_const(0.0, line);
+                c.emit_op(Op::F64_LT, line);
+                c.emit_if(line);
+                str_const(&mut c, "-", line);
+                c.emit_else(line);
+                str_const(&mut c, "+", line);
+                c.emit_end(line);
+                concat(&mut c, line);
+                lget(&mut c, imag_s, line);
+                concat(&mut c, line);
+                str_const(&mut c, "j)", line);
+                concat(&mut c, line);
+            }
+            c.emit_end(line);
             c.emit_op(Op::RETURN, line);
         }
         c.emit_end(line);

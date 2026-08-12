@@ -21,9 +21,13 @@ fn set_buf(value: Expression) -> Statement {
 pub(super) fn string_buffer() -> Statement {
     let members = vec![
         field(BUF, "String", str_lit("")),
-        // `StringBuffer([Object content = ''])` — the optional seed.
+        // `StringBuffer([Object? content = ''])` — the walker supplies the
+        // omitted-argument default as an explicit `""`. Do NOT put the default
+        // here: the shared optional-param lowering uses null as its missing
+        // sentinel, but Dart distinguishes omitted from explicit null, and
+        // `StringBuffer(null)` must contain `"null"`.
         constructor(
-            vec![param("content", Some("Object"), Some(str_lit("")))],
+            vec![param("content", None, None)],
             vec![set_buf(stringify(ident("content")))],
         ),
         // **Getters, and that is the RIGHT shape** — Dart spells them
@@ -52,13 +56,13 @@ pub(super) fn string_buffer() -> Statement {
         ),
         method(
             "write",
-            vec![param("o", Some("Object"), None)],
+            vec![param("o", None, None)],
             Some("void"),
             vec![set_buf(concat(buf(), stringify(ident("o"))))],
         ),
         method(
             "writeln",
-            vec![param("o", Some("Object"), Some(str_lit("")))],
+            vec![param("o", None, None)],
             Some("void"),
             vec![set_buf(concat(
                 concat(buf(), stringify(ident("o"))),

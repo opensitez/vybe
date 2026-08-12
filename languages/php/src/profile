@@ -757,15 +757,19 @@ header              = { emit = "common:php.header",               min_args = 1, 
 # which is `node:http`'s `status`/`set_status`; a combined `http_response_code`
 # host function was PHP's function name living in Node's namespace.
 http_response_code  = { emit = "common:php.http_response_code",   min_args = 0, max_args = 1 }
-session_start       = { emit = "common:php.session_start",         min_args = 0, max_args = 0 }
+session_start       = { emit = "common:php.session_start",         min_args = 0, max_args = 1 }
 # Identity/lifecycle come from the SHARED session primitive, not a PHP-specific
 # emit — a session is a session across languages (httpserver.md §4a). These three
 # did not exist at all before; calling them killed the script mid-response with
 # "undefined is not callable".
-session_id          = { emit = "common:http_session.id",           min_args = 0, max_args = 1 }
-session_name        = { emit = "common:http_session.name",         min_args = 0, max_args = 1 }
-session_status      = { emit = "common:http_session.status",       min_args = 0, max_args = 0 }
-session_regenerate_id = { emit = "common:http_session.regenerate_id", min_args = 0, max_args = 1 }
+session_id          = { emit = "common:php.session_id",            min_args = 0, max_args = 1 }
+session_name        = { emit = "common:php.session_name",          min_args = 0, max_args = 1 }
+session_status      = { emit = "common:php.session_status",        min_args = 0, max_args = 0 }
+session_regenerate_id = { emit = "common:php.session_regenerate_id", min_args = 0, max_args = 1 }
+session_write_close = { emit = "common:php.session_write_close",   min_args = 0, max_args = 0 }
+session_commit      = { emit = "common:php.session_write_close",   min_args = 0, max_args = 0 }
+session_abort       = { emit = "common:php.session_abort",         min_args = 0, max_args = 0 }
+session_reset       = { emit = "common:php.session_reset",         min_args = 0, max_args = 0 }
 session_unset       = { emit = "common:php.session_unset",         min_args = 0, max_args = 0 }
 session_destroy     = { emit = "common:php.session_destroy",       min_args = 0, max_args = 0 }
 # Cookie serialization is the SHARED RFC 6265 primitive; only the value
@@ -1065,6 +1069,9 @@ reduce   = "__array_reduce"
 [namespace_constants]
 "PHP_VERSION"           = "8.0.0"
 "PHP_VERSION_ID"        = 80000
+"PHP_SESSION_DISABLED"  = 0
+"PHP_SESSION_NONE"      = 1
+"PHP_SESSION_ACTIVE"    = 2
 "Math.PI"               = 3.141592653589793
 "Math.E"                = 2.718281828459045
 "Math.LN2"              = 0.6931471805599453

@@ -188,7 +188,7 @@ void main() {
   // Create a link pointing to its own parent
   Link('${dir.path}/cycle').createSync(dir.path);
   try {
-    dir.listSync(recursive: true, followLinks: true).length;
+    dir.listSync(recursive: true, followLinks: true);
     print('Did not throw'); // Dart throws FileSystemException for cyclic links
   } on FileSystemException {
     print('FileSystemException thrown');

@@ -171,5 +171,25 @@ pub fn classes() -> &'static [DotnetClass] {
             widget_host_fn: Some("new_TreeView"),
             widget_host_module: "vybe:gui",
         },
+        // A CheckedListBox IS a ListBox with per-item checkboxes, so it
+        // inherits the whole list surface by declaring that parent.
+        // `vybe_widgets` already has the `checkedlistbox` kind and its default
+        // size; only the descriptor entry was missing, and without it a
+        // designer could NAME the control while every property write on it was
+        // dropped — see [[project_dotnet_strips_and_items_are_menu_elements]].
+        DotnetClass {
+            name: "CheckedListBox",
+            parent: Some("ListBox"),
+            properties: &[
+                "CheckOnClick",
+                "CheckedIndices",
+                "CheckedItems",
+                "ThreeDCheckBoxes",
+            ],
+            methods: &[],
+            ctor_arity: 0,
+            widget_host_fn: None,
+            widget_host_module: "vybe:gui",
+        },
     ]
 }

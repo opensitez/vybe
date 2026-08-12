@@ -126,7 +126,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, iter_slot);
         self.emit_global_write("__js_this");
         self.emit_u16(Op::LOCAL_GET, iter_fn_slot);
-        self.emit_u8_u8(Op::CALL_REF, 0, 1);
+        self.emit_direct_callable_invoke(0);
         self.emit_u16(Op::LOCAL_SET, it_slot);
 
         // Emit BLOCK + LOOP
@@ -144,7 +144,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, it_slot);
         self.emit_global_write("__js_this");
         self.emit_u16(Op::LOCAL_GET, next_method_slot);
-        self.emit_u8_u8(Op::CALL_REF, 0, 1);
+        self.emit_direct_callable_invoke(0);
         self.emit_u16(Op::LOCAL_SET, step_slot);
 
         // ECMA-262 IteratorNext: next() must return an Object. A primitive
@@ -447,7 +447,7 @@ impl Compiler {
                     for arg in args {
                         self.compile_expr(&arg.value)?;
                     }
-                    self.emit_u8_u8(Op::CALL_REF, args.len() as u8, 1);
+                    self.emit_direct_callable_invoke(args.len() as u8);
                     return Ok(());
                 }
             }
@@ -1750,7 +1750,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, iterator_slot);
         self.emit_global_write("__js_this");
         self.emit_u16(Op::LOCAL_GET, return_fn_slot);
-        self.emit_u8_u8(Op::CALL_REF, 0, 1);
+        self.emit_direct_callable_invoke(0);
         self.emit(Op::DROP);
         self.chunk().emit_end(line);
     }

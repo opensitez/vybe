@@ -173,12 +173,30 @@ impl Document {
         self.next_id += 1;
         let id = self.next_id;
         let kind = control_kind(&tag, &input_type);
-        let (w, h) = default_size(kind);
+        let (w, h) = default_size(kind, &tag);
         let mut widget = make_widget(kind, &Self::widget_name(id), "", w, h);
         // Give it its geometry immediately: `make_widget` sets a control's own
         // width/height fields, but the layout rect is what positioning and hit
         // testing use, and an unstyled element must still be visible.
+        // Metadata content is a node with no rendering: zero-sized, so nothing
+        // paints and nothing hit-tests. `SetVisible` would look like the
+        // obvious answer and is not — only panels honour it; a label ignores
+        // it entirely, so hiding a leaf that way silently fails.
+        let (w, h) = if renders_nothing(&tag, &input_type) {
+            (0.0, 0.0)
+        } else {
+            (w, h)
+        };
         widget.set_rect(LayoutRect::new(0.0, 0.0, w, h));
+        // A `<fieldset>` draws a border with its legend across the top; a
+        // `<div>` draws nothing. Same widget, and the UA stylesheet is what
+        // separates them.
+        if tag == "fieldset" {
+            widget.handle_command(&WidgetCommand::Custom(
+                "SetBordered".into(),
+                CommandValue::Bool(true),
+            ));
+        }
         self.detached.insert(id, widget);
         self.nodes.insert(
             id,
@@ -309,6 +327,22 @@ impl Document {
             return false;
         }
 
+        // An `<option>` is CONTENT of its select, not a control beside it —
+        // `insert_widget` would refuse, because a combobox is not a container.
+        // Appending options is the DOM-native way to fill a list, so it has to
+        // work; before this the only route was assigning the whole
+        // `textContent`, which no frontend spells that way.
+        if self.value_kind(parent) == ValueKind::Index && self.is_item_element(child) {
+            if let Some(n) = self.nodes.get_mut(&child) {
+                n.parent = Some(parent);
+            }
+            if let Some(p) = self.nodes.get_mut(&parent) {
+                p.children.push(child);
+            }
+            self.sync_items(parent);
+            return true;
+        }
+
         let Some(widget) = self.extract_widget(child) else {
             return false;
         };
@@ -334,6 +368,29 @@ impl Document {
                 // setting the dock BEFORE the parent (the order a designer
                 // file emits) left the element with its default rect forever.
                 self.relayout_docked(parent);
+                // Same reasoning for out-of-flow, and the same ordering trap:
+                // `Left := 8` before `Parent := Panel` is the ordinary way to
+                // write VCL, and the container did not exist to be told.
+                // Metadata takes no part in layout either — a `<style>` in a
+                // flow container would otherwise be handed a slot and push its
+                // siblings down by a row of nothing.
+                let metadata = self
+                    .node(child)
+                    .map(|n| renders_nothing(&n.tag, &n.input_type))
+                    .unwrap_or(false);
+                if metadata {
+                    self.set_child_flow(child, false);
+                }
+                if self.positions_itself(child) {
+                    self.set_child_flow(child, false);
+                    // Insertion already ran the container's layout — twice, in
+                    // fact — so the child's rect was overwritten before it was
+                    // excluded. Restore it from the DECLARATIONS rather than
+                    // from the rect we found: the rect is downstream of the
+                    // layout that just clobbered it, and the declarations are
+                    // what the program actually asked for.
+                    self.apply_declared_geometry(child);
+                }
                 true
             }
             // The parent is not a container. Put the control back where it
@@ -610,18 +667,120 @@ impl Document {
         let px = parse_px(value);
         match property.as_str() {
             "left" | "top" | "width" | "height" => {
-                let Some(px) = px else { return };
+                // `left`/`width` measure across, `top`/`height` down — which is
+                // the axis a percentage refers to.
+                let horizontal = matches!(property.as_str(), "left" | "width");
+                let Some(px) = self.resolve_length(node, value, horizontal) else {
+                    return;
+                };
                 if node == DOCUMENT {
                     let r = self.form.rect();
                     let r = apply_axis(r, &property, px);
                     <Form as PanelWidget>::set_rect(&mut self.form, r);
                     return;
                 }
+                let clamped = self.clamp_to_constraints(node, &property, px);
+                // `left`/`top` are measured from the containing block, not from
+                // the document. A rect is in form coordinates, so the block's
+                // origin has to be added back — otherwise a child at (20, 50)
+                // inside a panel at (10, 10) lands at (20, 50) on the BODY.
+                // Invisible whenever the container sits at the origin, which is
+                // why the calculator never showed it.
+                let origin = match property.as_str() {
+                    "left" => self.containing_block(node).x,
+                    "top" => self.containing_block(node).y,
+                    _ => 0.0,
+                };
                 let Some(w) = self.widget_mut(node) else {
                     return;
                 };
-                let r = apply_axis(w.rect(), &property, px);
+                let r = apply_axis(w.rect(), &property, origin + clamped);
                 w.set_rect(r);
+                // Setting a coordinate is a positioning statement, so the
+                // container must stop arranging this child — otherwise the next
+                // `relayout()` recomputes the rect from flow order and discards
+                // the value just written. The rect was never missing; it was
+                // overwritten.
+                if matches!(property.as_str(), "left" | "top") {
+                    if self.positions_itself(node) {
+                        self.set_child_flow(node, false);
+                    } else {
+                        // `left` is inert on a static box in CSS. The write
+                        // above moved the widget, so hand the child back to its
+                        // container and let the flow answer stand.
+                        self.relayout_parent(node);
+                    }
+                }
+            }
+            // `right`/`bottom` position from the OPPOSITE edge of the
+            // containing block, which is what makes an absolutely positioned
+            // box anchorable to any corner — Flutter's `Positioned` uses all
+            // four, and VCL/WinForms use only the first two.
+            //
+            // With the matching `left`/`top` also set, CSS stretches the box
+            // between the two edges; with neither, the box keeps its size and
+            // moves. Both fall out of computing the edge and comparing.
+            "right" | "bottom" => {
+                let horizontal = property == "right";
+                let Some(offset) = self.resolve_length(node, value, horizontal) else {
+                    return;
+                };
+                let block = self.containing_block(node);
+                let (origin, extent) = if horizontal {
+                    (block.x, block.w)
+                } else {
+                    (block.y, block.h)
+                };
+                let opposite = if horizontal { "left" } else { "top" };
+                let has_opposite = self
+                    .style(node)
+                    .map(|s| !s.get(opposite).is_empty())
+                    .unwrap_or(false);
+                let Some(w) = self.widget_mut(node) else {
+                    return;
+                };
+                let mut r = w.rect();
+                // The far edge in FORM coordinates — the containing block's own
+                // origin plus its extent, less the inset.
+                let far_edge = origin + extent - offset;
+                if has_opposite {
+                    // Anchored both sides: the box spans between them.
+                    if horizontal {
+                        r.w = (far_edge - r.x).max(0.0);
+                    } else {
+                        r.h = (far_edge - r.y).max(0.0);
+                    }
+                } else if horizontal {
+                    r.x = far_edge - r.w;
+                } else {
+                    r.y = far_edge - r.h;
+                }
+                w.set_rect(r);
+                self.set_child_flow(node, false);
+            }
+            // Constraints. Recorded by the store; applied by re-running the
+            // axis they constrain, so declaration order does not matter.
+            "min-width" | "max-width" => self.reapply_constrained_axis(node, "width"),
+            "min-height" | "max-height" => self.reapply_constrained_axis(node, "height"),
+            // `align-self` — one child overriding the container's
+            // `align-items`. Told to the container, which is what aligns.
+            "align-self" => {
+                let mode = value.trim().to_ascii_lowercase();
+                self.tell_container(node, "SetChildAlignSelf", &mode);
+            }
+            // `order` — the position a child takes in the flow, regardless of
+            // document order.
+            "order" => {
+                let order = value.trim().to_string();
+                self.tell_container(node, "SetChildOrder", &order);
+            }
+            // `overflow` — whether a container clips what does not fit.
+            "overflow" | "overflow-x" | "overflow-y" => {
+                let mode = value.trim().to_ascii_lowercase();
+                self.command(
+                    node,
+                    &WidgetCommand::Custom("SetOverflow".into(), CommandValue::Text(mode)),
+                );
             }
             // Docking. The element stops owning its own rect: the container
             // hands it one edge of whatever space is left, in child order,
@@ -648,9 +807,119 @@ impl Document {
                 let parent = n.parent;
                 self.relayout_docked(parent.unwrap_or(DOCUMENT));
             }
+            // `display` carries TWO things, and conflating them cost a day:
+            // `none` is visibility, every other value is a LAYOUT MODE. When
+            // this arm meant only visibility, `display: flex` marked the
+            // element visible and selected no layout — indistinguishable from
+            // unimplemented, while actually being consumed.
             "display" => {
-                let visible = !value.eq_ignore_ascii_case("none");
-                self.command(node, &WidgetCommand::SetVisible(visible));
+                if value.eq_ignore_ascii_case("none") {
+                    self.command(node, &WidgetCommand::SetVisible(false));
+                } else {
+                    self.command(node, &WidgetCommand::SetVisible(true));
+                    // A flex container arranges its children along an axis,
+                    // which is what the flow panel already does; `block` leaves
+                    // it as it was. Neither needs a different widget — that is
+                    // the whole point of the mode being a property.
+                }
+            }
+            // `position` decides WHO places this element: itself, or its
+            // container. `absolute`/`fixed` are out of flow, which is precisely
+            // what every pixel-positioned frontend means by setting Left/Top.
+            //
+            // Addressed to the PARENT, because the container is what arranges —
+            // the same reason `dock` is resolved by `relayout_docked` rather
+            // than by the child.
+            "position" => {
+                let in_flow = !matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "absolute" | "fixed"
+                );
+                self.set_child_flow(node, in_flow);
+            }
+            "flex-direction" => {
+                let direction = value.trim().to_ascii_lowercase();
+                self.command(
+                    node,
+                    &WidgetCommand::Custom(
+                        "SetFlexDirection".into(),
+                        CommandValue::Text(direction),
+                    ),
+                );
+            }
+            // Flutter's `mainAxisAlignment` / `crossAxisAlignment` — the two
+            // most-used layout properties it has, and the panel had the
+            // algorithm with no vocabulary reaching it.
+            "justify-content" => {
+                let mode = value.trim().to_ascii_lowercase();
+                self.command(
+                    node,
+                    &WidgetCommand::Custom("SetJustifyContent".into(), CommandValue::Text(mode)),
+                );
+            }
+            "align-items" => {
+                let mode = value.trim().to_ascii_lowercase();
+                self.command(
+                    node,
+                    &WidgetCommand::Custom("SetAlignItems".into(), CommandValue::Text(mode)),
+                );
+            }
+            "flex-wrap" => {
+                let wrap = value.trim().to_ascii_lowercase();
+                self.command(
+                    node,
+                    &WidgetCommand::Custom("SetFlexWrap".into(), CommandValue::Text(wrap)),
+                );
+            }
+            "gap" | "row-gap" | "column-gap" => {
+                let Some(px) = px else { return };
+                self.command(
+                    node,
+                    &WidgetCommand::Custom("SetGap".into(), CommandValue::Number(px as f64)),
+                );
+            }
+            "padding" => {
+                // One inset, from the largest edge of the shorthand: the panel
+                // carries a single padding. Better here, once, than in each
+                // frontend flattening its own.
+                let largest = value
+                    .split_whitespace()
+                    .filter_map(parse_px)
+                    .fold(f32::NAN, f32::max);
+                if largest.is_finite() {
+                    self.command(
+                        node,
+                        &WidgetCommand::Custom(
+                            "SetPadding".into(),
+                            CommandValue::Number(largest as f64),
+                        ),
+                    );
+                }
+            }
+            // `flex: <grow>` on a CHILD — the weight it takes of the leftover
+            // space. `flex: 0 0 auto` is a fixed bar, `flex: 1` shares.
+            "flex" | "flex-grow" => {
+                let grow = value
+                    .split_whitespace()
+                    .next()
+                    .and_then(|g| g.parse::<f32>().ok());
+                let grow = match (grow, value.trim()) {
+                    (Some(grow), _) => Some(grow),
+                    (None, "none") => Some(0.0),
+                    (None, "auto") => Some(1.0),
+                    _ => None,
+                };
+                if let Some(grow) = grow {
+                    // Told to the container, not the child: `SetFlex` is only
+                    // implemented by panels, so a button or label silently kept
+                    // the trait default of 1.0 and grew regardless. The
+                    // container is what distributes the space, so it is what
+                    // has to know.
+                    self.set_child_flex(node, grow);
+                    // A panel is also a child of something, and its own weight
+                    // is its business.
+                    self.command(node, &WidgetCommand::SetFlex(grow));
+                }
             }
             "visibility" => {
                 let visible = !value.eq_ignore_ascii_case("hidden");
@@ -685,6 +954,272 @@ impl Document {
             }
             _ => {}
         }
+    }
+
+    /// Tell an element's CONTAINER whether it arranges that element.
+    ///
+    /// The flag lives with the container because the container is what
+    /// arranges, exactly as `dock` does. It is re-sent on insertion too: a
+    /// frontend sets geometry before appending as often as after, and a
+    /// container that never heard about a child cannot leave it alone.
+    fn set_child_flow(&mut self, node: NodeId, in_flow: bool) {
+        let Some(parent) = self.nodes.get(&node).and_then(|n| n.parent) else {
+            return;
+        };
+        let spec = format!(
+            "{}={}",
+            Self::widget_name(node),
+            if in_flow { "flow" } else { "absolute" }
+        );
+        if parent == DOCUMENT {
+            self.form.handle_command(&WidgetCommand::Custom(
+                "SetChildFlow".into(),
+                CommandValue::Text(spec),
+            ));
+            return;
+        }
+        self.command(
+            parent,
+            &WidgetCommand::Custom("SetChildFlow".into(), CommandValue::Text(spec)),
+        );
+    }
+
+    /// Is this element an ITEM of a list rather than a control of its own?
+    fn is_item_element(&self, node: NodeId) -> bool {
+        self.node(node)
+            .map(|n| matches!(n.tag.as_str(), "option" | "optgroup" | "li"))
+            .unwrap_or(false)
+    }
+
+    /// Rebuild an item-bearing control's list from its item children.
+    ///
+    /// Derived on demand rather than kept in step, for the reason `linecount`
+    /// is: one source of truth, and no ordering rule to get wrong when an
+    /// option's text arrives after the option does.
+    fn sync_items(&mut self, node: NodeId) {
+        let items: Vec<NodeId> = self
+            .node(node)
+            .map(|n| n.children.clone())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|c| self.is_item_element(*c))
+            .collect();
+        self.command(node, &WidgetCommand::ClearItems);
+        for item in items {
+            let text = self.text_content(item);
+            self.command(node, &WidgetCommand::AddItem(text));
+        }
+    }
+
+    /// The containing block: the nearest ancestor an out-of-flow child's
+    /// coordinates are measured from.
+    ///
+    /// The nearest **positioned** ancestor, exactly as CSS defines it — an
+    /// ancestor whose declared `position` is not `static`. A plain `<div>` is
+    /// not one, and is correctly transparent to its children's coordinates.
+    ///
+    /// This is the whole rule; there is no container special case. A frontend
+    /// whose children are parent-relative — VCL, WinForms, Flutter's
+    /// `Positioned`, all of them — gets that by its containers **declaring**
+    /// `position: relative`, which `primitives/gui.rs` emits at construction.
+    /// The declaration is in the document, so a real engine handed the same
+    /// markup places the same controls in the same places. A behavioural
+    /// assumption here would render correctly and be wrong in a browser, which
+    /// is the one failure mode being HTML underneath exists to prevent.
+    ///
+    /// `position: fixed` resolves against the viewport rather than an ancestor,
+    /// so the walk skips straight to the form.
+    fn containing_block(&mut self, node: NodeId) -> LayoutRect {
+        if self.declared_position(node) == "fixed" {
+            return self.form.rect();
+        }
+        let mut cursor = self.nodes.get(&node).and_then(|n| n.parent);
+        while let Some(parent) = cursor {
+            if parent == DOCUMENT {
+                break;
+            }
+            if !matches!(self.declared_position(parent).as_str(), "" | "static") {
+                if let Some(w) = self.widget_mut(parent) {
+                    return w.rect();
+                }
+            }
+            cursor = self.nodes.get(&parent).and_then(|n| n.parent);
+        }
+        // No positioned ancestor: the initial containing block, which is the
+        // viewport. A browser answers the same.
+        self.form.rect()
+    }
+
+    fn declared_position(&self, node: NodeId) -> String {
+        self.style(node)
+            .map(|s| s.get("position").trim().to_ascii_lowercase())
+            .unwrap_or_default()
+    }
+
+    /// The containing block's extent along one axis — what a percentage is a
+    /// percentage OF.
+    ///
+    /// The parent's rect, or the viewport for a child of the document. This is
+    /// the piece parsing cannot have, which is why `Length::Percent` stays
+    /// symbolic until here.
+    fn containing_extent(&mut self, node: NodeId, horizontal: bool) -> f32 {
+        let rect = self.containing_block(node);
+        if horizontal { rect.w } else { rect.h }
+    }
+
+    /// A CSS length in pixels, resolving percentages against the containing
+    /// block. `horizontal` picks which axis the percentage refers to.
+    fn resolve_length(&mut self, node: NodeId, value: &str, horizontal: bool) -> Option<f32> {
+        if let Some(px) = parse_px(value) {
+            return Some(px);
+        }
+        let percent = value.trim().strip_suffix('%')?.trim().parse::<f32>().ok()?;
+        Some(self.containing_extent(node, horizontal) * percent / 100.0)
+    }
+
+    /// Apply `min-*`/`max-*` to a width or height.
+    ///
+    /// Declared constraints are read from the store rather than tracked
+    /// separately, so they apply whichever order they were set in — `max-width`
+    /// before or after `width` gives the same answer, which is what a
+    /// declarative frontend needs since it emits fields in catalog order.
+    fn clamp_to_constraints(&mut self, node: NodeId, property: &str, value: f32) -> f32 {
+        let (min_key, max_key, horizontal) = match property {
+            "width" => ("min-width", "max-width", true),
+            "height" => ("min-height", "max-height", false),
+            _ => return value,
+        };
+        let declared = |doc: &Self, key: &str| -> Option<String> {
+            let raw = doc.style(node)?.get(key);
+            (!raw.is_empty()).then(|| raw.to_string())
+        };
+        let min = declared(self, min_key);
+        let max = declared(self, max_key);
+        let mut value = value;
+        if let Some(max) = max.and_then(|m| self.resolve_length(node, &m, horizontal)) {
+            value = value.min(max);
+        }
+        if let Some(min) = min.and_then(|m| self.resolve_length(node, &m, horizontal)) {
+            value = value.max(min);
+        }
+        value
+    }
+
+    /// Re-apply a declared width/height through the constraints — used when a
+    /// `min-*`/`max-*` arrives after the size it constrains.
+    fn reapply_constrained_axis(&mut self, node: NodeId, property: &str) {
+        let horizontal = property == "width";
+        let Some(declared) = self
+            .style(node)
+            .map(|s| s.get(property).to_string())
+            .filter(|d| !d.is_empty())
+        else {
+            return;
+        };
+        let Some(px) = self.resolve_length(node, &declared, horizontal) else {
+            return;
+        };
+        let clamped = self.clamp_to_constraints(node, property, px);
+        if let Some(w) = self.widget_mut(node) {
+            let r = apply_axis(w.rect(), property, clamped);
+            w.set_rect(r);
+        }
+    }
+
+    /// Tell an element's container something about that element.
+    ///
+    /// Per-child layout facts — grow weight, cross alignment, order — live
+    /// with whoever arranges, for the reason `dock` does: the child does not
+    /// act on them, the container does. The command carries `name=value`
+    /// because a container is addressed by ITS name and has to know which child
+    /// is meant.
+    fn tell_container(&mut self, node: NodeId, verb: &str, value: &str) {
+        let Some(parent) = self.nodes.get(&node).and_then(|n| n.parent) else {
+            return;
+        };
+        if parent == DOCUMENT {
+            return;
+        }
+        let spec = format!("{}={}", Self::widget_name(node), value);
+        self.command(
+            parent,
+            &WidgetCommand::Custom(verb.to_string(), CommandValue::Text(spec)),
+        );
+    }
+
+    /// Record a child's grow weight with its container.
+    fn set_child_flex(&mut self, node: NodeId, grow: f32) {
+        self.tell_container(node, "SetChildFlex", &grow.to_string());
+    }
+
+    /// Put an out-of-flow element where its own declarations say.
+    ///
+    /// Reads the store, not the rect: a rect is whatever the last layout pass
+    /// left behind, and after an insertion that is exactly the value we are
+    /// trying to undo.
+    fn apply_declared_geometry(&mut self, node: NodeId) {
+        let declared: Vec<(String, f32)> = ["left", "top", "width", "height"]
+            .iter()
+            .filter_map(|axis| {
+                let value = self.style(node)?.get(axis);
+                parse_px(value).map(|px| ((*axis).to_string(), px))
+            })
+            .collect();
+        let Some(w) = self.widget_mut(node) else {
+            return;
+        };
+        let mut rect = w.rect();
+        for (axis, px) in &declared {
+            rect = apply_axis(rect, axis, *px);
+        }
+        w.set_rect(rect);
+    }
+
+    /// Re-run the container's layout, for a child the container arranges.
+    ///
+    /// Handing a panel its own rect is what triggers `relayout()`. Needed
+    /// because writing `left` on an in-flow child moves it directly, and in CSS
+    /// `left` is inert on a `position: static` box — the container's answer has
+    /// to win, or the two disagree until something else happens to relayout.
+    fn relayout_parent(&mut self, node: NodeId) {
+        let Some(parent) = self.nodes.get(&node).and_then(|n| n.parent) else {
+            return;
+        };
+        if parent == DOCUMENT {
+            return;
+        }
+        if let Some(w) = self.widget_mut(parent) {
+            let rect = w.rect();
+            w.set_rect(rect);
+        }
+    }
+
+    /// Has this element been positioned by its own coordinates?
+    ///
+    /// The bridge until every frontend declares `position` explicitly. In CSS
+    /// `left`/`top` do nothing on a `position: static` box, so a frontend
+    /// setting them and expecting them to count is *already* saying
+    /// `position: absolute` — it simply has not said so yet. Reading the
+    /// declaration store means this answers from what the program actually set,
+    /// not from a guess.
+    fn positions_itself(&self, node: NodeId) -> bool {
+        let Some(style) = self.style(node) else {
+            return false;
+        };
+        match style.get("position").trim().to_ascii_lowercase().as_str() {
+            "absolute" | "fixed" => return true,
+            // `static` is the author saying the container decides, and it wins
+            // over the inference below.
+            "static" => return false,
+            // `relative` is offset FROM the flow position, so a box with
+            // coordinates keeps them — the container must not recompute it.
+            // Without this, declaring containers `relative` (which they must
+            // be, to be containing blocks) would make a nested panel lose the
+            // coordinates it had before the declaration existed.
+            "relative" | "" => {}
+            _ => return false,
+        }
+        !style.get("left").is_empty() || !style.get("top").is_empty()
     }
 
     /// An element's `style`. A node that does not exist has no declarations,
@@ -823,9 +1358,75 @@ impl Document {
         self.command(node, &WidgetCommand::Focus);
     }
 
+    /// `select.selectedIndex` — `-1` when nothing is selected.
+    ///
+    /// The widget already holds this: a list control answers `GetValue` with
+    /// [`CommandValue::Index`], which is the same fact `value_kind_of` reports
+    /// as [`ValueKind::Index`]. So this asks the control rather than keeping a
+    /// second copy of the selection in the document.
+    ///
+    /// It is NOT `value`. `HTMLSelectElement.value` is the selected option's
+    /// value string; `selectedIndex` is a `long`. Binding a toolkit's
+    /// `ItemIndex` to `value` would read correctly here and wrongly in a
+    /// browser.
+    pub fn selected_index(&mut self, node: NodeId) -> i32 {
+        match self.command(node, &WidgetCommand::GetValue) {
+            CommandValue::Index(i) => i as i32,
+            _ => -1,
+        }
+    }
+
+    /// `select.options[i].text` — the item at an index, `""` when out of range.
+    ///
+    /// The list had add, remove and clear but no READ, so an indexed item was
+    /// unreachable from any frontend. `TStrings[i]`, .NET's `this[int]` and the
+    /// options collection are all this one question.
+    pub fn item_text(&mut self, node: NodeId, index: usize) -> String {
+        match self.command(node, &WidgetCommand::GetItem(index)) {
+            CommandValue::Text(text) => text,
+            _ => String::new(),
+        }
+    }
+
+    pub fn set_item_text(&mut self, node: NodeId, index: usize, text: &str) {
+        self.command(node, &WidgetCommand::SetItem(index, text.to_string()));
+    }
+
+    pub fn set_selected_index(&mut self, node: NodeId, index: i32) {
+        // The IDL clamps a negative assignment to "nothing selected"; the
+        // command takes a `usize`, so a negative index has no command to send.
+        if let Ok(index) = usize::try_from(index) {
+            self.command(node, &WidgetCommand::SetSelectedIndex(index));
+        }
+    }
+
     /// `select.add(option)` / `select.remove(index)`.
+    /// `select.add(option)` — append an item.
+    ///
+    /// A **radio group's** items are not an option list: they are child
+    /// `<input type=radio>` elements, which is what HTML uses and what VCL's
+    /// `TRadioGroup` and WinForms' `GroupBox` actually build. `AddItem` had
+    /// nowhere to land on a `<fieldset>`, so `Items.Add('red')` raised nothing
+    /// and produced nothing — a declared member that was silently inert.
     pub fn add_item(&mut self, node: NodeId, text: &str) {
+        if self.is_radio_group(node) {
+            let option = self.create_element("input", "radio");
+            self.append_child(node, option);
+            // The caption is the control's own text, the way a VCL radio item
+            // carries its label. HTML would wrap the input in a `<label>`; that
+            // is the shape to grow into, and until then a void element cannot
+            // serialise its caption — see guiplan's gap list.
+            self.set_text_content(option, text);
+            return;
+        }
         self.command(node, &WidgetCommand::AddItem(text.to_string()));
+    }
+
+    /// A container whose items are radio choices rather than list rows.
+    fn is_radio_group(&self, node: NodeId) -> bool {
+        self.node(node)
+            .map(|n| n.tag == "fieldset")
+            .unwrap_or(false)
     }
 
     pub fn remove_item(&mut self, node: NodeId, index: usize) {
@@ -990,12 +1591,26 @@ fn control_kind(tag: &str, input_type: &str) -> &'static str {
             "date" | "datetime-local" | "time" | "month" | "week" => "datetimepicker",
             "button" | "submit" | "reset" => "button",
             "image" => "picturebox",
+            // A password field masks what it holds, which is exactly what the
+            // masked textbox is for — it fell to the plain textbox before and
+            // showed the characters.
+            "password" => "maskedtextbox",
             // `text`, `password`, `email`, `search`, `tel`, `url`, and the
             // spec's "missing value default" for anything unknown.
             _ => "textbox",
         },
         "button" => "button",
-        "select" => "combobox",
+        // `<select>` is BOTH controls, and `size` is what separates them —
+        // HTML's own rule: a size above one is a list box, anything else is a
+        // dropdown. Answering `combobox` unconditionally left a VCL `TListBox`
+        // no element that could represent it, and `<ul>` — the obvious
+        // alternative — has no selection IDL at all: no `selectedIndex`, no
+        // indexed item text, no `remove(i)`. It rendered as a list and could
+        // not answer which row was selected, silently.
+        "select" => match input_type.parse::<u32>() {
+            Ok(size) if size > 1 => "listbox",
+            _ => "combobox",
+        },
         "datalist" => "listbox",
         "textarea" => "richtextbox",
         "progress" | "meter" => "progressbar",
@@ -1009,16 +1624,146 @@ fn control_kind(tag: &str, input_type: &str) -> &'static str {
         "table" => "datagridview",
         "ul" | "ol" => "listbox",
         "menu" => "menustrip",
+        // A `<select>`'s options and a table's cells are CONTENT of their
+        // container, not controls beside it. They are text-bearing, so `label`
+        // is right — listed explicitly so it is a decision rather than the
+        // fallback catching them.
+        "option" | "optgroup" | "td" | "th" | "caption" | "legend" | "summary" => "label",
+        // Table structure: rows and sections hold cells, so they are
+        // containers rather than text.
+        "tr" | "thead" | "tbody" | "tfoot" | "colgroup" => "flowlayoutpanel",
+        "iframe" | "embed" | "object" => "picturebox",
+        // A rule is a thematic break: a thin panel, which is what it draws as.
+        // Without an arm here it would fall to `_ => "label"` at 120x20 — the
+        // silent-label trap — which is why a separator stayed on `<menu>` in
+        // the dotnet adapter until this existed.
+        "hr" => "panel",
         "dialog" | "div" | "form" | "section" | "article" | "main" | "aside" | "header"
         | "footer" | "nav" | "li" => "flowlayoutpanel",
+        // A custom element IS the control it is named after: `<vybe-tabcontrol>`
+        // is the tabcontrol widget. The tag carries the kind, so the two halves
+        // of the mapping cannot drift and adding a control needs no arm here.
+        //
+        // This is what makes custom elements first-class rather than a
+        // fallback. Before it, `control_kind` had no `vybe-` handling at all
+        // and EVERY custom element — tabs, split containers, picture boxes,
+        // every non-visual component — fell through to `label` at 120x20. The
+        // silent-label trap, applied to the entire custom-element mechanism.
+        custom if custom.starts_with("vybe-") => vybe_widget_kind(&custom[5..]),
         // Anything else is text-bearing: `p`, `span`, `label`, `h1`…`h6`, `li`.
         _ => "label",
     }
 }
 
+/// The `vybe_widgets` control a `<vybe-*>` element names, or `label` if the
+/// name matches no control.
+///
+/// The list is `controls::make_widget`'s own, which is what keeps a custom
+/// element honest: a tag naming a control that does not exist is a *mistake*,
+/// and it degrades to a label rather than to nothing — visible in an `html`
+/// dump and in a capture.
+///
+/// **This list is also the polyfill manifest.** Each entry is one
+/// `customElements.define("vybe-<name>", …)` a browser build would need, so
+/// keeping it in one place is what makes running in a real engine a finite job
+/// rather than an archaeology exercise.
+fn vybe_widget_kind(name: &str) -> &'static str {
+    match name {
+        "tabcontrol" => "tabcontrol",
+        "tabpage" => "tabpage",
+        "splitcontainer" => "splitcontainer",
+        "treeview" => "treeview",
+        "listview" => "listview",
+        "monthcalendar" => "monthcalendar",
+        "datetimepicker" => "datetimepicker",
+        "picturebox" => "picturebox",
+        "richtextbox" => "richtextbox",
+        "maskedtextbox" => "maskedtextbox",
+        "numericupdown" => "numericupdown",
+        "checkedlistbox" => "checkedlistbox",
+        "datagridview" | "datagrid" => "datagridview",
+        "menustrip" => "menustrip",
+        "toolstrip" => "toolstrip",
+        "statusstrip" => "statusstrip",
+        "contextmenustrip" => "contextmenustrip",
+        "bindingnavigator" => "bindingnavigator",
+        "flowlayoutpanel" => "flowlayoutpanel",
+        "hflowlayoutpanel" => "hflowlayoutpanel",
+        "tablelayoutpanel" => "tablelayoutpanel",
+        "hscrollbar" => "hscrollbar",
+        "vscrollbar" => "vscrollbar",
+        "panel" | "usercontrol" => "panel",
+        "groupbox" => "groupbox",
+        "canvas" | "paintbox" => "canvas",
+        "progressbar" => "progressbar",
+        "trackbar" => "trackbar",
+        "linklabel" => "linklabel",
+        _ => "label",
+    }
+}
+
+/// Elements that are in the document but draw nothing.
+///
+/// Metadata content (`<script>`, `<style>`, `<title>`, `<meta>`…), a hidden
+/// input, and `<template>`, whose contents are inert by definition. They are
+/// real nodes — `createElement("script")` must give you something you can
+/// append and read back — they simply have no rendering.
+///
+/// Without this they fell to `_ => "label"` and drew their text at 120x20:
+/// a stylesheet or a script visible in the middle of the form. The
+/// silent-label trap again, from the standards side rather than the invented-tag
+/// side.
+fn renders_nothing(tag: &str, input_type: &str) -> bool {
+    matches!(
+        tag,
+        "script"
+            | "style"
+            | "head"
+            | "title"
+            | "meta"
+            | "link"
+            | "base"
+            | "template"
+            | "noscript"
+            | "param"
+            | "source"
+            | "track"
+    ) || (tag == "input" && input_type == "hidden")
+        // Non-visual components. A `Timer`, `ToolTip`, `ImageList` or
+        // `BindingSource` is a member of the form, not a box on it — WinForms
+        // and VCL both put them in a `components` collection rather than
+        // `Controls`, and neither ever paints one.
+        //
+        // They are still nodes, for the same reason `<script>` is: a program
+        // creates one, names it, wires its events and reads it back. What they
+        // must not do is occupy a rectangle, which is precisely what they did
+        // before — a form with a timer and a tooltip drew two grey labels.
+        || matches!(
+            tag,
+            "vybe-timer"
+                | "vybe-tooltip"
+                | "vybe-imagelist"
+                | "vybe-notifyicon"
+                | "vybe-bindingsource"
+                | "vybe-backgroundworker"
+                | "vybe-errorprovider"
+                | "vybe-helpprovider"
+                | "vybe-openfiledialog"
+                | "vybe-savefiledialog"
+                | "vybe-folderbrowserdialog"
+                | "vybe-colordialog"
+                | "vybe-fontdialog"
+        )
+}
+
 /// A starting size, so a control that is appended before it is styled is
 /// visible rather than zero-sized. CSS overrides it.
-fn default_size(kind: &str) -> (f32, f32) {
+fn default_size(kind: &str, tag: &str) -> (f32, f32) {
+    // A rule is a panel that draws as a line — same widget, nothing like the
+    // same shape, so the tag decides before the kind does.
+    if tag == "hr" {
+        return (200.0, 2.0);
+    }
     match kind {
         "textbox" | "combobox" | "numericupdown" | "datetimepicker" => (160.0, 24.0),
         // Tall, because it holds lines — the same call `RICHTEXTBOX_DEF` makes
@@ -1030,6 +1775,18 @@ fn default_size(kind: &str) -> (f32, f32) {
         "trackbar" | "progressbar" => (160.0, 20.0),
         "listbox" | "listview" | "datagridview" | "treeview" => (200.0, 120.0),
         "panel" | "groupbox" | "flowlayoutpanel" | "canvas" | "picturebox" => (200.0, 150.0),
+        // The custom-element controls. Without arms here they inherited the
+        // text fallback of 120x20 — the right widget at label size, which reads
+        // as "the control is broken" rather than "the size is unset".
+        "tabcontrol" | "splitcontainer" | "tablelayoutpanel" | "hflowlayoutpanel" => (300.0, 200.0),
+        "tabpage" | "usercontrol" => (300.0, 170.0),
+        "monthcalendar" => (220.0, 180.0),
+        "checkedlistbox" => (200.0, 120.0),
+        "menustrip" | "toolstrip" | "statusstrip" | "contextmenustrip" | "bindingnavigator" => {
+            (300.0, 24.0)
+        }
+        "hscrollbar" => (200.0, 16.0),
+        "vscrollbar" => (16.0, 200.0),
         _ => (120.0, 20.0),
     }
 }
@@ -1311,6 +2068,477 @@ mod tests {
         doc.set_style_property(b, "display", "none");
         assert!(doc.style_properties(b).display_none);
         assert_eq!(doc.style_property(b, "display"), "none");
+    }
+
+    /// A container sized so it actually runs a layout pass.
+    ///
+    /// `position: relative` is declared, because that is what makes it a
+    /// containing block — a static box is transparent to its children's
+    /// coordinates, in CSS and here. In a real program `primitives/gui.rs`
+    /// emits this at construction for every container element; the fixture
+    /// says it out loud for the same reason the markup does.
+    fn container_with(doc: &mut Document, w: f32, h: f32) -> NodeId {
+        let panel = doc.create_element("div", "");
+        doc.append_child(DOCUMENT, panel);
+        doc.set_style_property(panel, "position", "relative");
+        doc.set_style_property(panel, "width", &format!("{w}px"));
+        doc.set_style_property(panel, "height", &format!("{h}px"));
+        panel
+    }
+
+    #[test]
+    fn a_positioned_child_keeps_its_own_coordinates() {
+        // THE container defect. `relayout()` recomputed every child's rect
+        // from flow order and discarded what `left`/`top` wrote — the rect was
+        // never missing, it was overwritten, which is why controls appeared
+        // stacked in flow order rather than at nonsense coordinates.
+        let mut doc = Document::new("t");
+        let panel = container_with(&mut doc, 200.0, 200.0);
+        let b = doc.create_element("button", "");
+        doc.append_child(panel, b);
+        doc.set_style_property(b, "left", "20px");
+        doc.set_style_property(b, "top", "90px");
+        doc.set_style_property(b, "width", "120px");
+        assert_eq!(doc.style_property(b, "left"), "20px");
+        assert_eq!(doc.style_property(b, "top"), "90px");
+        assert_eq!(doc.style_property(b, "width"), "120px");
+    }
+
+    #[test]
+    fn coordinates_set_before_insertion_survive_joining_the_container() {
+        // `Left := 8` before `Parent := Panel` is the ordinary way to write
+        // VCL, and appending re-runs the container's layout.
+        let mut doc = Document::new("t");
+        let panel = container_with(&mut doc, 200.0, 200.0);
+        let b = doc.create_element("button", "");
+        doc.set_style_property(b, "left", "30px");
+        doc.set_style_property(b, "top", "40px");
+        doc.append_child(panel, b);
+        assert_eq!(doc.style_property(b, "left"), "30px");
+        assert_eq!(doc.style_property(b, "top"), "40px");
+    }
+
+    #[test]
+    fn a_child_with_no_coordinates_still_flows() {
+        // Flutter never sets left/top — its children must keep being arranged,
+        // or fixing the frontends that position by pixel breaks the one that
+        // does not.
+        let mut doc = Document::new("t");
+        let panel = container_with(&mut doc, 200.0, 200.0);
+        let a = doc.create_element("button", "");
+        let b = doc.create_element("button", "");
+        doc.append_child(panel, a);
+        doc.append_child(panel, b);
+        // Arranged top-down, so the second child sits below the first.
+        let a_top = doc.style_property(a, "top");
+        let b_top = doc.style_property(b, "top");
+        assert_ne!(a_top, b_top, "flowed children must not overlap");
+    }
+
+    #[test]
+    fn an_explicit_static_position_hands_the_child_back_to_the_container() {
+        // The author overruling the inference: `left` is inert on a static box
+        // in CSS, so saying `static` out loud means "you arrange me".
+        let mut doc = Document::new("t");
+        let panel = container_with(&mut doc, 200.0, 200.0);
+        let b = doc.create_element("button", "");
+        doc.append_child(panel, b);
+        doc.set_style_property(b, "position", "static");
+        doc.set_style_property(b, "left", "60px");
+        assert_ne!(doc.style_property(b, "left"), "60px");
+    }
+
+    #[test]
+    fn an_out_of_flow_child_takes_no_space_from_its_siblings() {
+        // The half of `position: absolute` that is easy to miss: it is removed
+        // from the flow, so the flowed sibling gets the whole container.
+        let mut doc = Document::new("t");
+        let panel = container_with(&mut doc, 200.0, 200.0);
+        let flowed = doc.create_element("button", "");
+        doc.append_child(panel, flowed);
+        let alone = doc.style_property(flowed, "height");
+
+        let positioned = doc.create_element("button", "");
+        doc.append_child(panel, positioned);
+        doc.set_style_property(positioned, "left", "10px");
+        doc.set_style_property(positioned, "top", "10px");
+        assert_eq!(
+            doc.style_property(flowed, "height"),
+            alone,
+            "an absolutely positioned sibling must not shrink the flowed one"
+        );
+    }
+
+    #[test]
+    fn metadata_content_is_a_node_that_draws_nothing() {
+        // `<script>`/`<style>` fell to the text fallback and drew their source
+        // at 120x20 — a stylesheet visible in the middle of the form. They are
+        // real nodes: appendable, serialisable, and invisible.
+        let mut doc = Document::new("t");
+        for tag in ["script", "style", "title", "meta", "template"] {
+            let n = doc.create_element(tag, "");
+            assert!(doc.append_child(DOCUMENT, n), "{tag} must be appendable");
+            assert_eq!(doc.style_property(n, "width"), "0px", "{tag} must not draw");
+            assert_eq!(doc.style_property(n, "height"), "0px");
+        }
+        // …and they are still in the document, which is the half that makes
+        // them nodes rather than nothing.
+        assert!(doc.to_html().contains("<script>"));
+    }
+
+    #[test]
+    fn a_populated_list_has_nothing_selected_until_something_selects() {
+        // The widget answered `Index(0)` the moment a list was populated, so a
+        // program asking "which row did the user pick?" got row 0 before the
+        // user had touched it — and acted on a choice nobody made. `-1` is
+        // what `HTMLSelectElement.selectedIndex` reports for a `size > 1`
+        // select, and what `TListBox.ItemIndex` starts at.
+        let mut doc = Document::new("t");
+        let list = doc.create_element("select", "6");
+        doc.append_child(DOCUMENT, list);
+        doc.add_item(list, "alpha");
+        doc.add_item(list, "beta");
+        assert_eq!(doc.selected_index(list), -1);
+        doc.set_selected_index(list, 1);
+        assert_eq!(doc.selected_index(list), 1);
+    }
+
+    #[test]
+    fn an_item_can_be_read_back_by_index() {
+        // Add, remove and clear existed; there was no READ, so `Items[i]` was
+        // unreachable from every frontend.
+        let mut doc = Document::new("t");
+        let list = doc.create_element("select", "6");
+        doc.append_child(DOCUMENT, list);
+        doc.add_item(list, "alpha");
+        doc.add_item(list, "beta");
+        assert_eq!(doc.item_text(list, 0), "alpha");
+        assert_eq!(doc.item_text(list, 1), "beta");
+        // Out of range is empty, not a panic and not a wrong row.
+        assert_eq!(doc.item_text(list, 9), "");
+        doc.set_item_text(list, 0, "gamma");
+        assert_eq!(doc.item_text(list, 0), "gamma");
+    }
+
+    #[test]
+    fn a_radio_groups_items_are_child_radios() {
+        // `Items.Add('red')` on a `TRadioGroup` raised nothing and produced
+        // nothing — a declared member that was silently inert, because a
+        // `<fieldset>` has no option list for `AddItem` to land in. HTML's
+        // answer, and VCL's, is child radios.
+        let mut doc = Document::new("t");
+        let group = doc.create_element("fieldset", "");
+        doc.append_child(DOCUMENT, group);
+        doc.add_item(group, "red");
+        doc.add_item(group, "green");
+        let html = doc.to_html();
+        assert_eq!(html.matches("type=\"radio\"").count(), 2, "{html}");
+    }
+
+    #[test]
+    fn a_custom_element_is_the_control_it_names() {
+        // `<vybe-tabcontrol>` IS the tabcontrol widget. Before this,
+        // `control_kind` had no `vybe-` handling at all, so every custom
+        // element — the whole mechanism — was a 120x20 label.
+        let mut doc = Document::new("t");
+        let tabs = doc.create_element("vybe-tabcontrol", "");
+        doc.append_child(DOCUMENT, tabs);
+        // A tab control is not label-sized.
+        assert_ne!(doc.style_property(tabs, "width"), "120px");
+        // …and it serialises as the custom element it is, so a browser build
+        // knows exactly which `customElements.define` it needs.
+        assert!(doc.to_html().contains("<vybe-tabcontrol>"));
+    }
+
+    #[test]
+    fn a_custom_element_naming_no_control_degrades_visibly() {
+        // A tag naming a control that does not exist is a mistake, and it must
+        // fail toward something you can SEE rather than toward nothing.
+        let mut doc = Document::new("t");
+        let bogus = doc.create_element("vybe-nonesuch", "");
+        doc.append_child(DOCUMENT, bogus);
+        assert_eq!(doc.style_property(bogus, "width"), "120px");
+    }
+
+    #[test]
+    fn a_non_visual_component_is_not_a_box() {
+        // A Timer or ToolTip is a member of the form, not a rectangle on it —
+        // WinForms and VCL both keep them in `components`, not `Controls`.
+        // They drew as grey labels before.
+        let mut doc = Document::new("t");
+        for tag in ["vybe-timer", "vybe-tooltip", "vybe-imagelist"] {
+            let n = doc.create_element(tag, "");
+            doc.append_child(DOCUMENT, n);
+            assert_eq!(doc.style_property(n, "width"), "0px", "{tag} must not draw");
+        }
+    }
+
+    #[test]
+    fn a_hidden_input_does_not_render() {
+        let mut doc = Document::new("t");
+        let hidden = doc.create_element("input", "hidden");
+        doc.append_child(DOCUMENT, hidden);
+        assert_eq!(doc.style_property(hidden, "width"), "0px");
+        // …while an ordinary one does.
+        let text = doc.create_element("input", "text");
+        doc.append_child(DOCUMENT, text);
+        assert_ne!(doc.style_property(text, "width"), "0px");
+    }
+
+    #[test]
+    fn metadata_takes_no_slot_in_a_flow_container() {
+        // A `<style>` in a container must not push its siblings down by a row
+        // of nothing.
+        let mut doc = Document::new("t");
+        let panel = container_with(&mut doc, 200.0, 400.0);
+        let first = doc.create_element("button", "");
+        doc.append_child(panel, first);
+        let alone = doc.style_property(first, "height");
+
+        let style = doc.create_element("style", "");
+        doc.append_child(panel, style);
+        assert_eq!(doc.style_property(first, "height"), alone);
+    }
+
+    #[test]
+    fn a_percentage_resolves_against_the_containing_block() {
+        // Parsing cannot do this — `width: 50%` is a fraction of a parent the
+        // parser cannot see, which is why `Length::Percent` stays symbolic
+        // until something knows the containing block.
+        let mut doc = Document::new("t");
+        let panel = container_with(&mut doc, 400.0, 300.0);
+        let b = doc.create_element("button", "");
+        doc.append_child(panel, b);
+        doc.set_style_property(b, "position", "absolute");
+        doc.set_style_property(b, "width", "50%");
+        assert_eq!(doc.style_property(b, "width"), "200px");
+        doc.set_style_property(b, "height", "10%");
+        assert_eq!(doc.style_property(b, "height"), "30px");
+    }
+
+    #[test]
+    fn an_undeclared_axis_keeps_its_natural_size_not_the_flow_size() {
+        // Found in a shipped form, three times over: every control that
+        // declared `Left`/`Top` and a `Width` but NO `Height` rendered as a
+        // tall box spanning its container, while the one sibling that declared
+        // both behaved. The bug was never about position — insertion lays the
+        // child out once, and the axis the program did not declare kept the
+        // stretched value forever.
+        let mut doc = Document::new("t");
+        let panel = container_with(&mut doc, 320.0, 200.0);
+        // The control's OWN height, read before anything lays it out — a
+        // detached element has never been through a flow pass.
+        let detached = doc.create_element("input", "text");
+        let natural_height = doc.style_property(detached, "height");
+
+        // A flowed sibling, for contrast: it SHOULD stretch.
+        let flowed = doc.create_element("input", "text");
+        doc.append_child(panel, flowed);
+        assert_ne!(doc.style_property(flowed, "height"), natural_height);
+
+        let partly = doc.create_element("input", "text");
+        doc.append_child(panel, partly);
+        doc.set_style_property(partly, "left", "10px");
+        doc.set_style_property(partly, "top", "30px");
+        doc.set_style_property(partly, "width", "120px");
+        // Width is honoured, height falls back to the control's own — NOT to
+        // whatever the flow pass left behind.
+        assert_eq!(doc.style_property(partly, "width"), "120px");
+        assert_eq!(doc.style_property(partly, "height"), natural_height);
+    }
+
+    #[test]
+    fn a_childs_coordinates_are_relative_to_its_container() {
+        // The half the first layout batch missed, and invisible in every
+        // capture whose container happened to sit at the origin: VCL, WinForms
+        // and Flutter all mean parent-relative, always. In CSS terms the
+        // container is the containing block.
+        let mut doc = Document::new("t");
+        let panel = container_with(&mut doc, 200.0, 200.0);
+        doc.set_style_property(panel, "left", "10px");
+        doc.set_style_property(panel, "top", "10px");
+
+        let b = doc.create_element("button", "");
+        doc.append_child(panel, b);
+        doc.set_style_property(b, "left", "20px");
+        doc.set_style_property(b, "top", "50px");
+        // 10 + 20, 10 + 50 — not 20, 50 on the body.
+        assert_eq!(doc.style_property(b, "left"), "30px");
+        assert_eq!(doc.style_property(b, "top"), "60px");
+    }
+
+    #[test]
+    fn a_static_container_is_transparent_to_its_childrens_coordinates() {
+        // The CSS rule, stated as a test so it cannot quietly become a
+        // container special case again: only a POSITIONED ancestor is a
+        // containing block. A browser handed this markup answers the same, and
+        // that equivalence is the whole reason the widget layer is HTML.
+        let mut doc = Document::new("t");
+        let panel = doc.create_element("div", "");
+        doc.append_child(DOCUMENT, panel);
+        doc.set_style_property(panel, "position", "static");
+        doc.set_style_property(panel, "left", "10px");
+        doc.set_style_property(panel, "top", "10px");
+        doc.set_style_property(panel, "width", "200px");
+        doc.set_style_property(panel, "height", "200px");
+
+        let b = doc.create_element("button", "");
+        doc.append_child(panel, b);
+        doc.set_style_property(b, "position", "absolute");
+        doc.set_style_property(b, "left", "20px");
+        // Resolved against the viewport, not the static panel.
+        assert_eq!(doc.style_property(b, "left"), "20px");
+    }
+
+    #[test]
+    fn fixed_resolves_against_the_viewport_not_an_ancestor() {
+        let mut doc = Document::new("t");
+        let panel = container_with(&mut doc, 200.0, 200.0);
+        doc.set_style_property(panel, "left", "10px");
+        doc.set_style_property(panel, "top", "10px");
+        let b = doc.create_element("button", "");
+        doc.append_child(panel, b);
+        doc.set_style_property(b, "position", "fixed");
+        doc.set_style_property(b, "left", "20px");
+        assert_eq!(doc.style_property(b, "left"), "20px");
+    }
+
+    #[test]
+    fn right_anchors_to_the_opposite_edge() {
+        // Flutter's `Positioned` uses all four; VCL and WinForms only ever set
+        // two, which is why the other two were never wired.
+        let mut doc = Document::new("t");
+        let panel = container_with(&mut doc, 400.0, 300.0);
+        let b = doc.create_element("button", "");
+        doc.append_child(panel, b);
+        doc.set_style_property(b, "width", "100px");
+        doc.set_style_property(b, "right", "20px");
+        // 400 wide, 20 from the right edge, 100 wide → x = 280.
+        assert_eq!(doc.style_property(b, "left"), "280px");
+    }
+
+    #[test]
+    fn left_and_right_together_stretch_the_box_between_them() {
+        let mut doc = Document::new("t");
+        let panel = container_with(&mut doc, 400.0, 300.0);
+        let b = doc.create_element("button", "");
+        doc.append_child(panel, b);
+        doc.set_style_property(b, "left", "50px");
+        doc.set_style_property(b, "right", "50px");
+        assert_eq!(doc.style_property(b, "width"), "300px");
+    }
+
+    #[test]
+    fn constraints_apply_whichever_order_they_arrive_in() {
+        // A declarative frontend emits fields in catalog order, so `max-width`
+        // may land before or after the width it constrains. Both must clamp.
+        let mut doc = Document::new("t");
+        let panel = container_with(&mut doc, 400.0, 300.0);
+
+        let after = doc.create_element("button", "");
+        doc.append_child(panel, after);
+        doc.set_style_property(after, "position", "absolute");
+        doc.set_style_property(after, "width", "300px");
+        doc.set_style_property(after, "max-width", "120px");
+        assert_eq!(doc.style_property(after, "width"), "120px");
+
+        let before = doc.create_element("button", "");
+        doc.append_child(panel, before);
+        doc.set_style_property(before, "position", "absolute");
+        doc.set_style_property(before, "max-width", "120px");
+        doc.set_style_property(before, "width", "300px");
+        assert_eq!(doc.style_property(before, "width"), "120px");
+    }
+
+    #[test]
+    fn min_width_wins_over_max_width_when_they_conflict() {
+        // CSS resolves the conflict in favour of `min`.
+        let mut doc = Document::new("t");
+        let panel = container_with(&mut doc, 400.0, 300.0);
+        let b = doc.create_element("button", "");
+        doc.append_child(panel, b);
+        doc.set_style_property(b, "position", "absolute");
+        doc.set_style_property(b, "max-width", "50px");
+        doc.set_style_property(b, "min-width", "150px");
+        doc.set_style_property(b, "width", "100px");
+        assert_eq!(doc.style_property(b, "width"), "150px");
+    }
+
+    #[test]
+    fn order_rearranges_children_without_moving_them_in_the_document() {
+        let mut doc = Document::new("t");
+        let panel = container_with(&mut doc, 200.0, 400.0);
+        let first = doc.create_element("button", "");
+        let second = doc.create_element("button", "");
+        doc.append_child(panel, first);
+        doc.append_child(panel, second);
+        let first_top = doc.style_property(first, "top");
+        // Send the first child to the back.
+        doc.set_style_property(first, "order", "5");
+        assert_ne!(doc.style_property(first, "top"), first_top);
+        assert_eq!(doc.style_property(second, "top"), first_top);
+        // …and the document order is untouched.
+        assert!(doc.to_html().find("</button>").is_some());
+    }
+
+    #[test]
+    fn align_self_overrules_the_containers_align_items() {
+        let mut doc = Document::new("t");
+        let panel = container_with(&mut doc, 200.0, 400.0);
+        let a = doc.create_element("button", "");
+        let b = doc.create_element("button", "");
+        doc.append_child(panel, a);
+        doc.append_child(panel, b);
+        doc.set_style_property(panel, "align-items", "stretch");
+        let stretched = doc.style_property(a, "width");
+        doc.set_style_property(b, "align-self", "center");
+        assert_eq!(doc.style_property(a, "width"), stretched);
+        assert_ne!(doc.style_property(b, "width"), stretched);
+    }
+
+    #[test]
+    fn justify_content_moves_the_children_within_the_leftover() {
+        // Flutter `mainAxisAlignment`. Only observable when nothing grows —
+        // with a growing child there is no leftover to distribute.
+        let mut doc = Document::new("t");
+        let panel = container_with(&mut doc, 200.0, 400.0);
+        let a = doc.create_element("button", "");
+        doc.append_child(panel, a);
+        doc.set_style_property(a, "flex", "0");
+        let packed = doc.style_property(a, "top");
+        doc.set_style_property(panel, "justify-content", "center");
+        let centred = doc.style_property(a, "top");
+        assert_ne!(packed, centred, "centring must move the child down");
+    }
+
+    #[test]
+    fn align_items_stretch_is_the_default_and_stays_so() {
+        // Changing the default here would move every existing flutter widget,
+        // so this pins it: declaring nothing keeps the old behaviour.
+        let mut doc = Document::new("t");
+        let panel = container_with(&mut doc, 200.0, 200.0);
+        let a = doc.create_element("button", "");
+        doc.append_child(panel, a);
+        let stretched = doc.style_property(a, "width");
+        doc.set_style_property(panel, "align-items", "stretch");
+        assert_eq!(doc.style_property(a, "width"), stretched);
+        // …and asking for something else visibly differs.
+        doc.set_style_property(panel, "align-items", "center");
+        assert_ne!(doc.style_property(a, "width"), stretched);
+    }
+
+    #[test]
+    fn flex_direction_chooses_the_axis() {
+        let mut doc = Document::new("t");
+        let panel = container_with(&mut doc, 200.0, 200.0);
+        let a = doc.create_element("button", "");
+        let b = doc.create_element("button", "");
+        doc.append_child(panel, a);
+        doc.append_child(panel, b);
+        doc.set_style_property(panel, "flex-direction", "row");
+        // Side by side: same top, different left.
+        assert_eq!(doc.style_property(a, "top"), doc.style_property(b, "top"));
+        assert_ne!(doc.style_property(a, "left"), doc.style_property(b, "left"));
     }
 
     #[test]

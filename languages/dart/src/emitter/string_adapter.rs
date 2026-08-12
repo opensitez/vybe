@@ -14,6 +14,7 @@ use vybe_runtime::{Chunk, Value};
 
 const SB_BUFFER_KEY: &str = "__dart_string_buffer";
 const SB_MARKER_KEY: &str = "__dart_string_buffer_marker";
+const SB_CLASS_BUFFER_KEY: &str = "_vybeBuf";
 const URI_HREF_KEY: &str = "href";
 const URI_MARKER_KEY: &str = "__dart_uri_marker";
 const SET_MARKER_KEY: &str = "__dart_set_marker";
@@ -43,8 +44,35 @@ fn emit_sb_marker_test(chunk: &mut Chunk, line: u32) {
 }
 
 fn emit_dart_value_to_string(chunk: &mut Chunk, line: u32) {
+    let slot = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if(line);
+    chunk.emit_string_const("null", line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    reflection::emit_typeof_in_chunk(chunk, line);
+    chunk.emit_string_const("bool", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    chunk.emit_string_const("true", line);
+    chunk.emit_else(line);
+    chunk.emit_string_const("false", line);
+    chunk.emit_end(line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     let to_str = chunk.add_import("ecma:string", "String");
     chunk.emit_call(to_str, 1, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+}
+
+fn call_ref(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], argc, line);
 }
 
 fn emit_string_field(chunk: &mut Chunk, key: &str, value: &str, line: u32) {
@@ -121,13 +149,26 @@ fn emit_bigint_i32(chunks: &mut [Chunk], current: usize, value: i32, line: u32) 
 fn emit_dart_sb_append_value(chunks: &mut [Chunk], current: usize, value_slot: u16, line: u32) {
     let chunk = &mut chunks[current];
     let sb_slot = reserve_slot(chunk);
+    let text_slot = reserve_slot(chunk);
     let buffer_key = string_key(chunk, SB_BUFFER_KEY);
     chunk.emit_op_u16(Op::LOCAL_SET, sb_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    host::emit(chunk, "wasm:js-undefined", "test", 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_if(line);
+    chunk.emit_string_const("null", line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    emit_dart_value_to_string(chunk, line);
+    chunk.emit_end(line);
+    chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
     chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buffer_key, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    emit_dart_value_to_string(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buffer_key, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
@@ -331,6 +372,15 @@ pub fn emit_dart_sb_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
 }
 
+fn emit_dart_sb_class_clear(chunks: &mut [Chunk], current: usize, receiver_slot: u16, line: u32) {
+    let chunk = &mut chunks[current];
+    let buffer_key = string_key(chunk, SB_CLASS_BUFFER_KEY);
+    chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    chunk.emit_string_const("", line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buffer_key, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+}
+
 /// Dart `buf.toString()` — the accumulated content, no marker sniffing.
 ///
 /// Reached only when the receiver's type resolved to the registered
@@ -460,6 +510,286 @@ fn emit_dart_format_exception_throw(chunks: &mut [Chunk], current: usize, line: 
     );
     chunks[current].emit_op_u16(Op::LOCAL_GET, exc_slot, line);
     errors::emit_throw(&mut chunks[current], line);
+}
+
+fn emit_byte_list_to_binary_string(chunks: &mut [Chunk], current: usize, line: u32) {
+    let list_slot = reserve_slot(&mut chunks[current]);
+    let out_slot = reserve_slot(&mut chunks[current]);
+    let i_slot = reserve_slot(&mut chunks[current]);
+    let len_slot = reserve_slot(&mut chunks[current]);
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, list_slot, line);
+    chunks[current].emit_string_const("", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, list_slot, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
+
+    let state = loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    loops::emit_loop_cond(chunks, current, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, list_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    collections::emit_get(chunks, current, line);
+    host::emit(
+        &mut chunks[current],
+        "wasm:js-string",
+        "fromCharCode",
+        1,
+        line,
+    );
+    strings::emit_concat(&mut chunks[current], 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
+    loops::emit_loop_end(chunks, current, state, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
+}
+
+fn emit_binary_string_to_byte_list(chunks: &mut [Chunk], current: usize, line: u32) {
+    let text_slot = reserve_slot(&mut chunks[current]);
+    let out_slot = reserve_slot(&mut chunks[current]);
+    let i_slot = reserve_slot(&mut chunks[current]);
+    let len_slot = reserve_slot(&mut chunks[current]);
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, text_slot, line);
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, text_slot, line);
+    strings::emit_length(&mut chunks[current], line);
+    host::emit(&mut chunks[current], "wasm:js-number", "toI32", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
+
+    let state = loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    loops::emit_loop_cond(chunks, current, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, text_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    host::emit(
+        &mut chunks[current],
+        "wasm:js-string",
+        "charCodeAt",
+        2,
+        line,
+    );
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
+    loops::emit_loop_end(chunks, current, state, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
+}
+
+fn emit_dart_base64_rewrite_url(chunks: &mut [Chunk], current: usize, to_url: bool, line: u32) {
+    if to_url {
+        chunks[current].emit_string_const("+", line);
+        chunks[current].emit_string_const("-", line);
+        strings::emit_replace(&mut chunks[current], line);
+        chunks[current].emit_string_const("/", line);
+        chunks[current].emit_string_const("_", line);
+        strings::emit_replace(&mut chunks[current], line);
+    } else {
+        chunks[current].emit_string_const("-", line);
+        chunks[current].emit_string_const("+", line);
+        strings::emit_replace(&mut chunks[current], line);
+        chunks[current].emit_string_const("_", line);
+        chunks[current].emit_string_const("/", line);
+        strings::emit_replace(&mut chunks[current], line);
+    }
+}
+
+fn emit_base64_char_valid(chunk: &mut Chunk, code_slot: u16, url: bool, line: u32) {
+    let ok_slot = reserve_slot(chunk);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, ok_slot, line);
+    for (lo, hi) in [(65, 90), (97, 122), (48, 57)] {
+        chunk.emit_op_u16(Op::LOCAL_GET, code_slot, line);
+        chunk.emit_i32_const(lo, line);
+        chunk.emit_op(Op::I32_GE_S, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, code_slot, line);
+        chunk.emit_i32_const(hi, line);
+        chunk.emit_op(Op::I32_LE_S, line);
+        chunk.emit_op(Op::I32_AND, line);
+        chunk.emit_if(line);
+        chunk.emit_i32_const(1, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, ok_slot, line);
+        chunk.emit_end(line);
+    }
+    let extra = if url { [45, 95, 61] } else { [43, 47, 61] };
+    for code in extra {
+        chunk.emit_op_u16(Op::LOCAL_GET, code_slot, line);
+        chunk.emit_i32_const(code, line);
+        chunk.emit_op(Op::I32_EQ, line);
+        chunk.emit_if(line);
+        chunk.emit_i32_const(1, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, ok_slot, line);
+        chunk.emit_end(line);
+    }
+    chunk.emit_op_u16(Op::LOCAL_GET, ok_slot, line);
+}
+
+fn emit_dart_base64_validate(
+    chunks: &mut [Chunk],
+    current: usize,
+    text_slot: u16,
+    url: bool,
+    require_padding: bool,
+    line: u32,
+) {
+    let i_slot = reserve_slot(&mut chunks[current]);
+    let len_slot = reserve_slot(&mut chunks[current]);
+    let code_slot = reserve_slot(&mut chunks[current]);
+
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, text_slot, line);
+    host::emit(&mut chunks[current], "ecma:string", "length", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_EQ, line);
+    chunks[current].emit_if(line);
+    emit_dart_format_exception_throw(chunks, current, line);
+    chunks[current].emit_end(line);
+
+    if require_padding {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+        chunks[current].emit_i32_const(4, line);
+        chunks[current].emit_op(Op::I32_REM_S, line);
+        chunks[current].emit_i32_const(0, line);
+        chunks[current].emit_op(Op::I32_NE, line);
+        chunks[current].emit_if(line);
+        emit_dart_format_exception_throw(chunks, current, line);
+        chunks[current].emit_end(line);
+    }
+
+    let state = loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    loops::emit_loop_cond(chunks, current, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, text_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    host::emit(
+        &mut chunks[current],
+        "wasm:js-string",
+        "charCodeAt",
+        2,
+        line,
+    );
+    chunks[current].emit_op_u16(Op::LOCAL_SET, code_slot, line);
+    emit_base64_char_valid(&mut chunks[current], code_slot, url, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    emit_dart_format_exception_throw(chunks, current, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
+    loops::emit_loop_end(chunks, current, state, line);
+}
+
+pub fn emit_dart_base64_encode(chunks: &mut [Chunk], current: usize, url: bool, line: u32) {
+    emit_byte_list_to_binary_string(chunks, current, line);
+    vybe_compiler::primitives::base64::emit_encode_binary_string(chunks, current, line);
+    if url {
+        emit_dart_base64_rewrite_url(chunks, current, true, line);
+    }
+}
+
+pub fn emit_dart_base64_decode(chunks: &mut [Chunk], current: usize, url: bool, line: u32) {
+    let text_slot = reserve_slot(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, text_slot, line);
+    emit_dart_base64_validate(chunks, current, text_slot, url, true, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, text_slot, line);
+    if url {
+        emit_dart_base64_rewrite_url(chunks, current, false, line);
+    }
+    vybe_compiler::primitives::base64::emit_decode_binary_string(chunks, current, line);
+    emit_binary_string_to_byte_list(chunks, current, line);
+}
+
+pub fn emit_dart_base64_normalize(chunks: &mut [Chunk], current: usize, url: bool, line: u32) {
+    let text_slot = reserve_slot(&mut chunks[current]);
+    let len_slot = reserve_slot(&mut chunks[current]);
+    let rem_slot = reserve_slot(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, text_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, text_slot, line);
+    strings::emit_length(&mut chunks[current], line);
+    host::emit(&mut chunks[current], "wasm:js-number", "toI32", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, text_slot, line);
+    chunks[current].emit_string_const("=", line);
+    chunks[current].emit_string_const("", line);
+    strings::emit_replace(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, text_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, text_slot, line);
+    strings::emit_length(&mut chunks[current], line);
+    host::emit(&mut chunks[current], "wasm:js-number", "toI32", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
+
+    emit_dart_base64_validate(chunks, current, text_slot, url, false, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    chunks[current].emit_i32_const(4, line);
+    chunks[current].emit_op(Op::I32_REM_S, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, rem_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, rem_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_EQ, line);
+    if !url {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+        chunks[current].emit_i32_const(3, line);
+        chunks[current].emit_op(Op::I32_EQ, line);
+        chunks[current].emit_op(Op::I32_OR, line);
+    }
+    chunks[current].emit_if(line);
+    emit_dart_format_exception_throw(chunks, current, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, text_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, rem_slot, line);
+    chunks[current].emit_i32_const(2, line);
+    chunks[current].emit_op(Op::I32_EQ, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_string_const("==", line);
+    strings::emit_concat(&mut chunks[current], 2, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, rem_slot, line);
+    chunks[current].emit_i32_const(3, line);
+    chunks[current].emit_op(Op::I32_EQ, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_string_const("=", line);
+    strings::emit_concat(&mut chunks[current], 2, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, text_slot, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
 }
 
 fn emit_trimmed_string_empty(chunk: &mut Chunk, text_slot: u16, line: u32) {
@@ -631,17 +961,72 @@ pub fn emit_dart_int_parse(chunks: &mut [Chunk], current: usize, argc: u8, line:
 }
 
 pub fn emit_dart_int_try_parse(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_int_parse_result_or_null(chunks, current, argc, false, line);
+    let radix_slot = if argc >= 2 {
+        let slot = reserve_slot(&mut chunks[current]);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
+        Some(slot)
+    } else {
+        None
+    };
+    let text_slot = reserve_slot(&mut chunks[current]);
+    let value_slot = reserve_slot(&mut chunks[current]);
+    let int_slot = reserve_slot(&mut chunks[current]);
+    let out_slot = reserve_slot(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, text_slot, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
+
+    emit_trimmed_string_empty(&mut chunks[current], text_slot, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    if let Some(radix_slot) = radix_slot {
+        emit_int_radix_text_valid(&mut chunks[current], text_slot, radix_slot, line);
+        chunks[current].emit_if(line);
+    }
+    emit_parse_int_from_slots(chunks, current, text_slot, radix_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    emit_number_is_nan(&mut chunks[current], value_slot, line);
+    if radix_slot.is_none() {
+        emit_number_is_finite(&mut chunks[current], value_slot, line);
+        vybe_compiler::primitives::ops::emit_dyn_not(&mut chunks[current], line);
+        chunks[current].emit_op(Op::I32_OR, line);
+    }
+    chunks[current].emit_if(line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunks[current].emit_op(Op::F64_TRUNC, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, int_slot, line);
+    if radix_slot.is_none() {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, int_slot, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if(line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_GET, int_slot, line);
+    chunks[current].emit_op(Op::I32_FROM_F64, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
+    if radix_slot.is_none() {
+        chunks[current].emit_end(line);
+    }
+    chunks[current].emit_end(line);
+    if radix_slot.is_some() {
+        chunks[current].emit_end(line);
+    }
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
 }
 
 pub fn emit_dart_double_try_parse(chunks: &mut [Chunk], current: usize, line: u32) {
     let text_slot = reserve_slot(&mut chunks[current]);
     let value_slot = reserve_slot(&mut chunks[current]);
+    let out_slot = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, text_slot, line);
-    emit_trimmed_string_empty(&mut chunks[current], text_slot, line);
-    chunks[current].emit_if(line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
-    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
+    emit_trimmed_string_empty(&mut chunks[current], text_slot, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, text_slot, line);
     host::emit(&mut chunks[current], "ecma:number", "Number", 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
@@ -654,13 +1039,15 @@ pub fn emit_dart_double_try_parse(chunks: &mut [Chunk], current: usize, line: u3
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
     chunks[current].emit_else(line);
-    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_end(line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
 }
 
 pub fn emit_dart_double_parse(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -694,6 +1081,104 @@ pub fn emit_dart_double_parse(chunks: &mut [Chunk], current: usize, line: u32) {
 
 pub fn emit_dart_bigint_from(chunks: &mut [Chunk], current: usize, line: u32) {
     host::emit(&mut chunks[current], "ecma:bigint", "BigInt", 1, line);
+}
+
+pub fn emit_dart_bigint_idiv(chunks: &mut [Chunk], current: usize, line: u32) {
+    let right_slot = reserve_slot(&mut chunks[current]);
+    let left_slot = reserve_slot(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, right_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, left_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    host::emit(&mut chunks[current], "ecma:bigint", "div", 2, line);
+}
+
+pub fn emit_dart_bigint_compare_to(chunks: &mut [Chunk], current: usize, line: u32) {
+    let right_slot = reserve_slot(&mut chunks[current]);
+    let left_slot = reserve_slot(&mut chunks[current]);
+    let result_slot = reserve_slot(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, right_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, left_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    host::emit(&mut chunks[current], "ecma:bigint", "lt", 2, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_i32_const(-1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    host::emit(&mut chunks[current], "ecma:bigint", "gt", 2, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+}
+
+pub fn emit_dart_bigint_mod(chunks: &mut [Chunk], current: usize, line: u32) {
+    let right_slot = reserve_slot(&mut chunks[current]);
+    let left_slot = reserve_slot(&mut chunks[current]);
+    let rem_slot = reserve_slot(&mut chunks[current]);
+    let result_slot = reserve_slot(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, right_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, left_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    host::emit(&mut chunks[current], "ecma:bigint", "rem", 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, rem_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, rem_slot, line);
+    emit_bigint_i32(chunks, current, 0, line);
+    host::emit(&mut chunks[current], "ecma:bigint", "eq", 2, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, rem_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_else(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, rem_slot, line);
+    emit_bigint_i32(chunks, current, 0, line);
+    host::emit(&mut chunks[current], "ecma:bigint", "lt", 2, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    emit_bigint_i32(chunks, current, 0, line);
+    host::emit(&mut chunks[current], "ecma:bigint", "gt", 2, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_AND, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, rem_slot, line);
+    emit_bigint_i32(chunks, current, 0, line);
+    host::emit(&mut chunks[current], "ecma:bigint", "gt", 2, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    emit_bigint_i32(chunks, current, 0, line);
+    host::emit(&mut chunks[current], "ecma:bigint", "lt", 2, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    chunks[current].emit_op(Op::I32_OR, line);
+
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, rem_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    host::emit(&mut chunks[current], "ecma:bigint", "add", 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, rem_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
 
 pub fn emit_dart_stream_value(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -766,6 +1251,41 @@ pub fn emit_dart_stream_listen(chunks: &mut [Chunk], current: usize, argc: u8, l
     }
     chunks[current].emit_op_u16(Op::LOCAL_SET, on_data_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, stream_slot, line);
+    let single_slot = reserve_slot(&mut chunks[current]);
+    emit_get_string_field_to_slot(
+        &mut chunks[current],
+        stream_slot,
+        "__dart_single_subscription",
+        single_slot,
+        line,
+    );
+    chunks[current].emit_op_u16(Op::LOCAL_GET, single_slot, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    let listened_slot = reserve_slot(&mut chunks[current]);
+    emit_get_string_field_to_slot(
+        &mut chunks[current],
+        stream_slot,
+        "__dart_listened",
+        listened_slot,
+        line,
+    );
+    chunks[current].emit_op_u16(Op::LOCAL_GET, listened_slot, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_string_const("Stream has already been listened to.", line);
+    emit_dart_exception_new(
+        chunks,
+        current,
+        1,
+        "StateError",
+        &["StateError", "Error", "Exception"],
+        line,
+    );
+    errors::emit_throw(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+    emit_set_bool_field(&mut chunks[current], stream_slot, "__dart_listened", true, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_struct_new(0, 0, line);
     let sub_slot = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, sub_slot, line);
@@ -780,7 +1300,37 @@ pub fn emit_dart_stream_listen(chunks: &mut [Chunk], current: usize, argc: u8, l
     );
     emit_set_string_field_from_slot(&mut chunks[current], sub_slot, "onDone", done_slot, line);
     emit_set_bool_field(&mut chunks[current], sub_slot, "cancelled", false, line);
+    let arr_slot = materialize_slot(chunks, current, stream_slot, line);
+    let idx_slot = reserve_slot(&mut chunks[current]);
+    let elem_slot = reserve_slot(&mut chunks[current]);
+    let state = loops::emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, sub_slot, line);
+    let cancelled_key = string_key(&mut chunks[current], "cancelled");
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, cancelled_key, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, on_data_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    call_ref(chunks, current, 1, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+    loops::emit_for_in_end(chunks, current, idx_slot, state, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, sub_slot, line);
+}
+
+pub fn emit_dart_stream_as_broadcast(chunks: &mut [Chunk], current: usize, line: u32) {
+    let stream_slot = reserve_slot(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, stream_slot, line);
+    emit_set_bool_field(
+        &mut chunks[current],
+        stream_slot,
+        "__dart_single_subscription",
+        false,
+        line,
+    );
+    chunks[current].emit_op_u16(Op::LOCAL_GET, stream_slot, line);
 }
 
 pub fn emit_dart_stream_cancel(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -821,7 +1371,7 @@ pub fn emit_dart_stream_as_future(chunks: &mut [Chunk], current: usize, line: u3
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, error_or_done_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, err_slot, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    call_ref(chunks, current, 1, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_end(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, err_slot, line);
@@ -840,7 +1390,7 @@ pub fn emit_dart_stream_as_future(chunks: &mut [Chunk], current: usize, line: u3
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, on_data_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    call_ref(chunks, current, 1, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_end(line);
     loops::emit_for_in_end(chunks, current, idx_slot, state, line);
@@ -858,7 +1408,7 @@ pub fn emit_dart_stream_as_future(chunks: &mut [Chunk], current: usize, line: u3
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, callback_slot, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 0, 1, line);
+    call_ref(chunks, current, 0, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_end(line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
@@ -1039,6 +1589,18 @@ pub fn emit_dart_print(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
 pub fn emit_dart_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
     let uri_key = string_key(&mut chunks[current], URI_HREF_KEY);
     let uri_marker = string_key(&mut chunks[current], URI_MARKER_KEY);
+    let value_slot = reserve_slot(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    host::emit(&mut chunks[current], "wasm:js-undefined", "test", 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_OR, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_string_const("null", line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     core_wasm::dup(&mut chunks[current], line);
     host::emit(&mut chunks[current], "ecma:array", "isArray", 1, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
@@ -1078,6 +1640,12 @@ pub fn emit_dart_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_sb_buffer_get(&mut chunks[current], line);
     chunks[current].emit_else(line);
     core_wasm::dup(&mut chunks[current], line);
+    emit_dart_process_signal_like_to_string(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    let name_key = string_key(&mut chunks[current], "name");
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, name_key, line);
+    chunks[current].emit_else(line);
+    core_wasm::dup(&mut chunks[current], line);
     emit_dart_enum_like_to_string(chunks, current, line);
     chunks[current].emit_if(line);
     emit_dart_enum_to_string(chunks, current, line);
@@ -1094,6 +1662,16 @@ pub fn emit_dart_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_dart_process_signal_like_to_string(chunk: &mut Chunk, line: u32) {
+    let type_key = string_key(chunk, "__type");
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, type_key, line);
+    chunk.emit_string_const("ProcessSignal", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
 }
 
 fn emit_dart_enum_like_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -1206,6 +1784,28 @@ fn emit_dart_double_to_string_normal(
 pub fn emit_dart_double_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
     let value_slot = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    host::emit(&mut chunks[current], "ecma:number", "isNaN", 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_string_const("NaN", line);
+    chunks[current].emit_else(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    host::emit(&mut chunks[current], "ecma:number", "isFinite", 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    vybe_compiler::primitives::math::emit_signbit(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_string_const("-Infinity", line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_string_const("Infinity", line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     vybe_compiler::primitives::math::emit_signbit(&mut chunks[current], line);
     chunks[current].emit_if(line);
@@ -1219,6 +1819,25 @@ pub fn emit_dart_double_to_string(chunks: &mut [Chunk], current: usize, line: u3
     chunks[current].emit_end(line);
     chunks[current].emit_else(line);
     emit_dart_double_to_string_normal(chunks, current, value_slot, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+}
+
+pub fn emit_dart_nullable_double_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value_slot = reserve_slot(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    host::emit(&mut chunks[current], "wasm:js-undefined", "test", 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_OR, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_string_const("null", line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    emit_dart_double_to_string(chunks, current, line);
     chunks[current].emit_end(line);
 }
 
@@ -1359,7 +1978,7 @@ fn emit_slot_or(
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, method_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    call_ref(chunks, current, 1, line);
     chunks[current].emit_else(line);
     fallback(chunks, current, line);
     chunks[current].emit_end(line);
@@ -1489,7 +2108,7 @@ pub fn emit_dart_iter_join(chunks: &mut [Chunk], current: usize, argc: u8, line:
 
 /// Dart `Future.sync(fn)` / `Future.microtask(fn)`.
 pub fn emit_dart_future_call0(chunks: &mut [Chunk], current: usize, line: u32) {
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 0, 1, line);
+    call_ref(chunks, current, 0, line);
     host::emit(&mut chunks[current], "ecma:promise", "resolve", 1, line);
 }
 
@@ -1501,7 +2120,7 @@ pub fn emit_dart_future_delayed(chunks: &mut [Chunk], current: usize, line: u32)
     chunks[current].emit_op_u16(Op::LOCAL_SET, callback_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, duration_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, callback_slot, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 0, 1, line);
+    call_ref(chunks, current, 0, line);
     host::emit(&mut chunks[current], "ecma:promise", "resolve", 1, line);
 }
 
@@ -1564,7 +2183,7 @@ fn emit_call_ref_on_receiver(
     vybe_compiler::primitives::globals::emit_write(&mut chunks[current], "__js_this", line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    call_ref(chunks, current, 1, line);
 }
 
 fn emit_getter_or_field_to_slot(
@@ -1724,6 +2343,36 @@ pub fn emit_dart_map_entry(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_set_string_field_from_slot(chunk, pair_slot, "key", key_slot, line);
     emit_set_string_field_from_slot(chunk, pair_slot, "value", value_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, pair_slot, line);
+}
+
+fn emit_dart_map_record_new_key(
+    chunks: &mut [Chunk],
+    current: usize,
+    receiver_slot: u16,
+    key_slot: u16,
+    line: u32,
+) {
+    let order_slot = reserve_slot(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    let order_key = string_key(&mut chunks[current], MAP_ORDER_KEY);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, order_key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, order_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, order_slot, line);
+    host::emit(&mut chunks[current], "wasm:js-undefined", "test", 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    host::emit(&mut chunks[current], "ecma:object", "keys", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, order_slot, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, order_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, order_slot, line);
+    let order_key = string_key(&mut chunks[current], MAP_ORDER_KEY);
+    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, order_key, line);
 }
 
 pub fn emit_dart_map_keys(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -1973,16 +2622,31 @@ pub fn emit_dart_add_general(chunks: &mut [Chunk], current: usize, argc: u8, lin
         let value_slot = reserve_slot(&mut chunks[current]);
         let key_slot = reserve_slot(&mut chunks[current]);
         let receiver_slot = reserve_slot(&mut chunks[current]);
+        let had_slot = reserve_slot(&mut chunks[current]);
+        let prev_slot = reserve_slot(&mut chunks[current]);
         chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, key_slot, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, receiver_slot, line);
         emit_throw_if_frozen(chunks, current, receiver_slot, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
+        host::emit(&mut chunks[current], "ecma:object", "has", 2, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_op_u16(Op::LOCAL_TEE, had_slot, line);
+        chunks[current].emit_if(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
         host::emit(&mut chunks[current], "ecma:object", "get", 2, line);
         emit_undefined_to_null(&mut chunks[current], line);
-        let prev_slot = reserve_slot(&mut chunks[current]);
+        chunks[current].emit_else(line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+        chunks[current].emit_end(line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, prev_slot, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, had_slot, line);
+        chunks[current].emit_op(Op::I32_EQZ, line);
+        chunks[current].emit_if(line);
+        emit_dart_map_record_new_key(chunks, current, receiver_slot, key_slot, line);
+        chunks[current].emit_end(line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
@@ -1996,6 +2660,37 @@ pub fn emit_dart_add_general(chunks: &mut [Chunk], current: usize, argc: u8, lin
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, receiver_slot, line);
     emit_throw_if_frozen(chunks, current, receiver_slot, line);
+    let receiver_type_slot = reserve_slot(&mut chunks[current]);
+    emit_get_field_or_null_to_slot(
+        &mut chunks[current],
+        receiver_slot,
+        "__type",
+        receiver_type_slot,
+        line,
+    );
+    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_type_slot, line);
+    chunks[current].emit_string_const("IOSink", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    host::emit(&mut chunks[current], "web:encoding", "decoderNew", 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    host::emit(&mut chunks[current], "web:encoding", "decode", 2, line);
+    let text_slot = reserve_slot(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, text_slot, line);
+    let stream_slot = reserve_slot(&mut chunks[current]);
+    emit_get_field_or_null_to_slot(
+        &mut chunks[current],
+        receiver_slot,
+        "stdoutStream",
+        stream_slot,
+        line,
+    );
+    chunks[current].emit_op_u16(Op::LOCAL_GET, stream_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, text_slot, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunks[current].emit_else(line);
     // The `__type == "DateTime"` arm is gone — `DateTime.add` is a method on
     // the class. What remains is the real split: a SET adds only what it does
     // not already hold, a LIST always appends.
@@ -2034,6 +2729,7 @@ pub fn emit_dart_add_general(chunks: &mut [Chunk], current: usize, argc: u8, lin
     // that used to close it then closed the CALLER's frame instead — measured
     // as `[for (var i = 0; i < 3; i++) i]` yielding one element, because the
     // comprehension's own loop was what got closed.
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
 }
 
@@ -2109,6 +2805,7 @@ pub fn emit_dart_add_all(chunks: &mut [Chunk], current: usize, line: u32) {
     let pair_slot = reserve_slot(&mut chunks[current]);
     let key_slot = reserve_slot(&mut chunks[current]);
     let val_slot = reserve_slot(&mut chunks[current]);
+    let had_slot = reserve_slot(&mut chunks[current]);
     let idx2_slot = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, entries_slot, line);
     let state2 = loops::emit_for_in_start(chunks, current, entries_slot, idx2_slot, line);
@@ -2121,6 +2818,16 @@ pub fn emit_dart_add_all(chunks: &mut [Chunk], current: usize, line: u32) {
     core_wasm::i32_const(&mut chunks[current], line, 1);
     collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, val_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
+    host::emit(&mut chunks[current], "ecma:object", "has", 2, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, had_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, had_slot, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    emit_dart_map_record_new_key(chunks, current, receiver_slot, key_slot, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, val_slot, line);
@@ -2182,7 +2889,7 @@ pub fn emit_dart_lookup(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunks[current].emit_else(line);
-    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunks[current].emit_string_const("null", line);
     chunks[current].emit_end(line);
 }
 
@@ -2195,6 +2902,13 @@ pub fn emit_dart_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
     emit_dart_sb_clear(chunks, current, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    chunks[current].emit_string_const("StringBuffer", line);
+    reflection::emit_instanceof(chunks, current, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    emit_dart_sb_class_clear(chunks, current, receiver_slot, line);
     chunks[current].emit_else(line);
     emit_array_is_array(chunks, current, receiver_slot, line);
     chunks[current].emit_if(line);
@@ -2215,6 +2929,7 @@ pub fn emit_dart_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
     loops::emit_for_in_end(chunks, current, idx_slot, state, line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
 }
@@ -2243,10 +2958,10 @@ pub fn emit_dart_map_update(chunks: &mut [Chunk], current: usize, argc: u8, line
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
     host::emit(&mut chunks[current], "ecma:object", "get", 2, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    call_ref(chunks, current, 1, line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, absent_slot, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 0, 1, line);
+    call_ref(chunks, current, 0, line);
     chunks[current].emit_end(line);
     let new_slot = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, new_slot, line);
@@ -2283,7 +2998,7 @@ pub fn emit_dart_map_update_all(chunks: &mut [Chunk], current: usize, line: u32)
     chunks[current].emit_op_u16(Op::LOCAL_GET, pair_slot, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
     collections::emit_get(chunks, current, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+    call_ref(chunks, current, 2, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
@@ -2318,7 +3033,7 @@ pub fn emit_dart_for_each_general(chunks: &mut [Chunk], current: usize, line: u3
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+    call_ref(chunks, current, 2, line);
     chunks[current].emit_op(Op::DROP, line);
     loops::emit_for_in_end(chunks, current, idx2_slot, state, line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
@@ -2396,7 +3111,7 @@ pub fn emit_dart_map_general(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, pair_slot, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
     collections::emit_get(chunks, current, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+    call_ref(chunks, current, 2, line);
     collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     loops::emit_for_in_end(chunks, current, idx2_slot, state, line);
@@ -2432,7 +3147,7 @@ pub fn emit_dart_remove_where(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, pair_slot, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
     collections::emit_get(chunks, current, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+    call_ref(chunks, current, 2, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
@@ -2544,7 +3259,7 @@ fn emit_dart_set_retain_or_remove_where(
     chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    call_ref(chunks, current, 1, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     if !retain_matches {
         chunks[current].emit_op(Op::I32_EQZ, line);
@@ -3021,7 +3736,7 @@ pub fn emit_dart_map_put_if_absent(chunks: &mut [Chunk], current: usize, line: u
     emit_undefined_to_null(&mut chunks[current], line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 0, 1, line);
+    call_ref(chunks, current, 0, line);
     let value_slot = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
@@ -3170,7 +3885,7 @@ pub fn emit_dart_list_generate(chunks: &mut [Chunk], current: usize, argc: u8, l
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    call_ref(chunks, current, 1, line);
     collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
@@ -3302,16 +4017,29 @@ pub fn emit_dart_list_fill_range(chunks: &mut [Chunk], current: usize, line: u32
     let end_slot = reserve_slot(&mut chunks[current]);
     let start_slot = reserve_slot(&mut chunks[current]);
     let receiver_slot = reserve_slot(&mut chunks[current]);
+    let idx_slot = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, end_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, start_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, receiver_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, start_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
+    emit_throw_if_frozen(chunks, current, receiver_slot, line);
+    let state = loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, end_slot, line);
-    collections::emit_fill(chunks, current, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    collections::emit_set(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
+    loops::emit_loop_end(chunks, current, state, line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
@@ -3395,80 +4123,97 @@ pub fn emit_dart_list_reversed(chunks: &mut [Chunk], current: usize, line: u32) 
 }
 
 fn emit_dart_list_sort_by_compare_to(chunks: &mut [Chunk], current: usize, line: u32) {
-    let list_slot = reserve_slot(&mut chunks[current]);
+    let arr_slot = reserve_slot(&mut chunks[current]);
     let len_slot = reserve_slot(&mut chunks[current]);
     let i_slot = reserve_slot(&mut chunks[current]);
     let j_slot = reserve_slot(&mut chunks[current]);
-    let a_slot = reserve_slot(&mut chunks[current]);
-    let b_slot = reserve_slot(&mut chunks[current]);
+    let tmp_slot = reserve_slot(&mut chunks[current]);
 
-    chunks[current].emit_op_u16(Op::LOCAL_SET, list_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, list_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     collections::emit_len(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
-
-    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_i32_const(1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
-    let outer = loops::emit_loop_start(chunks, current, line);
+
+    let outer_block = chunks[current].emit_block(line);
+    let (outer_loop, _) = chunks[current].emit_loop_s(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_br_if(1, line);
 
-    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, j_slot, line);
-    let inner = loops::emit_loop_start(chunks, current, line);
+
+    let inner_block = chunks[current].emit_block(line);
+    let (inner_loop, _) = chunks[current].emit_loop_s(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, j_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_GT_S, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_br_if(1, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, j_slot, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, j_slot, line);
+    chunks[current].emit_i32_const(1, line);
     chunks[current].emit_op(Op::I32_SUB, line);
-    core_wasm::i32_const(&mut chunks[current], line, 1);
-    chunks[current].emit_op(Op::I32_SUB, line);
+    collections::emit_get(chunks, current, line);
+    crate::emitter::core_adapter::emit_compare_to(chunks, current, line);
+    chunks[current].emit_i32_const(0, line);
     vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_br_if(1, line);
 
-    chunks[current].emit_op_u16(Op::LOCAL_GET, list_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, j_slot, line);
     collections::emit_get(chunks, current, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, a_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, list_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, j_slot, line);
-    core_wasm::i32_const(&mut chunks[current], line, 1);
-    chunks[current].emit_op(Op::I32_ADD, line);
-    collections::emit_get(chunks, current, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, b_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, tmp_slot, line);
 
-    chunks[current].emit_op_u16(Op::LOCAL_GET, a_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, b_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_gt(&mut chunks[current], line);
-    chunks[current].emit_if(line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, list_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, j_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, j_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    collections::emit_get(chunks, current, line);
     collections::emit_set(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, list_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, j_slot, line);
-    core_wasm::i32_const(&mut chunks[current], line, 1);
-    chunks[current].emit_op(Op::I32_ADD, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, tmp_slot, line);
     collections::emit_set(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, j_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, j_slot, line);
+    chunks[current].emit_br(0, line);
     chunks[current].emit_end(line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, j_slot, line);
-    core_wasm::i32_const(&mut chunks[current], line, 1);
-    chunks[current].emit_op(Op::I32_ADD, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, j_slot, line);
-    loops::emit_loop_end(chunks, current, inner, line);
+    chunks[current].patch_loop(inner_loop);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(inner_block);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
-    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_i32_const(1, line);
     chunks[current].emit_op(Op::I32_ADD, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
-    loops::emit_loop_end(chunks, current, outer, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(outer_loop);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer_block);
 
-    chunks[current].emit_op_u16(Op::LOCAL_GET, list_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
 }
 
 pub fn emit_dart_list_sort(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -3523,7 +4268,7 @@ pub fn emit_dart_list_sort(chunks: &mut [Chunk], current: usize, argc: u8, line:
         chunks[current].emit_op_u16(Op::LOCAL_GET, cmp_slot, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, a_slot, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, b_slot, line);
-        chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+        call_ref(chunks, current, 2, line);
         core_wasm::i32_const(&mut chunks[current], line, 0);
         vybe_compiler::primitives::ops::emit_dyn_gt(&mut chunks[current], line);
         chunks[current].emit_if(line);
@@ -3626,7 +4371,7 @@ pub fn emit_dart_list_where_search(chunks: &mut [Chunk], current: usize, mode: u
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     collections::emit_get(chunks, current, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    call_ref(chunks, current, 1, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     if mode <= 1 {
@@ -3856,7 +4601,7 @@ pub fn emit_dart_iter_async_map(chunks: &mut [Chunk], current: usize, line: u32)
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     collections::emit_get(chunks, current, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    call_ref(chunks, current, 1, line);
     functions::emit_await(&mut chunks[current], line);
     collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -3926,7 +4671,7 @@ pub fn emit_dart_iter_reduce(chunks: &mut [Chunk], current: usize, argc: u8, lin
         chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
         collections::emit_get(chunks, current, line);
-        chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+        call_ref(chunks, current, 2, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, initial_slot, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
         core_wasm::i32_const(&mut chunks[current], line, 1);
@@ -3997,7 +4742,7 @@ pub fn emit_dart_iter_expand(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    call_ref(chunks, current, 1, line);
     emit_dart_materialize_iterable(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, inner_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
@@ -4024,7 +4769,7 @@ pub fn emit_dart_iter_expand_precurrent(chunks: &mut [Chunk], current: usize, li
     chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    call_ref(chunks, current, 1, line);
     emit_dart_materialize_iterable(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, inner_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
@@ -4058,7 +4803,7 @@ pub fn emit_dart_iter_take_while(chunks: &mut [Chunk], current: usize, line: u32
     chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    call_ref(chunks, current, 1, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_br_if(2, line);
@@ -4089,7 +4834,7 @@ pub fn emit_dart_iter_skip_while(chunks: &mut [Chunk], current: usize, line: u32
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    call_ref(chunks, current, 1, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_br(2, line);
@@ -4153,7 +4898,7 @@ pub fn emit_dart_iter_distinct(chunks: &mut [Chunk], current: usize, argc: u8, l
     chunks[current].emit_op_u16(Op::LOCAL_GET, eq_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, prev_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+    call_ref(chunks, current, 2, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_end(line);

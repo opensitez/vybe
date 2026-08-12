@@ -35,7 +35,7 @@ fn goto_conditional_branch_merge() {
 fn goto_nested_if_escape() {
     assert_eq!(
         run_pascal(
-            r#"program T; label out; var a,b:Integer; begin a:=0; b:=1; if a=1 then begin if b=1 then WriteLn('in'); end else goto out; WriteLn('fall'); out: WriteLn('out'); end."#
+            r#"program T; label out_label; var a,b:Integer; begin a:=0; b:=1; if a=1 then begin if b=1 then WriteLn('in'); end else goto out_label; WriteLn('fall'); out_label: WriteLn('out'); end."#
         ),
         &["out"]
     );
@@ -223,7 +223,7 @@ fn goto_if_false_fallthrough() {
 fn goto_multiple_entry_single_exit() {
     assert_eq!(
         run_pascal(
-            r#"program T; label exit; var r:Integer; begin r:=1; if r=1 then goto exit; if r=2 then goto exit; WriteLn('nope'); exit: WriteLn('exit'); end."#
+            r#"program T; label exit_label; var r:Integer; begin r:=1; if r=1 then goto exit_label; if r=2 then goto exit_label; WriteLn('nope'); exit_label: WriteLn('exit'); end."#
         ),
         &["exit"]
     );
@@ -313,7 +313,7 @@ fn goto_reset_and_retry_once() {
 fn goto_skip_nested_begin_block() {
     assert_eq!(
         run_pascal(
-            r#"program T; label out; begin begin goto out; WriteLn('in'); end; out: WriteLn('out'); end."#
+            r#"program T; label out_label; begin begin goto out_label; WriteLn('in'); end; out_label: WriteLn('out'); end."#
         ),
         &["out"]
     );
@@ -323,7 +323,7 @@ fn goto_skip_nested_begin_block() {
 fn goto_modulo_filter_loop() {
     assert_eq!(
         run_pascal(
-            r#"program T; label top; var n:Integer; begin n:=0; top: Inc(n); if n mod 2=0 then if n<5 then goto top; WriteLn(n); end."#
+            r#"program T; label top; var n:Integer; begin n:=0; top: Inc(n); if (n mod 2=0) or (n<5) then goto top; WriteLn(n); end."#
         ),
         &["5"]
     );
@@ -343,7 +343,7 @@ fn goto_two_separate_forward_labels() {
 fn goto_procedure_chain() {
     assert_eq!(
         run_pascal(
-            r#"program T; label step2; procedure Step1; begin goto step2; end; begin Step1; WriteLn('skip'); step2: WriteLn('step2'); end."#
+            r#"program T; procedure Step1; label step2; begin goto step2; WriteLn('skip'); step2: WriteLn('step2'); end; begin Step1; end."#
         ),
         &["step2"]
     );

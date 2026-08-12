@@ -480,7 +480,7 @@ dart_cases! {
     entries_fold_min_entry_by_value => {
         r#"void main() {
   var m = {'a': 30, 'b': 10, 'c': 20};
-  var minKey = m.entries.fold('?', (best, e) => e.value < m[best]! ? e.key : best);
+  var minKey = m.entries.fold('a', (best, e) => e.value < m[best]! ? e.key : best);
   print(minKey);
   print(m[minKey]);
 }"#,

@@ -230,6 +230,16 @@ impl PanelWidget for Select {
                 self.options.push(s.clone());
                 CommandValue::None
             }
+            WidgetCommand::GetItem(i) => match self.options.get(*i) {
+                Some(text) => CommandValue::Text(text.clone()),
+                None => CommandValue::None,
+            },
+            WidgetCommand::SetItem(i, text) => {
+                if let Some(slot) = self.options.get_mut(*i) {
+                    *slot = text.clone();
+                }
+                CommandValue::None
+            }
             WidgetCommand::RemoveItem(i) => {
                 if *i < self.options.len() {
                     self.options.remove(*i);

@@ -303,12 +303,12 @@ echo is_array($_SESSION) ? 'arr' : 'no';
         ["arr"]
     };
 
-    session_encode_empty_session => {
+session_encode_empty_session => {
         r#"<?php
 session_start();
 echo session_encode() === '' ? 'empty' : 'data';
 "#,
-        ["data"]
+        ["empty"]
     };
 
     session_get_cookie_params_samesite_key => {

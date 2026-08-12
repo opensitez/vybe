@@ -533,62 +533,25 @@ fn expand_php_bundle_sources_with_map_and_entry_path(
     // `dynamic::compile_dynamic_php`, so unpicking it is a separate change from
     // this one — see the note on retiring the rest of this subsystem.
     let _ = entry_path_override;
-    let mut constants: HashMap<String, String> = HashMap::new();
     let mut expanded = ExpandedPhpSource::default();
     for source in sources {
         append_expanded_source(
             &mut expanded,
-            expand_php_source_file(&source.path, &source.code, &mut constants)?,
+            expand_php_source_file(&source.path, &source.code)?,
         );
     }
     Ok(expanded)
 }
 
-fn expand_php_source_file(
-    source_path: &Path,
-    code: &str,
-    constants: &mut HashMap<String, String>,
-) -> Result<ExpandedPhpSource, String> {
+fn expand_php_source_file(source_path: &Path, code: &str) -> Result<ExpandedPhpSource, String> {
     let rewritten_code = rewrite_php_magic_constants(code, source_path);
-    let mut aliases: HashMap<String, String> = HashMap::new();
-    let mut brace_depth = 0usize;
-    let mut previous_nonempty_line: Option<String> = None;
     let mut out = ExpandedPhpSource::default();
 
     let mut lines = rewritten_code.lines().peekable();
     while let Some(line) = lines.next() {
         let trimmed = line.trim();
 
-        if brace_depth == 0
-            && let Some((name, value)) =
-                parse_php_alias_assignment(trimmed, source_path, &aliases, constants)
-        {
-            aliases.insert(name, value);
-            record_expanded_line(&mut out, source_path, line.to_string());
-            brace_depth = update_php_brace_depth(brace_depth, line);
-            continue;
-        }
-
-        if let Some((name, value)) =
-            parse_php_constant_assignment(trimmed, source_path, &aliases, constants)
-        {
-            constants.insert(name, value);
-            record_expanded_line(&mut out, source_path, line.to_string());
-            brace_depth = update_php_brace_depth(brace_depth, line);
-            continue;
-        }
-
         if parse_php_include_statement(trimmed).is_some() {
-            if previous_nonempty_line
-                .as_deref()
-                .and_then(parse_positive_defined_guard)
-                .is_some_and(|name| !constants.contains_key(&name))
-            {
-                brace_depth = update_php_brace_depth(brace_depth, line);
-                previous_nonempty_line =
-                    next_previous_nonempty_line(trimmed, &previous_nonempty_line);
-                continue;
-            }
             // Every include is left for the RUNTIME to perform — PHP compiles
             // an included file when the `require` executes, and that is the
             // model the whole language is built on (`function_exists` before a
@@ -609,9 +572,17 @@ fn expand_php_source_file(
             // vanished from the program entirely and the file was never
             // included — a silent no-op, measured. Recording the line verbatim
             // is the whole fix.
+            // It is also why there is no `if (defined('X'))` guard here any
+            // more. This arm used to look at the previous line and DROP the
+            // include when the guarded constant was not in a compile-time
+            // constants table — the same silent statement deletion described
+            // above, and wrong for the same reason: `defined('X')` is a runtime
+            // question. `define('SUNRISE', 1); if (defined('SUNRISE')) {
+            // include_once …; }` printed `have=no` because a bare `1` is not a
+            // path expression the pre-pass could fold, so the constant was
+            // "unknown" and the include vanished. The runtime evaluates the
+            // guard itself and only reaches the include when it passes.
             record_expanded_line(&mut out, source_path, line.to_string());
-            brace_depth = update_php_brace_depth(brace_depth, line);
-            previous_nonempty_line = next_previous_nonempty_line(trimmed, &previous_nonempty_line);
             continue;
         }
 
@@ -640,11 +611,6 @@ fn expand_php_source_file(
             for expanded_line in expanded_lines.lines() {
                 record_expanded_line(&mut out, source_path, expanded_line.to_string());
             }
-            for original_line in &header_lines {
-                brace_depth = update_php_brace_depth(brace_depth, original_line);
-                previous_nonempty_line =
-                    next_previous_nonempty_line(original_line.trim(), &previous_nonempty_line);
-            }
             continue;
         }
 
@@ -653,8 +619,6 @@ fn expand_php_source_file(
             source_path,
             normalize_php_alternative_control_syntax(line),
         );
-        brace_depth = update_php_brace_depth(brace_depth, line);
-        previous_nonempty_line = next_previous_nonempty_line(trimmed, &previous_nonempty_line);
     }
 
     Ok(out)
@@ -726,69 +690,14 @@ fn rewrite_cobol_assign_path_line(line: &str, base_dir: &Path) -> String {
 // resolved against the include_path and the calling script's directory, neither
 // of which the bundle pre-pass can know.
 
-fn parse_php_alias_assignment(
-    line: &str,
-    source_path: &Path,
-    aliases: &HashMap<String, String>,
-    constants: &HashMap<String, String>,
-) -> Option<(String, String)> {
-    let statement = php_statement_prefix(line)?;
-    if !statement.starts_with('$') {
-        return None;
-    }
-    let (lhs, rhs) = statement.split_once('=')?;
-    let name = lhs.trim().strip_prefix('$')?.trim();
-    if name.is_empty()
-        || !name
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-    {
-        return None;
-    }
-    let value = eval_php_path_expression(rhs.trim(), source_path, aliases, constants)?;
-    Some((name.to_string(), value))
-}
-
-fn parse_php_constant_assignment(
-    line: &str,
-    source_path: &Path,
-    aliases: &HashMap<String, String>,
-    constants: &HashMap<String, String>,
-) -> Option<(String, String)> {
-    let statement = php_statement_prefix(line)?;
-
-    if let Some(args) = statement.strip_prefix("define").map(str::trim) {
-        let args = args.strip_prefix('(')?.strip_suffix(')')?.trim();
-        let parts = split_php_function_args(args);
-        if parts.len() < 2 {
-            return None;
-        }
-        let name = parse_php_constant_name(parts[0].trim())?;
-        let value = eval_php_path_expression(parts[1].trim(), source_path, aliases, constants)?;
-        return Some((name, value));
-    }
-
-    let declaration = statement.strip_prefix("const ")?.trim();
-    let (name, expr) = declaration.split_once('=')?;
-    let name = name.trim();
-    if name.is_empty()
-        || !name
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-    {
-        return None;
-    }
-    let value = eval_php_path_expression(expr.trim(), source_path, aliases, constants)?;
-    Some((name.to_string(), value))
-}
-
-fn parse_php_constant_name(expr: &str) -> Option<String> {
-    let expr = expr.trim();
-    expr.strip_prefix('"')
-        .and_then(|s| s.strip_suffix('"'))
-        .or_else(|| expr.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
-        .map(|name| name.to_string())
-}
+// The compile-time CONSTANT TABLE lived here: `parse_php_alias_assignment`
+// (`$base = dirname(__FILE__);`), `parse_php_constant_assignment` (`define(…)`
+// and `const …`) and `parse_php_constant_name`, all feeding
+// `eval_php_path_expression`/`eval_php_path_atom` and their two splitters.
+// It was a compile-time shadow of a RUNTIME fact — php evaluates `define()`
+// when the statement runs — and its last consumer was the `if (defined('X'))`
+// guard at the include site, which is gone. Nothing else ever asked it a
+// question, so the whole subsystem goes with it.
 
 fn parse_php_include_statement(line: &str) -> Option<(PhpIncludeKind, &str)> {
     let statement = php_statement_prefix(line)?;
@@ -855,231 +764,25 @@ fn php_statement_prefix(line: &str) -> Option<&str> {
 // `VecDeque`s were filled and never read. The runtime evaluates those guards
 // itself and only reaches the include when they pass.
 
-fn update_php_brace_depth(mut depth: usize, line: &str) -> usize {
-    let mut quote: Option<char> = None;
-    let chars: Vec<char> = line.chars().collect();
-    let mut index = 0usize;
+// `update_php_brace_depth` tracked top-level-ness so an alias assignment was
+// only believed outside a function body, and `next_previous_nonempty_line` fed
+// `parse_positive_defined_guard` the line above an include. Both existed only
+// to serve the guard.
+//
+// ⚠ `parse_positive_defined_guard` was also wrong on the commonest php idiom of
+// all: it bailed on the literal `"! defined"`, WITH a space, so
+// `if (!defined('ABSPATH')) { … }` was read as a POSITIVE guard and had its
+// include dropped as well. Deleting the guard fixes more shapes than the one it
+// was written for.
 
-    while index < chars.len() {
-        let ch = chars[index];
-        if let Some(q) = quote {
-            if ch == '\\' {
-                index += 2;
-                continue;
-            }
-            if ch == q {
-                quote = None;
-            }
-            index += 1;
-            continue;
-        }
-
-        match ch {
-            '\'' | '"' => quote = Some(ch),
-            '{' => depth += 1,
-            '}' => depth = depth.saturating_sub(1),
-            _ => {}
-        }
-        index += 1;
-    }
-
-    depth
-}
-
-fn next_previous_nonempty_line<'a>(
-    trimmed: &'a str,
-    current: &'a Option<String>,
-) -> Option<String> {
-    if trimmed.is_empty() {
-        current.clone()
-    } else {
-        Some(trimmed.to_string())
-    }
-}
-
-fn parse_positive_defined_guard(line: &str) -> Option<String> {
-    let line = line.trim();
-    if !line.starts_with("if") && !line.starts_with("elseif") {
-        return None;
-    }
-    if line.contains("! defined") {
-        return None;
-    }
-    let start = line.find("defined(")? + "defined(".len();
-    let after = &line[start..];
-    let end = after.find(')')?;
-    parse_php_constant_name(after[..end].trim())
-}
-
-fn eval_php_path_expression(
-    expr: &str,
-    source_path: &Path,
-    aliases: &HashMap<String, String>,
-    constants: &HashMap<String, String>,
-) -> Option<String> {
-    let mut out = String::new();
-    for part in split_php_concat(expr) {
-        out.push_str(&eval_php_path_atom(
-            part.trim(),
-            source_path,
-            aliases,
-            constants,
-        )?);
-    }
-    Some(out)
-}
-
-fn split_php_function_args(args: &str) -> Vec<&str> {
-    let mut parts = Vec::new();
-    let mut start = 0usize;
-    let mut depth = 0usize;
-    let mut quote: Option<char> = None;
-    let chars: Vec<(usize, char)> = args.char_indices().collect();
-    let mut index = 0usize;
-
-    while index < chars.len() {
-        let (byte_idx, ch) = chars[index];
-        if let Some(q) = quote {
-            if ch == '\\' {
-                index += 2;
-                continue;
-            }
-            if ch == q {
-                quote = None;
-            }
-            index += 1;
-            continue;
-        }
-
-        match ch {
-            '\'' | '"' => quote = Some(ch),
-            '(' => depth += 1,
-            ')' => depth = depth.saturating_sub(1),
-            ',' if depth == 0 => {
-                parts.push(args[start..byte_idx].trim());
-                start = byte_idx + ch.len_utf8();
-            }
-            _ => {}
-        }
-        index += 1;
-    }
-
-    let tail = args[start..].trim();
-    if !tail.is_empty() {
-        parts.push(tail);
-    }
-    parts
-}
-
-fn split_php_concat(expr: &str) -> Vec<&str> {
-    let mut parts = Vec::new();
-    let mut start = 0usize;
-    let mut depth = 0usize;
-    let mut quote: Option<char> = None;
-    let chars: Vec<(usize, char)> = expr.char_indices().collect();
-    let mut index = 0usize;
-
-    while index < chars.len() {
-        let (byte_idx, ch) = chars[index];
-        if let Some(q) = quote {
-            if ch == '\\' {
-                index += 2;
-                continue;
-            }
-            if ch == q {
-                quote = None;
-            }
-            index += 1;
-            continue;
-        }
-
-        match ch {
-            '\'' | '"' => quote = Some(ch),
-            '(' => depth += 1,
-            ')' => depth = depth.saturating_sub(1),
-            '.' if depth == 0 => {
-                parts.push(expr[start..byte_idx].trim());
-                start = byte_idx + ch.len_utf8();
-            }
-            _ => {}
-        }
-        index += 1;
-    }
-
-    let tail = expr[start..].trim();
-    if !tail.is_empty() {
-        parts.push(tail);
-    }
-    parts
-}
-
-fn eval_php_path_atom(
-    atom: &str,
-    source_path: &Path,
-    aliases: &HashMap<String, String>,
-    constants: &HashMap<String, String>,
-) -> Option<String> {
-    let atom = atom.trim();
-    if atom.is_empty() {
-        return Some(String::new());
-    }
-
-    if let Some(stripped) = atom.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
-        if php_double_quoted_string_has_interpolation(stripped) {
-            return None;
-        }
-        return Some(stripped.to_string());
-    }
-    if let Some(stripped) = atom.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')) {
-        return Some(stripped.to_string());
-    }
-    if atom.eq("__DIR__") {
-        return Some(
-            absolutize_path(source_path)
-                .parent()
-                .unwrap_or(Path::new("."))
-                .to_string_lossy()
-                .into_owned(),
-        );
-    }
-    if atom.eq("__FILE__") {
-        return Some(absolutize_path(source_path).to_string_lossy().into_owned());
-    }
-    if let Some(name) = atom.strip_prefix('$') {
-        return aliases.get(name).cloned();
-    }
-    if atom
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-    {
-        if let Some(value) = constants.get(atom) {
-            return Some(value.clone());
-        }
-    }
-    if atom.starts_with("dirname(") && atom.ends_with(')') {
-        let inner = &atom["dirname(".len()..atom.len() - 1];
-        let resolved = eval_php_path_expression(inner, source_path, aliases, constants)?;
-        let parent = Path::new(&resolved).parent().unwrap_or(Path::new("."));
-        return Some(parent.to_string_lossy().into_owned());
-    }
-    None
-}
-
-fn php_double_quoted_string_has_interpolation(content: &str) -> bool {
-    let bytes = content.as_bytes();
-    let mut index = 0usize;
-    while index < bytes.len() {
-        if bytes[index] == b'\\' {
-            index += 2;
-            continue;
-        }
-        if bytes[index] == b'$' {
-            return true;
-        }
-        index += 1;
-    }
-    false
-}
+// The path EVALUATOR went with the table it filled: `eval_php_path_expression`
+// / `eval_php_path_atom` (string literals, `__DIR__`, `__FILE__`, `$alias`,
+// a known constant, `dirname(…)`), their two splitters `split_php_concat` /
+// `split_php_function_args`, and `php_double_quoted_string_has_interpolation`,
+// which existed to decline a `"…$x…"` the pre-pass could not evaluate.
+// `__DIR__` and `__FILE__` are still handled — by `rewrite_php_magic_constants`,
+// which rewrites them in the SOURCE, so the program sees the right value at
+// runtime instead of the pre-pass guessing it at compile time.
 
 // `normalize_php_include_for_inlining` re-wove an included file's `?>`/`<?php`
 // segments so the text could be spliced into its caller, and
@@ -2280,38 +1983,12 @@ PROCEDURE DIVISION.
         let _ = std::fs::remove_dir_all(&temp_root);
     }
 
-    /// `define(…); // comment` must still register the constant. The subject is
-    /// the PARSE, not an include — the constant table's one remaining consumer
-    /// is the `if (defined('X'))` guard in `expand_php_source_file`, so the test
-    /// asks the expander for the table it built rather than for inlined code.
-    #[test]
-    fn php_bundle_parses_define_with_trailing_inline_comment() {
-        let temp_root = std::env::temp_dir().join(format!(
-            "vybex_php_bundle_define_comment_{}",
-            uuid::Uuid::new_v4()
-        ));
-        std::fs::create_dir_all(&temp_root).expect("create temp dir");
-
-        let entry_path = temp_root.join("entry.php");
-        let entry_src = "<?php\ndefine('ABSPATH', __DIR__ . '/');\ndefine('WP_CONTENT_DIR', ABSPATH . 'wp-content'); // trailing comment\n";
-        std::fs::write(&entry_path, entry_src).expect("write entry");
-
-        let mut constants: HashMap<String, String> = HashMap::new();
-        expand_php_source_file(&entry_path, entry_src, &mut constants).expect("expand entry");
-
-        assert_eq!(
-            constants.get("WP_CONTENT_DIR").map(String::as_str),
-            Some(
-                temp_root
-                    .join("wp-content")
-                    .to_string_lossy()
-                    .into_owned()
-                    .as_str()
-            )
-        );
-
-        let _ = std::fs::remove_dir_all(&temp_root);
-    }
+    // `php_bundle_parses_define_with_trailing_inline_comment` stood here. Its
+    // subject was the pre-pass's constant TABLE — gone with the guard that read
+    // it. What is still worth asking, "does `define(…); // comment` parse", is a
+    // walker question, so it moved to the php suite as
+    // `tests/php/php_constants/define_with_trailing_comment.php` rather than
+    // being dropped.
 
     #[test]
     fn php_bundle_skips_unknown_constant_include_paths() {
@@ -2531,16 +2208,28 @@ PROCEDURE DIVISION.
         let _ = std::fs::remove_dir_all(&temp_root);
     }
 
+    /// An include under `if (defined('X'))` is left for the RUNTIME to decide,
+    /// like every other include. The pre-pass used to DROP the line whenever it
+    /// could not find `X` in its own constants table — but `define()` runs, so a
+    /// constant defined by any expression the table could not fold (here a bare
+    /// `1`) made the include vanish from the program even though the guard is
+    /// true. The include line must survive verbatim.
     #[test]
-    fn php_bundle_skips_include_after_missing_positive_defined_guard() {
+    fn php_bundle_leaves_defined_guarded_include_to_runtime() {
         let temp_root = std::env::temp_dir().join(format!(
             "vybex_php_bundle_defined_guard_{}",
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&temp_root).expect("create temp dir");
 
+        std::fs::write(
+            temp_root.join("sunrise.php"),
+            "<?php\nfunction sunrise_fn() { return 42; }\n",
+        )
+        .expect("write sunrise");
+
         let entry_path = temp_root.join("entry.php");
-        let entry_src = "<?php\nif ( defined('SUNRISE') ) {\n    include_once __DIR__ . '/sunrise.php';\n}\nfunction after_defined_guard() { return 1; }\n";
+        let entry_src = "<?php\ndefine('SUNRISE', 1);\nif ( defined('SUNRISE') ) {\n    include_once __DIR__ . '/sunrise.php';\n}\nfunction after_defined_guard() { return 1; }\n";
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
         register_test_languages();
@@ -2558,6 +2247,21 @@ PROCEDURE DIVISION.
 
         let module = bundle.prepared_module().expect("prepared module");
         assert!(module.body.iter().any(|stmt| matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name == "after_defined_guard")));
+        // Not inlined — the includee's declaration stays out of the module.
+        assert!(!module.body.iter().any(
+            |stmt| matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name == "sunrise_fn")
+        ));
+
+        let expanded =
+            expand_php_bundle_sources_with_map(&bundle.sources).expect("expand php bundle");
+        // `__DIR__` is already a literal by this point — `rewrite_php_magic_constants`
+        // resolves it in the SOURCE so the runtime include sees the right path.
+        let expected = format!(
+            "include_once '{}' . '/sunrise.php';",
+            temp_root.to_string_lossy()
+        );
+        let code = expanded.into_code();
+        assert!(code.contains(&expected), "expanded code was:\n{code}");
 
         let _ = std::fs::remove_dir_all(&temp_root);
     }

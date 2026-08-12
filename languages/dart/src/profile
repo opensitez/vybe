@@ -64,6 +64,11 @@ tuple_literals_tagged = true
 has_generators = true
 ecma_promise_methods = true
 throwable_is_root = true
+# Dart `obj(args)` dispatches through an instance `call` method. The class
+# normalizer binds that spelling to `ProtocolSlot::Call`; this property enables
+# the shared call-site probe for object callees, the same concept path used by
+# Python `__call__`, PHP `__invoke`, and Kotlin `operator fun invoke`.
+callable_objects = true
 
 # ────────────────────────────────────────────────────────────────────────────
 # BUILTINS — bare global function calls
@@ -115,15 +120,22 @@ __dart_stack_trace  = { emit = "common:dart.stack_trace",        min_args = 1, m
 __dart_index_get    = { emit = "common:dart.index_get",          min_args = 2, max_args = 2, slot = "get_item" }
 __dart_index_set    = { emit = "common:dart.index_set",          min_args = 3, max_args = 3 }
 __dart_set_from     = { emit = "common:dart.set_from",           min_args = 1, max_args = 1 }
+__dart_clear        = { emit = "common:dart.clear",              min_args = 1, max_args = 1 }
+__dart_lookup       = { emit = "common:dart.lookup",             min_args = 2, max_args = 2 }
+__dart_to_string    = { emit = "common:dart.to_string",          min_args = 1, max_args = 1 }
 __dart_for_in_iterable = { emit = "common:dart.for_in_iterable", min_args = 1, max_args = 1 }
 __dart_eq           = { emit = "common:dart.eq",                 min_args = 2, max_args = 2 }
 __dart_is_null      = { emit = "common:dart.is_null",            min_args = 1, max_args = 1 }
+__dart_is_empty     = { emit = "common:dart.is_empty",           min_args = 1, max_args = 1 }
+__dart_is_not_empty = { emit = "common:dart.is_not_empty",       min_args = 1, max_args = 1 }
+__dart_length       = { emit = "common:dart.length",             min_args = 1, max_args = 1 }
 __dart_hash_code    = { emit = "common:dart.hash_code",          min_args = 1, max_args = 1 }
 __dart_object_hash_code = { emit = "common:dart.object_hash_code", min_args = 1, max_args = 1 }
 __dart_runtime_type = { emit = "common:dart.runtime_type",       min_args = 1, max_args = 1 }
 __dart_type_to_string = { emit = "common:dart.type_to_string",   min_args = 1, max_args = 1 }
 __dart_is_list_of_int = { emit = "common:dart.is_list_of_int",   min_args = 1, max_args = 1 }
 __dart_double_to_string = { emit = "common:dart.double_to_string", min_args = 1, max_args = 1 }
+__dart_nullable_double_to_string = { emit = "common:dart.nullable_double_to_string", min_args = 1, max_args = 1 }
 # `Duration` is not here: it is a `dart.core` CLASS (`core_classes/duration.rs`), so
 # `Duration(...)` is an ordinary construction and its members dispatch on the
 # receiver. The wrapper this replaces was an anonymous struct with a `__type`
@@ -225,6 +237,10 @@ __dart_url_decode   = { emit = "common:dart.url_decode",         min_args = 1, m
 # `~/` and unary `-` on a BigInt fell through to f64 arithmetic and produced
 # NaN even though the VALUE was a real ECMA BigInt all along.
 "__dart_bigint_from" = { emit = "host:ecma:bigint:BigInt",       min_args = 1, max_args = 1 }
+"__dart_bigint_compare_to" = { emit = "common:dart.bigint_compare_to", min_args = 2, max_args = 2 }
+"__dart_bigint_idiv" = { emit = "common:dart.bigint_idiv",       min_args = 2, max_args = 2 }
+"__dart_bigint_mod"  = { emit = "common:dart.bigint_mod",        min_args = 2, max_args = 2 }
+"__dart_compare_to"  = { emit = "common:dart.compare_to",        min_args = 2, max_args = 2 }
 "String.fromCharCode" = { emit = "host:wasm:js-string:fromCharCode", min_args = 1, max_args = 1 }
 "String.fromCharCodes" = { emit = "common:dart.string_from_char_codes", min_args = 1, max_args = 1 }
 "__dart_string_code_units" = { emit = "common:dart.string_code_units", min_args = 1, max_args = 1 }
@@ -263,6 +279,22 @@ __dart_url_decode   = { emit = "common:dart.url_decode",         min_args = 1, m
 
 jsonEncode          = { emit = "host:ecma:json:stringify",        min_args = 1, max_args = 1 }
 jsonDecode          = { emit = "host:ecma:json:parse",            min_args = 1, max_args = 1 }
+base64Encode        = { emit = "common:dart.base64_encode",       min_args = 1, max_args = 1 }
+base64Decode        = { emit = "common:dart.base64_decode",       min_args = 1, max_args = 1 }
+base64UrlEncode     = { emit = "common:dart.base64url_encode",    min_args = 1, max_args = 1 }
+base64UrlDecode     = { emit = "common:dart.base64url_decode",    min_args = 1, max_args = 1 }
+__dart_base64_encode      = { emit = "common:dart.base64_encode",       min_args = 1, max_args = 1 }
+__dart_base64_decode      = { emit = "common:dart.base64_decode",       min_args = 1, max_args = 1 }
+__dart_base64_normalize   = { emit = "common:dart.base64_normalize",    min_args = 1, max_args = 1 }
+__dart_base64url_encode   = { emit = "common:dart.base64url_encode",    min_args = 1, max_args = 1 }
+__dart_base64url_decode   = { emit = "common:dart.base64url_decode",    min_args = 1, max_args = 1 }
+__dart_base64url_normalize = { emit = "common:dart.base64url_normalize", min_args = 1, max_args = 1 }
+"base64.encode"     = { emit = "common:dart.base64_encode",       min_args = 1, max_args = 1 }
+"base64.decode"     = { emit = "common:dart.base64_decode",       min_args = 1, max_args = 1 }
+"base64.normalize"  = { emit = "common:dart.base64_normalize",    min_args = 1, max_args = 1 }
+"base64Url.encode"    = { emit = "common:dart.base64url_encode",    min_args = 1, max_args = 1 }
+"base64Url.decode"    = { emit = "common:dart.base64url_decode",    min_args = 1, max_args = 1 }
+"base64Url.normalize" = { emit = "common:dart.base64url_normalize", min_args = 1, max_args = 1 }
 
 # ── Date / Time ─────────────────────────────────────────────────────────────
 
@@ -286,6 +318,30 @@ __dart_io_current_dir   = { emit = "host:node:process:cwd",         min_args = 0
 # ── Environment ─────────────────────────────────────────────────────────────
 
 "Platform.environment"  = { emit = "host:wasi:cli:getEnv",       min_args = 1, max_args = 1 }
+__dart_platform_environment = { emit = "common:dart.io_platform_environment", min_args = 0, max_args = 0 }
+__dart_process_run_sync = { emit = "common:dart.io_process_run_sync", min_args = 2, max_args = 7 }
+__dart_process_start = { emit = "common:dart.io_process_start", min_args = 2, max_args = 9 }
+__dart_process_kill = { emit = "common:dart.io_process_kill", min_args = 1, max_args = 2 }
+__dart_process_stdin_writeln = { emit = "common:dart.io_process_stdin_writeln", min_args = 1, max_args = 2 }
+__dart_process_stdin_add = { emit = "common:dart.io_process_stdin_add", min_args = 2, max_args = 2 }
+__dart_process_stdin_write_char_code = { emit = "common:dart.io_process_stdin_write_char_code", min_args = 2, max_args = 2 }
+__dart_process_stdin_flush = { emit = "common:dart.io_process_stdin_flush", min_args = 1, max_args = 1 }
+__dart_process_stdin_close = { emit = "common:dart.io_process_stdin_close", min_args = 1, max_args = 1 }
+__dart_process_stdin_add_error = { emit = "common:dart.io_process_stdin_add_error", min_args = 2, max_args = 2 }
+__dart_utf8_encode = { emit = "common:dart.utf8_encode", min_args = 1, max_args = 1 }
+__dart_latin1_encode = { emit = "common:dart.latin1_encode", min_args = 1, max_args = 1 }
+__dart_ascii_encode = { emit = "common:dart.latin1_encode", min_args = 1, max_args = 1 }
+__dart_utf8_decode = { emit = "common:dart.utf8_decode", min_args = 1, max_args = 2 }
+__dart_latin1_decode = { emit = "common:dart.latin1_decode", min_args = 1, max_args = 2 }
+__dart_ascii_decode = { emit = "common:dart.latin1_decode", min_args = 1, max_args = 2 }
+__dart_io_absolute_handle = { emit = "common:dart.io_absolute_handle", min_args = 1, max_args = 1 }
+__dart_io_parent_handle = { emit = "common:dart.io_parent_handle", min_args = 1, max_args = 1 }
+__dart_io_uri_string = { emit = "common:dart.io_uri_string", min_args = 1, max_args = 1 }
+__dart_io_is_absolute = { emit = "common:dart.io_is_absolute", min_args = 1, max_args = 1 }
+__dart_io_type_sync = { emit = "common:dart.io_type_sync", min_args = 1, max_args = 2 }
+__dart_io_identical_sync = { emit = "common:dart.io_identical_sync", min_args = 2, max_args = 2 }
+__dart_io_stat_path = { emit = "common:dart.io_stat_path", min_args = 1, max_args = 1 }
+__dart_io_set_current_dir = { emit = "common:dart.io_set_current_dir", min_args = 1, max_args = 1 }
 
 # ────────────────────────────────────────────────────────────────────────────
 # VALUE METHODS — instance method calls on values
@@ -296,11 +352,13 @@ __dart_io_current_dir   = { emit = "host:node:process:cwd",         min_args = 0
 # ── dart:io synchronous filesystem (emitter/io_adapter.rs) ──────────────────
 # argc INCLUDES the receiver handle, which is where the path comes from.
 readAsStringSync  = { emit = "common:dart.io_read_as_string_sync",  min_args = 0, max_args = 2 }
+readAsLatin1StringSync = { emit = "common:dart.io_read_as_latin1_string_sync", min_args = 0, max_args = 2 }
 readAsBytesSync   = { emit = "common:dart.io_read_as_bytes_sync",   min_args = 0, max_args = 1 }
 readAsLinesSync   = { emit = "common:dart.io_read_as_lines_sync",   min_args = 0, max_args = 2 }
 appendAsStringSync = { emit = "common:dart.io_append_as_string_sync", min_args = 1, max_args = 4 }
+appendAsBytesSync  = { emit = "common:dart.io_append_as_bytes_sync",  min_args = 1, max_args = 4 }
 writeAsStringSync = { emit = "common:dart.io_write_as_string_sync", min_args = 1, max_args = 4 }
-writeAsBytesSync  = { emit = "common:dart.io_write_as_string_sync", min_args = 1, max_args = 4 }
+writeAsBytesSync  = { emit = "common:dart.io_write_as_bytes_sync", min_args = 1, max_args = 4 }
 existsSync        = { emit = "common:dart.io_exists_sync",          min_args = 0, max_args = 1 }
 deleteSync        = { emit = "common:dart.io_delete_sync",          min_args = 0, max_args = 2 }
 lengthSync        = { emit = "common:dart.io_length_sync",          min_args = 0, max_args = 1 }
@@ -308,6 +366,33 @@ createSync        = { emit = "common:dart.io_create_sync",          min_args = 0
 renameSync        = { emit = "common:dart.io_rename_sync",          min_args = 1, max_args = 1 }
 copySync          = { emit = "common:dart.io_copy_sync",            min_args = 1, max_args = 1 }
 listSync          = { emit = "common:dart.io_list_sync",            min_args = 0, max_args = 2 }
+statSync          = { emit = "common:dart.io_stat_sync",            min_args = 0, max_args = 1 }
+lastModifiedSync  = { emit = "common:dart.io_last_modified_sync",   min_args = 0, max_args = 0 }
+setLastModifiedSync = { emit = "common:dart.io_set_last_modified_sync", min_args = 1, max_args = 1 }
+setLastAccessedSync = { emit = "common:dart.io_set_last_accessed_sync", min_args = 1, max_args = 1 }
+resolveSymbolicLinksSync = { emit = "common:dart.io_resolve_symbolic_links_sync", min_args = 0, max_args = 0 }
+targetSync        = { emit = "common:dart.io_target_sync",          min_args = 0, max_args = 0 }
+updateSync        = { emit = "common:dart.io_update_sync",          min_args = 1, max_args = 1 }
+createTempSync    = { emit = "common:dart.io_create_temp_sync",     min_args = 0, max_args = 1 }
+watch             = { emit = "common:dart.io_watch",                min_args = 0, max_args = 2 }
+absolute          = { emit = "common:dart.io_absolute_handle",       min_args = 0, max_args = 0 }
+parent            = { emit = "common:dart.io_parent_handle",         min_args = 0, max_args = 0 }
+uri               = { emit = "common:dart.io_uri_string",            min_args = 0, max_args = 0 }
+isAbsolute        = { emit = "common:dart.io_handle_is_absolute",    min_args = 0, max_args = 0 }
+openSync          = { emit = "common:dart.io_open_sync",            min_args = 0, max_args = 2 }
+closeSync         = { emit = "common:dart.io_raf_close_sync",       min_args = 0, max_args = 0 }
+flushSync         = { emit = "common:dart.io_raf_flush_sync",       min_args = 0, max_args = 0 }
+lockSync          = { emit = "common:dart.io_raf_lock_sync",        min_args = 0, max_args = 3 }
+unlockSync        = { emit = "common:dart.io_raf_unlock_sync",      min_args = 0, max_args = 2 }
+writeStringSync   = { emit = "common:dart.io_raf_write_string_sync", min_args = 1, max_args = 2 }
+writeByteSync     = { emit = "common:dart.io_raf_write_byte_sync",  min_args = 1, max_args = 1 }
+writeFromSync     = { emit = "common:dart.io_raf_write_from_sync",  min_args = 1, max_args = 3 }
+readByteSync      = { emit = "common:dart.io_raf_read_byte_sync",   min_args = 0, max_args = 0 }
+readSync          = { emit = "common:dart.io_raf_read_sync",        min_args = 1, max_args = 1 }
+readIntoSync      = { emit = "common:dart.io_raf_read_into_sync",   min_args = 1, max_args = 3 }
+positionSync      = { emit = "common:dart.io_raf_position_sync",    min_args = 0, max_args = 0 }
+setPositionSync   = { emit = "common:dart.io_raf_set_position_sync", min_args = 1, max_args = 1 }
+truncateSync      = { emit = "common:dart.io_raf_truncate_sync",    min_args = 1, max_args = 1 }
 
 # String instance methods
 toUpperCase   = { emit = "common:strings.to_upper",   min_args = 0, max_args = 0 }
@@ -485,6 +570,7 @@ reduce        = { emit = "common:dart.iter_reduce",    min_args = 1, max_args = 
 forEach       = { emit = "common:dart.iter_for_each",  min_args = 1, max_args = 1 }
 listen        = { emit = "common:dart.stream_listen",  min_args = 1, max_args = 3 }
 asFuture      = { emit = "common:dart.stream_as_future", min_args = 0, max_args = 0 }
+asBroadcastStream = { emit = "common:dart.stream_as_broadcast", min_args = 0, max_args = 0 }
 cancel        = { emit = "common:dart.stream_cancel",  min_args = 0, max_args = 0 }
 indexWhere    = { emit = "common:dart.list_index_where", min_args = 1, max_args = 1 }
 lastIndexWhere = { emit = "common:dart.list_last_index_where", min_args = 1, max_args = 1 }
@@ -582,11 +668,6 @@ kind = "namespace"
 alias = "Map"
 module = "ecma:map"
 
-[[esm_default]]
-kind = "namespace"
-alias = "Set"
-module = "ecma:set"
-
 # DateTime / StringBuffer / Duration namespace aliases retired.
 # `StringBuffer` is a `dart.core` TYPE node (`tree_register.rs`) —
 # construction and member dispatch both resolve from that one
@@ -631,6 +712,11 @@ module = "web:encoding"
 [[esm_default]]
 kind = "namespace"
 alias = "base64"
+module = "web:encoding"
+
+[[esm_default]]
+kind = "namespace"
+alias = "base64Url"
 module = "web:encoding"
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -736,6 +822,9 @@ eq = "common:dart.value_eq"
 # `1,2`. `print([1, 2])` already rendered correctly via `dart.to_string` — the
 # same renderer, which interpolation simply never consulted.
 [builtin_slots.string]
+to_string = "common:dart.to_string"
+
+[builtin_slots.bool]
 to_string = "common:dart.to_string"
 
 # A Dart `double` ALWAYS shows a fractional part — `5.toDouble()` prints `5.0`

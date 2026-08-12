@@ -3,6 +3,7 @@
 use vybe_compiler::primitives::{
     collections,
     instructions::{core_wasm, host},
+    sets,
 };
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
@@ -18,26 +19,26 @@ fn set_local(chunk: &mut Chunk, slot: u16, line: u32) {
 fn set_add(chunks: &mut [Chunk], current: usize, set_slot: u16, value_slot: u16, line: u32) {
     get(&mut chunks[current], set_slot, line);
     get(&mut chunks[current], value_slot, line);
-    host::emit(&mut chunks[current], "ecma:set", "add", 2, line);
+    sets::emit_add(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
 }
 
 fn set_delete(chunks: &mut [Chunk], current: usize, set_slot: u16, value_slot: u16, line: u32) {
     get(&mut chunks[current], set_slot, line);
     get(&mut chunks[current], value_slot, line);
-    host::emit(&mut chunks[current], "ecma:set", "delete", 2, line);
+    sets::emit_delete(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
 }
 
 fn set_has(chunks: &mut [Chunk], current: usize, set_slot: u16, value_slot: u16, line: u32) {
     get(&mut chunks[current], set_slot, line);
     get(&mut chunks[current], value_slot, line);
-    host::emit(&mut chunks[current], "ecma:set", "has", 2, line);
+    sets::emit_has(chunks, current, line);
 }
 
 fn values_snapshot(chunks: &mut [Chunk], current: usize, set_slot: u16, out_slot: u16, line: u32) {
     get(&mut chunks[current], set_slot, line);
-    host::emit(&mut chunks[current], "ecma:set", "values", 1, line);
+    sets::emit_values_array(chunks, current, line);
     set_local(&mut chunks[current], out_slot, line);
 }
 
@@ -45,18 +46,18 @@ pub fn emit_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     for _ in 0..argc {
         chunks[current].emit_op(Op::DROP, line);
     }
-    host::emit(&mut chunks[current], "ecma:set", "new", 0, line);
+    sets::emit_new(chunks, current, line);
 }
 
 pub fn emit_value_of(chunks: &mut [Chunk], current: usize, line: u32) {
     let value = chunks[current].alloc_scratch(1);
     let out = chunks[current].alloc_scratch(1);
     set_local(&mut chunks[current], value, line);
-    host::emit(&mut chunks[current], "ecma:set", "new", 0, line);
+    sets::emit_new(chunks, current, line);
     set_local(&mut chunks[current], out, line);
     get(&mut chunks[current], out, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
-    host::emit(&mut chunks[current], "ecma:set", "add", 2, line);
+    sets::emit_add(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     get(&mut chunks[current], value, line);
     core_wasm::i32_const(&mut chunks[current], line, 5);
@@ -65,14 +66,14 @@ pub fn emit_value_of(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_if_value(line);
     get(&mut chunks[current], out, line);
     core_wasm::i32_const(&mut chunks[current], line, 2);
-    host::emit(&mut chunks[current], "ecma:set", "add", 2, line);
+    sets::emit_add(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_end(line);
     get(&mut chunks[current], out, line);
 }
 
 pub fn emit_cardinality(chunks: &mut [Chunk], current: usize, line: u32) {
-    host::emit(&mut chunks[current], "ecma:set", "size", 1, line);
+    sets::emit_size(chunks, current, line);
 }
 
 pub fn emit_is_empty(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -108,7 +109,7 @@ pub fn emit_get(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         set_local(&mut chunks[current], to, line);
         set_local(&mut chunks[current], from, line);
         set_local(&mut chunks[current], bs, line);
-        host::emit(&mut chunks[current], "ecma:set", "new", 0, line);
+        sets::emit_new(chunks, current, line);
         set_local(&mut chunks[current], out, line);
         get(&mut chunks[current], from, line);
         set_local(&mut chunks[current], i, line);
@@ -179,7 +180,7 @@ pub fn emit_set(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
 pub fn emit_clear(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     if argc == 1 {
-        host::emit(&mut chunks[current], "ecma:set", "clear", 1, line);
+        sets::emit_clear(chunks, current, line);
         return;
     }
     let end = if argc == 3 {
@@ -572,14 +573,14 @@ fn emit_intersects_like_equals(
     line: u32,
 ) {
     get(&mut chunks[current], target, line);
-    host::emit(&mut chunks[current], "ecma:set", "size", 1, line);
+    sets::emit_size(chunks, current, line);
     get(&mut chunks[current], other, line);
-    host::emit(&mut chunks[current], "ecma:set", "size", 1, line);
+    sets::emit_size(chunks, current, line);
     chunks[current].emit_op(Op::I32_EQ, line);
     vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     get(&mut chunks[current], target, line);
-    host::emit(&mut chunks[current], "ecma:set", "size", 1, line);
+    sets::emit_size(chunks, current, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op(Op::I32_EQ, line);
     vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
@@ -599,7 +600,7 @@ pub fn emit_clone(chunks: &mut [Chunk], current: usize, line: u32) {
     let original = chunks[current].alloc_scratch(1);
     let out = chunks[current].alloc_scratch(1);
     set_local(&mut chunks[current], original, line);
-    host::emit(&mut chunks[current], "ecma:set", "new", 0, line);
+    sets::emit_new(chunks, current, line);
     set_local(&mut chunks[current], out, line);
     get(&mut chunks[current], out, line);
     get(&mut chunks[current], original, line);
@@ -609,14 +610,14 @@ pub fn emit_clone(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 pub fn emit_stream(chunks: &mut [Chunk], current: usize, line: u32) {
-    host::emit(&mut chunks[current], "ecma:set", "values", 1, line);
+    sets::emit_values_array(chunks, current, line);
 }
 
 pub fn emit_to_array(chunks: &mut [Chunk], current: usize, line: u32) {
     let bs = chunks[current].alloc_scratch(1);
     set_local(&mut chunks[current], bs, line);
     get(&mut chunks[current], bs, line);
-    host::emit(&mut chunks[current], "ecma:set", "size", 1, line);
+    sets::emit_size(chunks, current, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op(Op::I32_GT_S, line);
     chunks[current].emit_if_value(line);
@@ -628,7 +629,7 @@ pub fn emit_to_array(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 pub fn emit_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
-    host::emit(&mut chunks[current], "ecma:set", "values", 1, line);
+    sets::emit_values_array(chunks, current, line);
     chunks[current].emit_string_const(",", line);
     host::emit(&mut chunks[current], "ecma:array", "join", 2, line);
 }

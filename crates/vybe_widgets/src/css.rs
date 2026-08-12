@@ -632,7 +632,11 @@ pub fn parse_color(value: &str) -> Option<u32> {
                 let r = expand(bytes[0])?;
                 let g = expand(bytes[1])?;
                 let b = expand(bytes[2])?;
-                let a = if bytes.len() == 4 { expand(bytes[3])? } else { 255 };
+                let a = if bytes.len() == 4 {
+                    expand(bytes[3])?
+                } else {
+                    255
+                };
                 Some(a << 24 | r << 16 | g << 8 | b)
             }
             6 | 8 => {
@@ -653,7 +657,10 @@ pub fn parse_color(value: &str) -> Option<u32> {
         .or_else(|| lower.strip_prefix("rgb("))
         .and_then(|a| a.strip_suffix(')'))
     {
-        let parts: Vec<&str> = args.split([',', '/', ' ']).filter(|p| !p.is_empty()).collect();
+        let parts: Vec<&str> = args
+            .split([',', '/', ' '])
+            .filter(|p| !p.is_empty())
+            .collect();
         if parts.len() < 3 {
             return None;
         }

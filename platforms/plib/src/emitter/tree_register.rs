@@ -43,22 +43,63 @@ fn ancestry(class: &super::gcl::GclClass) -> Vec<String> {
     namespaces::ancestry_of(class.name, gcl_parent)
 }
 
-/// The generic-construction spec for a GCL class — the SAME shape Flutter
-/// registers. `control_fn` is the `vybe:gui` control factory; each declared
-/// property forwards as a `Set<Prop>` command on that control. This is what
-/// makes plib an adapter over the one GUI interface instead of a compiler-side
-/// class-registration pass.
+/// The generic-construction spec for a GCL class. `control_fn` is the element
+/// the class IS; the ancestry is what `is`/`isInstance` answer from.
+///
+/// **`params`/`fields`/`field_gui` are deliberately EMPTY, and that is the whole
+/// difference between the two families of frontend.** A VCL control is
+/// constructed BARE and configured afterwards by property assignment —
+/// `TEdit.Create(Self)` takes an owner, not a `PasswordChar` — so there is no
+/// constructor argument that names a property, and nothing to declare here.
+/// WinForms is the same shape (`platforms/dotnet`, `control_ctor_spec`). Only a
+/// DECLARATIVE frontend, where config arrives as constructor arguments, has
+/// fields to describe: Flutter's `Text('hi', style: …)`.
+///
+/// Declaring the property list here instead aligned the ctor's ONE real
+/// argument onto `properties[0]`, so `TMemo.Create(Self)` stamped
+/// `PasswordChar = <the owner>` plus a `Count` of `null` that then raced the
+/// real `Lines.Count` property read. Inert only because nothing on this path
+/// consumes `__ops` — `emit_tree_ctor_construction` emits it today.
+///
+/// Nothing is lost: the MEMBERS come from the ancestry walk below, not from
+/// this list. And `describes_construction` (`primitives/expressions.rs`) is
+/// `!params.is_empty() || !fields.is_empty() || control_fn.is_some()`, so a
+/// widget still routes to generic construction on `control_fn` alone — a class
+/// with NO element would fall through to the backing-call path, which is why
+/// this is safe here and would not be everywhere.
+///
+/// ⚠ A class with NO element keeps the old declaration, and that is forced, not
+/// chosen. `describes_construction` reads non-emptiness as "construct this
+/// generically", so emptying the lists for `TObject`/`TComponent`/`TControl`/
+/// `TWinControl` — which have no `control_fn` to carry the disjunct — drops them
+/// to the backing-call path, and they have no backing call. Measured:
+/// `TComponent.Create(nil)` became `undefined is not callable`. Their
+/// declaration is inert anyway (no `control_fn`, so no `__ops`; the stamped
+/// fields are shadowed by the declared property members), so the hazard this
+/// removes is entirely on the widget side. The real fix is a shared one — a
+/// spec needs to say "generic construction, no fields" without saying it with
+/// an empty list — and it is not plib's to make.
 fn ctor_spec(class: &super::gcl::GclClass) -> CtorSpec {
-    let fields: Vec<String> = class.properties.iter().map(|p| p.to_string()).collect();
+    let Some(control_fn) = class.widget_host_fn else {
+        let fields: Vec<String> = class.properties.iter().map(|p| p.to_string()).collect();
+        return CtorSpec {
+            params: fields.clone(),
+            field_gui: fields
+                .iter()
+                .map(|f| FieldGui::NestOrProp(f.clone()))
+                .collect(),
+            fields,
+            ancestry: ancestry(class),
+            control_fn: None,
+            value_equality: false,
+        };
+    };
     CtorSpec {
-        params: fields.clone(),
-        field_gui: fields
-            .iter()
-            .map(|f| FieldGui::NestOrProp(f.clone()))
-            .collect(),
-        fields,
+        params: Vec::new(),
+        fields: Vec::new(),
+        field_gui: Vec::new(),
         ancestry: ancestry(class),
-        control_fn: class.widget_host_fn.map(str::to_string),
+        control_fn: Some(control_fn.to_string()),
         value_equality: false,
     }
 }
@@ -69,8 +110,24 @@ fn ctor_spec(class: &super::gcl::GclClass) -> CtorSpec {
 /// language already spoke. This is the whole of plib's job here: `Caption` and
 /// `Text` are the same role, `ClientWidth` is `width`. The Pascal word stops
 /// at this function; nothing downstream knows VCL exists.
-fn gui_property_role(prop: &str) -> &'static str {
-    match prop.to_ascii_lowercase().as_str() {
+fn gui_property_role(owner: &str, prop: &str) -> &'static str {
+    let spelling = prop.to_ascii_lowercase();
+    // Spellings VCL reuses for unrelated things. The DECLARING class settles
+    // them — `Position` on a form is where the window opens, on a track bar it
+    // is the value — which is why this takes the owner rather than matching on
+    // the word alone. A word-only map answered `Position` the same for both and
+    // there was no spelling that could have told them apart.
+    match (owner, spelling.as_str()) {
+        // Window placement (`poScreenCenter`). No DOM counterpart — the page
+        // does not choose where its window opens — so it stays an attribute.
+        ("TForm", "position") => return "",
+        (_, "position") => return "value",
+        // `Lines.Count`, and only a memo's. A list control declaring `Count`
+        // would want its item count, which is a different question.
+        ("TMemo", "count") => return "linecount",
+        _ => {}
+    }
+    match spelling.as_str() {
         "caption" | "text" => "text",
         "name" => "name",
         "checked" | "state" => "checked",
@@ -85,10 +142,10 @@ fn gui_property_role(prop: &str) -> &'static str {
         "readonly" => "readonly",
         "maxlength" => "maxlength",
         "hint" => "tooltip",
-        // `Lines.Count` — how many lines the control's text holds. Only
-        // `TMemo` declares `Count`; the day a list control does, this needs to
-        // become a per-class answer rather than a spelling one.
-        "count" => "linecount",
+        // VCL's `Color` is the control's BACKGROUND — `Font.Color` is the text.
+        // WinForms spells the same two `BackColor`/`ForeColor`, which is what
+        // the roles are named after.
+        "color" => "backcolor",
         // VCL's `Align` IS WinForms' `Dock` — the control gives up its own
         // rect and takes an edge of the container. The constants it is
         // assigned are declared below as the role's own vocabulary.
@@ -435,14 +492,16 @@ pub fn register_namespace_tree() {
             // the same role either way, so both orders build the same node.
             let chain = ancestry(class);
             let declared = || chain.iter().filter_map(|name| gcl_class(name));
-            for prop in declared().flat_map(|c| c.properties) {
+            for (owner, prop) in
+                declared().flat_map(|c| c.properties.iter().map(move |p| (c.name, p)))
+            {
                 // Registered under the CANONICAL name, not the VCL spelling:
                 // `Caption` IS `Text`, so Pascal and C# reach one property on
                 // one control. The Pascal spelling stays the map KEY (that is
                 // what source says); only the bound target is canonical.
                 // The role this VCL property fills. Unmapped names keep their
                 // own spelling, which lands on an attribute of that name.
-                let role = match gui_property_role(prop) {
+                let role = match gui_property_role(owner, prop) {
                     "" => prop.to_ascii_lowercase(),
                     r => r.to_string(),
                 };
@@ -497,6 +556,25 @@ pub fn register_namespace_tree() {
                     ),
                 );
                 member_returns.insert(key, returns.to_string());
+            }
+            // `Items[i]` — the option list by index. See `INDEXED_ITEM_CLASSES`
+            // for why the member is named `Item` and why both directions are
+            // declared together. It reads back as a string, which is what makes
+            // `Txt := Src.Items[i]` type as text rather than as nothing.
+            if super::gcl::INDEXED_ITEM_CLASSES
+                .iter()
+                .any(|indexed| indexed.eq_ignore_ascii_case(class.name))
+            {
+                members.insert(
+                    "item".to_string(),
+                    namespaces::property(
+                        Some(NamespaceNode::CommonEmit(gui::ITEM_TEXT_EMIT.to_string())),
+                        Some(NamespaceNode::CommonEmit(
+                            gui::SET_ITEM_TEXT_EMIT.to_string(),
+                        )),
+                    ),
+                );
+                member_returns.insert("item".to_string(), "string".to_string());
             }
             classes.insert(
                 class.name.to_lowercase(),

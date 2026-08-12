@@ -412,7 +412,10 @@ mod tests {
         );
         match cache.get(&entry) {
             Some(Err(message)) => assert!(message.contains("unexpected token")),
-            other => panic!("expected the cached compile error, got {:?}", other.is_some()),
+            other => panic!(
+                "expected the cached compile error, got {:?}",
+                other.is_some()
+            ),
         }
 
         std::thread::sleep(std::time::Duration::from_millis(1100));

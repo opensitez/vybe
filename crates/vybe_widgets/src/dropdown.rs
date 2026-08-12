@@ -291,6 +291,16 @@ impl PanelWidget for Dropdown {
                 self.items.push(s.clone());
                 CommandValue::None
             }
+            WidgetCommand::GetItem(i) => match self.items.get(*i) {
+                Some(text) => CommandValue::Text(text.clone()),
+                None => CommandValue::None,
+            },
+            WidgetCommand::SetItem(i, text) => {
+                if let Some(slot) = self.items.get_mut(*i) {
+                    *slot = text.clone();
+                }
+                CommandValue::None
+            }
             WidgetCommand::RemoveItem(i) => {
                 if *i < self.items.len() {
                     self.items.remove(*i);

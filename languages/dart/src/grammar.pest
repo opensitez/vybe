@@ -220,7 +220,9 @@ extension_type_declaration = {
 // ── Top-level function or variable ──────────────────────────────────────────
 
 top_level_function_or_variable = _{
-    function_declaration
+    getter_declaration
+    | setter_declaration
+    | function_declaration
     | variable_declaration_statement
     | expression_statement
 }

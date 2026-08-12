@@ -1966,9 +1966,9 @@ fn expr_contains_yield_outside_nested_scopes(expr: &Expression) -> bool {
             ..
         } => {
             expr_contains_yield_outside_nested_scopes(target)
-                || receiver
-                    .as_ref()
-                    .map_or(false, |expr| expr_contains_yield_outside_nested_scopes(expr))
+                || receiver.as_ref().map_or(false, |expr| {
+                    expr_contains_yield_outside_nested_scopes(expr)
+                })
                 || adapter.as_ref().map_or(false, |adapter| match adapter {
                     CallableAdapter::Expr { body, .. } => {
                         expr_contains_yield_outside_nested_scopes(body)

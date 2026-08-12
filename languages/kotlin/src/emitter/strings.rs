@@ -29,6 +29,12 @@ fn host(chunks: &mut [Chunk], current: usize, module: &str, func: &str, argc: u8
     chunks[current].emit_call(idx, argc, line);
 }
 
+fn object_get(chunks: &mut [Chunk], current: usize, slot: u16, key: &str, line: u32) {
+    get(chunks, current, slot, line);
+    chunks[current].emit_string_const(key, line);
+    host(chunks, current, "ecma:object", "get", 2, line);
+}
+
 fn bool_out(chunks: &mut [Chunk], current: usize, line: u32) {
     ops::emit_i32_to_bool(&mut chunks[current], line);
 }
@@ -225,7 +231,7 @@ pub fn emit_compare_to(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line:
     ops::emit_dyn_lt(&mut chunks[current], line);
     truthy(chunks, current, line);
     chunks[current].emit_if_value(line);
-    core_wasm::i32_const(&mut chunks[current], line, -1);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
     chunks[current].emit_else(line);
     get(chunks, current, a, line);
     get(chunks, current, b, line);
@@ -234,7 +240,7 @@ pub fn emit_compare_to(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line:
     chunks[current].emit_if_value(line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_else(line);
-    core_wasm::i32_const(&mut chunks[current], line, 1);
+    core_wasm::i32_const(&mut chunks[current], line, -1);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
 }
@@ -446,6 +452,16 @@ pub fn emit_to_boolean_strict_or_null(
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
+}
+
+pub fn emit_to_boolean_or_null(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    _argc: u8,
+    line: u32,
+) {
+    strings::emit_to_lower(&mut chunks[current], line);
+    emit_to_boolean_strict_or_null(chunks, current, 1, line);
 }
 
 /// `trimIndent()` — drop a first/last blank line, remove the common leading
@@ -823,6 +839,14 @@ pub fn emit_chunked_windowed_ex(
         set(chunks, current, step, line);
     }
     set(chunks, current, recv, line);
+
+    object_get(chunks, current, recv, "__kt_sequence", line);
+    truthy(chunks, current, line);
+    chunks[current].emit_if(line);
+    get(chunks, current, recv, line);
+    crate::emitter::hof::emit_sequence_to_list(chunks, current, 1, line);
+    set(chunks, current, recv, line);
+    chunks[current].emit_end(line);
 
     let is_str = chunks[current].alloc_scratch(1);
     get(chunks, current, recv, line);

@@ -93,6 +93,17 @@ Integer       = { emit = "common:pascal.trunc_cast",      min_args = 1, max_args
 Int           = { emit = "common:pascal.trunc_cast",      min_args = 1, max_args = 1 }
 LongInt       = { emit = "common:pascal.trunc_cast",      min_args = 1, max_args = 1 }
 IntToHex      = { emit = "common:pascal.int_to_hex",      min_args = 1, max_args = 2 }
+# SysUtils path helpers. `wasi:filesystem` already answers all of these and is
+# the same host every other language's path functions go through — there is no
+# second path parser. Only `ExtractFileExt` needs an adapter, because Delphi
+# includes the dot and a path component does not.
+ExtractFileName = { emit = "host:wasi:filesystem:pathGetFileName",     min_args = 1, max_args = 1 }
+ExtractFileDir  = { emit = "host:wasi:filesystem:pathGetDirectory",    min_args = 1, max_args = 1 }
+ChangeFileExt   = { emit = "host:wasi:filesystem:pathChangeExtension", min_args = 2, max_args = 2 }
+ExtractFileExt  = { emit = "common:pascal.extract_file_ext",           min_args = 1, max_args = 1 }
+# Graphics. A `TColor` is a CSS colour here, not a packed integer — see
+# `emit_rgb`.
+RGB             = { emit = "common:pascal.rgb",                        min_args = 3, max_args = 3 }
 BoolToStr     = { emit = "common:pascal.bool_to_str",     min_args = 1, max_args = 2 }
 AnsiUpperCase = { emit = "common:pascal.ansi_upper",      min_args = 1, max_args = 1 }
 AnsiLowerCase = { emit = "common:pascal.ansi_lower",      min_args = 1, max_args = 1 }

@@ -396,9 +396,33 @@ impl PanelWidget for ListBox {
                 }
                 CommandValue::None
             }
-            WidgetCommand::GetValue => CommandValue::Index(self.selected_index.unwrap_or(0)),
+            // Nothing selected answers NOTHING, which `Document::selected_index`
+            // reports as `-1`. `unwrap_or(0)` claimed the first row was
+            // selected the moment a list was populated — so a program asking
+            // "which row did the user pick?" got row 0 before the user had
+            // touched it, and acted on a choice nobody made.
+            //
+            // `-1` is both frameworks' answer and the spec's:
+            // `HTMLSelectElement.selectedIndex` is `-1` for a `size > 1` select
+            // with no selection, and a Delphi `TListBox.ItemIndex` starts there.
+            // A dropdown is the case that auto-selects, and it is a different
+            // widget.
+            WidgetCommand::GetValue => match self.selected_index {
+                Some(i) => CommandValue::Index(i),
+                None => CommandValue::None,
+            },
             WidgetCommand::AddItem(s) => {
                 self.items.push(s.clone());
+                CommandValue::None
+            }
+            WidgetCommand::GetItem(i) => match self.items.get(*i) {
+                Some(text) => CommandValue::Text(text.clone()),
+                None => CommandValue::None,
+            },
+            WidgetCommand::SetItem(i, text) => {
+                if let Some(slot) = self.items.get_mut(*i) {
+                    *slot = text.clone();
+                }
                 CommandValue::None
             }
             WidgetCommand::RemoveItem(i) => {

@@ -5,7 +5,8 @@
 //! without making individual expression/statement paths know about language
 //! hook storage.
 
-use super::Compiler;
+use super::*;
+use crate::primitives::instructions::recipes;
 
 impl Compiler {
     fn proxy_hook_error(&self, op: &str) -> String {
@@ -61,14 +62,146 @@ impl Compiler {
     }
 
     /// Stack: `[object, key] -> [bool]`.
-    pub(crate) fn emit_proxy_delete_property(&mut self) {
-        let idx = self.import("ecma:proxy", "deleteProperty");
-        self.emit_host_call(idx, 2);
+    pub(crate) fn emit_proxy_delete_property(&mut self) -> Result<(), String> {
+        let hook = vybe_runtime::registry::hooks(&self.profile.name)
+            .proxy_delete_property
+            .ok_or_else(|| self.proxy_hook_error("delete_property"))?;
+        hook(&mut self.chunks, self.current, self.line);
+        Ok(())
     }
 
     /// Stack: `[callable_or_proxy, this_arg, args_array] -> [result]`.
-    pub(crate) fn emit_proxy_apply(&mut self) {
-        let idx = self.import("ecma:proxy", "apply");
-        self.emit_host_call(idx, 3);
+    pub(crate) fn emit_proxy_apply(&mut self) -> Result<(), String> {
+        let hook = vybe_runtime::registry::hooks(&self.profile.name)
+            .proxy_apply
+            .ok_or_else(|| self.proxy_hook_error("apply"))?;
+        hook(&mut self.chunks, self.current, self.line);
+        Ok(())
+    }
+
+    /// Stack: `[object] -> [keys_array]`.
+    pub(crate) fn emit_proxy_own_keys(&mut self) -> Result<(), String> {
+        let hook = vybe_runtime::registry::hooks(&self.profile.name)
+            .proxy_own_keys
+            .ok_or_else(|| self.proxy_hook_error("own_keys"))?;
+        hook(&mut self.chunks, self.current, self.line);
+        Ok(())
+    }
+
+    /// Stack: `[object, key] -> [descriptor_or_undefined]`.
+    pub(crate) fn emit_proxy_get_own_property_descriptor(&mut self) -> Result<(), String> {
+        let hook = vybe_runtime::registry::hooks(&self.profile.name)
+            .proxy_get_own_property_descriptor
+            .ok_or_else(|| self.proxy_hook_error("get_own_property_descriptor"))?;
+        hook(&mut self.chunks, self.current, self.line);
+        Ok(())
+    }
+
+    /// Stack: `[object, key, descriptor] -> [success_bool]`.
+    pub(crate) fn emit_proxy_define_property(&mut self) -> Result<(), String> {
+        let hook = vybe_runtime::registry::hooks(&self.profile.name)
+            .proxy_define_property
+            .ok_or_else(|| self.proxy_hook_error("define_property"))?;
+        hook(&mut self.chunks, self.current, self.line);
+        Ok(())
+    }
+
+    /// Stack: `[object] -> [prototype_or_null]`.
+    pub(crate) fn emit_proxy_get_prototype_of(&mut self) -> Result<(), String> {
+        let hook = vybe_runtime::registry::hooks(&self.profile.name)
+            .proxy_get_prototype_of
+            .ok_or_else(|| self.proxy_hook_error("get_prototype_of"))?;
+        hook(&mut self.chunks, self.current, self.line);
+        Ok(())
+    }
+
+    /// Stack: `[object, prototype_or_null] -> [success_bool]`.
+    pub(crate) fn emit_proxy_set_prototype_of(&mut self) -> Result<(), String> {
+        let hook = vybe_runtime::registry::hooks(&self.profile.name)
+            .proxy_set_prototype_of
+            .ok_or_else(|| self.proxy_hook_error("set_prototype_of"))?;
+        hook(&mut self.chunks, self.current, self.line);
+        Ok(())
+    }
+
+    /// Stack: `[object] -> [bool]`.
+    pub(crate) fn emit_proxy_is_extensible(&mut self) -> Result<(), String> {
+        let hook = vybe_runtime::registry::hooks(&self.profile.name)
+            .proxy_is_extensible
+            .ok_or_else(|| self.proxy_hook_error("is_extensible"))?;
+        hook(&mut self.chunks, self.current, self.line);
+        Ok(())
+    }
+
+    /// Stack: `[object] -> [success_bool]`.
+    pub(crate) fn emit_proxy_prevent_extensions(&mut self) -> Result<(), String> {
+        let hook = vybe_runtime::registry::hooks(&self.profile.name)
+            .proxy_prevent_extensions
+            .ok_or_else(|| self.proxy_hook_error("prevent_extensions"))?;
+        hook(&mut self.chunks, self.current, self.line);
+        Ok(())
+    }
+
+    /// Stack: `[constructor_or_proxy, args_array] -> [object]`.
+    pub(crate) fn emit_proxy_construct(&mut self) -> Result<(), String> {
+        let hook = vybe_runtime::registry::hooks(&self.profile.name)
+            .proxy_construct
+            .ok_or_else(|| self.proxy_hook_error("construct"))?;
+        hook(&mut self.chunks, self.current, self.line);
+        Ok(())
+    }
+
+    /// Shared attribute-miss interception role.
+    ///
+    /// Python `__getattr__` / `__getattribute__` and PHP `__get` publish the
+    /// same protocol slot. Normal member reads stay ordinary ECMA `[[Get]]`
+    /// first; only an `undefined` result probes the slot and calls the handler
+    /// as `handler(receiver, name)`.
+    ///
+    /// Stack: `[value] -> [value]`.
+    pub(super) fn emit_getattr_slot_probe(&mut self, obj_slot: u16, field_name: &str) {
+        if !self.program_has_getattr {
+            return;
+        }
+        let slot_key = vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::GetAttr);
+        let line = self.line;
+        let value_slot = self.define_local("__getattr_value");
+        let handler_slot = self.define_local("__getattr_handler");
+
+        self.emit_u16(Op::LOCAL_SET, value_slot);
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        {
+            let undef = self.chunk().add_import("wasm:js-undefined", "test");
+            self.chunk().emit_call(undef, 1, line);
+        }
+        self.chunk().emit_if(line);
+
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        recipes::is_object(self.chunk(), line);
+        self.chunk().emit_if(line);
+        let get = self.import("ecma:reflect", "get");
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.emit_const(Value::String(Arc::from(slot_key.as_str())));
+        self.emit_host_call(get, 2);
+        self.emit_u16(Op::LOCAL_SET, handler_slot);
+
+        self.emit_u16(Op::LOCAL_GET, handler_slot);
+        {
+            let undef = self.chunk().add_import("wasm:js-undefined", "test");
+            self.chunk().emit_call(undef, 1, line);
+        }
+        self.chunk().emit_op(Op::I32_EQZ, line);
+        self.chunk().emit_if(line);
+        self.emit_u16(Op::LOCAL_GET, handler_slot);
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.emit_const(Value::String(Arc::from(field_name)));
+        crate::primitives::callable::emit_direct_invoke_chunk(self.chunk(), 2, line);
+        self.emit_u16(Op::LOCAL_SET, value_slot);
+        self.chunk().emit_end(line);
+
+        self.chunk().emit_end(line);
+        self.chunk().emit_end(line);
+
+        self.emit_u16(Op::LOCAL_GET, value_slot);
     }
 }

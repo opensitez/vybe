@@ -6,6 +6,7 @@ const PROXY_TAG: &str = "__vybe_js_proxy";
 const PROXY_TARGET: &str = "__vybe_proxy_target";
 const PROXY_HANDLER: &str = "__vybe_proxy_handler";
 const PROXY_REVOKED: &str = "__vybe_proxy_revoked";
+const PROXY_SET_TRAP_DEPTH: &str = "__vybe_proxy_set_trap_depth";
 
 fn new_proxy(target: Value, handler: Value, call_idx: Option<usize>) -> Value {
     let callable = call_idx.filter(|_| is_callable(&target));
@@ -149,8 +150,50 @@ fn target_get(target: &Value, key: &str) -> Value {
     }
 }
 
-fn target_set(target: &Value, key: &str, val: Value) {
+fn target_set(ctx: &mut HostContext, target: &Value, key_value: Value, key: &str, val: Value) {
+    target_set_with_receiver(ctx, target, key_value, key, val, target.clone());
+}
+
+fn target_set_with_receiver(
+    ctx: &mut HostContext,
+    target: &Value,
+    key_value: Value,
+    key: &str,
+    val: Value,
+    receiver: Value,
+) {
     if let Value::Object(obj) = target {
+        let forwards_to_proto = {
+            let o = obj.lock().unwrap();
+            let ordinary = !matches!(o.kind, ObjectKind::Array(_) | ObjectKind::TypedArray(_));
+            drop(o);
+            ordinary
+                && !in_proxy_set_trap(ctx)
+                && !target_own_property_exists(target, key)
+                && !matches!(crate::object::js_prototype_of(target), Value::Null)
+        };
+        if forwards_to_proto {
+            let proto = crate::object::js_prototype_of(target);
+            if let Some(proto_proxy) = is_proxy(&proto) {
+                if proxy_is_revoked(&proto_proxy) {
+                    throw_revoked(ctx);
+                    return;
+                }
+                let handler = get_handler(&proto_proxy);
+                let proto_target = get_target(&proto_proxy);
+                if let Some(trap) = get_trap(&handler, "set") {
+                    if is_callable(&trap) {
+                        let _ = call_set_trap(
+                            ctx,
+                            &handler,
+                            &trap,
+                            &[proto_target, key_value, val, receiver],
+                        );
+                        return;
+                    }
+                }
+            }
+        }
         {
             let mut o = obj.lock().unwrap();
             if let ObjectKind::Array(v) = &mut o.kind {
@@ -234,6 +277,10 @@ fn apply_dispatch(ctx: &mut HostContext, args: &[Value]) -> Value {
     }
     let handler = get_handler(&proxy_obj);
     let target = get_target(&proxy_obj);
+    if !is_callable(&target) {
+        ctx.throw_value(make_type_error(ctx, "Proxy target is not callable"));
+        return Value::Undefined;
+    }
     let this_arg = args.get(1).cloned().unwrap_or(Value::Undefined);
     let args_list = args
         .get(2)
@@ -246,6 +293,47 @@ fn apply_dispatch(ctx: &mut HostContext, args: &[Value]) -> Value {
     }
     let invoke_args = array_values(&args_list);
     crate::function::invoke_with_explicit_this(ctx, &target, this_arg, &invoke_args)
+}
+
+pub fn get_dispatch(ctx: &mut HostContext, value: &Value, key_value: &Value) -> Value {
+    let proxy_obj = match is_proxy(value) {
+        Some(p) => p,
+        None => {
+            let key = key_string(key_value);
+            return target_get(value, &key);
+        }
+    };
+    if proxy_is_revoked(&proxy_obj) {
+        return throw_revoked(ctx);
+    }
+    let handler = get_handler(&proxy_obj);
+    let target = get_target(&proxy_obj);
+    let key = key_string(key_value);
+    if let Some(trap) = get_trap(&handler, "get") {
+        if is_callable(&trap) {
+            let receiver = value.clone();
+            let result = call_trap(
+                ctx,
+                &handler,
+                &trap,
+                &[target.clone(), key_value.clone(), receiver],
+            );
+            if let Some((actual, writable)) = target_nonconfig_data_value(&target, &key) {
+                if !writable && result != actual {
+                    ctx.throw_value(make_type_error(
+                        ctx,
+                        "Proxy get trap violated non-configurable property invariant",
+                    ));
+                    return Value::Undefined;
+                }
+            }
+            return result;
+        }
+    }
+    if key == "__proto__" {
+        return crate::object::get_prototype_of(ctx, value).unwrap_or(Value::Undefined);
+    }
+    target_get(&target, &key)
 }
 
 fn callable_proxy_dispatch(ctx: &mut HostContext, args: &[Value]) -> Value {
@@ -262,8 +350,44 @@ fn is_callable(value: &Value) -> bool {
         if matches!(obj.lock().unwrap().kind, ObjectKind::Function(_) | ObjectKind::HostFunction(_)))
 }
 
+fn is_constructor(value: &Value) -> bool {
+    let Value::Object(obj) = value else {
+        return false;
+    };
+    let o = obj.lock().unwrap();
+    if !matches!(
+        o.kind,
+        ObjectKind::Function(_) | ObjectKind::HostFunction(_)
+    ) {
+        return false;
+    }
+    !matches!(o.properties.get("__vybe_non_ctor"), Some(Value::Bool(true)))
+}
+
 fn call_trap(ctx: &mut HostContext, handler: &Value, trap: &Value, args: &[Value]) -> Value {
     crate::function::invoke_with_explicit_this(ctx, trap, handler.clone(), args)
+}
+
+fn try_call_trap(
+    ctx: &mut HostContext,
+    handler: &Value,
+    trap: &Value,
+    args: &[Value],
+) -> Result<Value, Value> {
+    crate::function::try_invoke_with_explicit_this(ctx, trap, handler.clone(), args)
+}
+
+fn call_set_trap(ctx: &mut HostContext, handler: &Value, trap: &Value, args: &[Value]) -> Value {
+    let previous = ctx.get_global(PROXY_SET_TRAP_DEPTH);
+    let depth = previous.as_f64() as i32;
+    ctx.set_global(PROXY_SET_TRAP_DEPTH, Value::I32(depth + 1));
+    let result = call_trap(ctx, handler, trap, args);
+    ctx.set_global(PROXY_SET_TRAP_DEPTH, previous);
+    result
+}
+
+fn in_proxy_set_trap(ctx: &HostContext) -> bool {
+    ctx.get_global(PROXY_SET_TRAP_DEPTH).as_f64() > 0.0
 }
 
 fn target_has(target: &Value, key: &str) -> bool {
@@ -276,7 +400,7 @@ fn target_has(target: &Value, key: &str) -> bool {
                         return true;
                     }
                     if let Ok(i) = key.parse::<usize>() {
-                        return i < v.len();
+                        return i < v.len() && !crate::array::is_array_hole(&o, i);
                     }
                 }
             }
@@ -286,11 +410,73 @@ fn target_has(target: &Value, key: &str) -> bool {
     }
 }
 
+fn target_own_property_exists(target: &Value, key: &str) -> bool {
+    let Value::Object(obj) = target else {
+        return false;
+    };
+    let o = obj.lock().unwrap();
+    match &o.kind {
+        ObjectKind::Array(values) => {
+            if key == "length" {
+                return true;
+            }
+            if let Ok(i) = key.parse::<usize>() {
+                return i < values.len() && !crate::array::is_array_hole(&o, i);
+            }
+        }
+        ObjectKind::TypedArray(ta) => {
+            if let Ok(i) = key.parse::<usize>() {
+                return i < crate::typedarray::ta_live_length(ta);
+            }
+        }
+        _ => {}
+    }
+    o.properties.contains_key(key)
+        || o.properties.contains_key(&format!("__get_{}", key))
+        || o.properties.contains_key(&format!("__set_{}", key))
+}
+
+fn target_nonconfig_data_value(target: &Value, key: &str) -> Option<(Value, bool)> {
+    let Value::Object(obj) = target else {
+        return None;
+    };
+    let o = obj.lock().unwrap();
+    if !crate::object::is_nonconfig(&o, key) {
+        return None;
+    }
+    if let ObjectKind::Array(values) = &o.kind {
+        if key == "length" {
+            return Some((Value::I32(values.len() as i32), true));
+        }
+        if let Ok(i) = key.parse::<usize>() {
+            if i < values.len() && !crate::array::is_array_hole(&o, i) {
+                return Some((values[i].clone(), true));
+            }
+        }
+    }
+    if o.properties.contains_key(&format!("__get_{}", key)) {
+        return None;
+    }
+    let value = o.properties.get(key).cloned()?;
+    let writable = crate::object::is_data_property_writable(&o, key);
+    Some((value, writable))
+}
+
 fn target_delete(target: &Value, key: &str) -> bool {
     if let Value::Object(obj) = target {
         let mut o = obj.lock().unwrap();
         if crate::object::is_nonconfig(&o, key) {
             return false;
+        }
+        if let ObjectKind::Array(values) = &mut o.kind {
+            if let Ok(i) = key.parse::<usize>() {
+                if i < values.len() {
+                    values[i] = Value::Undefined;
+                    crate::array::mark_array_hole(&mut o, i);
+                    return true;
+                }
+                return true;
+            }
         }
         o.properties.shift_remove(key);
     }
@@ -315,8 +501,210 @@ fn array_values(value: &Value) -> Vec<Value> {
         if let ObjectKind::Array(values) = &o.kind {
             return values.clone();
         }
+        if let Some(length) = o
+            .properties
+            .get("length")
+            .map(|v| v.as_i32().max(0) as usize)
+        {
+            return (0..length)
+                .map(|i| {
+                    o.properties
+                        .get(&i.to_string())
+                        .cloned()
+                        .unwrap_or(Value::Undefined)
+                })
+                .collect();
+        }
     }
     Vec::new()
+}
+
+fn desc_bool(desc: &Value, key: &str, default: bool) -> bool {
+    if let Value::Object(obj) = desc {
+        return obj
+            .lock()
+            .unwrap()
+            .properties
+            .get(key)
+            .map(|v| v.as_bool())
+            .unwrap_or(default);
+    }
+    default
+}
+
+fn desc_value(desc: &Value) -> Option<Value> {
+    if let Value::Object(obj) = desc {
+        return obj.lock().unwrap().properties.get("value").cloned();
+    }
+    None
+}
+
+fn target_is_not_extensible(target: &Value) -> bool {
+    !crate::object::value_is_extensible(target)
+}
+
+fn target_descriptor(target: &Value, key: &str) -> Value {
+    match target {
+        Value::Object(obj) => crate::object::own_property_descriptor(obj, key),
+        _ => Value::Undefined,
+    }
+}
+
+fn validate_proxy_descriptor_result(
+    ctx: &mut HostContext,
+    target: &Value,
+    key: &str,
+    target_desc: &Value,
+    result: &Value,
+) -> bool {
+    if matches!(result, Value::Undefined) {
+        if !matches!(target_desc, Value::Undefined)
+            && (!desc_bool(target_desc, "configurable", true) || target_is_not_extensible(target))
+        {
+            ctx.throw_value(make_type_error(
+                ctx,
+                "Proxy getOwnPropertyDescriptor trap violated target invariant",
+            ));
+            return false;
+        }
+        return true;
+    }
+    if !matches!(result, Value::Object(_)) {
+        ctx.throw_value(make_type_error(
+            ctx,
+            "Proxy getOwnPropertyDescriptor trap must return an object or undefined",
+        ));
+        return false;
+    }
+    if matches!(target_desc, Value::Undefined) {
+        if target_is_not_extensible(target) || !desc_bool(result, "configurable", false) {
+            ctx.throw_value(make_type_error(
+                ctx,
+                "Proxy getOwnPropertyDescriptor trap reported incompatible descriptor",
+            ));
+            return false;
+        }
+        return true;
+    }
+    if !desc_bool(target_desc, "configurable", true) {
+        if desc_bool(result, "configurable", false) {
+            ctx.throw_value(make_type_error(
+                ctx,
+                "Proxy getOwnPropertyDescriptor trap reported non-configurable target as configurable",
+            ));
+            return false;
+        }
+        if let (Some(actual), Some(reported)) = (desc_value(target_desc), desc_value(result)) {
+            if actual != reported {
+                ctx.throw_value(make_type_error(
+                    ctx,
+                    "Proxy getOwnPropertyDescriptor trap changed a non-configurable value",
+                ));
+                return false;
+            }
+        }
+    }
+    let _ = key;
+    true
+}
+
+pub fn get_own_property_descriptor_dispatch(
+    ctx: &mut HostContext,
+    value: &Value,
+    key_value: &Value,
+) -> Option<Value> {
+    let proxy_obj = is_proxy(value)?;
+    if proxy_is_revoked(&proxy_obj) {
+        return Some(throw_revoked(ctx));
+    }
+    let handler = get_handler(&proxy_obj);
+    let target = get_target(&proxy_obj);
+    let key = key_string(key_value);
+    let target_desc = target_descriptor(&target, &key);
+    if let Some(trap) = get_trap(&handler, "getOwnPropertyDescriptor") {
+        if is_callable(&trap) {
+            let result = call_trap(ctx, &handler, &trap, &[target.clone(), key_value.clone()]);
+            if !validate_proxy_descriptor_result(ctx, &target, &key, &target_desc, &result) {
+                return Some(Value::Undefined);
+            }
+            return Some(result);
+        }
+    }
+    Some(target_desc)
+}
+
+pub fn define_property_dispatch(
+    ctx: &mut HostContext,
+    proxy_obj: &Arc<Mutex<Object>>,
+    key_value: Value,
+    descriptor: Value,
+) -> Option<Value> {
+    if proxy_is_revoked(proxy_obj) {
+        return Some(throw_revoked(ctx));
+    }
+    let handler = get_handler(proxy_obj);
+    let target = get_target(proxy_obj);
+    let key = key_string(&key_value);
+    let target_desc = target_descriptor(&target, &key);
+    if let Some(trap) = get_trap(&handler, "defineProperty") {
+        if is_callable(&trap) {
+            let result = match try_call_trap(
+                ctx,
+                &handler,
+                &trap,
+                &[target.clone(), key_value, descriptor.clone()],
+            ) {
+                Ok(result) => result,
+                Err(thrown) => {
+                    ctx.throw_value(thrown);
+                    return Some(Value::Undefined);
+                }
+            };
+            if !crate::boolean::to_boolean(&result) {
+                ctx.throw_value(make_type_error(
+                    ctx,
+                    "Proxy defineProperty trap returned false",
+                ));
+                return Some(Value::Undefined);
+            }
+            let requested_nonconfig = !desc_bool(&descriptor, "configurable", false);
+            if matches!(target_desc, Value::Undefined) {
+                let next_target_desc = target_descriptor(&target, &key);
+                if target_is_not_extensible(&target)
+                    || (requested_nonconfig
+                        && (matches!(next_target_desc, Value::Undefined)
+                            || desc_bool(&next_target_desc, "configurable", true)))
+                {
+                    ctx.throw_value(make_type_error(
+                        ctx,
+                        "Proxy defineProperty trap violated target invariant",
+                    ));
+                    return Some(Value::Undefined);
+                }
+            } else if !desc_bool(&target_desc, "configurable", true) {
+                if desc_bool(&descriptor, "configurable", false) {
+                    ctx.throw_value(make_type_error(
+                        ctx,
+                        "Proxy defineProperty trap cannot make property configurable",
+                    ));
+                    return Some(Value::Undefined);
+                }
+                if let (Some(actual), Some(next)) =
+                    (desc_value(&target_desc), desc_value(&descriptor))
+                {
+                    if actual != next && !desc_bool(&target_desc, "writable", true) {
+                        ctx.throw_value(make_type_error(
+                            ctx,
+                            "Proxy defineProperty trap cannot change read-only property",
+                        ));
+                        return Some(Value::Undefined);
+                    }
+                }
+            }
+            return Some(Value::Bool(true));
+        }
+    }
+    None
 }
 
 /// [[OwnPropertyKeys]] for proxy exotic objects — ECMA-262 §10.5.11.
@@ -329,17 +717,62 @@ pub fn own_keys_dispatch(ctx: &mut HostContext, value: &Value) -> Option<Value> 
     }
     let handler = get_handler(&proxy_obj);
     let target = get_target(&proxy_obj);
-    if let Some(trap) = get_trap(&handler, "ownKeys") {
+    let result = if let Some(trap) = get_trap(&handler, "ownKeys") {
         if is_callable(&trap) {
-            return Some(call_trap(
+            call_trap(ctx, &handler, &trap, std::slice::from_ref(&target))
+        } else {
+            target_own_keys(&target)
+        }
+    } else {
+        target_own_keys(&target)
+    };
+    let keys = array_values(&result);
+    if !matches!(result, Value::Object(_)) {
+        ctx.throw_value(make_type_error(
+            ctx,
+            "Proxy ownKeys trap must return an object",
+        ));
+        return Some(Value::Undefined);
+    }
+    let mut seen = std::collections::HashSet::new();
+    for key in &keys {
+        let text = key_string(key);
+        if !seen.insert(text) {
+            ctx.throw_value(make_type_error(
                 ctx,
-                &handler,
-                &trap,
-                std::slice::from_ref(&target),
+                "Proxy ownKeys trap returned duplicate keys",
             ));
+            return Some(Value::Undefined);
         }
     }
-    Some(target_own_keys(&target))
+    if let Value::Object(target_obj) = &target {
+        let target_keys = {
+            let o = target_obj.lock().unwrap();
+            crate::object::descriptor_own_keys(&o)
+        };
+        for key in &target_keys {
+            let desc = crate::object::own_property_descriptor(target_obj, key);
+            if !desc_bool(&desc, "configurable", true) && !seen.contains(key) {
+                ctx.throw_value(make_type_error(
+                    ctx,
+                    "Proxy ownKeys trap omitted a non-configurable key",
+                ));
+                return Some(Value::Undefined);
+            }
+        }
+        if target_is_not_extensible(&target) {
+            for key in &target_keys {
+                if !seen.contains(key) {
+                    ctx.throw_value(make_type_error(
+                        ctx,
+                        "Proxy ownKeys trap omitted a key from non-extensible target",
+                    ));
+                    return Some(Value::Undefined);
+                }
+            }
+        }
+    }
+    Some(result)
 }
 
 /// [[Construct]] dispatch — ECMA-262 §10.5.13 for proxy exotic objects,
@@ -358,7 +791,14 @@ pub fn construct_dispatch_with_new_target(
     args_list: &Value,
     new_target: Option<Value>,
 ) -> Value {
-    let effective_nt = new_target.unwrap_or_else(|| constructor.clone());
+    let effective_nt = new_target.unwrap_or_else(|| {
+        let current = ctx.get_global("__js_new_target");
+        if matches!(current, Value::Undefined | Value::Null) {
+            constructor.clone()
+        } else {
+            current
+        }
+    });
     let previous_nt = ctx.get_global("__js_new_target");
     ctx.set_global("__js_new_target", effective_nt);
     let result = construct_dispatch_inner(ctx, constructor, args_list);
@@ -377,14 +817,30 @@ fn construct_dispatch_inner(
         }
         let handler = get_handler(&proxy_obj);
         let target = get_target(&proxy_obj);
+        if !is_constructor(&target) {
+            ctx.throw_value(make_type_error(ctx, "Proxy target is not a constructor"));
+            return Value::Undefined;
+        }
         if let Some(trap) = get_trap(&handler, "construct") {
             if is_callable(&trap) {
-                let result = call_trap(
+                let new_target = ctx.get_global("__js_new_target");
+                let new_target = if matches!(new_target, Value::Undefined | Value::Null) {
+                    constructor.clone()
+                } else {
+                    new_target
+                };
+                let result = match try_call_trap(
                     ctx,
                     &handler,
                     &trap,
-                    &[target.clone(), args_list.clone(), constructor.clone()],
-                );
+                    &[target.clone(), args_list.clone(), new_target],
+                ) {
+                    Ok(result) => result,
+                    Err(thrown) => {
+                        ctx.throw_value(thrown);
+                        return Value::Undefined;
+                    }
+                };
                 if matches!(result, Value::Object(_)) {
                     return result;
                 }
@@ -468,7 +924,13 @@ fn construct_dispatch_inner(
     }
 
     let mut this_value = Object::new();
-    if let Value::Object(target_obj) = constructor {
+    let new_target = ctx.get_global("__js_new_target");
+    let prototype_source = if matches!(new_target, Value::Undefined | Value::Null) {
+        constructor
+    } else {
+        &new_target
+    };
+    if let Value::Object(target_obj) = prototype_source {
         if let Some(proto) = target_obj
             .lock()
             .unwrap()
@@ -527,36 +989,9 @@ pub fn register(vm: &mut VM) {
         "ecma:proxy",
         "get",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let proxy_obj = match args.first().and_then(is_proxy) {
-                Some(p) => p,
-                None => {
-                    let key = args.get(1).map(key_string).unwrap_or_default();
-                    return target_get(args.first().unwrap_or(&Value::Undefined), &key);
-                }
-            };
-            if proxy_is_revoked(&proxy_obj) {
-                return throw_revoked(ctx);
-            }
-            let handler = get_handler(&proxy_obj);
-            let target = get_target(&proxy_obj);
+            let value = args.first().cloned().unwrap_or(Value::Undefined);
             let key_value = args.get(1).cloned().unwrap_or(Value::Undefined);
-            let key = key_string(&key_value);
-            if let Some(trap) = get_trap(&handler, "get") {
-                if is_callable(&trap) {
-                    let receiver = args.first().cloned().unwrap_or(Value::Undefined);
-                    return call_trap(ctx, &handler, &trap, &[target, key_value, receiver]);
-                }
-            }
-            // With no `get` trap, [[Get]] forwards to the target with the
-            // PROXY as receiver. `__proto__` is an accessor on
-            // %Object.prototype% whose getter is [[GetPrototypeOf]](receiver)
-            // — so it lands back on the proxy and its `getPrototypeOf` trap.
-            // Reading the target's raw slot instead skips the trap entirely.
-            if key == "__proto__" {
-                let receiver = args.first().cloned().unwrap_or(Value::Undefined);
-                return crate::object::get_prototype_of(ctx, &receiver).unwrap_or(Value::Undefined);
-            }
-            target_get(&target, &key)
+            get_dispatch(ctx, &value, &key_value)
         }),
     );
 
@@ -570,7 +1005,8 @@ pub fn register(vm: &mut VM) {
                     let target = args.first().cloned().unwrap_or(Value::Undefined);
                     let key = args.get(1).map(key_string).unwrap_or_default();
                     let val = args.get(2).cloned().unwrap_or(Value::Undefined);
-                    target_set(&target, &key, val);
+                    let key_value = args.get(1).cloned().unwrap_or(Value::Undefined);
+                    target_set(ctx, &target, key_value, &key, val);
                     return Value::Bool(true);
                 }
             };
@@ -586,9 +1022,26 @@ pub fn register(vm: &mut VM) {
                 if is_callable(&trap) {
                     let receiver = args.first().cloned().unwrap_or(Value::Undefined);
                     // §10.5.9 step 6: ToBoolean(trap result), not === true.
-                    let result =
-                        call_trap(ctx, &handler, &trap, &[target, key_value, val, receiver]);
-                    return Value::Bool(crate::boolean::to_boolean(&result));
+                    let result = call_set_trap(
+                        ctx,
+                        &handler,
+                        &trap,
+                        &[target.clone(), key_value, val.clone(), receiver],
+                    );
+                    let success = crate::boolean::to_boolean(&result);
+                    if success {
+                        if let Some((actual, writable)) = target_nonconfig_data_value(&target, &key)
+                        {
+                            if !writable && val != actual {
+                                ctx.throw_value(make_type_error(
+                                    ctx,
+                                    "Proxy set trap violated non-configurable property invariant",
+                                ));
+                                return Value::Undefined;
+                            }
+                        }
+                    }
+                    return Value::Bool(success);
                 }
             }
             // Mirror of the `get` path: with no `set` trap, assigning
@@ -605,7 +1058,24 @@ pub fn register(vm: &mut VM) {
             if !crate::object::value_is_extensible(&target) && !target_has(&target, &key) {
                 return Value::Bool(false);
             }
-            target_set(&target, &key, val);
+            if get_trap(&handler, "defineProperty").is_some() {
+                let mut desc = Object::new();
+                desc.properties.insert("value".into(), val.clone());
+                desc.properties.insert("writable".into(), Value::Bool(true));
+                desc.properties
+                    .insert("enumerable".into(), Value::Bool(true));
+                desc.properties
+                    .insert("configurable".into(), Value::Bool(true));
+                if let Some(result) = define_property_dispatch(
+                    ctx,
+                    &proxy_obj,
+                    key_value.clone(),
+                    Value::Object(vybe_runtime::heap::alloc(desc)),
+                ) {
+                    return Value::Bool(crate::boolean::to_boolean(&result));
+                }
+            }
+            target_set(ctx, &target, key_value, &key, val);
             Value::Bool(true)
         }),
     );
@@ -632,8 +1102,20 @@ pub fn register(vm: &mut VM) {
             if let Some(trap) = get_trap(&handler, "has") {
                 if is_callable(&trap) {
                     // §10.5.7 step 6: ToBoolean(trap result), not === true.
-                    let result = call_trap(ctx, &handler, &trap, &[target, key_value]);
-                    return Value::Bool(crate::boolean::to_boolean(&result));
+                    let result = call_trap(ctx, &handler, &trap, &[target.clone(), key_value]);
+                    let present = crate::boolean::to_boolean(&result);
+                    if !present
+                        && (target_nonconfig_data_value(&target, &key).is_some()
+                            || (!crate::object::value_is_extensible(&target)
+                                && target_own_property_exists(&target, &key)))
+                    {
+                        ctx.throw_value(make_type_error(
+                            ctx,
+                            "Proxy has trap violated target property invariant",
+                        ));
+                        return Value::Undefined;
+                    }
+                    return Value::Bool(present);
                 }
             }
             Value::Bool(target_has(&target, &key))
@@ -662,8 +1144,16 @@ pub fn register(vm: &mut VM) {
             if let Some(trap) = get_trap(&handler, "deleteProperty") {
                 if is_callable(&trap) {
                     // §10.5.10 step 6: ToBoolean(trap result), not === true.
-                    let result = call_trap(ctx, &handler, &trap, &[target, key_value]);
-                    return Value::Bool(crate::boolean::to_boolean(&result));
+                    let result = call_trap(ctx, &handler, &trap, &[target.clone(), key_value]);
+                    let success = crate::boolean::to_boolean(&result);
+                    if success && target_nonconfig_data_value(&target, &key).is_some() {
+                        ctx.throw_value(make_type_error(
+                            ctx,
+                            "Proxy deleteProperty trap violated non-configurable property invariant",
+                        ));
+                        return Value::Undefined;
+                    }
+                    return Value::Bool(success);
                 }
             }
             Value::Bool(target_delete(&target, &key))
@@ -676,6 +1166,115 @@ pub fn register(vm: &mut VM) {
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let value = args.first().cloned().unwrap_or(Value::Undefined);
             own_keys_dispatch(ctx, &value).unwrap_or_else(|| target_own_keys(&value))
+        }),
+    );
+
+    vm.register_host_fn(
+        "ecma:proxy",
+        "getOwnPropertyDescriptor",
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            let value = args.first().cloned().unwrap_or(Value::Undefined);
+            let key_value = args.get(1).cloned().unwrap_or(Value::Undefined);
+            if let Some(desc) = get_own_property_descriptor_dispatch(ctx, &value, &key_value) {
+                return desc;
+            }
+            let Value::Object(obj) = value else {
+                ctx.throw_value(make_type_error(
+                    ctx,
+                    "Reflect.getOwnPropertyDescriptor called on non-object",
+                ));
+                return Value::Undefined;
+            };
+            crate::object::own_property_descriptor(&obj, &key_string(&key_value))
+        }),
+    );
+
+    vm.register_host_fn(
+        "ecma:proxy",
+        "defineProperty",
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            let value = args.first().cloned().unwrap_or(Value::Undefined);
+            let key_value = args.get(1).cloned().unwrap_or(Value::Undefined);
+            let descriptor = args.get(2).cloned().unwrap_or(Value::Undefined);
+            if let Some(proxy_obj) = is_proxy(&value) {
+                return define_property_dispatch(ctx, &proxy_obj, key_value, descriptor)
+                    .unwrap_or(Value::Bool(false));
+            }
+            let Value::Object(obj) = value else {
+                ctx.throw_value(make_type_error(
+                    ctx,
+                    "Reflect.defineProperty called on non-object",
+                ));
+                return Value::Undefined;
+            };
+            let key = key_string(&key_value);
+            let mut o = obj.lock().unwrap();
+            let exists = o.properties.contains_key(&key)
+                || o.properties.contains_key(&format!("__get_{}", key))
+                || o.properties.contains_key(&format!("__set_{}", key));
+            if !exists && crate::object::is_not_extensible(&o) {
+                return Value::Bool(false);
+            }
+            let Value::Object(desc_obj) = descriptor else {
+                ctx.throw_value(make_type_error(
+                    ctx,
+                    "Property descriptor must be an object",
+                ));
+                return Value::Undefined;
+            };
+            let desc = desc_obj.lock().unwrap();
+            let has_value = desc.properties.contains_key("value");
+            let has_writable = desc.properties.contains_key("writable");
+            let has_get = desc.properties.contains_key("get");
+            let has_set = desc.properties.contains_key("set");
+            if (has_value || has_writable) && (has_get || has_set) {
+                ctx.throw_value(make_type_error(ctx, "Invalid property descriptor"));
+                return Value::Undefined;
+            }
+            if let Some(getter) = desc.properties.get("get").cloned() {
+                o.properties.insert(format!("__get_{}", key), getter);
+                o.properties.shift_remove(&key);
+            }
+            if let Some(setter) = desc.properties.get("set").cloned() {
+                o.properties.insert(format!("__set_{}", key), setter);
+                o.properties.shift_remove(&key);
+            }
+            if has_value || (!has_get && !has_set) {
+                let value = desc
+                    .properties
+                    .get("value")
+                    .cloned()
+                    .unwrap_or(Value::Undefined);
+                o.properties.insert(key.clone(), value);
+            }
+            let enumerable = desc
+                .properties
+                .get("enumerable")
+                .map(crate::boolean::to_boolean)
+                .unwrap_or(false);
+            let writable = desc
+                .properties
+                .get("writable")
+                .map(crate::boolean::to_boolean)
+                .unwrap_or(false);
+            let configurable = desc
+                .properties
+                .get("configurable")
+                .map(crate::boolean::to_boolean)
+                .unwrap_or(false);
+            drop(desc);
+            drop(o);
+            crate::object::track_key(&obj, &key);
+            if !enumerable {
+                crate::object::track_nonenum(&obj, &key);
+            }
+            if !writable {
+                crate::object::install_noop_setter(&mut obj.lock().unwrap(), &key);
+            }
+            if !configurable {
+                crate::object::track_nonconfig(&obj, &key);
+            }
+            Value::Bool(true)
         }),
     );
 
@@ -711,6 +1310,10 @@ pub fn register(vm: &mut VM) {
             let proxy_obj = match args.first().and_then(is_proxy) {
                 Some(p) => p,
                 None => {
+                    let value = args.first().cloned().unwrap_or(Value::Undefined);
+                    if let Value::Object(_) = &value {
+                        return Value::Bool(crate::object::value_is_extensible(&value));
+                    }
                     ctx.throw_value(make_type_error(
                         ctx,
                         "Reflect.isExtensible called on non-object",
@@ -751,6 +1354,11 @@ pub fn register(vm: &mut VM) {
             let proxy_obj = match args.first().and_then(is_proxy) {
                 Some(p) => p,
                 None => {
+                    let value = args.first().cloned().unwrap_or(Value::Undefined);
+                    if let Value::Object(obj) = value {
+                        crate::object::mark_not_extensible(&mut obj.lock().unwrap());
+                        return Value::Bool(true);
+                    }
                     ctx.throw_value(make_type_error(
                         ctx,
                         "Reflect.preventExtensions called on non-object",

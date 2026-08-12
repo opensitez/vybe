@@ -226,6 +226,28 @@ pub fn register() {
             proxy_set_bool: Some(emitter::proxy_adapter::emit_proxy_set_dispatch_bool),
             proxy_has: Some(emitter::proxy_adapter::emit_proxy_has_dispatch),
             proxy_create: Some(emitter::proxy_adapter::emit_proxy_create),
+            proxy_delete_property: Some(
+                emitter::proxy_adapter::emit_proxy_delete_property_dispatch,
+            ),
+            proxy_apply: Some(emitter::proxy_adapter::emit_proxy_apply_dispatch),
+            proxy_own_keys: Some(emitter::proxy_adapter::emit_proxy_own_keys_dispatch),
+            proxy_get_own_property_descriptor: Some(
+                emitter::proxy_adapter::emit_proxy_get_own_property_descriptor_dispatch,
+            ),
+            proxy_define_property: Some(
+                emitter::proxy_adapter::emit_proxy_define_property_dispatch,
+            ),
+            proxy_get_prototype_of: Some(
+                emitter::proxy_adapter::emit_proxy_get_prototype_of_dispatch,
+            ),
+            proxy_set_prototype_of: Some(
+                emitter::proxy_adapter::emit_proxy_set_prototype_of_dispatch,
+            ),
+            proxy_is_extensible: Some(emitter::proxy_adapter::emit_proxy_is_extensible_dispatch),
+            proxy_prevent_extensions: Some(
+                emitter::proxy_adapter::emit_proxy_prevent_extensions_dispatch,
+            ),
+            proxy_construct: Some(emitter::proxy_adapter::emit_proxy_construct_dispatch),
             parse_eval: Some(parse_source_only),
             ..Default::default()
         },

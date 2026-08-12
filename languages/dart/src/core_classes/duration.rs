@@ -93,7 +93,7 @@ pub(super) fn duration() -> Statement {
                 // microseconds: 1 ms is 1000 of them.
                 binary(vybe_ast::BinOp::Mul, ident("ms"), num_lit(1.0 / *per_ms))
             } else {
-                binary(vybe_ast::BinOp::Div, ident("ms"), num_lit(*per_ms))
+                binary(vybe_ast::BinOp::IDiv, ident("ms"), num_lit(*per_ms))
             };
             set_this(name, value)
         })
@@ -176,26 +176,20 @@ pub(super) fn duration() -> Statement {
             dur_ms(),
         )))],
     ));
-    // **`compareTo` is deliberately absent, and `d.compareTo(other)` is broken
-    // because of it — a KNOWN, MEASURED trade, not an oversight.**
-    //
-    // Two shared mechanisms pull in opposite directions and a core class is
-    // caught between them:
-    //   - declare it, and `defined_class_methods` (`calls.rs:5995`) — a FLAT,
-    //     class-less set of every method name ANY class declares — diverts
-    //     `someDateTime.compareTo(x)` and `someBigInt.compareTo(x)` away from
-    //     their adapters into a member those types do not have. Measured:
-    //     −2 `datetime_compare_*`, −4 `bigint_compare_to_*`.
-    //   - omit it, and `user_typed_receiver_shadow` (`calls.rs:5993`) makes a
-    //     directly-named Duration local skip `[value_methods]` entirely, so
-    //     `common:dart.compare_to` is never reached. Measured: −4
-    //     `duration_compare_*`.
-    // Omitting costs 4 and declaring costs 6, so it stays out until the flat
-    // set goes — the site itself calls it "actively wrong" and slates it for
-    // deletion once receiver typing covers untyped locals (flexclassplan §3a).
-    //
-    // `abs` and `negate` above are safe only because no OTHER receiver in the
-    // suite calls them on an untyped local.
+    members.push(method(
+        "compareTo",
+        vec![param("other", Some("Duration"), None)],
+        Some("int"),
+        vec![ret(ternary(
+            binary(vybe_ast::BinOp::Lt, dur_ms(), other_ms()),
+            int_lit(-1),
+            ternary(
+                binary(vybe_ast::BinOp::Gt, dur_ms(), other_ms()),
+                int_lit(1),
+                int_lit(0),
+            ),
+        ))],
+    ));
     members.push(method(
         "toString",
         vec![],

@@ -733,7 +733,7 @@ class BA with B, A {}
 void main() {
   print(AB().build().length + BA().build().length);
 }"#,
-        ["4"]
+        ["3"]
     };
 
     mixin_on_abstract_with_concrete_subclass => {

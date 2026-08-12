@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 use vybe_compiler::primitives::instructions::{core_wasm, host};
-use vybe_compiler::primitives::{collections, reflection, url};
+use vybe_compiler::primitives::{collections, invoke, reflection, url};
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
@@ -309,27 +309,6 @@ fn datetime_ms_from_obj(chunk: &mut Chunk, slot: u16, line: u32) {
     get_field(chunk, "millisecondsSinceEpoch", line);
 }
 
-fn comparable_value_from_obj(chunk: &mut Chunk, slot: u16, out: u16, line: u32) {
-    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
-    get_field(chunk, "millisecondsSinceEpoch", line);
-    chunk.emit_op_u16(Op::LOCAL_SET, out, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, out, line);
-    host::emit(chunk, "wasm:js-undefined", "test", 1, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if(line);
-    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
-    get_field(chunk, "inMilliseconds", line);
-    chunk.emit_op_u16(Op::LOCAL_SET, out, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, out, line);
-    host::emit(chunk, "wasm:js-undefined", "test", 1, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if(line);
-    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, out, line);
-    chunk.emit_end(line);
-    chunk.emit_end(line);
-}
-
 fn emit_compare_slots(chunk: &mut Chunk, left: u16, right: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, left, line);
     chunk.emit_op_u16(Op::LOCAL_GET, right, line);
@@ -373,10 +352,14 @@ pub fn emit_date_weekday(chunks: &mut [Chunk], current: usize, line: u32) {
     host::emit(&mut chunks[current], "ecma:date", "getUTCDay", 1, line);
     vybe_compiler::primitives::datetime::emit_weekday_in_base(
         &mut chunks[current],
-        vybe_ast::datetime::WeekdayBase::MondayOne,
+        DART_WEEKDAY_BASE,
         line,
     );
 }
+
+/// Dart numbers weekdays Monday=1 … Sunday=7.
+const DART_WEEKDAY_BASE: vybe_ast::datetime::WeekdayBase =
+    vybe_ast::datetime::WeekdayBase::MondayOne;
 
 // `emit_datetime_new` / `_add` / `_subtract` / `_difference` / `_diff_ms` /
 // `_is_before` / `_is_after` / `_same_moment` are GONE — every one of them is a
@@ -394,11 +377,8 @@ pub fn emit_dart_add(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 pub fn emit_compare_to(chunks: &mut [Chunk], current: usize, line: u32) {
-    let right = chunks[current].alloc_scratch(5);
+    let right = chunks[current].alloc_scratch(2);
     let left = right + 1;
-    let r = right + 2;
-    let l = right + 3;
-    let method = right + 4;
     chunks[current].emit_op_u16(Op::LOCAL_SET, right, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, left, line);
     emit_slot_is_bigint(&mut chunks[current], left, line);
@@ -436,21 +416,8 @@ pub fn emit_compare_to(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_compare_slots(&mut chunks[current], left, right, line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, left, line);
-    get_field(&mut chunks[current], "compareTo", line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, method, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, method, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
-    chunks[current].emit_op(Op::I32_EQZ, line);
-    chunks[current].emit_if(line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, method, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, left, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, right, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
-    chunks[current].emit_else(line);
-    comparable_value_from_obj(&mut chunks[current], left, l, line);
-    comparable_value_from_obj(&mut chunks[current], right, r, line);
-    emit_compare_slots(&mut chunks[current], l, r, line);
-    chunks[current].emit_end(line);
+    invoke::emit_invoke_method(chunks, current, "compareTo", 1, line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
 }
@@ -473,7 +440,8 @@ pub fn emit_compare_to(chunks: &mut [Chunk], current: usize, line: u32) {
 fn dart_parse_options() -> url::ParseOptions {
     url::ParseOptions {
         mode: url::ParseMode::Syntactic,
-        lowercase_scheme: true }
+        lowercase_scheme: true,
+    }
 }
 
 /// `__dart_url_parse(s)` — the ONE parse. Every component read below takes the
@@ -484,12 +452,7 @@ pub fn emit_url_parse(chunks: &mut [Chunk], current: usize, line: u32) {
 
 /// `__dart_url_<field>(parsed)` — one canonical component, trimmed by the
 /// shared reader.
-pub fn emit_url_component(
-    chunks: &mut [Chunk],
-    current: usize,
-    field: url::UrlField,
-    line: u32,
-) {
+pub fn emit_url_component(chunks: &mut [Chunk], current: usize, field: url::UrlField, line: u32) {
     url::emit_component_of(chunks, current, field, line);
 }
 

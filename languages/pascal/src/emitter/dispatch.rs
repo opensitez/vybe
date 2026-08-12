@@ -121,6 +121,14 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::runtime_adapter::emit_ansi_case(chunks, current, false, line);
             return true;
         }
+        "pascal.rgb" => {
+            crate::emitter::runtime_adapter::emit_rgb(chunks, current, line);
+            return true;
+        }
+        "pascal.extract_file_ext" => {
+            crate::emitter::runtime_adapter::emit_extract_file_ext(chunks, current, line);
+            return true;
+        }
         "pascal.same_str" => {
             crate::emitter::runtime_adapter::emit_same_str(chunks, current, line);
             return true;

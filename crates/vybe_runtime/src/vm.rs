@@ -854,6 +854,24 @@ pub struct VM {
     pub(crate) block_tables: HashMap<usize, HashMap<usize, BlockTargets>>,
     /// Callback invoker for host functions (cached allocation).
     pub(crate) callback_invoker: Option<Box<dyn FnMut(&Value, &[Value]) -> Value>>,
+    /// Where this VM currently lives, in a cell the VM does NOT own inline.
+    ///
+    /// `callback_invoker` is built once and reused, so whatever address it
+    /// captures it keeps. A VM is MOVED after its first host call — an embedder
+    /// hands it on by value and parks it in an `Rc` (`cli::run` → `launch_gui` →
+    /// `Rc::new(RefCell::new(vm))`) — and the captured address then named the
+    /// moved-out-of copy: a bitwise duplicate sharing every heap pointer with
+    /// the live VM. A callback running through it grew `label_stack`, which
+    /// reallocated and freed the buffer the LIVE VM still pointed at, and the
+    /// program aborted at quit in `free` (`pointer being freed was not
+    /// allocated`) dropping that same `Vec`.
+    ///
+    /// The cell is behind a `Box` precisely because moving the VM copies the
+    /// Box's pointer and leaves the pointee where it is, so its address is the
+    /// one thing here that survives a move. The closure captures THAT, and
+    /// `get_invoker` republishes `self` into it on every host call, so the
+    /// callback always reaches the VM where it now lives.
+    pub(crate) invoker_vm_slot: Box<std::cell::Cell<*mut VM>>,
     /// Last exception value thrown by a callback that had no handler.
     /// Populated by the THROW opcode when no ExceptionHandler matches.
     /// Consumed by HostContext::try_invoke to report the thrown value.
@@ -1140,6 +1158,7 @@ impl VM {
             label_stack: Vec::new(),
             block_tables: HashMap::new(),
             callback_invoker: None,
+            invoker_vm_slot: Box::new(std::cell::Cell::new(std::ptr::null_mut())),
             last_exception: None,
             pending_exit: false,
             pending_exit_code: 0,
@@ -2225,12 +2244,20 @@ impl VM {
 
     /// Get a mutable reference to the invoker closure.
     pub(crate) fn get_invoker(&mut self) -> &mut dyn FnMut(&Value, &[Value]) -> Value {
+        // Republish where the VM is NOW, before handing the invoker out. The
+        // closure below is built once and reused, so it cannot carry the
+        // address — see `invoker_vm_slot` for what capturing one cost.
+        let here = self as *mut VM;
+        self.invoker_vm_slot.set(here);
         // This is stored as a field to avoid repeated allocation
         if self.callback_invoker.is_none() {
-            let vm_ptr = self as *mut VM;
+            let slot: *const std::cell::Cell<*mut VM> = &*self.invoker_vm_slot;
             self.callback_invoker = Some(Box::new(move |func_ref: &Value, args: &[Value]| {
-                // SAFETY: vm_ptr is valid during host function execution
-                let vm = unsafe { &mut *vm_ptr };
+                // SAFETY: `slot` is the VM's own boxed cell, alive as long as
+                // the VM that owns this closure; the line above wrote the
+                // current `&mut self` into it for this very host call, and the
+                // VM cannot move while that borrow is outstanding.
+                let vm = unsafe { &mut *(*slot).get() };
                 vm.invoke_callback(func_ref, args)
             }));
         }
@@ -3240,6 +3267,56 @@ impl VM {
                 e
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod invoker_tests {
+    use super::*;
+
+    /// A VM is MOVED after its first host call — an embedder takes it by value
+    /// and parks it in an `Rc`. The cached `callback_invoker` must still reach
+    /// the VM where it now lives.
+    ///
+    /// It did not: the closure captured `self as *mut VM` once, so callbacks ran
+    /// against the moved-out-of copy — a bitwise duplicate sharing every heap
+    /// pointer with the live VM. Growing `label_stack` through it reallocated
+    /// and freed the buffer the live VM still held, and the process aborted in
+    /// `free` ("pointer being freed was not allocated") when that VM was
+    /// dropped. Intermittent by nature: it needs a push that reallocates.
+    ///
+    /// Both halves are asserted, because either one alone would leave the bug:
+    /// the captured cell keeps its address across the move (so the closure's
+    /// capture stays valid), and the address published INSIDE it tracks the VM.
+    #[test]
+    fn cached_invoker_follows_the_vm_across_a_move() {
+        let mut vm = VM::new();
+
+        // First host call: builds and caches the invoker closure.
+        let _ = vm.get_invoker();
+        let captured_cell: *const std::cell::Cell<*mut VM> = &*vm.invoker_vm_slot;
+        let before = vm.invoker_vm_slot.get();
+        assert_eq!(before, &mut vm as *mut VM, "publishes its own address");
+
+        // The move an embedder makes (`launch_gui(vm, …)`, then `Rc::new`).
+        let mut moved = Box::new(vm);
+        assert_ne!(
+            before, &mut *moved as *mut VM,
+            "the move must actually relocate the VM, or this proves nothing"
+        );
+
+        // A host call on the moved VM.
+        let _ = moved.get_invoker();
+
+        assert_eq!(
+            captured_cell, &*moved.invoker_vm_slot as *const _,
+            "the cell the closure captured must survive the move"
+        );
+        assert_eq!(
+            moved.invoker_vm_slot.get(),
+            &mut *moved as *mut VM,
+            "the callback must reach the VM where it now lives, not the stale copy"
+        );
     }
 }
 

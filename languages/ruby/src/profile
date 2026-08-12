@@ -86,6 +86,18 @@ method          = { emit = "common:ruby.method",            min_args = 1, max_ar
 "__ruby_op_xor" = { emit = "common:ruby.op_xor",             min_args = 2, max_args = 2 }
 "__ruby_op_pow" = { emit = "common:ruby.pow",                min_args = 2, max_args = 2 }
 "__ruby_eq"     = { emit = "common:ruby.eq",                 min_args = 2, max_args = 2 }
+"__ruby_round"  = { emit = "common:ruby.round",              min_args = 1, max_args = 2 }
+"__ruby_complex_math_sqrt"  = { emit = "host:ecma:math:sqrt",  min_args = 1, max_args = 1 }
+"__ruby_complex_math_atan2" = { emit = "host:ecma:math:atan2", min_args = 2, max_args = 2 }
+"__ruby_complex_math_sin"   = { emit = "host:ecma:math:sin",   min_args = 1, max_args = 1 }
+"__ruby_complex_math_cos"   = { emit = "host:ecma:math:cos",   min_args = 1, max_args = 1 }
+"__ruby_complex_math_tan"   = { emit = "host:ecma:math:tan",   min_args = 1, max_args = 1 }
+"__ruby_complex_math_sinh"  = { emit = "host:ecma:math:sinh",  min_args = 1, max_args = 1 }
+"__ruby_complex_math_cosh"  = { emit = "host:ecma:math:cosh",  min_args = 1, max_args = 1 }
+"__ruby_complex_math_tanh"  = { emit = "host:ecma:math:tanh",  min_args = 1, max_args = 1 }
+"__ruby_complex_math_exp"   = { emit = "host:ecma:math:exp",   min_args = 1, max_args = 1 }
+"__ruby_complex_math_log"   = { emit = "host:ecma:math:log",   min_args = 1, max_args = 1 }
+"__ruby_complex_math_pow"   = { emit = "host:ecma:math:pow",   min_args = 2, max_args = 2 }
 "__ruby_exception" = { emit = "common:ruby.exception",       min_args = 2, max_args = 2 }
 "__ruby_exception_exception" = { emit = "common:ruby.exception.exception", min_args = 0, max_args = 1 }
 "__ruby_exception_runtime_error" = { emit = "common:ruby.exception.runtime_error", min_args = 0, max_args = 1 }
@@ -128,6 +140,65 @@ method          = { emit = "common:ruby.method",            min_args = 1, max_ar
 "__ruby_method" = { emit = "common:ruby.method",             min_args = 1, max_args = 8 }
 "__ruby_enum_from" = { emit = "common:ruby.enum_from",       min_args = 1, max_args = 2 }
 "__ruby_enum_new" = { emit = "common:ruby.enum_new",         min_args = 0, max_args = 1 }
+"__ruby_is_a" = { emit = "common:ruby.is_a",                 min_args = 2, max_args = 2 }
+"__ruby_all" = { emit = "common:ruby.all",                   min_args = 1, max_args = 2 }
+"__ruby_any" = { emit = "common:ruby.any",                   min_args = 1, max_args = 2 }
+"__ruby_none" = { emit = "common:ruby.none",                 min_args = 1, max_args = 2 }
+"__ruby_one" = { emit = "common:ruby.one",                   min_args = 1, max_args = 2 }
+"__ruby_all_is" = { emit = "common:ruby.all_is",             min_args = 2, max_args = 2 }
+"__ruby_any_is" = { emit = "common:ruby.any_is",             min_args = 2, max_args = 2 }
+"__ruby_none_is" = { emit = "common:ruby.none_is",           min_args = 2, max_args = 2 }
+"__ruby_one_is" = { emit = "common:ruby.one_is",             min_args = 2, max_args = 2 }
+"__ruby_all_gt" = { emit = "common:ruby.all_gt",             min_args = 2, max_args = 2 }
+"__ruby_any_gt" = { emit = "common:ruby.any_gt",             min_args = 2, max_args = 2 }
+"__ruby_none_gt" = { emit = "common:ruby.none_gt",           min_args = 2, max_args = 2 }
+"__ruby_one_gt" = { emit = "common:ruby.one_gt",             min_args = 2, max_args = 2 }
+"__ruby_all_eq" = { emit = "common:ruby.all_eq",             min_args = 2, max_args = 2 }
+"__ruby_any_eq" = { emit = "common:ruby.any_eq",             min_args = 2, max_args = 2 }
+"__ruby_none_eq" = { emit = "common:ruby.none_eq",           min_args = 2, max_args = 2 }
+"__ruby_one_eq" = { emit = "common:ruby.one_eq",             min_args = 2, max_args = 2 }
+"__ruby_take" = { emit = "common:ruby.take",                 min_args = 2, max_args = 2 }
+"__ruby_drop" = { emit = "common:ruby.drop",                 min_args = 2, max_args = 2 }
+"__ruby_map" = { emit = "common:ruby.map",                   min_args = 2, max_args = 2 }
+"__ruby_map_scalar" = { emit = "common:ruby.map_scalar",     min_args = 2, max_args = 2 }
+"__ruby_select" = { emit = "common:ruby.select",             min_args = 2, max_args = 2 }
+"__ruby_reject" = { emit = "common:ruby.reject",             min_args = 2, max_args = 2 }
+"__ruby_flat_map" = { emit = "common:ruby.flat_map",         min_args = 2, max_args = 2 }
+"__ruby_take_while" = { emit = "common:ruby.take_while",     min_args = 2, max_args = 2 }
+"__ruby_drop_while" = { emit = "common:ruby.drop_while",     min_args = 2, max_args = 2 }
+"__ruby_each_slice" = { emit = "common:ruby.each_slice",     min_args = 2, max_args = 3 }
+"__ruby_each_cons" = { emit = "common:ruby.each_cons",       min_args = 2, max_args = 3 }
+"__ruby_grep" = { emit = "common:ruby.grep",                 min_args = 2, max_args = 3 }
+"__ruby_grep_v" = { emit = "common:ruby.grep_v",             min_args = 2, max_args = 3 }
+"__ruby_partition_enum" = { emit = "common:ruby.partition_enum", min_args = 1, max_args = 2 }
+"__ruby_group_by" = { emit = "common:ruby.group_by",         min_args = 1, max_args = 2 }
+"__ruby_tally" = { emit = "common:ruby.tally",               min_args = 1, max_args = 2 }
+"__ruby_slice_before" = { emit = "common:ruby.slice_before", min_args = 2, max_args = 2 }
+"__ruby_slice_after" = { emit = "common:ruby.slice_after",   min_args = 2, max_args = 2 }
+"__ruby_slice_when" = { emit = "common:ruby.slice_when",     min_args = 2, max_args = 2 }
+"__ruby_chunk" = { emit = "common:ruby.chunk",               min_args = 2, max_args = 2 }
+"__ruby_chunk_while" = { emit = "common:ruby.chunk_while",   min_args = 2, max_args = 2 }
+"__ruby_cycle" = { emit = "common:ruby.cycle",               min_args = 1, max_args = 3 }
+"__ruby_reverse_each" = { emit = "common:ruby.reverse_each", min_args = 1, max_args = 2 }
+"__ruby_each_with_index" = { emit = "common:ruby.each_with_index", min_args = 1, max_args = 2 }
+"__ruby_each_with_object" = { emit = "common:ruby.each_with_object", min_args = 2, max_args = 3 }
+"__ruby_each_entry" = { emit = "common:ruby.each_entry",     min_args = 1, max_args = 2 }
+"__ruby_find" = { emit = "common:ruby.find",                 min_args = 1, max_args = 2 }
+"__ruby_lazy" = { emit = "common:ruby.enum_lazy",            min_args = 1, max_args = 1 }
+"__ruby_chain" = { emit = "common:ruby.enum_chain",          min_args = 0, max_args = 255 }
+"__ruby_min_by" = { emit = "common:ruby.min_by",             min_args = 1, max_args = 3 }
+"__ruby_max_by" = { emit = "common:ruby.max_by",             min_args = 1, max_args = 3 }
+"__ruby_count" = { emit = "common:ruby.count",               min_args = 1, max_args = 3 }
+"__ruby_each" = { emit = "common:ruby.each",                 min_args = 2, max_args = 2 }
+"__ruby_zip" = { emit = "common:ruby.zip",                   min_args = 1, max_args = 255 }
+"__ruby_arithmetic_sequence" = { emit = "common:ruby.arithmetic_sequence", min_args = 4, max_args = 4 }
+"__ruby_arith_begin" = { emit = "common:ruby.arith_begin",   min_args = 1, max_args = 1 }
+"__ruby_arith_end" = { emit = "common:ruby.arith_end",       min_args = 1, max_args = 1 }
+"__ruby_arith_step" = { emit = "common:ruby.arith_step",     min_args = 1, max_args = 1 }
+"__ruby_arith_exclude_end" = { emit = "common:ruby.arith_exclude_end", min_args = 1, max_args = 1 }
+"__ruby_first" = { emit = "common:ruby.first",               min_args = 1, max_args = 1 }
+"__ruby_first_n" = { emit = "common:ruby.first_n",           min_args = 2, max_args = 2 }
+"__ruby_last" = { emit = "common:ruby.last",                 min_args = 1, max_args = 2 }
 "__ruby_env" = { emit = "common:ruby.env",                   min_args = 0, max_args = 0 }
 "__ruby_random_new" = { emit = "common:ruby.random_new",     min_args = 0, max_args = 1 }
 "__ruby_queue_new" = { emit = "common:ruby.queue_new",       min_args = 0, max_args = 1 }
@@ -156,6 +227,7 @@ method          = { emit = "common:ruby.method",            min_args = 1, max_ar
 "__ruby_match_index" = { emit = "common:ruby.match_index",   min_args = 2, max_args = 2 }
 "__ruby_symbols" = { emit = "common:ruby.symbols",           min_args = 0, max_args = 0 }
 "__ruby_index_get" = { emit = "common:ruby.index_get",       min_args = 2, max_args = 2 }
+"__ruby_index_set" = { emit = "common:ruby.index_set",       min_args = 3, max_args = 3 }
 "Date.leap?" = { emit = "common:ruby.date_gregorian_leap",   min_args = 1, max_args = 1 }
 "Date.gregorian_leap?" = { emit = "common:ruby.date_gregorian_leap", min_args = 1, max_args = 1 }
 "Date.julian_leap?" = { emit = "common:ruby.date_julian_leap", min_args = 1, max_args = 1 }
@@ -462,17 +534,22 @@ prepend         = { emit = "common:ruby.prepend",           min_args = 1, max_ar
 flatten         = { emit = "common:ruby.flatten",           min_args = 0, max_args = 1 }
 compact         = { emit = "common:ruby.compact",                min_args = 0, max_args = 0 }
 "compact!"      = { emit = "common:ruby.compact_bang",           min_args = 0, max_args = 0 }
-uniq            = { emit = "common:ruby.uniq",                   min_args = 0, max_args = 0 }
-min             = { emit = "common:ruby.min",                min_args = 0, max_args = 0 }
-max             = { emit = "common:ruby.max",                min_args = 0, max_args = 0 }
+uniq            = { emit = "common:ruby.uniq",                   min_args = 0, max_args = 1 }
+min             = { emit = "common:ruby.min",                min_args = 0, max_args = 2 }
+max             = { emit = "common:ruby.max",                min_args = 0, max_args = 2 }
 "max="          = { emit = "common:ruby.set_max",            min_args = 1, max_args = 1 }
-"min_by"        = { emit = "common:ruby.min_by",             min_args = 1, max_args = 1 }
-"max_by"        = { emit = "host:ecma:math:maxOf",           min_args = 0, max_args = 0 }
-minmax          = { emit = "common:ruby.minmax",                 min_args = 0, max_args = 0 }
-sum             = { emit = "common:ruby.sum",                min_args = 0, max_args = 1 }
+"min_by"        = { emit = "common:ruby.min_by",             min_args = 0, max_args = 2 }
+"max_by"        = { emit = "common:ruby.max_by",             min_args = 0, max_args = 2 }
+"minmax_by"     = { emit = "common:ruby.minmax_by",          min_args = 0, max_args = 1 }
+minmax          = { emit = "common:ruby.minmax",                 min_args = 0, max_args = 1 }
+sum             = { emit = "common:ruby.sum",                min_args = 0, max_args = 2 }
 count           = { emit = "common:ruby.count",              min_args = 0, max_args = 255 }
 "empty?"        = { emit = "common:ruby.isempty",                min_args = 0, max_args = 0 }
 concat          = { emit = "common:ruby.concat",                 min_args = 1, max_args = 255 }
+"subset?"       = { emit = "common:ruby.set_subset",             min_args = 1, max_args = 1 }
+"superset?"     = { emit = "common:ruby.set_superset",           min_args = 1, max_args = 1 }
+"proper_subset?" = { emit = "common:ruby.set_proper_subset",     min_args = 1, max_args = 1 }
+"proper_superset?" = { emit = "common:ruby.set_proper_superset", min_args = 1, max_args = 1 }
 fill            = { emit = "common:ruby.fill",                    min_args = 0, max_args = 255 }
 sample          = { emit = "common:ruby.sample",            min_args = 0, max_args = 1 }
 shuffle         = { emit = "common:ruby.shuffle",           min_args = 0, max_args = 0 }
@@ -488,13 +565,15 @@ lazy            = { emit = "common:ruby.enum_lazy",         min_args = 0, max_ar
 force           = { emit = "common:ruby.to_a",              min_args = 0, max_args = 0 }
 peek            = { emit = "common:ruby.enum_peek",         min_args = 0, max_args = 0 }
 rewind          = { emit = "common:ruby.enum_rewind",       min_args = 0, max_args = 0 }
-chain           = { emit = "common:ruby.enum_chain",        min_args = 1, max_args = 255 }
+chain           = { emit = "common:ruby.enum_chain",        min_args = 0, max_args = 255 }
 with_index      = { emit = "common:ruby.enum_with_index",   min_args = 0, max_args = 1 }
 with_object     = { emit = "common:ruby.enum_with_object",  min_args = 1, max_args = 2 }
 slice           = { emit = "common:collections.slice",      min_args = 1, max_args = 2 }
 "slice!"        = { emit = "host:ecma:array:splice",        min_args = 2, max_args = 2 }
-"none?"         = { emit = "common:ruby.none",              min_args = 1, max_args = 1 }
-"one?"          = { emit = "common:ruby.one",               min_args = 1, max_args = 1 }
+"all?"          = { emit = "common:ruby.all",               min_args = 0, max_args = 1 }
+"any?"          = { emit = "common:ruby.any",               min_args = 0, max_args = 1 }
+"none?"         = { emit = "common:ruby.none",              min_args = 0, max_args = 1 }
+"one?"          = { emit = "common:ruby.one",               min_args = 0, max_args = 1 }
 "map!"          = { emit = "common:ruby.map_bang",          min_args = 1, max_args = 1 }
 "collect!"      = { emit = "common:ruby.map_bang",          min_args = 1, max_args = 1 }
 "select!"       = { emit = "common:ruby.select_bang",       min_args = 1, max_args = 1 }
@@ -502,7 +581,7 @@ slice           = { emit = "common:collections.slice",      min_args = 1, max_ar
 reject          = { emit = "common:ruby.reject",            min_args = 1, max_args = 1 }
 "reject!"       = { emit = "common:ruby.reject_bang",       min_args = 1, max_args = 1 }
 filter_map      = { emit = "common:ruby.filter_map",        min_args = 1, max_args = 1 }
-"sort_by"       = { emit = "common:ruby.sort_by",           min_args = 1, max_args = 1 }
+"sort_by"       = { emit = "common:ruby.sort_by",           min_args = 0, max_args = 1 }
 intersection    = { emit = "common:ruby.array_intersection", min_args = 1, max_args = 1 }
 union           = { emit = "common:ruby.array_union",       min_args = 1, max_args = 1 }
 difference      = { emit = "common:ruby.array_difference",  min_args = 1, max_args = 1 }
@@ -513,6 +592,7 @@ difference      = { emit = "common:ruby.array_difference",  min_args = 1, max_ar
 "__ruby_array_repeat" = { emit = "common:ruby.array_repeat", min_args = 1, max_args = 1 }
 "__ruby_inject_initial" = { emit = "common:ruby.inject_initial", min_args = 2, max_args = 2 }
 "__ruby_inject_symbol" = { emit = "common:ruby.inject_symbol", min_args = 1, max_args = 1 }
+"__ruby_inject_symbol_initial" = { emit = "common:ruby.inject_symbol_initial", min_args = 2, max_args = 2 }
 
 # ── Hash instance methods (common:dict.*) ────────────────────────────────────
 
@@ -743,8 +823,8 @@ detect           = "__array_find"
 find_index       = "__array_findIndex"
 reduce           = "__array_reduce"
 inject           = "__array_reduce"
-"any?"           = "__array_some"
-"all?"           = "__array_every"
+"any?"           = { emit = "common:ruby.any",              min_args = 0, max_args = 1 }
+"all?"           = { emit = "common:ruby.all",              min_args = 0, max_args = 1 }
 flat_map         = { emit = "common:ruby.flat_map",         min_args = 1, max_args = 1 }
 collect_concat   = { emit = "common:ruby.flat_map",         min_args = 1, max_args = 1 }
 sort             = "__array_sort"

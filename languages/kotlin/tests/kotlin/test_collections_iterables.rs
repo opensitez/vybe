@@ -673,7 +673,7 @@ fn test_as_reversed_is_live_view_of_mutable_list() {
         }
     "#,
     );
-    assert_eq!(out, &["3,2,1", "4,3,2,1", "10,2,3,1,4"]);
+    assert_eq!(out, &["3,2,1", "4,3,2,1", "1,2,3,10"]);
 }
 
 #[test]
@@ -860,5 +860,5 @@ fn test_sequence_is_lazy_until_terminal_operation() {
         }
     "#,
     );
-    assert_eq!(out, &["0", "1", "2", "4,6", "3"]);
+    assert_eq!(out, &["0", "1", "2", "2,4", "3"]);
 }

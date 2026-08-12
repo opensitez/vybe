@@ -24,10 +24,11 @@
 //! and a value's display name is `value.__name` — read off the constant, which
 //! is a `java.lang.Enum` instance that carries it (`lang_enum`).
 
-use super::enum_adapter;
+use super::{collection_adapter, enum_adapter};
 use vybe_compiler::primitives::{
     collections,
     instructions::{core_wasm, host},
+    reflection,
 };
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
@@ -51,6 +52,7 @@ fn attach_names(chunks: &mut [Chunk], current: usize, set_slot: u16, names_slot:
     get(&mut chunks[current], names_slot, line);
     host::emit(&mut chunks[current], "ecma:object", "set", 3, line);
     chunks[current].emit_op(Op::DROP, line);
+    reflection::emit_stamp_type(&mut chunks[current], set_slot, "java.util.EnumSet", line);
     get(&mut chunks[current], set_slot, line);
     chunks[current].emit_string_const(CLASS_KEY, line);
     chunks[current].emit_string_const("EnumSet", line);
@@ -434,7 +436,7 @@ pub fn emit_hash_code(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 pub fn emit_iterator(chunks: &mut [Chunk], current: usize, line: u32) {
-    host::emit(&mut chunks[current], "ecma:array", "values", 1, line);
+    collection_adapter::emit_list_iterator(chunks, current, 0, line);
 }
 
 pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {

@@ -148,6 +148,29 @@ fn key_string(v: &Value) -> String {
     }
 }
 
+fn array_elements(value: &Value) -> Vec<Value> {
+    if let Value::Object(obj) = value {
+        let o = obj.lock().unwrap();
+        if let ObjectKind::Array(values) = &o.kind {
+            return values.clone();
+        }
+    }
+    Vec::new()
+}
+
+fn descriptor_bool(desc: &Value, key: &str, default: bool) -> bool {
+    if let Value::Object(obj) = desc {
+        return obj
+            .lock()
+            .unwrap()
+            .properties
+            .get(key)
+            .map(|v| v.as_bool())
+            .unwrap_or(default);
+    }
+    default
+}
+
 fn array_index_key(key: &str) -> Option<u32> {
     let n = key.parse::<u32>().ok()?;
     if n != u32::MAX && n.to_string() == key {
@@ -1470,6 +1493,30 @@ fn register_construction(vm: &mut VM) {
                 else {
                     return Value::Undefined;
                 };
+                if let Some(proxy_keys) = crate::proxy::own_keys_dispatch(ctx, &source_value) {
+                    for key_value in array_elements(&proxy_keys) {
+                        if !matches!(key_value, Value::String(_)) {
+                            continue;
+                        }
+                        let desc = crate::proxy::get_own_property_descriptor_dispatch(
+                            ctx,
+                            &source_value,
+                            &key_value,
+                        )
+                        .unwrap_or(Value::Undefined);
+                        if !matches!(desc, Value::Object(_))
+                            || !descriptor_bool(&desc, "enumerable", false)
+                        {
+                            continue;
+                        }
+                        let key = key_string(&key_value);
+                        let value = crate::proxy::get_dispatch(ctx, &source_value, &key_value);
+                        if !assign_strict_set(ctx, target_obj, &key, value, None) {
+                            return Value::Undefined;
+                        }
+                    }
+                    continue;
+                }
                 let Value::Object(source_obj) = source_value else {
                     continue;
                 };
@@ -1913,6 +1960,11 @@ fn register_access(vm: &mut VM) {
                 ));
                 return Value::Undefined;
             }
+            if let Some(desc) =
+                crate::proxy::get_own_property_descriptor_dispatch(ctx, &target, &key_raw)
+            {
+                return Value::Bool(matches!(desc, Value::Object(_)));
+            }
             Value::Bool(has_own_property_key(&target, &key_raw).unwrap_or(false))
         }),
     );
@@ -2200,7 +2252,18 @@ fn register_enumeration(vm: &mut VM) {
             // §20.1.2.17 Object.keys routes through [[OwnPropertyKeys]] —
             // for proxy exotic objects that is the ownKeys trap.
             if let Some(keys) = crate::proxy::own_keys_dispatch(ctx, &value) {
-                return keys;
+                let filtered: Vec<Value> = array_elements(&keys)
+                    .into_iter()
+                    .filter(|key| matches!(key, Value::String(_)))
+                    .filter(|key| {
+                        let desc =
+                            crate::proxy::get_own_property_descriptor_dispatch(ctx, &value, key)
+                                .unwrap_or(Value::Undefined);
+                        matches!(desc, Value::Object(_))
+                            && descriptor_bool(&desc, "enumerable", false)
+                    })
+                    .collect();
+                return Value::Object(vybe_runtime::heap::alloc(Object::new_array(filtered)));
             }
             if let Value::Object(obj) = value {
                 let o = obj.lock().unwrap();
@@ -2243,7 +2306,23 @@ fn register_enumeration(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:object",
         "iterForIn",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
+            if let Some(value) = args.first() {
+                if let Some(keys) = crate::proxy::own_keys_dispatch(ctx, value) {
+                    let filtered: Vec<Value> = array_elements(&keys)
+                        .into_iter()
+                        .filter(|key| matches!(key, Value::String(_)))
+                        .filter(|key| {
+                            let desc =
+                                crate::proxy::get_own_property_descriptor_dispatch(ctx, value, key)
+                                    .unwrap_or(Value::Undefined);
+                            matches!(desc, Value::Object(_))
+                                && descriptor_bool(&desc, "enumerable", false)
+                        })
+                        .collect();
+                    return Value::Object(vybe_runtime::heap::alloc(Object::new_array(filtered)));
+                }
+            }
             if let Some(obj) = obj_of(args, 0) {
                 let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
                 let mut out: Vec<Value> = Vec::new();
@@ -2542,7 +2621,19 @@ fn register_enumeration(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:object",
         "getOwnPropertySymbols",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
+            if let Some(value) = args.first() {
+                if let Some(keys) = crate::proxy::own_keys_dispatch(ctx, value) {
+                    let syms: Vec<Value> = array_elements(&keys)
+                        .into_iter()
+                        .filter(|key| {
+                            matches!(key, Value::Symbol(_))
+                                || matches!(key, Value::String(s) if s.starts_with("Symbol("))
+                        })
+                        .collect();
+                    return Value::Object(vybe_runtime::heap::alloc(Object::new_array(syms)));
+                }
+            }
             if let Some(obj) = obj_of(args, 0) {
                 let o = obj.lock().unwrap();
                 let syms: Vec<Value> = match o.properties.get("__sym_keys") {
@@ -2601,18 +2692,26 @@ fn register_descriptors(vm: &mut VM) {
                 let key_value = args.get(1).cloned().unwrap_or(Value::Undefined);
                 let descriptor = args.get(2).cloned().unwrap_or(Value::Undefined);
                 let mut define_obj = obj.clone();
-                if let Some((target, handler)) = proxy_target_and_handler(&obj) {
-                    if let Some(trap) = proxy_trap(&handler, "defineProperty") {
-                        let _ = invoke_with_explicit_this(
-                            ctx,
-                            &trap,
-                            handler,
-                            &[target, key_value.clone(), descriptor.clone()],
-                        );
-                        return Value::Object(original_obj);
+                if proxy_target_and_handler(&obj).is_some() {
+                    if let Some(result) = crate::proxy::define_property_dispatch(
+                        ctx,
+                        &obj,
+                        key_value.clone(),
+                        descriptor.clone(),
+                    ) {
+                        if matches!(result, Value::Undefined) {
+                            return Value::Undefined;
+                        }
+                        if crate::boolean::to_boolean(&result) {
+                            return Value::Object(original_obj);
+                        }
                     }
-                    if let Value::Object(target_obj) = target {
-                        define_obj = target_obj;
+                    if let Some((target, _)) = proxy_target_and_handler(&obj) {
+                        if let Value::Object(target_obj) = target {
+                            define_obj = target_obj;
+                        }
+                    } else {
+                        return Value::Object(original_obj);
                     }
                 }
                 let key = key_string(&key_value);
@@ -2926,54 +3025,14 @@ fn register_descriptors(vm: &mut VM) {
                 return Value::Undefined;
             }
             if let Some(obj) = obj_of(args, 0) {
-                let key = args.get(1).map(key_string).unwrap_or_default();
+                let key_value = args.get(1).cloned().unwrap_or(Value::Undefined);
+                let key = key_string(&key_value);
                 // §10.5.5: proxies answer via their trap (with the
                 // non-configurable invariant enforced) or their target.
-                if let Some((target, handler)) = proxy_target_and_handler(&obj) {
-                    let target_desc = match &target {
-                        Value::Object(t) => own_property_descriptor(t, &key),
-                        _ => Value::Undefined };
-                    if let Some(trap) = proxy_trap(&handler, "getOwnPropertyDescriptor") {
-                        let key_value = args.get(1).cloned().unwrap_or(Value::Undefined);
-                        let result = invoke_with_explicit_this(
-                            ctx,
-                            &trap,
-                            handler,
-                            &[target.clone(), key_value],
-                        );
-                        // Minimal §10.5.5 step 17 invariant: a
-                        // non-configurable own target property cannot be
-                        // reported missing or with a different value.
-                        let violation = if let Value::Object(td) = &target_desc {
-                            let t = td.lock().unwrap();
-                            let nonconfig = matches!(
-                                t.properties.get("configurable"),
-                                Some(Value::Bool(false))
-                            );
-                            nonconfig
-                                && match (&result, t.properties.get("value")) {
-                                    (Value::Undefined, _) => true,
-                                    (Value::Object(rd), Some(tv)) => rd
-                                        .lock()
-                                        .unwrap()
-                                        .properties
-                                        .get("value")
-                                        .map(|rv| rv != tv)
-                                        .unwrap_or(false),
-                                    _ => false }
-                        } else {
-                            false
-                        };
-                        if violation {
-                            ctx.throw_value(crate::error::new_error(ctx,
-                                "TypeError",
-                                "proxy getOwnPropertyDescriptor trap violated its invariant: property is non-configurable on the target",
-                            ));
-                            return Value::Undefined;
-                        }
-                        return result;
-                    }
-                    return target_desc;
+                if let Some(proxy_desc) =
+                    crate::proxy::get_own_property_descriptor_dispatch(ctx, &target, &key_value)
+                {
+                    return proxy_desc;
                 }
                 return own_property_descriptor(&obj, &key);
             }
@@ -3034,7 +3093,7 @@ fn register_descriptors(vm: &mut VM) {
 /// §20.1.2.8 core for an ORDINARY object: fresh accessor/data descriptor,
 /// or Undefined when `key` is not an own property. Proxy callers resolve
 /// their target first and pass it here.
-fn own_property_descriptor(obj: &Arc<Mutex<Object>>, key: &str) -> Value {
+pub fn own_property_descriptor(obj: &Arc<Mutex<Object>>, key: &str) -> Value {
     let o = obj.lock().unwrap();
     if let ObjectKind::Array(values) = &o.kind {
         if key == "length" {
@@ -3132,7 +3191,7 @@ fn string_length_descriptor(value: &Value, key: &str) -> Value {
     Value::Object(vybe_runtime::heap::alloc(desc))
 }
 
-fn descriptor_own_keys(o: &Object) -> Vec<String> {
+pub fn descriptor_own_keys(o: &Object) -> Vec<String> {
     let mut keys = Vec::new();
     match &o.kind {
         ObjectKind::Array(values) => {
@@ -3181,7 +3240,7 @@ fn is_noop_setter_value(value: &Value) -> bool {
         && matches!(obj.lock().unwrap().kind, ObjectKind::HostFunction(idx) if idx == noop_idx)
 }
 
-fn is_data_property_writable(o: &Object, key: &str) -> bool {
+pub fn is_data_property_writable(o: &Object, key: &str) -> bool {
     if o.properties.contains_key(FROZEN_MARK) {
         return false;
     }
@@ -3375,10 +3434,16 @@ pub fn set_prototype_of(ctx: &mut HostContext, value: &Value, proto: &Value) -> 
         if Arc::ptr_eq(p_obj, obj) {
             return Some(false);
         }
-        if crate::proxy::is_proxy(&p).is_some() {
-            break;
+        if let Some((Value::Object(proxy_target), _)) = proxy_target_and_handler(p_obj) {
+            if Arc::ptr_eq(&proxy_target, obj) {
+                return Some(false);
+            }
         }
-        let next = js_prototype_of(&p);
+        let next = if crate::proxy::is_proxy(&p).is_some() {
+            get_prototype_of(ctx, &p)?
+        } else {
+            js_prototype_of(&p)
+        };
         // A root prototype can resolve to itself; that is the end of the
         // chain, not a cycle in `value`.
         if same_prototype(&next, &p) {

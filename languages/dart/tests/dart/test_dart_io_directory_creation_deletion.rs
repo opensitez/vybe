@@ -29,7 +29,10 @@ fn directory_create_nested_without_recursive_throws() {
             r#"
 import 'dart:io';
 void main() {
-  final dir = Directory('test_nested_1/test_nested_2');
+  final parent = Directory.systemTemp.createTempSync('test_nested_parent_');
+  final missingParent = Directory('${parent.path}/missing');
+  parent.deleteSync();
+  final dir = Directory('${missingParent.path}/test_nested_2');
   try {
     dir.createSync();
   } on FileSystemException {
@@ -156,7 +159,7 @@ void main() {
 }
 "#
         ),
-        vec!["false\ntrue"]
+        vec!["false", "true"]
     );
 }
 
@@ -266,7 +269,7 @@ void main() {
   final original = Directory.current;
   final temp = Directory.systemTemp.createTempSync();
   Directory.current = temp;
-  print(Directory.current.path == temp.path);
+  print(Directory.current.resolveSymbolicLinksSync() == temp.resolveSymbolicLinksSync());
   Directory.current = original;
   temp.deleteSync();
 }

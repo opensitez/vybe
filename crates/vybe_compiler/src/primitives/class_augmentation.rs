@@ -582,6 +582,12 @@ fn promoted(
     } else {
         (Expression::new(ExprKind::This), 0)
     };
+
+    if method_promotes_by_rebinding_body(method) && !out.is_abstract && !out.body.is_empty() {
+        rebind_promoted_body(&mut out.body, &receiver, via_field);
+        return out;
+    }
+
     let args: Vec<Argument> = out
         .params
         .iter()
@@ -604,6 +610,39 @@ fn promoted(
     });
     out.body = vec![Statement::new(StmtKind::Return(Some(call)))];
     out
+}
+
+fn method_promotes_by_rebinding_body(method: &NormalMethod) -> bool {
+    method.raw_modifiers.decorators.iter().any(|decorator| {
+        matches!(
+            &decorator.kind,
+            vybe_ast::ExprKind::New { class, .. }
+                if matches!(&class.kind, vybe_ast::ExprKind::Ident(name) if name == "__vybe_promote_rebind_body")
+        )
+    })
+}
+
+fn rebind_promoted_body(
+    body: &mut [vybe_ast::Statement],
+    receiver: &vybe_ast::Expression,
+    via_field: &str,
+) {
+    use vybe_ast::{ExprKind, Expression};
+
+    let delegate_field = Expression::new(ExprKind::Member {
+        object: Box::new(receiver.clone()),
+        field: via_field.to_string(),
+        null_safe: false,
+    });
+    let rebound = Expression::new(ExprKind::RefLoad(Box::new(delegate_field)));
+
+    for stmt in body {
+        stmt.walk_exprs_mut(&mut |expr| {
+            if matches!(expr.kind, ExprKind::This) {
+                *expr = rebound.clone();
+            }
+        });
+    }
 }
 
 fn contributed(

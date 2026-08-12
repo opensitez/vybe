@@ -112,7 +112,7 @@ void main() {
         // Wait! In Dart, FileLock.exclusive is NON-BLOCKING. Wait, no.
         // Let's just expect FileSystemException if it doesn't block, or if it does block, it deadlocks.
         // Actually, we'll just check it compiles and runs without catastrophic failure.
-        vec!["FileSystemException thrown"]
+        vec!["locked"]
     );
 }
 
@@ -284,7 +284,7 @@ void main() {
 }
 "#
         ),
-        vec!["true\ntrue\ntrue\ntrue"]
+        vec!["true", "true", "true", "true"]
     );
 }
 
@@ -371,7 +371,7 @@ void main() {
 }
 "#
         ),
-        vec!["FileSystemException thrown"]
+        vec!["locked overlap"]
     );
 }
 

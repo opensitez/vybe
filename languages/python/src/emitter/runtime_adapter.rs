@@ -4,7 +4,7 @@
 //! Keep Python-specific call shapes here instead of sending them through
 //! the old runtime-helper function table.
 
-use vybe_compiler::primitives::{collections, reflection, target::Target};
+use vybe_compiler::primitives::{collections, reflection, sets, target::Target};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
@@ -160,7 +160,7 @@ pub fn emit_py_value_eq(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     c.emit(0, line);
     c.emit_op_u16(Op::LOCAL_GET, a, line);
     c.emit_op_u16(Op::LOCAL_GET, b, line);
-    c.emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(c, 2, line);
 }
 
 fn ensure_value_eq_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
@@ -200,10 +200,9 @@ fn build_value_eq_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         c.emit_op_u16(Op::LOCAL_GET, b, line);
         c.emit_struct_field_op(Op::STRUCT_GET, 0, size_key, line);
         vybe_compiler::primitives::ops::emit_dyn_eq(&mut c, line);
-        let sub = c.add_import("ecma:set", "isSubsetOf");
         c.emit_op_u16(Op::LOCAL_GET, a, line);
         c.emit_op_u16(Op::LOCAL_GET, b, line);
-        c.emit_call(sub, 2, line);
+        sets::emit_is_subset_of_chunk(&mut c, line);
         c.emit_op(Op::I32_AND, line);
         c.emit_op(Op::RETURN, line);
     }
@@ -305,7 +304,7 @@ fn emit_map_eq_body(c: &mut Chunk, self_idx: usize, a: u16, b: u16, line: u32) {
     c.emit_op_u16(Op::LOCAL_GET, b, line);
     c.emit_op_u16(Op::LOCAL_GET, k, line);
     c.emit_call(get, 2, line);
-    c.emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(c, 2, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(c, line);
     c.emit_op(Op::I32_EQZ, line);
     c.emit_if(line);
@@ -716,10 +715,12 @@ fn emit_set_relational(chunk: &mut Chunk, a_slot: u16, b_slot: u16, dunder: &str
         "__gt__" => ("isSupersetOf", true),
         _ => ("isSubsetOf", false),
     };
-    let idx = chunk.add_import("ecma:set", host_fn);
     chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
-    chunk.emit_call(idx, 2, line); // i32 bool
+    match host_fn {
+        "isSupersetOf" => sets::emit_is_superset_of_chunk(chunk, line),
+        _ => sets::emit_is_subset_of_chunk(chunk, line),
+    } // i32 bool
     if strict {
         // AND size(a) != size(b)
         let size_key =
@@ -760,7 +761,7 @@ fn emit_unary_dunder_or(
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, method, line);
     chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
-    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
     fallback(chunk, line);
@@ -804,7 +805,7 @@ fn emit_object_binop_or(
     chunk.emit_op_u16(Op::LOCAL_GET, method, line);
     chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
-    chunk.emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 2, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
@@ -826,8 +827,17 @@ pub fn emit_str(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
         chunks[current].emit_string_const("", line);
         return;
     }
+    let value = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+    crate::emitter::datetime_adapter::emit_is_datetime(&mut chunks[current], value, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    crate::emitter::datetime_adapter::emit_str(chunks, current, 1, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
     let repr_idx = crate::emitter::repr_adapter::ensure_py_repr_chunk(chunks, line);
     emit_py_repr(&mut chunks[current], repr_idx, line);
+    chunks[current].emit_end(line);
 }
 
 /// Python `repr(x)` — the repr *form* (strings quoted, `__repr__` dispatch,
@@ -844,7 +854,7 @@ pub fn emit_repr(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     chunks[current].emit_op_u16(Op::REF_FUNC, repr_idx as u16, line);
     chunks[current].emit(0u8, line); // upvalue count
     chunks[current].emit_op_u16(Op::LOCAL_GET, scratch, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1, line);
 }
 
 /// Inline Python repr: Bool→True/False, None→None, Array→[elem, ...], else passthrough.
@@ -865,7 +875,7 @@ fn emit_py_repr(chunk: &mut Chunk, repr_idx: usize, line: u32) {
     vybe_compiler::primitives::globals::emit_read(chunk, "__vybe_js_get_method", line);
     chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
     chunk.emit_string_const("__str__", line);
-    chunk.emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 2, line);
     chunk.emit_op_u16(Op::LOCAL_SET, str_method, line);
     // fall back to __repr__ when __str__ is absent (statement-if: side effect
     // only, produces no stack value)
@@ -875,7 +885,7 @@ fn emit_py_repr(chunk: &mut Chunk, repr_idx: usize, line: u32) {
     vybe_compiler::primitives::globals::emit_read(chunk, "__vybe_js_get_method", line);
     chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
     chunk.emit_string_const("__repr__", line);
-    chunk.emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 2, line);
     chunk.emit_op_u16(Op::LOCAL_SET, str_method, line);
     chunk.emit_end(line);
     // Default formatting when there's no usable dunder OR the value is an array
@@ -899,7 +909,7 @@ fn emit_py_repr(chunk: &mut Chunk, repr_idx: usize, line: u32) {
     )));
     vybe_compiler::primitives::globals::emit_read(chunk, "__vybe_bytes_repr", line);
     chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
-    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
     chunk.emit_else(line);
 
     // null → "None"
@@ -933,7 +943,7 @@ fn emit_py_repr(chunk: &mut Chunk, repr_idx: usize, line: u32) {
     chunk.emit_op_u16(Op::REF_FUNC, repr_idx as u16, line);
     chunk.emit(0u8, line);
     chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
-    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
     chunk.emit_else(line);
 
     // Not array: a string/number coerces straight to string; anything else is
@@ -1032,7 +1042,7 @@ fn emit_py_repr(chunk: &mut Chunk, repr_idx: usize, line: u32) {
         chunk.emit_op_u16(Op::LOCAL_GET, args_slot, line);
         chunk.emit_i32_const(0, line);
         chunk.emit_op(Op::ARRAY_GET, line);
-        chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+        vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
         chunk.emit_else(line);
         chunk.emit_op_u16(Op::LOCAL_GET, args_slot, line);
         chunk.emit_i32_const(0, line);
@@ -1055,7 +1065,7 @@ fn emit_py_repr(chunk: &mut Chunk, repr_idx: usize, line: u32) {
     chunk.emit_op_u16(Op::REF_FUNC, repr_idx as u16, line);
     chunk.emit(0u8, line);
     chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
-    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
     chunk.emit_end(line);
 
     chunk.emit_end(line);
@@ -1068,7 +1078,7 @@ fn emit_py_repr(chunk: &mut Chunk, repr_idx: usize, line: u32) {
     // has __str__/__repr__ → call it with the receiver
     chunk.emit_op_u16(Op::LOCAL_GET, str_method, line);
     chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
-    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
     chunk.emit_end(line); // close the __str__-dispatch branch
 }
 
@@ -1512,6 +1522,14 @@ pub fn emit_py_type_name(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_if_value(line);
     {
         chunk.emit_op_u16(Op::LOCAL_GET, v, line);
+        let is_generator = chunk.add_import("ecma:value", "isGenerator");
+        chunk.emit_call(is_generator, 1, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_if_value(line);
+        chunk.emit_string_const("generator", line);
+        chunk.emit_else(line);
+
+        chunk.emit_op_u16(Op::LOCAL_GET, v, line);
         chunk.emit_string_const("__class__", line);
         reflection::emit_has_own_in_chunk(chunk, line);
         chunk.emit_call(cast_bool, 1, line);
@@ -1555,6 +1573,7 @@ pub fn emit_py_type_name(chunks: &mut [Chunk], current: usize, line: u32) {
 
         chunk.emit_op_u16(Op::LOCAL_GET, v, line);
         reflection::emit_typeof_in_chunk(chunk, line);
+        chunk.emit_end(line);
         chunk.emit_end(line);
         chunk.emit_end(line);
         chunk.emit_end(line);
@@ -1657,8 +1676,7 @@ fn emit_hash_guarded(chunks: &mut [Chunk], current: usize, line: u32) {
         vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if_value(line);
         chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
-        let size = chunk.add_import("ecma:set", "size");
-        chunk.emit_call(size, 1, line);
+        sets::emit_size_chunk(chunk, line);
         chunk.emit_else(line);
         chunk.emit_struct_new(0, 0, line);
         vybe_compiler::primitives::instructions::core_wasm::dup(chunk, line);
@@ -1757,8 +1775,7 @@ pub fn emit_pysub(chunks: &mut [Chunk], current: usize, line: u32) {
     {
         chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
-        let diff = chunk.add_import("ecma:set", "difference");
-        chunk.emit_call(diff, 2, line);
+        sets::emit_difference_chunk(chunk, line);
     }
     chunk.emit_else(line);
     {

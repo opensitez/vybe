@@ -66,6 +66,20 @@ pub fn attach(vm: &mut VM, gui: Arc<Mutex<GuiState>>) {
                 capture_frame(&gui, &line.split_whitespace().skip(1).collect::<Vec<_>>());
                 continue;
             }
+            // `html` is client-side for the same reason as `widgets`: it reads
+            // the live document, which is safe to walk whether the VM is
+            // paused or running.
+            if matches!(head, "html" | "dom") {
+                print_html(&line.split_whitespace().skip(1).collect::<Vec<_>>());
+                continue;
+            }
+            // The inspector: read or write one element, live. Client-side for
+            // the same reason as `widgets` — it walks the document, which is
+            // safe whether the VM is paused or running.
+            if matches!(head, "css" | "attr" | "text") {
+                inspect(head, &line.split_whitespace().skip(1).collect::<Vec<_>>());
+                continue;
+            }
             if matches!(head, "draws" | "drawlist") {
                 print_draws(&gui, &line.split_whitespace().skip(1).collect::<Vec<_>>());
                 continue;
@@ -316,6 +330,131 @@ fn print_widgets(gui: &Arc<Mutex<GuiState>>) {
 /// Dump the document's elements — geometry, observable properties, listeners.
 /// Returns false when there is no document tree to report on, so the caller can
 /// fall back to `GuiState`.
+/// `html` — the live document as markup.
+///
+/// The companion to `widgets`, not a replacement: that one reports each
+/// element's properties and laid-out rect, this one reports the STRUCTURE.
+/// A control with correct properties in the wrong parent reads as fine in a
+/// property dump and is obvious here.
+///
+/// A designer form built straight into `GuiState` never opens a document, so
+/// there is genuinely nothing to serialise — say so rather than print an empty
+/// body and imply the program built nothing.
+/// Do two CSS lengths mean the same thing? `8` and `8px` do — the emitters
+/// still write geometry unitless, so a bare number and a `px` value are the
+/// same declaration and flagging them as a mismatch would cry wolf on every
+/// control.
+fn same_length(a: &str, b: &str) -> bool {
+    let strip = |s: &str| s.trim().trim_end_matches("px").trim().to_string();
+    strip(a) == strip(b)
+}
+
+fn print_html(args: &[&str]) {
+    match args.first() {
+        // One element and its subtree — `outerHTML`. Useful on a form with
+        // sixty controls, where the whole body scrolls past.
+        Some(name) => match crate::gui_document::node_by_id(name) {
+            Some(node) => match crate::gui_document::inspect::outer_html(node) {
+                Some(html) => println!("{html}"),
+                None => eprintln!("  (no document)"),
+            },
+            None => eprintln!("  no control named `{name}` (see `widgets` for names)"),
+        },
+        None => match crate::gui_document::html() {
+            Some(html) => println!("{html}"),
+            None => eprintln!("  (no document — nothing has built one yet)"),
+        },
+    }
+}
+
+/// The inspector: `css` / `attr` / `text`, each reading with one argument and
+/// writing with two.
+///
+/// Writes go through the same `Document` entry points the guest uses, so
+/// setting something here does exactly what the program setting it would do —
+/// and a change is visible in `widgets`, `html` and `capture` immediately,
+/// because there is only one tree.
+fn inspect(verb: &str, args: &[&str]) {
+    let usage = match verb {
+        "css" => "usage: css <control> [property] [value]",
+        "attr" => "usage: attr <control> <name> [value]",
+        _ => "usage: text <control> [value]",
+    };
+    let Some(name) = args.first() else {
+        eprintln!("  {usage}");
+        return;
+    };
+    let Some(node) = crate::gui_document::node_by_id(name) else {
+        eprintln!("  no control named `{name}` (see `widgets` for names)");
+        return;
+    };
+    use crate::gui_document::inspect;
+    match (verb, args.get(1), args.get(2)) {
+        // `css <control>` — every declaration on the element.
+        ("css", None, _) => match inspect::declarations(node) {
+            Some(declarations) if !declarations.is_empty() => {
+                for (property, value) in declarations {
+                    println!("  {property}: {value}");
+                }
+            }
+            Some(_) => eprintln!("  (no declarations)"),
+            None => eprintln!("  (no document)"),
+        },
+        // Declared vs computed, and SAY when they differ. Geometry is read off
+        // the control, so a laid-out or docked element does not sit where its
+        // own `left` asked — and that gap is the single most useful number in a
+        // layout bug. Printing one figure hides it.
+        ("css", Some(property), None) => {
+            let computed = inspect::style(node, property);
+            let declared = inspect::declarations(node).and_then(|declarations| {
+                declarations
+                    .into_iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case(property))
+                    .map(|(_, value)| value)
+            });
+            match (declared, computed) {
+                (None, None) => eprintln!("  (no document)"),
+                (None, Some(value)) if value.is_empty() => {
+                    eprintln!("  {property}: (not set)")
+                }
+                (None, Some(value)) => println!("  {property}: {value}  (computed)"),
+                (Some(declared), Some(computed))
+                    if !computed.is_empty() && !same_length(&declared, &computed) =>
+                {
+                    println!("  {property}: {declared}  ← declared, computed {computed}");
+                }
+                (Some(declared), _) => println!("  {property}: {declared}"),
+            }
+        }
+        ("css", Some(property), Some(_)) => {
+            // Everything after the property is the value, so
+            // `css btn font "16px Helvetica"` works unquoted too.
+            let value = args[2..].join(" ");
+            inspect::set_style(node, property, &value);
+            println!("  {property}: {value}");
+        }
+        ("attr", Some(attribute), None) => match inspect::attribute(node, attribute) {
+            Some(value) => println!("  {attribute}=\"{value}\""),
+            None => eprintln!("  {attribute}: (not set)"),
+        },
+        ("attr", Some(attribute), Some(_)) => {
+            let value = args[2..].join(" ");
+            inspect::set_attribute(node, attribute, &value);
+            println!("  {attribute}=\"{value}\"");
+        }
+        ("text", None, _) => match inspect::text(node) {
+            Some(text) => println!("  {text:?}"),
+            None => eprintln!("  (no document)"),
+        },
+        ("text", Some(_), _) => {
+            let value = args[1..].join(" ");
+            inspect::set_text(node, &value);
+            println!("  {value:?}");
+        }
+        _ => eprintln!("  {usage}"),
+    }
+}
+
 fn print_document_widgets() -> bool {
     let controls = crate::gui_document::controls();
     if controls.is_empty() {
@@ -326,14 +465,20 @@ fn print_document_widgets() -> bool {
         None => eprintln!("  document  ({} element(s))", controls.len()),
     }
     for control in controls {
-        // Same warning the GuiState dump carries, and for the same reason: a
-        // control with no rect will not render and cannot be hit-tested.
-        let rect = match control.rect {
-            Some(r) if r.w >= 1.0 && r.h >= 1.0 => {
+        // A control with no rect will not render and cannot be hit-tested —
+        // but SAY WHICH of the two reasons it is. `rect` is looked up in the
+        // form's tree, so a missing one usually means the element was never
+        // appended, not that layout has not run; those are a missing
+        // `appendChild` and a missing layout pass, and reporting them the same
+        // way sent a session hunting container layout for a control that was
+        // never in the container.
+        let rect = match (control.rect, control.connected) {
+            (Some(r), _) if r.w >= 1.0 && r.h >= 1.0 => {
                 format!("  rect={},{} {}x{}", r.x, r.y, r.w, r.h)
             }
-            Some(_) => "  rect=0x0 ← never laid out".to_string(),
-            None => String::new(),
+            (Some(_), _) => "  rect=0x0 ← never laid out".to_string(),
+            (None, false) => "  ⚠ DETACHED ← created, never appended".to_string(),
+            (None, true) => "  rect=? ← in the document, not laid out".to_string(),
         };
         let props = if control.properties.is_empty() {
             String::new()

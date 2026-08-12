@@ -95,6 +95,7 @@ thread_local! {
     static JAVA_STATIC_FIELD_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_STATIC_FIELD_TYPES: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
     static JAVA_LOCAL_TYPES: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+    static JAVA_MONITOR_TEMP_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static JAVA_FINAL_CONSTANTS: RefCell<HashMap<String, Expression>> = RefCell::new(HashMap::new());
     static JAVA_RUNNABLE_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_FUNCTIONAL_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
@@ -288,6 +289,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     JAVA_STATIC_FIELD_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_STATIC_FIELD_TYPES.with(|types| types.borrow_mut().clear());
     JAVA_LOCAL_TYPES.with(|types| types.borrow_mut().clear());
+    JAVA_MONITOR_TEMP_COUNTER.with(|counter| *counter.borrow_mut() = 0);
     JAVA_FINAL_CONSTANTS.with(|constants| constants.borrow_mut().clear());
     JAVA_RUNNABLE_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_FUNCTIONAL_VARS.with(|vars| vars.borrow_mut().clear());
@@ -892,7 +894,9 @@ fn java_expr_references_any_name(expr: &Expression, names: &HashSet<String>) -> 
                     .as_ref()
                     .is_some_and(|receiver| java_expr_references_any_name(receiver, names))
                 || adapter.as_ref().is_some_and(|adapter| match adapter {
-                    CallableAdapter::Expr { body, .. } => java_expr_references_any_name(body, names),
+                    CallableAdapter::Expr { body, .. } => {
+                        java_expr_references_any_name(body, names)
+                    }
                 })
         }
         _ => false,
@@ -1268,6 +1272,7 @@ struct ParsedModifiers {
     is_static: bool,
     is_abstract: bool,
     is_final: bool,
+    is_synchronized: bool,
 }
 
 impl Default for ParsedModifiers {
@@ -1277,6 +1282,7 @@ impl Default for ParsedModifiers {
             is_static: false,
             is_abstract: false,
             is_final: false,
+            is_synchronized: false,
         }
     }
 }
@@ -1296,6 +1302,7 @@ fn parse_modifiers(pair: &Pair<Rule>) -> ParsedModifiers {
                 Some(Rule::static_kw) => out.is_static = true,
                 Some(Rule::abstract_kw) => out.is_abstract = true,
                 Some(Rule::final_kw) => out.is_final = true,
+                Some(Rule::synchronized_kw) => out.is_synchronized = true,
                 _ => {}
             }
         }
@@ -1794,6 +1801,18 @@ fn walk_method(pair: Pair<Rule>) -> Result<ClassMember, String> {
             }
             _ => {}
         }
+    }
+
+    if pm.is_synchronized {
+        let lock_expr = if modifiers.is_static {
+            let owner = JAVA_CURRENT_CLASS_STACK
+                .with(|stack| stack.borrow().last().cloned())
+                .unwrap_or_else(|| "__java_static_lock".to_string());
+            Expression::ident(&owner)
+        } else {
+            Expression::new(ExprKind::This)
+        };
+        body = vec![java_synchronized_stmt(lock_expr, body)];
     }
 
     Ok(ClassMember::Method(Box::new(Statement::new(
@@ -2762,11 +2781,10 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
         }
 
         Rule::synchronized_statement => {
-            // synchronized (lock) { body } → just compile the body block
             let mut inner = pair.into_inner();
-            let _lock = walk_expr_inner(&mut inner)?;
+            let lock = walk_expr_inner(&mut inner)?;
             let body_pair = inner.next().ok_or("synchronized: missing body")?;
-            StmtKind::Block(walk_block(body_pair)?)
+            return Ok(Some(java_synchronized_stmt(lock, walk_block(body_pair)?)));
         }
 
         Rule::super_constructor_call => {
@@ -5011,6 +5029,9 @@ fn java_dotted_static_call_name(name: &str) -> Option<&'static str> {
         "Executors.newFixedThreadPool" | "java.util.concurrent.Executors.newFixedThreadPool" => {
             "__j_exec_new"
         }
+        "ConcurrentHashMap.newKeySet" | "java.util.concurrent.ConcurrentHashMap.newKeySet" => {
+            "__java_concurrent_hash_map_new_key_set"
+        }
         _ => return None,
     })
 }
@@ -5589,6 +5610,36 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                     });
                 }
             }
+            if java_type_is_map(Some(&type_name)) {
+                if java_type_is_concurrent_hash_map(&type_name) && method == "put" {
+                    let mut call_args =
+                        vec![Argument::positional(Expression::new(ExprKind::Member {
+                            object: Box::new(Expression::ident(&class_name)),
+                            field: name.clone(),
+                            null_safe: false,
+                        }))];
+                    call_args.extend(args);
+                    return Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__java_concurrent_map_put")),
+                        args: call_args,
+                        optional: false,
+                    });
+                }
+                if let Some(internal) = java_map_method_name(&method) {
+                    let mut call_args =
+                        vec![Argument::positional(Expression::new(ExprKind::Member {
+                            object: Box::new(Expression::ident(&class_name)),
+                            field: name.clone(),
+                            null_safe: false,
+                        }))];
+                    call_args.extend(args);
+                    return Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident(internal)),
+                        args: call_args,
+                        optional: false,
+                    });
+                }
+            }
             if java_type_is_queue_or_deque(Some(&type_name)) {
                 if let Some(internal) =
                     java_queue_method_name(Some(&type_name), &method, args.len())
@@ -5609,6 +5660,22 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             }
             if java_type_is_semaphore(Some(&type_name)) {
                 if let Some(internal) = java_semaphore_method_name(&method) {
+                    let mut call_args =
+                        vec![Argument::positional(Expression::new(ExprKind::Member {
+                            object: Box::new(Expression::ident(&class_name)),
+                            field: name.clone(),
+                            null_safe: false,
+                        }))];
+                    call_args.extend(args);
+                    return Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident(internal)),
+                        args: call_args,
+                        optional: false,
+                    });
+                }
+            }
+            if java_type_is_atomic(Some(&type_name)) {
+                if let Some(internal) = java_atomic_method_name(&method) {
                     let mut call_args =
                         vec![Argument::positional(Expression::new(ExprKind::Member {
                             object: Box::new(Expression::ident(&class_name)),
@@ -5731,6 +5798,37 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 });
             }
         }
+        if java_type_is_atomic(Some(&type_name)) {
+            if let Some(internal) = java_atomic_method_name(&method) {
+                let mut call_args = vec![Argument::positional(receiver)];
+                call_args.extend(args);
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident(internal)),
+                    args: call_args,
+                    optional: false,
+                });
+            }
+        }
+        if java_type_is_map(Some(&type_name)) {
+            if java_type_is_concurrent_hash_map(&type_name) && method == "put" {
+                let mut call_args = vec![Argument::positional(receiver)];
+                call_args.extend(args);
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__java_concurrent_map_put")),
+                    args: call_args,
+                    optional: false,
+                });
+            }
+            if let Some(internal) = java_map_method_name(&method) {
+                let mut call_args = vec![Argument::positional(receiver)];
+                call_args.extend(args);
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident(internal)),
+                    args: call_args,
+                    optional: false,
+                });
+            }
+        }
     }
 
     let thread_receiver = match &receiver.kind {
@@ -5749,19 +5847,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             });
         }
         let prelude_fn = match method.as_str() {
-            "join" => {
-                let unsafe_target = match &receiver.kind {
-                    ExprKind::Ident(name) => {
-                        JAVA_THREAD_UNSAFE_TARGETS.with(|targets| targets.borrow().contains(name))
-                    }
-                    _ => false,
-                };
-                Some(if unsafe_target {
-                    "__j_thread_join"
-                } else {
-                    "__java_thread_join"
-                })
-            }
+            "join" => Some("__j_thread_join"),
             "isAlive" => Some("__j_thread_is_alive"),
             "getName" => Some("__j_thread_get_name"),
             "setName" => Some("__j_thread_set_name"),
@@ -5922,6 +6008,18 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
     {
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__j_char_unicode_block_of")),
+            args,
+            optional: false,
+        });
+    }
+    if method == "newKeySet"
+        && args.is_empty()
+        && java_expr_dotted_name(&receiver)
+            .as_deref()
+            .is_some_and(java_type_is_concurrent_hash_map)
+    {
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__java_concurrent_hash_map_new_key_set")),
             args,
             optional: false,
         });
@@ -6110,6 +6208,22 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             call_args.extend(args);
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__j_stream_builder_add")),
+                args: call_args,
+                optional: false,
+            });
+        }
+    }
+
+    if let ExprKind::Ident(name) = &receiver.kind {
+        let receiver_type =
+            JAVA_LOCAL_TYPES.with(|types| types.borrow().get(name.as_str()).cloned());
+        if java_type_is_bitset(receiver_type.as_deref())
+            && let Some(prelude_fn) = java_bitset_method_name(&method)
+        {
+            let mut call_args = vec![Argument::positional(receiver)];
+            call_args.extend(args);
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(prelude_fn)),
                 args: call_args,
                 optional: false,
             });
@@ -6802,7 +6916,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 });
             }
         }
-        if type_name == "Base64" {
+        if java_type_simple_name(&type_name) == "Base64" {
             if let Some(expr) = java_base64_static_call(&method, args.clone()) {
                 return expr;
             }
@@ -6836,6 +6950,16 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         if java_type_simple_name(&type_name) == "Runtime" && method == "getRuntime" {
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__j_runtime_get")),
+                args,
+                optional: false,
+            });
+        }
+        if java_type_simple_name(&type_name) == "ConcurrentHashMap"
+            && method == "newKeySet"
+            && args.is_empty()
+        {
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__java_concurrent_hash_map_new_key_set")),
                 args,
                 optional: false,
             });
@@ -6957,7 +7081,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                     });
                 }
             }
-            if type_name == "Base64" {
+            if java_type_simple_name(type_name) == "Base64" {
                 if let Some(expr) = java_base64_static_call(&method, args.clone()) {
                     return expr;
                 }
@@ -8674,6 +8798,7 @@ fn is_java_type_or_util(name: &str) -> bool {
             | "Thread"
             | "ThreadLocalRandom"
             | "Executors"
+            | "ConcurrentHashMap"
             | "FutureTask"
             | "Executor"
             | "ExecutorService"
@@ -8960,6 +9085,7 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                     }));
                 }
                 if matches!(class_name.as_str(), "Thread" | "java.lang.Thread") {
+                    let args = java_thread_constructor_args(args);
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__j_thread_new")),
                         args,
@@ -8972,6 +9098,29 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                 ) {
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__java_semaphore_new")),
+                        args,
+                        optional: false,
+                    }));
+                }
+                if java_type_is_concurrent_hash_map(&class_name) {
+                    return Ok(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__java_concurrent_hash_map_new")),
+                        args,
+                        optional: false,
+                    }));
+                }
+                if java_type_is_atomic(Some(&class_name)) {
+                    let mut args = args;
+                    if args.is_empty() {
+                        let default = match java_type_base_simple_name(&class_name) {
+                            "AtomicBoolean" => Expression::bool(false),
+                            "AtomicReference" => Expression::null(),
+                            _ => Expression::int(0),
+                        };
+                        args.push(Argument::positional(default));
+                    }
+                    return Ok(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__java_atomic_new")),
                         args,
                         optional: false,
                     }));
@@ -9093,10 +9242,74 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
         }));
     }
 
+    if java_type_is_concurrent_hash_map(&class_name) {
+        return Ok(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__java_concurrent_hash_map_new")),
+            args: vec![],
+            optional: false,
+        }));
+    }
+
     Ok(Expression::new(ExprKind::New {
         class: Box::new(Expression::ident(&class_name)),
         args: vec![],
     }))
+}
+
+fn java_thread_constructor_args(mut args: Vec<Argument>) -> Vec<Argument> {
+    if let Some(first) = args.first_mut() {
+        if matches!(first.value.kind, ExprKind::Lambda { .. }) {
+            let lambda = first.value.clone();
+            first.value = Expression::new(ExprKind::Object(vec![ObjectProperty::KeyValue {
+                key: Expression::string("run"),
+                value: lambda,
+            }]));
+        }
+    }
+    args
+}
+
+fn java_synchronized_stmt(lock: Expression, body: Vec<Statement>) -> Statement {
+    let temp = JAVA_MONITOR_TEMP_COUNTER.with(|counter| {
+        let mut counter = counter.borrow_mut();
+        *counter += 1;
+        format!("__java_monitor_{}", *counter)
+    });
+    let temp_expr = Expression::ident(&temp);
+    Statement::new(StmtKind::Block(vec![
+        Statement::new(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(temp.clone()),
+                type_hint: None,
+                init: Some(lock),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Let,
+        }),
+        Statement::new(StmtKind::Expr(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__j_monitor_enter")),
+            args: vec![Argument::positional(temp_expr.clone())],
+            optional: false,
+        }))),
+        Statement::new(StmtKind::Try {
+            body,
+            catches: Vec::new(),
+            else_body: None,
+            finally: Some(vec![Statement::new(StmtKind::Expr(Expression::new(
+                ExprKind::Call {
+                    callee: Box::new(Expression::ident("__j_monitor_exit")),
+                    args: vec![Argument::positional(temp_expr)],
+                    optional: false,
+                },
+            )))]),
+        }),
+    ]))
+}
+
+fn java_type_is_concurrent_hash_map(type_name: &str) -> bool {
+    let simple = java_type_base_simple_name(type_name);
+    simple == "ConcurrentHashMap" || simple.starts_with("ConcurrentHashMap<")
 }
 
 fn walk_anonymous_class_new(
@@ -13717,6 +13930,19 @@ fn rewrite_java_tostring_expr(
                             return;
                         }
                     }
+                    if java_type_is_atomic(locals.get(name).map(String::as_str)) {
+                        if let Some(internal) = java_atomic_method_name(field) {
+                            let mut new_args = Vec::with_capacity(args.len() + 1);
+                            new_args.push(Argument::positional((**object).clone()));
+                            new_args.extend(args.iter().cloned());
+                            *expr = Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident(internal)),
+                                args: new_args,
+                                optional: false,
+                            });
+                            return;
+                        }
+                    }
                     if java_type_is_list_like(locals.get(name).map(String::as_str)) {
                         if let Some(internal) = java_list_method_name(field, args.len()) {
                             let mut new_args = Vec::with_capacity(args.len() + 1);
@@ -14423,6 +14649,8 @@ fn java_list_method_name(method: &str, argc: usize) -> Option<&'static str> {
         "addIfAbsent" if argc == 1 => "__java_copy_on_write_add_if_absent",
         "size" if argc == 0 => "__java_list_size",
         "remove" if argc == 1 => "__java_list_remove",
+        "set" if argc == 2 => "__java_stack_set",
+        "subList" if argc == 2 => "__java_sub_list",
         "containsAll" if argc == 1 => "__java_list_contains_all",
         "equals" if argc == 1 => "__java_list_equals",
         "indexOf" if argc == 1 => "__java_list_index_of",
@@ -14465,7 +14693,7 @@ fn java_list_result_receiver(expr: &Expression) -> bool {
     matches!(
         &expr.kind,
         ExprKind::Call { callee, .. }
-            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__j_pb_command_get")
+            if matches!(&callee.kind, ExprKind::Ident(name) if matches!(name.as_str(), "__j_pb_command_get" | "__java_sub_list"))
     )
 }
 
@@ -14702,6 +14930,30 @@ fn java_type_is_semaphore(type_name: Option<&str>) -> bool {
         return false;
     };
     java_type_base_simple_name(type_name) == "Semaphore"
+}
+
+fn java_type_is_atomic(type_name: Option<&str>) -> bool {
+    let Some(type_name) = type_name else {
+        return false;
+    };
+    matches!(
+        java_type_base_simple_name(type_name),
+        "AtomicInteger" | "AtomicLong" | "AtomicBoolean" | "AtomicReference"
+    )
+}
+
+fn java_atomic_method_name(method: &str) -> Option<&'static str> {
+    Some(match method {
+        "get" => "__java_atomic_get",
+        "set" | "lazySet" => "__java_atomic_set",
+        "getAndSet" => "__java_atomic_get_and_set",
+        "compareAndSet" | "weakCompareAndSet" => "__java_atomic_compare_and_set",
+        "incrementAndGet" => "__java_atomic_increment_and_get",
+        "getAndIncrement" => "__java_atomic_get_and_increment",
+        "getAndDecrement" => "__java_atomic_get_and_decrement",
+        "addAndGet" => "__java_atomic_add_and_get",
+        _ => return None,
+    })
 }
 
 fn java_semaphore_method_name(method: &str) -> Option<&'static str> {
@@ -15242,7 +15494,11 @@ fn java_bigdecimal_constant_replacement(expr: &Expression) -> Option<Expression>
 }
 
 fn java_type_simple_name(type_name: &str) -> &str {
-    let erased = common_generics::generic_base_name(type_name.trim());
+    let erased = type_name
+        .trim()
+        .split('<')
+        .next()
+        .unwrap_or_else(|| type_name.trim());
     erased.rsplit('.').next().unwrap_or(erased)
 }
 
@@ -17760,6 +18016,43 @@ fn java_thread_target_is_unsafe(target: &Expression, locals: &HashSet<String>) -
         ExprKind::Lambda { .. } | ExprKind::CallableRef { .. } => {
             java_expr_reads_any_local(target, locals)
         }
+        ExprKind::Object(props) => props.iter().any(|prop| match prop {
+            ObjectProperty::KeyValue { value, .. } | ObjectProperty::Computed { value, .. } => {
+                java_thread_target_is_unsafe(value, locals)
+            }
+            ObjectProperty::Spread(value) => java_thread_target_is_unsafe(value, locals),
+            ObjectProperty::Shorthand(name) => locals.contains(name),
+            ObjectProperty::Method { .. } | ObjectProperty::Accessor { .. } => false,
+        }),
+        _ => false,
+    }
+}
+
+fn java_expr_is_thread_like_receiver(
+    expr: &Expression,
+    local_types: &HashMap<String, String>,
+) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => {
+            JAVA_THREAD_VARS.with(|vars| vars.borrow().contains(name))
+                || local_types.get(name).is_some_and(|type_name| {
+                    let simple = java_type_base_simple_name(type_name);
+                    simple == "Thread"
+                        || JAVA_THREAD_TYPES.with(|types| types.borrow().contains(simple))
+                })
+        }
+        ExprKind::Call { callee, .. } => {
+            if let ExprKind::Member { object, field, .. } = &callee.kind {
+                if field == "get" {
+                    if let ExprKind::Ident(name) = &object.kind {
+                        return local_types
+                            .get(name)
+                            .is_some_and(|type_name| type_name.contains("<Thread>"));
+                    }
+                }
+            }
+            false
+        }
         _ => false,
     }
 }
@@ -18448,6 +18741,31 @@ fn normalize_java_stmts(
                     &mut local_types.clone(),
                 );
             }
+            StmtKind::Lock { expr, body } => {
+                normalize_java_expr(
+                    expr,
+                    fields,
+                    methods,
+                    static_methods,
+                    static_overloads,
+                    class_members,
+                    current_class,
+                    locals,
+                    local_types,
+                    false,
+                );
+                normalize_java_stmts(
+                    body,
+                    fields,
+                    methods,
+                    static_methods,
+                    static_overloads,
+                    class_members,
+                    current_class,
+                    &mut locals.clone(),
+                    &mut local_types.clone(),
+                );
+            }
             StmtKind::Try {
                 body,
                 catches,
@@ -18617,6 +18935,46 @@ fn normalize_java_expr(
                 null_safe: false,
             };
         }
+        ExprKind::New { class, args } => {
+            normalize_java_expr(
+                class,
+                fields,
+                methods,
+                static_methods,
+                static_overloads,
+                class_members,
+                current_class,
+                locals,
+                local_types,
+                false,
+            );
+            for arg in args.iter_mut() {
+                normalize_java_expr(
+                    &mut arg.value,
+                    fields,
+                    methods,
+                    static_methods,
+                    static_overloads,
+                    class_members,
+                    current_class,
+                    locals,
+                    local_types,
+                    false,
+                );
+            }
+            if matches!(&class.kind, ExprKind::Ident(name) if name == "KeySet")
+                && args.len() == 1
+                && java_expr_dotted_name(&args[0].value)
+                    .as_deref()
+                    .is_some_and(java_type_is_concurrent_hash_map)
+            {
+                *expr = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__java_concurrent_hash_map_new_key_set")),
+                    args: vec![],
+                    optional: false,
+                });
+            }
+        }
         ExprKind::Call { callee, args, .. } => {
             for arg in args.iter_mut() {
                 normalize_java_expr(
@@ -18640,37 +18998,70 @@ fn normalize_java_expr(
                     *first = java_print_arg(first.clone());
                 }
             }
-            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__j_thread_start")
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__java_map_put")
+                && args.len() == 3
+                && matches!(
+                    &args[0].value.kind,
+                    ExprKind::Ident(name)
+                        if local_types.get(name).is_some_and(|ty| java_type_is_concurrent_hash_map(ty))
+                )
+            {
+                *callee = Box::new(Expression::ident("__java_concurrent_map_put"));
+                return;
+            }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__java_list_size")
                 && args.len() == 1
             {
-                if let ExprKind::Ident(thread_name) = &args[0].value.kind {
-                    if let Some(mut target) = JAVA_THREAD_TARGETS
-                        .with(|targets| targets.borrow().get(thread_name).cloned())
+                if let ExprKind::Call {
+                    callee: sub_callee,
+                    args: sub_args,
+                    ..
+                } = &args[0].value.kind
+                {
+                    if matches!(&sub_callee.kind, ExprKind::Ident(name) if name == "__java_sub_list")
+                        && sub_args.len() == 3
                     {
-                        target = java_resolve_runnable_target(target);
-                        normalize_java_expr(
-                            &mut target,
-                            fields,
-                            methods,
-                            static_methods,
-                            static_overloads,
-                            class_members,
-                            current_class,
-                            locals,
-                            local_types,
-                            false,
-                        );
-                        java_rewrite_spawned_thread_sleep_expr(&mut target);
-                        *expr = Expression::new(ExprKind::Call {
-                            callee: Box::new(Expression::ident("__java_thread_start_with")),
-                            args: vec![args[0].clone(), Argument::positional(target)],
-                            optional: false,
+                        *expr = Expression::new(ExprKind::Binary {
+                            op: BinOp::Sub,
+                            left: Box::new(sub_args[2].value.clone()),
+                            right: Box::new(sub_args[1].value.clone()),
                         });
                         return;
                     }
                 }
             }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__j_thread_start")
+                && args.len() == 1
+            {
+                return;
+            }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__java_thread_join")
+                && args.len() == 1
+            {
+                if let ExprKind::Ident(thread_name) = &args[0].value.kind {
+                    let unsafe_target = JAVA_THREAD_UNSAFE_TARGETS
+                        .with(|targets| targets.borrow().contains(thread_name));
+                    if unsafe_target {
+                        *callee = Box::new(Expression::ident("__j_thread_join"));
+                    }
+                }
+            }
             if let ExprKind::Member { object, field, .. } = &mut callee.kind {
+                if args.is_empty() && java_expr_is_thread_like_receiver(object, local_types) {
+                    let prelude_fn = match field.as_str() {
+                        "start" => Some("__j_thread_start"),
+                        "join" => Some("__j_thread_join"),
+                        _ => None,
+                    };
+                    if let Some(prelude_fn) = prelude_fn {
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident(prelude_fn)),
+                            args: vec![Argument::positional((**object).clone())],
+                            optional: false,
+                        });
+                        return;
+                    }
+                }
                 if java_expr_dotted_name(object)
                     .as_deref()
                     .is_some_and(|name| java_type_simple_name(name) == "Executors")
@@ -18715,6 +19106,59 @@ fn normalize_java_expr(
                     local_types,
                     false,
                 );
+                if let (
+                    Some(class_name),
+                    ExprKind::Member {
+                        object: receiver_root,
+                        field: receiver_field,
+                        ..
+                    },
+                ) = (current_class, &object.kind)
+                {
+                    if matches!(&receiver_root.kind, ExprKind::This) {
+                        if let Some(class_names) =
+                            java_lookup_class_members(class_members, class_name)
+                        {
+                            if class_names
+                                .field_types
+                                .get(receiver_field)
+                                .is_some_and(|ty| {
+                                    ty.contains("StringBuilder") || ty.contains("StringBuffer")
+                                })
+                            {
+                                let prelude_fn = match field.as_str() {
+                                    "toString" => Some("__j_sb_to_string"),
+                                    "length" => Some("__j_sb_length"),
+                                    "append" => Some("__j_sb_append"),
+                                    "charAt" => Some("__j_sb_char_at"),
+                                    "setCharAt" => Some("__j_sb_set_char_at"),
+                                    "insert" => Some("__j_sb_insert"),
+                                    "delete" => Some("__j_sb_delete"),
+                                    "deleteCharAt" => Some("__j_sb_delete_char_at"),
+                                    "replace" if args.len() == 3 => Some("__j_sb_replace"),
+                                    "reverse" => Some("__j_sb_reverse"),
+                                    "setLength" => Some("__j_sb_set_length"),
+                                    "capacity" => Some("__j_sb_capacity"),
+                                    "ensureCapacity" => Some("__j_sb_ensure_capacity"),
+                                    "compareTo" => Some("__j_sb_compare_to"),
+                                    "appendCodePoint" => Some("__j_sb_append_code_point"),
+                                    _ => None,
+                                };
+                                if let Some(prelude_fn) = prelude_fn {
+                                    let mut new_args = Vec::with_capacity(args.len() + 1);
+                                    new_args.push(Argument::positional((**object).clone()));
+                                    new_args.extend(args.iter().cloned());
+                                    *expr = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident(prelude_fn)),
+                                        args: new_args,
+                                        optional: false,
+                                    });
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
                 if let Some(receiver_type) = java_overload_receiver_type(object, local_types) {
                     if let Some(class_names) =
                         java_lookup_class_members(class_members, &receiver_type)
@@ -18810,6 +19254,60 @@ fn normalize_java_expr(
                 }
                 if java_type_is_list_like(java_receiver_type(object, local_types).as_deref()) {
                     if let Some(internal) = java_list_method_name(field, args.len()) {
+                        let mut new_args = Vec::with_capacity(args.len() + 1);
+                        new_args.push(Argument::positional((**object).clone()));
+                        new_args.extend(args.iter().cloned());
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident(internal)),
+                            args: new_args,
+                            optional: false,
+                        });
+                        return;
+                    }
+                }
+                if java_list_result_receiver(object) {
+                    if let Some(internal) = java_list_method_name(field, args.len()) {
+                        let mut new_args = Vec::with_capacity(args.len() + 1);
+                        new_args.push(Argument::positional((**object).clone()));
+                        new_args.extend(args.iter().cloned());
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident(internal)),
+                            args: new_args,
+                            optional: false,
+                        });
+                        return;
+                    }
+                }
+                if java_type_is_map(java_receiver_type(object, local_types).as_deref()) {
+                    if java_receiver_type(object, local_types)
+                        .as_deref()
+                        .is_some_and(java_type_is_concurrent_hash_map)
+                        && field == "put"
+                    {
+                        let mut new_args = Vec::with_capacity(args.len() + 1);
+                        new_args.push(Argument::positional((**object).clone()));
+                        new_args.extend(args.iter().cloned());
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__java_concurrent_map_put")),
+                            args: new_args,
+                            optional: false,
+                        });
+                        return;
+                    }
+                    if let Some(internal) = java_map_method_name(field) {
+                        let mut new_args = Vec::with_capacity(args.len() + 1);
+                        new_args.push(Argument::positional((**object).clone()));
+                        new_args.extend(args.iter().cloned());
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident(internal)),
+                            args: new_args,
+                            optional: false,
+                        });
+                        return;
+                    }
+                }
+                if java_spliterator_receiver(object) {
+                    if let Some(internal) = java_spliterator_method_name(field, args.len()) {
                         let mut new_args = Vec::with_capacity(args.len() + 1);
                         new_args.push(Argument::positional((**object).clone()));
                         new_args.extend(args.iter().cloned());
@@ -19230,10 +19728,15 @@ fn normalize_java_expr(
                 );
             }
         }
-        ExprKind::Lambda { params, body, .. } => {
+        ExprKind::Lambda {
+            params,
+            body,
+            captures,
+            ..
+        } => {
             let mut lambda_locals = locals.clone();
             let mut lambda_types = local_types.clone();
-            for param in params {
+            for param in &mut *params {
                 lambda_locals.insert(param.name.clone());
                 if let Some(type_hint) = &param.type_hint {
                     lambda_types.insert(param.name.clone(), type_hint.clone().to_string());
@@ -19264,6 +19767,25 @@ fn normalize_java_expr(
                     &mut lambda_types,
                 ),
             }
+            let mut used = std::collections::HashSet::new();
+            match body {
+                LambdaBody::Expr(inner) => collect_java_lambda_used_idents_expr(inner, &mut used),
+                LambdaBody::Block(stmts) => {
+                    collect_java_lambda_used_idents_stmts(stmts, &mut used);
+                    let mut declared = std::collections::HashSet::new();
+                    collect_java_lambda_declared_names(stmts, &mut declared);
+                    used.retain(|name| !declared.contains(name));
+                }
+            }
+            for param in &mut *params {
+                used.remove(&param.name);
+            }
+            let mut explicit_captures: Vec<String> = used
+                .into_iter()
+                .filter(|name| locals.contains(name))
+                .collect();
+            explicit_captures.sort();
+            *captures = explicit_captures;
         }
         ExprKind::StaticAccess { class, member } => {
             normalize_java_expr(

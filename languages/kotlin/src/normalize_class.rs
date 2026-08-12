@@ -322,10 +322,13 @@ pub fn normalize_class(
                 // on — the class machinery binds members by `source_name`, and
                 // those names are what Kotlin code calls.
                 let renamed;
+                let slot_source_name;
                 let stmt = if src_name.starts_with("operator ") {
+                    slot_source_name = canonical.clone();
                     renamed = rename_method(stmt, &canonical);
                     &renamed
                 } else {
+                    slot_source_name = src_name.clone();
                     stmt
                 };
                 let Some(method) = from_method_stmt(span.clone(), stmt, &canonical, access) else {
@@ -335,7 +338,7 @@ pub fn normalize_class(
                     out.special_methods.push(SpecialMethod {
                         kind,
                         canonical_name: canonical.clone(),
-                        source_name: src_name.clone(),
+                        source_name: slot_source_name,
                     });
                 }
                 out.push_method(m.is_static, method);
@@ -393,11 +396,13 @@ pub fn normalize_class(
                     synthetic_backing_getter
                         .then(|| ret(this_field(&format!("__kt_field_{}", pname))))
                 });
+                let getter_name = format!("__get_{pname}");
+                let setter_name = format!("__set_{pname}");
                 let getter_method = getter_body.as_ref().map(|body| {
                     build_normal_method(
                         span.clone(),
-                        pname,
-                        pname,
+                        &getter_name,
+                        &getter_name,
                         vec![],
                         None,
                         body.clone(),
@@ -405,14 +410,14 @@ pub fn normalize_class(
                         false,
                         false,
                         false,
-                        Modifiers::default(),
+                        m.clone(),
                     )
                 });
                 let setter_method = setter.as_ref().map(|s: &PropertySetter| {
                     build_normal_method(
                         span.clone(),
-                        pname,
-                        pname,
+                        &setter_name,
+                        &setter_name,
                         vec![s.param.clone()],
                         None,
                         s.body.clone(),
@@ -420,7 +425,7 @@ pub fn normalize_class(
                         false,
                         false,
                         false,
-                        Modifiers::default(),
+                        m.clone(),
                     )
                 });
                 out.properties.push(NormalProperty {

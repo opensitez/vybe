@@ -22,7 +22,9 @@
 //!     own "consenting adults" philosophy).
 
 use vybe_ast::class_normalize::{NormalMembers, build_normal_method, from_method_stmt, types::*};
-use vybe_ast::{ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, StmtKind};
+use vybe_ast::{
+    ClassMember, ClassModifiers, Modifiers, PropertySetter, ProtocolSlot, Span, StmtKind,
+};
 
 /// `<ClassName>.<field>` — the read an instance-side mirror of a class
 /// attribute initialises from, so the value object is shared rather than
@@ -46,6 +48,21 @@ pub fn normalize_class(
     _modifiers: &ClassModifiers,
 ) -> NormalClass {
     let mut out = NormalMembers::default();
+    out.push_field(
+        false,
+        NormalField {
+            span: span.clone(),
+            name: "__class__".to_string(),
+            type_hint: None,
+            init: Some(vybe_ast::Expression::new(vybe_ast::ExprKind::Ident(
+                name.to_string(),
+            ))),
+            array_bounds: None,
+            access: Access::Public,
+            readonly: false,
+            value_type: None,
+        },
+    );
 
     for member in members {
         match member {
@@ -114,7 +131,23 @@ pub fn normalize_class(
                     });
                 }
 
-                out.push_method(m.is_static, method);
+                out.push_method(m.is_static, method.clone());
+
+                // Python keeps dunder spellings public (`obj.__iter__()` is a
+                // real call), while the shared class/generator machinery looks
+                // up protocol roles by their canonical slot names
+                // (`iterator`, `next`, `len`). Publish both names here: the
+                // source method remains Python-visible and the alias is what
+                // common primitives consume.
+                if matches!(
+                    special_kind,
+                    Some(ProtocolSlot::Iterator | ProtocolSlot::Next | ProtocolSlot::Len)
+                ) && canonical != *src_name
+                {
+                    let mut alias = method;
+                    alias.source_name = canonical.clone();
+                    out.push_method(m.is_static, alias);
+                }
             }
             ClassMember::Constructor {
                 params,

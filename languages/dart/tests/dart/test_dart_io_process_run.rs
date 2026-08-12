@@ -17,7 +17,7 @@ void main() {
 }
 "#
         ),
-        vec!["0\nhello"]
+        vec!["0", "hello"]
     );
 }
 
@@ -123,7 +123,7 @@ void main() {
 }
 "#
         ),
-        vec!["true\ntrue"]
+        vec!["true", "true"]
     );
 }
 
@@ -206,7 +206,7 @@ void main() async {
 }
 "#
         ),
-        vec!["0\nasync_hello"]
+        vec!["0", "async_hello"]
     );
 }
 
@@ -347,6 +347,6 @@ void main() {
 }
 "#
         ),
-        vec!["true\ntrue\ntrue\ntrue"]
+        vec!["true", "true", "true", "true"]
     );
 }

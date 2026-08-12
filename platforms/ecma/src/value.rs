@@ -253,24 +253,24 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:value",
         "getMethodForCall",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let receiver = args.first().cloned().unwrap_or(Value::Undefined);
             let method = match args.get(1) {
                 Some(Value::String(s)) => s.to_string(),
                 Some(other) => format!("{}", other),
                 None => return Value::Undefined,
             };
-            lookup_method_for_call(&receiver, &method)
+            lookup_method_for_call(ctx, &receiver, &method)
         }),
     );
 
     vm.register_host_fn(
         "ecma:value",
         "instanceOf",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let receiver = args.first().cloned().unwrap_or(Value::Undefined);
             let ctor = args.get(1).cloned().unwrap_or(Value::Undefined);
-            Value::Bool(js_instanceof(&receiver, &ctor))
+            Value::Bool(js_instanceof(ctx, &receiver, &ctor))
         }),
     );
 }
@@ -3072,7 +3072,15 @@ fn is_error_like_object(obj: &Arc<Mutex<Object>>) -> bool {
 /// `Object.getPrototypeOf(5)` returns), so no wrapper is allocated and no host
 /// function is added — this is the existing `ecma:value` surface behaving as
 /// the spec step it already implements.
-fn lookup_method_for_call(receiver: &Value, method: &str) -> Value {
+fn lookup_method_for_call(ctx: &mut HostContext, receiver: &Value, method: &str) -> Value {
+    if crate::proxy::is_proxy(receiver).is_some() {
+        let key = Value::String(Arc::from(method));
+        let value = crate::proxy::get_dispatch(ctx, receiver, &key);
+        return match receiver {
+            Value::Object(obj) => bind_method_receiver(obj.clone(), value),
+            _ => value,
+        };
+    }
     let receiver_obj = match receiver {
         Value::Object(obj) => obj.clone(),
         // Primitive: start at the intrinsic prototype. The method is returned
@@ -3213,7 +3221,7 @@ fn bind_method_receiver(receiver: Arc<Mutex<Object>>, method: Value) -> Value {
     Value::Object(vybe_runtime::heap::alloc(bound_obj))
 }
 
-fn js_instanceof(receiver: &Value, ctor: &Value) -> bool {
+fn js_instanceof(ctx: &mut HostContext, receiver: &Value, ctor: &Value) -> bool {
     let Value::Object(obj) = receiver else {
         return false;
     };
@@ -3281,20 +3289,16 @@ fn js_instanceof(receiver: &Value, ctor: &Value) -> bool {
         return false;
     };
 
-    let mut current = Some(obj.clone());
-    while let Some(cur) = current {
-        let next = {
-            let lock = cur.lock().unwrap();
-            lock.properties.get("__proto__").cloned()
-        };
-        match next {
+    let mut current = receiver.clone();
+    for _ in 0..1000 {
+        match crate::object::get_prototype_of(ctx, &current) {
             Some(Value::Object(proto)) => {
                 if Arc::ptr_eq(&proto, &target_proto) {
                     return true;
                 }
-                current = Some(proto);
+                current = Value::Object(proto);
             }
-            _ => return false,
+            _ => break,
         }
     }
 

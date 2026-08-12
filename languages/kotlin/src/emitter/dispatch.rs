@@ -35,6 +35,50 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::hof::emit_kt_for_each(chunks, current, argc, line);
             true
         }
+        "kotlin.sequence_of" => {
+            crate::emitter::hof::emit_sequence_of(chunks, current, argc, line);
+            true
+        }
+        "kotlin.sequence_builder" => {
+            crate::emitter::hof::emit_sequence_builder(chunks, current, argc, line);
+            true
+        }
+        "kotlin.sequence_map" => {
+            crate::emitter::hof::emit_sequence_map(chunks, current, argc, line);
+            true
+        }
+        "kotlin.sequence_take" => {
+            crate::emitter::hof::emit_sequence_take(chunks, current, argc, line);
+            true
+        }
+        "kotlin.sequence_take_while" => {
+            crate::emitter::hof::emit_sequence_take_while(chunks, current, argc, line);
+            true
+        }
+        "kotlin.sequence_to_list" => {
+            crate::emitter::hof::emit_sequence_to_list(chunks, current, argc, line);
+            true
+        }
+        "kotlin.sequence_constrain_once" => {
+            crate::emitter::hof::emit_sequence_constrain_once(chunks, current, argc, line);
+            true
+        }
+        "kotlin.sequence_zip" => {
+            crate::emitter::hof::emit_sequence_zip(chunks, current, argc, line);
+            true
+        }
+        "kotlin.regex_new" => {
+            vybe_platform_jvm::emitter::regex_adapter::emit_pattern_compile(chunks, current, argc, line);
+            true
+        }
+        "kotlin.regex_from_string" => {
+            vybe_platform_jvm::emitter::regex_adapter::emit_pattern_compile(chunks, current, argc, line);
+            true
+        }
+        "kotlin.regex_to_pattern" => {
+            vybe_platform_jvm::emitter::regex_adapter::emit_to_pattern(chunks, current, line);
+            true
+        }
         "kotlin.dict_set_tracked" => {
             crate::emitter::maps::emit_dict_set_stmt(chunks, current, argc, line);
             true
@@ -95,6 +139,26 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 current,
                 argc,
                 "UnsupportedOperationException",
+                line,
+            );
+            true
+        }
+        "kotlin.interrupted_exception" => {
+            crate::emitter::nullability::emit_exception(
+                chunks,
+                current,
+                argc,
+                "InterruptedException",
+                line,
+            );
+            true
+        }
+        "kotlin.runtime_exception" => {
+            crate::emitter::nullability::emit_exception(
+                chunks,
+                current,
+                argc,
+                "RuntimeException",
                 line,
             );
             true
@@ -191,6 +255,10 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "kotlin.to_boolean_strict_or_null" => {
             crate::emitter::strings::emit_to_boolean_strict_or_null(chunks, current, argc, line);
+            true
+        }
+        "kotlin.to_boolean_or_null" => {
+            crate::emitter::strings::emit_to_boolean_or_null(chunks, current, argc, line);
             true
         }
         "kotlin.is_digit" => {
@@ -349,6 +417,10 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::maps::emit_clear_any(chunks, current, argc, line);
             true
         }
+        "kotlin.sublist_clear" => {
+            crate::emitter::maps::emit_sublist_clear(chunks, current, argc, line);
+            true
+        }
         "kotlin.map_put" => {
             crate::emitter::maps::emit_map_put(chunks, current, argc, line);
             true
@@ -421,6 +493,13 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::numbers::emit_to_long(chunks, current, line);
             true
         }
+        "kotlin.to_long_radix" => {
+            if argc >= 2 {
+                crate::emitter::strings::emit_parse_radix(chunks, current, argc, false, line);
+            }
+            crate::emitter::numbers::emit_to_long(chunks, current, line);
+            true
+        }
         "kotlin.long_shl" => {
             crate::emitter::numbers::emit_long_shift(
                 chunks,
@@ -490,6 +569,10 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "kotlin.count" => {
             crate::emitter::hof::emit_count(chunks, current, argc, line);
+            true
+        }
+        "kotlin.file_walk_max_depth" => {
+            crate::emitter::collections::emit_file_walk_max_depth(chunks, current, argc, line);
             true
         }
         "kotlin.none" => {
@@ -626,6 +709,10 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "kotlin.associate_with" => {
             crate::emitter::hof::emit_associate_with(chunks, current, argc, line);
+            true
+        }
+        "kotlin.associate_with_to" => {
+            crate::emitter::hof::emit_associate_with_to(chunks, current, argc, line);
             true
         }
         "kotlin.associate" => {
@@ -772,6 +859,26 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::maps::emit_minus(chunks, current, argc, line);
             true
         }
+        "kotlin.map_values_remove" => {
+            crate::emitter::maps::emit_map_values_remove(chunks, current, argc, line);
+            true
+        }
+        "kotlin.map_entry_iterator" => {
+            crate::emitter::maps::emit_map_entry_iterator(chunks, current, argc, line);
+            true
+        }
+        "kotlin.map_entry_iterator_has_next" => {
+            crate::emitter::maps::emit_map_entry_iterator_has_next(chunks, current, argc, line);
+            true
+        }
+        "kotlin.map_entry_iterator_next" => {
+            crate::emitter::maps::emit_map_entry_iterator_next(chunks, current, argc, line);
+            true
+        }
+        "kotlin.map_entry_iterator_remove" => {
+            crate::emitter::maps::emit_map_entry_iterator_remove(chunks, current, argc, line);
+            true
+        }
         "kotlin.entries" => {
             crate::emitter::collections::emit_entries(chunks, current, argc, line);
             true
@@ -786,6 +893,38 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "kotlin.ref_eq" => {
             crate::emitter::equality::emit_ref_eq(chunks, current, line);
+            true
+        }
+        "kotlin.measure_time_millis" => {
+            crate::emitter::system::emit_measure_time(chunks, current, argc, false, line);
+            true
+        }
+        "kotlin.measure_nano_time" => {
+            crate::emitter::system::emit_measure_time(chunks, current, argc, true, line);
+            true
+        }
+        "kotlin.identity_hash_code" => {
+            crate::emitter::system::emit_identity_hash_code(chunks, current, line);
+            true
+        }
+        "kotlin.random_default" => {
+            crate::emitter::system::emit_random_default(chunks, current, line);
+            true
+        }
+        "kotlin.random_next_int" => {
+            crate::emitter::system::emit_random_next_int(chunks, current, argc, line);
+            true
+        }
+        "kotlin.random_next_long" => {
+            crate::emitter::system::emit_random_next_long(chunks, current, argc, line);
+            true
+        }
+        "kotlin.random_next_double" => {
+            crate::emitter::system::emit_random_next_double(chunks, current, argc, line);
+            true
+        }
+        "kotlin.random_next_bytes" => {
+            crate::emitter::system::emit_random_next_bytes(chunks, current, argc, line);
             true
         }
         // Identity at RUNTIME — the marker's whole job is carrying the
@@ -811,6 +950,18 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::numbers::emit_print_double(chunks, current, argc, line);
             true
         }
+        "kotlin.double_tostring" => {
+            crate::emitter::numbers::emit_double_tostring(chunks, current, argc, line);
+            true
+        }
+        "kotlin.round" => {
+            crate::emitter::numbers::emit_round(chunks, current, argc, line);
+            true
+        }
+        "kotlin.sign" => {
+            crate::emitter::numbers::emit_sign(chunks, current, argc, line);
+            true
+        }
         "kotlin.is_infinite" => {
             crate::emitter::numbers::emit_is_infinite(chunks, current, argc, line);
             true
@@ -821,6 +972,10 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "kotlin.to_double_or_null" => {
             crate::emitter::numbers::emit_to_double_or_null(chunks, current, argc, line);
+            true
+        }
+        "kotlin.to_double" => {
+            crate::emitter::numbers::emit_to_double_throwing(chunks, current, argc, line);
             true
         }
         "kotlin.cmp_lt0" => {
@@ -871,6 +1026,10 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::collections::emit_add(chunks, current, argc, line);
             true
         }
+        "kotlin.remove" => {
+            crate::emitter::collections::emit_remove(chunks, current, argc, line);
+            true
+        }
         "kotlin.set_add" => {
             crate::emitter::collections::emit_set_add(chunks, current, argc, line);
             true
@@ -901,6 +1060,14 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "kotlin.to_list" => {
             crate::emitter::collections::emit_to_list(chunks, current, argc, line);
+            true
+        }
+        "kotlin.to_mutable_list" => {
+            crate::emitter::collections::emit_to_mutable_list(chunks, current, argc, line);
+            true
+        }
+        "kotlin.is_mutable_list" => {
+            crate::emitter::collections::emit_is_mutable_list(chunks, current, argc, line);
             true
         }
         "kotlin.add_all" => {
@@ -979,6 +1146,16 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 current,
                 argc,
                 "IllegalStateException",
+                line,
+            );
+            true
+        }
+        "kotlin.class_cast_exception" => {
+            crate::emitter::nullability::emit_exception(
+                chunks,
+                current,
+                argc,
+                "ClassCastException",
                 line,
             );
             true

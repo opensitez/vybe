@@ -111,7 +111,6 @@ fn base64_decode_invalid_length_throws() {
 import 'dart:convert';
 void main() {
   try {
-    base64Decode('aGVs'); // Valid length is multiple of 4, but let's test a badly padded string like 'a'
     base64Decode('a');
   } on FormatException {
     print('FormatException thrown');

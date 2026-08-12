@@ -11,6 +11,7 @@ fun_kw         = @{ "fun" ~ !(ASCII_ALPHANUMERIC | "_") }
 val_kw         = @{ "val" ~ !(ASCII_ALPHANUMERIC | "_") }
 var_kw         = @{ "var" ~ !(ASCII_ALPHANUMERIC | "_") }
 class_kw       = @{ "class" ~ !(ASCII_ALPHANUMERIC | "_") }
+annotation_kw  = @{ "annotation" ~ !(ASCII_ALPHANUMERIC | "_") }
 enum_kw        = @{ "enum" ~ !(ASCII_ALPHANUMERIC | "_") }
 open_kw        = @{ "open" ~ !(ASCII_ALPHANUMERIC | "_") }
 data_kw        = @{ "data" ~ !(ASCII_ALPHANUMERIC | "_") }
@@ -121,16 +122,17 @@ import_decl  = { import_kw ~ dotted_name ~ ("." ~ "*")? ~ (as_kw ~ identifier)? 
 top_level_decl = { label_decl? ~ (typealias_decl | interface_decl | enum_decl | function_decl | class_decl | object_decl | destructuring_decl | var_decl | statement) }
 
 // Typealias
-typealias_decl = { modifier* ~ typealias_kw ~ identifier ~ "=" ~ type_ref }
+typealias_decl = { modifier* ~ typealias_kw ~ identifier ~ type_params? ~ "=" ~ type_ref }
 
 // Labels
 label_decl = { identifier ~ "@" }
 
 // Annotations
-annotation = { "@" ~ type_ref ~ ("(" ~ eat_terminators ~ arg_list? ~ eat_terminators ~ ")")? ~ eat_terminators }
+annotation = { "@" ~ (identifier ~ ":")? ~ type_ref ~ ("(" ~ eat_terminators ~ arg_list? ~ eat_terminators ~ ")")? ~ eat_terminators }
+collection_literal = { "[" ~ eat_terminators ~ (expr ~ (eat_terminators ~ "," ~ eat_terminators ~ expr)* ~ eat_terminators ~ ","?)? ~ eat_terminators ~ "]" }
 
 // Types (including function types)
-type_ref = !{
+type_ref = !{ annotation* ~ (
     // Receiver-typed function types: `String.() -> String`, `Int.(Int) -> Int`.
     dotted_name ~ type_args? ~ "." ~ "(" ~ eat_terminators ~ (type_ref ~ (eat_terminators ~ "," ~ eat_terminators ~ type_ref)*)? ~ eat_terminators ~ ")" ~ "->" ~ type_ref
   | "(" ~ eat_terminators ~ (type_ref ~ (eat_terminators ~ "," ~ eat_terminators ~ type_ref)*)? ~ eat_terminators ~ ")" ~ "->" ~ type_ref
@@ -140,7 +142,7 @@ type_ref = !{
   // left a stray `:` and failed the whole declaration).
   | "(" ~ eat_terminators ~ type_ref ~ eat_terminators ~ ")" ~ ("?" ~ !":")?
   | dotted_name ~ type_args? ~ ("?" ~ !":")?
-}
+) }
 
 // A type ARGUMENT is not a type: `List<*>` is a star projection and
 // `Array<out T>` carries use-site variance. Both were unparseable.
@@ -151,7 +153,7 @@ modifier = {
     open_kw | data_kw | abstract_kw | override_kw | private_kw | protected_kw | public_kw
   | internal_kw | const_kw | sealed_kw | infix_kw | inline_kw | inner_kw | operator_kw
   | suspend_kw | tailrec_kw | lateinit_kw | final_kw | external_kw | noinline_kw
-  | crossinline_kw | reified_kw
+  | crossinline_kw | reified_kw | annotation_kw
 }
 
 // Receiver prefix for extension functions. Generic (`List<T>.`), nullable
@@ -232,7 +234,9 @@ inheritance_specifier = { type_ref ~ ("(" ~ eat_terminators ~ arg_list? ~ eat_te
 // parsed the CLASS BODY as an argument to `b`: every member the class declared
 // itself vanished and `b.f()` was called with a lambda. `{` after the delegate
 // always opens the class body, never an argument.
-delegate_expr = { primary ~ (!"{" ~ postfix_suffix)* }
+delegate_expr = { primary ~ delegate_postfix_suffix* }
+delegate_postfix_suffix = { type_args | delegate_call_suffix | index_suffix | callable_ref_suffix | safe_call_suffix | member_suffix | null_assert_suffix | inc_suffix }
+delegate_call_suffix = { "(" ~ eat_terminators ~ arg_list? ~ eat_terminators ~ ")" }
 
 class_body = { "{" ~ eat_terminators ~ (class_member ~ eat_terminators)* ~ "}" }
 class_member = { import_decl | init_block | secondary_constructor | companion_object | enum_decl | function_decl | var_decl | class_decl | object_decl | interface_decl }
@@ -309,14 +313,14 @@ and_op = { "&&" }
 equality = { comparison ~ (eq_op ~ comparison)* }
 eq_op = { "===" | "!==" | "==" | "!=" }
 
-comparison = { infix_lvl ~ (comp_op ~ infix_lvl)* }
+comparison = { infix_lvl ~ (((is_kw | not_is_kw) ~ type_ref) | (comp_op ~ infix_lvl))* }
 
 // Named infix calls — `a to b`, `0 until n`, `x shl 2` — sit between the
 // comparisons and the range operator, per Kotlin's own precedence table:
 // `it to it * 10` is `it to (it * 10)`, and `1..10 step 2` groups the range
 // first.
 infix_lvl = { range_expr ~ (infix_op ~ range_expr)* }
-comp_op = { in_kw | not_in_kw | is_kw | not_is_kw | "<=" | ">=" | "<" | ">" }
+comp_op = { in_kw | not_in_kw | "<=" | ">=" | "<" | ">" }
 
 range_expr = { additive ~ (range_op ~ additive)* }
 range_op = { ".." }
@@ -361,7 +365,7 @@ unary = { prefix_op* ~ postfix }
 prefix_op = { "++" | "--" | "!" | "-" | "+" }
 
 postfix = { primary ~ postfix_suffix* }
-postfix_suffix = { type_args | call_suffix | index_suffix | safe_call_suffix | member_suffix | null_assert_suffix | inc_suffix }
+postfix_suffix = { type_args | call_suffix | index_suffix | callable_ref_suffix | safe_call_suffix | member_suffix | null_assert_suffix | inc_suffix }
 
 type_args = !{ "<" ~ eat_terminators ~ type_arg ~ (eat_terminators ~ "," ~ eat_terminators ~ type_arg)* ~ eat_terminators ~ ">" }
 
@@ -384,6 +388,7 @@ call_suffix = {
   | lambda_literal
 }
 index_suffix = { eat_terminators ~ "[" ~ eat_terminators ~ arg_list ~ eat_terminators ~ "]" }
+callable_ref_suffix = { eat_terminators ~ "::" ~ (identifier | class_kw) }
 safe_call_suffix = { eat_terminators ~ "?." ~ identifier }
 member_suffix = { eat_terminators ~ "." ~ identifier }
 null_assert_suffix = { "!!" }
@@ -402,6 +407,7 @@ primary = {
   | anon_fun
   | lambda_literal
   | callable_ref
+  | collection_literal
   | "(" ~ expr ~ ")"
   | literal
   | identifier
@@ -409,7 +415,7 @@ primary = {
   | super_expr
 }
 
-callable_ref = { (this_kw | dotted_name)? ~ "::" ~ (identifier | class_kw) }
+callable_ref = { (this_kw | type_ref)? ~ "::" ~ (identifier | class_kw) }
 
 // `this@Outer` reaches an outer receiver from an inner class or a scope
 // function; `super<Base>.f()` picks WHICH supertype's default implementation to

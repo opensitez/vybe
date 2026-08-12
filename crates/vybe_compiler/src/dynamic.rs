@@ -128,6 +128,17 @@ pub fn run_with_js_dynamic_runtime(
     vm.run(chunks).map_err(|err| err.to_string())
 }
 
+/// Install the compiler-as-a-service host imports used by runtime dynamic code
+/// (`ecma:global.eval`, JS `Function`, and the language-generic
+/// `vybe:eval.eval` used by PHP and Python).
+///
+/// Normal one-shot execution gets this through [`RuntimeCompilerService`].
+/// Warm embedders call it during boot so the host module records are part of
+/// the reset baseline instead of being dropped as per-tenant script state.
+pub fn register_dynamic_runtime_imports(vm: &mut VM) {
+    ensure_js_runtime_registered(vm);
+}
+
 struct PhpIncludeRuntime {
     caps: Capabilities,
     vm: *mut VM,
@@ -896,8 +907,9 @@ impl PhpIncludeRuntime {
                 // `prepared_module` opens files this bundle never names. The
                 // recorder returns `None` when an outer scope owns the reads,
                 // and `store` then caches nothing rather than risk staleness.
-                let (result, deps) =
-                    crate::bundle::record_source_reads(|| self.compile_dynamic_php(vm, &bundle, &entry));
+                let (result, deps) = crate::bundle::record_source_reads(|| {
+                    self.compile_dynamic_php(vm, &bundle, &entry)
+                });
                 let deps = deps.map(|mut deps| {
                     // The include's own source is read by THIS function, before
                     // the recorded scope opens, so it is never in `deps` — and
@@ -928,7 +940,6 @@ impl PhpIncludeRuntime {
         kind: String,
         canonical_path: PathBuf,
     ) -> Result<Value, String> {
-
         let base_chunk_index = vm.chunks.len();
         crate::host_imports::install(vm, &compiled.host_imports);
         install_chunk_globals(vm, &compiled.chunks, base_chunk_index);
@@ -2060,13 +2071,15 @@ fn is_shared_dynamic_global(name: &str, value: &Value) -> bool {
 fn resolve_imports(vm: &VM, imports: &[Import]) -> Result<Vec<ImportTarget>, String> {
     imports
         .iter()
-        .map(|import| match vm.resolve_import_target(&import.module, &import.name) {
-            Ok(target) => Ok(target),
-            Err(_) if is_free_global_module(&import.module) => {
-                Ok(ImportTarget::StdlibRedirect(import.name.clone()))
-            }
-            Err(e) => Err(e.to_string()),
-        })
+        .map(
+            |import| match vm.resolve_import_target(&import.module, &import.name) {
+                Ok(target) => Ok(target),
+                Err(_) if is_free_global_module(&import.module) => {
+                    Ok(ImportTarget::StdlibRedirect(import.name.clone()))
+                }
+                Err(e) => Err(e.to_string()),
+            },
+        )
         .collect()
 }
 

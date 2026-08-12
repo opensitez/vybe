@@ -85,6 +85,17 @@ pub enum DomOp {
     /// `input.checked` — a boolean, not the string `"True"`.
     Checked(NodeId),
     SetChecked(NodeId, bool),
+    /// `select.selectedIndex` — the index of the first selected option, or
+    /// `-1` when nothing is selected. Its own IDL member, NOT `value`:
+    /// `HTMLSelectElement.value` is a DOMString (the selected option's value),
+    /// and a control that answered an index there would not survive contact
+    /// with a browser.
+    SelectedIndex(NodeId),
+    SetSelectedIndex(NodeId, i32),
+    /// `select.options[index].text` — the text of one option.
+    /// Out of range answers `""`, not a trap.
+    ItemText(NodeId, usize),
+    SetItemText(NodeId, usize, String),
     /// `select.add(option)` / `select.remove(index)` / clear.
     AddItem(NodeId, String),
     RemoveItem(NodeId, usize),
@@ -106,6 +117,10 @@ pub enum DomValue {
     Nodes(Vec<NodeId>),
     Text(String),
     Bool(bool),
+    /// A numeric IDL attribute — `select.selectedIndex`. Distinct from
+    /// [`DomValue::Text`] because the IDL type is `long`, and a caller that
+    /// compares it with `>= 0` needs a number rather than digits.
+    Number(f64),
     /// `(node, event type)` pairs from [`DomOp::DrainEvents`].
     Events(Vec<(NodeId, String)>),
 }

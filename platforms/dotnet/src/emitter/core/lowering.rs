@@ -373,6 +373,43 @@ pub fn try_create_desugar(
     }))
 }
 
+/// `Convert.TryFromBase64Chars(chars, dest, bytesWritten)` out-param
+/// normalization. The hidden two-arg core returns `[ok, bytesWritten]`.
+pub fn try_from_base64_chars_desugar(
+    recv: Option<&str>,
+    source: &Expression,
+    dest: &Expression,
+    bytes_written_target: &Expression,
+) -> Option<Expression> {
+    let recv = recv?;
+    if !(recv.eq_ignore_ascii_case("Convert") || recv.eq_ignore_ascii_case("System.Convert")) {
+        return None;
+    }
+
+    let pair = Expression::ident("__vybe_base64_try_pair");
+    let core = call_expr(
+        member_expr(
+            Expression::new(ExprKind::Ident(recv.to_string())),
+            "__TryFromBase64CharsCore",
+        ),
+        vec![
+            Argument::positional(source.clone()),
+            Argument::positional(dest.clone()),
+        ],
+    );
+    Some(Expression::new(ExprKind::Sequence(vec![
+        Expression::new(ExprKind::Assign {
+            target: Box::new(pair.clone()),
+            value: Box::new(core),
+        }),
+        Expression::new(ExprKind::Assign {
+            target: Box::new(bytes_written_target.clone()),
+            value: Box::new(index_expr(pair.clone(), Expression::int(1))),
+        }),
+        index_expr(pair, Expression::int(0)),
+    ])))
+}
+
 /// `d.TryGetValue(k, v)` out-param normalization.
 pub fn try_get_value_desugar(
     object: &Expression,

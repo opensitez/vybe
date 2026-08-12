@@ -1,6 +1,8 @@
+use vybe_ast::{ProtocolSlot, protocol_slot_key};
 use vybe_compiler::primitives::instructions::{core_wasm, host};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
+use vybe_runtime::opcode::heaptype::{HT_STRUCT, HeapType};
 
 use vybe_compiler::primitives::{collections, dict, ops, sets, strings, tuples};
 
@@ -100,7 +102,23 @@ pub fn emit_py_iter_array(chunks: &mut [Chunk], current: usize, _argc: u8, line:
     call_import(chunks, current, "ecma:array", "from", 1, line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    vybe_compiler::primitives::generators::emit_drain_custom_iterable(chunks, current, line);
     chunks[current].emit_end(line);
+}
+
+/// Python `tuple(iterable)` — materialize through Python's iteration rules,
+/// then stamp the shared tuple tag. The caller is responsible for wrapping
+/// lazy generators with spread, so generator draining still goes through
+/// `primitives/generators.rs`.
+pub fn emit_tuple_from_iter(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc == 0 {
+        call_import(chunks, current, "ecma:array", "new", 0, line);
+        vybe_compiler::primitives::tuples::emit_tag(chunks, current, line);
+        return;
+    }
+    emit_py_iter_array(chunks, current, 1, line);
+    call_import(chunks, current, "ecma:array", "from", 1, line);
+    vybe_compiler::primitives::tuples::emit_tag(chunks, current, line);
 }
 
 fn call_import(
@@ -128,6 +146,43 @@ fn stash_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> u16 
         chunks[current].emit_op_u16(Op::LOCAL_SET, base + offset, line);
     }
     base
+}
+
+fn emit_generator_control_packet(chunks: &mut [Chunk], current: usize, op: &str, line: u32) {
+    let value_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+
+    dict::emit_new(chunks, current, line);
+
+    core_wasm::dup(&mut chunks[current], line);
+    chunks[current].emit_bool_const(true, line);
+    let marker_key = chunks[current].add_constant(vybe_runtime::Value::String(
+        std::sync::Arc::from("__vybe_generator_control"),
+    ));
+    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, marker_key, line);
+
+    core_wasm::dup(&mut chunks[current], line);
+    chunks[current].emit_string_const(op, line);
+    let op_key =
+        chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from("op")));
+    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, op_key, line);
+
+    core_wasm::dup(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    let value_key =
+        chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from("value")));
+    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, value_key, line);
+}
+
+fn emit_generator_exception(chunks: &mut [Chunk], current: usize, exc_name: &str, line: u32) {
+    chunks[current].emit_struct_new(0, 0, line);
+    core_wasm::dup(&mut chunks[current], line);
+    chunks[current].emit_string_const("", line);
+    vybe_compiler::primitives::errors::emit_exception_new_finalize(
+        &mut chunks[current],
+        exc_name,
+        line,
+    );
 }
 
 /// Python `int.bit_length()` — count binary digits of `abs(trunc(n))`, with
@@ -897,27 +952,36 @@ pub fn emit_gen_send(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     chunks[current].emit_end(line);
 }
 
-/// Python `gen.throw(exc)` — resume the generator by throwing `exc` at the
-/// pending `yield` via the shared `generators.rs` `resume_throw`.
+/// Python `gen.throw(exc)` — resume the generator with the shared
+/// `generators.rs` control packet so the throw is observed by normal
+/// try/except/finally code at the suspended `yield`.
 /// Stack: `[gen, exc]` → `[yielded]`.
 pub fn emit_gen_throw(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let base = stash_args(chunks, current, argc, line);
     let recv = base;
-    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    let exc_slot = chunks[current].alloc_scratch(1);
     if argc >= 2 {
         chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
     } else {
-        // throw() with no arg → GeneratorExit-ish; use a generic exception
-        chunks[current].emit_struct_new(0, 0, line);
-        core_wasm::dup(&mut chunks[current], line);
-        chunks[current].emit_string_const("", line);
-        vybe_compiler::primitives::errors::emit_exception_new_finalize(
-            &mut chunks[current],
-            "Exception",
-            line,
-        );
+        emit_generator_exception(chunks, current, "Exception", line);
     }
-    vybe_compiler::primitives::generators::emit_resume_throw(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, exc_slot, line);
+
+    let started_key = chunks[current].add_constant(vybe_runtime::Value::String(
+        std::sync::Arc::from("__vybe_gen_started"),
+    ));
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, started_key, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, exc_slot, line);
+    emit_generator_control_packet(chunks, current, "throw", line);
+    vybe_compiler::primitives::generators::emit_resume(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, exc_slot, line);
+    vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
+    chunks[current].emit_end(line);
 }
 
 /// Python `gen.close()` — inject `GeneratorExit` at the suspended yield through
@@ -927,23 +991,27 @@ pub fn emit_gen_close(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     let base = stash_args(chunks, current, argc, line);
     let recv = base;
 
-    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    chunks[current].emit_bool_const(true, line);
     let closed_key = chunks[current].add_constant(vybe_runtime::Value::String(
         std::sync::Arc::from("__py_gen_closed"),
     ));
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, closed_key, line);
+
+    let done_block = chunks[current].emit_block(line);
+    let catch_patch = vybe_compiler::primitives::errors::emit_try_start(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    chunks[current].emit_struct_new(0, 0, line);
-    core_wasm::dup(&mut chunks[current], line);
-    chunks[current].emit_string_const("", line);
-    vybe_compiler::primitives::errors::emit_exception_new_finalize(
-        &mut chunks[current],
-        "GeneratorExit",
-        line,
-    );
-    vybe_compiler::primitives::generators::emit_resume_throw(&mut chunks[current], line);
+    emit_generator_exception(chunks, current, "GeneratorExit", line);
+    emit_generator_control_packet(chunks, current, "throw", line);
+    vybe_compiler::primitives::generators::emit_resume(&mut chunks[current], line);
     chunks[current].emit_op(Op::DROP, line);
+    vybe_compiler::primitives::errors::emit_try_end(&mut chunks[current], line);
+    chunks[current].emit_br(0, line);
+    vybe_compiler::primitives::errors::patch_catch(&mut chunks[current], catch_patch);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(done_block);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_bool_const(true, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, closed_key, line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
@@ -1005,8 +1073,30 @@ pub fn emit_pynext(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_end(line);
 
     chunks[current].emit_else(line);
-    // not a generator → shared iterator-protocol next
-    if argc < 2 {
+    let next_fn = chunks[current].alloc_scratch(1);
+    let next_key =
+        chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from("next")));
+    chunks[current].emit_op_u16(Op::LOCAL_GET, it, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, next_key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, next_fn, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, next_fn, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if_value(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, it, line);
+    vybe_compiler::primitives::globals::emit_write(&mut chunks[current], "__js_this", line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, next_fn, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, it, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1, line);
+
+    chunks[current].emit_else(line);
+    // not a generator and not a Python iterator object → shared array helper
+    chunks[current].emit_op_u16(Op::LOCAL_GET, it, line);
+    if argc >= 2 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
+    } else {
         chunks[current].emit_op_u16(Op::LOCAL_GET, it, line);
         collections::emit_len(chunks, current, line);
         chunks[current].emit_i32_const(0, line);
@@ -1017,11 +1107,8 @@ pub fn emit_pynext(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         chunks[current].emit_end(line);
     }
-    chunks[current].emit_op_u16(Op::LOCAL_GET, it, line);
-    if argc >= 2 {
-        chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
-    }
     collections::emit_runtime_helper_call(chunks, current, "__vybe_pynext", argc, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
 }
 
@@ -1119,10 +1206,9 @@ pub fn emit_contains(chunks: &mut [Chunk], current: usize, line: u32) {
     // rather than needing its own type predicate: a real set answers here,
     // a dict/object falls through to the key/`__contains__` tests, and a
     // set that simply lacks the item answers false either way.
-    let set_has = chunk.add_import("ecma:set", "has");
     chunk.emit_op_u16(Op::LOCAL_GET, container, line);
     chunk.emit_op_u16(Op::LOCAL_GET, needle, line);
-    chunk.emit_call(set_has, 2, line);
+    sets::emit_has_chunk(chunk, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     chunk.emit_bool_const(true, line);
@@ -1143,7 +1229,7 @@ pub fn emit_contains(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, contains_method, line);
     chunk.emit_op_u16(Op::LOCAL_GET, container, line);
     chunk.emit_op_u16(Op::LOCAL_GET, needle, line);
-    chunk.emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 2, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, container, line);
     chunk.emit_op_u16(Op::LOCAL_GET, needle, line);
@@ -1170,6 +1256,7 @@ pub fn emit_contains(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_attr_read(chunks: &mut [Chunk], current: usize, line: u32) {
     let name = chunks[current].alloc_scratch(1);
     let obj = chunks[current].alloc_scratch(1);
+    let value = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, name, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, obj, line);
 
@@ -1182,6 +1269,66 @@ pub fn emit_attr_read(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, name, line);
     collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+
+    {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+        chunks[current].emit_ref_type_op(Op::REF_TEST, HeapType::Abstract(HT_STRUCT), line);
+        chunks[current].emit_if_value(line);
+
+        let getter = chunks[current].alloc_scratch(1);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+        chunks[current].emit_string_const("__get__", line);
+        call_import(chunks, current, "ecma:reflect", "get", 2, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, getter, line);
+
+        chunks[current].emit_op_u16(Op::LOCAL_GET, getter, line);
+        call_import(chunks, current, "ecma:value", "typeof", 1, line);
+        chunks[current].emit_string_const("function", line);
+        call_import(chunks, current, "wasm:js-string", "equals", 2, line);
+        chunks[current].emit_if_value(line);
+        let owner = chunks[current].alloc_scratch(1);
+
+        chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+        chunks[current].emit_string_const("__mro__", line);
+        call_import(chunks, current, "ecma:object", "hasIn", 2, line);
+        ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if_value(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, owner, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, getter, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, owner, line);
+        chunks[current].emit_else(line);
+        chunks[current].emit_struct_new(0, 0, line);
+        core_wasm::dup(&mut chunks[current], line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+        chunks[current].emit_string_const("__type", line);
+        call_import(chunks, current, "ecma:reflect", "get", 2, line);
+        let owner_name_key = chunks[current].add_constant(vybe_runtime::Value::String(
+            std::sync::Arc::from("__name__"),
+        ));
+        chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, owner_name_key, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, owner, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, getter, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, owner, line);
+        chunks[current].emit_end(line);
+        vybe_compiler::primitives::callable::emit_direct_invoke_chunk(
+            &mut chunks[current],
+            3,
+            line,
+        );
+        chunks[current].emit_else(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+        chunks[current].emit_end(line);
+
+        chunks[current].emit_else(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+        chunks[current].emit_end(line);
+    }
 
     chunks[current].emit_else(line);
 
@@ -1203,7 +1350,7 @@ pub fn emit_attr_read(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, handler, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, name, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2, line);
     chunks[current].emit_else(line);
     emit_throw_python_exception(
         &mut chunks[current],
@@ -1214,6 +1361,155 @@ pub fn emit_attr_read(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_end(line);
 
+    chunks[current].emit_end(line);
+}
+
+/// `obj.attr = value` — Python attribute WRITE.
+///
+/// Data descriptors get first refusal through `__set__(descriptor, obj, value)`;
+/// everything else writes into the object's map-backed storage.
+pub fn emit_attr_write(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value_arg = chunks[current].alloc_scratch(1);
+    let name = chunks[current].alloc_scratch(1);
+    let obj = chunks[current].alloc_scratch(1);
+    let current_value = chunks[current].alloc_scratch(1);
+    let setattr = chunks[current].alloc_scratch(1);
+    let descriptor_set = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value_arg, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, name, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, obj, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunks[current].emit_string_const("__setattr__", line);
+    call_import(chunks, current, "ecma:object", "hasIn", 2, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunks[current].emit_string_const("__setattr__", line);
+    call_import(chunks, current, "ecma:reflect", "get", 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, setattr, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, setattr, line);
+    vybe_compiler::primitives::reflection::emit_is_callable(chunks, current, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, setattr, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, name, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_arg, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, name, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_arg, line);
+    collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, name, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, current_value, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, current_value, line);
+    chunks[current].emit_string_const("__set__", line);
+    call_import(chunks, current, "ecma:object", "hasIn", 2, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, current_value, line);
+        chunks[current].emit_string_const("__set__", line);
+        call_import(chunks, current, "ecma:reflect", "get", 2, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, descriptor_set, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, descriptor_set, line);
+        vybe_compiler::primitives::reflection::emit_is_callable(chunks, current, line);
+        ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if_value(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, descriptor_set, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, current_value, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, value_arg, line);
+        vybe_compiler::primitives::callable::emit_direct_invoke_chunk(
+            &mut chunks[current],
+            3,
+            line,
+        );
+        chunks[current].emit_op(Op::DROP, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+        chunks[current].emit_else(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, name, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, value_arg, line);
+        collections::emit_set(chunks, current, line);
+        chunks[current].emit_op(Op::DROP, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+        chunks[current].emit_end(line);
+    }
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, name, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_arg, line);
+    collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+}
+
+/// Raw object attribute write, used for `object.__setattr__(obj, name, value)`.
+pub fn emit_attr_raw_write(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value_arg = chunks[current].alloc_scratch(1);
+    let name = chunks[current].alloc_scratch(1);
+    let obj = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value_arg, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, name, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, obj, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, name, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_arg, line);
+    collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
+/// `del obj.attr` — Python attribute DELETE.
+///
+/// Data descriptors get `__delete__(descriptor, obj)`; otherwise delete the
+/// object's own storage slot.
+pub fn emit_attr_delete(chunks: &mut [Chunk], current: usize, line: u32) {
+    let name = chunks[current].alloc_scratch(1);
+    let obj = chunks[current].alloc_scratch(1);
+    let current_value = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, name, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, obj, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, name, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, current_value, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, current_value, line);
+    chunks[current].emit_string_const("__delete__", line);
+    call_import(chunks, current, "ecma:object", "hasIn", 2, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, current_value, line);
+    chunks[current].emit_string_const("__delete__", line);
+    call_import(chunks, current, "ecma:reflect", "get", 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, current_value, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, name, line);
+    call_import(chunks, current, "ecma:object", "delete", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_end(line);
 }
 
@@ -1522,7 +1818,7 @@ pub fn emit_iter_sentinel(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     let (lp, _) = chunks[current].emit_loop_s(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, func, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 0, 1, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, item, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, item, line);
@@ -1837,7 +2133,7 @@ pub fn emit_make_set(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
         sets::emit_new(chunks, current, line);
         return;
     }
-    call_import(chunks, current, "ecma:array", "from", 1, line);
+    emit_py_iter_array(chunks, current, 1, line);
     sets::emit_from_iterable(chunks, current, line);
 }
 
@@ -2330,9 +2626,13 @@ pub fn emit_length(chunks: &mut [Chunk], current: usize, line: u32) {
     let size_key =
         chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from("size")));
 
-    // User-defined `__len__` → call it with the receiver. (Cross-language:
-    // bound alongside `__get_length`/`__get_count`.)
-    let len_key =
+    // User-defined length → call the shared Len slot first. Python class
+    // normalization publishes `__len__` under this slot; the dunder fallback is
+    // only for older/ambient objects that were not normalized through classes.
+    let len_key = chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
+        protocol_slot_key(ProtocolSlot::Len).as_str(),
+    )));
+    let dunder_len_key =
         chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from("__len__")));
     let len_method = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
@@ -2340,11 +2640,18 @@ pub fn emit_length(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, len_method, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_method, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, dunder_len_key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len_method, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_method, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_op(Op::I32_EQZ, line); // 1 if a method is present
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_method, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1, line);
     chunks[current].emit_else(line);
 
     // isString(recv) → CODE POINTS, not UTF-16 code units.

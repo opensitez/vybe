@@ -80,6 +80,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
     if source.contains("net/url") {
         prelude.extend(go_prelude_body(GO_NETURL_PRELUDE)?);
     }
+    if source.contains("net/netip") {
+        prelude.extend(go_prelude_body(GO_NETIP_PRELUDE)?);
+    }
     if source.contains("atomic.") {
         prelude.extend(go_prelude_body(GO_ATOMIC_PRELUDE)?);
     }
@@ -1031,6 +1034,322 @@ func __go_url_UserPassword(name, pass string) __goUser {
 func main() {}
 "##;
 
+/// Go-source runtime prelude for `net/netip`. The package is value parsing and
+/// formatting, not socket I/O, so keep it as ordinary Go structs/methods over
+/// the shared string/array/math machinery instead of adding network host fns.
+const GO_NETIP_PRELUDE: &str = r#"package main
+
+import "strings"
+
+type __goNetipAddr struct {
+	s      string
+	is4    bool
+	is6    bool
+	is4in6 bool
+	zone   string
+	valid  bool
+}
+
+type __goNetipPrefix struct {
+	addr  __goNetipAddr
+	bits  int
+	valid bool
+}
+
+type __goNetipAddrPort struct {
+	addr  __goNetipAddr
+	port  int
+	valid bool
+}
+
+func __go_netip_atoi(s string) int {
+	n := 0
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < '0' || c > '9' {
+			return -1
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n
+}
+
+func __go_netip_itoa(n int) string {
+	return __go_sprintf("%d", n)
+}
+
+func __go_netip_ipv4_parts(s string) ([]int, bool) {
+	parts := strings.Split(s, ".")
+	if len(parts) != 4 {
+		return []int{}, false
+	}
+	out := []int{}
+	for _, p := range parts {
+		if len(p) == 0 {
+			return []int{}, false
+		}
+		n := __go_netip_atoi(p)
+		if n < 0 || n > 255 {
+			return []int{}, false
+		}
+		out = append(out, n)
+	}
+	return out, true
+}
+
+func __go_netip_ipv4_string(a, b, c, d int) string {
+	return __go_netip_itoa(a) + "." + __go_netip_itoa(b) + "." + __go_netip_itoa(c) + "." + __go_netip_itoa(d)
+}
+
+func __go_netip_parse_ipv4(s string) (__goNetipAddr, bool) {
+	parts, ok := __go_netip_ipv4_parts(s)
+	if !ok {
+		return __goNetipAddr{}, false
+	}
+	return __goNetipAddr{s: __go_netip_ipv4_string(parts[0], parts[1], parts[2], parts[3]), is4: true, valid: true}, true
+}
+
+func __go_netip_parse_ipv6(s string) (__goNetipAddr, bool) {
+	zone := ""
+	z := strings.Index(s, "%")
+	if z >= 0 {
+		zone = s[z+1:]
+		s = s[:z]
+	}
+	if !strings.Contains(s, ":") {
+		return __goNetipAddr{}, false
+	}
+	is4in6 := strings.Contains(s, ".")
+	return __goNetipAddr{s: s, is6: true, is4in6: is4in6, zone: zone, valid: true}, true
+}
+
+func __go_netip_ParseAddr(s string) (__goNetipAddr, error) {
+	if strings.Contains(s, ".") && !strings.Contains(s, ":") {
+		if a, ok := __go_netip_parse_ipv4(s); ok {
+			return a, nil
+		}
+		return __goNetipAddr{}, "invalid IP"
+	}
+	if strings.Contains(s, ":") {
+		if a, ok := __go_netip_parse_ipv6(s); ok {
+			return a, nil
+		}
+	}
+	return __goNetipAddr{}, "invalid IP"
+}
+
+func __go_netip_MustParseAddr(s string) __goNetipAddr {
+	a, err := __go_netip_ParseAddr(s)
+	if err != nil {
+		panic(err)
+	}
+	return a
+}
+
+func __go_netip_IPv4(a, b, c, d int) __goNetipAddr {
+	return __goNetipAddr{s: __go_netip_ipv4_string(a, b, c, d), is4: true, valid: true}
+}
+
+func __go_netip_AddrFromSlice(b []byte) (__goNetipAddr, bool) {
+	if len(b) == 4 {
+		return __go_netip_IPv4(int(b[0]), int(b[1]), int(b[2]), int(b[3])), true
+	}
+	if len(b) == 16 {
+		return __goNetipAddr{s: "::", is6: true, valid: true}, true
+	}
+	return __goNetipAddr{}, false
+}
+
+func (a __goNetipAddr) String() string { return a.s }
+func (a __goNetipAddr) Is4() bool { return a.is4 }
+func (a __goNetipAddr) Is6() bool { return a.is6 }
+func (a __goNetipAddr) Is4In6() bool { return a.is4in6 }
+func (a __goNetipAddr) IsValid() bool { return a.valid }
+func (a __goNetipAddr) IsUnspecified() bool { return a.s == "0.0.0.0" || a.s == "::" }
+func (a __goNetipAddr) IsLoopback() bool { return strings.HasPrefix(a.s, "127.") || a.s == "::1" }
+func (a __goNetipAddr) IsPrivate() bool { return strings.HasPrefix(a.s, "10.") || strings.HasPrefix(a.s, "192.168.") || strings.HasPrefix(a.s, "172.16.") }
+func (a __goNetipAddr) IsGlobalUnicast() bool { return a.valid && !a.IsUnspecified() && !a.IsMulticast() }
+func (a __goNetipAddr) IsLinkLocalUnicast() bool { return strings.HasPrefix(a.s, "169.254.") || strings.HasPrefix(a.s, "fe80:") }
+func (a __goNetipAddr) IsMulticast() bool {
+	if a.is6 {
+		return strings.HasPrefix(a.s, "ff")
+	}
+	parts, ok := __go_netip_ipv4_parts(a.s)
+	return ok && parts[0] >= 224 && parts[0] <= 239
+}
+func (a __goNetipAddr) Unmap() __goNetipAddr {
+	if strings.HasPrefix(a.s, "::ffff:") {
+		v4 := a.s[7:]
+		if x, ok := __go_netip_parse_ipv4(v4); ok {
+			return x
+		}
+	}
+	return a
+}
+func (a __goNetipAddr) WithZone(z string) __goNetipAddr { a.zone = z; return a }
+func (a __goNetipAddr) Zone() string { return a.zone }
+func (a __goNetipAddr) Compare(b __goNetipAddr) int {
+	if a.s == b.s {
+		return 0
+	}
+	if a.s < b.s {
+		return -1
+	}
+	return 1
+}
+func (a __goNetipAddr) Equal(b __goNetipAddr) bool { return a.s == b.s }
+func (a __goNetipAddr) Less(b __goNetipAddr) bool { return a.Compare(b) < 0 }
+func (a __goNetipAddr) AsSlice() []byte {
+	parts, ok := __go_netip_ipv4_parts(a.s)
+	if ok {
+		return []byte{byte(parts[0]), byte(parts[1]), byte(parts[2]), byte(parts[3])}
+	}
+	return []byte{}
+}
+func (a __goNetipAddr) As16() []byte {
+	out := []byte{}
+	for i := 0; i < 16; i++ {
+		out = append(out, byte(0))
+	}
+	return out
+}
+func (a __goNetipAddr) Next() __goNetipAddr { return a }
+func (a __goNetipAddr) Prev() __goNetipAddr { return a }
+
+func __go_netip_mask_ipv4(s string, bits int) string {
+	parts, ok := __go_netip_ipv4_parts(s)
+	if !ok {
+		return s
+	}
+	if bits <= 0 {
+		return "0.0.0.0"
+	}
+	if bits <= 8 {
+		parts[1] = 0; parts[2] = 0; parts[3] = 0
+	} else if bits <= 16 {
+		parts[2] = 0; parts[3] = 0
+	} else if bits <= 24 {
+		parts[3] = 0
+	}
+	return __go_netip_ipv4_string(parts[0], parts[1], parts[2], parts[3])
+}
+
+func __go_netip_ParsePrefix(s string) (__goNetipPrefix, error) {
+	i := strings.Index(s, "/")
+	if i < 0 {
+		return __goNetipPrefix{}, "invalid prefix"
+	}
+	addr, err := __go_netip_ParseAddr(s[:i])
+	if err != nil {
+		return __goNetipPrefix{}, err
+	}
+	bits := __go_netip_atoi(s[i+1:])
+	if bits < 0 || (addr.is4 && bits > 32) || (addr.is6 && bits > 128) {
+		return __goNetipPrefix{}, "invalid prefix"
+	}
+	return __goNetipPrefix{addr: addr, bits: bits, valid: true}, nil
+}
+
+func __go_netip_MustParsePrefix(s string) __goNetipPrefix {
+	p, err := __go_netip_ParsePrefix(s)
+	if err != nil {
+		panic(err)
+	}
+	return p
+}
+
+func __go_netip_PrefixFrom(a __goNetipAddr, bits int) (__goNetipPrefix, error) {
+	if bits < 0 || (a.is4 && bits > 32) || (a.is6 && bits > 128) {
+		return __goNetipPrefix{}, "invalid prefix"
+	}
+	return __goNetipPrefix{addr: a, bits: bits, valid: true}, nil
+}
+
+func (p __goNetipPrefix) String() string { return p.addr.String() + "/" + __go_netip_itoa(p.bits) }
+func (p __goNetipPrefix) Bits() int { return p.bits }
+func (p __goNetipPrefix) IsValid() bool { return p.valid }
+func (p __goNetipPrefix) Addr() __goNetipAddr { return p.addr }
+func (p __goNetipPrefix) Masked() __goNetipPrefix {
+	if p.addr.is4 {
+		p.addr.s = __go_netip_mask_ipv4(p.addr.s, p.bits)
+	}
+	return p
+}
+func (p __goNetipPrefix) Contains(a __goNetipAddr) bool {
+	if p.addr.is4 && a.is4 {
+		pa, ok1 := __go_netip_ipv4_parts(p.addr.s)
+		aa, ok2 := __go_netip_ipv4_parts(a.s)
+		if !ok1 || !ok2 {
+			return false
+		}
+		if p.bits <= 8 {
+			return pa[0] == aa[0]
+		}
+		if p.bits <= 16 {
+			return pa[0] == aa[0] && pa[1] == aa[1]
+		}
+		if p.bits <= 24 {
+			return pa[0] == aa[0] && pa[1] == aa[1] && pa[2] == aa[2]
+		}
+		return p.addr.s == a.s
+	}
+	return strings.HasPrefix(a.s, p.addr.s)
+}
+func (p __goNetipPrefix) Overlaps(q __goNetipPrefix) bool { return p.Contains(q.addr) || q.Contains(p.addr) }
+func (p __goNetipPrefix) ContainsPrefix(q __goNetipPrefix) bool { return p.Contains(q.addr) && p.bits <= q.bits }
+
+func __go_netip_ParseAddrPort(s string) (__goNetipAddrPort, error) {
+	if strings.HasPrefix(s, "[") {
+		end := strings.Index(s, "]")
+		if end < 0 || end+2 > len(s) || s[end+1] != ':' {
+			return __goNetipAddrPort{}, "invalid addrport"
+		}
+		a, err := __go_netip_ParseAddr(s[1:end])
+		if err != nil {
+			return __goNetipAddrPort{}, err
+		}
+		port := __go_netip_atoi(s[end+2:])
+		if port < 0 {
+			return __goNetipAddrPort{}, "invalid port"
+		}
+		return __goNetipAddrPort{addr: a, port: port, valid: true}, nil
+	}
+	i := -1
+	for n := 0; n < len(s); n++ {
+		if s[n] == ':' {
+			i = n
+		}
+	}
+	if i < 0 {
+		return __goNetipAddrPort{}, "missing port"
+	}
+	a, err := __go_netip_ParseAddr(s[:i])
+	if err != nil {
+		return __goNetipAddrPort{}, err
+	}
+	port := __go_netip_atoi(s[i+1:])
+	if port < 0 {
+		return __goNetipAddrPort{}, "invalid port"
+	}
+	return __goNetipAddrPort{addr: a, port: port, valid: true}, nil
+}
+
+func __go_netip_AddrPortFrom(a __goNetipAddr, port int) __goNetipAddrPort {
+	return __goNetipAddrPort{addr: a, port: port, valid: true}
+}
+
+func (ap __goNetipAddrPort) String() string {
+	if ap.addr.is6 {
+		return "[" + ap.addr.String() + "]:" + __go_netip_itoa(ap.port)
+	}
+	return ap.addr.String() + ":" + __go_netip_itoa(ap.port)
+}
+func (ap __goNetipAddrPort) Addr() __goNetipAddr { return ap.addr }
+func (ap __goNetipAddrPort) Port() int { return ap.port }
+
+func main() {}
+"#;
+
 /// Go-source runtime prelude for `bytes.Buffer` (string-backed accumulator).
 const GO_BYTES_PRELUDE: &str = r#"package main
 
@@ -1680,7 +1999,7 @@ func __go_base64_input_text(src []byte) string {
 
 func __go_base64_output_bytes(s string) []byte {
 	out := []byte{}
-	for i := 0; i < len(s); i++ {
+	for i := 0; i < __go_js_str_length(s); i++ {
 		out = append(out, byte(s[i]))
 	}
 	return out
@@ -4224,6 +4543,15 @@ func __go_slices_Delete[T any](s []T, i, j int) []T {
 	}
 	return r
 }
+func __go_slices_DeleteFunc[T any](s []T, f func(T) bool) []T {
+	r := []T{}
+	for _, x := range s {
+		if !f(x) {
+			r = append(r, x)
+		}
+	}
+	return r
+}
 func __go_slices_Insert[T any](s []T, i int, vals []T) []T {
 	r := []T{}
 	for k := 0; k < i; k++ {
@@ -4247,6 +4575,15 @@ func __go_slices_Replace[T any](s []T, i, j int, vals []T) []T {
 	}
 	for k := j; k < len(s); k++ {
 		r = append(r, s[k])
+	}
+	return r
+}
+func __go_slices_CompactFunc[T any](s []T, eq func(T, T) bool) []T {
+	r := []T{}
+	for i, x := range s {
+		if i == 0 || !eq(x, s[i-1]) {
+			r = append(r, x)
+		}
 	}
 	return r
 }
@@ -8650,7 +8987,18 @@ fn normalize_go_statement(
                             return tuple_expr;
                         }
                     }
-                    normalize_go_expr(expr, env, signatures, state)
+                    let normalized = normalize_go_expr(expr, env, signatures, state);
+                    if next_decl
+                        .type_hint
+                        .as_deref()
+                        .is_some_and(go_is_function_type)
+                    {
+                        go_normalize_function_value(normalized, env, signatures)
+                    } else {
+                        go_normalize_function_value_for_inferred_binding(
+                            normalized, env, signatures,
+                        )
+                    }
                 });
                 next_decl.array_bounds = decl.array_bounds.as_ref().map(|bounds| {
                     bounds
@@ -9250,6 +9598,16 @@ fn normalize_go_expr(
                     equal
                 }
             } else if matches!(normalized_op, BinOp::Eq | BinOp::NotEq)
+                && let Some(equal) = go_nil_slice_map_equality_expr(
+                    next_left.clone(),
+                    next_right.clone(),
+                    normalized_op,
+                    env,
+                    signatures,
+                )
+            {
+                equal
+            } else if matches!(normalized_op, BinOp::Eq | BinOp::NotEq)
                 && go_expr_is_fixed_array(&next_left, env, signatures)
                 && go_expr_is_fixed_array(&next_right, env, signatures)
             {
@@ -9541,6 +9899,13 @@ fn normalize_go_expr(
                     if signature
                         .and_then(|sig| sig.params.get(idx))
                         .and_then(|hint| hint.as_deref())
+                        .is_some_and(go_is_function_type)
+                    {
+                        value = go_normalize_function_value(value, env, signatures);
+                    }
+                    if signature
+                        .and_then(|sig| sig.params.get(idx))
+                        .and_then(|hint| hint.as_deref())
                         .is_some_and(go_is_fixed_array_type)
                     {
                         value = go_wrap_fixed_array_copy(value, env, signatures);
@@ -9735,6 +10100,9 @@ fn normalize_go_expr(
                     return rewritten;
                 }
                 if let Some(rewritten) = go_rewrite_url_call(name, &next_args) {
+                    return rewritten;
+                }
+                if let Some(rewritten) = go_rewrite_netip_call(name, &next_args) {
                     return rewritten;
                 }
                 if let Some(rewritten) = go_rewrite_bytes_call(name, &next_args) {
@@ -9943,7 +10311,10 @@ fn normalize_go_expr(
             }
 
             if call_name.as_deref() == Some("clear") && next_args.len() == 1 {
-                return go_builtin_call("__go_clear_map", vec![next_args[0].value.clone()]);
+                return go_builtin_call(
+                    "__go_clear_keyed_common",
+                    vec![next_args[0].value.clone()],
+                );
             }
 
             if call_name.as_deref() == Some("append") && !next_args.is_empty() {
@@ -9998,6 +10369,16 @@ fn normalize_go_expr(
                 {
                     return chan_len(next_args[0].value.clone());
                 }
+                let value = next_args[0].value.clone();
+                return Expression::new(ExprKind::Ternary {
+                    cond: Box::new(Expression::new(ExprKind::Binary {
+                        op: BinOp::StrictEq,
+                        left: Box::new(value.clone()),
+                        right: Box::new(Expression::null()),
+                    })),
+                    then: Box::new(Expression::int(0)),
+                    else_: Box::new(go_builtin_call("len", vec![value])),
+                });
             }
 
             if call_name.as_deref() == Some("cap") && next_args.len() == 1 {
@@ -16045,29 +16426,73 @@ fn go_rewrite_slices_maps_call(call_name: &str, args: &[Argument]) -> Option<Exp
             args.iter().map(|a| a.value.clone()).collect(),
         ))
     };
+    let direct_nil_empty = |helper: &str, args: &[Argument]| {
+        Some(go_builtin_call(
+            helper,
+            args.iter()
+                .map(|a| go_slice_nil_to_empty_expr(a.value.clone()))
+                .collect(),
+        ))
+    };
     match call_name {
-        "slices.Contains" => direct("__go_slices_Contains", args),
-        "slices.Index" => direct("__go_slices_Index", args),
-        "slices.IndexFunc" => direct("__go_slices_IndexFunc", args),
-        "slices.Equal" => direct("__go_slices_Equal", args),
-        "slices.Compare" => direct("__go_slices_Compare", args),
-        "slices.Clone" => direct("__go_slices_Clone", args),
-        "slices.Compact" => direct("__go_slices_Compact", args),
-        "slices.Delete" => direct("__go_slices_Delete", args),
-        "slices.Grow" => direct("__go_slices_Grow", args),
-        "slices.Clip" => direct("__go_slices_Clip", args),
+        "slices.Contains" => direct("__go_slices_contains_common", args),
+        "slices.Index" => direct("__go_slices_index_common", args),
+        "slices.IndexFunc" => direct("__go_slices_index_func_common", args),
+        "slices.Equal" => direct_nil_empty("__go_slices_equal_common", args),
+        "slices.Compare" => direct_nil_empty("__go_slices_compare_common", args),
+        "slices.Clone" => args.first().map(|arg| {
+            let slice = arg.value.clone();
+            Expression::new(ExprKind::Ternary {
+                cond: Box::new(Expression::new(ExprKind::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(slice.clone()),
+                    right: Box::new(Expression::null()),
+                })),
+                then: Box::new(Expression::null()),
+                else_: Box::new(go_builtin_call("__go_slices_clone_common", vec![slice])),
+            })
+        }),
+        "slices.Compact" => direct("__go_slices_compact_common", args),
+        "slices.Delete" => direct("__go_slices_delete_common", args),
+        "slices.DeleteFunc" => direct("__go_slices_DeleteFunc", args),
+        "slices.CompactFunc" => direct("__go_slices_CompactFunc", args),
+        "slices.Grow" => args.first().map(|_| {
+            go_builtin_call(
+                "__go_slices_grow_common",
+                args.iter().take(2).map(|a| a.value.clone()).collect(),
+            )
+        }),
+        "slices.Clip" => direct("__go_slices_clip_common", args),
         "slices.All" => args.first().map(|a| a.value.clone()),
         "slices.Values" => direct("__go_maps_Values", args),
-        "slices.Sort" => direct("__go_slices_Sort", args),
-        "slices.SortFunc" => direct("__go_slices_SortFunc", args),
-        "slices.SortStableFunc" => direct("__go_slices_SortStableFunc", args),
-        "slices.IsSorted" => direct("__go_slices_IsSorted", args),
-        "slices.IsSortedFunc" => direct("__go_slices_IsSortedFunc", args),
-        "slices.BinarySearch" => direct("__go_slices_BinarySearch", args),
-        "slices.BinarySearchFunc" => direct("__go_slices_BinarySearchFunc", args),
-        "maps.Clone" => direct("__go_maps_Clone", args),
-        "maps.Copy" => direct("__go_maps_Copy", args),
-        "maps.DeleteFunc" => direct("__go_maps_DeleteFunc", args),
+        "slices.Sort" => direct("__go_slices_sort_common", args),
+        "slices.SortFunc" => direct("__go_slices_sort_func_common", args),
+        "slices.SortStableFunc" => direct("__go_slices_sort_func_common", args),
+        "slices.IsSorted" => direct("__go_slices_is_sorted_common", args),
+        "slices.IsSortedFunc" => direct("__go_slices_is_sorted_func_common", args),
+        "slices.BinarySearch" => {
+            let mut call_args: Vec<Expression> = args.iter().map(|a| a.value.clone()).collect();
+            if let Some(first) = call_args.first_mut() {
+                *first = go_slice_nil_to_empty_expr(first.clone());
+            }
+            Some(go_builtin_call(
+                "__go_slices_binary_search_pair_common",
+                call_args,
+            ))
+        }
+        "slices.BinarySearchFunc" => {
+            let mut call_args: Vec<Expression> = args.iter().map(|a| a.value.clone()).collect();
+            if let Some(first) = call_args.first_mut() {
+                *first = go_slice_nil_to_empty_expr(first.clone());
+            }
+            Some(go_builtin_call(
+                "__go_slices_binary_search_func_pair_common",
+                call_args,
+            ))
+        }
+        "maps.Clone" => direct("__go_maps_clone_common", args),
+        "maps.Copy" => direct("__go_maps_copy_common", args),
+        "maps.DeleteFunc" => direct("__go_maps_delete_func_common", args),
         "maps.Keys" => direct("__go_maps_Keys", args),
         "maps.Values" => direct("__go_maps_Values", args),
         "maps.Equal" => direct("__go_maps_Equal", args),
@@ -16075,19 +16500,29 @@ fn go_rewrite_slices_maps_call(call_name: &str, args: &[Argument]) -> Option<Exp
         // slices.Insert(s, i, vals...) / Replace(s, i, j, vals...) — variadic tail → slice.
         "slices.Insert" => {
             let head: Vec<Expression> = args.iter().take(2).map(|a| a.value.clone()).collect();
-            let tail: Vec<Expression> = args.iter().skip(2).map(|a| a.value.clone()).collect();
             let mut call_args = head;
-            call_args.push(go_array_of(tail));
-            Some(go_builtin_call("__go_slices_Insert", call_args))
+            call_args.push(go_variadic_tail_as_slice(args, 2));
+            Some(go_builtin_call("__go_slices_insert_common", call_args))
         }
         "slices.Replace" => {
             let head: Vec<Expression> = args.iter().take(3).map(|a| a.value.clone()).collect();
-            let tail: Vec<Expression> = args.iter().skip(3).map(|a| a.value.clone()).collect();
             let mut call_args = head;
-            call_args.push(go_array_of(tail));
-            Some(go_builtin_call("__go_slices_Replace", call_args))
+            call_args.push(go_variadic_tail_as_slice(args, 3));
+            Some(go_builtin_call("__go_slices_replace_common", call_args))
         }
         _ => None,
+    }
+}
+
+fn go_slice_nil_to_empty_expr(expr: Expression) -> Expression {
+    go_builtin_call("__go_slices_nil_to_empty_common", vec![expr])
+}
+
+fn go_variadic_tail_as_slice(args: &[Argument], start: usize) -> Expression {
+    if args.len() == start + 1 && args[start].spread {
+        args[start].value.clone()
+    } else {
+        go_array_of(args.iter().skip(start).map(|a| a.value.clone()).collect())
     }
 }
 
@@ -16272,6 +16707,55 @@ fn go_rewrite_url_call(call_name: &str, args: &[Argument]) -> Option<Expression>
                 vec![base, go_array_of(elems)],
             ))
         }
+        _ => None,
+    }
+}
+
+/// Rewrite `net/netip` package functions to ordinary Go helper constructors
+/// from the injected netip prelude.
+fn go_rewrite_netip_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
+    match call_name {
+        "netip.ParseAddr" => Some(go_builtin_call(
+            "__go_netip_ParseAddr",
+            vec![go_arg_value(args, 0)],
+        )),
+        "netip.MustParseAddr" => Some(go_builtin_call(
+            "__go_netip_MustParseAddr",
+            vec![go_arg_value(args, 0)],
+        )),
+        "netip.IPv4" => Some(go_builtin_call(
+            "__go_netip_IPv4",
+            vec![
+                go_arg_value(args, 0),
+                go_arg_value(args, 1),
+                go_arg_value(args, 2),
+                go_arg_value(args, 3),
+            ],
+        )),
+        "netip.AddrFromSlice" => Some(go_builtin_call(
+            "__go_netip_AddrFromSlice",
+            vec![go_arg_value(args, 0)],
+        )),
+        "netip.ParsePrefix" => Some(go_builtin_call(
+            "__go_netip_ParsePrefix",
+            vec![go_arg_value(args, 0)],
+        )),
+        "netip.MustParsePrefix" => Some(go_builtin_call(
+            "__go_netip_MustParsePrefix",
+            vec![go_arg_value(args, 0)],
+        )),
+        "netip.PrefixFrom" => Some(go_builtin_call(
+            "__go_netip_PrefixFrom",
+            vec![go_arg_value(args, 0), go_arg_value(args, 1)],
+        )),
+        "netip.ParseAddrPort" => Some(go_builtin_call(
+            "__go_netip_ParseAddrPort",
+            vec![go_arg_value(args, 0)],
+        )),
+        "netip.AddrPortFrom" => Some(go_builtin_call(
+            "__go_netip_AddrPortFrom",
+            vec![go_arg_value(args, 0), go_arg_value(args, 1)],
+        )),
         _ => None,
     }
 }
@@ -16533,6 +17017,9 @@ fn go_stdlib_type_binding(type_name: &str) -> Option<&'static str> {
         "url.Values" => Some("__goValues"),
         "url.URL" => Some("__goURL"),
         "url.Userinfo" => Some("__goUser"),
+        "netip.Addr" => Some("__goNetipAddr"),
+        "netip.Prefix" => Some("__goNetipPrefix"),
+        "netip.AddrPort" => Some("__goNetipAddrPort"),
         "bytes.Buffer" => Some("__goBuffer"),
         "json.RawMessage" => Some("__goRawMessage"),
         "xml.Name" => Some("__goXMLName"),
@@ -17223,14 +17710,24 @@ fn go_add_expr(left: Expression, right: Expression) -> Expression {
 }
 
 fn go_materialize_slice_view(view: GoSliceViewInfo) -> Expression {
-    let mut args = vec![view.start];
-    if let Some(end) = view.end {
-        args.push(end);
-    }
+    let base = view.base;
+    let start = view.start;
+    let end = view
+        .end
+        .unwrap_or_else(|| go_builtin_call("len", vec![base.clone()]));
     if let Some(max) = view.max {
-        args.push(max);
+        let cap_bound = Expression::new(ExprKind::Binary {
+            op: BinOp::Sub,
+            left: Box::new(max),
+            right: Box::new(start.clone()),
+        });
+        go_builtin_call(
+            "__go_slices_slice_bound_common",
+            vec![base, start, end, cap_bound],
+        )
+    } else {
+        go_builtin_call("__go_slices_slice_common", vec![base, start, end])
     }
-    go_member_call(view.base, "slice", args)
 }
 
 fn go_slice_view_index_expr(view: GoSliceViewInfo, index: Expression) -> Expression {
@@ -17253,6 +17750,31 @@ fn go_expr_slice_view(expr: &Expression, env: &GoNormalizeEnv) -> Option<GoSlice
     match &expr.kind {
         ExprKind::Ident(name) => env.slice_views.get(name).cloned(),
         ExprKind::Call { callee, args, .. } => {
+            if matches!(
+                go_expr_call_name(callee).as_deref(),
+                Some("__go_slices_slice_common" | "__go_slices_slice_bound_common")
+            ) {
+                let base = args.first()?.value.clone();
+                let parent = go_expr_slice_view(&base, env);
+                let parent_start = parent
+                    .as_ref()
+                    .map(|view| view.start.clone())
+                    .unwrap_or_else(|| Expression::int(0));
+                let start = go_add_expr(parent_start.clone(), args.get(1)?.value.clone());
+                let end = args
+                    .get(2)
+                    .map(|end_arg| go_add_expr(parent_start.clone(), end_arg.value.clone()));
+                let max = args
+                    .get(3)
+                    .map(|max_arg| go_add_expr(start.clone(), max_arg.value.clone()))
+                    .or_else(|| parent.as_ref().and_then(|view| view.max.clone()));
+                return Some(GoSliceViewInfo {
+                    base: parent.map(|view| view.base).unwrap_or(base),
+                    start,
+                    end,
+                    max,
+                });
+            }
             let ExprKind::Member { object, field, .. } = &callee.kind else {
                 return None;
             };
@@ -17591,6 +18113,35 @@ fn go_struct_equality_expr(
     }
 }
 
+fn go_nil_slice_map_equality_expr(
+    left: Expression,
+    right: Expression,
+    op: BinOp,
+    _env: &GoNormalizeEnv,
+    _signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<Expression> {
+    let (value, nil) = if go_is_null_expr(&left) {
+        (right, left)
+    } else if go_is_null_expr(&right) {
+        (left, right)
+    } else {
+        return None;
+    };
+    Some(Expression::new(ExprKind::Binary {
+        op: if op == BinOp::NotEq {
+            BinOp::StrictNotEq
+        } else {
+            BinOp::StrictEq
+        },
+        left: Box::new(value),
+        right: Box::new(nil),
+    }))
+}
+
+fn go_is_null_expr(expr: &Expression) -> bool {
+    matches!(expr.kind, ExprKind::Lit(Literal::Null))
+}
+
 fn go_struct_field_eq(left: Expression, right: Expression, field: &str) -> Expression {
     Expression::new(ExprKind::Binary {
         op: BinOp::Eq,
@@ -17821,6 +18372,15 @@ fn go_expr_type_hint(
             ExprKind::Member { object, field, .. } if field == "slice" => {
                 go_expr_type_hint(object, env, signatures)
             }
+            ExprKind::Ident(name)
+                if matches!(
+                    name.as_str(),
+                    "__go_slices_slice_common" | "__go_slices_slice_bound_common"
+                ) =>
+            {
+                args.first()
+                    .and_then(|arg| go_expr_type_hint(&arg.value, env, signatures))
+            }
             ExprKind::Member { field, .. } if field == "charCodeAt" => Some("int".to_string()),
             ExprKind::Ident(name) => signatures.get(name).and_then(|sig| sig.return_type.clone()),
             _ => match go_expr_call_name(callee).as_deref() {
@@ -18003,6 +18563,37 @@ fn go_rewrite_named_type_method_call(
 
 fn go_is_function_type(type_name: &str) -> bool {
     type_name.trim().starts_with("func(")
+}
+
+fn go_normalize_function_value_for_inferred_binding(
+    expr: Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Expression {
+    let ExprKind::Ident(name) = &expr.kind else {
+        return expr;
+    };
+    if !signatures.contains_key(name)
+        || env.value_types.contains_key(name)
+        || env.package_aliases.contains_key(name)
+        || env.type_names.contains(name)
+    {
+        return expr;
+    }
+    Expression::new(ExprKind::FuncRef(name.clone()))
+}
+
+fn go_normalize_function_value(
+    expr: Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Expression {
+    match &expr.kind {
+        ExprKind::Ident(_) => {
+            go_normalize_function_value_for_inferred_binding(expr, env, signatures)
+        }
+        _ => expr,
+    }
 }
 
 fn go_rewrite_callable_field_member_call(
@@ -18291,10 +18882,13 @@ fn go_expr_tuple_type_hints(
             Some(vec![Some("rune".to_string()), Some("int".to_string())])
         }
         "__go_utf16_EncodeRune" => Some(vec![Some("rune".to_string()), Some("rune".to_string())]),
-        "__go_hex_Decode" | "__go_base64_Decode" | "__go_binary_ReadFull" => {
-            Some(vec![Some("int".to_string()), Some("error".to_string())])
-        }
-        "__go_hex_DecodeString" | "__go_base64_DecodeString" => {
+        "__go_hex_Decode"
+        | "__go_base64_Decode"
+        | "__goBase64Encoding.Decode"
+        | "__go_binary_ReadFull" => Some(vec![Some("int".to_string()), Some("error".to_string())]),
+        "__go_hex_DecodeString"
+        | "__go_base64_DecodeString"
+        | "__goBase64Encoding.DecodeString" => {
             Some(vec![Some("[]byte".to_string()), Some("error".to_string())])
         }
         "__go_xml_Unescape" => Some(vec![Some("string".to_string()), Some("error".to_string())]),
@@ -20973,39 +21567,27 @@ fn walk_primary(pair: Pair<Rule>) -> Result<Expression, String> {
                     null_safe: false,
                 }),
                 PrimaryChain::Slice { start, end, max } => {
+                    let base = result;
                     let start_expr =
                         start.unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Int(0))));
-                    let mut args = vec![Argument {
-                        value: start_expr,
-                        name: None,
-                        by_ref: false,
-                        spread: false,
-                    }];
-                    if let Some(end_expr) = end {
-                        args.push(Argument {
-                            value: end_expr,
-                            name: None,
-                            by_ref: false,
-                            spread: false,
-                        });
-                    }
+                    let end_expr =
+                        end.unwrap_or_else(|| go_builtin_call("len", vec![base.clone()]));
                     if let Some(max_expr) = max {
-                        args.push(Argument {
-                            value: max_expr,
-                            name: None,
-                            by_ref: false,
-                            spread: false,
+                        let cap_bound = Expression::new(ExprKind::Binary {
+                            op: BinOp::Sub,
+                            left: Box::new(max_expr),
+                            right: Box::new(start_expr.clone()),
                         });
+                        go_builtin_call(
+                            "__go_slices_slice_bound_common",
+                            vec![base, start_expr, end_expr, cap_bound],
+                        )
+                    } else {
+                        go_builtin_call(
+                            "__go_slices_slice_common",
+                            vec![base, start_expr, end_expr],
+                        )
                     }
-                    Expression::new(ExprKind::Call {
-                        callee: Box::new(Expression::new(ExprKind::Member {
-                            object: Box::new(result),
-                            field: "slice".to_string(),
-                            null_safe: false,
-                        })),
-                        args,
-                        optional: false,
-                    })
                 }
                 PrimaryChain::Call(args) => {
                     let mut call_args = Vec::new();
@@ -22410,11 +22992,16 @@ fn go_bound_slice_capacity_expr(expr: &Expression, env: &GoNormalizeEnv) -> Opti
 
     match &expr.kind {
         ExprKind::Call { callee, args, .. }
-            if go_expr_call_name(callee).as_deref() == Some("__go_slices_Grow")
-                && args.len() == 2 =>
+            if matches!(
+                go_expr_call_name(callee).as_deref(),
+                Some("__go_slices_Grow" | "__go_slices_grow_common")
+            ) =>
         {
             let slice = &args[0].value;
-            let grow_by = args[1].value.clone();
+            let grow_by = args
+                .get(1)
+                .map(|arg| arg.value.clone())
+                .unwrap_or_else(|| Expression::int(0));
             let current_cap = go_expr_capacity_hint(slice, env)
                 .unwrap_or_else(|| go_builtin_call("len", vec![slice.clone()]));
             let needed_cap = Expression::new(ExprKind::Binary {

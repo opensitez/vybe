@@ -17,6 +17,7 @@
 // `impl Compiler` walkers alongside them are one layer now — this crate IS
 // the emitter, so there is no second module to route through.
 pub mod addressable_storage;
+pub mod base64;
 pub mod bigint;
 pub mod builtin_slots;
 pub mod bundle;
@@ -456,6 +457,10 @@ pub struct Compiler {
     /// Read by `primitives/globals.rs` to answer "what does `$GLOBALS`
     /// contain"; nothing else consults it.
     pub(crate) module_variable_names: HashSet<String>,
+    /// Serial for the default NAME every created control gets. A control has a
+    /// name whether the program assigns one or not — see
+    /// `gui::emit_control_type_stamp`.
+    pub(crate) gui_auto_name_counter: u32,
     const_globals: HashSet<String>,
     /// Compile-time integer values of immutable globals whose initializer is a
     /// constant expression (WASM). Feeds extended-const evaluation of data/elem
@@ -601,7 +606,14 @@ pub struct Compiler {
     array_bindings: HashMap<String, ArrayBindingMetadata>,
     /// Label for the next loop to be pushed (set by StmtKind::Labeled).
     pending_label: Option<String>,
-    with_targets: Vec<u16>,
+    /// The BINDING NAME of each open `with` target, innermost last.
+    ///
+    /// A name, not a slot, because a bare name inside the block is compiled as
+    /// an ordinary member access on that binding — see `emit_with_target_get`.
+    /// A slot could only be read with `LOCAL_GET`, which is what forced the old
+    /// raw `STRUCT_SET` and made every declared property inside a `with` block
+    /// write a field nobody reads.
+    with_targets: Vec<String>,
     capture_by_value_vars: Vec<String>,
     capture_locals: HashMap<u8, u16>,
     closure_env_names: Vec<String>,
@@ -2374,6 +2386,7 @@ impl Compiler {
             line: 1,
             defined_globals: HashSet::new(),
             module_variable_names: HashSet::new(),
+            gui_auto_name_counter: 0,
             const_globals: HashSet::new(),
             global_const_values: std::collections::HashMap::new(),
             in_strict: false,
@@ -2878,7 +2891,7 @@ impl Compiler {
                         .any(|g| g.eq_ignore_ascii_case(ep)));
             if has_ep {
                 self.emit_var_get(ep);
-                self.emit_u8_u8(Op::CALL_REF, 0, 1);
+                self.emit_direct_callable_invoke(0);
                 self.emit(Op::DROP);
             } else {
                 // C#-style entry: `static void Main()` lives as a static
@@ -2895,7 +2908,7 @@ impl Compiler {
                     self.emit_var_get(&class_name);
                     let key = self.str_const(&ep_canon);
                     self.emit_struct_field_op(Op::STRUCT_GET, 0, key);
-                    self.emit_u8_u8(Op::CALL_REF, 0, 1);
+                    self.emit_direct_callable_invoke(0);
                     self.emit(Op::DROP);
                 }
             }

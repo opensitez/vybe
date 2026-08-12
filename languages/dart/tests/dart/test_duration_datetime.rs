@@ -23,7 +23,7 @@ dart_cases! {
   var d = Duration(minutes: 5);
   print(d.inMinutes);
 }"#,
-        ["5.0"]
+        ["5"]
     };
 
     duration_hours_constructor => {
@@ -31,7 +31,7 @@ dart_cases! {
   var d = Duration(hours: 2);
   print(d.inHours);
 }"#,
-        ["2.0"]
+        ["2"]
     };
 
     duration_days_constructor => {
@@ -39,7 +39,7 @@ dart_cases! {
   var d = Duration(days: 1);
   print(d.inDays);
 }"#,
-        ["1.0"]
+        ["1"]
     };
 
     duration_zero_constant => {
@@ -55,7 +55,7 @@ dart_cases! {
   var d = Duration(hours: 1, minutes: 30, seconds: 15);
   print(d.inMinutes);
 }"#,
-        ["90.25"]
+        ["90"]
     };
 
     duration_days_hours_minutes => {
@@ -63,7 +63,7 @@ dart_cases! {
   var d = Duration(days: 1, hours: 2, minutes: 3);
   print(d.inHours);
 }"#,
-        ["26.05"]
+        ["26"]
     };
 
     duration_negative_milliseconds => {
@@ -95,7 +95,7 @@ dart_cases! {
   var d = Duration(minutes: 90);
   print(d.inHours);
 }"#,
-        ["1.5"]
+        ["1"]
     };
 
     duration_in_days_from_hours => {
@@ -103,7 +103,7 @@ dart_cases! {
   var d = Duration(hours: 48);
   print(d.inDays);
 }"#,
-        ["2.0"]
+        ["2"]
     };
 
     duration_fractional_minutes => {
@@ -111,7 +111,7 @@ dart_cases! {
   var d = Duration(seconds: 90);
   print(d.inMinutes);
 }"#,
-        ["1.5"]
+        ["1"]
     };
 
     duration_compare_equal => {
@@ -147,7 +147,7 @@ dart_cases! {
   var b = Duration(minutes: 3);
   print((a + b).inMinutes);
 }"#,
-        ["8.0"]
+        ["8"]
     };
 
     duration_addition_hours_and_minutes => {
@@ -156,7 +156,7 @@ dart_cases! {
   var b = Duration(minutes: 30);
   print((a + b).inMinutes);
 }"#,
-        ["90.0"]
+        ["90"]
     };
 
     duration_subtraction_yields_remaining => {
@@ -165,7 +165,7 @@ dart_cases! {
   var b = Duration(minutes: 15);
   print((a - b).inMinutes);
 }"#,
-        ["30.0"]
+        ["30"]
     };
 
     duration_subtraction_to_zero => {
@@ -221,7 +221,7 @@ dart_cases! {
   var d = Duration(days: 2);
   print(d.inMinutes);
 }"#,
-        ["2880.0"]
+        ["2880"]
     };
 
     duration_negate_flips_sign => {
@@ -229,7 +229,7 @@ dart_cases! {
   var d = Duration(minutes: 4);
   print(d.negate().inMinutes);
 }"#,
-        ["-4.0"]
+        ["-4"]
     };
 
     duration_double_negate_restores => {
@@ -237,7 +237,7 @@ dart_cases! {
   var d = Duration(hours: 3);
   print(d.negate().negate().inHours);
 }"#,
-        ["3.0"]
+        ["3"]
     };
 
     duration_add_zero_is_identity => {
@@ -245,7 +245,7 @@ dart_cases! {
   var d = Duration(minutes: 7);
   print((d + Duration.zero).inMinutes);
 }"#,
-        ["7.0"]
+        ["7"]
     };
 
     datetime_constructor_year_month_day => {
@@ -326,7 +326,7 @@ dart_cases! {
   var end = DateTime(2024, 1, 11);
   print(end.difference(start).inDays);
 }"#,
-        ["10.0"]
+        ["10"]
     };
 
     datetime_difference_in_hours => {
@@ -335,7 +335,7 @@ dart_cases! {
   var end = DateTime(2024, 1, 1, 6, 0, 0);
   print(end.difference(start).inHours);
 }"#,
-        ["6.0"]
+        ["6"]
     };
 
     datetime_difference_reverse_is_negative => {
@@ -345,7 +345,7 @@ dart_cases! {
   print(later.difference(earlier).inDays);
   print(earlier.difference(later).inDays);
 }"#,
-        ["31.0", "-31.0"]
+        ["31", "-31"]
     };
 
     datetime_is_before_true => {
@@ -409,7 +409,7 @@ dart_cases! {
   var target = base.add(span);
   print(target.difference(base).inDays);
 }"#,
-        ["14.0"]
+        ["14"]
     };
 
     datetime_month_boundary_add_days => {

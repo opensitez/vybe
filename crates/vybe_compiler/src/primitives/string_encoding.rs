@@ -64,6 +64,91 @@ fn call_import(
     chunk.emit_call(idx, argc, line);
 }
 
+fn emit_base64_lenient_filter(chunks: &mut [Chunk], current: usize, s_slot: u16, line: u32) {
+    let chunk = &mut chunks[current];
+    let out_slot = alloc_local(chunk);
+    let i_slot = alloc_local(chunk);
+    let len_slot = alloc_local(chunk);
+    let code_slot = alloc_local(chunk);
+    let ok_slot = alloc_local(chunk);
+
+    push_str(chunk, "", line);
+    lset(chunk, out_slot, line);
+    push_const(chunk, Value::I32(0), line);
+    lset(chunk, i_slot, line);
+    lget(chunk, s_slot, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
+    lset(chunk, len_slot, line);
+
+    let _ = chunk;
+    let loop_state = crate::primitives::loops::emit_loop_start(chunks, current, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, i_slot, line);
+    lget(chunk, len_slot, line);
+    chunk.emit_op(Op::I32_LT_S, line);
+    let _ = chunk;
+    crate::primitives::loops::emit_loop_cond(chunks, current, line);
+    let chunk = &mut chunks[current];
+
+    lget(chunk, s_slot, line);
+    lget(chunk, i_slot, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "charCodeAt");
+        chunk.emit_call(idx, 2, line);
+    }
+    lset(chunk, code_slot, line);
+
+    push_const(chunk, Value::I32(0), line);
+    lset(chunk, ok_slot, line);
+    for (lo, hi) in [(65, 90), (97, 122), (48, 57)] {
+        lget(chunk, code_slot, line);
+        push_const(chunk, Value::I32(lo), line);
+        chunk.emit_op(Op::I32_GE_S, line);
+        lget(chunk, code_slot, line);
+        push_const(chunk, Value::I32(hi), line);
+        chunk.emit_op(Op::I32_LE_S, line);
+        chunk.emit_op(Op::I32_AND, line);
+        chunk.emit_if(line);
+        push_const(chunk, Value::I32(1), line);
+        lset(chunk, ok_slot, line);
+        chunk.emit_end(line);
+    }
+    for code in [43, 47, 61] {
+        lget(chunk, code_slot, line);
+        push_const(chunk, Value::I32(code), line);
+        chunk.emit_op(Op::I32_EQ, line);
+        chunk.emit_if(line);
+        push_const(chunk, Value::I32(1), line);
+        lset(chunk, ok_slot, line);
+        chunk.emit_end(line);
+    }
+
+    lget(chunk, ok_slot, line);
+    chunk.emit_if(line);
+    lget(chunk, out_slot, line);
+    lget(chunk, code_slot, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "fromCharCode");
+        chunk.emit_call(idx, 1, line);
+    }
+    crate::primitives::strings::emit_str_concat(chunk, line);
+    lset(chunk, out_slot, line);
+    chunk.emit_end(line);
+
+    lget(chunk, i_slot, line);
+    push_const(chunk, Value::I32(1), line);
+    chunk.emit_op(Op::I32_ADD, line);
+    lset(chunk, i_slot, line);
+
+    let _ = chunk;
+    crate::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, out_slot, line);
+}
+
 fn emit_floordiv(chunk: &mut Chunk, slot: u16, div: f64, line: u32) {
     lget(chunk, slot, line);
     push_const(chunk, Value::F64(div), line);
@@ -162,7 +247,6 @@ fn emit_uu_enc(chunk: &mut Chunk, c_slot: u16, line: u32) {
 }
 
 pub fn emit_base64_decode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    let atob = chunks[0].add_import("ecma:string", "atob");
     let chunk = &mut chunks[current];
     let strict_slot = alloc_local(chunk);
     let s_slot = alloc_local(chunk);
@@ -257,14 +341,20 @@ pub fn emit_base64_decode(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     lget(chunk, valid_slot, line);
     chunk.emit_if_value(line);
     lget(chunk, s_slot, line);
-    chunk.emit_call(atob, 1, line);
+    let _ = chunk;
+    crate::primitives::base64::emit_decode_binary_string(chunks, current, line);
+    let chunk = &mut chunks[current];
     chunk.emit_else(line);
     push_const(chunk, Value::Bool(false), line);
     chunk.emit_end(line);
 
     chunk.emit_else(line);
-    lget(chunk, s_slot, line);
-    chunk.emit_call(atob, 1, line);
+    let _ = chunk;
+    emit_base64_lenient_filter(chunks, current, s_slot, line);
+    let chunk = &mut chunks[current];
+    let _ = chunk;
+    crate::primitives::base64::emit_decode_binary_string(chunks, current, line);
+    let chunk = &mut chunks[current];
     chunk.emit_end(line);
 }
 

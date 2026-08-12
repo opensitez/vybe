@@ -14,6 +14,11 @@ fn call(chunks: &mut [Chunk], current: usize, name: &str, argc: u8, line: u32) {
     chunks[current].emit_call(idx, argc, line);
 }
 
+fn call_chunk(chunk: &mut Chunk, name: &str, argc: u8, line: u32) {
+    let idx = chunk.add_import("ecma:set", name);
+    chunk.emit_call(idx, argc, line);
+}
+
 fn stash_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> u16 {
     let base = chunks[current].alloc_scratch(argc as u16);
     for offset in (0..argc as u16).rev() {
@@ -78,6 +83,10 @@ pub fn emit_add(chunks: &mut [Chunk], current: usize, line: u32) {
     call(chunks, current, "add", 2, line);
 }
 
+pub fn emit_add_chunk(chunk: &mut Chunk, line: u32) {
+    call_chunk(chunk, "add", 2, line);
+}
+
 /// Stack: `[set, value] -> [null]`.
 pub fn emit_add_void(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_add(chunks, current, line);
@@ -97,6 +106,10 @@ pub fn emit_add_mode(chunks: &mut [Chunk], current: usize, semantics: SetSemanti
 /// Stack: `[set, value] -> [bool]`.
 pub fn emit_delete(chunks: &mut [Chunk], current: usize, line: u32) {
     call(chunks, current, "delete", 2, line);
+}
+
+pub fn emit_delete_chunk(chunk: &mut Chunk, line: u32) {
+    call_chunk(chunk, "delete", 2, line);
 }
 
 /// Stack: `[set, value] -> [null]`.
@@ -160,9 +173,17 @@ pub fn emit_has(chunks: &mut [Chunk], current: usize, line: u32) {
     call(chunks, current, "has", 2, line);
 }
 
+pub fn emit_has_chunk(chunk: &mut Chunk, line: u32) {
+    call_chunk(chunk, "has", 2, line);
+}
+
 /// Stack: `[set] -> [i32]`.
 pub fn emit_size(chunks: &mut [Chunk], current: usize, line: u32) {
     call(chunks, current, "size", 1, line);
+}
+
+pub fn emit_size_chunk(chunk: &mut Chunk, line: u32) {
+    call_chunk(chunk, "size", 1, line);
 }
 
 /// Stack: `[set] -> [null]`.
@@ -188,6 +209,10 @@ pub fn emit_clear_mode(chunks: &mut [Chunk], current: usize, semantics: SetSeman
 /// Stack: `[left, right] -> [set]`.
 pub fn emit_union(chunks: &mut [Chunk], current: usize, line: u32) {
     call(chunks, current, "union", 2, line);
+}
+
+pub fn emit_union_chunk(chunk: &mut Chunk, line: u32) {
+    call_chunk(chunk, "union", 2, line);
 }
 
 /// Stack: `[set0, set1, ...] -> [set]`.
@@ -258,6 +283,10 @@ pub fn emit_intersection(chunks: &mut [Chunk], current: usize, line: u32) {
     call(chunks, current, "intersection", 2, line);
 }
 
+pub fn emit_intersection_chunk(chunk: &mut Chunk, line: u32) {
+    call_chunk(chunk, "intersection", 2, line);
+}
+
 /// Stack: `[set0, set1, ...] -> [set]`.
 pub fn emit_intersection_variadic(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     if argc == 0 {
@@ -326,6 +355,10 @@ pub fn emit_intersect_with_mode(
 /// Stack: `[left, right] -> [set]`.
 pub fn emit_difference(chunks: &mut [Chunk], current: usize, line: u32) {
     call(chunks, current, "difference", 2, line);
+}
+
+pub fn emit_difference_chunk(chunk: &mut Chunk, line: u32) {
+    call_chunk(chunk, "difference", 2, line);
 }
 
 /// Stack: `[set0, set1, ...] -> [set]`.
@@ -433,6 +466,10 @@ pub fn emit_is_subset_of(chunks: &mut [Chunk], current: usize, line: u32) {
     call(chunks, current, "isSubsetOf", 2, line);
 }
 
+pub fn emit_is_subset_of_chunk(chunk: &mut Chunk, line: u32) {
+    call_chunk(chunk, "isSubsetOf", 2, line);
+}
+
 /// Stack: `[left, right] -> [bool]`.
 pub fn emit_is_subset_of_bool(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_is_subset_of(chunks, current, line);
@@ -451,6 +488,10 @@ pub fn emit_subset_mode(chunks: &mut [Chunk], current: usize, semantics: SetSema
 /// Stack: `[left, right] -> [bool]`.
 pub fn emit_is_superset_of(chunks: &mut [Chunk], current: usize, line: u32) {
     call(chunks, current, "isSupersetOf", 2, line);
+}
+
+pub fn emit_is_superset_of_chunk(chunk: &mut Chunk, line: u32) {
+    call_chunk(chunk, "isSupersetOf", 2, line);
 }
 
 /// Stack: `[left, right] -> [bool]`.

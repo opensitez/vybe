@@ -53,6 +53,7 @@ pub fn boot_with(
     crate::server::programmatic::register(&mut vm);
     crate::adapters::register_all(&mut vm)
         .map_err(|e| format!("adapter registration failed: {e}"))?;
+    vybe_compiler::dynamic::register_dynamic_runtime_imports(&mut vm);
 
     // Force the shared prototypes into the tracked heap so a program that
     // mutates `Object.prototype` cannot leak into the next one. Lazily-built

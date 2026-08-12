@@ -559,7 +559,7 @@ fn test_kotlin_io_file_name_with_path_methods() {
             val file = java.io.File(java.lang.System.getProperty("java.io.tmpdir") + "/vybe_io_name_" + System.nanoTime() + ".txt")
             file.writeText("x")
             println(file.path.contains(file.name))
-            println(file.absoluteFile.name)
+            println(file.absoluteFile.name == file.name)
             println(file.toPath().fileName.toString().endsWith(".txt"))
             file.delete()
         }

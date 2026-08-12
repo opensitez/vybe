@@ -151,6 +151,36 @@ pub fn emit_lock_release(chunk: &mut Chunk, addr_slot: u16, line: u32) {
     chunk.emit_op(Op::DROP, line); // drop notify count
 }
 
+/// Resolve an object's monitor word address, allocating one lazily.
+///
+/// Stack before: [object]  Stack after: [addr]
+pub fn emit_object_monitor_addr(chunk: &mut Chunk, line: u32) {
+    let obj_slot = chunk.alloc_scratch(2);
+    let addr_slot = obj_slot + 1;
+    let get_idx = chunk.add_import("ecma:object", "get");
+    let set_idx = chunk.add_import("ecma:object", "set");
+
+    chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_string_const("__vybe_monitor_addr", line);
+    chunk.emit_call(get_idx, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, addr_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if(line);
+
+    crate::primitives::bundle::emit_call_push_func(chunk, "__vybe_futex_alloc16", line);
+    crate::primitives::bundle::emit_call_invoke(chunk, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, addr_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_string_const("__vybe_monitor_addr", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, addr_slot, line);
+    chunk.emit_call(set_idx, 3, line);
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.emit_end(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, addr_slot, line);
+}
+
 // ── Thread/Task (WASM stack switching) ──────────────────────────────────
 //
 // WASM stack switching primitives:

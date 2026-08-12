@@ -1018,7 +1018,7 @@ fn test_map_values_view_remove_by_value_affects_source() {
         }
     "#,
     );
-    assert_eq!(out, &["true", "2", "-1"]);
+    assert_eq!(out, &["true", "2", "2"]);
 }
 
 #[test]

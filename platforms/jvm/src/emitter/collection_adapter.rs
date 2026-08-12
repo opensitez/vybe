@@ -5,9 +5,9 @@
 //! JVM namespace tree.
 
 use vybe_compiler::primitives::{
-    collections, errors, heap, sets,
+    collections, errors, heap,
     instructions::{core_wasm, host},
-    object, ops, sorted_collection,
+    object, ops, sets, sorted_collection,
 };
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
@@ -790,6 +790,66 @@ pub fn emit_iterator_index(chunks: &mut [Chunk], current: usize, previous: bool,
     }
 }
 
+pub fn emit_iterator_set(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    let iterator = chunks[current].alloc_scratch(1);
+    let index = chunks[current].alloc_scratch(1);
+    let list = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], value, line);
+    set(&mut chunks[current], iterator, line);
+    get_object_prop(chunks, current, iterator, "__last", line);
+    set(&mut chunks[current], index, line);
+    get(&mut chunks[current], index, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    ops::emit_dyn_lt(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    emit_jvm_exception_throw(chunks, current, "IllegalStateException", line);
+    chunks[current].emit_end(line);
+
+    get_iterator_list(chunks, current, iterator, line);
+    set(&mut chunks[current], list, line);
+    emit_throw_if_immutable_list(chunks, current, list, line);
+    get(&mut chunks[current], list, line);
+    get(&mut chunks[current], index, line);
+    get(&mut chunks[current], value, line);
+    collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
+pub fn emit_iterator_add(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    let iterator = chunks[current].alloc_scratch(1);
+    let index = chunks[current].alloc_scratch(1);
+    let list = chunks[current].alloc_scratch(1);
+    let next = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], value, line);
+    set(&mut chunks[current], iterator, line);
+    get_object_prop(chunks, current, iterator, "__index", line);
+    set(&mut chunks[current], index, line);
+    get_iterator_list(chunks, current, iterator, line);
+    set(&mut chunks[current], list, line);
+    emit_throw_if_immutable_list(chunks, current, list, line);
+
+    get(&mut chunks[current], list, line);
+    get(&mut chunks[current], index, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    get(&mut chunks[current], value, line);
+    collections::emit_insert(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    get(&mut chunks[current], index, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    set(&mut chunks[current], next, line);
+    set_object_prop_from_local(chunks, current, iterator, "__index", next, line);
+    chunks[current].emit_i32_const(-1, line);
+    set(&mut chunks[current], index, line);
+    set_object_prop_from_local(chunks, current, iterator, "__last", index, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
 pub fn emit_add(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let value = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], value, line);
@@ -1219,6 +1279,14 @@ pub fn emit_poll(chunks: &mut [Chunk], current: usize, last: bool, line: u32) {
         collections::emit_shift(chunks, current, line);
     }
     chunks[current].emit_end(line);
+}
+
+pub fn emit_priority_poll(chunks: &mut [Chunk], current: usize, line: u32) {
+    let queue = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], queue, line);
+    emit_sort_if_ordered(chunks, current, queue, line);
+    get(&mut chunks[current], queue, line);
+    emit_poll(chunks, current, false, line);
 }
 
 pub fn emit_priority_add(chunks: &mut [Chunk], current: usize, line: u32) {

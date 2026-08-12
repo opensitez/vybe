@@ -25,8 +25,8 @@ use vybe_runtime::opcode::Op;
 
 use crate::primitives::threading as thread_adapter;
 use crate::primitives::{
-    collections, csv, dict, heap, http_cookie, http_form, http_request_env, http_session, io,
-    object, ops, reflection, sets, strings, threading, url, xml,
+    base64, collections, csv, dict, heap, http_cookie, http_form, http_request_env, http_session,
+    io, object, ops, reflection, sets, strings, threading, url, xml,
 };
 
 /// Handle common ops that need only a chunk and line.
@@ -475,11 +475,25 @@ pub fn emit_common(
         "collections.join" => collections::emit_join(chunks, current, line),
         "collections.join_sep_first" => collections::emit_join_sep_first(chunks, current, line),
         "collections.slice" => collections::emit_slice(chunks, current, line),
+        "collections.slice_with_bound" => collections::emit_slice_with_bound(chunks, current, line),
         "collections.new" => collections::emit_array_new(chunks, current, 0, line),
         "collections.shift" => collections::emit_shift(chunks, current, line),
         "collections.concat" => collections::emit_concat(chunks, current, line),
         "collections.fill" => collections::emit_fill(chunks, current, line),
         "collections.sort" => collections::emit_sort(chunks, current, line),
+        "collections.identity" => collections::emit_identity(chunks, current, line),
+        "collections.first_of_two" => collections::emit_first_of_two(chunks, current, line),
+        "collections.nil_to_empty" => collections::emit_nil_to_empty_array(chunks, current, line),
+        "collections.clear_keyed" => collections::emit_clear_keyed(chunks, current, line),
+        "collections.index_func" => collections::emit_index_func(chunks, current, line),
+        "collections.sort_func" => collections::emit_sort_func(chunks, current, line),
+        "collections.is_sorted_func" => collections::emit_is_sorted_func(chunks, current, line),
+        "collections.binary_search_pair" => {
+            collections::emit_binary_search_pair(chunks, current, line)
+        }
+        "collections.binary_search_func_pair" => {
+            collections::emit_binary_search_func_pair(chunks, current, line)
+        }
         "collections.index_of_from" => collections::emit_index_of_from(chunks, current, line),
         "collections.last_index_of_from" => {
             collections::emit_last_index_of_from(chunks, current, line)
@@ -488,6 +502,21 @@ pub fn emit_common(
         "collections.get_range" => collections::emit_get_range(chunks, current, line),
         "collections.clone" => collections::emit_clone(chunks, current, line),
         "collections.sequence_equal" => collections::emit_sequence_equal(chunks, current, line),
+        "collections.delete_range_copy" => {
+            collections::emit_delete_range_copy(chunks, current, line)
+        }
+        "collections.insert_range_copy" => {
+            collections::emit_insert_range_copy(chunks, current, line)
+        }
+        "collections.replace_range_copy" => {
+            collections::emit_replace_range_copy(chunks, current, line)
+        }
+        "collections.compact_adjacent" => collections::emit_compact_adjacent(chunks, current, line),
+        "collections.map_clone" => collections::emit_map_clone(chunks, current, line),
+        "collections.map_copy" => collections::emit_map_copy(chunks, current, line),
+        "collections.map_delete_func" => collections::emit_map_delete_func(chunks, current, line),
+        "collections.sequence_compare" => collections::emit_sequence_compare(chunks, current, line),
+        "collections.is_sorted" => collections::emit_is_sorted(chunks, current, line),
         "collections.insert_range" => collections::emit_insert_range(chunks, current, line),
         "collections.set_range" => collections::emit_set_range(chunks, current, line),
         "collections.binary_search" => collections::emit_binary_search(chunks, current, line),
@@ -540,6 +569,8 @@ pub fn emit_common(
         "strings.split" => strings::emit_split(&mut chunks[current], line),
         "strings.index_of" => strings::emit_index_of(&mut chunks[current], line),
         "strings.concat" => strings::emit_concat(&mut chunks[current], 2, line),
+        "base64.encode_binary_string" => base64::emit_encode_binary_string(chunks, current, line),
+        "base64.decode_binary_string" => base64::emit_decode_binary_string(chunks, current, line),
         "sprintf.format" => crate::primitives::sprintf::emit_sprintf(chunks, current, argc, line),
         "sprintf.format_array" => {
             crate::primitives::sprintf::emit_sprintf_from_array(chunks, current, line)

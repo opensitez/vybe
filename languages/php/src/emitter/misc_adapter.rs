@@ -10,6 +10,11 @@ use vybe_compiler::primitives::object::{
 };
 
 const SERIAL_KIND_KEY: &str = "vybe$php_ser_kind";
+const PHP_SESSION_COOKIE_NAME: &str = "PHPSESSID";
+const PHP_SESSION_ID_GLOBAL: &str = "__php_session_id";
+const PHP_SESSION_STARTED_GLOBAL: &str = "__php_session_started";
+const PHP_SESSION_DESTROYED_GLOBAL: &str = "__php_session_destroyed";
+const PHP_SESSION_NEEDS_COOKIE_GLOBAL: &str = "__php_session_needs_cookie";
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
@@ -67,7 +72,7 @@ fn call_import_into(
 }
 
 fn call_ref(chunk: &mut Chunk, argc: u8, line: u32) {
-    chunk.emit_op_u8_u8(Op::CALL_REF, argc, 1, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, argc, line);
 }
 
 fn ref_func(chunk: &mut Chunk, func_idx: usize, line: u32) {
@@ -479,14 +484,217 @@ pub fn emit_php_phpinfo(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     push_const(chunk, Value::Bool(true), line);
 }
 
-pub fn emit_php_session_start(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+fn emit_php_session_sync_legacy_id(chunks: &mut [Chunk], current: usize, line: u32) {
+    vybe_compiler::primitives::http_session::emit_id(
+        chunks,
+        current,
+        PHP_SESSION_COOKIE_NAME,
+        line,
+    );
+    vybe_compiler::primitives::globals::emit_write(
+        &mut chunks[current],
+        PHP_SESSION_ID_GLOBAL,
+        line,
+    );
+}
+
+fn emit_php_session_load_working_copy(chunks: &mut [Chunk], current: usize, line: u32) {
+    vybe_compiler::primitives::http_session::emit_data(chunks, current, line);
+    vybe_compiler::primitives::collections::emit_map_clone(chunks, current, line);
+    vybe_compiler::primitives::globals::emit_write(&mut chunks[current], "$_SESSION", line);
+}
+
+fn emit_php_session_commit_working_copy(chunks: &mut [Chunk], current: usize, line: u32) {
+    vybe_compiler::primitives::globals::emit_read(&mut chunks[current], "$_SESSION", line);
+    vybe_compiler::primitives::collections::emit_map_clone(chunks, current, line);
+    vybe_compiler::primitives::globals::emit_write(
+        &mut chunks[current],
+        vybe_compiler::primitives::http_session::SESSION_DATA_GLOBAL,
+        line,
+    );
+}
+
+fn emit_php_session_set_status(chunks: &mut [Chunk], current: usize, status: i32, line: u32) {
+    push_const(&mut chunks[current], Value::I32(status), line);
+    vybe_compiler::primitives::globals::emit_write(
+        &mut chunks[current],
+        vybe_compiler::primitives::http_session::SESSION_STATUS_GLOBAL,
+        line,
+    );
+}
+
+pub fn emit_php_session_start(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc > 0 {
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    vybe_compiler::primitives::http_session::emit_start(
+        chunks,
+        current,
+        PHP_SESSION_COOKIE_NAME,
+        line,
+    );
+    let result_slot = alloc_local(&mut chunks[current]);
+    lset(&mut chunks[current], result_slot, line);
+    emit_php_session_sync_legacy_id(chunks, current, line);
+    emit_php_session_load_working_copy(chunks, current, line);
+
+    push_const(&mut chunks[current], Value::Bool(true), line);
+    vybe_compiler::primitives::globals::emit_write(
+        &mut chunks[current],
+        PHP_SESSION_STARTED_GLOBAL,
+        line,
+    );
+    push_const(&mut chunks[current], Value::Bool(false), line);
+    vybe_compiler::primitives::globals::emit_write(
+        &mut chunks[current],
+        PHP_SESSION_DESTROYED_GLOBAL,
+        line,
+    );
+    lget(&mut chunks[current], result_slot, line);
+}
+
+pub fn emit_php_session_id(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let new_slot = if argc > 0 {
+        let slot = alloc_local(&mut chunks[current]);
+        lset(&mut chunks[current], slot, line);
+        Some(slot)
+    } else {
+        None
+    };
+    vybe_compiler::primitives::http_session::emit_id(
+        chunks,
+        current,
+        PHP_SESSION_COOKIE_NAME,
+        line,
+    );
+    let old_slot = alloc_local(&mut chunks[current]);
+    lset(&mut chunks[current], old_slot, line);
+    if let Some(slot) = new_slot {
+        lget(&mut chunks[current], slot, line);
+        vybe_compiler::primitives::globals::emit_write(
+            &mut chunks[current],
+            vybe_compiler::primitives::http_session::SESSION_ID_GLOBAL,
+            line,
+        );
+        lget(&mut chunks[current], slot, line);
+        vybe_compiler::primitives::globals::emit_write(
+            &mut chunks[current],
+            PHP_SESSION_ID_GLOBAL,
+            line,
+        );
+    }
+    lget(&mut chunks[current], old_slot, line);
+}
+
+pub fn emit_php_session_name(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let new_slot = if argc > 0 {
+        let slot = alloc_local(&mut chunks[current]);
+        lset(&mut chunks[current], slot, line);
+        Some(slot)
+    } else {
+        None
+    };
+    vybe_compiler::primitives::http_session::emit_name(
+        chunks,
+        current,
+        PHP_SESSION_COOKIE_NAME,
+        line,
+    );
+    let old_slot = alloc_local(&mut chunks[current]);
+    lset(&mut chunks[current], old_slot, line);
+    if let Some(slot) = new_slot {
+        lget(&mut chunks[current], slot, line);
+        vybe_compiler::primitives::http_session::emit_set_name(chunks, current, line);
+    }
+    lget(&mut chunks[current], old_slot, line);
+}
+
+pub fn emit_php_session_status(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    vybe_compiler::primitives::http_session::emit_status(chunks, current, line);
+}
+
+pub fn emit_php_session_regenerate_id(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    line: u32,
+) {
+    if argc > 0 {
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    vybe_compiler::primitives::http_session::emit_status(chunks, current, line);
+    push_const(
+        &mut chunks[current],
+        Value::I32(vybe_compiler::primitives::http_session::STATUS_ACTIVE),
+        line,
+    );
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    vybe_compiler::primitives::http_session::emit_regenerate_id(chunks, current, line);
+    let ok_slot = alloc_local(&mut chunks[current]);
+    lset(&mut chunks[current], ok_slot, line);
+    emit_php_session_sync_legacy_id(chunks, current, line);
+    lget(&mut chunks[current], ok_slot, line);
+    chunks[current].emit_else(line);
+    push_const(&mut chunks[current], Value::Bool(false), line);
+    chunks[current].emit_end(line);
+}
+
+pub fn emit_php_session_write_close(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    emit_php_session_commit_working_copy(chunks, current, line);
+    emit_php_session_set_status(
+        chunks,
+        current,
+        vybe_compiler::primitives::http_session::STATUS_NONE,
+        line,
+    );
+    push_const(&mut chunks[current], Value::Bool(false), line);
+    vybe_compiler::primitives::globals::emit_write(
+        &mut chunks[current],
+        PHP_SESSION_STARTED_GLOBAL,
+        line,
+    );
+    push_const(&mut chunks[current], Value::Bool(true), line);
+}
+
+pub fn emit_php_session_abort(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    emit_php_session_load_working_copy(chunks, current, line);
+    emit_php_session_set_status(
+        chunks,
+        current,
+        vybe_compiler::primitives::http_session::STATUS_NONE,
+        line,
+    );
+    push_const(&mut chunks[current], Value::Bool(false), line);
+    vybe_compiler::primitives::globals::emit_write(
+        &mut chunks[current],
+        PHP_SESSION_STARTED_GLOBAL,
+        line,
+    );
+    push_const(&mut chunks[current], Value::Bool(true), line);
+}
+
+pub fn emit_php_session_reset(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    emit_php_session_load_working_copy(chunks, current, line);
+    emit_php_session_set_status(
+        chunks,
+        current,
+        vybe_compiler::primitives::http_session::STATUS_ACTIVE,
+        line,
+    );
+    push_const(&mut chunks[current], Value::Bool(true), line);
+}
+
+#[allow(dead_code)]
+pub fn emit_php_session_start_legacy(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let map_new_import = chunks[0].add_import("ecma:map".to_string(), "new".to_string());
     let chunk = &mut chunks[current];
 
     push_const(chunk, Value::Bool(true), line);
-    vybe_compiler::primitives::globals::emit_write(chunk, "__php_session_started", line);
+    vybe_compiler::primitives::globals::emit_write(chunk, PHP_SESSION_STARTED_GLOBAL, line);
     push_const(chunk, Value::Bool(false), line);
-    vybe_compiler::primitives::globals::emit_write(chunk, "__php_session_destroyed", line);
+    vybe_compiler::primitives::globals::emit_write(chunk, PHP_SESSION_DESTROYED_GLOBAL, line);
 
     // Mirror the lifecycle into the SHARED session primitive's global so
     // `session_status()` — which dispatches to `common:http_session.status` —
@@ -511,7 +719,7 @@ pub fn emit_php_session_start(chunks: &mut [Chunk], current: usize, _argc: u8, l
     vybe_compiler::primitives::globals::emit_write(chunk, "$_SESSION", line);
     chunk.emit_end(line);
 
-    vybe_compiler::primitives::globals::emit_read(chunk, "__php_session_needs_cookie", line);
+    vybe_compiler::primitives::globals::emit_read(chunk, PHP_SESSION_NEEDS_COOKIE_GLOBAL, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
@@ -519,14 +727,14 @@ pub fn emit_php_session_start(chunks: &mut [Chunk], current: usize, _argc: u8, l
     // and an encoded cookie would disagree with what `session_id()` returns —
     // the value apps compare against and put in URLs.
     push_str(chunk, "PHPSESSID", line);
-    vybe_compiler::primitives::globals::emit_read(chunk, "__php_session_id", line);
+    vybe_compiler::primitives::globals::emit_read(chunk, PHP_SESSION_ID_GLOBAL, line);
     // No expiry: a session cookie lives until the browser closes.
     vybe_compiler::primitives::http_cookie::emit_serialize(chunks, current, 2, line);
     emit_send_cookie(chunks, current, line);
 
     let chunk = &mut chunks[current];
     push_const(chunk, Value::Bool(false), line);
-    vybe_compiler::primitives::globals::emit_write(chunk, "__php_session_needs_cookie", line);
+    vybe_compiler::primitives::globals::emit_write(chunk, PHP_SESSION_NEEDS_COOKIE_GLOBAL, line);
     chunk.emit_end(line);
     push_const(chunk, Value::Bool(true), line);
 }
@@ -555,10 +763,15 @@ fn emit_send_cookie(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 pub fn emit_php_session_unset(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    chunks[current].emit_array_new_fixed(0, 0, line);
+    vybe_compiler::primitives::globals::emit_write(&mut chunks[current], "$_SESSION", line);
     call_import(chunks, current, "ecma:map", "new", 0, line);
-    let chunk = &mut chunks[current];
-    vybe_compiler::primitives::globals::emit_write(chunk, "$_SESSION", line);
-    push_const(chunk, Value::Bool(true), line);
+    vybe_compiler::primitives::globals::emit_write(
+        &mut chunks[current],
+        vybe_compiler::primitives::http_session::SESSION_DATA_GLOBAL,
+        line,
+    );
+    push_const(&mut chunks[current], Value::Bool(true), line);
 }
 
 pub fn emit_php_session_destroy(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -580,11 +793,11 @@ pub fn emit_php_session_destroy(chunks: &mut [Chunk], current: usize, _argc: u8,
 
     chunk.emit_op(Op::DROP, line);
     push_const(chunk, Value::Bool(false), line);
-    vybe_compiler::primitives::globals::emit_write(chunk, "__php_session_started", line);
+    vybe_compiler::primitives::globals::emit_write(chunk, PHP_SESSION_STARTED_GLOBAL, line);
     push_const(chunk, Value::Bool(true), line);
-    vybe_compiler::primitives::globals::emit_write(chunk, "__php_session_destroyed", line);
+    vybe_compiler::primitives::globals::emit_write(chunk, PHP_SESSION_DESTROYED_GLOBAL, line);
     push_const(chunk, Value::Bool(false), line);
-    vybe_compiler::primitives::globals::emit_write(chunk, "__php_session_needs_cookie", line);
+    vybe_compiler::primitives::globals::emit_write(chunk, PHP_SESSION_NEEDS_COOKIE_GLOBAL, line);
 
     // Deleting a cookie means expiring it in the past (RFC 6265 §3.1) — an
     // empty value alone leaves the cookie in the jar. The date formatting is

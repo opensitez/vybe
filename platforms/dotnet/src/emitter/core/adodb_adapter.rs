@@ -22,6 +22,12 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
         Value::String(s) => chunk.emit_string_const(s, line),
         Value::F64(f) => chunk.emit_f64_const(*f, line),
         Value::I32(i) => chunk.emit_i32_const(*i, line),
+        // A WASM boolean IS an `i32` 0/1 — `Chunk::emit_bool_const` has said so
+        // since the `CONST` opcode was retired. This arm was simply never
+        // added, so every `Recordset` this adapter builds PANICKED the
+        // compiler: it sets `IsClosed`/`EOF` from constants, and the first one
+        // is unconditional. Any VB program touching ADO died before it ran.
+        Value::Bool(b) => chunk.emit_bool_const(*b, line),
         _ => panic!("push_const: no WASM-compliant encoding for {:?}", val),
     }
 }
@@ -420,10 +426,17 @@ pub fn emit_adodb_recordset_move_next(chunks: &mut [Chunk], current: usize, line
         let chunk = &mut chunks[current];
         chunk.emit_op_u16(Op::LOCAL_SET, rs_slot, line);
         get_prop_to_local(chunk, rs_slot, POS_KEY, pos_slot, line);
+        // ⚠ Advance in the SAME number type the position is stored in.
+        //
+        // This converted to `i32` to add one, then stored the `i32` back — but
+        // `__pos` is created as an `f64` and the row count below comes back as
+        // an `f64` too, so the `pos >= len` test compared an `i32` against an
+        // `f64` and was NEVER true. `EOF` therefore never flipped: a
+        // `Do While Not rs.EOF` walked the three real rows and then spun
+        // forever printing empty ones.
         chunk.emit_op_u16(Op::LOCAL_GET, pos_slot, line);
-        chunk.emit_op(Op::I32_FROM_F64, line);
-        core_wasm::i32_const(chunk, line, 1);
-        chunk.emit_op(Op::I32_ADD, line);
+        chunk.emit_f64_const(1.0, line);
+        vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
         chunk.emit_op_u16(Op::LOCAL_SET, pos_slot, line);
         get_prop_to_local(chunk, rs_slot, ROWS_KEY, rows_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, rows_slot, line);

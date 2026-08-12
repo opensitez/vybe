@@ -50,7 +50,7 @@ void main() {
 }
 "#
         ),
-        vec!["true\ntrue\ntrue\ntrue\ntrue"]
+        vec!["true", "true", "true", "true", "true"]
     );
 }
 
@@ -209,7 +209,7 @@ void main() {
 }
 "#
         ),
-        vec!["true\ntrue"]
+        vec!["true", "true"]
     );
 }
 

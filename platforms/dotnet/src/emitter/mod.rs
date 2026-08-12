@@ -641,6 +641,51 @@ pub fn instance_method_return_type(class_name: &str, method_name: &str) -> Optio
 
 fn dotnet_instance_method_return_type(class_name: &str, method_name: &str) -> Option<String> {
     let class = class_name.rsplit('.').next().unwrap_or(class_name);
+    // ── ADO.NET ───────────────────────────────────────────────────────────
+    //
+    // Every ADO chain is a chain of FACTORY calls — `conn.CreateCommand()`,
+    // `cmd.ExecuteReader()` — and each hop was undeclared, so the value came
+    // back with no type and the next member on it resolved against nothing.
+    // `Dim cmd As Object = conn.CreateCommand()` is the shape every ADO
+    // example uses, and `cmd.ExecuteNonQuery()` reached
+    // `undefined is not callable`.
+    //
+    // The methods themselves have always been declared (they are `wasi:sql`
+    // host calls in `component_classes_data_drawing.rs`); what was missing is
+    // what they RETURN.
+    if class.eq_ignore_ascii_case("SqlConnection")
+        || class.eq_ignore_ascii_case("OleDbConnection")
+    {
+        return match method_name.to_ascii_lowercase().as_str() {
+            "createcommand" => Some("SqlCommand".into()),
+            "begintransaction" => Some("SqlTransaction".into()),
+            _ => None,
+        };
+    }
+    if class.eq_ignore_ascii_case("SqlCommand") || class.eq_ignore_ascii_case("OleDbCommand") {
+        // The `*Async` twins return the same thing here: the adapter awaits at
+        // the boundary, so the value a program binds is the reader/count, not
+        // a Task. Declaring only the sync half left `ExecuteReaderAsync()`
+        // untyped and `rdr.Read()` unresolvable — the same failure one call
+        // further along.
+        return match method_name.to_ascii_lowercase().as_str() {
+            "executereader" | "executereaderasync" => Some("SqlDataReader".into()),
+            "executenonquery" | "executenonqueryasync" => Some("Int32".into()),
+            "createparameter" => Some("SqlParameter".into()),
+            _ => None,
+        };
+    }
+    if class.eq_ignore_ascii_case("SqlDataReader")
+        || class.eq_ignore_ascii_case("OleDbDataReader")
+    {
+        return match method_name.to_ascii_lowercase().as_str() {
+            "read" | "nextresult" | "isdbnull" => Some("Boolean".into()),
+            "getstring" | "getname" => Some("string".into()),
+            "getint32" | "getfieldcount" | "fieldcount" => Some("Int32".into()),
+            "getdouble" => Some("Double".into()),
+            _ => None,
+        };
+    }
     if class.eq_ignore_ascii_case("StringBuilder") {
         if matches!(
             method_name.to_ascii_lowercase().as_str(),
@@ -1440,8 +1485,49 @@ pub fn static_property_type(class_name: &str, property_name: &str) -> Option<&'s
     None
 }
 
+/// Properties whose TYPE the platform declares, enumerable so tree
+/// registration can publish them.
+///
+/// A property read had no declared type at all — the registrar's scan walks
+/// `class.methods` only — so the value came back untyped and the next hop on it
+/// resolved against nothing. `cmd.Parameters` is the case that matters:
+/// `wasi:sql` has always had `params.add-with-value`/`clear`/`count`, and
+/// `make_command_obj` puts a params object on every command, but with no type
+/// on `Parameters` the chain died at `.AddWithValue(…)` and the query ran with
+/// no parameters bound — "Got 0, needed 2".
+///
+/// Enumerable rather than a lookup so there is ONE declaration serving both the
+/// walker's type inference and the tree.
+pub fn declared_instance_property_types(
+    class_name: &str,
+) -> &'static [(&'static str, &'static str)] {
+    match class_name
+        .rsplit('.')
+        .next()
+        .unwrap_or(class_name)
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "sqlcommand" | "oledbcommand" | "adodbcommand" => {
+            &[("Parameters", "SqlParameterCollection")]
+        }
+        _ => &[],
+    }
+}
+
 pub fn instance_property_type(class_name: &str, property_name: &str) -> Option<&'static str> {
     let class = class_name.rsplit('.').next().unwrap_or(class_name);
+    // `cmd.Parameters` — the collection the host already puts on every command
+    // object (`make_command_obj` inserts `parameters`). Saying WHAT it is is
+    // what lets `cmd.Parameters.AddWithValue(...)` resolve; without the type
+    // the chain died at the second hop, the parameters never reached the
+    // query, and `wasi:sql` answered "Got 0, needed 2".
+    if let Some((_, ty)) = declared_instance_property_types(class)
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(property_name))
+    {
+        return Some(ty);
+    }
     if class.eq_ignore_ascii_case("StringBuilder") {
         return match property_name.to_ascii_lowercase().as_str() {
             "length" | "capacity" | "maxcapacity" => Some("Int32"),

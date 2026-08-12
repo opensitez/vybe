@@ -357,7 +357,7 @@ impl Compiler {
             self.emit_host_call(idx, 0);
         } else {
             self.emit_global_read(&ctor_name);
-            self.emit_u8_u8(Op::CALL_REF, 0, 1);
+            self.emit_direct_callable_invoke(0);
         }
         self.emit_u16(Op::LOCAL_SET, slot);
 
@@ -380,7 +380,7 @@ impl Compiler {
             self.emit_host_call(idx, 0);
         } else {
             self.emit_global_read(ctor_name);
-            self.emit_u8_u8(Op::CALL_REF, 0, 1);
+            self.emit_direct_callable_invoke(0);
         }
     }
 

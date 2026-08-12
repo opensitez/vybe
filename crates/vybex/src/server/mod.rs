@@ -84,8 +84,7 @@ async fn run(config: ServeConfig) -> Result<(), Box<dyn std::error::Error + Send
     // `--no-cache` controls the cache. Sharing one flag between them would mean
     // neither could be measured on its own — and `--cold` exists to be exactly
     // that control.
-    let cache =
-        (!shared.no_cache).then(|| std::sync::Arc::new(compile_cache::CompileCache::new()));
+    let cache = (!shared.no_cache).then(|| std::sync::Arc::new(compile_cache::CompileCache::new()));
 
     // Warm VM pool. Booted BEFORE the accept loop so the first request lands on
     // a ready VM rather than racing the boot it was supposed to avoid.

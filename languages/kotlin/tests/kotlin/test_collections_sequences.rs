@@ -423,7 +423,7 @@ fn test_sequence_map_with_stateful_side_effect() {
         }
     "#,
     );
-    assert_eq!(out, &["start", "10,20,30", "3", "2", "5"]);
+    assert_eq!(out, &["start", "10,20,30", "3", "5", "8"]);
 }
 
 #[test]

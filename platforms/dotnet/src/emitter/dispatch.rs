@@ -168,6 +168,13 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         return true;
     }
     match name {
+        // A member that IS the receiver — `MenuStrip.Items`. WinForms wraps a
+        // strip's contents in a collection object, but in the document the
+        // element already IS that container, so the getter yields what it was
+        // handed and allocates nothing. Emitting NOTHING is the whole
+        // implementation: the receiver is already on the stack. plib spells the
+        // same member `pascal.self` for the same reason.
+        "dotnet.self" => {}
         "dotnet.winforms_application_run" => {
             crate::emitter::winforms::adapter::emit_application_run(chunks, current, argc, line);
         }
@@ -2496,6 +2503,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.convert_from_base64_string" => {
             crate::emitter::core::convert_adapter::emit_convert_from_base64_string(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.convert_try_from_base64_chars" => {
+            crate::emitter::core::convert_adapter::emit_convert_try_from_base64_chars(
                 chunks, current, argc, line,
             )
         }

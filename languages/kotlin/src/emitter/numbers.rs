@@ -31,6 +31,59 @@ pub fn emit_print_double(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line
     chunks[current].emit_call(log, 1, line);
 }
 
+pub fn emit_double_tostring(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    emit_double_to_string(chunks, current, line);
+}
+
+/// Kotlin `round(x)` rounds ties away from zero. ECMA `Math.round` ties toward
+/// +infinity, so `round(-2.5)` must not use the host directly.
+pub fn emit_round(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    let v = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, v, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_op(Op::F64_LT, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    chunks[current].emit_f64_const(0.5, line);
+    chunks[current].emit_op(Op::F64_SUB, line);
+    chunks[current].emit_op(Op::F64_CEIL, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    chunks[current].emit_f64_const(0.5, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    chunks[current].emit_op(Op::F64_FLOOR, line);
+    chunks[current].emit_end(line);
+}
+
+/// Kotlin `sign(x)` returns -1.0, 0.0, 1.0, or NaN for NaN.
+pub fn emit_sign(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    let v = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, v, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    chunks[current].emit_op(Op::F64_NE, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_f64_const(f64::NAN, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_op(Op::F64_LT, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_f64_const(-1.0, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_op(Op::F64_GT, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_f64_const(1.0, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+}
+
 /// Kotlin `Double.toString()`. Stack: `[value]` → `[string]`.
 ///
 /// `6.0` → `"6.0"`, `0.125` → `"0.125"`, `-2.0` → `"-2.0"`. Appends `.0` only
@@ -170,6 +223,16 @@ pub fn emit_to_int_throwing(chunks: &mut Vec<Chunk>, current: usize, line: u32) 
     chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
     let trunc = chunks[current].add_import("ecma:math", "trunc");
     chunks[current].emit_call(trunc, 1, line);
+    let truncated = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, truncated, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, truncated, line);
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_op(Op::F64_EQ, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, truncated, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
 }
 
@@ -215,10 +278,102 @@ pub fn emit_to_double_or_null(chunks: &mut Vec<Chunk>, current: usize, argc: u8,
         chunk.emit_op_u16(Op::LOCAL_SET, value, line);
     }
 
-    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
-    let parse = chunk.add_import("ecma:number", "Number");
-    chunk.emit_call(parse, 1, line);
-    emit_null_if_nan(chunks, current, line);
+    emit_to_double_checked(chunks, current, value, true, line);
+}
+
+pub fn emit_to_double_throwing(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let value = chunk.alloc_scratch(1);
+    if argc >= 1 {
+        chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+    } else {
+        chunk.emit_string_const("", line);
+        chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+    }
+
+    emit_to_double_checked(chunks, current, value, false, line);
+}
+
+fn emit_to_double_checked(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    value: u16,
+    or_null: bool,
+    line: u32,
+) {
+    let trimmed = chunks[current].alloc_scratch(1);
+    let parsed = chunks[current].alloc_scratch(1);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    let type_of = chunks[current].add_import("ecma:value", "typeof");
+    chunks[current].emit_call(type_of, 1, line);
+    chunks[current].emit_string_const("string", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    let trim = chunks[current].add_import("ecma:string", "trim");
+    chunks[current].emit_call(trim, 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, trimmed, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, trimmed, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if_value(line);
+    emit_double_parse_failure(chunks, current, or_null, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    let parse = chunks[current].add_import("ecma:number", "Number");
+    chunks[current].emit_call(parse, 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, parsed, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, parsed, line);
+    let is_nan = chunks[current].add_import("ecma:number", "isNaN");
+    chunks[current].emit_call(is_nan, 1, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    chunks[current].emit_string_const("NaN", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, parsed, line);
+    chunks[current].emit_else(line);
+    emit_double_parse_failure(chunks, current, or_null, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, parsed, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    let parse = chunks[current].add_import("ecma:number", "Number");
+    chunks[current].emit_call(parse, 1, line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_double_parse_failure(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    or_null: bool,
+    line: u32,
+) {
+    if or_null {
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    } else {
+        chunks[current].emit_string_const("invalid number", line);
+        crate::emitter::nullability::emit_exception(
+            chunks,
+            current,
+            1,
+            "NumberFormatException",
+            line,
+        );
+        vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    }
 }
 
 fn emit_null_if_nan(chunks: &mut Vec<Chunk>, current: usize, line: u32) {

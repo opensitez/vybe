@@ -420,6 +420,16 @@ impl Compiler {
                         return Some(name.clone());
                     }
                 }
+                // A call `compile_call` lowers to a DOM element is worth that
+                // control type. Same predicate, asked from the other end — see
+                // `constructed_control_type_name`. Without this the value has
+                // NO type, so `Window.Forms.Button()` assigned to a widened
+                // declaration stayed the top type and every `.Text`/`.Left`
+                // write on it missed the DOM path and landed on a plain object
+                // property: a control with no caption at the origin.
+                if let Some(control_type) = self.constructed_control_type_name(callee) {
+                    return Some(control_type);
+                }
                 if self.profile.parens_for_index
                     && args.len() == 1
                     && self

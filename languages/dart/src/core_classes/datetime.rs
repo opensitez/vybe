@@ -66,7 +66,8 @@ fn call(name: &str, args: Vec<Expression>) -> Expression {
                 .into_iter()
                 .map(vybe_ast::Argument::positional)
                 .collect(),
-            optional: false },
+            optional: false,
+        },
         span(),
     )
 }
@@ -95,7 +96,8 @@ fn new_datetime(ms: Expression, utc: Expression) -> Expression {
             args: vec![
                 vybe_ast::Argument::positional(ms),
                 vybe_ast::Argument::positional(utc),
-            ] },
+            ],
+        },
         span(),
     )
 }
@@ -105,7 +107,8 @@ fn new_duration(ms: Expression) -> Expression {
     Expression::with_span(
         ExprKind::New {
             class: Box::new(ident("Duration")),
-            args: vec![vybe_ast::Argument::positional(ms)] },
+            args: vec![vybe_ast::Argument::positional(ms)],
+        },
         span(),
     )
 }
@@ -146,7 +149,10 @@ pub(super) fn datetime() -> Statement {
     // a builtin that applies the shared primitive rather than arithmetic
     // spelled here: `dart.date_month` adds the `MonthIndexing::OneBased` offset
     // and `dart.date_weekday` applies `WeekdayBase::MondayOne`.
-    body.push(set_this("month", call("__dart_date_month", vec![ident("ms")])));
+    body.push(set_this(
+        "month",
+        call("__dart_date_month", vec![ident("ms")]),
+    ));
     body.push(set_this(
         "weekday",
         call("__dart_date_weekday", vec![ident("ms")]),
@@ -175,7 +181,10 @@ fn instance_members() -> Vec<ClassMember> {
     // (`builtin_type_of`) and array dispatch answers before the flat set is
     // consulted. That is the difference from `Duration.compareTo`, whose
     // competing receivers were WRAPPERS with no classification at all.
-    for (name, op) in [("add", vybe_ast::BinOp::Add), ("subtract", vybe_ast::BinOp::Sub)] {
+    for (name, op) in [
+        ("add", vybe_ast::BinOp::Add),
+        ("subtract", vybe_ast::BinOp::Sub),
+    ] {
         out.push(method(
             name,
             vec![param("other", Some("Duration"), None)],

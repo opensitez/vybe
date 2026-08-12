@@ -169,6 +169,15 @@ cast_kw = @{
 
 // Reserved word predicate — used in `identifier` to reject reserved
 // words from being parsed as identifiers.
+//
+// `kw_readonly` is deliberately NOT here. `readonly` is context-sensitive in
+// php, not reserved: `readonly( true );` is a call (WordPress declares that
+// function), and `$x = readonly;` reads a constant. Its four grammar uses —
+// `param_modifier`, `member_modifier`, `class_modifier` and `anonymous_class` —
+// all match `kw_readonly` directly in a position pinned by what surrounds it,
+// so none of them needed the identifier ban. Listing it here only made every
+// `readonly(…)` a parse error, reported confusingly as "expected kw_class or
+// class_modifier" because pest surfaces the furthest failure.
 reserved = _{
     kw_if | kw_elseif | kw_else_if | kw_else | kw_while | kw_do | kw_for
     | kw_foreach | kw_as | kw_switch | kw_case | kw_default | kw_break
@@ -179,7 +188,7 @@ reserved = _{
     | kw_throw | kw_try | kw_catch | kw_finally | kw_static | kw_public
     | kw_private | kw_protected | kw_abstract | kw_final | kw_const
     | kw_match | kw_fn | kw_use | kw_namespace | kw_yield_from | kw_yield
-    | kw_list | kw_global | kw_readonly | kw_and | kw_or | kw_xor
+    | kw_list | kw_global | kw_and | kw_or | kw_xor
     | kw_self | kw_parent | kw_isset | kw_empty | kw_unset | kw_insteadof
     | kw_endif | kw_endwhile | kw_endfor | kw_endforeach | kw_endswitch
 }

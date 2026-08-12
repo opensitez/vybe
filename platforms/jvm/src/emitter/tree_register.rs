@@ -325,11 +325,13 @@ fn java_type_ctor_target(qualified: &str) -> Option<NamespaceNode> {
         "java.util.BitSet" => "jvm.java.bitset_new",
         "java.util.UUID" => "jvm.java.uuid_new",
         "java.util.Random" | "java.util.SplittableRandom" => "jvm.java.random_new",
+        "java.util.regex.Pattern" => "jvm.java.regex_pattern_compile",
         "java.lang.StringBuilder" | "java.lang.StringBuffer" => "jvm.java.stringbuilder_new",
         "java.util.StringTokenizer" => "jvm.java.stringtokenizer_new",
         "java.lang.Object" => "jvm.java.hash_map_new",
         "java.io.ByteArrayOutputStream" => "jvm.java.io_byte_array_output_stream_new",
         "java.io.ByteArrayInputStream" => "jvm.java.io_byte_array_input_stream_new",
+        "java.io.File" => "jvm.java.io_file_new",
         "java.io.PrintWriter" | "java.io.PrintStream" => "jvm.java.io_print_writer_new",
         "java.io.OutputStreamWriter" | "java.io.BufferedWriter" | "java.io.FilterWriter" => {
             "jvm.java.io_passthrough_new"
@@ -358,6 +360,14 @@ fn insert_java_lang_system(root: &mut Subtree) {
             (1, common_emit("jvm.java.lang.system_get_property")),
             (2, common_emit("jvm.java.lang.system_get_property")),
         ]),
+    );
+    statics.insert(
+        "currenttimemillis".to_string(),
+        common_emit("jvm.java.current_time_millis"),
+    );
+    statics.insert(
+        "nanotime".to_string(),
+        common_emit("jvm.java.current_time_millis"),
     );
     insert_path(
         root,
@@ -698,10 +708,17 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
         ("Collection", "isempty", "jvm.java.is_empty", 0, 0),
         ("Collection", "contains", "jvm.java.contains", 1, 1),
         ("Collection", "clear", "jvm.java.list_clear", 0, 0),
-        ("Collection", "remove", "jvm.java.list_remove", 1, 1),
+        // `Collection.remove(Object)` is BY VALUE — `jvm.java.list_remove` at
+        // this arity is `emit_remove_at`, i.e. by INDEX, which a `Set` has no
+        // notion of. `List` overrides below with the index overload that is
+        // genuinely List's.
+        ("Collection", "remove", "jvm.java.list_remove_value", 1, 1),
         // ── List ───────────────────────────────────────────────────────────
         // `add(index, e)` is the List-only overload, so List widens the arity.
         ("List", "add", "jvm.java.add", 1, 2),
+        // `List.remove(int)` — the index overload Java declares on `List` and
+        // nowhere above it.
+        ("List", "remove", "jvm.java.list_remove", 1, 1),
         ("List", "get", "jvm.java.get", 1, 1),
         ("List", "set", "jvm.java.list_set", 1, 2),
         ("List", "sort", "jvm.java.collections_sort", 0, 1),
@@ -748,7 +765,13 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
         // ── SortedMap / NavigableMap ───────────────────────────────────────
         ("SortedMap", "keyset", "jvm.java.sorted_map_key_set", 0, 0),
         ("SortedMap", "values", "jvm.java.sorted_map_values", 0, 0),
-        ("SortedMap", "firstkey", "jvm.java.sorted_map_first_key", 0, 0),
+        (
+            "SortedMap",
+            "firstkey",
+            "jvm.java.sorted_map_first_key",
+            0,
+            0,
+        ),
         ("SortedMap", "lastkey", "jvm.java.sorted_map_last_key", 0, 0),
         (
             "NavigableMap",
@@ -768,7 +791,13 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
         ("Iterator", "next", "jvm.java.iterator_next", 0, 0),
         ("Iterator", "hasnext", "jvm.java.iterator_has_next", 0, 0),
         ("Iterator", "remove", "jvm.java.iterator_remove", 0, 0),
-        ("ListIterator", "previous", "jvm.java.iterator_previous", 0, 0),
+        (
+            "ListIterator",
+            "previous",
+            "jvm.java.iterator_previous",
+            0,
+            0,
+        ),
         (
             "ListIterator",
             "hasprevious",
@@ -790,6 +819,8 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
             0,
             0,
         ),
+        ("ListIterator", "set", "jvm.java.iterator_set", 1, 1),
+        ("ListIterator", "add", "jvm.java.iterator_add", 1, 1),
         // ── Concrete classes: ONLY what they override or add ───────────────
         ("Vector", "addelement", "jvm.java.add", 1, 1),
         ("Vector", "elementat", "jvm.java.get", 1, 1),
@@ -801,6 +832,8 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
         ("Stack", "empty", "jvm.java.is_empty", 0, 0),
         ("PriorityQueue", "add", "jvm.java.priority_add", 1, 1),
         ("PriorityQueue", "offer", "jvm.java.priority_add", 1, 1),
+        ("PriorityQueue", "poll", "jvm.java.priority_poll", 0, 0),
+        ("PriorityQueue", "remove", "jvm.java.priority_poll", 0, 0),
         ("PriorityQueue", "peek", "jvm.java.priority_peek", 0, 0),
     ];
 
@@ -812,7 +845,16 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
     // `or_insert_with` is what makes nearest-declaration-win: the type's own
     // rows land before its interfaces', and a nearer interface before a
     // further one.
-    for ty in JAVA_TYPES.iter().filter(|t| t.package == "util") {
+    // `util.concurrent` folds too: `CopyOnWriteArrayList` declares `List` in
+    // its ancestry and `LinkedBlockingQueue` declares `BlockingQueue`/`Queue`,
+    // so they inherit the same surface and an exact `== "util"` test silently
+    // gave them none. Measured A/B on `java/copy_on_write_list`: 41/8 either
+    // way — the concurrent types reach their own members through the Java
+    // profile, so this neither shadows them nor is shadowed by them.
+    for ty in JAVA_TYPES
+        .iter()
+        .filter(|t| t.package == "util" || t.package.starts_with("util."))
+    {
         let mut methods = Subtree::new();
         for ancestor in ty.ancestry {
             for (owner, member, emit, min_args, max_args) in SPECS {
@@ -855,9 +897,279 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
     }
 }
 
+fn insert_java_util_regex(root: &mut Subtree) {
+    ensure_type_node(root, "util.regex.pattern");
+    ensure_type_node(root, "util.regex.matcher");
+
+    insert_path(
+        root,
+        "util.regex.pattern.compile",
+        common_method("jvm.java.regex_pattern_compile", 1, 2),
+    );
+    insert_path(
+        root,
+        "util.regex.pattern.quote",
+        common_emit("strings.escape_regex"),
+    );
+    for (name, value) in [
+        ("unix_lines", 1.0),
+        ("case_insensitive", 2.0),
+        ("comments", 4.0),
+        ("multiline", 8.0),
+        ("literal", 16.0),
+        ("dotall", 32.0),
+        ("unicode_case", 64.0),
+        ("canonical_eq", 128.0),
+        ("unicode_character_class", 256.0),
+    ] {
+        insert_path(
+            root,
+            &format!("util.regex.pattern.{name}"),
+            NamespaceNode::Const(Value::F64(value)),
+        );
+    }
+    merge_type_methods(
+        root,
+        "util.regex.pattern",
+        [
+            (
+                "matcher".to_string(),
+                common_method("jvm.java.regex_pattern_matcher", 1, 1),
+            ),
+            (
+                "split".to_string(),
+                common_method("jvm.java.regex_pattern_split", 1, 2),
+            ),
+            (
+                "pattern".to_string(),
+                common_method("jvm.java.regex_pattern_pattern", 0, 0),
+            ),
+            (
+                "flags".to_string(),
+                common_method("jvm.java.regex_pattern_flags", 0, 0),
+            ),
+            (
+                "toString".to_string(),
+                common_method("jvm.java.regex_pattern_pattern", 0, 0),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    merge_type_member_returns(
+        root,
+        "util.regex.pattern",
+        &[
+            ("matcher", "java.util.regex.Matcher"),
+            ("split", "Array"),
+            ("pattern", "String"),
+            ("flags", "Int"),
+            ("toString", "String"),
+        ],
+    );
+
+    merge_type_methods(
+        root,
+        "util.regex.matcher",
+        [
+            (
+                "find".to_string(),
+                common_method("jvm.java.regex_matcher_find", 0, 0),
+            ),
+            (
+                "matches".to_string(),
+                common_method("jvm.java.regex_matcher_matches", 0, 0),
+            ),
+            (
+                "lookingAt".to_string(),
+                common_method("jvm.java.regex_matcher_find", 0, 0),
+            ),
+            (
+                "group".to_string(),
+                common_method("jvm.java.regex_matcher_group", 0, 1),
+            ),
+            (
+                "start".to_string(),
+                common_method("jvm.java.regex_matcher_start", 0, 0),
+            ),
+            (
+                "end".to_string(),
+                common_method("jvm.java.regex_matcher_end", 0, 0),
+            ),
+            (
+                "reset".to_string(),
+                common_method("jvm.java.regex_matcher_reset", 0, 1),
+            ),
+            (
+                "replaceAll".to_string(),
+                common_method("jvm.java.regex_pattern_replace_all", 1, 1),
+            ),
+            (
+                "replaceFirst".to_string(),
+                common_method("jvm.java.regex_pattern_replace_first", 1, 1),
+            ),
+            (
+                "value".to_string(),
+                common_method("jvm.java.regex_match_result_value", 0, 0),
+            ),
+            (
+                "range".to_string(),
+                common_method("jvm.java.regex_match_result_range", 0, 0),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    merge_type_member_returns(
+        root,
+        "util.regex.matcher",
+        &[
+            ("find", "Boolean"),
+            ("matches", "Boolean"),
+            ("lookingAt", "Boolean"),
+            ("group", "String"),
+            ("start", "Int"),
+            ("end", "Int"),
+            ("reset", "java.util.regex.Matcher"),
+            ("replaceAll", "String"),
+            ("replaceFirst", "String"),
+            ("value", "String"),
+            ("range", "IntRange"),
+        ],
+    );
+}
+
 fn insert_java_io_methods(root: &mut Subtree) {
+    insert_common_static(
+        root,
+        "io.file",
+        "createtempfile",
+        "jvm.java.io_file_create_temp",
+    );
+
     const SPECS: &[(&str, &str, &str, u8, u8)] = &[
+        ("io.file", "writetext", "jvm.java.io_file_write_text", 1, 2),
+        (
+            "io.file",
+            "appendtext",
+            "jvm.java.io_file_append_text",
+            1,
+            2,
+        ),
+        ("io.file", "readtext", "jvm.java.io_file_read_text", 0, 1),
+        ("io.file", "readlines", "jvm.java.io_file_read_lines", 0, 1),
+        ("io.file", "listfiles", "jvm.java.io_file_list_files", 0, 1),
+        ("io.file", "walk", "jvm.java.io_file_walk", 0, 0),
+        ("io.file", "walktopdown", "jvm.java.io_file_walk", 0, 0),
+        ("io.file", "walkbottomup", "jvm.java.io_file_walk", 0, 0),
+        ("io.file", "writebytes", "jvm.java.io_file_write_text", 1, 1),
+        ("io.file", "readbytes", "jvm.java.io_file_read_text", 0, 0),
+        ("io.file", "exists", "jvm.java.io_file_exists", 0, 0),
+        ("io.file", "delete", "jvm.java.io_file_delete", 0, 0),
+        ("io.file", "deleteonexit", "jvm.java.io_false", 0, 0),
+        ("io.file", "mkdir", "jvm.java.io_file_mkdirs", 0, 0),
+        ("io.file", "mkdirs", "jvm.java.io_file_mkdirs", 0, 0),
+        ("io.file", "isfile", "jvm.java.io_file_is_file", 0, 0),
+        (
+            "io.file",
+            "isdirectory",
+            "jvm.java.io_file_is_directory",
+            0,
+            0,
+        ),
+        ("io.file", "canread", "jvm.java.io_file_exists", 0, 0),
+        ("io.file", "canwrite", "jvm.java.io_file_exists", 0, 0),
+        ("io.file", "canexecute", "jvm.java.io_false", 0, 0),
+        ("io.file", "getpath", "jvm.java.io_file_get_path", 0, 0),
+        ("io.file", "path", "jvm.java.io_file_get_path", 0, 0),
+        (
+            "io.file",
+            "getabsolutepath",
+            "jvm.java.io_file_get_path",
+            0,
+            0,
+        ),
+        ("io.file", "absolutepath", "jvm.java.io_file_get_path", 0, 0),
+        ("io.file", "getabsolutefile", "jvm.java.identity", 0, 0),
+        ("io.file", "absolutefile", "jvm.java.identity", 0, 0),
+        ("io.file", "getname", "jvm.java.io_file_get_name", 0, 0),
+        ("io.file", "name", "jvm.java.io_file_get_name", 0, 0),
+        ("io.file", "filename", "jvm.java.io_file_get_name", 0, 0),
+        ("io.file", "extension", "jvm.java.io_file_extension", 0, 0),
+        (
+            "io.file",
+            "namewithoutextension",
+            "jvm.java.io_file_name_without_extension",
+            0,
+            0,
+        ),
+        ("io.file", "getparent", "jvm.java.io_file_parent", 0, 0),
+        ("io.file", "parent", "jvm.java.io_file_parent", 0, 0),
+        (
+            "io.file",
+            "getparentfile",
+            "jvm.java.io_file_parent_file",
+            0,
+            0,
+        ),
+        (
+            "io.file",
+            "parentfile",
+            "jvm.java.io_file_parent_file",
+            0,
+            0,
+        ),
+        ("io.file", "topath", "jvm.java.identity", 0, 0),
+        ("io.file", "touri", "jvm.java.io_file_get_path", 0, 0),
+        ("io.file", "tostring", "jvm.java.io_file_get_path", 0, 0),
+        (
+            "io.file",
+            "lastmodified",
+            "jvm.java.current_time_millis",
+            0,
+            0,
+        ),
+        ("io.file", "renameto", "jvm.java.io_file_rename_to", 1, 1),
+        ("io.file", "copyto", "jvm.java.io_file_copy_to", 1, 2),
+        (
+            "io.file",
+            "inputstream",
+            "jvm.java.io_file_input_stream",
+            0,
+            0,
+        ),
+        (
+            "io.file",
+            "outputstream",
+            "jvm.java.io_file_output_stream",
+            0,
+            0,
+        ),
+        (
+            "io.file",
+            "appendstream",
+            "jvm.java.io_file_append_stream",
+            0,
+            0,
+        ),
+        ("io.file", "reader", "jvm.java.io_file_input_stream", 0, 0),
+        ("io.file", "writer", "jvm.java.io_file_output_stream", 0, 0),
         ("io.bytearrayoutputstream", "size", "jvm.java.io_size", 0, 0),
+        ("io.bytearrayoutputstream", "use", "jvm.java.io_use", 1, 1),
+        (
+            "io.bytearrayoutputstream",
+            "flush",
+            "jvm.java.io_flush_close",
+            0,
+            0,
+        ),
+        (
+            "io.bytearrayoutputstream",
+            "close",
+            "jvm.java.io_flush_close",
+            0,
+            0,
+        ),
         (
             "io.bytearrayoutputstream",
             "tostring",
@@ -889,6 +1201,21 @@ fn insert_java_io_methods(root: &mut Subtree) {
         ("io.bytearrayinputstream", "read", "jvm.java.io_read", 0, 1),
         (
             "io.bytearrayinputstream",
+            "copyto",
+            "jvm.java.io_stream_copy_to",
+            1,
+            1,
+        ),
+        ("io.bytearrayinputstream", "use", "jvm.java.io_use", 1, 1),
+        (
+            "io.bytearrayinputstream",
+            "close",
+            "jvm.java.io_flush_close",
+            0,
+            0,
+        ),
+        (
+            "io.bytearrayinputstream",
             "available",
             "jvm.java.io_available",
             0,
@@ -911,17 +1238,86 @@ fn insert_java_io_methods(root: &mut Subtree) {
         ),
         ("io.bytearrayinputstream", "skip", "jvm.java.io_skip", 1, 1),
         ("io.stringreader", "read", "jvm.java.io_read", 0, 1),
+        ("io.stringreader", "use", "jvm.java.io_use", 1, 1),
+        ("io.stringreader", "close", "jvm.java.io_flush_close", 0, 0),
         ("io.stringreader", "mark", "jvm.java.io_mark", 1, 1),
         ("io.stringreader", "reset", "jvm.java.io_reset_pos", 0, 0),
         ("io.stringreader", "skip", "jvm.java.io_skip", 1, 1),
         ("io.chararrayreader", "read", "jvm.java.io_read", 0, 1),
+        ("io.chararrayreader", "use", "jvm.java.io_use", 1, 1),
+        (
+            "io.chararrayreader",
+            "close",
+            "jvm.java.io_flush_close",
+            0,
+            0,
+        ),
         ("io.chararrayreader", "mark", "jvm.java.io_mark", 1, 1),
         ("io.chararrayreader", "reset", "jvm.java.io_reset_pos", 0, 0),
         ("io.chararrayreader", "skip", "jvm.java.io_skip", 1, 1),
         ("io.inputstreamreader", "read", "jvm.java.io_read", 0, 1),
+        (
+            "io.inputstreamreader",
+            "readtext",
+            "jvm.java.io_read_text",
+            0,
+            0,
+        ),
+        ("io.inputstreamreader", "use", "jvm.java.io_use", 1, 1),
+        (
+            "io.inputstreamreader",
+            "close",
+            "jvm.java.io_flush_close",
+            0,
+            0,
+        ),
         ("io.inputstreamreader", "ready", "jvm.java.io_ready", 0, 0),
         ("io.bufferedinputstream", "read", "jvm.java.io_read", 0, 1),
+        (
+            "io.bufferedinputstream",
+            "readtext",
+            "jvm.java.io_read_text",
+            0,
+            0,
+        ),
+        (
+            "io.bufferedinputstream",
+            "copyto",
+            "jvm.java.io_stream_copy_to",
+            1,
+            1,
+        ),
+        ("io.bufferedinputstream", "use", "jvm.java.io_use", 1, 1),
+        (
+            "io.bufferedinputstream",
+            "close",
+            "jvm.java.io_flush_close",
+            0,
+            0,
+        ),
         ("io.filterinputstream", "read", "jvm.java.io_read", 0, 1),
+        (
+            "io.filterinputstream",
+            "readtext",
+            "jvm.java.io_read_text",
+            0,
+            0,
+        ),
+        (
+            "io.filterinputstream",
+            "copyto",
+            "jvm.java.io_stream_copy_to",
+            1,
+            1,
+        ),
+        ("io.filterinputstream", "use", "jvm.java.io_use", 1, 1),
+        (
+            "io.filterinputstream",
+            "close",
+            "jvm.java.io_flush_close",
+            0,
+            0,
+        ),
         ("io.pushbackinputstream", "read", "jvm.java.io_read", 0, 0),
         (
             "io.pushbackinputstream",
@@ -931,6 +1327,21 @@ fn insert_java_io_methods(root: &mut Subtree) {
             1,
         ),
         ("io.bufferedreader", "read", "jvm.java.io_read", 0, 1),
+        (
+            "io.bufferedreader",
+            "readtext",
+            "jvm.java.io_read_text",
+            0,
+            0,
+        ),
+        ("io.bufferedreader", "use", "jvm.java.io_use", 1, 1),
+        (
+            "io.bufferedreader",
+            "close",
+            "jvm.java.io_flush_close",
+            0,
+            0,
+        ),
         (
             "io.bufferedreader",
             "readline",
@@ -994,6 +1405,7 @@ fn insert_java_io_methods(root: &mut Subtree) {
             1,
             3,
         ),
+        ("io.outputstreamwriter", "use", "jvm.java.io_use", 1, 1),
         (
             "io.outputstreamwriter",
             "flush",
@@ -1009,6 +1421,7 @@ fn insert_java_io_methods(root: &mut Subtree) {
             0,
         ),
         ("io.stringwriter", "write", "jvm.java.io_writer_write", 1, 3),
+        ("io.stringwriter", "use", "jvm.java.io_use", 1, 1),
         (
             "io.stringwriter",
             "append",
@@ -1032,6 +1445,7 @@ fn insert_java_io_methods(root: &mut Subtree) {
             1,
             3,
         ),
+        ("io.chararraywriter", "use", "jvm.java.io_use", 1, 1),
         (
             "io.chararraywriter",
             "tochararray",
@@ -1174,9 +1588,41 @@ fn insert_java_io_methods(root: &mut Subtree) {
     for (type_path, returns) in [
         ("io.printwriter", &[("append", "java.io.PrintWriter")][..]),
         ("io.stringwriter", &[("append", "java.io.StringWriter")][..]),
+        (
+            "io.file",
+            &[
+                ("createtempfile", "java.io.File"),
+                ("copyto", "java.io.File"),
+                ("inputstream", "java.io.ByteArrayInputStream"),
+                ("outputstream", "java.io.ByteArrayOutputStream"),
+                ("appendstream", "java.io.ByteArrayOutputStream"),
+                ("reader", "java.io.InputStreamReader"),
+                ("writer", "java.io.OutputStreamWriter"),
+                ("getparentfile", "java.io.File"),
+                ("parentfile", "java.io.File"),
+                ("getabsolutefile", "java.io.File"),
+                ("absolutefile", "java.io.File"),
+                ("topath", "java.io.File"),
+            ][..],
+        ),
     ] {
         merge_type_member_returns(root, type_path, returns);
     }
+    merge_type_member_returns(
+        root,
+        "io.file",
+        &[
+            ("exists", "Boolean"),
+            ("delete", "Boolean"),
+            ("mkdir", "Boolean"),
+            ("mkdirs", "Boolean"),
+            ("isfile", "Boolean"),
+            ("isdirectory", "Boolean"),
+            ("canread", "Boolean"),
+            ("canwrite", "Boolean"),
+            ("canexecute", "Boolean"),
+        ],
+    );
 }
 
 /// `java.util.EnumSet` and `java.lang.Enum` — declared as TREE data, children
@@ -1212,7 +1658,6 @@ fn insert_java_util_enum_set(root: &mut Subtree) {
         ("equals", "jvm.java.enum_set_equals", 1, 1),
         ("hashcode", "jvm.java.enum_set_hash_code", 0, 0),
         ("iterator", "jvm.java.enum_set_iterator", 0, 0),
-        ("getclass", "jvm.java.enum_set_get_class", 0, 0),
     ];
 
     for (member, emit, min_args, max_args) in STATICS {
@@ -2669,6 +3114,18 @@ pub const JAVA_TYPES: &[JavaType] = &[
         None,
     ),
     t(
+        "Pattern",
+        "util.regex",
+        &["Pattern", "Object"],
+        None,
+    ),
+    t(
+        "Matcher",
+        "util.regex",
+        &["Matcher", "Object"],
+        None,
+    ),
+    t(
         "ByteArrayOutputStream",
         "io",
         &[
@@ -2690,6 +3147,12 @@ pub const JAVA_TYPES: &[JavaType] = &[
             "AutoCloseable",
             "Object",
         ],
+        None,
+    ),
+    t(
+        "File",
+        "io",
+        &["File", "Serializable", "Comparable", "Object"],
         None,
     ),
     t(
@@ -3098,6 +3561,7 @@ pub fn register_namespace_tree() {
         insert_java_stream_statics(&mut root);
         insert_java_net_url_uri(&mut root);
         insert_java_util_collection_methods(&mut root);
+        insert_java_util_regex(&mut root);
         insert_java_math_biginteger_methods(&mut root);
         insert_java_util_collection_statics(&mut root);
         insert_java_util_enum_set(&mut root);

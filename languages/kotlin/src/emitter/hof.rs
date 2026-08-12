@@ -13,8 +13,10 @@
 //! order), and Pairs via `tuples::emit_tuple`, which stamps the tag the
 //! renderer's `(a, b)` bracket decision reads.
 
-use vybe_compiler::primitives::instructions::core_wasm;
-use vybe_compiler::primitives::{callable, collections, dict, loops, ops, sets, tuples};
+use vybe_compiler::primitives::instructions::{core_wasm, host};
+use vybe_compiler::primitives::{
+    callable, collections, dict, generators, loops, ops, sets, tuples,
+};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
@@ -105,6 +107,451 @@ fn pop_recv_fn(chunks: &mut [Chunk], current: usize, line: u32) -> (u16, u16) {
     set(chunks, current, f, line);
     set(chunks, current, arr, line);
     (arr, f)
+}
+
+// ── Sequence facade ────────────────────────────────────────────────────────
+
+fn object_get(chunks: &mut Vec<Chunk>, current: usize, object: u16, key: &str, line: u32) {
+    get(chunks, current, object, line);
+    chunks[current].emit_string_const(key, line);
+    host::emit(&mut chunks[current], "ecma:object", "get", 2, line);
+}
+
+fn object_set_from_slot(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    object: u16,
+    key: &str,
+    value: u16,
+    line: u32,
+) {
+    get(chunks, current, object, line);
+    chunks[current].emit_string_const(key, line);
+    get(chunks, current, value, line);
+    host::emit(&mut chunks[current], "ecma:object", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+}
+
+fn object_set_bool(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    object: u16,
+    key: &str,
+    value: bool,
+    line: u32,
+) {
+    get(chunks, current, object, line);
+    chunks[current].emit_string_const(key, line);
+    chunks[current].emit_bool_const(value, line);
+    host::emit(&mut chunks[current], "ecma:object", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+}
+
+fn object_set_i32(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    object: u16,
+    key: &str,
+    value: i32,
+    line: u32,
+) {
+    get(chunks, current, object, line);
+    chunks[current].emit_string_const(key, line);
+    chunks[current].emit_i32_const(value, line);
+    host::emit(&mut chunks[current], "ecma:object", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+}
+
+fn object_set_null(chunks: &mut Vec<Chunk>, current: usize, object: u16, key: &str, line: u32) {
+    get(chunks, current, object, line);
+    chunks[current].emit_string_const(key, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    host::emit(&mut chunks[current], "ecma:object", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+}
+
+fn throw_illegal_state(chunks: &mut Vec<Chunk>, current: usize, msg: &str, line: u32) {
+    chunks[current].emit_string_const(msg, line);
+    crate::emitter::nullability::emit_exception(chunks, current, 1, "IllegalStateException", line);
+    vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
+}
+
+fn emit_sequence_descriptor(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    source: u16,
+    factory: Option<u16>,
+    map: Option<u16>,
+    take: Option<u16>,
+    take_while: Option<u16>,
+    once: Option<u16>,
+    used: Option<u16>,
+    line: u32,
+) {
+    host::emit(&mut chunks[current], "ecma:object", "new", 0, line);
+    let seq = chunks[current].alloc_scratch(1);
+    set(chunks, current, seq, line);
+    object_set_bool(chunks, current, seq, "__kt_sequence", true, line);
+    object_set_from_slot(chunks, current, seq, "__source", source, line);
+    if let Some(factory) = factory {
+        object_set_from_slot(chunks, current, seq, "__factory", factory, line);
+    } else {
+        object_set_null(chunks, current, seq, "__factory", line);
+    }
+    if let Some(map) = map {
+        object_set_from_slot(chunks, current, seq, "__map", map, line);
+    } else {
+        object_set_null(chunks, current, seq, "__map", line);
+    }
+    if let Some(take) = take {
+        object_set_from_slot(chunks, current, seq, "__take", take, line);
+    } else {
+        object_set_i32(chunks, current, seq, "__take", -1, line);
+    }
+    if let Some(take_while) = take_while {
+        object_set_from_slot(chunks, current, seq, "__takeWhile", take_while, line);
+    } else {
+        object_set_null(chunks, current, seq, "__takeWhile", line);
+    }
+    if let Some(once) = once {
+        object_set_from_slot(chunks, current, seq, "__once", once, line);
+    } else {
+        object_set_bool(chunks, current, seq, "__once", false, line);
+    }
+    if let Some(used) = used {
+        object_set_from_slot(chunks, current, seq, "__used", used, line);
+    } else {
+        object_set_bool(chunks, current, seq, "__used", false, line);
+    }
+    get(chunks, current, seq, line);
+}
+
+fn emit_sequence_to_list_from_slot(chunks: &mut Vec<Chunk>, current: usize, seq: u16, line: u32) {
+    get(chunks, current, seq, line);
+    emit_sequence_to_list(chunks, current, 1, line);
+}
+
+pub fn emit_sequence_of(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    let source = chunks[current].alloc_scratch(1);
+    set(chunks, current, source, line);
+    emit_sequence_descriptor(
+        chunks, current, source, None, None, None, None, None, None, line,
+    );
+}
+
+pub fn emit_sequence_builder(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    let factory = chunks[current].alloc_scratch(1);
+    set(chunks, current, factory, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    let source = chunks[current].alloc_scratch(1);
+    set(chunks, current, source, line);
+    emit_sequence_descriptor(
+        chunks,
+        current,
+        source,
+        Some(factory),
+        None,
+        None,
+        None,
+        None,
+        None,
+        line,
+    );
+}
+
+pub fn emit_sequence_map(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    let f = chunks[current].alloc_scratch(1);
+    let input = chunks[current].alloc_scratch(1);
+    let source = chunks[current].alloc_scratch(1);
+    let factory = chunks[current].alloc_scratch(1);
+    let take = chunks[current].alloc_scratch(1);
+    let take_while = chunks[current].alloc_scratch(1);
+    let once = chunks[current].alloc_scratch(1);
+    let used = chunks[current].alloc_scratch(1);
+    set(chunks, current, f, line);
+    set(chunks, current, input, line);
+    object_get(chunks, current, input, "__source", line);
+    set(chunks, current, source, line);
+    object_get(chunks, current, input, "__factory", line);
+    set(chunks, current, factory, line);
+    object_get(chunks, current, input, "__take", line);
+    set(chunks, current, take, line);
+    object_get(chunks, current, input, "__takeWhile", line);
+    set(chunks, current, take_while, line);
+    object_get(chunks, current, input, "__once", line);
+    set(chunks, current, once, line);
+    object_get(chunks, current, input, "__used", line);
+    set(chunks, current, used, line);
+    emit_sequence_descriptor(
+        chunks,
+        current,
+        source,
+        Some(factory),
+        Some(f),
+        Some(take),
+        Some(take_while),
+        Some(once),
+        Some(used),
+        line,
+    );
+}
+
+pub fn emit_sequence_take(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    let take = chunks[current].alloc_scratch(1);
+    let input = chunks[current].alloc_scratch(1);
+    let source = chunks[current].alloc_scratch(1);
+    let factory = chunks[current].alloc_scratch(1);
+    let map = chunks[current].alloc_scratch(1);
+    let take_while = chunks[current].alloc_scratch(1);
+    let once = chunks[current].alloc_scratch(1);
+    let used = chunks[current].alloc_scratch(1);
+    set(chunks, current, take, line);
+    set(chunks, current, input, line);
+    object_get(chunks, current, input, "__source", line);
+    set(chunks, current, source, line);
+    object_get(chunks, current, input, "__factory", line);
+    set(chunks, current, factory, line);
+    object_get(chunks, current, input, "__map", line);
+    set(chunks, current, map, line);
+    object_get(chunks, current, input, "__takeWhile", line);
+    set(chunks, current, take_while, line);
+    object_get(chunks, current, input, "__once", line);
+    set(chunks, current, once, line);
+    object_get(chunks, current, input, "__used", line);
+    set(chunks, current, used, line);
+    emit_sequence_descriptor(
+        chunks,
+        current,
+        source,
+        Some(factory),
+        Some(map),
+        Some(take),
+        Some(take_while),
+        Some(once),
+        Some(used),
+        line,
+    );
+}
+
+pub fn emit_sequence_take_while(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    let pred = chunks[current].alloc_scratch(1);
+    let input = chunks[current].alloc_scratch(1);
+    let source = chunks[current].alloc_scratch(1);
+    let factory = chunks[current].alloc_scratch(1);
+    let map = chunks[current].alloc_scratch(1);
+    let take = chunks[current].alloc_scratch(1);
+    let once = chunks[current].alloc_scratch(1);
+    let used = chunks[current].alloc_scratch(1);
+    set(chunks, current, pred, line);
+    set(chunks, current, input, line);
+    object_get(chunks, current, input, "__source", line);
+    set(chunks, current, source, line);
+    object_get(chunks, current, input, "__factory", line);
+    set(chunks, current, factory, line);
+    object_get(chunks, current, input, "__map", line);
+    set(chunks, current, map, line);
+    object_get(chunks, current, input, "__take", line);
+    set(chunks, current, take, line);
+    object_get(chunks, current, input, "__once", line);
+    set(chunks, current, once, line);
+    object_get(chunks, current, input, "__used", line);
+    set(chunks, current, used, line);
+    emit_sequence_descriptor(
+        chunks,
+        current,
+        source,
+        Some(factory),
+        Some(map),
+        Some(take),
+        Some(pred),
+        Some(once),
+        Some(used),
+        line,
+    );
+}
+
+pub fn emit_sequence_to_list(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    let seq = chunks[current].alloc_scratch(1);
+    let source = chunks[current].alloc_scratch(1);
+    let factory = chunks[current].alloc_scratch(1);
+    let map = chunks[current].alloc_scratch(1);
+    let take = chunks[current].alloc_scratch(1);
+    let take_while = chunks[current].alloc_scratch(1);
+    let out = chunks[current].alloc_scratch(1);
+    let produced = chunks[current].alloc_scratch(1);
+    let allowed = chunks[current].alloc_scratch(1);
+    let active = chunks[current].alloc_scratch(1);
+    set(chunks, current, seq, line);
+
+    object_get(chunks, current, seq, "__once", line);
+    truthy(chunks, current, line);
+    chunks[current].emit_if(line);
+    object_get(chunks, current, seq, "__used", line);
+    truthy(chunks, current, line);
+    chunks[current].emit_if(line);
+    throw_illegal_state(
+        chunks,
+        current,
+        "This sequence can be consumed only once.",
+        line,
+    );
+    chunks[current].emit_end(line);
+    object_set_bool(chunks, current, seq, "__used", true, line);
+    chunks[current].emit_end(line);
+
+    object_get(chunks, current, seq, "__source", line);
+    set(chunks, current, source, line);
+    object_get(chunks, current, seq, "__factory", line);
+    set(chunks, current, factory, line);
+    object_get(chunks, current, seq, "__map", line);
+    set(chunks, current, map, line);
+    object_get(chunks, current, seq, "__take", line);
+    set(chunks, current, take, line);
+    object_get(chunks, current, seq, "__takeWhile", line);
+    set(chunks, current, take_while, line);
+
+    get(chunks, current, factory, line);
+    truthy(chunks, current, line);
+    chunks[current].emit_if(line);
+    call_fn(chunks, current, factory, &[], line);
+    set(chunks, current, source, line);
+    get(chunks, current, take, line);
+    chunks[current].emit_i32_const(0, line);
+    ops::emit_dyn_lt(&mut chunks[current], line);
+    truthy(chunks, current, line);
+    chunks[current].emit_if(line);
+    get(chunks, current, source, line);
+    generators::emit_drain_into_array(chunks, current, line);
+    set(chunks, current, source, line);
+    chunks[current].emit_else(line);
+    get(chunks, current, source, line);
+    get(chunks, current, take, line);
+    generators::emit_take_into_array(chunks, current, line);
+    set(chunks, current, source, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+
+    collections::emit_array_new(chunks, current, 0, line);
+    set(chunks, current, out, line);
+    chunks[current].emit_i32_const(0, line);
+    set(chunks, current, produced, line);
+    chunks[current].emit_bool_const(true, line);
+    set(chunks, current, active, line);
+
+    let idx = chunks[current].alloc_scratch(1);
+    let elem = chunks[current].alloc_scratch(1);
+    for_each(chunks, current, source, idx, elem, line, |chunks| {
+        chunks[current].emit_bool_const(false, line);
+        set(chunks, current, allowed, line);
+        get(chunks, current, active, line);
+        truthy(chunks, current, line);
+        chunks[current].emit_if(line);
+        get(chunks, current, take, line);
+        chunks[current].emit_i32_const(0, line);
+        ops::emit_dyn_lt(&mut chunks[current], line);
+        truthy(chunks, current, line);
+        chunks[current].emit_if(line);
+        chunks[current].emit_bool_const(true, line);
+        set(chunks, current, allowed, line);
+        chunks[current].emit_else(line);
+        get(chunks, current, produced, line);
+        get(chunks, current, take, line);
+        ops::emit_dyn_lt(&mut chunks[current], line);
+        truthy(chunks, current, line);
+        chunks[current].emit_if(line);
+        chunks[current].emit_bool_const(true, line);
+        set(chunks, current, allowed, line);
+        chunks[current].emit_end(line);
+        chunks[current].emit_end(line);
+        chunks[current].emit_end(line);
+
+        get(chunks, current, allowed, line);
+        truthy(chunks, current, line);
+        chunks[current].emit_if(line);
+        get(chunks, current, map, line);
+        truthy(chunks, current, line);
+        chunks[current].emit_if(line);
+        call_fn(chunks, current, map, &[elem], line);
+        set(chunks, current, elem, line);
+        chunks[current].emit_end(line);
+        get(chunks, current, take_while, line);
+        truthy(chunks, current, line);
+        chunks[current].emit_if(line);
+        call_fn(chunks, current, take_while, &[elem], line);
+        truthy(chunks, current, line);
+        chunks[current].emit_if(line);
+        chunks[current].emit_else(line);
+        chunks[current].emit_bool_const(false, line);
+        set(chunks, current, active, line);
+        chunks[current].emit_bool_const(false, line);
+        set(chunks, current, allowed, line);
+        chunks[current].emit_end(line);
+        chunks[current].emit_end(line);
+        get(chunks, current, allowed, line);
+        truthy(chunks, current, line);
+        chunks[current].emit_if(line);
+        get(chunks, current, out, line);
+        get(chunks, current, elem, line);
+        collections::emit_push(chunks, current, line);
+        chunks[current].emit_op(Op::DROP, line);
+        get(chunks, current, produced, line);
+        chunks[current].emit_i32_const(1, line);
+        ops::emit_dyn_add(&mut chunks[current], line);
+        set(chunks, current, produced, line);
+        chunks[current].emit_end(line);
+        chunks[current].emit_end(line);
+    });
+    get(chunks, current, out, line);
+}
+
+pub fn emit_sequence_constrain_once(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    let seq = chunks[current].alloc_scratch(1);
+    set(chunks, current, seq, line);
+    object_set_bool(chunks, current, seq, "__once", true, line);
+    get(chunks, current, seq, line);
+}
+
+fn emit_sequence_or_collection_list(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    value: u16,
+    line: u32,
+) {
+    object_get(chunks, current, value, "__kt_sequence", line);
+    truthy(chunks, current, line);
+    chunks[current].emit_if_value(line);
+    emit_sequence_to_list_from_slot(chunks, current, value, line);
+    chunks[current].emit_else(line);
+    get(chunks, current, value, line);
+    chunks[current].emit_end(line);
+}
+
+pub fn emit_sequence_zip(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let f = if argc >= 3 {
+        let f = chunks[current].alloc_scratch(1);
+        set(chunks, current, f, line);
+        Some(f)
+    } else {
+        None
+    };
+    let other = chunks[current].alloc_scratch(1);
+    let seq = chunks[current].alloc_scratch(1);
+    let left = chunks[current].alloc_scratch(1);
+    let right = chunks[current].alloc_scratch(1);
+    set(chunks, current, other, line);
+    set(chunks, current, seq, line);
+    emit_sequence_or_collection_list(chunks, current, seq, line);
+    set(chunks, current, left, line);
+    emit_sequence_or_collection_list(chunks, current, other, line);
+    set(chunks, current, right, line);
+    get(chunks, current, left, line);
+    get(chunks, current, right, line);
+    if let Some(f) = f {
+        get(chunks, current, f, line);
+        emit_zip(chunks, current, 3, line);
+    } else {
+        emit_zip(chunks, current, 2, line);
+    }
 }
 
 // ── Predicates over the whole receiver ──────────────────────────────────────
@@ -1129,7 +1576,27 @@ pub fn emit_map_indexed_not_null(chunks: &mut Vec<Chunk>, current: usize, _argc:
 }
 
 /// `associateByTo(dest) { }`.
-pub fn emit_associate_by_to(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+pub fn emit_associate_by_to(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    if argc >= 4 {
+        let vf = chunks[current].alloc_scratch(1);
+        let kf = chunks[current].alloc_scratch(1);
+        let dest = chunks[current].alloc_scratch(1);
+        let arr = chunks[current].alloc_scratch(1);
+        set(chunks, current, vf, line);
+        set(chunks, current, kf, line);
+        set(chunks, current, dest, line);
+        set(chunks, current, arr, line);
+        let idx = chunks[current].alloc_scratch(1);
+        let elem = chunks[current].alloc_scratch(1);
+        for_each(chunks, current, arr, idx, elem, line, |chunks| {
+            get(chunks, current, dest, line);
+            call_fn(chunks, current, kf, &[elem], line);
+            call_fn(chunks, current, vf, &[elem], line);
+            crate::emitter::maps::emit_dict_set_tracked(chunks, current, line);
+        });
+        get(chunks, current, dest, line);
+        return;
+    }
     let f = chunks[current].alloc_scratch(1);
     let dest = chunks[current].alloc_scratch(1);
     let arr = chunks[current].alloc_scratch(1);
@@ -1148,6 +1615,18 @@ pub fn emit_associate_with(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, l
     set(chunks, current, out, line);
     emit_associate_loop(chunks, current, arr, f, out, AssocKind::WithValue, line);
     get(chunks, current, out, line);
+}
+
+/// `associateWithTo(dest) { }`.
+pub fn emit_associate_with_to(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    let f = chunks[current].alloc_scratch(1);
+    let dest = chunks[current].alloc_scratch(1);
+    let arr = chunks[current].alloc_scratch(1);
+    set(chunks, current, f, line);
+    set(chunks, current, dest, line);
+    set(chunks, current, arr, line);
+    emit_associate_loop(chunks, current, arr, f, dest, AssocKind::WithValue, line);
+    get(chunks, current, dest, line);
 }
 
 /// `associate { it to … }` → the lambda returns a Pair `[k, v]`.
@@ -2399,6 +2878,14 @@ pub fn emit_running_fold_indexed(chunks: &mut Vec<Chunk>, current: usize, _argc:
 /// plus per-index initializer. The 1-arg numeric-array form zero-fills.
 /// Stack: [n, (f)] → [array].
 pub fn emit_array_init(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let extra_count = argc.saturating_sub(2);
+    let mut extra_slots = Vec::new();
+    for _ in 0..extra_count {
+        let slot = chunks[current].alloc_scratch(1);
+        set(chunks, current, slot, line);
+        extra_slots.push(slot);
+    }
+    extra_slots.reverse();
     let f = if argc >= 2 {
         let f = chunks[current].alloc_scratch(1);
         set(chunks, current, f, line);
@@ -2426,7 +2913,10 @@ pub fn emit_array_init(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
 
     get(chunks, current, out, line);
     if let Some(f) = f {
-        call_fn(chunks, current, f, &[i], line);
+        let mut call_args = Vec::with_capacity(1 + extra_slots.len());
+        call_args.push(i);
+        call_args.extend(extra_slots.iter().copied());
+        call_fn(chunks, current, f, &call_args, line);
     } else {
         core_wasm::i32_const(&mut chunks[current], line, 0);
     }

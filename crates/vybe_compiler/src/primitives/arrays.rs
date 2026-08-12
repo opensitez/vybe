@@ -712,7 +712,7 @@ impl Compiler {
                     }
                 };
                 self.emit_global_read(&ctor_global);
-                self.emit_u8_u8(Op::CALL_REF, 0, 1);
+                self.emit_direct_callable_invoke(0);
                 return Ok(());
             } else {
                 match effective_type_hint.map(|s| s.to_lowercase()).as_deref() {

@@ -8232,34 +8232,12 @@ impl Walker {
             BinOp::Add if left_complex || right_complex || left_i || right_i => {
                 let (left_re, left_im) = self.complex_parts(left);
                 let (right_re, right_im) = self.complex_parts(right);
-                return self.complex_object(
-                    expr(ExprKind::Binary {
-                        op: BinOp::Add,
-                        left: Box::new(left_re),
-                        right: Box::new(right_re),
-                    }),
-                    expr(ExprKind::Binary {
-                        op: BinOp::Add,
-                        left: Box::new(left_im),
-                        right: Box::new(right_im),
-                    }),
-                );
+                return complex::add(left_re, left_im, right_re, right_im);
             }
             BinOp::Sub if left_complex || right_complex || left_i || right_i => {
                 let (left_re, left_im) = self.complex_parts(left);
                 let (right_re, right_im) = self.complex_parts(right);
-                return self.complex_object(
-                    expr(ExprKind::Binary {
-                        op: BinOp::Sub,
-                        left: Box::new(left_re),
-                        right: Box::new(right_re),
-                    }),
-                    expr(ExprKind::Binary {
-                        op: BinOp::Sub,
-                        left: Box::new(left_im),
-                        right: Box::new(right_im),
-                    }),
-                );
+                return complex::sub(left_re, left_im, right_re, right_im);
             }
             BinOp::Mul if left_complex || right_complex || left_i || right_i => {
                 if left_i && right_i {
@@ -8287,33 +8265,7 @@ impl Walker {
                 }
                 let (a_re, a_im) = self.complex_parts(left);
                 let (b_re, b_im) = self.complex_parts(right);
-                let real = expr(ExprKind::Binary {
-                    op: BinOp::Sub,
-                    left: Box::new(expr(ExprKind::Binary {
-                        op: BinOp::Mul,
-                        left: Box::new(a_re.clone()),
-                        right: Box::new(b_re.clone()),
-                    })),
-                    right: Box::new(expr(ExprKind::Binary {
-                        op: BinOp::Mul,
-                        left: Box::new(a_im.clone()),
-                        right: Box::new(b_im.clone()),
-                    })),
-                });
-                let imag = expr(ExprKind::Binary {
-                    op: BinOp::Add,
-                    left: Box::new(expr(ExprKind::Binary {
-                        op: BinOp::Mul,
-                        left: Box::new(a_re),
-                        right: Box::new(b_im),
-                    })),
-                    right: Box::new(expr(ExprKind::Binary {
-                        op: BinOp::Mul,
-                        left: Box::new(a_im),
-                        right: Box::new(b_re),
-                    })),
-                });
-                return self.complex_object(real, imag);
+                return complex::mul(a_re, a_im, b_re, b_im);
             }
             _ => {}
         }
@@ -8425,174 +8377,44 @@ impl Walker {
     }
 
     fn complex_conj(&self, value: Expression) -> Expression {
-        self.complex_object(
+        complex::conj(
             self.complex_real_part(value.clone()),
-            expr(ExprKind::Unary {
-                op: UnaryOp::Neg,
-                expr: Box::new(self.complex_imag_part(value)),
-            }),
-        )
-    }
-
-    fn complex_divide(
-        &self,
-        a_re: Expression,
-        a_im: Expression,
-        b_re: Expression,
-        b_im: Expression,
-    ) -> Expression {
-        let denom = binary_expr(
-            BinOp::Add,
-            binary_expr(BinOp::Mul, b_re.clone(), b_re.clone()),
-            binary_expr(BinOp::Mul, b_im.clone(), b_im.clone()),
-        );
-        self.complex_object(
-            binary_expr(
-                BinOp::Div,
-                binary_expr(
-                    BinOp::Add,
-                    binary_expr(BinOp::Mul, a_re.clone(), b_re.clone()),
-                    binary_expr(BinOp::Mul, a_im.clone(), b_im.clone()),
-                ),
-                denom.clone(),
-            ),
-            binary_expr(
-                BinOp::Div,
-                binary_expr(
-                    BinOp::Sub,
-                    binary_expr(BinOp::Mul, a_im, b_re),
-                    binary_expr(BinOp::Mul, a_re, b_im),
-                ),
-                denom,
-            ),
+            self.complex_imag_part(value),
         )
     }
 
     fn complex_exp_parts(&self, re: Expression, im: Expression) -> Expression {
-        let mag = ecma_math_call("exp", re);
-        self.complex_object(
-            binary_expr(BinOp::Mul, mag.clone(), ecma_math_call("cos", im.clone())),
-            binary_expr(BinOp::Mul, mag, ecma_math_call("sin", im)),
-        )
+        complex::exp(re, im)
     }
 
     fn complex_log_parts(&self, re: Expression, im: Expression) -> Expression {
-        self.complex_object(
-            ecma_math_call("log", complex::cabs(re.clone(), im.clone())),
-            complex::carg(re, im),
-        )
+        complex::log(re, im)
     }
 
     fn complex_sqrt_parts(&self, re: Expression, im: Expression) -> Expression {
-        let r = complex::cabs(re.clone(), im.clone());
-        let real = ecma_math_call(
-            "sqrt",
-            binary_expr(
-                BinOp::Div,
-                binary_expr(BinOp::Add, r.clone(), re.clone()),
-                int_lit(2),
-            ),
-        );
-        let imag_mag = ecma_math_call(
-            "sqrt",
-            binary_expr(
-                BinOp::Div,
-                binary_expr(BinOp::Sub, r, re.clone()),
-                int_lit(2),
-            ),
-        );
-        let sign = ternary_expr(
-            binary_expr(BinOp::Lt, im.clone(), int_lit(0)),
-            int_lit(-1),
-            int_lit(1),
-        );
-        let imag = ternary_expr(
-            binary_expr(BinOp::Eq, im, int_lit(0)),
-            ternary_expr(
-                binary_expr(BinOp::Lt, re, int_lit(0)),
-                imag_mag.clone(),
-                int_lit(0),
-            ),
-            binary_expr(BinOp::Mul, sign, imag_mag),
-        );
-        self.complex_object(real, imag)
+        complex::sqrt(re, im)
     }
 
     fn complex_sin_parts(&self, re: Expression, im: Expression) -> Expression {
-        self.complex_object(
-            binary_expr(
-                BinOp::Mul,
-                ecma_math_call("sin", re.clone()),
-                ecma_math_call("cosh", im.clone()),
-            ),
-            binary_expr(
-                BinOp::Mul,
-                ecma_math_call("cos", re),
-                ecma_math_call("sinh", im),
-            ),
-        )
+        complex::sin(re, im)
     }
 
     fn complex_cos_parts(&self, re: Expression, im: Expression) -> Expression {
-        self.complex_object(
-            binary_expr(
-                BinOp::Mul,
-                ecma_math_call("cos", re.clone()),
-                ecma_math_call("cosh", im.clone()),
-            ),
-            unary_expr(
-                UnaryOp::Neg,
-                binary_expr(
-                    BinOp::Mul,
-                    ecma_math_call("sin", re),
-                    ecma_math_call("sinh", im),
-                ),
-            ),
-        )
+        complex::cos(re, im)
     }
 
     fn complex_sinh_parts(&self, re: Expression, im: Expression) -> Expression {
-        self.complex_object(
-            binary_expr(
-                BinOp::Mul,
-                ecma_math_call("sinh", re.clone()),
-                ecma_math_call("cos", im.clone()),
-            ),
-            binary_expr(
-                BinOp::Mul,
-                ecma_math_call("cosh", re),
-                ecma_math_call("sin", im),
-            ),
-        )
+        complex::sinh(re, im)
     }
 
     fn complex_cosh_parts(&self, re: Expression, im: Expression) -> Expression {
-        self.complex_object(
-            binary_expr(
-                BinOp::Mul,
-                ecma_math_call("cosh", re.clone()),
-                ecma_math_call("cos", im.clone()),
-            ),
-            binary_expr(
-                BinOp::Mul,
-                ecma_math_call("sinh", re),
-                ecma_math_call("sin", im),
-            ),
-        )
+        complex::cosh(re, im)
     }
 
     fn complex_pow_values(&self, base: Expression, exponent: Expression) -> Expression {
         let (b_re, b_im) = self.complex_parts(base);
-        let log_base = self.complex_log_parts(b_re, b_im);
-        let (l_re, l_im) = self.complex_parts(log_base);
         let (e_re, e_im) = self.complex_parts(exponent);
-        let product = self.rewrite_complex_binary_expr(binary_expr(
-            BinOp::Mul,
-            self.complex_object(e_re, e_im),
-            self.complex_object(l_re, l_im),
-        ));
-        let (p_re, p_im) = self.complex_parts(product);
-        self.complex_exp_parts(p_re, p_im)
+        complex::pow(b_re, b_im, e_re, e_im)
     }
 
     fn rewrite_pointer_zero_comparison(&self, e: Expression) -> Expression {
@@ -12515,14 +12337,7 @@ impl Walker {
                         if self.is_complex_expr(&a.value) {
                             let re = self.complex_real_part(a.value.clone());
                             let im = self.complex_imag_part(a.value);
-                            let sinz = self.complex_sin_parts(re.clone(), im.clone());
-                            let cosz = self.complex_cos_parts(re, im);
-                            return self.complex_divide(
-                                self.complex_real_part(sinz.clone()),
-                                self.complex_imag_part(sinz),
-                                self.complex_real_part(cosz.clone()),
-                                self.complex_imag_part(cosz),
-                            );
+                            return complex::tan(re, im);
                         }
                         return ecma_math_call("tan", a.value);
                     }
@@ -12532,14 +12347,8 @@ impl Walker {
                     if let Some(a) = args.into_iter().next() {
                         if self.is_complex_expr(&a.value) {
                             let re = self.complex_real_part(a.value.clone());
-                            return self.complex_object(
-                                ternary_expr(
-                                    binary_expr(BinOp::Gt, re.clone(), int_lit(1)),
-                                    float_lit(std::f64::consts::FRAC_PI_2),
-                                    ecma_math_call("asin", re),
-                                ),
-                                int_lit(0),
-                            );
+                            let im = self.complex_imag_part(a.value);
+                            return complex::asin(re, im);
                         }
                         return ecma_math_call("asin", a.value);
                     }
@@ -12549,23 +12358,8 @@ impl Walker {
                     if let Some(a) = args.into_iter().next() {
                         if self.is_complex_expr(&a.value) {
                             let re = self.complex_real_part(a.value.clone());
-                            let acosh = ecma_math_call(
-                                "log",
-                                binary_expr(
-                                    BinOp::Add,
-                                    re.clone(),
-                                    ecma_math_call(
-                                        "sqrt",
-                                        binary_expr(
-                                            BinOp::Sub,
-                                            binary_expr(BinOp::Mul, re.clone(), re),
-                                            int_lit(1),
-                                        ),
-                                    ),
-                                ),
-                            );
-                            return self
-                                .complex_object(int_lit(0), unary_expr(UnaryOp::Neg, acosh));
+                            let im = self.complex_imag_part(a.value);
+                            return complex::acos(re, im);
                         }
                         return ecma_math_call("acos", a.value);
                     }
@@ -12574,20 +12368,9 @@ impl Walker {
                 "catan" | "catanf" | "atan" | "atanf" => {
                     if let Some(a) = args.into_iter().next() {
                         if self.is_complex_expr(&a.value) {
+                            let re = self.complex_real_part(a.value.clone());
                             let im = self.complex_imag_part(a.value);
-                            let imag = binary_expr(
-                                BinOp::Mul,
-                                float_lit(0.5),
-                                ecma_math_call(
-                                    "log",
-                                    binary_expr(
-                                        BinOp::Div,
-                                        binary_expr(BinOp::Add, im.clone(), int_lit(1)),
-                                        binary_expr(BinOp::Sub, im, int_lit(1)),
-                                    ),
-                                ),
-                            );
-                            return self.complex_object(int_lit(0), imag);
+                            return complex::atan(re, im);
                         }
                         return ecma_math_call("atan", a.value);
                     }
@@ -12620,14 +12403,7 @@ impl Walker {
                         if self.is_complex_expr(&a.value) {
                             let re = self.complex_real_part(a.value.clone());
                             let im = self.complex_imag_part(a.value);
-                            let sinhz = self.complex_sinh_parts(re.clone(), im.clone());
-                            let coshz = self.complex_cosh_parts(re, im);
-                            return self.complex_divide(
-                                self.complex_real_part(sinhz.clone()),
-                                self.complex_imag_part(sinhz),
-                                self.complex_real_part(coshz.clone()),
-                                self.complex_imag_part(coshz),
-                            );
+                            return complex::tanh(re, im);
                         }
                         return ecma_math_call("tanh", a.value);
                     }
@@ -12637,16 +12413,7 @@ impl Walker {
                     if let Some(a) = args.into_iter().next() {
                         let re = self.complex_real_part(a.value.clone());
                         let im = self.complex_imag_part(a.value);
-                        let inf = binary_expr(BinOp::Div, float_lit(1.0), float_lit(0.0));
-                        return ternary_expr(
-                            binary_expr(
-                                BinOp::Or,
-                                binary_expr(BinOp::Eq, im.clone(), inf.clone()),
-                                binary_expr(BinOp::Eq, im, unary_expr(UnaryOp::Neg, inf.clone())),
-                            ),
-                            self.complex_object(inf, int_lit(0)),
-                            self.complex_object(re, int_lit(0)),
-                        );
+                        return complex::proj(re, im);
                     }
                     return self.complex_object(int_lit(0), int_lit(0));
                 }

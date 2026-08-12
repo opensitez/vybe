@@ -1236,6 +1236,27 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.session_start" => {
             crate::emitter::misc_adapter::emit_php_session_start(chunks, current, argc, line)
         }
+        "php.session_id" => {
+            crate::emitter::misc_adapter::emit_php_session_id(chunks, current, argc, line)
+        }
+        "php.session_name" => {
+            crate::emitter::misc_adapter::emit_php_session_name(chunks, current, argc, line)
+        }
+        "php.session_status" => {
+            crate::emitter::misc_adapter::emit_php_session_status(chunks, current, argc, line)
+        }
+        "php.session_regenerate_id" => crate::emitter::misc_adapter::emit_php_session_regenerate_id(
+            chunks, current, argc, line,
+        ),
+        "php.session_write_close" => crate::emitter::misc_adapter::emit_php_session_write_close(
+            chunks, current, argc, line,
+        ),
+        "php.session_abort" => {
+            crate::emitter::misc_adapter::emit_php_session_abort(chunks, current, argc, line)
+        }
+        "php.session_reset" => {
+            crate::emitter::misc_adapter::emit_php_session_reset(chunks, current, argc, line)
+        }
         "php.session_unset" => {
             crate::emitter::misc_adapter::emit_php_session_unset(chunks, current, argc, line)
         }

@@ -261,8 +261,23 @@ pub fn emit_urljoin(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         return;
     }
     let base = stash_args(chunks, current, argc, line);
-    lget(chunks, current, base + 1, line);
+    let normalized_base = chunks[current].alloc_scratch(1);
+
     lget(chunks, current, base, line);
+    chunks[current].emit_string_const("/", line);
+    call_import(chunks, current, "ecma:string", "endsWith", 2, line);
+    chunks[current].emit_if_value(line);
+    lget(chunks, current, base, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_i32_const(-1, line);
+    call_import(chunks, current, "ecma:string", "slice", 3, line);
+    chunks[current].emit_else(line);
+    lget(chunks, current, base, line);
+    chunks[current].emit_end(line);
+    lset(chunks, current, normalized_base, line);
+
+    lget(chunks, current, base + 1, line);
+    lget(chunks, current, normalized_base, line);
     call_import(chunks, current, "web:url", "new", 2, line);
     call_import(chunks, current, "web:url", "urlToString", 1, line);
 }

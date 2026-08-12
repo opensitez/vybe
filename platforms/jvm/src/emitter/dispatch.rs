@@ -15,6 +15,7 @@ use vybe_runtime::Chunk;
 
 pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
     use crate::emitter::arrays_adapter as arrays;
+    use crate::emitter::base64_adapter as base64;
     use crate::emitter::biginteger_adapter as bigint;
     use crate::emitter::bitset_adapter as bitset;
     use crate::emitter::collection_adapter as collection;
@@ -25,6 +26,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     use crate::emitter::math_adapter as math;
     use crate::emitter::optional_adapter as optional;
     use crate::emitter::random_adapter as random;
+    use crate::emitter::regex_adapter as regex;
     use crate::emitter::stream_adapter as stream;
     use crate::emitter::string_adapter;
     use crate::emitter::stringbuilder_adapter as sb;
@@ -102,9 +104,49 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
 
         // ── construction ──
+        "jvm.java.base64_encode_binary_string" => {
+            base64::emit_encode_binary_string(chunks, current, line)
+        }
+        "jvm.java.base64_decode_binary_string" => {
+            base64::emit_decode_binary_string(chunks, current, line)
+        }
         "jvm.java.net.url_new" => url::emit_url_new(chunks, current, argc, line),
         "jvm.java.net.uri_new" => url::emit_uri_new(chunks, current, argc, line),
         "jvm.java.random_new" => random::emit_new(chunks, current, argc, line),
+        "jvm.java.regex_pattern_compile" => regex::emit_pattern_compile(chunks, current, argc, line),
+        "jvm.java.regex_pattern_compile_flags" => {
+            regex::emit_pattern_compile_flags(chunks, current, argc, line)
+        }
+        "jvm.java.regex_pattern_pattern" => regex::emit_pattern_pattern(chunks, current, line),
+        "jvm.java.regex_pattern_flags" => regex::emit_pattern_flags(chunks, current, line),
+        "jvm.java.regex_pattern_matcher" => regex::emit_pattern_matcher(chunks, current, line),
+        "jvm.java.regex_pattern_match_full" => regex::emit_pattern_match_full(chunks, current, line),
+        "jvm.java.regex_pattern_match_entire" => {
+            regex::emit_pattern_match_entire(chunks, current, line)
+        }
+        "jvm.java.regex_pattern_contains" => regex::emit_pattern_contains(chunks, current, line),
+        "jvm.java.regex_pattern_find" => regex::emit_pattern_find(chunks, current, argc, line),
+        "jvm.java.regex_pattern_matches_at" => {
+            regex::emit_pattern_matches_at(chunks, current, argc, line)
+        }
+        "jvm.java.regex_pattern_find_all" => {
+            regex::emit_pattern_find_all(chunks, current, argc, line)
+        }
+        "jvm.java.regex_pattern_split" => regex::emit_pattern_split(chunks, current, argc, line),
+        "jvm.java.regex_pattern_replace_all" => {
+            regex::emit_pattern_replace_all(chunks, current, false, line)
+        }
+        "jvm.java.regex_pattern_replace_first" => {
+            regex::emit_pattern_replace_all(chunks, current, true, line)
+        }
+        "jvm.java.regex_matcher_find" => regex::emit_matcher_find(chunks, current, line),
+        "jvm.java.regex_matcher_matches" => regex::emit_matcher_matches(chunks, current, line),
+        "jvm.java.regex_matcher_group" => regex::emit_matcher_group(chunks, current, argc, line),
+        "jvm.java.regex_matcher_start" => regex::emit_matcher_start(chunks, current, line),
+        "jvm.java.regex_matcher_end" => regex::emit_matcher_end(chunks, current, line),
+        "jvm.java.regex_matcher_reset" => regex::emit_matcher_reset(chunks, current, argc, line),
+        "jvm.java.regex_match_result_value" => regex::emit_match_result_value(chunks, current, line),
+        "jvm.java.regex_match_result_range" => regex::emit_match_result_range(chunks, current, line),
         "jvm.java.io_byte_array_output_stream_new" => {
             io::emit_byte_array_output_stream_new(chunks, current, argc, line)
         }
@@ -114,6 +156,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "jvm.java.io_sequence_input_stream_new" => {
             io::emit_sequence_input_stream_new(chunks, current, argc, line)
         }
+        "jvm.java.io_file_new" => io::emit_file_new(chunks, current, argc, line),
         "jvm.java.io_print_writer_new" => io::emit_print_writer_new(chunks, current, argc, line),
         "jvm.java.io_passthrough_new" => io::emit_passthrough_new(chunks, current, argc, line),
         "jvm.java.io_string_writer_new" => io::emit_string_writer_new(chunks, current, argc, line),
@@ -422,8 +465,48 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "jvm.java.io_ready" => io::emit_ready(chunks, current, line),
         "jvm.java.io_unread" => io::emit_unread(chunks, current, line),
         "jvm.java.io_read_line" => io::emit_read_line(chunks, current, line),
+        "jvm.java.io_read_text" => io::emit_read_text(chunks, current, line),
+        "jvm.java.io_use" => io::emit_use(chunks, current, argc, line),
+        "jvm.java.io_stream_copy_to" => io::emit_stream_copy_to(chunks, current, line),
         "jvm.java.io_get_line_number" => io::emit_get_line_number(chunks, current, line),
         "jvm.java.io_read_utf" => io::emit_read_utf(chunks, current, line),
+        "jvm.java.io_file_write_text" => {
+            io::emit_file_write_text(chunks, current, argc, false, line)
+        }
+        "jvm.java.io_file_append_text" => {
+            io::emit_file_write_text(chunks, current, argc, true, line)
+        }
+        "jvm.java.io_file_read_text" => io::emit_file_read_text(chunks, current, argc, line),
+        "jvm.java.io_file_read_lines" => io::emit_file_read_lines(chunks, current, argc, line),
+        "jvm.java.io_file_list_files" => io::emit_file_list_files(chunks, current, argc, line),
+        "jvm.java.io_file_walk" => io::emit_file_walk(chunks, current, line),
+        "jvm.java.io_file_exists" => io::emit_file_exists(chunks, current, line),
+        "jvm.java.io_file_delete" => io::emit_file_delete(chunks, current, line),
+        "jvm.java.io_file_mkdirs" => io::emit_file_mkdirs(chunks, current, line),
+        "jvm.java.io_file_is_file" => io::emit_file_is_directory(chunks, current, false, line),
+        "jvm.java.io_file_is_directory" => io::emit_file_is_directory(chunks, current, true, line),
+        "jvm.java.io_file_get_path" => io::emit_file_get_path(chunks, current, line),
+        "jvm.java.io_file_get_name" => io::emit_file_get_name(chunks, current, line),
+        "jvm.java.io_file_extension" => io::emit_file_extension(chunks, current, line),
+        "jvm.java.io_file_name_without_extension" => {
+            io::emit_file_name_without_extension(chunks, current, line)
+        }
+        "jvm.java.io_file_parent" => io::emit_file_parent(chunks, current, line),
+        "jvm.java.io_file_parent_file" => io::emit_file_parent_file(chunks, current, line),
+        "jvm.java.io_file_create_temp" => io::emit_file_create_temp(chunks, current, argc, line),
+        "jvm.java.io_file_rename_to" => io::emit_file_rename_to(chunks, current, line),
+        "jvm.java.io_file_copy_to" => io::emit_file_copy_to(chunks, current, argc, line),
+        "jvm.java.io_file_input_stream" => io::emit_file_input_stream(chunks, current, line),
+        "jvm.java.io_file_output_stream" => {
+            io::emit_file_output_stream(chunks, current, false, line)
+        }
+        "jvm.java.io_file_append_stream" => {
+            io::emit_file_output_stream(chunks, current, true, line)
+        }
+        "jvm.java.current_time_millis" => {
+            let now = chunks[current].add_import("ecma:date", "now");
+            chunks[current].emit_call(now, 0, line);
+        }
         "jvm.java.io_false" => {
             chunks[current].emit_bool_const(false, line);
         }
@@ -848,6 +931,8 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "jvm.java.iterator_previous_index" => {
             collection::emit_iterator_index(chunks, current, true, line)
         }
+        "jvm.java.iterator_set" => collection::emit_iterator_set(chunks, current, line),
+        "jvm.java.iterator_add" => collection::emit_iterator_add(chunks, current, line),
         "jvm.java.add" => collection::emit_add(chunks, current, argc, line),
         "jvm.java.get" => collection::emit_get(chunks, current, line),
         "jvm.java.list_set" => collection::emit_set(chunks, current, line),
@@ -865,6 +950,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "jvm.java.poll_first" => collection::emit_poll(chunks, current, false, line),
         "jvm.java.poll_last" => collection::emit_poll(chunks, current, true, line),
         "jvm.java.queue_poll" => collection::emit_poll(chunks, current, false, line),
+        "jvm.java.priority_poll" => collection::emit_priority_poll(chunks, current, line),
         "jvm.java.priority_add" => collection::emit_priority_add(chunks, current, line),
         "jvm.java.priority_peek" => collection::emit_priority_peek(chunks, current, line),
         "jvm.java.sorted_add" => sorted_collection::emit_sorted_add(chunks, current, line),

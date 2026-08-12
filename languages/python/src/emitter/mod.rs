@@ -5,7 +5,9 @@
 //! `common:python.*` from the Python profile.
 
 pub mod array_adapter;
+pub mod base64_adapter;
 pub mod bisect_adapter;
+pub mod calendar_adapter;
 pub mod collections_adapter;
 pub mod dataclass_adapter;
 pub mod datetime_adapter;
@@ -27,6 +29,7 @@ pub mod sql_adapter;
 pub mod statistics_adapter;
 pub mod string_adapter;
 pub mod struct_adapter;
+pub mod thread_adapter;
 pub mod time_adapter;
 pub mod tree_register;
 pub mod url_adapter;

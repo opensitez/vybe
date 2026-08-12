@@ -1329,7 +1329,7 @@ impl Compiler {
                     self.set_js_this_from_stack();
                     self.emit_u16(Op::LOCAL_GET, method_slot);
                     self.emit_u16(Op::LOCAL_GET, lhs_slot);
-                    self.emit_u8_u8(Op::CALL_REF, 1, 1);
+                    self.emit_direct_callable_invoke(1);
                     {
                         let line = self.line;
                         // Convert dynamic result to Bool (consistent with

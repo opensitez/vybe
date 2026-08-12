@@ -818,6 +818,34 @@ pub fn emit_int_to_hex(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     }
 }
 
+/// `RGB(r, g, b)` — a colour, as `#RRGGBB`.
+///
+/// Delphi's `TColor` is a packed integer, but the thing it is ASSIGNED to is a
+/// CSS colour, and `#RRGGBB` is the spelling both ends already agree on:
+/// `vybe_widgets`' `parse_color` reads it, and so does a browser. Packing it
+/// into an integer here would mean unpacking it again at every property write,
+/// with VCL's byte order (`$00BBGGRR`, blue-first) as a second thing to get
+/// wrong.
+///
+/// Two hex digits per component, zero-padded, reusing `IntToHex` — a colour is
+/// not a second hex formatter.
+pub fn emit_rgb(chunks: &mut [Chunk], current: usize, line: u32) {
+    let blue = chunks[current].alloc_scratch(1);
+    let green = chunks[current].alloc_scratch(1);
+    let red = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, blue, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, green, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, red, line);
+
+    chunks[current].emit_string_const("#", line);
+    for slot in [red, green, blue] {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+        chunks[current].emit_f64_const(2.0, line);
+        emit_int_to_hex(chunks, current, 2, line);
+        vybe_compiler::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+    }
+}
+
 /// `BoolToStr(b)` → `true`/`false`; `BoolToStr(b, True)` → `True`/`False`.
 pub fn emit_bool_to_str(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     if argc >= 2 {
@@ -840,6 +868,38 @@ pub fn emit_bool_to_str(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
 pub fn emit_ansi_case(chunks: &mut [Chunk], current: usize, upper: bool, line: u32) {
     let m = if upper { "toUpperCase" } else { "toLowerCase" };
     host(chunks, current, "ecma:string", m, 1, line);
+}
+
+/// `ExtractFileExt(path)` — the extension, **including the dot**.
+///
+/// The path splitting itself is `wasi:filesystem.pathGetExtension`, which every
+/// language's path functions already go through (PHP's `pathinfo` family too) —
+/// there is no second path parser here. It answers `pas`, because that is what
+/// a path component IS; Delphi answers `.pas`. So the dot is the whole of the
+/// adaptation, and it belongs in the language rather than in the host.
+///
+/// The empty case must stay empty: `ExtractFileExt('README')` is `''`, not
+/// `'.'`, which is why this is a branch and not a concatenation.
+pub fn emit_extract_file_ext(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let path_ext = chunk.add_import("wasi:filesystem", "pathGetExtension");
+    let ext = chunk.alloc_scratch(1);
+
+    chunk.emit_call(path_ext, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, ext, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, ext, line);
+    chunk.emit_string_const("", line);
+    vybe_compiler::primitives::ops::emit_dyn_ne(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    chunk.emit_string_const(".", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, ext, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, ext, line);
+    chunk.emit_end(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, ext, line);
 }
 
 /// `SameStr(a, b)` — case-SENSITIVE equality.

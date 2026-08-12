@@ -1384,6 +1384,62 @@ impl Compiler {
         crate::primitives::classes::register_gc_array_type(&mut self.chunks, &key, "")
     }
 
+    fn try_emit_proxy_reflection_common(&mut self, name: &str, argc: u8, line: u32) -> bool {
+        if !self.uses_proxy {
+            return false;
+        }
+        let hooks = vybe_runtime::registry::hooks(&self.profile.name);
+        let available = match (name, argc) {
+            // `Object.*` only routes through the proxy primitive where the
+            // wrapper's stack/result contract matches the Object API.
+            ("reflection.get_own_property_descriptor", 2) => {
+                hooks.proxy_get_own_property_descriptor
+            }
+            ("reflection.get_prototype_of", 1) => hooks.proxy_get_prototype_of,
+            ("reflection.is_extensible", 1) => hooks.proxy_is_extensible,
+
+            // `Reflect.*` APIs expose proxy internal-method results directly.
+            ("reflection.own_keys", 1) => hooks.proxy_own_keys,
+            ("reflection.reflect_define_property", 3) => hooks.proxy_define_property,
+            ("reflection.reflect_get_own_property_descriptor", 2) => {
+                hooks.proxy_get_own_property_descriptor
+            }
+            ("reflection.reflect_get_prototype_of", 1) => hooks.proxy_get_prototype_of,
+            ("reflection.reflect_is_extensible", 1) => hooks.proxy_is_extensible,
+            ("reflection.reflect_prevent_extensions", 1) => hooks.proxy_prevent_extensions,
+            ("reflection.reflect_set_prototype_of", 2) => hooks.proxy_set_prototype_of,
+            ("reflection.construct", 2) => hooks.proxy_construct,
+            _ => None,
+        }
+        .is_some();
+        if !available {
+            return false;
+        }
+
+        let previous_line = self.line;
+        self.line = line;
+        let result = match (name, argc) {
+            ("reflection.get_own_property_descriptor", 2)
+            | ("reflection.reflect_get_own_property_descriptor", 2) => {
+                self.emit_proxy_get_own_property_descriptor()
+            }
+            ("reflection.get_prototype_of", 1) | ("reflection.reflect_get_prototype_of", 1) => {
+                self.emit_proxy_get_prototype_of()
+            }
+            ("reflection.is_extensible", 1) | ("reflection.reflect_is_extensible", 1) => {
+                self.emit_proxy_is_extensible()
+            }
+            ("reflection.own_keys", 1) => self.emit_proxy_own_keys(),
+            ("reflection.reflect_define_property", 3) => self.emit_proxy_define_property(),
+            ("reflection.reflect_prevent_extensions", 1) => self.emit_proxy_prevent_extensions(),
+            ("reflection.reflect_set_prototype_of", 2) => self.emit_proxy_set_prototype_of(),
+            ("reflection.construct", 2) => self.emit_proxy_construct(),
+            _ => Ok(()),
+        };
+        self.line = previous_line;
+        result.is_ok()
+    }
+
     /// Emit a compiler_common operation by namespaced name.
     /// Used by both `BuiltinEmit::Common` paths.
     ///
@@ -1413,6 +1469,22 @@ impl Compiler {
         }
         if name == common::gui::APPEND_CHILD_EMIT {
             self.emit_gui_append_child(line);
+            return;
+        }
+        if name == common::gui::APPEND_ITEM_EMIT {
+            self.emit_gui_append_item(line);
+            return;
+        }
+        if name == common::gui::REMOVE_ITEM_EMIT {
+            self.emit_gui_remove_item(line);
+            return;
+        }
+        if name == common::gui::ITEM_TEXT_EMIT {
+            self.emit_gui_item_text(line);
+            return;
+        }
+        if name == common::gui::SET_ITEM_TEXT_EMIT {
+            self.emit_gui_set_item_text(line);
             return;
         }
         // `gui.ctrl.<verb>` — a control METHOD, declared by role exactly as a
@@ -1527,6 +1599,10 @@ impl Compiler {
                 self.sync_scope_slots_with_chunk();
                 return;
             }
+        }
+        if self.try_emit_proxy_reflection_common(name, argc, line) {
+            self.sync_scope_slots_with_chunk();
+            return;
         }
         // First try the import-needing dispatch (sleep, etc.). It needs a
         // closure into the compiler to resolve imports against chunk[0].
@@ -2544,6 +2620,26 @@ impl Compiler {
     ) -> Result<(), String> {
         let line = self.line;
         match name {
+            "base64_encode_binary_string" => {
+                if args.len() != 1 {
+                    return Err(format!(
+                        "base64_encode_binary_string expects 1 argument, got {}",
+                        args.len()
+                    ));
+                }
+                self.compile_expr(args[0])?;
+                common::base64::emit_encode_binary_string(&mut self.chunks, self.current, line);
+            }
+            "base64_decode_binary_string" => {
+                if args.len() != 1 {
+                    return Err(format!(
+                        "base64_decode_binary_string expects 1 argument, got {}",
+                        args.len()
+                    ));
+                }
+                self.compile_expr(args[0])?;
+                common::base64::emit_decode_binary_string(&mut self.chunks, self.current, line);
+            }
             // CSV parsing — the shared primitive. Declared `intrinsic:str_getcsv`
             // by fortran, so it must be handled HERE: `emit_builtin_opcode` is a
             // different dispatch function and an arm there is unreachable for an

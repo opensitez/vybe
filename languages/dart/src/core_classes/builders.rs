@@ -6,8 +6,8 @@
 //! `Expression::with_span(ExprKind::…)` noise.
 
 use vybe_ast::{
-    ClassMember, ExprKind, Expression, InterpolPart, Literal, Modifiers, Param, PassBy,
-    PropertySetter, Span, Statement, StmtKind,
+    ClassMember, ExprKind, Expression, Literal, Modifiers, Param, PassBy, PropertySetter, Span,
+    Statement, StmtKind,
 };
 
 pub(super) fn span() -> Span {
@@ -110,7 +110,11 @@ pub(super) fn ternary(cond: Expression, then: Expression, else_: Expression) -> 
 /// member dispatch on an arbitrary receiver.
 pub(super) fn stringify(expr: Expression) -> Expression {
     Expression::with_span(
-        ExprKind::Interpolation(vec![InterpolPart::Expr(expr)]),
+        ExprKind::Call {
+            callee: Box::new(ident("__dart_to_string")),
+            args: vec![vybe_ast::Argument::positional(expr)],
+            optional: false,
+        },
         span(),
     )
 }
@@ -178,7 +182,8 @@ pub(super) fn if_stmt(cond: Expression, then_body: Vec<Statement>) -> Statement 
             cond,
             then_body,
             elifs: Vec::new(),
-            else_body: None },
+            else_body: None,
+        },
         span(),
     )
 }
@@ -194,7 +199,8 @@ pub(super) fn if_else(
             cond,
             then_body,
             elifs: Vec::new(),
-            else_body: Some(else_body) },
+            else_body: Some(else_body),
+        },
         span(),
     )
 }
@@ -210,7 +216,8 @@ pub(super) fn for_in(var: &str, iter: Expression, body: Vec<Statement>) -> State
             body,
             of: true,
             else_body: None,
-            is_async: false },
+            is_async: false,
+        },
         span(),
     )
 }
@@ -222,7 +229,8 @@ pub(super) fn index_set(object: Expression, index: Expression, value: Expression
             ExprKind::Index {
                 object: Box::new(object),
                 index: Box::new(index),
-                null_safe: false },
+                null_safe: false,
+            },
             span(),
         ),
         value,

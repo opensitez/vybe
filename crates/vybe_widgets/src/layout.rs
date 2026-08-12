@@ -592,6 +592,19 @@ pub enum WidgetCommand {
     AddItem(String),
     /// Remove item at index.
     RemoveItem(usize),
+    /// Read the item at index — `select.options[i].text`, `TStrings[i]`,
+    /// .NET's `this[int]`. Answers `CommandValue::Text`, or `None` when the
+    /// index is out of range.
+    ///
+    /// The list already had add, remove and clear but **no read**, so an
+    /// indexed item was unreachable from any frontend. A control verb is
+    /// `[control]` in and one value out, which is why an index needs its own
+    /// command rather than riding on `Custom`.
+    GetItem(usize),
+    /// Replace the item at index. The write half of the same pair — declared
+    /// together because an indexer needs both directions before the
+    /// compiler's `declared_indexer_emits` will take the branch at all.
+    SetItem(usize, String),
     /// Remove all items.
     ClearItems,
     /// Custom command with a string key and arbitrary payload.

@@ -69,6 +69,74 @@ pub fn with_live<T>(f: impl FnOnce(&mut Document) -> T) -> Option<T> {
     .flatten()
 }
 
+/// Read and write one element, live — the inspector half of the debugger.
+///
+/// Every one of these goes through the SAME `Document` entry point the guest
+/// uses (`set_style_property`, `set_attribute`, `set_text_content`), so what
+/// the inspector does to an element is exactly what a program doing it would
+/// do. An inspector with its own write path would be able to produce states a
+/// program cannot reach, and would then "prove" behaviour that never happens in
+/// a real run — the same mistake as a probe that calls a handler directly.
+pub mod inspect {
+    use super::{NodeId, with_live};
+    use vybe_widgets::dom::Document;
+
+    pub fn outer_html(node: NodeId) -> Option<String> {
+        with_live(|d| d.outer_html(node))
+    }
+
+    pub fn style(node: NodeId, property: &str) -> Option<String> {
+        with_live(|d| d.style_property(node, property))
+    }
+
+    pub fn set_style(node: NodeId, property: &str, value: &str) -> Option<()> {
+        with_live(|d| d.set_style_property(node, property, value))
+    }
+
+    /// Every declaration on the element, in the order they serialise.
+    pub fn declarations(node: NodeId) -> Option<Vec<(String, String)>> {
+        with_live(|d: &mut Document| {
+            d.style(node)
+                .map(|s| {
+                    s.iter()
+                        .map(|(k, v)| (k.to_string(), v.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
+    }
+
+    pub fn attribute(node: NodeId, name: &str) -> Option<String> {
+        with_live(|d| d.get_attribute(node, name)).flatten()
+    }
+
+    pub fn set_attribute(node: NodeId, name: &str, value: &str) -> Option<()> {
+        with_live(|d| d.set_attribute(node, name, value))
+    }
+
+    pub fn text(node: NodeId) -> Option<String> {
+        with_live(|d| d.text_content(node))
+    }
+
+    pub fn set_text(node: NodeId, value: &str) -> Option<()> {
+        with_live(|d| d.set_text_content(node, value))
+    }
+}
+
+/// The live tree serialised as HTML, when the document is the live tree.
+///
+/// `controls()` reports each element's *properties*; this reports the
+/// **structure** — what is inside what, with which tag. They answer different
+/// questions and a rendering bug is usually one or the other: a control with
+/// the right properties in the wrong parent looks fine in a property dump.
+///
+/// It is also the only form of this evidence that diffs. A PNG hash says
+/// "something moved"; this says which element, and a golden file can be
+/// reviewed in a patch.
+pub fn html() -> Option<String> {
+    with_live(Document::to_html)
+}
+
 /// The size the document says the window is, when the document is the live
 /// tree.
 ///
@@ -92,9 +160,21 @@ pub struct DomControl {
     /// and therefore the name a user types at the debugger.
     pub id: String,
     pub tag: String,
-    /// The LAID-OUT rect. `None` when nothing has laid the document out yet
-    /// (no window, no capture), which is a real and otherwise invisible state.
+    /// The LAID-OUT rect, looked up in the FORM's tree.
+    ///
+    /// `None` means the element is not in that tree — which is usually not
+    /// "nothing has laid out yet" but **"this element was never appended"**.
+    /// A created-and-never-inserted control is styled, named, addressable and
+    /// absent, and it is the single most common way a GUI silently renders
+    /// nothing. [`DomControl::connected`] separates the two.
     pub rect: Option<LayoutRect>,
+    /// Is the element actually in the document?
+    ///
+    /// Distinguishes "created and never appended" from "appended but not yet
+    /// laid out". Both show no rect and they are completely different bugs:
+    /// the first is a missing `appendChild`, the second is a missing layout
+    /// pass.
+    pub connected: bool,
     pub properties: Vec<(String, String)>,
     /// Registered listener types, in DOM spelling (`click`, `input`, …).
     pub events: Vec<String>,
@@ -141,11 +221,13 @@ pub fn controls() -> Vec<DomControl> {
             }
             let mut events = listener_types.get(&node).cloned().unwrap_or_default();
             events.sort();
+            let connected = d.connected(node);
             out.push(DomControl {
                 node,
                 id,
                 tag,
                 rect,
+                connected,
                 properties,
                 events,
             });

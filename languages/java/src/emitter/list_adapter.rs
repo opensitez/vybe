@@ -6,7 +6,7 @@ use vybe_compiler::primitives::{
     functions::create_function_chunk,
     heap,
     instructions::{core_wasm, host},
-    sorted_collection,
+    ops, sorted_collection,
 };
 use vybe_runtime::Chunk;
 use vybe_runtime::Value;
@@ -54,6 +54,101 @@ fn get_object_prop(chunks: &mut [Chunk], current: usize, object: u16, key: &str,
     get(&mut chunks[current], object, line);
     chunks[current].emit_string_const(key, line);
     host::emit(&mut chunks[current], "ecma:object", "get", 2, line);
+}
+
+pub fn emit_atomic_new(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], value, line);
+    chunks[current].emit_struct_new(0, 0, line);
+    let cell = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], cell, line);
+    set_object_prop_from_local(chunks, current, cell, "value", value, line);
+    get(&mut chunks[current], cell, line);
+}
+
+pub fn emit_atomic_get(chunks: &mut [Chunk], current: usize, line: u32) {
+    let cell = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], cell, line);
+    get_object_prop(chunks, current, cell, "value", line);
+}
+
+pub fn emit_atomic_set(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    let cell = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], value, line);
+    set(&mut chunks[current], cell, line);
+    set_object_prop_from_local(chunks, current, cell, "value", value, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
+pub fn emit_atomic_get_and_set(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    let cell = chunks[current].alloc_scratch(1);
+    let old = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], value, line);
+    set(&mut chunks[current], cell, line);
+    get_object_prop(chunks, current, cell, "value", line);
+    set(&mut chunks[current], old, line);
+    set_object_prop_from_local(chunks, current, cell, "value", value, line);
+    get(&mut chunks[current], old, line);
+}
+
+pub fn emit_atomic_compare_and_set(chunks: &mut [Chunk], current: usize, line: u32) {
+    let update = chunks[current].alloc_scratch(1);
+    let expected = chunks[current].alloc_scratch(1);
+    let cell = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], update, line);
+    set(&mut chunks[current], expected, line);
+    set(&mut chunks[current], cell, line);
+    get_object_prop(chunks, current, cell, "value", line);
+    get(&mut chunks[current], expected, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    set_object_prop_from_local(chunks, current, cell, "value", update, line);
+    chunks[current].emit_bool_const(true, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_bool_const(false, line);
+    chunks[current].emit_end(line);
+}
+
+pub fn emit_atomic_delta(
+    chunks: &mut [Chunk],
+    current: usize,
+    delta: f64,
+    return_old: bool,
+    line: u32,
+) {
+    let cell = chunks[current].alloc_scratch(1);
+    let old = chunks[current].alloc_scratch(1);
+    let next = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], cell, line);
+    get_object_prop(chunks, current, cell, "value", line);
+    set(&mut chunks[current], old, line);
+    get(&mut chunks[current], old, line);
+    chunks[current].emit_f64_const(delta, line);
+    ops::emit_dyn_add(&mut chunks[current], line);
+    set(&mut chunks[current], next, line);
+    set_object_prop_from_local(chunks, current, cell, "value", next, line);
+    get(
+        &mut chunks[current],
+        if return_old { old } else { next },
+        line,
+    );
+}
+
+pub fn emit_atomic_add_and_get(chunks: &mut [Chunk], current: usize, line: u32) {
+    let delta = chunks[current].alloc_scratch(1);
+    let cell = chunks[current].alloc_scratch(1);
+    let next = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], delta, line);
+    set(&mut chunks[current], cell, line);
+    get_object_prop(chunks, current, cell, "value", line);
+    get(&mut chunks[current], delta, line);
+    ops::emit_dyn_add(&mut chunks[current], line);
+    set(&mut chunks[current], next, line);
+    set_object_prop_from_local(chunks, current, cell, "value", next, line);
+    get(&mut chunks[current], next, line);
 }
 
 fn get_iterator_list(chunks: &mut [Chunk], current: usize, iterator: u16, line: u32) {
@@ -589,7 +684,7 @@ pub fn emit_size(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_if_value(line);
     emit_sublist_to(chunks, current, list, line);
     emit_sublist_from(chunks, current, list, line);
-    chunks[current].emit_op(Op::I32_SUB, line);
+    emit_dyn_sub(chunks, current, line);
     chunks[current].emit_else(line);
     get(&mut chunks[current], list, line);
     collections::emit_len(chunks, current, line);
@@ -1073,6 +1168,20 @@ pub fn emit_map_put(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_else(line);
     emit_unwrap_identity_map_value(chunks, current, map, previous, line);
     chunks[current].emit_end(line);
+}
+
+pub fn emit_concurrent_map_put(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    let key = chunks[current].alloc_scratch(1);
+    let map = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], value, line);
+    set(&mut chunks[current], key, line);
+    set(&mut chunks[current], map, line);
+    emit_throw_if_null(chunks, current, key, line);
+    get(&mut chunks[current], map, line);
+    get(&mut chunks[current], key, line);
+    get(&mut chunks[current], value, line);
+    emit_map_put(chunks, current, line);
 }
 
 pub fn emit_map_put_all(chunks: &mut [Chunk], current: usize, line: u32) {

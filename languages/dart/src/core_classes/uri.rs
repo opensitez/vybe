@@ -61,7 +61,8 @@ fn call(name: &str, args: Vec<Expression>) -> Expression {
                 .into_iter()
                 .map(vybe_ast::Argument::positional)
                 .collect(),
-            optional: false },
+            optional: false,
+        },
         span(),
     )
 }
@@ -155,11 +156,7 @@ pub(super) fn uri() -> Statement {
 /// have one; everything else is 0.
 fn default_port() -> Expression {
     ternary(
-        binary(
-            vybe_ast::BinOp::Eq,
-            this_field("scheme"),
-            str_lit("https"),
-        ),
+        binary(vybe_ast::BinOp::Eq, this_field("scheme"), str_lit("https")),
         int_lit(443),
         ternary(
             binary(vybe_ast::BinOp::Eq, this_field("scheme"), str_lit("http")),
@@ -468,10 +465,7 @@ fn normalize_path() -> ClassMember {
                         ],
                     )],
                     vec![if_stmt(
-                        not(or(
-                            eq(ident("__s"), str_lit(".")),
-                            blank(ident("__s")),
-                        )),
+                        not(or(eq(ident("__s"), str_lit(".")), blank(ident("__s")))),
                         vec![
                             expr_stmt(call_member(ident("__keep"), "add", vec![ident("__s")])),
                             assign(
@@ -493,7 +487,14 @@ fn normalize_path() -> ClassMember {
                     call_member(ident("__keep"), "join", vec![str_lit("/")]),
                 ),
             ),
-            ret(rebuilt(Some(ident("__joined")), None, None, None, None, None)),
+            ret(rebuilt(
+                Some(ident("__joined")),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )),
         ],
     )
 }
@@ -509,7 +510,9 @@ fn normalize_path() -> ClassMember {
 /// alternative SPELLING of `path` rather than a component of its own. It
 /// defaults to the empty list and, when non-empty, wins over `path`.
 fn replace_member() -> ClassMember {
-    let names = ["scheme", "userInfo", "host", "port", "path", "query", "fragment"];
+    let names = [
+        "scheme", "userInfo", "host", "port", "path", "query", "fragment",
+    ];
     let mut params: Vec<vybe_ast::Param> = names
         .iter()
         .map(|n| param(n, None, Some(this_field(n))))
@@ -523,7 +526,11 @@ fn replace_member() -> ClassMember {
             local(
                 "__path",
                 ternary(
-                    blank(call_member(ident("pathSegments"), "join", vec![str_lit("/")])),
+                    blank(call_member(
+                        ident("pathSegments"),
+                        "join",
+                        vec![str_lit("/")],
+                    )),
                     ident("path"),
                     concat(
                         str_lit("/"),
@@ -616,7 +623,8 @@ fn new_uri(text: Expression) -> Expression {
     Expression::with_span(
         ExprKind::New {
             class: Box::new(ident("Uri")),
-            args: vec![vybe_ast::Argument::positional(text)] },
+            args: vec![vybe_ast::Argument::positional(text)],
+        },
         span(),
     )
 }

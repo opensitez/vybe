@@ -80,8 +80,8 @@ pub fn resolve_common_import(name: &str) -> Option<CommonImport> {
         "isfinite" => Some(CommonImport::Host("ecma:number", "isFinite")),
 
         // ── Encoding ─────────────────────────────────────────────────────
-        "btoa" | "base64_encode" => Some(CommonImport::Host("ecma:string", "btoa")),
-        "atob" | "base64_decode" => Some(CommonImport::Host("ecma:string", "atob")),
+        "btoa" | "base64_encode" => Some(CommonImport::Intrinsic("base64_encode_binary_string")),
+        "atob" | "base64_decode" => Some(CommonImport::Intrinsic("base64_decode_binary_string")),
 
         // Only the JS spelling resolves here — PHP's `urlencode` uses
         // application/x-www-form-urlencoded semantics (space → "+",
@@ -170,12 +170,12 @@ mod tests {
     #[test]
     fn encoding_variants() {
         assert_eq!(
-            host(resolve_common_import("btoa")),
-            Some(("ecma:string", "btoa"))
+            intrinsic(resolve_common_import("btoa")),
+            Some("base64_encode_binary_string")
         );
         assert_eq!(
-            host(resolve_common_import("base64_encode")),
-            Some(("ecma:string", "btoa"))
+            intrinsic(resolve_common_import("base64_encode")),
+            Some("base64_encode_binary_string")
         );
         // PHP `urlencode` differs from `encodeURIComponent` (space → +
         // vs %20) — handled per-language via the profile binding.

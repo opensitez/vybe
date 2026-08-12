@@ -3173,7 +3173,7 @@ pub fn emit_preg_match_groups(chunks: &mut [Chunk], current: usize, _argc: u8, l
 /// Strategy: drive matching via `ecma:regexp.matchAll` (which returns
 /// each match as an Array of `[full, g1, g2, ...]` plus an `index`
 /// property — exactly the PHP callback shape). For each match, append
-/// the gap before it, invoke the user callback via CALL_REF, append
+/// the gap before it, invoke the user callback via the callable primitive, append
 /// the result, advance past the match. Append any trailing text after
 /// the loop.
 pub fn emit_preg_replace_callback(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -3287,7 +3287,7 @@ pub fn emit_preg_replace_callback(chunks: &mut [Chunk], current: usize, _argc: u
     // cb_ret = cb(m)
     lget(chunk, cb_slot, line);
     lget(chunk, m_slot, line);
-    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
     coerce_to_str(chunk, line);
     lset(chunk, cb_ret_slot, line);
 
@@ -3521,12 +3521,12 @@ pub fn emit_php_clone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     chunk.emit_if(line);
 
     // Invoke __clone with $this=copy. Vybe's PHP method ABI passes
-    // the receiver as arg0, so `CALL_REF 1` gives the method one arg
+    // the receiver as arg0, so callable invoke with 1 arg
     // (the copy itself) which lands in the `$this` slot inside the
     // function frame.
     lget(chunk, clone_fn_slot, line);
     lget(chunk, copy_slot, line);
-    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
     chunk.emit_op(Op::DROP, line);
 
     chunk.emit_end(line);
@@ -5476,7 +5476,7 @@ fn strtok_scan_chunk(chunks: &mut Vec<Chunk>) -> usize {
     idx
 }
 
-/// `helper(subject, delims, start)` — CALL_REF wants [callee, args…].
+/// `helper(subject, delims, start)` — callable invoke wants [callee, args...].
 fn emit_strtok_call(
     chunks: &mut Vec<Chunk>,
     current: usize,
@@ -5491,7 +5491,7 @@ fn emit_strtok_call(
     lget(chunk, s_slot, line);
     lget(chunk, delim_slot, line);
     vybe_compiler::primitives::globals::emit_read(chunk, STRTOK_CURSOR, line);
-    chunk.emit_op_u8_u8(Op::CALL_REF, 3, 1, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 3, line);
 }
 
 pub fn emit_strtok_init(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {

@@ -207,6 +207,31 @@ impl Compiler {
         event: &str,
         handler: &Expression,
     ) -> Result<(), String> {
+        // Subscribing on a DOM control IS `addEventListener`. `OnClick :=
+        // handler` — the same subscription spelled as a property — already
+        // emits exactly that, so this hands the statement spelling to the same
+        // emit rather than keeping a second registry.
+        //
+        // The one it replaces was name-keyed: `onEvent(control.__control_name,
+        // …)` into `GuiState`. An element created by `createElement` has no
+        // `__control_name` (the `vybe:gui` factory that used to assign one is
+        // gone), so every `AddHandler`/`Handles`/`+=` subscription registered
+        // under an EMPTY key and no button in any WinForms program could fire.
+        // Nothing errored — the control existed, the handler existed, and the
+        // two were never connected.
+        if self.control_receiver_is_element(control) {
+            let line = self.line;
+            self.compile_expr(control)?;
+            self.compile_expr(handler)?;
+            // `on` + the event word is the role every frontend already spells:
+            // Pascal writes the property `OnClick`, and this is the same role
+            // reached from `Click`. `event_role_type` strips it back off, so
+            // `Load`/`Timer` register alongside `click` with no table.
+            let role = format!("on{}", event.to_ascii_lowercase());
+            self.emit_gui_property_set(&role, line);
+            self.emit(Op::DROP);
+            return Ok(());
+        }
         if self.should_use_gui_event_host(control, event) {
             let line = self.line;
             let bind_idx = self.import("vybe:gui", common::gui::HOST_FN_BIND_EVENT);
@@ -223,6 +248,18 @@ impl Compiler {
         self.compile_expr(handler)?;
         common::delegates::emit_combine(&mut self.chunks, self.current, self.line);
         self.compile_assign_target(&event_target)
+    }
+
+    /// Is this subscription's receiver a DOM element?
+    ///
+    /// The receiver's STATIC type answers it, the same question
+    /// `emit_control_property_set` asks before sending a property write to the
+    /// document — a control is an element for its events exactly when it is one
+    /// for its properties.
+    fn control_receiver_is_element(&self, control: &Expression) -> bool {
+        self.event_receiver_type_hint(control)
+            .map(|type_hint| Self::normalize_type_hint(&type_hint))
+            .is_some_and(|class_name| self.control_element_for_type(&class_name).is_some())
     }
 
     pub(super) fn compile_remove_handler_stmt(

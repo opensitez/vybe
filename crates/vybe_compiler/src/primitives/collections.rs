@@ -560,6 +560,17 @@ pub fn emit_slice(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_import_call(chunks, current, "ecma:array", "slice", 3, line);
 }
 
+/// Array slice with an extra language-level capacity bound.
+/// Stack: [array, start, end, bound] -> [array].
+///
+/// The bound is metadata for languages with a separate slice capacity model
+/// (for example Go's full slice expression). The materialized value is still
+/// the regular half-open slice.
+pub fn emit_slice_with_bound(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_op(Op::DROP, line);
+    emit_slice(chunks, current, line);
+}
+
 /// Array join. Stack: [array, delimiter] → [string] via `ecma:array.join`.
 pub fn emit_join(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_import_call(chunks, current, "ecma:array", "join", 2, line);
@@ -600,6 +611,14 @@ pub fn emit_index_of(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Array concat. Stack: [array, array] → [array] via `ecma:array.concat`.
 pub fn emit_concat(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_import_call(chunks, current, "ecma:array", "concat", 2, line);
+}
+
+/// Passthrough value. Stack: [value] -> [value].
+pub fn emit_identity(_chunks: &mut [Chunk], _current: usize, _line: u32) {}
+
+/// Two-argument passthrough. Stack: [value, ignored] -> [value].
+pub fn emit_first_of_two(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_op(Op::DROP, line);
 }
 
 /// Array shift (remove first). Stack: [array] → [value] via `ecma:array.shift`.
@@ -914,7 +933,7 @@ pub fn emit_sequence_equal(chunks: &mut [Chunk], current: usize, line: u32) {
 
     lget(&mut chunks[current], idx_slot, line);
     chunks[current].emit_i32_const(1, line);
-    crate::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_ADD, line);
     lset(&mut chunks[current], idx_slot, line);
     chunks[current].emit_br(0, line);
     chunks[current].emit_end(line);
@@ -926,6 +945,987 @@ pub fn emit_sequence_equal(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_bool_const(false, line);
     lset(&mut chunks[current], result_slot, line);
     chunks[current].emit_end(line);
+
+    lget(&mut chunks[current], result_slot, line);
+}
+
+/// Coerce a null collection reference to an empty array. Stack: [value] -> [array-or-value].
+///
+/// This is intentionally a neutral collection primitive: languages whose
+/// surface treats nil/None/null slices as empty can normalize through it,
+/// while languages with trapping/null-distinct semantics simply don't opt in.
+pub fn emit_nil_to_empty_array(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value_slot = alloc_local(&mut chunks[current]);
+    lset(&mut chunks[current], value_slot, line);
+
+    lget(&mut chunks[current], value_slot, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_else(line);
+    lget(&mut chunks[current], value_slot, line);
+    chunks[current].emit_end(line);
+}
+
+/// Clear keyed/object-like collections, leaving array values intact.
+/// Stack: [collection] -> [null].
+pub fn emit_clear_keyed(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value_slot = alloc_local(&mut chunks[current]);
+    let keys_slot = alloc_local(&mut chunks[current]);
+    let len_slot = alloc_local(&mut chunks[current]);
+    let idx_slot = alloc_local(&mut chunks[current]);
+    let key_slot = alloc_local(&mut chunks[current]);
+    lset(&mut chunks[current], value_slot, line);
+
+    lget(&mut chunks[current], value_slot, line);
+    let is_array = chunks[current].add_import("ecma:array", "isArray");
+    chunks[current].emit_call(is_array, 1, line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunks[current].emit_else(line);
+
+    lget(&mut chunks[current], value_slot, line);
+    emit_import_call(chunks, current, "ecma:object", "keys", 1, line);
+    lset(&mut chunks[current], keys_slot, line);
+    lget(&mut chunks[current], keys_slot, line);
+    emit_len(chunks, current, line);
+    lset(&mut chunks[current], len_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    lset(&mut chunks[current], idx_slot, line);
+
+    let outer_block = chunks[current].emit_block(line);
+    let (outer_loop, _) = chunks[current].emit_loop_s(line);
+    lget(&mut chunks[current], idx_slot, line);
+    lget(&mut chunks[current], len_slot, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_br_if(1, line);
+
+    lget(&mut chunks[current], keys_slot, line);
+    lget(&mut chunks[current], idx_slot, line);
+    emit_get(chunks, current, line);
+    lset(&mut chunks[current], key_slot, line);
+    lget(&mut chunks[current], value_slot, line);
+    lget(&mut chunks[current], key_slot, line);
+    emit_import_call(chunks, current, "ecma:object", "delete", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    lget(&mut chunks[current], idx_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    lset(&mut chunks[current], idx_slot, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(outer_loop);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer_block);
+
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunks[current].emit_end(line);
+}
+
+/// Return the first index whose predicate is truthy, or -1.
+/// Stack: [array, predicate] -> [i32].
+pub fn emit_index_func(chunks: &mut [Chunk], current: usize, line: u32) {
+    let arr_slot = alloc_local(&mut chunks[current]);
+    let pred_slot = alloc_local(&mut chunks[current]);
+    let len_slot = alloc_local(&mut chunks[current]);
+    let idx_slot = alloc_local(&mut chunks[current]);
+    let result_slot = alloc_local(&mut chunks[current]);
+
+    lset(&mut chunks[current], pred_slot, line);
+    lset(&mut chunks[current], arr_slot, line);
+
+    lget(&mut chunks[current], arr_slot, line);
+    emit_len(chunks, current, line);
+    lset(&mut chunks[current], len_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    lset(&mut chunks[current], idx_slot, line);
+    chunks[current].emit_i32_const(-1, line);
+    lset(&mut chunks[current], result_slot, line);
+
+    let outer_block = chunks[current].emit_block(line);
+    let (outer_loop, _) = chunks[current].emit_loop_s(line);
+    lget(&mut chunks[current], idx_slot, line);
+    lget(&mut chunks[current], len_slot, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_br_if(1, line);
+
+    lget(&mut chunks[current], result_slot, line);
+    chunks[current].emit_i32_const(-1, line);
+    chunks[current].emit_op(Op::I32_EQ, line);
+    chunks[current].emit_if(line);
+    lget(&mut chunks[current], pred_slot, line);
+    lget(&mut chunks[current], arr_slot, line);
+    lget(&mut chunks[current], idx_slot, line);
+    emit_get(chunks, current, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1, line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    lget(&mut chunks[current], idx_slot, line);
+    lset(&mut chunks[current], result_slot, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+
+    lget(&mut chunks[current], idx_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    lset(&mut chunks[current], idx_slot, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(outer_loop);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer_block);
+
+    lget(&mut chunks[current], result_slot, line);
+}
+
+/// In-place stable insertion sort using a comparator returning negative/zero/positive.
+/// Stack: [array, comparator] -> [array].
+pub fn emit_sort_func(chunks: &mut [Chunk], current: usize, line: u32) {
+    let arr_slot = alloc_local(&mut chunks[current]);
+    let cmp_slot = alloc_local(&mut chunks[current]);
+    let len_slot = alloc_local(&mut chunks[current]);
+    let i_slot = alloc_local(&mut chunks[current]);
+    let j_slot = alloc_local(&mut chunks[current]);
+    let tmp_slot = alloc_local(&mut chunks[current]);
+
+    lset(&mut chunks[current], cmp_slot, line);
+    lset(&mut chunks[current], arr_slot, line);
+
+    lget(&mut chunks[current], arr_slot, line);
+    emit_len(chunks, current, line);
+    lset(&mut chunks[current], len_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    lset(&mut chunks[current], i_slot, line);
+
+    let outer_block = chunks[current].emit_block(line);
+    let (outer_loop, _) = chunks[current].emit_loop_s(line);
+    lget(&mut chunks[current], i_slot, line);
+    lget(&mut chunks[current], len_slot, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_br_if(1, line);
+
+    lget(&mut chunks[current], i_slot, line);
+    lset(&mut chunks[current], j_slot, line);
+
+    let inner_block = chunks[current].emit_block(line);
+    let (inner_loop, _) = chunks[current].emit_loop_s(line);
+    lget(&mut chunks[current], j_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_GT_S, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_br_if(1, line);
+
+    lget(&mut chunks[current], cmp_slot, line);
+    lget(&mut chunks[current], arr_slot, line);
+    lget(&mut chunks[current], j_slot, line);
+    emit_get(chunks, current, line);
+    lget(&mut chunks[current], arr_slot, line);
+    lget(&mut chunks[current], j_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    emit_get(chunks, current, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2, line);
+    chunks[current].emit_i32_const(0, line);
+    crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_br_if(1, line);
+
+    lget(&mut chunks[current], arr_slot, line);
+    lget(&mut chunks[current], j_slot, line);
+    emit_get(chunks, current, line);
+    lset(&mut chunks[current], tmp_slot, line);
+
+    lget(&mut chunks[current], arr_slot, line);
+    lget(&mut chunks[current], j_slot, line);
+    lget(&mut chunks[current], arr_slot, line);
+    lget(&mut chunks[current], j_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    emit_get(chunks, current, line);
+    emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    lget(&mut chunks[current], arr_slot, line);
+    lget(&mut chunks[current], j_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    lget(&mut chunks[current], tmp_slot, line);
+    emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    lget(&mut chunks[current], j_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    lset(&mut chunks[current], j_slot, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(inner_loop);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(inner_block);
+
+    lget(&mut chunks[current], i_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    lset(&mut chunks[current], i_slot, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(outer_loop);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer_block);
+
+    lget(&mut chunks[current], arr_slot, line);
+}
+
+/// Sortedness using a comparator returning negative/zero/positive.
+/// Stack: [array, comparator] -> [bool].
+pub fn emit_is_sorted_func(chunks: &mut [Chunk], current: usize, line: u32) {
+    let arr_slot = alloc_local(&mut chunks[current]);
+    let cmp_slot = alloc_local(&mut chunks[current]);
+    let len_slot = alloc_local(&mut chunks[current]);
+    let idx_slot = alloc_local(&mut chunks[current]);
+    let result_slot = alloc_local(&mut chunks[current]);
+
+    lset(&mut chunks[current], cmp_slot, line);
+    lset(&mut chunks[current], arr_slot, line);
+    lget(&mut chunks[current], arr_slot, line);
+    emit_len(chunks, current, line);
+    lset(&mut chunks[current], len_slot, line);
+    chunks[current].emit_bool_const(true, line);
+    lset(&mut chunks[current], result_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    lset(&mut chunks[current], idx_slot, line);
+
+    let outer_block = chunks[current].emit_block(line);
+    let (outer_loop, _) = chunks[current].emit_loop_s(line);
+    lget(&mut chunks[current], idx_slot, line);
+    lget(&mut chunks[current], len_slot, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_br_if(1, line);
+
+    lget(&mut chunks[current], cmp_slot, line);
+    lget(&mut chunks[current], arr_slot, line);
+    lget(&mut chunks[current], idx_slot, line);
+    emit_get(chunks, current, line);
+    lget(&mut chunks[current], arr_slot, line);
+    lget(&mut chunks[current], idx_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    emit_get(chunks, current, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2, line);
+    chunks[current].emit_i32_const(0, line);
+    crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_bool_const(false, line);
+    lset(&mut chunks[current], result_slot, line);
+    chunks[current].emit_br(2, line);
+    chunks[current].emit_end(line);
+
+    lget(&mut chunks[current], idx_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    lset(&mut chunks[current], idx_slot, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(outer_loop);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer_block);
+
+    lget(&mut chunks[current], result_slot, line);
+}
+
+/// Binary search over naturally sorted arrays. Returns [index, found].
+/// Stack: [array, target] -> [pair_array].
+pub fn emit_binary_search_pair(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_binary_search_pair_impl(chunks, current, line, false);
+}
+
+/// Binary search using comparator(array_value, target). Returns [index, found].
+/// Stack: [array, target, comparator] -> [pair_array].
+pub fn emit_binary_search_func_pair(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_binary_search_pair_impl(chunks, current, line, true);
+}
+
+fn emit_binary_search_pair_impl(chunks: &mut [Chunk], current: usize, line: u32, has_cmp: bool) {
+    let arr_slot = alloc_local(&mut chunks[current]);
+    let target_slot = alloc_local(&mut chunks[current]);
+    let cmp_slot = alloc_local(&mut chunks[current]);
+    let len_slot = alloc_local(&mut chunks[current]);
+    let lo_slot = alloc_local(&mut chunks[current]);
+    let hi_slot = alloc_local(&mut chunks[current]);
+    let mid_slot = alloc_local(&mut chunks[current]);
+    let found_slot = alloc_local(&mut chunks[current]);
+    let out_slot = alloc_local(&mut chunks[current]);
+
+    if has_cmp {
+        lset(&mut chunks[current], cmp_slot, line);
+    }
+    lset(&mut chunks[current], target_slot, line);
+    lset(&mut chunks[current], arr_slot, line);
+
+    lget(&mut chunks[current], arr_slot, line);
+    emit_len(chunks, current, line);
+    lset(&mut chunks[current], len_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    lset(&mut chunks[current], lo_slot, line);
+    lget(&mut chunks[current], len_slot, line);
+    lset(&mut chunks[current], hi_slot, line);
+
+    let outer_block = chunks[current].emit_block(line);
+    let (outer_loop, _) = chunks[current].emit_loop_s(line);
+    lget(&mut chunks[current], lo_slot, line);
+    lget(&mut chunks[current], hi_slot, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_br_if(1, line);
+
+    lget(&mut chunks[current], lo_slot, line);
+    lget(&mut chunks[current], hi_slot, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_SHR_U, line);
+    lset(&mut chunks[current], mid_slot, line);
+
+    if has_cmp {
+        lget(&mut chunks[current], cmp_slot, line);
+        lget(&mut chunks[current], arr_slot, line);
+        lget(&mut chunks[current], mid_slot, line);
+        emit_get(chunks, current, line);
+        lget(&mut chunks[current], target_slot, line);
+        crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2, line);
+        chunks[current].emit_i32_const(0, line);
+        crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    } else {
+        lget(&mut chunks[current], arr_slot, line);
+        lget(&mut chunks[current], mid_slot, line);
+        emit_get(chunks, current, line);
+        lget(&mut chunks[current], target_slot, line);
+        crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    }
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    lget(&mut chunks[current], mid_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    lset(&mut chunks[current], lo_slot, line);
+    chunks[current].emit_else(line);
+    lget(&mut chunks[current], mid_slot, line);
+    lset(&mut chunks[current], hi_slot, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(outer_loop);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer_block);
+
+    chunks[current].emit_bool_const(false, line);
+    lset(&mut chunks[current], found_slot, line);
+    lget(&mut chunks[current], lo_slot, line);
+    lget(&mut chunks[current], len_slot, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    chunks[current].emit_if(line);
+    if has_cmp {
+        lget(&mut chunks[current], cmp_slot, line);
+        lget(&mut chunks[current], arr_slot, line);
+        lget(&mut chunks[current], lo_slot, line);
+        emit_get(chunks, current, line);
+        lget(&mut chunks[current], target_slot, line);
+        crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2, line);
+        chunks[current].emit_i32_const(0, line);
+        crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    } else {
+        lget(&mut chunks[current], arr_slot, line);
+        lget(&mut chunks[current], lo_slot, line);
+        emit_get(chunks, current, line);
+        lget(&mut chunks[current], target_slot, line);
+        crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    }
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_bool_const(true, line);
+    lset(&mut chunks[current], found_slot, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+
+    emit_array_new(chunks, current, 0, line);
+    lset(&mut chunks[current], out_slot, line);
+    lget(&mut chunks[current], out_slot, line);
+    lget(&mut chunks[current], lo_slot, line);
+    emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    lget(&mut chunks[current], out_slot, line);
+    lget(&mut chunks[current], found_slot, line);
+    emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    lget(&mut chunks[current], out_slot, line);
+}
+
+/// Remove a half-open range from an array without mutating it.
+/// Stack: [array, start, end] -> [array].
+pub fn emit_delete_range_copy(chunks: &mut [Chunk], current: usize, line: u32) {
+    let arr_slot = alloc_local(&mut chunks[current]);
+    let start_slot = alloc_local(&mut chunks[current]);
+    let end_slot = alloc_local(&mut chunks[current]);
+
+    lset(&mut chunks[current], end_slot, line);
+    lset(&mut chunks[current], start_slot, line);
+    lset(&mut chunks[current], arr_slot, line);
+
+    lget(&mut chunks[current], arr_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    lget(&mut chunks[current], start_slot, line);
+    emit_slice(chunks, current, line);
+
+    lget(&mut chunks[current], arr_slot, line);
+    lget(&mut chunks[current], end_slot, line);
+    chunks[current].emit_i32_const(i32::MAX, line);
+    emit_slice(chunks, current, line);
+
+    emit_concat(chunks, current, line);
+}
+
+/// Insert an array of values without mutating the original array.
+/// Stack: [array, index, values_array] -> [array].
+pub fn emit_insert_range_copy(chunks: &mut [Chunk], current: usize, line: u32) {
+    let arr_slot = alloc_local(&mut chunks[current]);
+    let index_slot = alloc_local(&mut chunks[current]);
+    let values_slot = alloc_local(&mut chunks[current]);
+
+    lset(&mut chunks[current], values_slot, line);
+    lset(&mut chunks[current], index_slot, line);
+    lset(&mut chunks[current], arr_slot, line);
+
+    lget(&mut chunks[current], arr_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    lget(&mut chunks[current], index_slot, line);
+    emit_slice(chunks, current, line);
+
+    lget(&mut chunks[current], values_slot, line);
+    emit_concat(chunks, current, line);
+
+    lget(&mut chunks[current], arr_slot, line);
+    lget(&mut chunks[current], index_slot, line);
+    chunks[current].emit_i32_const(i32::MAX, line);
+    emit_slice(chunks, current, line);
+    emit_concat(chunks, current, line);
+}
+
+/// Replace a half-open range with an array of values without mutating the
+/// original array. Stack: [array, start, end, values_array] -> [array].
+pub fn emit_replace_range_copy(chunks: &mut [Chunk], current: usize, line: u32) {
+    let arr_slot = alloc_local(&mut chunks[current]);
+    let start_slot = alloc_local(&mut chunks[current]);
+    let end_slot = alloc_local(&mut chunks[current]);
+    let values_slot = alloc_local(&mut chunks[current]);
+
+    lset(&mut chunks[current], values_slot, line);
+    lset(&mut chunks[current], end_slot, line);
+    lset(&mut chunks[current], start_slot, line);
+    lset(&mut chunks[current], arr_slot, line);
+
+    lget(&mut chunks[current], arr_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    lget(&mut chunks[current], start_slot, line);
+    emit_slice(chunks, current, line);
+
+    lget(&mut chunks[current], values_slot, line);
+    emit_concat(chunks, current, line);
+
+    lget(&mut chunks[current], arr_slot, line);
+    lget(&mut chunks[current], end_slot, line);
+    chunks[current].emit_i32_const(i32::MAX, line);
+    emit_slice(chunks, current, line);
+    emit_concat(chunks, current, line);
+}
+
+/// Remove adjacent duplicate values. Stack: [array] -> [array].
+pub fn emit_compact_adjacent(chunks: &mut [Chunk], current: usize, line: u32) {
+    let arr_slot = alloc_local(&mut chunks[current]);
+    let out_slot = alloc_local(&mut chunks[current]);
+    let len_slot = alloc_local(&mut chunks[current]);
+    let idx_slot = alloc_local(&mut chunks[current]);
+    let value_slot = alloc_local(&mut chunks[current]);
+    let prev_slot = alloc_local(&mut chunks[current]);
+
+    lset(&mut chunks[current], arr_slot, line);
+    emit_array_new(chunks, current, 0, line);
+    lset(&mut chunks[current], out_slot, line);
+
+    lget(&mut chunks[current], arr_slot, line);
+    emit_len(chunks, current, line);
+    lset(&mut chunks[current], len_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    lset(&mut chunks[current], idx_slot, line);
+
+    let outer_block = chunks[current].emit_block(line);
+    let (outer_loop, _) = chunks[current].emit_loop_s(line);
+    lget(&mut chunks[current], idx_slot, line);
+    lget(&mut chunks[current], len_slot, line);
+    crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_not(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+
+    lget(&mut chunks[current], arr_slot, line);
+    lget(&mut chunks[current], idx_slot, line);
+    emit_get(chunks, current, line);
+    lset(&mut chunks[current], value_slot, line);
+
+    lget(&mut chunks[current], idx_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_EQ, line);
+    chunks[current].emit_if(line);
+    lget(&mut chunks[current], out_slot, line);
+    lget(&mut chunks[current], value_slot, line);
+    emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_else(line);
+    lget(&mut chunks[current], arr_slot, line);
+    lget(&mut chunks[current], idx_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    emit_get(chunks, current, line);
+    lset(&mut chunks[current], prev_slot, line);
+
+    lget(&mut chunks[current], value_slot, line);
+    lget(&mut chunks[current], prev_slot, line);
+    crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_not(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    lget(&mut chunks[current], out_slot, line);
+    lget(&mut chunks[current], value_slot, line);
+    emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+
+    lget(&mut chunks[current], idx_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    lset(&mut chunks[current], idx_slot, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(outer_loop);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer_block);
+
+    lget(&mut chunks[current], out_slot, line);
+}
+
+/// Clone an object/map, preserving null. Stack: [map] -> [map].
+pub fn emit_map_clone(chunks: &mut [Chunk], current: usize, line: u32) {
+    let src_slot = alloc_local(&mut chunks[current]);
+    let out_slot = alloc_local(&mut chunks[current]);
+    let entries_slot = alloc_local(&mut chunks[current]);
+    let len_slot = alloc_local(&mut chunks[current]);
+    let idx_slot = alloc_local(&mut chunks[current]);
+    let entry_slot = alloc_local(&mut chunks[current]);
+    let key_slot = alloc_local(&mut chunks[current]);
+    let value_slot = alloc_local(&mut chunks[current]);
+
+    lset(&mut chunks[current], src_slot, line);
+
+    lget(&mut chunks[current], src_slot, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunks[current].emit_else(line);
+
+    emit_import_call(chunks, current, "ecma:object", "new", 0, line);
+    lset(&mut chunks[current], out_slot, line);
+    lget(&mut chunks[current], src_slot, line);
+    emit_import_call(chunks, current, "ecma:object", "entries", 1, line);
+    lset(&mut chunks[current], entries_slot, line);
+    lget(&mut chunks[current], entries_slot, line);
+    emit_len(chunks, current, line);
+    lset(&mut chunks[current], len_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    lset(&mut chunks[current], idx_slot, line);
+
+    let outer_block = chunks[current].emit_block(line);
+    let (outer_loop, _) = chunks[current].emit_loop_s(line);
+    lget(&mut chunks[current], idx_slot, line);
+    lget(&mut chunks[current], len_slot, line);
+    crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_not(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+
+    lget(&mut chunks[current], entries_slot, line);
+    lget(&mut chunks[current], idx_slot, line);
+    emit_get(chunks, current, line);
+    lset(&mut chunks[current], entry_slot, line);
+
+    lget(&mut chunks[current], entry_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    emit_get(chunks, current, line);
+    lset(&mut chunks[current], key_slot, line);
+    lget(&mut chunks[current], entry_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    emit_get(chunks, current, line);
+    lset(&mut chunks[current], value_slot, line);
+
+    lget(&mut chunks[current], out_slot, line);
+    lget(&mut chunks[current], key_slot, line);
+    lget(&mut chunks[current], value_slot, line);
+    emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    lget(&mut chunks[current], idx_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    lset(&mut chunks[current], idx_slot, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(outer_loop);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer_block);
+
+    lget(&mut chunks[current], out_slot, line);
+    chunks[current].emit_end(line);
+}
+
+/// Copy entries from src into dst. Returns number of newly-created keys.
+/// Stack: [dst, src] -> [i32].
+pub fn emit_map_copy(chunks: &mut [Chunk], current: usize, line: u32) {
+    let dst_slot = alloc_local(&mut chunks[current]);
+    let src_slot = alloc_local(&mut chunks[current]);
+    let entries_slot = alloc_local(&mut chunks[current]);
+    let len_slot = alloc_local(&mut chunks[current]);
+    let idx_slot = alloc_local(&mut chunks[current]);
+    let count_slot = alloc_local(&mut chunks[current]);
+    let entry_slot = alloc_local(&mut chunks[current]);
+    let key_slot = alloc_local(&mut chunks[current]);
+    let value_slot = alloc_local(&mut chunks[current]);
+
+    lset(&mut chunks[current], src_slot, line);
+    lset(&mut chunks[current], dst_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    lset(&mut chunks[current], count_slot, line);
+
+    lget(&mut chunks[current], src_slot, line);
+    emit_import_call(chunks, current, "ecma:object", "entries", 1, line);
+    lset(&mut chunks[current], entries_slot, line);
+    lget(&mut chunks[current], entries_slot, line);
+    emit_len(chunks, current, line);
+    lset(&mut chunks[current], len_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    lset(&mut chunks[current], idx_slot, line);
+
+    let outer_block = chunks[current].emit_block(line);
+    let (outer_loop, _) = chunks[current].emit_loop_s(line);
+    lget(&mut chunks[current], idx_slot, line);
+    lget(&mut chunks[current], len_slot, line);
+    crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_not(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+
+    lget(&mut chunks[current], entries_slot, line);
+    lget(&mut chunks[current], idx_slot, line);
+    emit_get(chunks, current, line);
+    lset(&mut chunks[current], entry_slot, line);
+
+    lget(&mut chunks[current], entry_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    emit_get(chunks, current, line);
+    lset(&mut chunks[current], key_slot, line);
+    lget(&mut chunks[current], entry_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    emit_get(chunks, current, line);
+    lset(&mut chunks[current], value_slot, line);
+
+    lget(&mut chunks[current], dst_slot, line);
+    lget(&mut chunks[current], key_slot, line);
+    emit_import_call(chunks, current, "ecma:object", "hasOwn", 2, line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_not(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    lget(&mut chunks[current], count_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    lset(&mut chunks[current], count_slot, line);
+    chunks[current].emit_end(line);
+
+    lget(&mut chunks[current], dst_slot, line);
+    lget(&mut chunks[current], key_slot, line);
+    lget(&mut chunks[current], value_slot, line);
+    emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    lget(&mut chunks[current], idx_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    lset(&mut chunks[current], idx_slot, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(outer_loop);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer_block);
+
+    lget(&mut chunks[current], count_slot, line);
+}
+
+/// Delete entries for which predicate(key, value) is truthy. Stack:
+/// [map, predicate] -> [null].
+pub fn emit_map_delete_func(chunks: &mut [Chunk], current: usize, line: u32) {
+    let map_slot = alloc_local(&mut chunks[current]);
+    let pred_slot = alloc_local(&mut chunks[current]);
+    let entries_slot = alloc_local(&mut chunks[current]);
+    let len_slot = alloc_local(&mut chunks[current]);
+    let idx_slot = alloc_local(&mut chunks[current]);
+    let entry_slot = alloc_local(&mut chunks[current]);
+    let key_slot = alloc_local(&mut chunks[current]);
+    let value_slot = alloc_local(&mut chunks[current]);
+
+    lset(&mut chunks[current], pred_slot, line);
+    lset(&mut chunks[current], map_slot, line);
+
+    lget(&mut chunks[current], map_slot, line);
+    emit_import_call(chunks, current, "ecma:object", "entries", 1, line);
+    lset(&mut chunks[current], entries_slot, line);
+    lget(&mut chunks[current], entries_slot, line);
+    emit_len(chunks, current, line);
+    lset(&mut chunks[current], len_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    lset(&mut chunks[current], idx_slot, line);
+
+    let outer_block = chunks[current].emit_block(line);
+    let (outer_loop, _) = chunks[current].emit_loop_s(line);
+    lget(&mut chunks[current], idx_slot, line);
+    lget(&mut chunks[current], len_slot, line);
+    crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_not(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+
+    lget(&mut chunks[current], entries_slot, line);
+    lget(&mut chunks[current], idx_slot, line);
+    emit_get(chunks, current, line);
+    lset(&mut chunks[current], entry_slot, line);
+
+    lget(&mut chunks[current], entry_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    emit_get(chunks, current, line);
+    lset(&mut chunks[current], key_slot, line);
+    lget(&mut chunks[current], entry_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    emit_get(chunks, current, line);
+    lset(&mut chunks[current], value_slot, line);
+
+    lget(&mut chunks[current], pred_slot, line);
+    lget(&mut chunks[current], key_slot, line);
+    lget(&mut chunks[current], value_slot, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2, line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    lget(&mut chunks[current], map_slot, line);
+    lget(&mut chunks[current], key_slot, line);
+    emit_import_call(chunks, current, "ecma:object", "delete", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+
+    lget(&mut chunks[current], idx_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    lset(&mut chunks[current], idx_slot, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(outer_loop);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer_block);
+
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
+/// Lexicographic sequence comparison. Stack: [left_array, right_array] -> [i32].
+pub fn emit_sequence_compare(chunks: &mut [Chunk], current: usize, line: u32) {
+    let left_slot = alloc_local(&mut chunks[current]);
+    let right_slot = alloc_local(&mut chunks[current]);
+    let left_len_slot = alloc_local(&mut chunks[current]);
+    let right_len_slot = alloc_local(&mut chunks[current]);
+    let len_slot = alloc_local(&mut chunks[current]);
+    let idx_slot = alloc_local(&mut chunks[current]);
+    let left_elem_slot = alloc_local(&mut chunks[current]);
+    let right_elem_slot = alloc_local(&mut chunks[current]);
+    let result_slot = alloc_local(&mut chunks[current]);
+
+    lset(&mut chunks[current], right_slot, line);
+    lset(&mut chunks[current], left_slot, line);
+
+    lget(&mut chunks[current], left_slot, line);
+    emit_len(chunks, current, line);
+    lset(&mut chunks[current], left_len_slot, line);
+
+    lget(&mut chunks[current], right_slot, line);
+    emit_len(chunks, current, line);
+    lset(&mut chunks[current], right_len_slot, line);
+
+    lget(&mut chunks[current], left_len_slot, line);
+    lget(&mut chunks[current], right_len_slot, line);
+    crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    lget(&mut chunks[current], left_len_slot, line);
+    chunks[current].emit_else(line);
+    lget(&mut chunks[current], right_len_slot, line);
+    chunks[current].emit_end(line);
+    lset(&mut chunks[current], len_slot, line);
+
+    chunks[current].emit_i32_const(0, line);
+    lset(&mut chunks[current], result_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    lset(&mut chunks[current], idx_slot, line);
+
+    let outer_block = chunks[current].emit_block(line);
+    let (outer_loop, _) = chunks[current].emit_loop_s(line);
+    lget(&mut chunks[current], idx_slot, line);
+    lget(&mut chunks[current], len_slot, line);
+    crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_not(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+
+    lget(&mut chunks[current], left_slot, line);
+    lget(&mut chunks[current], idx_slot, line);
+    emit_get(chunks, current, line);
+    lset(&mut chunks[current], left_elem_slot, line);
+
+    lget(&mut chunks[current], right_slot, line);
+    lget(&mut chunks[current], idx_slot, line);
+    emit_get(chunks, current, line);
+    lset(&mut chunks[current], right_elem_slot, line);
+
+    lget(&mut chunks[current], left_elem_slot, line);
+    lget(&mut chunks[current], right_elem_slot, line);
+    crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_i32_const(-1, line);
+    lset(&mut chunks[current], result_slot, line);
+    chunks[current].emit_br(2, line);
+    chunks[current].emit_else(line);
+    lget(&mut chunks[current], left_elem_slot, line);
+    lget(&mut chunks[current], right_elem_slot, line);
+    crate::primitives::ops::emit_dyn_gt(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_i32_const(1, line);
+    lset(&mut chunks[current], result_slot, line);
+    chunks[current].emit_br(3, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+
+    lget(&mut chunks[current], idx_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    crate::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+    lset(&mut chunks[current], idx_slot, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(outer_loop);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer_block);
+
+    lget(&mut chunks[current], result_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    lget(&mut chunks[current], left_len_slot, line);
+    lget(&mut chunks[current], right_len_slot, line);
+    crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_i32_const(-1, line);
+    lset(&mut chunks[current], result_slot, line);
+    chunks[current].emit_else(line);
+    lget(&mut chunks[current], left_len_slot, line);
+    lget(&mut chunks[current], right_len_slot, line);
+    crate::primitives::ops::emit_dyn_gt(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_i32_const(1, line);
+    lset(&mut chunks[current], result_slot, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+
+    lget(&mut chunks[current], result_slot, line);
+}
+
+/// Natural ascending sortedness. Stack: [array] -> [bool].
+pub fn emit_is_sorted(chunks: &mut [Chunk], current: usize, line: u32) {
+    let arr_slot = alloc_local(&mut chunks[current]);
+    let len_slot = alloc_local(&mut chunks[current]);
+    let idx_slot = alloc_local(&mut chunks[current]);
+    let result_slot = alloc_local(&mut chunks[current]);
+    let prev_slot = alloc_local(&mut chunks[current]);
+    let curr_slot = alloc_local(&mut chunks[current]);
+
+    lset(&mut chunks[current], arr_slot, line);
+    lget(&mut chunks[current], arr_slot, line);
+    emit_len(chunks, current, line);
+    lset(&mut chunks[current], len_slot, line);
+    chunks[current].emit_bool_const(true, line);
+    lset(&mut chunks[current], result_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    lset(&mut chunks[current], idx_slot, line);
+
+    let outer_block = chunks[current].emit_block(line);
+    let (outer_loop, _) = chunks[current].emit_loop_s(line);
+    lget(&mut chunks[current], idx_slot, line);
+    lget(&mut chunks[current], len_slot, line);
+    crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_not(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+
+    lget(&mut chunks[current], arr_slot, line);
+    lget(&mut chunks[current], idx_slot, line);
+    emit_get(chunks, current, line);
+    lset(&mut chunks[current], curr_slot, line);
+
+    lget(&mut chunks[current], arr_slot, line);
+    lget(&mut chunks[current], idx_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    emit_get(chunks, current, line);
+    lset(&mut chunks[current], prev_slot, line);
+
+    lget(&mut chunks[current], curr_slot, line);
+    lget(&mut chunks[current], prev_slot, line);
+    crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_bool_const(false, line);
+    lset(&mut chunks[current], result_slot, line);
+    chunks[current].emit_br(2, line);
+    chunks[current].emit_end(line);
+
+    lget(&mut chunks[current], idx_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    crate::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+    lset(&mut chunks[current], idx_slot, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(outer_loop);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer_block);
 
     lget(&mut chunks[current], result_slot, line);
 }

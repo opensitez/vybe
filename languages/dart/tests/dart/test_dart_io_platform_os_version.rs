@@ -68,7 +68,7 @@ void main() {
 }
 "#
         ),
-        vec!["true\nremove failed"]
+        vec!["true", "remove failed"]
     );
 }
 

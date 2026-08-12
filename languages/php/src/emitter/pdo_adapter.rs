@@ -2163,7 +2163,7 @@ pub fn emit_php_pdo_statement_fetch_all(chunks: &mut [Chunk], current: usize, ar
 
         // ── FETCH_FUNC ──────────────────────────────────────────────────────
         // The callback takes one argument per column, so the arity is a
-        // RUNTIME property of the row and `CALL_REF` cannot express it. Collect
+        // RUNTIME property of the row and fixed-arity callable invoke cannot express it. Collect
         // the row's positional columns into an array and go through
         // `Reflect.apply`, which spreads them for any width.
         //

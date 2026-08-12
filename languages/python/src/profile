@@ -112,6 +112,9 @@ __py_getitem      = { emit = "common:python.getitem",        min_args = 2, max_a
 # `o.attr` read — distinct from `d[k]`: a miss consults the GetAttr role and
 # then raises AttributeError, where a subscript miss raises KeyError.
 __py_attr_read    = { emit = "common:python.attr_read",      min_args = 2, max_args = 2 }
+__py_attr_write   = { emit = "common:python.attr_write",     min_args = 3, max_args = 3 }
+__py_attr_raw_write = { emit = "common:python.attr_raw_write", min_args = 3, max_args = 3 }
+__py_attr_delete  = { emit = "common:python.attr_delete",    min_args = 2, max_args = 2 }
 BaseException     = { emit = "common:python.exc.BaseException",     min_args = 0, max_args = 16 }
 Exception         = { emit = "common:python.exc.Exception",         min_args = 0, max_args = 16 }
 ArithmeticError   = { emit = "common:python.exc.ArithmeticError",   min_args = 0, max_args = 16 }
@@ -139,6 +142,7 @@ TypeError         = { emit = "common:python.exc.TypeError",         min_args = 0
 UnicodeError      = { emit = "common:python.exc.UnicodeError",      min_args = 0, max_args = 16 }
 ValueError        = { emit = "common:python.exc.ValueError",        min_args = 0, max_args = 16 }
 ZeroDivisionError = { emit = "common:python.exc.ZeroDivisionError", min_args = 0, max_args = 16 }
+FrozenInstanceError = { emit = "common:python.exc.FrozenInstanceError", min_args = 0, max_args = 16 }
 __py_exc_BaseException     = { emit = "common:python.exc.BaseException",     min_args = 0, max_args = 16 }
 __py_exc_Exception         = { emit = "common:python.exc.Exception",         min_args = 0, max_args = 16 }
 __py_exc_ArithmeticError   = { emit = "common:python.exc.ArithmeticError",   min_args = 0, max_args = 16 }
@@ -146,6 +150,7 @@ __py_exc_AssertionError    = { emit = "common:python.exc.AssertionError",    min
 __py_exc_AttributeError    = { emit = "common:python.exc.AttributeError",    min_args = 0, max_args = 16 }
 __py_exc_ExceptionGroup    = { emit = "common:python.exc.ExceptionGroup",    min_args = 0, max_args = 16 }
 __py_exc_FileNotFoundError = { emit = "common:python.exc.FileNotFoundError", min_args = 0, max_args = 16 }
+__py_exc_FrozenInstanceError = { emit = "common:python.exc.FrozenInstanceError", min_args = 0, max_args = 16 }
 __py_exc_GeneratorExit     = { emit = "common:python.exc.GeneratorExit",     min_args = 0, max_args = 16 }
 __py_exc_ImportError       = { emit = "common:python.exc.ImportError",       min_args = 0, max_args = 16 }
 __py_exc_IndexError        = { emit = "common:python.exc.IndexError",        min_args = 0, max_args = 16 }
@@ -173,6 +178,7 @@ __py_raise_EOFError          = { emit = "common:python.raise.EOFError",         
 __py_raise_Exception         = { emit = "common:python.raise.Exception",         min_args = 0, max_args = 1 }
 __py_raise_ExceptionGroup    = { emit = "common:python.raise.ExceptionGroup",    min_args = 0, max_args = 1 }
 __py_raise_FileNotFoundError = { emit = "common:python.raise.FileNotFoundError", min_args = 0, max_args = 1 }
+__py_raise_FrozenInstanceError = { emit = "common:python.raise.FrozenInstanceError", min_args = 0, max_args = 1 }
 __py_raise_GeneratorExit     = { emit = "common:python.raise.GeneratorExit",     min_args = 0, max_args = 1 }
 __py_raise_ImportError       = { emit = "common:python.raise.ImportError",       min_args = 0, max_args = 1 }
 __py_raise_IndexError        = { emit = "common:python.raise.IndexError",        min_args = 0, max_args = 1 }
@@ -216,6 +222,7 @@ __py_fmt_sci    = { emit = "common:python.fmt_sci",          min_args = 2, max_a
 __py_fmt_group  = { emit = "common:python.fmt_group",        min_args = 1, max_args = 1 }
 __py_obj_entries__     = { emit = "host:ecma:object:entries",    min_args = 1, max_args = 1 }
 __py_obj_get__         = { emit = "host:ecma:object:get",        min_args = 2, max_args = 2 }
+__py_obj_delete__      = { emit = "host:ecma:object:delete",     min_args = 2, max_args = 2 }
 __py_map_from_entries__ = { emit = "host:ecma:map:fromEntries",  min_args = 1, max_args = 1 }
 # `eval`/`exec` → universal compiler-as-a-service. The walker injects the
 # language ("python") + mode; trailing args are globals/locals namespace dicts.
@@ -325,7 +332,7 @@ __glob_match    = { emit = "common:str_glob_match",        min_args = 2, max_arg
 len             = { emit = "common:python.length",         min_args = 1, max_args = 1, slot = "len" }
 range           = { emit = "common:python.range",         min_args = 1, max_args = 3 }
 list            = { emit = "host:ecma:array:from",          min_args = 0, max_args = 1 }
-tuple           = { emit = "host:ecma:array:from",          min_args = 0, max_args = 1 }
+tuple           = { emit = "common:python.tuple_from_iter", min_args = 0, max_args = 1 }
 dict            = { emit = "host:ecma:object:create",       min_args = 0, max_args = 1 }
 set             = { emit = "common:python.make_set",        min_args = 0, max_args = 1 }
 frozenset       = { emit = "common:python.make_set",        min_args = 0, max_args = 1 }
@@ -376,6 +383,23 @@ next            = { emit = "common:python.next",                 min_args = 1, m
 abs             = { emit = "opcode:f64_abs",                min_args = 1, max_args = 1 }
 round           = { emit = "opcode:f64_nearest",            min_args = 1, max_args = 2 }
 pow             = { emit = "host:ecma:math:pow",            min_args = 2, max_args = 3 }
+# Internal names emitted by the shared complex primitive. Python source still
+# owns its language surface in the walker; these keep common complex AST math
+# calls wired to the same ECMA math implementation as `math.*`.
+sqrt            = { emit = "opcode:f64_sqrt",               min_args = 1, max_args = 1 }
+sin             = { emit = "host:ecma:math:sin",            min_args = 1, max_args = 1 }
+cos             = { emit = "host:ecma:math:cos",            min_args = 1, max_args = 1 }
+tan             = { emit = "host:ecma:math:tan",            min_args = 1, max_args = 1 }
+atan2           = { emit = "host:ecma:math:atan2",          min_args = 2, max_args = 2 }
+sinh            = { emit = "host:ecma:math:sinh",           min_args = 1, max_args = 1 }
+cosh            = { emit = "host:ecma:math:cosh",           min_args = 1, max_args = 1 }
+tanh            = { emit = "host:ecma:math:tanh",           min_args = 1, max_args = 1 }
+acos            = { emit = "host:ecma:math:acos",           min_args = 1, max_args = 1 }
+exp             = { emit = "host:ecma:math:exp",            min_args = 1, max_args = 1 }
+log             = { emit = "host:ecma:math:log",            min_args = 1, max_args = 2 }
+isfinite        = { emit = "host:ecma:number:isFinite",     min_args = 1, max_args = 1 }
+isnan           = { emit = "host:ecma:number:isNaN",        min_args = 1, max_args = 1 }
+isinf           = { emit = "common:python.math_isinf",      min_args = 1, max_args = 1 }
 # ── Math module ──────────────────────────────────────────────────────────────
 
 "math.sqrt"     = { emit = "opcode:f64_sqrt",               min_args = 1, max_args = 1 }
@@ -437,6 +461,8 @@ pow             = { emit = "host:ecma:math:pow",            min_args = 2, max_ar
 "time.localtime"    = { emit = "common:python.time_gmtime",       min_args = 0, max_args = 1 }
 "time.struct_time"  = { emit = "common:python.time_struct_time",  min_args = 1, max_args = 1 }
 "time.mktime"       = { emit = "common:python.time_mktime",       min_args = 1, max_args = 1 }
+"time.asctime"      = { emit = "common:python.time_asctime",      min_args = 0, max_args = 1 }
+"time.ctime"        = { emit = "common:python.time_asctime",      min_args = 0, max_args = 1 }
 "time.monotonic"    = { emit = "common:python.time_clock_seconds", min_args = 0, max_args = 0 }
 "time.perf_counter" = { emit = "common:python.time_clock_seconds", min_args = 0, max_args = 0 }
 "time.process_time" = { emit = "common:python.time_clock_seconds", min_args = 0, max_args = 0 }
@@ -445,6 +471,13 @@ pow             = { emit = "host:ecma:math:pow",            min_args = 2, max_ar
 "time.monotonic_ns"     = { emit = "common:python.time_clock_ns", min_args = 0, max_args = 0 }
 "time.perf_counter_ns"  = { emit = "common:python.time_clock_ns", min_args = 0, max_args = 0 }
 "time.thread_time_ns"   = { emit = "common:python.time_clock_ns", min_args = 0, max_args = 0 }
+__py_time_time          = { emit = "common:python.time_clock_seconds", min_args = 0, max_args = 0 }
+__py_time_gmtime        = { emit = "common:python.time_gmtime",        min_args = 0, max_args = 1 }
+__py_time_localtime     = { emit = "common:python.time_gmtime",        min_args = 0, max_args = 1 }
+__py_time_struct_time   = { emit = "common:python.time_struct_time",   min_args = 1, max_args = 1 }
+__py_time_mktime        = { emit = "common:python.time_mktime",        min_args = 1, max_args = 1 }
+__py_time_clock_seconds = { emit = "common:python.time_clock_seconds", min_args = 0, max_args = 0 }
+__py_time_clock_ns      = { emit = "common:python.time_clock_ns",      min_args = 0, max_args = 0 }
 
 # ── Datetime module ──────────────────────────────────────────────────────────
 # Composed from `ecma:date.*` in `emitter/datetime_adapter.rs` — no
@@ -456,6 +489,11 @@ pow             = { emit = "host:ecma:math:pow",            min_args = 2, max_ar
 "datetime.datetime"  = { emit = "common:python.datetime_new",  min_args = 3, max_args = 8 }
 "datetime.timedelta" = { emit = "common:python.timedelta_new", min_args = 0, max_args = 7 }
 "datetime.timezone"  = { emit = "common:python.timezone_new",  min_args = 1, max_args = 2 }
+__py_date_new      = { emit = "common:python.date_new",      min_args = 3, max_args = 3 }
+__py_time_new      = { emit = "common:python.time_new",      min_args = 0, max_args = 4 }
+__py_datetime_new  = { emit = "common:python.datetime_new",  min_args = 3, max_args = 8 }
+__py_timedelta_new = { emit = "common:python.timedelta_new", min_args = 0, max_args = 7 }
+__py_timezone_new  = { emit = "common:python.timezone_new",  min_args = 1, max_args = 2 }
 "datetime.date.fromordinal"     = { emit = "common:python.fromordinal", min_args = 1, max_args = 1 }
 "datetime.datetime.fromordinal" = { emit = "common:python.fromordinal", min_args = 1, max_args = 1 }
 
@@ -472,6 +510,14 @@ pow             = { emit = "host:ecma:math:pow",            min_args = 2, max_ar
 "datetime.datetime.today"          = { emit = "common:python.dt_now",    min_args = 0, max_args = 0 }
 "datetime.date.today"              = { emit = "common:python.dt_today",  min_args = 0, max_args = 0 }
 "datetime.datetime.combine"        = { emit = "common:python.dt_combine", min_args = 2, max_args = 3 }
+__py_date_fromisoformat     = { emit = "common:python.date_fromisoformat",     min_args = 1, max_args = 1 }
+__py_time_fromisoformat     = { emit = "common:python.time_fromisoformat",     min_args = 1, max_args = 1 }
+__py_datetime_fromisoformat = { emit = "common:python.datetime_fromisoformat", min_args = 1, max_args = 2 }
+__py_fromordinal            = { emit = "common:python.fromordinal",            min_args = 1, max_args = 1 }
+__py_fromtimestamp          = { emit = "common:python.fromtimestamp",          min_args = 1, max_args = 2 }
+__py_dt_now                 = { emit = "common:python.dt_now",                 min_args = 0, max_args = 1 }
+__py_dt_today               = { emit = "common:python.dt_today",               min_args = 0, max_args = 0 }
+__py_dt_combine             = { emit = "common:python.dt_combine",             min_args = 2, max_args = 3 }
 
 # ── Calendar module ──────────────────────────────────────────────────────────
 # `month_name` / `day_name` are compile-time name tables (see the walker).
@@ -479,6 +525,24 @@ pow             = { emit = "host:ecma:math:pow",            min_args = 2, max_ar
 "calendar.weekday"    = { emit = "common:python.cal_weekday",    min_args = 3, max_args = 3 }
 "calendar.isleap"     = { emit = "common:python.cal_isleap",     min_args = 1, max_args = 1 }
 "calendar.monthrange" = { emit = "common:python.cal_monthrange", min_args = 2, max_args = 2 }
+"calendar.leapdays"   = { emit = "common:python.calendar_leapdays",      min_args = 2, max_args = 2 }
+"calendar.timegm"     = { emit = "common:python.calendar_timegm",        min_args = 1, max_args = 1 }
+"calendar.monthcalendar" = { emit = "common:python.calendar_monthcalendar", min_args = 2, max_args = 2 }
+"calendar.setfirstweekday" = { emit = "common:python.calendar_setfirstweekday", min_args = 1, max_args = 1 }
+"calendar.firstweekday" = { emit = "common:python.calendar_firstweekday", min_args = 0, max_args = 0 }
+__py_calendar_new = { emit = "common:python.calendar_new", min_args = 0, max_args = 1 }
+__py_calendar_text_new = { emit = "common:python.calendar_text_new", min_args = 0, max_args = 1 }
+__py_calendar_html_new = { emit = "common:python.calendar_html_new", min_args = 0, max_args = 1 }
+__py_calendar_leapdays = { emit = "common:python.calendar_leapdays", min_args = 2, max_args = 2 }
+__py_calendar_timegm = { emit = "common:python.calendar_timegm", min_args = 1, max_args = 1 }
+__py_calendar_monthcalendar = { emit = "common:python.calendar_monthcalendar", min_args = 2, max_args = 2 }
+__py_calendar_itermonthdays = { emit = "common:python.calendar_itermonthdays", min_args = 2, max_args = 3 }
+__py_calendar_itermonthdays2 = { emit = "common:python.calendar_itermonthdays2", min_args = 2, max_args = 3 }
+__py_calendar_yeardayscalendar = { emit = "common:python.calendar_yeardayscalendar", min_args = 1, max_args = 2 }
+__py_calendar_text_formatmonth = { emit = "common:python.calendar_text_formatmonth", min_args = 2, max_args = 4 }
+__py_calendar_html_formatmonth = { emit = "common:python.calendar_html_formatmonth", min_args = 2, max_args = 4 }
+__py_calendar_setfirstweekday = { emit = "common:python.calendar_setfirstweekday", min_args = 1, max_args = 1 }
+__py_calendar_firstweekday_fn = { emit = "common:python.calendar_firstweekday", min_args = 0, max_args = 0 }
 
 # Class attributes holding constructed values — the walker rewrites
 # `datetime.date.min` & co. to these zero-arg builtins.
@@ -491,6 +555,19 @@ __py_timedelta_resolution = { emit = "common:python.timedelta_resolution", min_a
 __py_dt_replace           = { emit = "common:python.dt_replace", min_args = 7, max_args = 7 }
 # The padded component a compile-time-expanded `strftime` emits.
 __py_dt_pad               = { emit = "common:python.dt_pad",     min_args = 2, max_args = 2 }
+__py_dt_isoformat         = { emit = "common:python.dt_isoformat",      min_args = 1, max_args = 1 }
+__py_dt_str               = { emit = "common:python.dt_str",            min_args = 1, max_args = 1 }
+__py_date_weekday         = { emit = "common:python.date_weekday",      min_args = 1, max_args = 1 }
+__py_total_seconds        = { emit = "common:python.total_seconds",     min_args = 1, max_args = 1 }
+__py_toordinal            = { emit = "common:python.toordinal",         min_args = 1, max_args = 1 }
+__py_timestamp            = { emit = "common:python.timestamp",         min_args = 1, max_args = 1 }
+__py_timetuple            = { emit = "common:python.timetuple",         min_args = 1, max_args = 1 }
+__py_dt_date_method       = { emit = "common:python.dt_date_method",    min_args = 1, max_args = 1 }
+__py_dt_time_method       = { emit = "common:python.dt_time_method",    min_args = 1, max_args = 1 }
+__py_utcoffset            = { emit = "common:python.utcoffset",         min_args = 1, max_args = 2 }
+__py_astimezone           = { emit = "common:python.astimezone",        min_args = 2, max_args = 2 }
+__py_tzname               = { emit = "common:python.tzname",            min_args = 1, max_args = 1 }
+__py_tz_offset_str        = { emit = "common:python.tz_offset_str",     min_args = 1, max_args = 1 }
 
 # ── Itertools / functools / operator ─────────────────────────────────────────
 # List transforms with no ECMA counterpart (Array.prototype has no `product`),
@@ -689,11 +766,12 @@ gethostname            = { emit = "common:python.sock_gethostname",   min_args =
 gethostbyname          = { emit = "common:python.sock_gethostbyname", min_args = 1, max_args = 1 }
 getaddrinfo            = { emit = "common:python.sock_getaddrinfo",   min_args = 1, max_args = 6 }
 
-__py_thread_join = { emit = "common:threading.thread_join",   min_args = 1, max_args = 2 }
 # Nanoseconds. `wasi:clocks/monotonic-clock.wait-for` is the real blocking
 # sleep — the `vybe:clocks:sleep` the `time.sleep` row names is not a
 # registered host function at all.
 _vybe_wait_ns   = { emit = "host:wasi:clocks/monotonic-clock:wait-for", min_args = 1, max_args = 1 }
+__py_thread_start_common = { emit = "common:python.thread_start_with", min_args = 2, max_args = 2 }
+__py_thread_join_common  = { emit = "common:python.thread_join",       min_args = 1, max_args = 1 }
 urljoin         = { emit = "common:python.url_join",           min_args = 2, max_args = 3 }
 urlsplit        = { emit = "common:python.url_split",          min_args = 1, max_args = 3 }
 urlparse        = { emit = "common:python.url_split",          min_args = 1, max_args = 3 }
@@ -706,6 +784,8 @@ quote           = { emit = "common:python.url_quote",          min_args = 1, max
 quote_plus      = { emit = "common:python.url_quote_plus",     min_args = 1, max_args = 4 }
 unquote         = { emit = "common:python.url_unquote",        min_args = 1, max_args = 3 }
 unquote_plus    = { emit = "common:python.url_unquote_plus",   min_args = 1, max_args = 3 }
+__py_csv_parse_line = { emit = "common:csv.parse_line",        min_args = 3, max_args = 3 }
+__py_csv_format_row = { emit = "common:csv.format_row",        min_args = 3, max_args = 3 }
 
 # ── dataclasses ──────────────────────────────────────────────────────────────
 # All four read the `__dataclass_fields__` array the walker synthesizes onto
@@ -832,6 +912,70 @@ open            = { emit = "common:python.file_open",        min_args = 1, max_a
 # `", "` / `": "` separators) that bare `ecma:json.stringify` can't provide.
 "__py_json_dumps" = { emit = "common:python.json_dumps",      min_args = 6, max_args = 6 }
 
+# ── base64 / binascii modules ────────────────────────────────────────────────
+
+"base64.b64encode"          = { emit = "common:python.base64_b64encode",          min_args = 1, max_args = 2 }
+"base64.b64decode"          = { emit = "common:python.base64_b64decode",          min_args = 1, max_args = 3 }
+"base64.standard_b64encode" = { emit = "common:python.base64_b64encode",          min_args = 1, max_args = 1 }
+"base64.standard_b64decode" = { emit = "common:python.base64_b64decode",          min_args = 1, max_args = 1 }
+"base64.urlsafe_b64encode"  = { emit = "common:python.base64_urlsafe_b64encode",  min_args = 1, max_args = 1 }
+"base64.urlsafe_b64decode"  = { emit = "common:python.base64_urlsafe_b64decode",  min_args = 1, max_args = 1 }
+"base64.encodebytes"        = { emit = "common:python.base64_encodebytes",        min_args = 1, max_args = 1 }
+"base64.decodebytes"        = { emit = "common:python.base64_b64decode",          min_args = 1, max_args = 1 }
+"base64.b16encode"          = { emit = "common:python.base64_b16encode",          min_args = 1, max_args = 1 }
+"base64.b16decode"          = { emit = "common:python.base64_b16decode",          min_args = 1, max_args = 2 }
+"base64.b32encode"          = { emit = "common:python.base64_b32encode",          min_args = 1, max_args = 1 }
+"base64.b32decode"          = { emit = "common:python.base64_b32decode",          min_args = 1, max_args = 3 }
+"base64.b32hexencode"       = { emit = "common:python.base64_b32encode",          min_args = 1, max_args = 1 }
+"base64.b32hexdecode"       = { emit = "common:python.base64_b32decode",          min_args = 1, max_args = 3 }
+"base64.a85encode"          = { emit = "common:python.base64_a85encode",          min_args = 1, max_args = 4 }
+"base64.a85decode"          = { emit = "common:python.base64_a85decode",          min_args = 1, max_args = 4 }
+"base64.b85encode"          = { emit = "common:python.base64_b85encode",          min_args = 1, max_args = 2 }
+"base64.b85decode"          = { emit = "common:python.base64_b85decode",          min_args = 1, max_args = 1 }
+"binascii.b2a_base64"       = { emit = "common:python.binascii_b2a_base64",       min_args = 1, max_args = 2 }
+"binascii.a2b_base64"       = { emit = "common:python.binascii_a2b_base64",       min_args = 1, max_args = 1 }
+"binascii.hexlify"          = { emit = "common:python.binascii_hexlify",          min_args = 1, max_args = 2 }
+"binascii.unhexlify"        = { emit = "common:python.binascii_unhexlify",        min_args = 1, max_args = 1 }
+"binascii.b2a_hex"          = { emit = "common:python.binascii_hexlify",          min_args = 1, max_args = 2 }
+"binascii.a2b_hex"          = { emit = "common:python.binascii_unhexlify",        min_args = 1, max_args = 1 }
+"binascii.crc32"            = { emit = "common:python.binascii_crc32",            min_args = 1, max_args = 2 }
+"codecs.encode"             = { emit = "common:python.codecs_encode",             min_args = 2, max_args = 3 }
+"codecs.decode"             = { emit = "common:python.codecs_decode",             min_args = 2, max_args = 3 }
+"codecs.lookup"             = { emit = "common:python.codecs_lookup",             min_args = 1, max_args = 1 }
+"codecs.escape_decode"      = { emit = "common:python.codecs_escape_decode",      min_args = 1, max_args = 2 }
+"codecs.escape_encode"      = { emit = "common:python.codecs_escape_encode",      min_args = 1, max_args = 2 }
+"codecs.iterencode"         = { emit = "common:python.codecs_iterencode",         min_args = 2, max_args = 3 }
+"codecs.iterdecode"         = { emit = "common:python.codecs_iterdecode",         min_args = 2, max_args = 3 }
+"codecs.EncodedFile"        = { emit = "common:python.first_arg",                 min_args = 1, max_args = 3 }
+"codecs.encodedfile"        = { emit = "common:python.first_arg",                 min_args = 1, max_args = 3 }
+"unicodedata.normalize"     = { emit = "common:python.unicodedata_normalize",     min_args = 2, max_args = 2 }
+__py_base64_b64encode         = { emit = "common:python.base64_b64encode",         min_args = 1, max_args = 2 }
+__py_base64_b64decode         = { emit = "common:python.base64_b64decode",         min_args = 1, max_args = 3 }
+__py_base64_urlsafe_b64encode = { emit = "common:python.base64_urlsafe_b64encode", min_args = 1, max_args = 1 }
+__py_base64_urlsafe_b64decode = { emit = "common:python.base64_urlsafe_b64decode", min_args = 1, max_args = 1 }
+__py_base64_encodebytes       = { emit = "common:python.base64_encodebytes",       min_args = 1, max_args = 1 }
+__py_base64_b16encode         = { emit = "common:python.base64_b16encode",         min_args = 1, max_args = 1 }
+__py_base64_b16decode         = { emit = "common:python.base64_b16decode",         min_args = 1, max_args = 2 }
+__py_base64_b32encode         = { emit = "common:python.base64_b32encode",         min_args = 1, max_args = 1 }
+__py_base64_b32decode         = { emit = "common:python.base64_b32decode",         min_args = 1, max_args = 3 }
+__py_base64_a85encode         = { emit = "common:python.base64_a85encode",         min_args = 1, max_args = 4 }
+__py_base64_a85decode         = { emit = "common:python.base64_a85decode",         min_args = 1, max_args = 4 }
+__py_base64_b85encode         = { emit = "common:python.base64_b85encode",         min_args = 1, max_args = 2 }
+__py_base64_b85decode         = { emit = "common:python.base64_b85decode",         min_args = 1, max_args = 1 }
+__py_binascii_b2a_base64      = { emit = "common:python.binascii_b2a_base64",      min_args = 1, max_args = 2 }
+__py_binascii_a2b_base64      = { emit = "common:python.binascii_a2b_base64",      min_args = 1, max_args = 1 }
+__py_binascii_hexlify         = { emit = "common:python.binascii_hexlify",         min_args = 1, max_args = 2 }
+__py_binascii_unhexlify       = { emit = "common:python.binascii_unhexlify",       min_args = 1, max_args = 1 }
+__py_binascii_crc32           = { emit = "common:python.binascii_crc32",           min_args = 1, max_args = 2 }
+__py_codecs_encode            = { emit = "common:python.codecs_encode",            min_args = 2, max_args = 3 }
+__py_codecs_decode            = { emit = "common:python.codecs_decode",            min_args = 2, max_args = 3 }
+__py_codecs_lookup            = { emit = "common:python.codecs_lookup",            min_args = 1, max_args = 1 }
+__py_codecs_escape_decode     = { emit = "common:python.codecs_escape_decode",     min_args = 1, max_args = 2 }
+__py_codecs_escape_encode     = { emit = "common:python.codecs_escape_encode",     min_args = 1, max_args = 2 }
+__py_codecs_iterencode        = { emit = "common:python.codecs_iterencode",        min_args = 2, max_args = 3 }
+__py_codecs_iterdecode        = { emit = "common:python.codecs_iterdecode",        min_args = 2, max_args = 3 }
+__py_unicodedata_normalize    = { emit = "common:python.unicodedata_normalize",    min_args = 2, max_args = 2 }
+
 # ── re module ────────────────────────────────────────────────────────────────
 
 # Python `re.*` → ECMA-262 §22.2 RegExp. Python's pattern-first
@@ -851,16 +995,6 @@ open            = { emit = "common:python.file_open",        min_args = 1, max_a
 # ── time module ──────────────────────────────────────────────────────────────
 
 "time.time"      = { emit = "host:ecma:date:now",              min_args = 0, max_args = 0 }
-"time.sleep"     = { emit = "host:vybe:clocks:sleep",          min_args = 1, max_args = 1 }
-
-# ── subprocess module ────────────────────────────────────────────────────────
-
-"subprocess.run"  = { emit = "host:node:child_process:execSync", min_args = 1, max_args = 3 }
-
-# ── threading module ─────────────────────────────────────────────────────────
-
-"threading.Thread" = { emit = "common:threading.task_run",     min_args = 0, max_args = 2 }
-
 # ────────────────────────────────────────────────────────────────────────────
 # VALUE METHODS — instance .method() calls
 # ────────────────────────────────────────────────────────────────────────────
@@ -902,11 +1036,6 @@ index           = { emit = "common:python.index",             min_args = 1, max_
 rindex          = { emit = "common:python.str_rindex",        min_args = 1, max_args = 3 }
 count           = { emit = "common:python.str_count",        min_args = 1, max_args = 3 }
 startswith      = { emit = "common:python.str_startswith",    min_args = 1, max_args = 3 }
-# `threading.Thread` spawns on construction (common:threading.task_run), so
-# `.start()` is the no-op the shared emitter already models; `.join()` is the
-# real wait. `join` is taken by the string/array method, so only `start` can be
-# a plain value method here.
-start           = { emit = "common:threading.thread_start",   min_args = 0, max_args = 0 }
 endswith        = { emit = "common:python.str_endswith",      min_args = 1, max_args = 3 }
 capitalize      = { emit = "intrinsic:capitalize",     min_args = 0, max_args = 0 }
 title           = { emit = "host:ecma:string:title",          min_args = 0, max_args = 0 }
@@ -1038,6 +1167,11 @@ __name__ = "__main__"
 "math.tau"      = 6.283185307179586
 "math.inf"      = "Infinity"
 "math.nan"      = "NaN"
+"cmath.pi"      = 3.141592653589793
+"cmath.e"       = 2.718281828459045
+"cmath.tau"     = 6.283185307179586
+"cmath.inf"     = "Infinity"
+"cmath.nan"     = "NaN"
 "float.inf"     = "Infinity"
 "float.nan"     = "NaN"
 "True"          = true

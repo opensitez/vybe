@@ -81,3 +81,77 @@ pub fn emit_proxy_has_dispatch(chunks: &mut [Chunk], current: usize, line: u32) 
     let chunk = &mut chunks[current];
     chunk.emit_call(has_idx, 2, line);
 }
+
+/// Proxy `deleteProperty` trap dispatch. Stack: [obj, key] → [bool].
+pub fn emit_proxy_delete_property_dispatch(chunks: &mut [Chunk], current: usize, line: u32) {
+    let delete_idx = add_import(chunks, current, "ecma:proxy", "deleteProperty");
+    let chunk = &mut chunks[current];
+    chunk.emit_call(delete_idx, 2, line);
+}
+
+/// Proxy `apply` trap dispatch. Stack: [callable_or_proxy, this_arg, args_array] → [result].
+pub fn emit_proxy_apply_dispatch(chunks: &mut [Chunk], current: usize, line: u32) {
+    let apply_idx = add_import(chunks, current, "ecma:proxy", "apply");
+    let chunk = &mut chunks[current];
+    chunk.emit_call(apply_idx, 3, line);
+}
+
+/// Proxy `ownKeys` trap dispatch. Stack: [obj] → [keys_array].
+pub fn emit_proxy_own_keys_dispatch(chunks: &mut [Chunk], current: usize, line: u32) {
+    let idx = add_import(chunks, current, "ecma:proxy", "ownKeys");
+    let chunk = &mut chunks[current];
+    chunk.emit_call(idx, 1, line);
+}
+
+/// Proxy `getOwnPropertyDescriptor` trap dispatch. Stack: [obj, key] → [descriptor|undefined].
+pub fn emit_proxy_get_own_property_descriptor_dispatch(
+    chunks: &mut [Chunk],
+    current: usize,
+    line: u32,
+) {
+    let idx = add_import(chunks, current, "ecma:proxy", "getOwnPropertyDescriptor");
+    let chunk = &mut chunks[current];
+    chunk.emit_call(idx, 2, line);
+}
+
+/// Proxy `defineProperty` trap dispatch. Stack: [obj, key, descriptor] → [bool].
+pub fn emit_proxy_define_property_dispatch(chunks: &mut [Chunk], current: usize, line: u32) {
+    let idx = add_import(chunks, current, "ecma:proxy", "defineProperty");
+    let chunk = &mut chunks[current];
+    chunk.emit_call(idx, 3, line);
+}
+
+/// Proxy `getPrototypeOf` trap dispatch. Stack: [obj] → [prototype|null].
+pub fn emit_proxy_get_prototype_of_dispatch(chunks: &mut [Chunk], current: usize, line: u32) {
+    let idx = add_import(chunks, current, "ecma:proxy", "getPrototypeOf");
+    let chunk = &mut chunks[current];
+    chunk.emit_call(idx, 1, line);
+}
+
+/// Proxy `setPrototypeOf` trap dispatch. Stack: [obj, prototype|null] → [bool].
+pub fn emit_proxy_set_prototype_of_dispatch(chunks: &mut [Chunk], current: usize, line: u32) {
+    let idx = add_import(chunks, current, "ecma:proxy", "setPrototypeOf");
+    let chunk = &mut chunks[current];
+    chunk.emit_call(idx, 2, line);
+}
+
+/// Proxy `isExtensible` trap dispatch. Stack: [obj] → [bool].
+pub fn emit_proxy_is_extensible_dispatch(chunks: &mut [Chunk], current: usize, line: u32) {
+    let idx = add_import(chunks, current, "ecma:proxy", "isExtensible");
+    let chunk = &mut chunks[current];
+    chunk.emit_call(idx, 1, line);
+}
+
+/// Proxy `preventExtensions` trap dispatch. Stack: [obj] → [bool].
+pub fn emit_proxy_prevent_extensions_dispatch(chunks: &mut [Chunk], current: usize, line: u32) {
+    let idx = add_import(chunks, current, "ecma:proxy", "preventExtensions");
+    let chunk = &mut chunks[current];
+    chunk.emit_call(idx, 1, line);
+}
+
+/// Proxy `construct` trap dispatch. Stack: [constructor_or_proxy, args_array] → [object].
+pub fn emit_proxy_construct_dispatch(chunks: &mut [Chunk], current: usize, line: u32) {
+    let idx = add_import(chunks, current, "ecma:proxy", "construct");
+    let chunk = &mut chunks[current];
+    chunk.emit_call(idx, 2, line);
+}

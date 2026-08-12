@@ -206,22 +206,11 @@ pub fn normalize_class(
     }
 
     NormalClass {
-        // Dart `class X with M` — declared as DATA for the shared
-        // augmentation pass rather than folded here. Copy mode: members are
-        // duplicated in. `AfterOwn`: the class's own members win. `LastWins`:
-        // Dart linearization is left-to-right with later mixins overriding
-        // earlier. `NextInOrder`: `super` inside a mixin resolves to the next
-        // entry in the linearization, NOT the mixin's own parent. Mixins
-        // declare no constructors. See flexclassplan.md §4c.
-        augmentations: crate::walker::dart_class_mixins(name)
-            .iter()
-            .map(|mixin| {
-                DART_MIXIN.applied_to(&vybe_ast::AugmentDecl {
-                    from: mixin.clone(),
-                    ..Default::default()
-                })
-            })
-            .collect(),
+        // Dart `with` and user-owned `extension on` clauses arrive as
+        // `ClassMember::Augment` entries. `with_members` appends those to this
+        // normalized class, and the shared `class_augmentation` pass applies
+        // them. Do not re-read the old walker thread-local here: the AST is the
+        // declaration surface.
         // Dart resolves bare identifiers in instance methods to `this.field`
         // (the `this.` is only needed when a local shadows). Setting this true
         // lets `String toString() => '($x, $y)'` and `_balance += v` reach

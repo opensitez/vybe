@@ -470,7 +470,7 @@ void main() {
 void main() {
   print(Rec(2)(3));
 }"#,
-        ["5"]
+        ["6"]
     };
 
     call_with_string_interpolation_result => {

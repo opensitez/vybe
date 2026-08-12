@@ -1,6 +1,6 @@
 //! Kotlin nullability operators.
 
-use vybe_compiler::primitives::callable;
+use vybe_compiler::primitives::{callable, collections};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
@@ -28,6 +28,13 @@ fn jvm_exception_chain(exc_name: &str) -> Vec<&'static str> {
         ],
         "IllegalStateException" => vec![
             "IllegalStateException",
+            "RuntimeException",
+            "RuntimeError",
+            "Exception",
+            "Throwable",
+        ],
+        "ClassCastException" => vec![
+            "ClassCastException",
             "RuntimeException",
             "RuntimeError",
             "Exception",
@@ -68,6 +75,7 @@ fn jvm_exception_chain(exc_name: &str) -> Vec<&'static str> {
             "Exception",
             "Throwable",
         ],
+        "InterruptedException" => vec!["InterruptedException", "Exception", "Throwable"],
         "RuntimeException" => vec!["RuntimeException", "RuntimeError", "Exception", "Throwable"],
         _ => vec!["Exception", "Throwable"],
     }
@@ -234,7 +242,43 @@ pub fn emit_class_of(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u3
     chunks[current].emit_op_u16(Op::LOCAL_GET, type_name, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    let types_key = chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
+        vybe_compiler::primitives::reflection::FIELD_TYPES,
+    )));
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, types_key, line);
+    let types = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, types, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, types, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    let string_test = chunks[current].add_import("wasm:js-string", "test");
+    chunks[current].emit_call(string_test, 1, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_string_const("String", line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    let number_test = chunks[current].add_import("wasm:js-number", "test");
+    chunks[current].emit_call(number_test, 1, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_string_const("Int", line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    let bool_test = chunks[current].add_import("wasm:js-boolean", "test");
+    chunks[current].emit_call(bool_test, 1, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_string_const("Boolean", line);
+    chunks[current].emit_else(line);
     chunks[current].emit_string_const("Any", line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, types, line);
+    chunks[current].emit_f64_const(0.0, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, type_name, line);
     chunks[current].emit_end(line);
 

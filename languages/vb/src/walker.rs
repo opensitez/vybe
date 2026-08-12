@@ -1298,76 +1298,73 @@ fn normalize_vb_uri_instance_expr(expr: &mut Expression, locals: &HashMap<String
                     normalize_vb_uri_instance_expr(expr, locals);
                     return;
                 }
-                if args.len() == 1 {
-                    let receiver_type = vb_infer_expr_type(object, locals);
-                    if receiver_type.as_deref() == Some("Uri")
-                        && field.eq_ignore_ascii_case("IsBaseOf")
-                    {
-                        let child_href = vb_uri_href_expr(args[0].value.clone());
-                        let base_href = vb_uri_href_expr((**object).clone());
-                        *expr = call_expr(
-                            Expression::new(ExprKind::Member {
-                                object: Box::new(child_href),
-                                field: "StartsWith".into(),
-                                null_safe: false,
-                            }),
-                            vec![Argument::positional(base_href)],
-                        );
-                        return;
-                    }
-                    if receiver_type.as_deref() == Some("Uri")
-                        && field.eq_ignore_ascii_case("MakeRelativeUri")
-                    {
-                        let target_href = vb_uri_href_expr(args[0].value.clone());
-                        let base_href = vb_uri_href_expr((**object).clone());
-                        *expr = call_expr(
-                            Expression::new(ExprKind::Member {
-                                object: Box::new(target_href),
-                                field: "Replace".into(),
-                                null_safe: false,
-                            }),
-                            vec![
-                                Argument::positional(base_href),
-                                Argument::positional(Expression::string("")),
-                            ],
-                        );
-                        return;
-                    }
-                    if receiver_type.as_deref() == Some("Version")
-                        && field.eq_ignore_ascii_case("CompareTo")
-                    {
-                        let receiver = (**object).clone();
-                        let first = args[0].value.clone();
-                        *expr = call_expr(
-                            Expression::new(ExprKind::Member {
-                                object: Box::new(Expression::ident("Version")),
-                                field: "CompareTo".into(),
-                                null_safe: false,
-                            }),
-                            vec![Argument::positional(first), Argument::positional(receiver)],
-                        );
-                        return;
-                    }
-                    let static_owner = match (
-                        receiver_type.as_deref(),
-                        field.to_ascii_lowercase().as_str(),
-                    ) {
-                        (Some("Uri"), "isbaseof" | "makerelativeuri") => Some("Uri"),
-                        _ => None,
-                    };
-                    if let Some(static_owner) = static_owner {
-                        let method = field.clone();
-                        let receiver = (**object).clone();
-                        let first = args[0].value.clone();
-                        *expr = call_expr(
-                            Expression::new(ExprKind::Member {
-                                object: Box::new(Expression::ident(static_owner)),
-                                field: method,
-                                null_safe: false,
-                            }),
-                            vec![Argument::positional(receiver), Argument::positional(first)],
-                        );
-                    }
+                let receiver_type = vb_infer_expr_type(object, locals);
+                if receiver_type.as_deref() == Some("Uri") && field.eq_ignore_ascii_case("IsBaseOf")
+                {
+                    let child_href = vb_uri_href_expr(args[0].value.clone());
+                    let base_href = vb_uri_href_expr((**object).clone());
+                    *expr = call_expr(
+                        Expression::new(ExprKind::Member {
+                            object: Box::new(child_href),
+                            field: "StartsWith".into(),
+                            null_safe: false,
+                        }),
+                        vec![Argument::positional(base_href)],
+                    );
+                    return;
+                }
+                if receiver_type.as_deref() == Some("Uri")
+                    && field.eq_ignore_ascii_case("MakeRelativeUri")
+                {
+                    let target_href = vb_uri_href_expr(args[0].value.clone());
+                    let base_href = vb_uri_href_expr((**object).clone());
+                    *expr = call_expr(
+                        Expression::new(ExprKind::Member {
+                            object: Box::new(target_href),
+                            field: "Replace".into(),
+                            null_safe: false,
+                        }),
+                        vec![
+                            Argument::positional(base_href),
+                            Argument::positional(Expression::string("")),
+                        ],
+                    );
+                    return;
+                }
+                if receiver_type.as_deref() == Some("Version")
+                    && field.eq_ignore_ascii_case("CompareTo")
+                {
+                    let receiver = (**object).clone();
+                    let first = args[0].value.clone();
+                    *expr = call_expr(
+                        Expression::new(ExprKind::Member {
+                            object: Box::new(Expression::ident("Version")),
+                            field: "CompareTo".into(),
+                            null_safe: false,
+                        }),
+                        vec![Argument::positional(first), Argument::positional(receiver)],
+                    );
+                    return;
+                }
+                let static_owner = match (
+                    receiver_type.as_deref(),
+                    field.to_ascii_lowercase().as_str(),
+                ) {
+                    (Some("Uri"), "isbaseof" | "makerelativeuri") => Some("Uri"),
+                    _ => None,
+                };
+                if let Some(static_owner) = static_owner {
+                    let method = field.clone();
+                    let receiver = (**object).clone();
+                    let first = args[0].value.clone();
+                    *expr = call_expr(
+                        Expression::new(ExprKind::Member {
+                            object: Box::new(Expression::ident(static_owner)),
+                            field: method,
+                            null_safe: false,
+                        }),
+                        vec![Argument::positional(receiver), Argument::positional(first)],
+                    );
                 }
             }
         }
@@ -2156,16 +2153,75 @@ fn vb_source_uses_option_compare_text(source: &str) -> bool {
     false
 }
 
+/// The byte ranges of `line` that are NOT code: double-quoted strings, and a
+/// trailing comment.
+///
+/// This pass rewrites SOURCE TEXT, so it has to know where the code stops. It
+/// did not, and a string is the one place a VB program routinely contains
+/// query words: `"SELECT * FROM contacts ORDER BY Name"` was chopped into
+/// separate lines mid-literal, and the file stopped parsing with an error
+/// pointing at `Select contacts` — a line the program never contained. Every
+/// data-bound example in the tree died on it.
+///
+/// `to_ascii_lowercase` preserves byte length, so these indices are valid in
+/// both the original and the lowercased copy.
+fn vb_line_literal_spans(line: &str) -> (Vec<(usize, usize)>, usize) {
+    let bytes = line.as_bytes();
+    let mut spans = Vec::new();
+    let mut comment_at = line.len();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => {
+                let start = i;
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'"' {
+                        // `""` is an escaped quote, not the end.
+                        if bytes.get(i + 1) == Some(&b'"') {
+                            i += 2;
+                            continue;
+                        }
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+                spans.push((start, i));
+            }
+            // An apostrophe outside a string starts a comment.
+            b'\'' => {
+                comment_at = i;
+                break;
+            }
+            _ => i += 1,
+        }
+    }
+    (spans, comment_at)
+}
+
 fn normalize_vb_inline_query_clauses(source: &str) -> String {
     let mut out = String::with_capacity(source.len());
     for line in source.lines() {
         let lower = line.to_ascii_lowercase();
-        let query_start = lower.find(" from ").map(|idx| idx + 1).or_else(|| {
-            lower
-                .trim_start()
-                .starts_with("from ")
-                .then_some(line.len() - line.trim_start().len())
-        });
+        let (literal_spans, comment_at) = vb_line_literal_spans(line);
+        let is_code = |idx: usize| {
+            idx < comment_at
+                && !literal_spans
+                    .iter()
+                    .any(|(start, end)| idx >= *start && idx < *end)
+        };
+        let query_start = lower
+            .match_indices(" from ")
+            .map(|(idx, _)| idx + 1)
+            .find(|idx| is_code(*idx))
+            .or_else(|| {
+                lower
+                    .trim_start()
+                    .starts_with("from ")
+                    .then_some(line.len() - line.trim_start().len())
+                    .filter(|idx| is_code(*idx))
+            });
         let Some(start) = query_start else {
             out.push_str(line);
             out.push('\n');
@@ -2194,8 +2250,13 @@ fn normalize_vb_inline_query_clauses(source: &str) -> String {
         while scan < lower.len() {
             let mut next: Option<(usize, &str)> = None;
             for pattern in patterns {
-                if let Some(rel) = lower[scan..].find(pattern) {
-                    let idx = scan + rel;
+                // Same rule as the `from` that opened the query: a clause word
+                // inside a string or a comment is TEXT, not syntax.
+                if let Some(idx) = lower[scan..]
+                    .match_indices(pattern)
+                    .map(|(rel, _)| scan + rel)
+                    .find(|idx| is_code(*idx))
+                {
                     if next.map_or(true, |(best, _)| idx < best) {
                         next = Some((idx, pattern));
                     }
@@ -5559,9 +5620,22 @@ fn normalize_vb_partial_classes(body: &mut Vec<Statement>) {
                 modifiers.is_partial = false;
             }
         } else {
-            if let StmtKind::ClassDecl { modifiers, .. } = &mut stmt.kind {
-                modifiers.is_partial = false;
-            }
+            // ⚠ `is_partial` stays TRUE here, and that is the whole point.
+            //
+            // This pass only ever sees the parts that spell `Partial`, so a
+            // lone one has nothing here to merge with — but VB requires the
+            // keyword on every part BUT ONE, and the part that omits it is the
+            // code-behind half of every designer form. Its match is
+            // `Public Class Form1`, which this pass never indexed.
+            //
+            // The shared merger handles exactly that: `merge_partial_classes`
+            // keys on the NAME, so it unites a partial with a plain declaration
+            // — but it only runs when some class in the module still claims to
+            // be partial. Clearing the flag here turned that gate off, so
+            // `Form1.vb` and `Form1.Designer.vb` stayed two declarations, one
+            // won, and `btn0_Click`/`HandleClick`/`ResetGame` were never
+            // compiled at all. The flag is cleared only where this pass has
+            // genuinely finished the merge, above.
             seen.insert(key, merged.len());
             merged.push(stmt);
         }
@@ -9422,6 +9496,26 @@ fn rewrite_vb_bitwise_logic_expr(expr: &mut Expression, locals: &HashMap<String,
             if let ExprKind::Binary { left, right, .. } = &mut bool_bit_expr.kind {
                 coerce_vb_boolish_literal(left);
                 coerce_vb_boolish_literal(right);
+                // ⚠ Each operand becomes an INTEGER before the bitwise op.
+                //
+                // `And`/`Or`/`Xor` are VB's non-short-circuit operators and are
+                // BITWISE — that is why they are lowered this way, and why the
+                // result is compared against 0. But the operands here are
+                // Booleans, and a bitwise op over two Booleans did not produce
+                // 0 or 1, so `<> 0` answered TRUE for every combination:
+                // `False Or False` was True, and so was `False And False`.
+                //
+                // `If previousValue = "" Or currentOp = "" Then Return` — the
+                // shape every VB program guards with — therefore always
+                // returned, which is why the calculator's `=` did nothing while
+                // its digits worked. `OrElse`/`AndAlso` were unaffected, being
+                // ordinary logical operators, which is what made it look like a
+                // GUI fault rather than a logic one.
+                //
+                // A ternary keeps BOTH operands evaluated, which is the whole
+                // difference between `Or` and `OrElse`.
+                *left = Box::new(vb_boolish_as_bit(left));
+                *right = Box::new(vb_boolish_as_bit(right));
             }
             *expr = Expression::new(ExprKind::Binary {
                 op: BinOp::NotEq,
@@ -9582,6 +9676,21 @@ fn vb_call_returns_bool(callee: &Expression) -> bool {
             | "startswith"
             | "endswith"
     )
+}
+
+/// A Boolean operand of a BITWISE operator, as the bit it stands for.
+///
+/// A literal answers directly; anything else keeps its evaluation and yields
+/// `1`/`0`, so the surrounding bitwise op has integers to work on.
+fn vb_boolish_as_bit(expr: &Expression) -> Expression {
+    if let ExprKind::Lit(Literal::Bool(value)) = &expr.kind {
+        return Expression::int(if *value { 1 } else { 0 });
+    }
+    Expression::new(ExprKind::Ternary {
+        cond: Box::new(expr.clone()),
+        then: Box::new(Expression::int(1)),
+        else_: Box::new(Expression::int(0)),
+    })
 }
 
 fn coerce_vb_boolish_literal(expr: &mut Expression) {
@@ -17705,18 +17814,41 @@ fn rewrite_vb_import_aliases(module: &mut Module) {
     aliases.insert("Environment".into(), "System.Environment".into());
     aliases.insert("TimeSpan".into(), "System.TimeSpan".into());
     for import in &module.imports {
-        if let ImportKind::Simple {
-            path,
-            alias: Some(alias),
-        } = &import.kind
-        {
-            aliases.insert(alias.clone(), path.clone());
+        if let ImportKind::Simple { path, alias } = &import.kind {
+            if let Some(alias) = alias {
+                aliases.insert(alias.clone(), path.clone());
+            } else {
+                add_vb_dotnet_namespace_import_aliases(path, &mut aliases);
+            }
         }
     }
     if aliases.is_empty() {
         return;
     }
     rewrite_vb_aliases_in_statements(&mut module.body, &aliases);
+}
+
+fn add_vb_dotnet_namespace_import_aliases(path: &str, aliases: &mut HashMap<String, String>) {
+    let namespace = path
+        .strip_prefix("Global.")
+        .unwrap_or(path)
+        .strip_prefix("dotnet.")
+        .unwrap_or_else(|| path.strip_prefix("Dotnet.").unwrap_or(path));
+    let descriptor = vybe_platform_dotnet::emitter::dotnet_component_descriptor();
+    for export in descriptor.exports {
+        let export_namespace = export
+            .interface
+            .strip_prefix("dotnet.")
+            .unwrap_or(export.interface.as_str());
+        if !export_namespace.eq_ignore_ascii_case(namespace) {
+            continue;
+        }
+        let vybe_runtime::component_model::ComponentItemKind::Class(class) = export.kind else {
+            continue;
+        };
+        let qualified = format!("{export_namespace}.{}", class.name);
+        aliases.entry(class.name).or_insert(qualified);
+    }
 }
 
 fn normalize_vb_system_static_receivers(module: &mut Module) {
@@ -23791,6 +23923,10 @@ fn normalize_vb_dotnet_collection_statement(
         }
         StmtKind::VarDecl { declarations, .. } => {
             for decl in declarations {
+                let init_hashset_uses_ignorecase = decl
+                    .init
+                    .as_ref()
+                    .is_some_and(vb_new_hashset_uses_ignorecase);
                 if let Some(init) = &mut decl.init {
                     normalize_vb_dotnet_collection_expr(init, locals);
                 }
@@ -23944,6 +24080,11 @@ fn normalize_vb_dotnet_collection_statement(
                                 .is_some_and(vb_new_dictionary_uses_ignorecase)
                         {
                             "DictionaryIgnoreCase".to_string()
+                        } else if init_hashset_uses_ignorecase
+                            && dotnet_vb::collection_base_type_name(&type_name)
+                                .eq_ignore_ascii_case("HashSet")
+                        {
+                            "HashSet#OrdinalIgnoreCase".to_string()
                         } else {
                             type_name
                         };
@@ -23958,6 +24099,11 @@ fn normalize_vb_dotnet_collection_statement(
                             if let Some(init) = &mut decl.init {
                                 vb_normalize_new_class_name(init, storage_type);
                             }
+                        } else if local_type
+                            .to_ascii_lowercase()
+                            .contains("#ordinalignorecase")
+                        {
+                            decl.type_hint = Some(local_type.clone().into());
                         }
                         locals.insert(name.to_ascii_lowercase(), local_type.into());
                     } else if let Some(type_name) = decl
@@ -25617,6 +25763,24 @@ fn normalize_vb_dotnet_collection_expr(expr: &mut Expression, locals: &HashMap<S
                     *expr = rewrite;
                     return;
                 }
+                if field.eq_ignore_ascii_case("RemoveWhere") && args.len() == 1 {
+                    if let Some(rewrite) =
+                        vb_hashset_remove_where_expr(object, args[0].value.clone(), locals)
+                    {
+                        *expr = rewrite;
+                        return;
+                    }
+                }
+                if let Some(helper) = vb_hashset_mutator_helper(object, field, args, locals) {
+                    *expr = call_expr(
+                        Expression::ident(helper),
+                        vec![
+                            Argument::positional((**object).clone()),
+                            Argument::positional(args[0].value.clone()),
+                        ],
+                    );
+                    return;
+                }
                 if field.eq_ignore_ascii_case("CompareTo") && args.len() == 1 {
                     let receiver_type = vb_infer_expr_type(object, locals);
                     if vb_compareto_receiver_should_normalize(receiver_type.as_deref(), object) {
@@ -25669,23 +25833,6 @@ fn normalize_vb_dotnet_collection_expr(expr: &mut Expression, locals: &HashMap<S
                 }
                 if !args.is_empty() {
                     if let ExprKind::Ident(name) = &object.kind {
-                        if args.len() == 1 {
-                            if let Some(helper) =
-                                vb_dotnet_hashset_algebra_helper(name, field, locals)
-                            {
-                                *expr = Expression::new(ExprKind::Assign {
-                                    target: Box::new((**object).clone()),
-                                    value: Box::new(call_expr(
-                                        Expression::ident(helper),
-                                        vec![
-                                            Argument::positional((**object).clone()),
-                                            args[0].clone(),
-                                        ],
-                                    )),
-                                });
-                                return;
-                            }
-                        }
                         if locals
                             .get(&name.to_ascii_lowercase())
                             .is_some_and(|type_name| {
@@ -25705,7 +25852,7 @@ fn normalize_vb_dotnet_collection_expr(expr: &mut Expression, locals: &HashMap<S
                             && locals
                                 .get(&name.to_ascii_lowercase())
                                 .is_some_and(|type_name| {
-                                    dotnet_vb::collection_base_type_name(type_name)
+                                    vb_collection_base_type_name(type_name)
                                         .eq_ignore_ascii_case("List")
                                 })
                         {
@@ -25720,7 +25867,7 @@ fn normalize_vb_dotnet_collection_expr(expr: &mut Expression, locals: &HashMap<S
                         && args.len() == 1
                         && vb_indexed_dictionary_value_type(object, locals).is_some_and(
                             |type_name| {
-                                dotnet_vb::collection_base_type_name(&type_name)
+                                vb_collection_base_type_name(&type_name)
                                     .eq_ignore_ascii_case("List")
                             },
                         )
@@ -25762,7 +25909,7 @@ fn normalize_vb_dotnet_collection_expr(expr: &mut Expression, locals: &HashMap<S
             normalize_vb_dotnet_collection_expr(object, locals);
             if field.eq_ignore_ascii_case("Count")
                 && vb_indexed_dictionary_value_type(object, locals).is_some_and(|type_name| {
-                    dotnet_vb::collection_base_type_name(&type_name).eq_ignore_ascii_case("List")
+                    vb_collection_base_type_name(&type_name).eq_ignore_ascii_case("List")
                 })
             {
                 *expr = Expression::new(ExprKind::Member {
@@ -25775,7 +25922,7 @@ fn normalize_vb_dotnet_collection_expr(expr: &mut Expression, locals: &HashMap<S
             if field.eq_ignore_ascii_case("Count")
                 && vb_dotnet_collection_member_expr_type(object, locals).is_some_and(|type_name| {
                     matches!(
-                        dotnet_vb::collection_base_type_name(&type_name).as_str(),
+                        vb_collection_base_type_name(&type_name).as_str(),
                         "ArrayList"
                             | "Collection"
                             | "HashSet"
@@ -25923,13 +26070,27 @@ fn normalize_vb_dotnet_collection_expr(expr: &mut Expression, locals: &HashMap<S
                 normalize_vb_dotnet_collection_expr(&mut arg.value, locals);
             }
             if dotted_expr_name(class).as_deref().is_some_and(|name| {
-                dotnet_vb::collection_base_type_name(name).eq_ignore_ascii_case("HashSet")
-            }) && args.len() == 1
-                && literal_string(&args[0].value)
-                    .is_some_and(|text| text.starts_with("__dotnet_stringcomparer_"))
-            {
-                args.clear();
-                return;
+                let base = dotnet_vb::collection_base_type_name(name);
+                base.eq_ignore_ascii_case("HashSet") || base.eq_ignore_ascii_case("SortedSet")
+            }) {
+                let helper = if args.is_empty()
+                    || (args.len() == 1
+                        && literal_string(&args[0].value)
+                            .is_some_and(|text| text.starts_with("__dotnet_stringcomparer_")))
+                {
+                    Some(("__dotnet_hashset_new", Vec::new()))
+                } else if args.len() == 1 {
+                    Some((
+                        "__dotnet_hashset_new_from_iterable",
+                        vec![Argument::positional(args[0].value.clone())],
+                    ))
+                } else {
+                    None
+                };
+                if let Some((helper, helper_args)) = helper {
+                    *expr = call_expr(Expression::ident(helper), helper_args);
+                    return;
+                }
             }
             if dotted_expr_name(class).as_deref().is_some_and(|name| {
                 dotnet_vb::collection_base_type_name(name).eq_ignore_ascii_case("KeyValuePair")
@@ -25961,6 +26122,157 @@ fn normalize_vb_dotnet_collection_expr(expr: &mut Expression, locals: &HashMap<S
     }
 }
 
+fn vb_hashset_mutator_helper<'a>(
+    object: &Expression,
+    field: &str,
+    args: &[Argument],
+    locals: &HashMap<String, String>,
+) -> Option<&'a str> {
+    if args.len() != 1 {
+        return None;
+    }
+    let receiver_type = vb_infer_expr_type(object, locals).or_else(|| {
+        let ExprKind::Ident(name) = &object.kind else {
+            return None;
+        };
+        locals.get(&name.to_ascii_lowercase()).cloned()
+    })?;
+    let receiver_base = vb_collection_base_type_name(&receiver_type);
+    if !receiver_base.eq_ignore_ascii_case("HashSet")
+        && !receiver_base.eq_ignore_ascii_case("SortedSet")
+    {
+        return None;
+    }
+    if field.eq_ignore_ascii_case("Add")
+        && receiver_type
+            .to_ascii_lowercase()
+            .contains("#ordinalignorecase")
+    {
+        return None;
+    }
+    match field.to_ascii_lowercase().as_str() {
+        "add" => Some("__dotnet_hashset_add"),
+        "unionwith" => Some("__dotnet_hashset_union_with"),
+        "intersectwith" => Some("__dotnet_hashset_intersect_with"),
+        "exceptwith" => Some("__dotnet_hashset_except_with"),
+        "symmetricexceptwith" => Some("__dotnet_hashset_symmetric_except_with"),
+        _ => None,
+    }
+}
+
+fn vb_hashset_remove_where_expr(
+    object: &Expression,
+    predicate: Expression,
+    locals: &HashMap<String, String>,
+) -> Option<Expression> {
+    let receiver_type = vb_infer_expr_type(object, locals).or_else(|| {
+        let ExprKind::Ident(name) = &object.kind else {
+            return None;
+        };
+        locals.get(&name.to_ascii_lowercase()).cloned()
+    })?;
+    let receiver_base = vb_collection_base_type_name(&receiver_type);
+    if !receiver_base.eq_ignore_ascii_case("HashSet")
+        && !receiver_base.eq_ignore_ascii_case("SortedSet")
+    {
+        return None;
+    }
+
+    let target_name = "__vb_removewhere_target";
+    let removed_name = "__vb_removewhere_removed";
+    let item_name = "__vb_removewhere_item";
+
+    let remove_call = call_expr(
+        Expression::ident("__dotnet_hashset_remove"),
+        vec![
+            Argument::positional(Expression::ident(target_name)),
+            Argument::positional(Expression::ident(item_name)),
+        ],
+    );
+    let inc_removed = Statement::with_span(
+        StmtKind::Assign {
+            targets: vec![Expression::ident(removed_name)],
+            value: Expression::new(ExprKind::Binary {
+                op: BinOp::Add,
+                left: Box::new(Expression::ident(removed_name)),
+                right: Box::new(Expression::int(1)),
+            }),
+            by_ref: false,
+        },
+        Span::default(),
+    );
+
+    let body = vec![
+        Statement::with_span(
+            StmtKind::VarDecl {
+                declarations: vec![VarDeclarator {
+                    pattern: BindingPattern::Ident(target_name.into()),
+                    type_hint: Some(receiver_type.into()),
+                    init: Some((*object).clone()),
+                    array_bounds: None,
+                    with_events: false,
+                }],
+                kind: VarDeclKind::Var,
+            },
+            Span::default(),
+        ),
+        Statement::with_span(
+            StmtKind::VarDecl {
+                declarations: vec![VarDeclarator {
+                    pattern: BindingPattern::Ident(removed_name.into()),
+                    type_hint: Some("Integer".into()),
+                    init: Some(Expression::int(0)),
+                    array_bounds: None,
+                    with_events: false,
+                }],
+                kind: VarDeclKind::Var,
+            },
+            Span::default(),
+        ),
+        Statement::with_span(
+            StmtKind::ForIn {
+                var: item_name.into(),
+                key: None,
+                iter: Expression::ident(target_name),
+                body: vec![Statement::with_span(
+                    StmtKind::If {
+                        cond: call_expr(
+                            predicate,
+                            vec![Argument::positional(Expression::ident(item_name))],
+                        ),
+                        then_body: vec![
+                            Statement::with_span(StmtKind::Expr(remove_call), Span::default()),
+                            inc_removed,
+                        ],
+                        elifs: Vec::new(),
+                        else_body: None,
+                    },
+                    Span::default(),
+                )],
+                of: true,
+                else_body: None,
+                is_async: false,
+            },
+            Span::default(),
+        ),
+        Statement::with_span(
+            StmtKind::Return(Some(Expression::ident(removed_name))),
+            Span::default(),
+        ),
+    ];
+
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Lambda {
+            params: Vec::new(),
+            body: LambdaBody::Block(body),
+            is_async: false,
+            captures: Vec::new(),
+        })),
+        args: Vec::new(),
+        optional: false,
+    }))
+}
+
 fn vb_new_dictionary_uses_ignorecase(expr: &Expression) -> bool {
     let ExprKind::New { class, args } = &expr.kind else {
         return false;
@@ -25974,23 +26286,43 @@ fn vb_new_dictionary_uses_ignorecase(expr: &Expression) -> bool {
     })
 }
 
-fn vb_dotnet_hashset_algebra_helper<'a>(
-    receiver_name: &str,
-    field: &str,
-    locals: &HashMap<String, String>,
-) -> Option<&'a str> {
-    let type_name = locals.get(&receiver_name.to_ascii_lowercase())?;
-    let base = dotnet_vb::collection_base_type_name(type_name);
-    if !base.eq_ignore_ascii_case("HashSet") && !base.eq_ignore_ascii_case("SortedSet") {
-        return None;
+fn vb_new_hashset_uses_ignorecase(expr: &Expression) -> bool {
+    if let ExprKind::New { class, args } = &expr.kind {
+        return dotted_expr_name(class).as_deref().is_some_and(|name| {
+            dotnet_vb::collection_base_type_name(name).eq_ignore_ascii_case("HashSet")
+        }) && args.iter().any(|arg| {
+            literal_string(&arg.value).is_some_and(|text| {
+                text.eq_ignore_ascii_case("__dotnet_stringcomparer_ordinalignorecase")
+            })
+        });
     }
-    match field.to_ascii_lowercase().as_str() {
-        "unionwith" => Some("__vb_set_union"),
-        "intersectwith" => Some("__vb_set_intersection"),
-        "exceptwith" => Some("__vb_set_difference"),
-        "symmetricexceptwith" => Some("__vb_set_symmetric_difference"),
-        _ => None,
-    }
+
+    let ExprKind::Call { callee, .. } = &expr.kind else {
+        return false;
+    };
+    let ExprKind::Lambda {
+        body: LambdaBody::Block(body),
+        ..
+    } = &callee.kind
+    else {
+        return false;
+    };
+    body.iter().any(|stmt| {
+        let StmtKind::VarDecl { declarations, .. } = &stmt.kind else {
+            return false;
+        };
+        declarations.iter().any(|decl| {
+            matches!(&decl.pattern, BindingPattern::Ident(name) if name == "__obj")
+                && decl
+                    .init
+                    .as_ref()
+                    .is_some_and(vb_new_hashset_uses_ignorecase)
+        })
+    })
+}
+
+fn vb_collection_base_type_name(type_name: &str) -> String {
+    dotnet_vb::collection_base_type_name(type_name.split('#').next().unwrap_or(type_name))
 }
 
 fn flatten_vb_append_chain(expr: &Expression) -> Option<Expression> {
@@ -30465,12 +30797,10 @@ fn normalize_vb_string_join_call(
         return None;
     }
 
-    if args.len() == 2 {
-        return None;
-    }
-
     let sep = args[0].value.clone();
-    let values = if args.len() == 4
+    let values = if args.len() == 2 {
+        args[1].value.clone()
+    } else if args.len() == 4
         && (vb_expr_is_array_like(&args[1].value, locals)
             || (vb_expr_is_integerish(&args[2].value, locals)
                 && vb_expr_is_integerish(&args[3].value, locals)))
@@ -30504,10 +30834,24 @@ fn normalize_vb_string_join_call(
         ))
     };
 
+    if vb_expr_is_set_like(&values, locals) {
+        return Some(call_expr(
+            Expression::ident("__vb_string_join_iterable"),
+            vec![Argument::positional(values), Argument::positional(sep)],
+        ));
+    }
+
     Some(call_expr(
-        Expression::ident("Join"),
-        vec![Argument::positional(values), Argument::positional(sep)],
+        Expression::ident("__dotnet_string_join_sep_first"),
+        vec![Argument::positional(sep), Argument::positional(values)],
     ))
+}
+
+fn vb_expr_is_set_like(expr: &Expression, locals: &HashMap<String, String>) -> bool {
+    vb_infer_expr_type(expr, locals).is_some_and(|ty| {
+        let base = vb_collection_base_type_name(&ty);
+        base.eq_ignore_ascii_case("HashSet") || base.eq_ignore_ascii_case("SortedSet")
+    })
 }
 
 fn vb_expr_is_array_like(expr: &Expression, locals: &HashMap<String, String>) -> bool {
@@ -38785,6 +39129,17 @@ fn parse_member_chain_node(chain: Pair<Rule>, expr: Expression) -> Result<Expres
                         return Ok(rewritten);
                     }
                 }
+                if field.eq_ignore_ascii_case("TryFromBase64Chars") && arguments.len() == 3 {
+                    let recv = dotted_expr_name(object);
+                    if let Some(rewritten) = dotnet_vb::try_from_base64_chars_desugar(
+                        recv.as_deref(),
+                        &arguments[0].value,
+                        &arguments[1].value,
+                        &arguments[2].value,
+                    ) {
+                        return Ok(rewritten);
+                    }
+                }
                 if field.eq_ignore_ascii_case("TryGetValue") && arguments.len() == 2 {
                     return Ok(dotnet_vb::try_get_value_desugar(
                         object,
@@ -38918,6 +39273,17 @@ fn parse_member_chain_node(chain: Pair<Rule>, expr: Expression) -> Result<Expres
                 if let Some(rewritten) = dotnet_vb::try_create_desugar(
                     recv.as_deref(),
                     &callee,
+                    &arguments[0].value,
+                    &arguments[1].value,
+                    &arguments[2].value,
+                ) {
+                    return Ok(rewritten);
+                }
+            }
+            if name.eq_ignore_ascii_case("TryFromBase64Chars") && arguments.len() == 3 {
+                let recv = dotted_expr_name(&expr);
+                if let Some(rewritten) = dotnet_vb::try_from_base64_chars_desugar(
+                    recv.as_deref(),
                     &arguments[0].value,
                     &arguments[1].value,
                     &arguments[2].value,

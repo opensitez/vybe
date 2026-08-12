@@ -4302,6 +4302,16 @@ fn rewrite_pascal_overload_stmt(
                 }
             }
         }
+        StmtKind::Labeled { body, .. } => {
+            let mut scoped = scope.clone();
+            rewrite_pascal_overload_stmt(
+                body,
+                overloads,
+                return_types,
+                enum_members,
+                &mut scoped,
+            );
+        }
         StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => {
             for member in members {
                 match member {

@@ -2945,6 +2945,42 @@ fn php_magic_get_read_parts(expr: &Expression) -> Option<(Expression, String)> {
     Some(((**receiver).clone(), field.clone()))
 }
 
+/// Can reading `$object->field` reach `__get`?
+///
+/// The honest answer is only known at runtime — `__get` runs for a property the
+/// object does not actually have, and an object acquires properties by being
+/// written to, including through a constructor or through another name bound to
+/// the same object. That is exactly why `build_magic_get_rewrite` guards the
+/// call with `!("p" in $_t)` instead of a class test.
+///
+/// So this asks the compile-time half only: does the class even define `__get`,
+/// and is the field undeclared? Over-inclusion is harmless — a `true` answer
+/// only means "emit the runtime check", and the check resolves it correctly.
+fn php_member_read_may_call_get(object: &Expression, field: &str) -> bool {
+    let Some(class_name) = php_object_class_from_expr(object) else {
+        return false;
+    };
+    class_has_method(&class_name, "__get") && !class_has_field(&class_name, field)
+}
+
+/// Does a reference to `$object->field` bind nothing?
+///
+/// php reaches `__get` only for a property the object does not actually have,
+/// and `__get` does not return by reference — so `&$obj->prop` binds the value
+/// `__get` handed back, writes through it are discarded, and php says so:
+/// *"Indirect modification of overloaded property M::$p has no effect"*.
+///
+/// ⚠ Unlike `walk_unary`'s `&`, a by-reference ARGUMENT has no place to put a
+/// runtime question: `mark_php_by_ref_args` either rewrites the argument to a
+/// place or leaves it an rvalue, and it must choose now. So this over-approximates
+/// with `simple_object_field_was_written` — a write this walker watched proves an
+/// own property and keeps the alias, but a property created in a constructor or
+/// through an aliased receiver is invisible to it and the argument wrongly binds
+/// a copy.
+fn php_member_reference_is_inert(object: &Expression, field: &str) -> bool {
+    !simple_object_field_was_written(object, field) && php_member_read_may_call_get(object, field)
+}
+
 fn propagate_simple_index_aliases(src: &str, dst: &str) {
     let src = src.trim_start_matches('$').to_string();
     let dst = dst.trim_start_matches('$').to_string();
@@ -3998,6 +4034,138 @@ function putenv($assignment) {
 }
 "##;
 
+const SESSION_FUNCTIONS_PRELUDE: &str = r##"
+$__vybe_session_cookie_params = [
+    'lifetime' => 0,
+    'path' => '/',
+    'domain' => '',
+    'secure' => false,
+    'httponly' => false,
+    'samesite' => '',
+];
+$__vybe_session_cache_limiter = 'nocache';
+$__vybe_session_cache_expire = 180;
+$__vybe_session_save_path = '';
+
+function session_get_cookie_params() {
+    global $__vybe_session_cookie_params;
+    return $__vybe_session_cookie_params;
+}
+function session_set_cookie_params($lifetime_or_options, $path = '/', $domain = '', $secure = false, $httponly = false) {
+    global $__vybe_session_cookie_params;
+    if (is_array($lifetime_or_options)) {
+        foreach ($lifetime_or_options as $k => $v) {
+            $__vybe_session_cookie_params[$k] = $v;
+        }
+    } else {
+        $__vybe_session_cookie_params['lifetime'] = $lifetime_or_options;
+        $__vybe_session_cookie_params['path'] = $path;
+        $__vybe_session_cookie_params['domain'] = $domain;
+        $__vybe_session_cookie_params['secure'] = $secure;
+        $__vybe_session_cookie_params['httponly'] = $httponly;
+    }
+    return true;
+}
+function session_cache_limiter($value = null) {
+    global $__vybe_session_cache_limiter;
+    $old = $__vybe_session_cache_limiter;
+    if ($value !== null) $__vybe_session_cache_limiter = $value;
+    return $old;
+}
+function session_cache_expire($value = null) {
+    global $__vybe_session_cache_expire;
+    $old = $__vybe_session_cache_expire;
+    if ($value !== null) $__vybe_session_cache_expire = $value;
+    return $old;
+}
+function session_module_name($name = null) {
+    return 'files';
+}
+function session_save_path($path = null) {
+    global $__vybe_session_save_path;
+    $old = $__vybe_session_save_path;
+    if ($path !== null) $__vybe_session_save_path = $path;
+    return $path === null ? $__vybe_session_save_path : $old;
+}
+function session_create_id($prefix = '') {
+    return $prefix . '0123456789abcdef0123456789abcdef';
+}
+function session_gc($options = null) {
+    return 0;
+}
+function session_set_save_handler($open, $close = null, $read = null, $write = null, $destroy = null, $gc = null, $create_sid = null, $validate_sid = null, $update_timestamp = null) {
+    return true;
+}
+function session_encode() {
+    $out = '';
+    foreach ($_SESSION as $k => $v) {
+        if ($v === null) {
+            $blob = 'N;';
+        } else if (is_bool($v)) {
+            $blob = $v ? 'b:1;' : 'b:0;';
+        } else if (is_int($v)) {
+            $blob = 'i:' . $v . ';';
+        } else if (is_float($v)) {
+            $blob = 'd:' . $v . ';';
+        } else if (is_string($v)) {
+            $blob = 's:' . strlen($v) . ':"' . $v . '";';
+        } else {
+            $blob = serialize($v);
+        }
+        $out = $out . $k . '|' . $blob;
+    }
+    return $out;
+}
+function session_decode($data) {
+    $_SESSION = [];
+    $i = 0;
+    $n = strlen($data);
+    while ($i < $n) {
+        $p = strpos($data, '|', $i);
+        if ($p === false) return false;
+        $key = substr($data, $i, $p - $i);
+        $i = $p + 1;
+        $tag = substr($data, $i, 1);
+        if ($tag === 's') {
+            $q1 = strpos($data, '"', $i);
+            if ($q1 === false) return false;
+            $q2 = strpos($data, '";', $q1 + 1);
+            if ($q2 === false) return false;
+            $value = substr($data, $q1 + 1, $q2 - $q1 - 1);
+            $i = $q2 + 2;
+        } else if ($tag === 'i') {
+            $semi = strpos($data, ';', $i);
+            if ($semi === false) return false;
+            $value = substr($data, $i + 2, $semi - $i - 2) + 0;
+            $i = $semi + 1;
+        } else if ($tag === 'd') {
+            $semi = strpos($data, ';', $i);
+            if ($semi === false) return false;
+            $value = substr($data, $i + 2, $semi - $i - 2) + 0.0;
+            $i = $semi + 1;
+        } else if ($tag === 'b') {
+            $semi = strpos($data, ';', $i);
+            if ($semi === false) return false;
+            $value = substr($data, $i + 2, $semi - $i - 2) == '1';
+            $i = $semi + 1;
+        } else if ($tag === 'N') {
+            $semi = strpos($data, ';', $i);
+            if ($semi === false) return false;
+            $value = null;
+            $i = $semi + 1;
+        } else {
+            $semi = strpos($data, ';', $i);
+            if ($semi === false) return false;
+            $blob = substr($data, $i, $semi - $i + 1);
+            $value = unserialize($blob);
+            $i = $semi + 1;
+        }
+        $_SESSION[$key] = $value;
+    }
+    return true;
+}
+"##;
+
 const COPY_ON_ASSIGN_PRELUDE: &str = r##"
 function __php_copy_on_assign($v) {
     // Scalars/null: not Map-backed, nothing to copy.
@@ -4114,6 +4282,7 @@ struct PhpPreludeNeeds {
     version: bool,
     copy_on_assign: bool,
     env_functions: bool,
+    session_functions: bool,
     /// One flag per superglobal, in `SUPERGLOBALS_PRELUDE` order:
     /// `$_SERVER`, `$_GET`, `$_POST`, `$_FILES`, `$_COOKIE`, `$_REQUEST`,
     /// `$_ENV`.
@@ -4129,6 +4298,7 @@ enum PhpPreludeGroup {
     Version,
     Copy,
     Env,
+    Session,
     Superglobals,
 }
 
@@ -4178,6 +4348,7 @@ fn cached_php_prelude_group(group: PhpPreludeGroup) -> Vec<Statement> {
         PhpPreludeGroup::Version => VERSION_PRELUDE,
         PhpPreludeGroup::Copy => COPY_ON_ASSIGN_PRELUDE,
         PhpPreludeGroup::Env => ENV_FUNCTIONS_PRELUDE,
+        PhpPreludeGroup::Session => SESSION_FUNCTIONS_PRELUDE,
     };
 
     // One shared, content-keyed cache instead of a `OnceLock` per group — the
@@ -4193,6 +4364,10 @@ fn cached_php_prelude_group(group: PhpPreludeGroup) -> Vec<Statement> {
 
 fn cached_php_prelude_for(stmts: &[Statement]) -> Vec<Statement> {
     let mut needs = php_prelude_needs(stmts);
+    if needs.session_functions {
+        needs.class_helpers = true;
+        needs.copy_on_assign = true;
+    }
     if needs.url || needs.ini || needs.version || needs.copy_on_assign {
         needs.class_helpers = true;
     }
@@ -4222,6 +4397,9 @@ fn cached_php_prelude_for(stmts: &[Statement]) -> Vec<Statement> {
     }
     if needs.env_functions {
         prelude.append(&mut cached_php_prelude_group(PhpPreludeGroup::Env));
+    }
+    if needs.session_functions {
+        prelude.append(&mut cached_php_prelude_group(PhpPreludeGroup::Session));
     }
     prelude
 }
@@ -4323,6 +4501,21 @@ fn php_prelude_needs(stmts: &[Statement]) -> PhpPreludeNeeds {
     // in the primitive, so naming it does not drag the other three in here.
 
     needs.env_functions = ["getenv", "putenv"].iter().any(|name| ast.contains(name));
+    needs.session_functions = [
+        "session_get_cookie_params",
+        "session_set_cookie_params",
+        "session_cache_limiter",
+        "session_cache_expire",
+        "session_module_name",
+        "session_save_path",
+        "session_create_id",
+        "session_gc",
+        "session_set_save_handler",
+        "session_encode",
+        "session_decode",
+    ]
+    .iter()
+    .any(|name| ast.contains(name));
 
     needs.url = [
         "parse_url",
@@ -9180,6 +9373,88 @@ fn class_clone_storage_fields(c: &str) -> Vec<String> {
     out
 }
 
+fn class_declared_clone_fields(c: &str) -> Vec<String> {
+    fn collect(c: &str, out: &mut Vec<String>) {
+        let meta = CLASS_REGISTRY.with(|r| r.borrow().get(c).cloned());
+        let Some(meta) = meta else {
+            return;
+        };
+        if let Some(parent) = meta.parent.as_deref() {
+            collect(parent, out);
+        }
+        for field in &meta.fields {
+            if !field.is_static && !out.iter().any(|existing| existing == &field.name) {
+                out.push(field.name.clone());
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    collect(c, &mut out);
+    out
+}
+
+fn build_known_class_clone_expr(class_name: &str, source: Expression, span: &Span) -> Expression {
+    let src_tmp = next_tmp_name("clone_src");
+    let copy_tmp = next_tmp_name("clone_copy");
+    let src_ident = || Expression::with_span(ExprKind::Ident(src_tmp.clone()), span.clone());
+    let copy_ident = || Expression::with_span(ExprKind::Ident(copy_tmp.clone()), span.clone());
+    let member = |object: Expression, field: &str| {
+        Expression::with_span(
+            ExprKind::Member {
+                object: Box::new(object),
+                field: field.to_string(),
+                null_safe: false,
+            },
+            span.clone(),
+        )
+    };
+
+    let mut seq = Vec::new();
+    seq.push(Expression::with_span(
+        ExprKind::Assign {
+            target: Box::new(src_ident()),
+            value: Box::new(source),
+        },
+        span.clone(),
+    ));
+    seq.push(Expression::with_span(
+        ExprKind::Assign {
+            target: Box::new(copy_ident()),
+            value: Box::new(Expression::with_span(
+                ExprKind::New {
+                    class: Box::new(Expression::ident(class_name)),
+                    args: Vec::new(),
+                },
+                span.clone(),
+            )),
+        },
+        span.clone(),
+    ));
+    for field in class_declared_clone_fields(class_name) {
+        seq.push(Expression::with_span(
+            ExprKind::Assign {
+                target: Box::new(member(copy_ident(), &field)),
+                value: Box::new(member(src_ident(), &field)),
+            },
+            span.clone(),
+        ));
+    }
+    if class_method_meta(class_name, "__clone").is_some() {
+        seq.push(Expression::with_span(
+            ExprKind::Call {
+                callee: Box::new(member(copy_ident(), "__clone")),
+                args: Vec::new(),
+                optional: false,
+            },
+            span.clone(),
+        ));
+    }
+    seq.push(copy_ident());
+
+    Expression::with_span(ExprKind::Sequence(seq), span.clone())
+}
+
 fn class_field_meta(c: &str, field: &str) -> Option<(String, FieldMeta)> {
     if let Some(meta) = pending_class_field_meta(c, field) {
         return Some((c.to_string(), meta));
@@ -10870,6 +11145,7 @@ fn walk_expression(mut pair: Pair<Rule>) -> Result<Expression, String> {
                         ));
                     }
                 }
+                return Ok(build_known_class_clone_expr(&class_name, arg, &span));
             }
             // PHP `clone $obj` — produce a shallow copy and invoke
             // the class's `__clone` magic method on the copy if one
@@ -12400,6 +12676,31 @@ fn build_magic_call_static_rewrite(
     )
 }
 
+/// What the two arms of the magic-`__get` ternary are consumed as.
+///
+/// The condition is a RUNTIME test — `!("p" in $_t)` — because whether `__get`
+/// runs depends on the object in hand, not on the class: an own property makes
+/// `__get` unreachable, and an object acquires one by being written to, possibly
+/// in a constructor or through another name bound to the same object. So
+/// `$r = &$obj->prop` asks that same runtime question rather than guessing.
+#[derive(Clone)]
+enum MagicGetUse {
+    /// `$obj->prop` — the arms are values.
+    Value,
+    /// `$r = &$obj->prop` — each arm is a whole ASSIGNMENT to the named target,
+    /// because binding is decided by the shape of an assignment's RHS and the
+    /// two arms need opposite shapes. The `__get` arm assigns the call's VALUE:
+    /// `__get` does not return by reference, so writes through `$r` are
+    /// discarded and php says *"Indirect modification of overloaded property …
+    /// has no effect"*. The other arm assigns `&$_t->prop`, a real place, and
+    /// aliases.
+    ///
+    /// It has to be the assignment and not just the reference: the shared assign
+    /// path recognises a binding by the RHS being `RefOf`/`Unary{AddrOf}` at the
+    /// top, and a `Sequence` or `Ternary` wrapped around one hides it.
+    BindTo(Expression),
+}
+
 /// Build the magic-`__get` rewrite for `$obj->prop` reads:
 ///
 ///     ($_t = $obj,
@@ -12407,7 +12708,12 @@ fn build_magic_call_static_rewrite(
 ///      typeof $_t->__get === "function"
 ///        ? $_t->__get("prop")
 ///        : $_t->prop)
-fn build_magic_get_rewrite(obj: Expression, name: String, span: &Span) -> Expression {
+fn build_magic_get_rewrite(
+    obj: Expression,
+    name: String,
+    span: &Span,
+    use_as: MagicGetUse,
+) -> Expression {
     let tmp = next_tmp_name("get_recv");
     let tmp_ident = || Expression::with_span(ExprKind::Ident(tmp.clone()), span.clone());
     let save = Expression::with_span(
@@ -12481,11 +12787,34 @@ fn build_magic_get_rewrite(obj: Expression, name: String, span: &Span) -> Expres
         },
         span.clone(),
     );
+    let arm = |inner: Expression, is_place: bool| match &use_as {
+        MagicGetUse::Value => inner,
+        MagicGetUse::BindTo(target) => {
+            let value = if is_place {
+                Expression::with_span(
+                    ExprKind::Unary {
+                        op: UnaryOp::AddrOf,
+                        expr: Box::new(inner),
+                    },
+                    span.clone(),
+                )
+            } else {
+                inner
+            };
+            Expression::with_span(
+                ExprKind::Assign {
+                    target: Box::new(target.clone()),
+                    value: Box::new(value),
+                },
+                span.clone(),
+            )
+        }
+    };
     let ternary = Expression::with_span(
         ExprKind::Ternary {
             cond: Box::new(cond),
-            then: Box::new(magic_get_call),
-            else_: Box::new(direct_member),
+            then: Box::new(arm(magic_get_call, false)),
+            else_: Box::new(arm(direct_member, true)),
         },
         span.clone(),
     );
@@ -13515,6 +13844,43 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
                         ),
                         span,
                     ));
+                }
+            }
+        }
+        // `$r = &$obj->prop` where reading `prop` might reach `__get`.
+        //
+        // php only reaches `__get` for a property the object does not have, and
+        // `__get` does not return by reference — so the reference is inert, php
+        // notices *"Indirect modification of overloaded property"*, and the
+        // write is discarded. But an own property makes `__get` unreachable and
+        // the reference aliases normally, and an object acquires one by being
+        // written to — in a constructor, or through any other name bound to it.
+        // No compile-time test can tell those apart, which is exactly why the
+        // READ lowering guards its call with a runtime `!("p" in $_t)`.
+        //
+        // So ask the same runtime question, and put a whole ASSIGNMENT in each
+        // arm: bind-vs-store is decided by the shape of an assignment's RHS, so
+        // the arms have to be assignments to differ in it.
+        if op == "=" && matches!(lhs.kind, ExprKind::Ident(_)) {
+            if let ExprKind::Unary {
+                op: UnaryOp::AddrOf,
+                expr: referent,
+            } = &rhs.kind
+            {
+                if let ExprKind::Member {
+                    object,
+                    field,
+                    null_safe: false,
+                } = &referent.kind
+                {
+                    if php_member_read_may_call_get(object, field) {
+                        return Ok(build_magic_get_rewrite(
+                            (**object).clone(),
+                            field.clone(),
+                            &span,
+                            MagicGetUse::BindTo(lhs),
+                        ));
+                    }
                 }
             }
         }
@@ -16293,7 +16659,12 @@ fn apply_postfix(
                 ExprKind::Member { object, .. } => (**object).clone(),
                 _ => return Ok(member),
             };
-            Ok(build_magic_get_rewrite(recv_for_save, name, span))
+            Ok(build_magic_get_rewrite(
+                recv_for_save,
+                name,
+                span,
+                MagicGetUse::Value,
+            ))
         }
         Rule::static_access_op => {
             // Grammar: `::` ~ class_member_name where class_member_name
@@ -17249,10 +17620,7 @@ fn apply_postfix(
                             ExprKind::Lit(Literal::Str(_)) => false,
                             ExprKind::Array(elems) => {
                                 elems.len() == 2
-                                    && matches!(
-                                        elems[1].value.kind,
-                                        ExprKind::Lit(Literal::Str(_))
-                                    )
+                                    && matches!(elems[1].value.kind, ExprKind::Lit(Literal::Str(_)))
                             }
                             _ => false,
                         };
@@ -17368,12 +17736,7 @@ fn apply_postfix(
                             }
                             return Ok(php_callable_ref_with_adapter(
                                 target,
-                                vec![
-                                    mk_param("a"),
-                                    mk_param("b"),
-                                    mk_param("c"),
-                                    mk_param("d"),
-                                ],
+                                vec![mk_param("a"), mk_param("b"), mk_param("c"), mk_param("d")],
                                 body_call,
                                 span,
                             ));
@@ -23172,7 +23535,9 @@ fn mark_php_by_ref_args(
                     },
                     arg.value.span.clone(),
                 );
-            } else if let Some((object, field)) = php_magic_get_read_parts(&arg.value) {
+            } else if let Some((object, field)) = php_magic_get_read_parts(&arg.value)
+                .filter(|(object, field)| !php_member_reference_is_inert(object, field))
+            {
                 // Same recovery, one property axis over: an UNDECLARED property
                 // read is wrapped in the magic-`__get` ternary, which is an
                 // rvalue for exactly the reason the ArrayAccess dispatch is —
@@ -30405,6 +30770,9 @@ fn php_constant_expr(name: &str, span: &Span) -> Option<ExprKind> {
         "PHP_OS" => ExprKind::Lit(Literal::Str("Darwin".to_string())),
         "PHP_OS_FAMILY" => ExprKind::Lit(Literal::Str("Darwin".to_string())),
         "PHP_MAXPATHLEN" => ExprKind::Lit(Literal::Int(4096)),
+        "PHP_SESSION_DISABLED" => ExprKind::Lit(Literal::Int(0)),
+        "PHP_SESSION_NONE" => ExprKind::Lit(Literal::Int(1)),
+        "PHP_SESSION_ACTIVE" => ExprKind::Lit(Literal::Int(2)),
         "PASSWORD_BCRYPT" => ExprKind::Lit(Literal::Str("2y".to_string())),
         "PASSWORD_DEFAULT" => ExprKind::Lit(Literal::Str("2y".to_string())),
         "DEBUG_BACKTRACE_PROVIDE_OBJECT" => ExprKind::Lit(Literal::Int(1)),

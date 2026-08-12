@@ -1371,7 +1371,7 @@ pub fn emit_sorted_set_view_between(chunks: &mut [Chunk], current: usize, line: 
     vybe_compiler::primitives::sorted_collection::emit_sorted_set_range_view(
         chunks, current, 0, true, line,
     );
-    call_import(chunks, current, "ecma:set", "new", 1, line);
+    sets::emit_from_iterable(chunks, current, line);
 }
 
 pub fn emit_linked_list_add_first(chunks: &mut [Chunk], current: usize, line: u32) {

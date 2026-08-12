@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 use std::sync::Once;
 
 use vybe_runtime::Value;
-use vybe_runtime::namespaces::{self, NamespaceNode, Subtree};
+use vybe_runtime::namespaces::{self, CtorSpec, NamespaceNode, Subtree};
 use vybe_runtime::profile::{BuiltinEmit, ConstantValue, parse_profile};
 
 /// Insert `leaf` at a dotted path (`["path", "join"]` under root `os`),
@@ -58,6 +58,7 @@ pub fn register_namespace_tree() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
         register_collections();
+        register_calendar();
         register_from_profile();
     });
 }
@@ -162,4 +163,76 @@ fn register_collections() {
         NamespaceNode::CommonEmit("python.defaultdict_new".to_string()),
     );
     namespaces::register_namespace_tree("collections", NamespaceNode::Namespace(root));
+}
+
+fn calendar_type(name: &str, ctor: &str, formatmonth: Option<&str>) -> NamespaceNode {
+    let mut methods = BTreeMap::from([
+        (
+            "itermonthdays".to_string(),
+            NamespaceNode::CommonEmit("python.calendar_itermonthdays".to_string()),
+        ),
+        (
+            "itermonthdates".to_string(),
+            NamespaceNode::CommonEmit("python.calendar_itermonthdays".to_string()),
+        ),
+        (
+            "itermonthdays2".to_string(),
+            NamespaceNode::CommonEmit("python.calendar_itermonthdays2".to_string()),
+        ),
+        (
+            "monthdayscalendar".to_string(),
+            NamespaceNode::CommonEmit("python.calendar_monthcalendar".to_string()),
+        ),
+        (
+            "yeardayscalendar".to_string(),
+            NamespaceNode::CommonEmit("python.calendar_yeardayscalendar".to_string()),
+        ),
+    ]);
+    if let Some(emit) = formatmonth {
+        methods.insert(
+            "formatmonth".to_string(),
+            NamespaceNode::CommonEmit(emit.to_string()),
+        );
+        methods.insert(
+            "prmonth".to_string(),
+            NamespaceNode::CommonEmit(emit.to_string()),
+        );
+    }
+    NamespaceNode::Type {
+        ctor: Some(CtorSpec {
+            params: vec!["firstweekday".to_string()],
+            fields: vec!["firstweekday".to_string()],
+            ancestry: vec![name.to_string()],
+            ..Default::default()
+        }),
+        ctor_call: Some(Box::new(NamespaceNode::CommonEmit(ctor.to_string()))),
+        statics: Subtree::new(),
+        methods,
+        member_returns: BTreeMap::new(),
+    }
+}
+
+fn register_calendar() {
+    let mut root = Subtree::new();
+    root.insert(
+        "Calendar".to_string(),
+        calendar_type("Calendar", "python.calendar_new", None),
+    );
+    root.insert(
+        "TextCalendar".to_string(),
+        calendar_type(
+            "TextCalendar",
+            "python.calendar_text_new",
+            Some("python.calendar_text_formatmonth"),
+        ),
+    );
+    root.insert(
+        "HTMLCalendar".to_string(),
+        calendar_type(
+            "HTMLCalendar",
+            "python.calendar_html_new",
+            Some("python.calendar_html_formatmonth"),
+        ),
+    );
+    namespaces::register_namespace_tree("calendar", NamespaceNode::Namespace(root));
 }

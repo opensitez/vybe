@@ -327,7 +327,44 @@ fn js_prefers_typed_member_dispatch(type_hint: &str) -> bool {
 }
 
 pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression) -> Option<String> {
+    // The type of `self` is the class being compiled — the answer
+    // `infer_expr_type_hint` has always given for the same expression, and
+    // `direct_receiver_has_own_pending_method` for the same receiver. Without
+    // it here this function fell to `_ => None`, so a method call on `this`
+    // had NO receiver type and could not reach instance-method resolution at
+    // all: `Me.SuspendLayout()` inside a `Form` subclass emitted a
+    // `struct.get suspendlayout` on the element and every designer-generated
+    // `InitializeComponent` died on its first line — while the identical
+    // `f.SuspendLayout()` on a typed local resolved fine.
+    //
+    // Only members the class does NOT declare change: a user-declared member
+    // of the same name is an override, and `namespace_tree_instance_method_owner`
+    // answers `None` for it, exactly as it does for a typed local.
+    //
+    // `Super` is deliberately NOT folded in here. `MyBase.M()` names the
+    // PARENT, and answering with the subclass would resolve a base call
+    // against the override it is trying to skip.
+    if matches!(&recv.kind, ExprKind::This) {
+        let self_kw = compiler.profile.self_keyword.clone();
+        return compiler
+            .lookup_var_type_hint(&self_kw)
+            .map(str::to_string)
+            .or_else(|| compiler.current_class.clone())
+            .map(|name| compiler.resolve_source_type_alias(&name));
+    }
     match &recv.kind {
+        ExprKind::Ident(local_name)
+            if {
+                let canon = compiler.canon(local_name);
+                canon == compiler.profile.self_keyword || canon == "me" || canon == "this"
+            } =>
+        {
+            compiler
+                .lookup_var_type_hint(local_name)
+                .map(str::to_string)
+                .or_else(|| compiler.current_class.clone())
+                .map(|name| compiler.resolve_source_type_alias(&name))
+        }
         ExprKind::Ident(local_name) => compiler
             .lookup_var_type_hint(local_name)
             .map(str::to_string)
@@ -740,7 +777,7 @@ impl Compiler {
         } else {
             self.emit_var_get(name);
         }
-        self.emit_u8_u8(Op::CALL_REF, 0, 1);
+        self.emit_direct_callable_invoke(0);
 
         let obj_slot = self.define_local("__fortran_type_ctor_obj");
         self.emit_u16(Op::LOCAL_SET, obj_slot);
@@ -1392,12 +1429,10 @@ impl Compiler {
             && arg_slots.len() == 1
         {
             inst!(self, core_wasm::undefined);
-            self.emit_u8_u8(Op::CALL_REF, 2, 1);
+            self.emit_direct_callable_invoke(2);
         } else {
-            self.emit_u8_u8(
-                Op::CALL_REF,
+            self.emit_direct_callable_invoke(
                 (arg_slots.len() + usize::from(receiver_slot.is_some())) as u8,
-                1,
             );
         }
         self.restore_js_this_after_call(saved_js_this, "__js_arg_call_result");
@@ -1439,7 +1474,7 @@ impl Compiler {
         }
         self.stamp_multi_value_row_slot(rest_slot);
         self.emit_u16(Op::LOCAL_GET, rest_slot);
-        self.emit_u8_u8(Op::CALL_REF, argc as u8, 1);
+        self.emit_direct_callable_invoke(argc as u8);
         self.restore_js_this_after_call(saved_js_this, "__js_rest_arg_call_result");
     }
 
@@ -1545,7 +1580,7 @@ impl Compiler {
                 _ => self.compile_expr(&arg.value)?,
             }
         }
-        self.emit_u8_u8(Op::CALL_REF, args.len() as u8, 1);
+        self.emit_direct_callable_invoke(args.len() as u8);
 
         // An `Alias` argument was handed a reference and the callee returned a
         // plain value — there is no pack to read, and reading one would store
@@ -1658,7 +1693,7 @@ impl Compiler {
             }
         }
 
-        self.emit_u8_u8(Op::CALL_REF, argc as u8, 1);
+        self.emit_direct_callable_invoke(argc as u8);
     }
 
     fn emit_dispatch_and_store_from_arg_slots(
@@ -1669,11 +1704,11 @@ impl Compiler {
         arg_slots: &[u16],
         result_slot: u16,
     ) {
-        // Proxy modules: the callee may be a Proxy whose apply trap must
-        // fire (ECMA-262 §10.5.12). ecma:proxy.apply falls through to an
-        // ordinary invoke for plain callables, so all dynamic calls can
-        // route through it.
-        if self.uses_proxy && receiver_slot.is_none() {
+        // Proxy-capable profiles: the callee may be a Proxy whose apply trap
+        // must fire (ECMA-262 §10.5.12). The profile hook falls through to an
+        // ordinary invoke for plain callables, so all dynamic calls can route
+        // through it when proxy lowering is active.
+        if self.uses_proxy {
             let line = self.line;
             let args_arr_slot = self.define_local("__proxy_apply_args");
             common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
@@ -1685,13 +1720,14 @@ impl Compiler {
                 self.emit(Op::DROP);
             }
             self.emit_u16(Op::LOCAL_GET, callee_slot);
-            if let Some(this_slot) = js_this_slot {
+            if let Some(this_slot) = js_this_slot.or(receiver_slot) {
                 self.emit_u16(Op::LOCAL_GET, this_slot);
             } else {
                 inst!(self, core_wasm::undefined);
             }
             self.emit_u16(Op::LOCAL_GET, args_arr_slot);
-            self.emit_proxy_apply();
+            self.emit_proxy_apply()
+                .expect("proxy apply hook must exist when proxy lowering is enabled");
             self.emit_u16(Op::LOCAL_SET, result_slot);
             return;
         }
@@ -2458,7 +2494,7 @@ impl Compiler {
 
         if fixed_count == 0 && args.len() == 1 && args[0].spread {
             self.compile_expr(&args[0].value)?;
-            self.emit_u8_u8(Op::CALL_REF, argc as u8, 1);
+            self.emit_direct_callable_invoke(argc as u8);
             return Ok(());
         }
 
@@ -2497,7 +2533,7 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, rest_slot);
         }
 
-        self.emit_u8_u8(Op::CALL_REF, argc as u8, 1);
+        self.emit_direct_callable_invoke(argc as u8);
         Ok(())
     }
 
@@ -3121,7 +3157,7 @@ impl Compiler {
                     for a in args {
                         self.compile_expr(&a.value)?;
                     }
-                    self.emit_u8_u8(Op::CALL_REF, args.len() as u8, 1);
+                    self.emit_direct_callable_invoke(args.len() as u8);
                     return Ok(());
                 }
             }
@@ -3170,28 +3206,36 @@ impl Compiler {
         // call in a language with no GUI surface would otherwise become a
         // control. Registration is the signal; the shared table only maps a
         // framework's spelling onto the canonical role.
+        //
+        // The predicate itself lives in `gui::constructed_control_type_name`,
+        // because type inference has to answer the SAME question: a call this
+        // arm lowers to an element is a call whose static type is that control.
+        if let Some(control_type) = self.constructed_control_type_name(callee) {
+            for a in args {
+                self.compile_expr(&a.value)?;
+            }
+            let line = self.line;
+            self.emit_control_element(&control_type, args.len() as u8, line);
+            return Ok(());
+        }
+
+        // `vybe.gui.setProperty(name, "Text", v)` — the BY-NAME GUI surface a
+        // program writes itself. Matched on the module path the way the host
+        // prefix arm below already matches `vybe`/`wasi`/`wasm`, and answered
+        // HERE because the host-call arms further down are reached by several
+        // different resolutions and only one of them would have caught it.
         {
             let parts = self.flatten_member_chain(callee);
-            if let Some(last) = parts.last() {
-                let canonical = common::gui::canonical_control_name(last);
-                let canon_last = self.canon(last);
-                let first_is_local = parts
-                    .first()
-                    .map_or(false, |f| self.scope().resolve(f).is_some());
-                if !canonical.is_empty()
-                    && !first_is_local
-                    && vybe_runtime::namespaces::is_registered_type(
-                        &self.profile.namespaces.type_scopes,
-                        last,
-                    )
-                    && !self.defined_functions.contains(&canon_last)
-                    && !self.defined_classes.contains(&canon_last)
-                {
-                    for a in args {
-                        self.compile_expr(&a.value)?;
-                    }
-                    let line = self.line;
-                    self.emit_control_element(&canon_last, args.len() as u8, line);
+            if parts.len() >= 3
+                && parts[parts.len() - 3].eq_ignore_ascii_case("vybe")
+                && parts[parts.len() - 2].eq_ignore_ascii_case("gui")
+            {
+                let arg_exprs: Vec<&Expression> = args.iter().map(|a| &a.value).collect();
+                if self.try_emit_gui_property_by_name(
+                    common::gui::GUI_MODULE,
+                    &parts[parts.len() - 1],
+                    &arg_exprs,
+                )? {
                     return Ok(());
                 }
             }
@@ -3314,6 +3358,11 @@ impl Compiler {
                         // (StringWriter, StringBuilder, DateTime, ...) route
                         // through platforms/dotnet instead of the generic
                         // object-string fallback.
+                    } else if let Some(target) = self.primitive_to_string_target(object) {
+                        self.compile_expr(object)?;
+                        let line = self.line;
+                        self.emit_to_string_slot(Some(&target), line);
+                        return Ok(());
                     } else {
                         self.compile_expr(object)?;
                         let line = self.line;
@@ -3561,7 +3610,7 @@ impl Compiler {
                     for a in &arg_exprs {
                         self.compile_expr(a)?;
                     }
-                    self.emit_u8_u8(Op::CALL_REF, arg_exprs.len() as u8, 1);
+                    self.emit_direct_callable_invoke(arg_exprs.len() as u8);
                     // Store result as this
                     let self_kw = self.profile.self_keyword.clone();
                     if let Some(slot) = self.scope().resolve(&self_kw) {
@@ -3627,7 +3676,7 @@ impl Compiler {
                         }
                         self.emit_const(Value::String(Arc::from(cur_canon.as_str())));
                         self.emit_const(Value::String(Arc::from(canon_field.as_str())));
-                        self.emit_u8_u8(Op::CALL_REF, 3, 1);
+                        self.emit_direct_callable_invoke(3);
                     } else {
                         // ECMA `super` resolves from the method's
                         // [[HomeObject]].[[Prototype]] at call time. For
@@ -3667,7 +3716,7 @@ impl Compiler {
                         for a in &arg_exprs {
                             self.compile_expr(a)?;
                         }
-                        self.emit_u8_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8, 1);
+                        self.emit_direct_callable_invoke((arg_exprs.len() + 1) as u8);
                     }
                     return Ok(());
                 }
@@ -4436,6 +4485,14 @@ impl Compiler {
                         }
                     };
                     if let Some((module, func)) = resolved {
+                        // `vybe.gui.setProperty(name, "Text", v)` — a three
+                        // segment host path is how a program spells the BY-NAME
+                        // GUI surface, and it is lowered onto the document
+                        // rather than left calling a registry the renderer no
+                        // longer paints from.
+                        if self.try_emit_gui_property_by_name(&module, &func, &arg_exprs)? {
+                            return Ok(());
+                        }
                         let mut arg_slots = Vec::with_capacity(arg_exprs.len());
                         for (index, arg) in arg_exprs.iter().enumerate() {
                             self.compile_expr(arg)?;
@@ -4592,7 +4649,7 @@ impl Compiler {
                             for slot in &arg_slots {
                                 self.emit_u16(Op::LOCAL_GET, *slot);
                             }
-                            self.emit_u8_u8(Op::CALL_REF, arg_exprs.len() as u8, 1);
+                            self.emit_direct_callable_invoke(arg_exprs.len() as u8);
 
                             if !needs_packed_result {
                                 return Ok(());
@@ -4761,7 +4818,7 @@ impl Compiler {
                                 for a in &arg_exprs {
                                     self.compile_expr(a)?;
                                 }
-                                self.emit_u8_u8(Op::CALL_REF, arg_exprs.len() as u8, 1);
+                                self.emit_direct_callable_invoke(arg_exprs.len() as u8);
                                 return Ok(());
                             }
                             Some(super::resolver::Resolution::Tree(
@@ -4807,6 +4864,13 @@ impl Compiler {
                                     },
                                 ),
                             ) => {
+                                // The BY-NAME GUI surface is a program-visible
+                                // spelling, not plumbing, so it is lowered onto
+                                // the document rather than left calling a host
+                                // registry the renderer no longer paints from.
+                                if self.try_emit_gui_property_by_name(&module, &func, &arg_exprs)? {
+                                    return Ok(());
+                                }
                                 // `Convert.ToInt32(c)` where `c` is a CHAR is the
                                 // same operation as the `(int)c` cast: read the
                                 // code point, don't parse the text. .NET picks
@@ -4935,10 +4999,8 @@ impl Compiler {
                                                             0,
                                                             idx,
                                                         );
-                                                        self.emit_u8_u8(
-                                                            Op::CALL_REF,
+                                                        self.emit_direct_callable_invoke(
                                                             arg_exprs.len() as u8,
-                                                            1,
                                                         );
                                                     }
                                                 }
@@ -4949,10 +5011,8 @@ impl Compiler {
                                                 for a in &arg_exprs {
                                                     self.compile_expr(a)?;
                                                 }
-                                                self.emit_u8_u8(
-                                                    Op::CALL_REF,
-                                                    arg_exprs.len() as u8,
-                                                    1,
+                                                self.emit_direct_callable_invoke(
+                                                    arg_exprs.len() as u8
                                                 );
                                             }
                                         }
@@ -4980,7 +5040,7 @@ impl Compiler {
                                     for a in &arg_exprs {
                                         self.compile_expr(a)?;
                                     }
-                                    self.emit_u8_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8, 1);
+                                    self.emit_direct_callable_invoke((arg_exprs.len() + 1) as u8);
                                     return Ok(());
                                 }
 
@@ -5004,7 +5064,7 @@ impl Compiler {
                                     for a in &arg_exprs {
                                         self.compile_expr(a)?;
                                     }
-                                    self.emit_u8_u8(Op::CALL_REF, arg_exprs.len() as u8, 1);
+                                    self.emit_direct_callable_invoke(arg_exprs.len() as u8);
                                 }
                                 return Ok(());
                             }
@@ -5183,7 +5243,7 @@ impl Compiler {
                                                         0,
                                                         midx,
                                                     );
-                                                    self.emit_u8_u8(Op::CALL_REF, argc, 1);
+                                                    self.emit_direct_callable_invoke(argc);
                                                 }
                                             }
                                         } else {
@@ -5192,7 +5252,7 @@ impl Compiler {
                                             for a in &arg_exprs {
                                                 self.compile_expr(a)?;
                                             }
-                                            self.emit_u8_u8(Op::CALL_REF, argc, 1);
+                                            self.emit_direct_callable_invoke(argc);
                                         }
                                         handled = true;
                                         break;
@@ -5250,7 +5310,7 @@ impl Compiler {
                     for a in &arg_exprs {
                         self.compile_expr(a)?;
                     }
-                    self.emit_u8_u8(Op::CALL_REF, arg_exprs.len() as u8, 1);
+                    self.emit_direct_callable_invoke(arg_exprs.len() as u8);
                     return Ok(());
                 }
             }
@@ -5398,7 +5458,7 @@ impl Compiler {
                                 for slot in &arg_slots {
                                     self.emit_u16(Op::LOCAL_GET, *slot);
                                 }
-                                self.emit_u8_u8(Op::CALL_REF, arg_exprs.len() as u8, 1);
+                                self.emit_direct_callable_invoke(arg_exprs.len() as u8);
                                 let pack_slot = self.define_local("__js_static_ref_call_pack");
                                 self.emit_u16(Op::LOCAL_SET, pack_slot);
                                 self.restore_js_this(saved_js_this);
@@ -5448,7 +5508,7 @@ impl Compiler {
                         for a in &arg_exprs {
                             self.compile_expr(a)?;
                         }
-                        self.emit_u8_u8(Op::CALL_REF, arg_exprs.len() as u8, 1);
+                        self.emit_direct_callable_invoke(arg_exprs.len() as u8);
                         let result_slot = self.define_local("__js_static_method_result");
                         self.emit_u16(Op::LOCAL_SET, result_slot);
                         self.restore_js_this(saved_js_this);
@@ -5529,7 +5589,7 @@ impl Compiler {
                             for slot in &arg_slots {
                                 self.emit_u16(Op::LOCAL_GET, *slot);
                             }
-                            self.emit_u8_u8(Op::CALL_REF, arg_exprs.len() as u8, 1);
+                            self.emit_direct_callable_invoke(arg_exprs.len() as u8);
 
                             if !needs_packed_result {
                                 return Ok(());
@@ -5676,7 +5736,7 @@ impl Compiler {
                             for a in &arg_exprs {
                                 self.compile_expr(a)?;
                             }
-                            self.emit_u8_u8(Op::CALL_REF, arg_exprs.len() as u8, 1);
+                            self.emit_direct_callable_invoke(arg_exprs.len() as u8);
                             return Ok(());
                         }
                     }
@@ -6397,7 +6457,9 @@ impl Compiler {
                     .builtin_signatures
                     .iter()
                     .any(|member| match member {
-                        InterfaceMember::Method { name, .. } => self.canon(name) == self.canon(field),
+                        InterfaceMember::Method { name, .. } => {
+                            self.canon(name) == self.canon(field)
+                        }
                         _ => false,
                     })
                     .then(|| self.function_param_modes.get(&self.canon(field)).cloned())
@@ -6617,7 +6679,7 @@ impl Compiler {
                                 common::collections::emit_get(&mut self.chunks, self.current, l);
                             }
                             self.emit_u16(Op::LOCAL_GET, idx_slot);
-                            self.emit_u8_u8(Op::CALL_REF, 3, 1);
+                            self.emit_direct_callable_invoke(3);
                             self.emit_u16(Op::LOCAL_SET, result_slot);
                             // i++
                             self.emit_u16(Op::LOCAL_GET, idx_slot);
@@ -6724,7 +6786,7 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_SET, elem_slot);
                         self.emit_u16(Op::LOCAL_GET, fn_slot);
                         self.emit_u16(Op::LOCAL_GET, elem_slot);
-                        self.emit_u8_u8(Op::CALL_REF, 1, 1);
+                        self.emit_direct_callable_invoke(1);
                         {
                             let line = self.line;
                             crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -6760,7 +6822,7 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, fn_slot);
                         self.emit_u16(Op::LOCAL_GET, elem_slot);
                         self.emit_u16(Op::LOCAL_GET, idx_slot);
-                        self.emit_u8_u8(Op::CALL_REF, 2, 1);
+                        self.emit_direct_callable_invoke(2);
                         {
                             let line = self.line;
                             crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -6986,7 +7048,7 @@ impl Compiler {
                             common::collections::emit_get(&mut self.chunks, self.current, l);
                         }
                         self.emit_u16(Op::LOCAL_GET, idx_slot);
-                        self.emit_u8_u8(Op::CALL_REF, 3, 1);
+                        self.emit_direct_callable_invoke(3);
                         self.emit_u16(Op::LOCAL_SET, result_slot);
                         // i--
                         self.emit_u16(Op::LOCAL_GET, idx_slot);
@@ -7034,7 +7096,7 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_SET, elem_slot);
                         self.emit_u16(Op::LOCAL_GET, fn_slot);
                         self.emit_u16(Op::LOCAL_GET, elem_slot);
-                        self.emit_u8_u8(Op::CALL_REF, 1, 1);
+                        self.emit_direct_callable_invoke(1);
                         {
                             let line = self.line;
                             crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -7090,7 +7152,7 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_SET, elem_slot2);
                         self.emit_u16(Op::LOCAL_GET, fn_slot);
                         self.emit_u16(Op::LOCAL_GET, elem_slot2);
-                        self.emit_u8_u8(Op::CALL_REF, 1, 1);
+                        self.emit_direct_callable_invoke(1);
                         {
                             let line = self.line;
                             crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -7152,7 +7214,7 @@ impl Compiler {
                         // if fn(elem) → remove
                         self.emit_u16(Op::LOCAL_GET, fn_slot);
                         self.emit_u16(Op::LOCAL_GET, ra_elem);
-                        self.emit_u8_u8(Op::CALL_REF, 1, 1);
+                        self.emit_direct_callable_invoke(1);
                         {
                             let line = self.line;
                             crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -7192,7 +7254,7 @@ impl Compiler {
                         // Fallback: call as regular method
                         self.emit_u16(Op::LOCAL_GET, arr_slot);
                         self.emit_u16(Op::LOCAL_GET, fn_slot);
-                        self.emit_u8_u8(Op::CALL_REF, 2, 1);
+                        self.emit_direct_callable_invoke(2);
                     }
                 }
                 return Ok(());
@@ -7216,7 +7278,7 @@ impl Compiler {
                     for a in &arg_exprs {
                         self.compile_expr(a)?;
                     }
-                    self.emit_u8_u8(Op::CALL_REF, arg_exprs.len() as u8, 1);
+                    self.emit_direct_callable_invoke(arg_exprs.len() as u8);
                     return Ok(());
                 }
             }
@@ -7234,7 +7296,7 @@ impl Compiler {
                         for a in &arg_exprs {
                             self.compile_expr(a)?;
                         }
-                        self.emit_u8_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8, 1);
+                        self.emit_direct_callable_invoke((arg_exprs.len() + 1) as u8);
                         return Ok(());
                     }
 
@@ -7255,7 +7317,7 @@ impl Compiler {
                         for a in &arg_exprs {
                             self.compile_expr(a)?;
                         }
-                        self.emit_u8_u8(Op::CALL_REF, arg_exprs.len() as u8, 1);
+                        self.emit_direct_callable_invoke(arg_exprs.len() as u8);
                         return Ok(());
                     }
                 }
@@ -7357,7 +7419,7 @@ impl Compiler {
                 for arg in &arg_exprs {
                     self.compile_expr(arg)?;
                 }
-                self.emit_u8_u8(Op::CALL_REF, arg_exprs.len() as u8, 1);
+                self.emit_direct_callable_invoke(arg_exprs.len() as u8);
                 let result_slot = self.define_local("__js_private_call_result");
                 self.emit_u16(Op::LOCAL_SET, result_slot);
                 self.restore_js_this(saved_js_this);
@@ -7767,7 +7829,7 @@ impl Compiler {
                         for slot in &arg_slots {
                             self.emit_u16(Op::LOCAL_GET, *slot);
                         }
-                        self.emit_u8_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8, 1);
+                        self.emit_direct_callable_invoke((arg_exprs.len() + 1) as u8);
                         self.chunk().emit_end(line);
                         self.chunk().emit_end(line);
                         // close the two member-present guards
@@ -7822,7 +7884,7 @@ impl Compiler {
                         for a in &arg_exprs {
                             self.compile_expr(a)?;
                         }
-                        self.emit_u8_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8, 1);
+                        self.emit_direct_callable_invoke((arg_exprs.len() + 1) as u8);
                     }
                     self.emit_u16(Op::LOCAL_SET, js_result_slot);
                     self.emit_const(Value::I32(1));
@@ -7836,11 +7898,14 @@ impl Compiler {
                 let line = self.line;
                 self.chunk().emit_if(line);
 
-                let receiver_is_pending_class = self
-                    .infer_expr_type_hint(object)
-                    .as_deref()
-                    .and_then(|type_hint| self.resolve_pending_class_name_for_type_hint(type_hint))
-                    .is_some();
+                let receiver_is_pending_class = !self.class_prototype_dispatch()
+                    && self
+                        .infer_expr_type_hint(object)
+                        .as_deref()
+                        .and_then(|type_hint| {
+                            self.resolve_pending_class_name_for_type_hint(type_hint)
+                        })
+                        .is_some();
                 if receiver_is_pending_class {
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     self.emit_struct_field_op(Op::STRUCT_GET, 0, prop);
@@ -8066,7 +8131,7 @@ impl Compiler {
                         for arg in &arg_exprs {
                             self.compile_expr(arg)?;
                         }
-                        self.emit_u8_u8(Op::CALL_REF, arg_exprs.len() as u8, 1);
+                        self.emit_direct_callable_invoke(arg_exprs.len() as u8);
                         let result_slot = self.define_local("__js_private_static_call_result");
                         self.emit_u16(Op::LOCAL_SET, result_slot);
                         self.restore_js_this(saved_js_this);
@@ -8440,7 +8505,7 @@ impl Compiler {
 
                     self.emit_u16(Op::LOCAL_GET, fn_tmp);
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    self.emit_u8_u8(Op::CALL_REF, 1, 1);
+                    self.emit_direct_callable_invoke(1);
                     self.chunk().emit_else(line);
                     self.emit_u16(Op::LOCAL_GET, fn_tmp);
                     self.chunk().emit_end(line);
@@ -8967,7 +9032,7 @@ impl Compiler {
 
                 self.emit_u16(Op::LOCAL_GET, fn_tmp);
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                self.emit_u8_u8(Op::CALL_REF, 1, 1);
+                self.emit_direct_callable_invoke(1);
                 self.chunk().emit_else(line);
                 self.emit_u16(Op::LOCAL_GET, fn_tmp);
                 self.chunk().emit_end(line);
@@ -9515,7 +9580,7 @@ impl Compiler {
                                 for slot in &arg_slots {
                                     self.emit_u16(Op::LOCAL_GET, *slot);
                                 }
-                                self.emit_u8_u8(Op::CALL_REF, arg_exprs.len() as u8, 1);
+                                self.emit_direct_callable_invoke(arg_exprs.len() as u8);
 
                                 if !needs_packed_result {
                                     return Ok(());
@@ -9939,7 +10004,7 @@ impl Compiler {
                                 self.line,
                             );
                         }
-                        self.emit_u8_u8(Op::CALL_REF, signature.param_names.len() as u8, 1);
+                        self.emit_direct_callable_invoke(signature.param_names.len() as u8);
                         self.chunk().emit_end(line);
                         return Ok(());
                     }
@@ -10054,7 +10119,7 @@ impl Compiler {
                 for a in &arg_exprs {
                     self.compile_expr(a)?;
                 }
-                self.emit_u8_u8(Op::CALL_REF, arg_exprs.len() as u8, 1);
+                self.emit_direct_callable_invoke(arg_exprs.len() as u8);
 
                 self.chunk().emit_else(line);
                 self.emit_u16(Op::LOCAL_GET, callee_slot);
@@ -10087,7 +10152,7 @@ impl Compiler {
                 for a in &arg_exprs {
                     self.compile_expr(a)?;
                 }
-                self.emit_u8_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8, 1);
+                self.emit_direct_callable_invoke((arg_exprs.len() + 1) as u8);
                 self.chunk().emit_end(line);
 
                 self.chunk().emit_else(line);
@@ -10096,7 +10161,7 @@ impl Compiler {
                 for a in &arg_exprs {
                     self.compile_expr(a)?;
                 }
-                self.emit_u8_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8, 1);
+                self.emit_direct_callable_invoke((arg_exprs.len() + 1) as u8);
                 self.chunk().emit_end(line);
                 self.chunk().emit_end(line);
                 return Ok(());
@@ -10435,7 +10500,7 @@ impl Compiler {
                 // leaving [callee, ..args] for CALL_REF.
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.set_js_this_from_stack();
-                self.emit_u8_u8(Op::CALL_REF, arg_exprs.len() as u8, 1);
+                self.emit_direct_callable_invoke(arg_exprs.len() as u8);
                 let result_slot = self.define_local("__js_idx_result");
                 self.emit_u16(Op::LOCAL_SET, result_slot);
                 self.restore_js_this(saved_js_this);

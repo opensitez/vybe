@@ -1028,6 +1028,11 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.convert_from_base64_string".into()),
                 ))
                 .with_method(MethodDef::static_method(
+                    "__TryFromBase64CharsCore",
+                    2,
+                    MethodBody::Common("dotnet.convert_try_from_base64_chars".into()),
+                ))
+                .with_method(MethodDef::static_method(
                     "ToBase64CharArray",
                     5,
                     MethodBody::Common("dotnet.convert_to_base64_char_array".into()),

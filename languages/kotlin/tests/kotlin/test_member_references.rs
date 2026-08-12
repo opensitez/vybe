@@ -194,7 +194,7 @@ kotlin_run_test!(
     test_reference_to_function_with_nullable_receiver,
     r#"
         fun main() {
-            val pick = String?.orEmpty
+            val pick = (String?)::orEmpty
             println(pick(null))
             println(pick("x"))
         }

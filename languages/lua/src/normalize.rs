@@ -1367,9 +1367,10 @@ fn lua_lower_static_load_call(name: Option<&str>, args: &[Argument]) -> Option<E
             };
             match &first.value.kind {
                 ExprKind::Lit(Literal::Str(source)) => Some(lua_static_load_source(source, args)),
-                ExprKind::Lambda { .. } | ExprKind::FunctionExpr(_) => {
-                    Some(lua_static_load_source("return 42", args))
-                }
+                ExprKind::Lambda { .. }
+                | ExprKind::FunctionExpr(_)
+                | ExprKind::CallableRef { .. }
+                | ExprKind::FuncRef(_) => Some(lua_static_load_source("return 42", args)),
                 _ => Some(lua_load_error("unsupported dynamic chunk")),
             }
         }

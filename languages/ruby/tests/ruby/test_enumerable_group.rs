@@ -54,6 +54,6 @@ ruby_test!(
 );
 ruby_test!(
     test_enumerable_chunk_drop,
-    "puts [1, 2, 2, 3].chunk { |x| x.even? ? x : :_drop }.map{|k, v| \"#{k}:#{v.join('-')}\"}.join('|')",
+    "puts [1, 2, 2, 3].chunk { |x| x.even? ? true : nil }.map{|k, v| \"#{k}:#{v.join('-')}\"}.join('|')",
     "true:2-2"
-); // :_drop drops the chunk
+); // nil drops the chunk

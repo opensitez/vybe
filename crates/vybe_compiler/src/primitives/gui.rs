@@ -28,7 +28,7 @@
 //! different GUI binding) requires no compiler changes.
 
 use super::Compiler;
-use super::{collections, strings};
+use super::{collections, ops, strings};
 use std::sync::Arc;
 use vybe_ast::Expression;
 use vybe_runtime::opcode::Op;
@@ -171,6 +171,22 @@ pub const HOST_FN_NEW_CONTROLS_COLLECTION: &str = "newControlsCollection";
 /// Stack at call site: [owner]
 pub const HOST_FN_NEW_COMPONENTS_COLLECTION: &str = "newComponentsCollection";
 
+/// The legacy GUI module, addressed BY CONTROL NAME rather than by object.
+///
+/// `vybe.gui.setProperty("display", "Text", v)` is a program-visible surface —
+/// programs call it directly — so it survives the conversion as a spelling and
+/// is lowered onto the document here, rather than reaching a host registry the
+/// renderer no longer paints from.
+pub const GUI_MODULE: &str = "vybe:gui";
+
+/// Host fn name for "set a property on the control with this NAME".
+/// Stack at call site: [name, prop_name, value]
+pub const HOST_FN_SET_PROPERTY_BY_NAME: &str = "setProperty";
+
+/// Host fn name for "get a property from the control with this NAME".
+/// Stack at call site: [name, prop_name]
+pub const HOST_FN_GET_PROPERTY_BY_NAME: &str = "getProperty";
+
 /// Host fn name for "register an event handler on a control".
 /// Stack at call site: [control_name_string, event_name, handler_fn_ref]
 pub const HOST_FN_BIND_EVENT: &str = "onEvent";
@@ -192,8 +208,6 @@ pub const HOST_FN_APP_EXIT: &str = "appExit";
 /// Host fn name for "fire a custom event on the current control/form".
 /// Stack at call site: [arg0, arg1, ..., event_name_string]
 pub const HOST_FN_RAISE_EVENT: &str = "raiseEvent";
-
-pub const GUI_MODULE: &str = "vybe:gui";
 
 /// WHATWG DOM — where a control is actually created.
 pub const DOM_MODULE: &str = "web:dom";
@@ -419,6 +433,22 @@ pub const CTRL_METHOD_EMIT: &str = "gui.ctrl.";
 /// be hit-tested, or be listed by `widgets`.
 pub const APPEND_CHILD_EMIT: &str = "gui.append_child";
 
+/// `List.Items.Add(text)` — the sibling of [`APPEND_CHILD_EMIT`] for a list
+/// whose entries are STRINGS rather than controls the caller built. A platform
+/// declares this one on its list classes and the other on its containers; the
+/// difference is who creates the element, and it is not inferable from the
+/// call, which is why it is two declarations rather than one emit with a test.
+pub const APPEND_ITEM_EMIT: &str = "gui.append_item";
+
+/// `List.Items.Delete(index)` — `select.remove(index)`.
+pub const REMOVE_ITEM_EMIT: &str = "gui.remove_item";
+
+/// `List.Items[i]` — `select.options[i].text`, the DECLARED INDEXER pair. A
+/// platform declares these as the `Item` property's two directions; both must
+/// be present or the index site does not take the branch.
+pub const ITEM_TEXT_EMIT: &str = "gui.item_text";
+pub const SET_ITEM_TEXT_EMIT: &str = "gui.set_item_text";
+
 /// The DOM operation a property role IS. `(module, func, attribute-key)`.
 ///
 /// The roles ARE `vybe:gui`'s canonical property names — the vocabulary every
@@ -470,6 +500,22 @@ fn property_op(role: &str, setting: bool) -> (&'static str, &'static str, Option
             if setting { "setChecked" } else { "checked" },
             None,
         ),
+        // `ItemIndex` / `SelectedIndex` — `HTMLSelectElement.selectedIndex`,
+        // its own IDL member and NOT `value`, which is the selected option's
+        // value STRING. Without this arm the role fell to the attribute
+        // fallback and read `getAttribute("selectedindex")`, which nothing ever
+        // writes: every list answered null, so `ItemIndex >= 0` was false
+        // everywhere and the kanban's Move Right exited before doing anything.
+        // Silent, like every unmapped role.
+        "selectedindex" => (
+            DOCUMENT_MODULE,
+            if setting {
+                "setSelectedIndex"
+            } else {
+                "selectedIndex"
+            },
+            None,
+        ),
         // A control's `Name` IS the element id — what `getElementById` and
         // `<label for>` resolve. Not HTML's `name`, the submission key.
         "name" => (
@@ -502,6 +548,28 @@ fn property_op(role: &str, setting: bool) -> (&'static str, &'static str, Option
             },
             Some("hidden"),
         ),
+        // A control's own colour is its BACKGROUND — VCL's `Color`, WinForms'
+        // `BackColor`. Text colour is a separate role because it is a separate
+        // CSS property (`Font.Color` / `ForeColor` → `color`), and conflating
+        // them is how a panel ends up painting its caption instead of itself.
+        "backcolor" => (
+            CSSOM_MODULE,
+            if setting {
+                "setStyleProperty"
+            } else {
+                "getStyleProperty"
+            },
+            Some("background-color"),
+        ),
+        "forecolor" => (
+            CSSOM_MODULE,
+            if setting {
+                "setStyleProperty"
+            } else {
+                "getStyleProperty"
+            },
+            Some("color"),
+        ),
         // `dock` joins these because it is geometry too, just expressed as a
         // rule instead of a number: the container computes the rect from it.
         // A frontend that spells it `Align` (VCL) or `Dock` (WinForms) reaches
@@ -527,6 +595,26 @@ fn property_op(role: &str, setting: bool) -> (&'static str, &'static str, Option
     }
 }
 
+/// The two roles a PAIR role decomposes into, with the field each component
+/// reads off the value.
+///
+/// `Location` and `Size` are one framework value carrying two CSS
+/// declarations. Answering here rather than in a `property_op` row is what
+/// keeps the decomposition a re-entry into the ordinary write path: the units,
+/// the `px` suffix and the CSS operation are `left`/`top`/`width`/`height`'s
+/// own, stated once.
+///
+/// The field names are the ones the value type actually stores (`vybe:gui`'s
+/// `pointNew`/`sizeNew`), not the framework's property spelling — `Point`
+/// declares `X`/`Y` and stores `x`/`y`.
+fn pair_role_components(role: &str) -> Option<[(&'static str, &'static str); 2]> {
+    match role {
+        "location" => Some([("x", "left"), ("y", "top")]),
+        "size" => Some([("width", "width"), ("height", "height")]),
+        _ => None,
+    }
+}
+
 /// The TYPE a property role's value has, for the roles whose type the DOM
 /// operation above already fixes.
 ///
@@ -545,7 +633,7 @@ pub fn property_value_type(role: &str) -> Option<&'static str> {
     match role {
         "text" | "caption" | "value" | "name" => Some("string"),
         "checked" | "ischecked" | "enabled" | "visible" => Some("Boolean"),
-        "left" | "top" | "width" | "height" | "linecount" => Some("Integer"),
+        "left" | "top" | "width" | "height" | "linecount" | "selectedindex" => Some("Integer"),
         _ => None,
     }
 }
@@ -579,6 +667,99 @@ impl Compiler {
     /// The operands already arrive container-first, which is `appendChild`'s
     /// own order — unlike the `parent` ROLE, where the assignment names the
     /// child first and the two have to be swapped.
+    /// `List.Items.Add(text)` — stack in `[list, text]`, out `[]`.
+    ///
+    /// An item is an OPTION, not an attribute — and the DOM already has the
+    /// operation: `web:html.addItem` IS `select.add(option)`, which is why this
+    /// builds no element of its own. Creating an `<option>` here and appending
+    /// it would have been a second way to say the same thing, and it renders
+    /// nothing: a list widget takes items, not child controls, so the element
+    /// would have been silently detached.
+    ///
+    /// Without it `Items` had no role at all and fell to the `_` arm as
+    /// `getAttribute("items")`, which answers null — so `Items.Add` called
+    /// `undefined` and took two shipped examples down with it. The lesson is
+    /// the attribute FALLBACK: an unmapped role is silent, and silently wrong
+    /// for anything whose value is not text.
+    ///
+    /// Distinct from `TMainMenu.Items`, whose entries are controls the caller
+    /// already built — that stays `appendChild` of the element it was handed.
+    /// Here the caller has a STRING and the element is ours to make.
+    pub fn emit_gui_append_item(&mut self, line: u32) {
+        let text = self.define_local("__gui_item_text");
+        let list = self.define_local("__gui_item_list");
+        self.emit_u16(Op::LOCAL_SET, text);
+        self.emit_u16(Op::LOCAL_SET, list);
+        let doc_idx = self.import(DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT);
+        self.chunk().emit_call(doc_idx, 0, line);
+        self.emit_u16(Op::LOCAL_GET, list);
+        self.emit_u16(Op::LOCAL_GET, text);
+        let idx = self.import(DOCUMENT_MODULE, "addItem");
+        self.emit_host_call(idx, 3);
+    }
+
+    /// `List.Items.Delete(index)` — `select.remove(index)`.
+    ///
+    /// A control VERB cannot express this: `gui.ctrl.<verb>` is `[control]` in,
+    /// one value out, with nowhere to put an argument. So the index-taking
+    /// members of the option list get their own emit, exactly as `Add` did.
+    pub fn emit_gui_remove_item(&mut self, line: u32) {
+        let index = self.define_local("__gui_item_index");
+        let list = self.define_local("__gui_item_list");
+        self.emit_u16(Op::LOCAL_SET, index);
+        self.emit_u16(Op::LOCAL_SET, list);
+        let doc_idx = self.import(DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT);
+        self.chunk().emit_call(doc_idx, 0, line);
+        self.emit_u16(Op::LOCAL_GET, list);
+        self.emit_u16(Op::LOCAL_GET, index);
+        let idx = self.import(DOCUMENT_MODULE, "removeItem");
+        self.emit_host_call(idx, 3);
+    }
+
+    /// `List.Items[i]` — `select.options[i].text`.
+    ///
+    /// Reached through the DECLARED INDEXER route, not a new mechanism: a
+    /// registered type declaring an instance property named `Item` with a
+    /// common emit in each direction makes `x[i]` lower to a two-argument emit
+    /// here (`declared_indexer_emits`). That is .NET's `this[int]`, and
+    /// Delphi's `TStrings.Strings[i]` is the same default indexed property.
+    ///
+    /// Stack in `[control, index]`, out `[text]`.
+    pub fn emit_gui_item_text(&mut self, line: u32) {
+        let index = self.define_local("__gui_item_index");
+        let list = self.define_local("__gui_item_list");
+        self.emit_u16(Op::LOCAL_SET, index);
+        self.emit_u16(Op::LOCAL_SET, list);
+        let doc_idx = self.import(DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT);
+        self.chunk().emit_call(doc_idx, 0, line);
+        self.emit_u16(Op::LOCAL_GET, list);
+        self.emit_u16(Op::LOCAL_GET, index);
+        let idx = self.import(DOCUMENT_MODULE, "itemText");
+        self.emit_host_call(idx, 3);
+    }
+
+    /// The write half — `List.Items[i] := 'text'`. Declared alongside the read
+    /// because `declared_indexer_emits` requires BOTH directions before it will
+    /// take the branch at all, which is what stops a type offering a readable
+    /// index and a silently ignored write.
+    ///
+    /// Stack in `[control, index, text]`, out `[value]` — the caller drops it.
+    pub fn emit_gui_set_item_text(&mut self, line: u32) {
+        let text = self.define_local("__gui_item_text");
+        let index = self.define_local("__gui_item_index");
+        let list = self.define_local("__gui_item_list");
+        self.emit_u16(Op::LOCAL_SET, text);
+        self.emit_u16(Op::LOCAL_SET, index);
+        self.emit_u16(Op::LOCAL_SET, list);
+        let doc_idx = self.import(DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT);
+        self.chunk().emit_call(doc_idx, 0, line);
+        self.emit_u16(Op::LOCAL_GET, list);
+        self.emit_u16(Op::LOCAL_GET, index);
+        self.emit_u16(Op::LOCAL_GET, text);
+        let idx = self.import(DOCUMENT_MODULE, "setItemText");
+        self.emit_host_call(idx, 4);
+    }
+
     pub fn emit_gui_append_child(&mut self, line: u32) {
         let child = self.define_local("__gui_add_child");
         let parent = self.define_local("__gui_add_parent");
@@ -627,6 +808,22 @@ impl Compiler {
         } {
             self.emit_const(Value::Bool(visible));
             self.emit_gui_property_set("visible", line);
+            return;
+        }
+
+        // `Clear` on a TEXT control — `FInput.Clear`, `FMemo.Clear`. The DOM
+        // has no `clear()`: emptying a field IS `value = ""`, so this takes the
+        // same route a `Text := ''` write takes, exactly as `Show`/`Hide` take
+        // the `visible` route above. One role, two spellings.
+        //
+        // A LIST's `Clear` is a different operation on a different element
+        // (`select.length = 0`) and is declared separately as
+        // `gui.ctrl.clearItems`, which the web platform names outright. The two
+        // share a spelling and nothing else, which is why each class says which
+        // one it means rather than this guessing from the receiver.
+        if verb == "clear" {
+            emit_string_const(self.chunk(), "", line);
+            self.emit_gui_property_set("text", line);
             return;
         }
 
@@ -863,6 +1060,40 @@ impl Compiler {
             self.emit_host_call(idx, 3);
             return;
         }
+        // A role whose VALUE is a pair — `Location` is `(Left, Top)` and `Size`
+        // is `(Width, Height)`. Unlike `Anchor`/`Font`/`BackColor`, these two DO
+        // have IDL counterparts; they are just spelled as one value type in the
+        // framework and as two declarations in CSS. So this decomposes and
+        // re-enters, which is why the units, the `px` suffix and the write path
+        // are shared with `Left`/`Top` rather than restated.
+        //
+        // Without it, `Me.btn0.Location = New Point(20, 50)` fell to the
+        // `setAttribute` catch-all and the document serialised
+        // `location="[object]"` — a designer-generated form is written almost
+        // ENTIRELY in these two properties, so every control in it sat at the
+        // origin while the form otherwise looked correct.
+        if let Some([(x_field, x_role), (y_field, y_role)]) = pair_role_components(role) {
+            let value = self.define_local("__gui_pair_value");
+            let ctrl = self.define_local("__gui_pair_ctrl");
+            self.emit_u16(Op::LOCAL_SET, value);
+            self.emit_u16(Op::LOCAL_SET, ctrl);
+            for (index, (field, component_role)) in [(x_field, x_role), (y_field, y_role)]
+                .into_iter()
+                .enumerate()
+            {
+                self.emit_u16(Op::LOCAL_GET, ctrl);
+                self.emit_u16(Op::LOCAL_GET, value);
+                let key = self.str_const(field);
+                self.emit_struct_field_op(Op::STRUCT_GET, 0, key);
+                self.emit_gui_property_set(component_role, line);
+                // Each write leaves the host call's result, and this function
+                // promises exactly one — so all but the last are dropped.
+                if index == 0 {
+                    self.emit(Op::DROP);
+                }
+            }
+            return;
+        }
         let (module, func, key) = property_op(role, true);
         let value = self.define_local("__gui_prop_value");
         let ctrl = self.define_local("__gui_prop_ctrl");
@@ -879,6 +1110,22 @@ impl Compiler {
                 // frontend lowered to the ATTRIBUTE role, so negate here once.
                 if matches!(role, "enabled" | "visible") {
                     self.chunk().emit_op(Op::I32_EQZ, line);
+                }
+                // A CSS length is TEXT WITH A UNIT. `Left := 8` is
+                // `style.left = "8px"`, and a browser DROPS `"8"` outright —
+                // `<length>` has no unitless form outside `0`. The read path
+                // has always said so, parsing the unit back off with
+                // `parseFloat`; the write side did not, and only
+                // `vybe_widgets`' own lenient `parse_px` hid it. That is a
+                // defect no capture can show, because both ends of OUR
+                // pipeline agreed on the wrong thing.
+                //
+                // `dock` shares this arm and must NOT get a unit: it carries
+                // an edge keyword, not a length.
+                if matches!(role, "left" | "top" | "width" | "height") {
+                    strings::emit_to_string(self.chunk(), line);
+                    emit_string_const(self.chunk(), "px", line);
+                    ops::emit_dyn_add(self.chunk(), line);
                 }
                 4
             }
@@ -922,6 +1169,34 @@ impl ControlElement {
     /// `<progress>` or `<table>` is NOT one — a `PictureBox` or `Panel` is a
     /// control in the toolkit sense but carries no submission identity, and
     /// `name` on it is non-conforming markup that submits nothing.
+    /// Does this element need to be a containing block for its children?
+    ///
+    /// The elements that hold other controls. `body` is excluded: the viewport
+    /// is already the initial containing block, so a child of the form resolves
+    /// correctly with nothing declared — and a browser would agree.
+    ///
+    /// Anything that is not a container has no positioned descendants to
+    /// anchor, so declaring it would be noise in the markup.
+    pub fn establishes_containing_block(&self) -> bool {
+        matches!(
+            self.tag.as_str(),
+            "div"
+                | "section"
+                | "article"
+                | "main"
+                | "aside"
+                | "header"
+                | "footer"
+                | "nav"
+                | "form"
+                | "fieldset"
+                | "dialog"
+                | "li"
+                | "td"
+                | "th"
+        ) || self.tag.starts_with("vybe-")
+    }
+
     pub fn is_form_associated(&self) -> bool {
         matches!(
             self.tag.as_str(),
@@ -944,7 +1219,23 @@ impl ControlElement {
     /// rather than anonymous boxes.
     fn custom(type_name: &str) -> ControlElement {
         let bare = type_name.rsplit(['.', ':']).next().unwrap_or(type_name);
-        let bare = bare.trim_start_matches(['T', 't']).to_ascii_lowercase();
+        // ⚠ Strip Delphi's `T` prefix — and ONLY that.
+        //
+        // `trim_start_matches(['T', 't'])` removed EVERY leading T, and after
+        // lowercasing there was no case left to tell a prefix from a word:
+        // `TableLayoutPanel` became `<vybe-ablelayoutpanel>` and `ToolStrip`
+        // would have become `<vybe-oolstrip>`. A tag naming no known control
+        // degrades to a 120x20 label, so the whole control silently vanished
+        // — see [[project_pseudo_tag_renders_as_a_label]].
+        //
+        // The convention is `T` followed by an UPPERCASE letter (`TButton`,
+        // `TForm`), which is why the test runs before lowercasing. A WinForms
+        // name has no prefix at all and now keeps every letter.
+        let stripped = bare
+            .strip_prefix('T')
+            .filter(|rest| rest.chars().next().is_some_and(|c| c.is_ascii_uppercase()))
+            .unwrap_or(bare);
+        let bare = stripped.to_ascii_lowercase();
         ControlElement {
             tag: format!("vybe-{}", if bare.is_empty() { "control" } else { &bare }),
             input_type: String::new(),
@@ -996,6 +1287,45 @@ impl Compiler {
         None
     }
 
+    /// The control type a `Name(...)` / `A.B.Name(...)` call CONSTRUCTS, if it
+    /// constructs one.
+    ///
+    /// One fact asked at both ends. `compile_call` uses this to decide it
+    /// should emit `emit_control_element` instead of a function call, and
+    /// `infer_expr_type_hint` uses it to say what such a call is WORTH. Asked
+    /// with two different predicates the two answers drift apart, and a call
+    /// typed as a control that was never lowered as one sends every later
+    /// property write down the DOM path for something that is not an element —
+    /// silently, which is the failure this exists to prevent.
+    ///
+    /// The callee resolves by its LAST segment; namespace qualifiers are
+    /// ignored, matching how the class name used to resolve as a global.
+    /// `canonical_control_name` alone cannot decide it — that shared table
+    /// holds generic words (`image`, `panel`, `label`) — so REGISTRATION in
+    /// this profile's own type scopes is the signal, and a user
+    /// function/class/local of the same name shadows.
+    pub(super) fn constructed_control_type_name(&self, callee: &Expression) -> Option<String> {
+        let parts = self.flatten_member_chain(callee);
+        let last = parts.last()?;
+        if canonical_control_name(last).is_empty() {
+            return None;
+        }
+        if parts
+            .first()
+            .is_some_and(|first| self.scope().resolve(first).is_some())
+        {
+            return None;
+        }
+        let canon_last = self.canon(last);
+        if self.defined_functions.contains(&canon_last)
+            || self.defined_classes.contains(&canon_last)
+        {
+            return None;
+        }
+        vybe_runtime::namespaces::is_registered_type(&self.profile.namespaces.type_scopes, last)
+            .then_some(canon_last)
+    }
+
     /// The ROLE a class declares for one of its properties.
     ///
     /// The class is the authority on what its property means: plib declares
@@ -1023,7 +1353,11 @@ impl Compiler {
             }?;
             match target {
                 vybe_runtime::component_model::InstancePropertyTarget::Common { emit } => emit
-                    .strip_prefix(if setting { PROP_SET_EMIT } else { PROP_GET_EMIT })
+                    .strip_prefix(if setting {
+                        PROP_SET_EMIT
+                    } else {
+                        PROP_GET_EMIT
+                    })
                     .map(str::to_string),
                 // A host-backed accessor is already a complete target; it is
                 // not a role and must not be rewritten into one.
@@ -1053,6 +1387,160 @@ impl Compiler {
     /// where unknown properties belong on the web anyway; that keeps the match
     /// to the handful of properties HTML actually treats specially instead of
     /// a table that has to grow per control.
+    /// Is a LATE-BOUND member access worth a runtime element test?
+    ///
+    /// Only where the compiler has no static answer at all. A receiver whose
+    /// type is known takes the direct emit above; this is for the case that was
+    /// already heading for a bare `struct_get`/`struct_set`, so the branch adds
+    /// an answer where there was none and changes nothing that had one.
+    ///
+    /// Gated on the profile declaring a type tree, which is the same structural
+    /// test every other tree consult here uses — a language that registers none
+    /// cannot own a control and pays nothing.
+    pub(super) fn member_access_is_late_bound(&self, object: &Expression, field: &str) -> bool {
+        if self.profile.namespaces.type_scopes.is_empty() {
+            return false;
+        }
+        // The receiver must be a VALUE held in a slot. A namespace root, a
+        // class name or a chain has no type hint either, and none of them can
+        // be an element — testing them at runtime would put a branch in front
+        // of every static member read for nothing.
+        if !matches!(&object.kind, vybe_ast::ExprKind::Ident(name)
+            if self.scope().resolve(name).is_some())
+        {
+            return false;
+        }
+        // A field whose STORAGE name differs from its spelling is resolved
+        // already — that resolution is what the ordinary read/write path
+        // applies, and this branch would drop it.
+        if self
+            .field_storage_name_for_receiver(object, field)
+            .is_some()
+        {
+            return false;
+        }
+        match self.infer_expr_type_hint(object) {
+            None => true,
+            Some(hint) => {
+                let class_name = Self::normalize_type_hint(&hint);
+                let scopes = &self.profile.namespaces.type_scopes;
+                // The test is "does the receiver's type DECLARE this member",
+                // not "is the type registered". `Object` IS registered — it is
+                // the root of the .NET hierarchy — so an `is_registered_type`
+                // test answered yes for the one spelling this exists to catch
+                // and the branch never fired.
+                self.control_element_for_type(&class_name).is_none()
+                    && self
+                        .resolve_pending_class_name_for_type_hint(&class_name)
+                        .is_none()
+                    && vybe_runtime::namespaces::lookup_type_property_target(
+                        scopes,
+                        &class_name,
+                        field,
+                    )
+                    .is_none()
+                    && vybe_runtime::namespaces::lookup_type_property_setter_target(
+                        scopes,
+                        &class_name,
+                        field,
+                    )
+                    .is_none()
+                    && vybe_runtime::namespaces::lookup_type_instance_member(
+                        scopes,
+                        &class_name,
+                        field,
+                    )
+                    .is_none()
+                    && !self.is_declared_instance_field(&class_name, field)
+            }
+        }
+    }
+
+    /// `x.<prop> = value` where the compiler does not know what `x` IS.
+    ///
+    /// **This restores a decision the conversion moved.** `vybe:gui`'s
+    /// `controlSetProperty(obj, prop, value)` took the OBJECT at runtime, so a
+    /// late-bound receiver reached the widget no matter what the compiler knew.
+    /// The DOM path is chosen from the receiver's STATIC type, which is
+    /// strictly better where a type exists — and where none does, left no path
+    /// at all. `Sub HandleClick(btn As Object)` writing `btn.Text` emitted a
+    /// bare `struct_set` onto the element and the document never heard about
+    /// it; Pascal was unaffected only because `(Sender as TButton).Caption` and
+    /// `FDisplay: TEdit` name a type at every access.
+    ///
+    /// So the test moves to runtime for exactly the accesses that have no
+    /// static answer: `__control_type` is stamped on every control at
+    /// construction, so "is this a node in the document" is one field read.
+    ///
+    /// Stack on entry: [value]. Stack on exit: empty.
+    pub fn emit_late_bound_property_set(
+        &mut self,
+        object: &Expression,
+        prop: &str,
+        line: u32,
+    ) -> Result<(), String> {
+        let value_tmp = self.define_local("__late_prop_value");
+        self.emit_u16(Op::LOCAL_SET, value_tmp);
+        let obj_tmp = self.define_local("__late_prop_obj");
+        self.compile_expr(object)?;
+        self.emit_u16(Op::LOCAL_SET, obj_tmp);
+
+        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+        let type_key = self.str_const(CONTROL_TYPE_FIELD);
+        self.emit_struct_field_op(Op::STRUCT_GET, 0, type_key);
+        let undef_idx = self.import("wasm:js-undefined", "test");
+        self.emit_host_call(undef_idx, 1);
+        self.chunk().emit_if(line);
+        // Not a control — the ordinary object property, exactly as before.
+        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+        self.emit_u16(Op::LOCAL_GET, value_tmp);
+        let prop_key = self.str_const(&self.canon(prop));
+        self.emit_struct_field_op(Op::STRUCT_SET, 0, prop_key);
+        self.chunk().emit_else(line);
+        // A control. There is no class to ask for a ROLE here — that is what
+        // "late bound" means — so the property's own spelling IS the role, the
+        // same fallback `emit_control_property_set` uses when a class declares
+        // nothing for the name.
+        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+        self.emit_u16(Op::LOCAL_GET, value_tmp);
+        self.emit_gui_property_set(&prop.to_ascii_lowercase(), line);
+        self.emit(Op::DROP);
+        self.chunk().emit_end(line);
+        Ok(())
+    }
+
+    /// `x.<prop>` where the compiler does not know what `x` IS — the mirror of
+    /// [`Self::emit_late_bound_property_set`], and needed for the same reason:
+    /// `If btn.Text <> ""` read `undefined` off the element and took the wrong
+    /// branch before any write was even attempted.
+    ///
+    /// Stack on entry: empty. Stack on exit: [value].
+    pub fn emit_late_bound_property_get(
+        &mut self,
+        object: &Expression,
+        prop: &str,
+        line: u32,
+    ) -> Result<(), String> {
+        let obj_tmp = self.define_local("__late_get_obj");
+        self.compile_expr(object)?;
+        self.emit_u16(Op::LOCAL_SET, obj_tmp);
+
+        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+        let type_key = self.str_const(CONTROL_TYPE_FIELD);
+        self.emit_struct_field_op(Op::STRUCT_GET, 0, type_key);
+        let undef_idx = self.import("wasm:js-undefined", "test");
+        self.emit_host_call(undef_idx, 1);
+        self.chunk().emit_if_value(line);
+        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+        let prop_key = self.str_const(&self.canon(prop));
+        self.emit_struct_field_op(Op::STRUCT_GET, 0, prop_key);
+        self.chunk().emit_else(line);
+        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+        self.emit_gui_property_get(&prop.to_ascii_lowercase(), line);
+        self.chunk().emit_end(line);
+        Ok(())
+    }
+
     ///
     /// Stack on entry: [value]. Stack on exit: empty.
     pub fn emit_control_property_set(
@@ -1156,6 +1644,161 @@ impl Compiler {
         emit_string_const(self.chunk(), &element.input_type, line);
         let create_idx = self.import(DOM_MODULE, HOST_FN_CREATE_ELEMENT);
         self.chunk().emit_call(create_idx, 3, line);
+        self.emit_control_type_stamp(type_name, line);
+        if element.establishes_containing_block() {
+            self.emit_container_is_positioned(line);
+        }
+    }
+
+    /// Stamp `__control_type` — "this object is a node in the document, and
+    /// this is the control it is".
+    ///
+    /// Here, in the ONE place an element is created, rather than in a
+    /// construction path: `New Button()` reaches
+    /// `emit_tree_ctor_construction`, `Window.Forms.Button()` reaches
+    /// `compile_call`, and a frontend that grows a third way would have needed
+    /// a third copy. Stamping at creation means the answer exists for every
+    /// element however it was spelled.
+    ///
+    /// It is what makes a LATE-BOUND member access decidable at all — see
+    /// `emit_late_bound_property_set`. It is also read by the host
+    /// (`platforms/vybe/src/gui.rs`, `gui_launch.rs`, `simd.rs`), which is why
+    /// its value is the canonical control NAME (`Button`), not the tag.
+    ///
+    /// The element is on the stack and stays there; this consumes a copy.
+    fn emit_control_type_stamp(&mut self, type_name: &str, line: u32) {
+        let canonical = canonical_control_name(type_name);
+        let stamped = if canonical.is_empty() {
+            type_name.to_string()
+        } else {
+            canonical
+        };
+        let element = self.define_local("__gui_stamped_element");
+        self.emit_u16(Op::LOCAL_TEE, element);
+        self.emit_const(Value::String(Arc::from(stamped.as_str())));
+        let key = self.str_const(CONTROL_TYPE_FIELD);
+        self.emit_struct_field_op(Op::STRUCT_SET, 0, key);
+
+        // A control has a NAME whether the program gives it one or not. Every
+        // framework here guarantees it — WinForms' designer assigns `Button1`,
+        // the VCL assigns `Button1` — and programs read it: the calculator does
+        // `displayName := display.Name` and addresses the control by that
+        // string afterwards. The `vybe:gui` factory generated one; a bare
+        // `createElement` does not, so `.Name` answered `""` and every
+        // by-name write went to a control called nothing.
+        //
+        // It is the element's `id`, which is what `getElementById` resolves —
+        // the same role a program-assigned `Name` fills, so a later `Name = x`
+        // simply replaces it.
+        self.gui_auto_name_counter += 1;
+        let auto_name = format!(
+            "{}{}",
+            stamped.to_ascii_lowercase(),
+            self.gui_auto_name_counter
+        );
+        self.emit_u16(Op::LOCAL_GET, element);
+        self.emit_const(Value::String(Arc::from(auto_name.as_str())));
+        self.emit_gui_property_set("name", line);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, element);
+    }
+
+    /// `vybe.gui.setProperty(name, prop, value)` / `getProperty(name, prop)` —
+    /// the BY-NAME surface, lowered onto the document.
+    ///
+    /// These are not internal plumbing: a program writes them itself, so they
+    /// are part of the language surface and had to survive the move to the DOM.
+    /// They used to reach `GuiState`, which the renderer no longer paints from
+    /// once a document has content — so the calculator's every display update
+    /// wrote to a registry nothing reads, while its clicks fired correctly.
+    ///
+    /// A name IS `getElementById`; that is what the `name` role has always
+    /// meant. The property spelling must be a literal, because the ROLE decides
+    /// the DOM operation — a computed one falls through to the old call rather
+    /// than guess.
+    pub(super) fn try_emit_gui_property_by_name(
+        &mut self,
+        module: &str,
+        func: &str,
+        args: &[&Expression],
+    ) -> Result<bool, String> {
+        if !module.eq_ignore_ascii_case(GUI_MODULE) {
+            return Ok(false);
+        }
+        let setting = func.eq_ignore_ascii_case(HOST_FN_SET_PROPERTY_BY_NAME);
+        let getting = func.eq_ignore_ascii_case(HOST_FN_GET_PROPERTY_BY_NAME);
+        if !(setting || getting) {
+            return Ok(false);
+        }
+        let expected = if setting { 3 } else { 2 };
+        if args.len() != expected {
+            return Ok(false);
+        }
+        let Some(role) = args.get(1).and_then(|arg| match &arg.kind {
+            vybe_ast::ExprKind::Lit(vybe_ast::Literal::Str(prop)) => {
+                Some(prop.to_ascii_lowercase())
+            }
+            _ => None,
+        }) else {
+            return Ok(false);
+        };
+
+        let line = self.line;
+        let doc_idx = self.import(DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT);
+        self.chunk().emit_call(doc_idx, 0, line);
+        self.compile_expr(args[0])?;
+        let by_id = self.import(DOM_MODULE, "getElementById");
+        self.emit_host_call(by_id, 2);
+        if setting {
+            self.compile_expr(args[2])?;
+            self.emit_gui_property_set(&role, line);
+        } else {
+            self.emit_gui_property_get(&role, line);
+        }
+        Ok(true)
+    }
+
+    /// Declare a container `position: relative`.
+    ///
+    /// A child's `Left`/`Top` is relative to its parent in every framework here
+    /// — VCL, WinForms and Flutter's `Positioned` all mean it. CSS spells that
+    /// as an absolutely positioned box resolving against its nearest
+    /// **positioned** ancestor, and a `position: static` box is not one. So a
+    /// container has to say it is positioned, or a browser handed this document
+    /// would place every nested control against the body.
+    ///
+    /// It is DECLARED, into the document, rather than assumed by the widget
+    /// layer. A behavioural assumption would render correctly here and wrongly
+    /// in a real engine — which defeats the point of being HTML underneath. The
+    /// emitted markup is now what you would write by hand:
+    ///
+    /// ```html
+    /// <div style="position: relative; left: 10px; top: 10px">
+    ///   <button style="left: 20px; top: 50px">…</button>
+    /// </div>
+    /// ```
+    ///
+    /// The element is on the stack and stays there; this consumes a copy.
+    fn emit_container_is_positioned(&mut self, line: u32) {
+        // `LOCAL_TEE` stores and leaves the value on the stack, so the element
+        // stays put for the caller while this reads a copy of it.
+        let element = self.define_local("__gui_container");
+        self.emit_u16(Op::LOCAL_TEE, element);
+        let doc_idx = self.import(DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT);
+        self.chunk().emit_call(doc_idx, 0, line);
+        self.emit_u16(Op::LOCAL_GET, element);
+        emit_string_const(self.chunk(), "position", line);
+        emit_string_const(self.chunk(), "relative", line);
+        let set_idx = self.import(CSSOM_MODULE, "setStyleProperty");
+        self.emit_host_call(set_idx, 4);
+        // A host call leaves its result on the stack — the convention every
+        // `gui::emit_*` helper follows. `emit_control_element` promises to
+        // leave exactly the element, so the result is dropped here. Without
+        // this the extra value corrupts the rest of the constructor: the
+        // calculator lost all twenty of its form-parented buttons and the form
+        // collapsed to the height of its one panel.
+        self.chunk().emit_op(Op::DROP, line);
     }
 }
 

@@ -127,7 +127,7 @@ pub fn emit_datetime_clone(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Stack on exit: `[obj]` with `__type=tag`, `__time=ms`.
 /// Build a 1-arg getter chunk returning `this.<field>`; returns its index.
 /// Mirrors `reflection_adapter::build_field_getter` so the stamped method
-/// dispatches via the normal `STRUCT_GET` + `CALL_REF` path.
+/// dispatches via the normal `STRUCT_GET` + callable-invoke path.
 fn build_tz_getter(chunks: &mut Vec<Chunk>, field: &str, line: u32) -> usize {
     let mut c = Chunk::new("__dtz_getter");
     c.arity = 1;

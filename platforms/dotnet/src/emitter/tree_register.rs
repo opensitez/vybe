@@ -35,7 +35,7 @@ pub fn register_namespace_tree() {
             let mut method_overloads: BTreeMap<String, Vec<(u8, NamespaceNode)>> = BTreeMap::new();
             let mut static_overloads: BTreeMap<String, Vec<(u8, NamespaceNode)>> = BTreeMap::new();
             let mut methods = Subtree::new();
-            let class_is_control = descends_from_control(&class.name);
+            let class_is_control = element_backed_control(&class.name);
             // The WHOLE inherited surface, not just this class's own methods —
             // the tree has no parent link, so anything left off here is
             // unreachable. See `inherited_methods`.
@@ -112,11 +112,15 @@ pub fn register_namespace_tree() {
             // registration would leave every inherited property unreachable.
             // Nearest declaration wins, so an override shadows its base.
             let mut property_returns: BTreeMap<String, String> = BTreeMap::new();
-            let is_control = descends_from_control(&class.name);
+            let is_control = element_backed_control(&class.name);
             for p in inherited_properties(&class.name) {
                 let node = namespaces::property(
-                    p.getter.as_ref().map(|t| accessor_node(t, &p.name, is_control)),
-                    p.setter.as_ref().map(|t| accessor_node(t, &p.name, is_control)),
+                    p.getter
+                        .as_ref()
+                        .map(|t| accessor_node(t, &p.name, is_control)),
+                    p.setter
+                        .as_ref()
+                        .map(|t| accessor_node(t, &p.name, is_control)),
                 );
                 // What the property READS BACK as, declared from its ROLE so
                 // the one answer serves every frontend registered this way.
@@ -195,6 +199,23 @@ pub fn register_namespace_tree() {
             // specific statement.
             for (name, ty) in property_returns {
                 member_returns.entry(name).or_insert(ty);
+            }
+            // A PROPERTY's declared type, for the classes that are not
+            // controls. The scan above only walks `class.methods`, so a
+            // property read came back untyped and the next hop on it resolved
+            // against nothing — `cmd.Parameters.AddWithValue(…)` died there
+            // even with the collection declared, because `Parameters` itself
+            // said nothing about what it is.
+            for (name, ty) in super::declared_instance_property_types(&class.name) {
+                member_returns
+                    .entry(name.to_lowercase())
+                    .or_insert_with(|| (*ty).to_string());
+            }
+            // A member that IS the receiver overrides both — the descriptor's
+            // own signature describes the collection wrapper WinForms models,
+            // and the element does not have one.
+            for (name, ty) in self_member_returns(&class.name) {
+                member_returns.insert((*name).to_string(), (*ty).to_string());
             }
 
             // The descriptor's backing constructor, as a tree node. dotnet
@@ -292,6 +313,12 @@ fn gui_property_role(prop: &str) -> &'static str {
         "top" => "top",
         "width" | "clientwidth" => "width",
         "height" | "clientheight" => "height",
+        // A `Point`/`Size` value IS the pair of declarations above, and the
+        // shared write path decomposes it. Designer-generated forms use these
+        // and never `Left`/`Top`, so without the role every `.Designer.vb`
+        // control sat at the origin with `location="[object]"` in the markup.
+        "location" => "location",
+        "size" | "clientsize" => "size",
         // ComboBox / ListBox selection, the same role plib maps `ItemIndex` to.
         "selectedindex" => "selectedindex",
         "items" => "items",
@@ -420,6 +447,34 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         // A LinkLabel IS a hyperlink.
         "linklabel" => "a",
         "groupbox" => "fieldset",
+        // The strips. `menu` is a real HTML element the document already knows
+        // (`control_kind` maps it to the `menustrip` widget, born `Dock::Top`);
+        // the `vybe-*` pseudo-tags these used to fall through to matched NO
+        // `control_kind` arm, so every WinForms menu came out a 120x20 LABEL
+        // stacked at the origin. plib spells `TMainMenu`/`TPopupMenu`/
+        // `TMenuItem` the same way, and a ToolStrip is what `<menu>` is
+        // specified to be — "a toolbar" — with WinForms' own `Dock=Top` default.
+        // An ITEM is the same `menu` tag as the strip, on purpose — plib says
+        // the same thing about `TMenuItem`. A bar word and the submenu it opens
+        // are one element here, and the strip derives its words from its
+        // children's captions at paint time.
+        "menustrip"
+        | "toolstrip"
+        | "toolstripmenuitem"
+        | "toolstripdropdownitem"
+        | "toolstripbutton"
+        | "toolstriplabel"
+        | "toolstripstatuslabel" => "menu",
+        // A separator IS a horizontal rule. Held on `menu` until `hr` had a
+        // `control_kind` arm, because a tag with no arm is a silent 120x20
+        // label — it has one now (`panel`, 200x2), so this is a rule.
+        "toolstripseparator" => "hr",
+        // A StatusStrip is the document's footer. `<footer>` has a
+        // `control_kind` arm (a container) where `vybe-statusstrip` has none;
+        // the `statusstrip` widget itself is still unreachable because no tag
+        // maps to it, which is `vybe_widgets`' half of the mapping, not this
+        // registrar's.
+        "statusstrip" => "footer",
         "combobox" => "select",
         "listbox" => "ul",
         "treeview" => "ul",
@@ -437,7 +492,44 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         // step with plib, which spells the same controls the same way
         // (`TImage`, `TSplitter`, `TPageControl`, `TTabSheet`, `TTimer`).
         "picturebox" => "vybe-picturebox",
-        "splitcontainer" => "vybe-splitter",
+        // The scrollbars and the navigator. `vybe_widgets` has had all three
+        // kinds and their default sizes the whole time; what was missing was
+        // the DECLARATION, without which they had no `CtorSpec` and every
+        // property write on them was silently dropped.
+        // ⚠ A ContextMenuStrip is NOT `<menu>`, and the difference is docking.
+        // The `menu` TAG is born `Dock::Top`, which is right for a menu bar and
+        // wrong for a popup: `cms1` took the full width under the other strips
+        // and threw away the `Location`/`Size` the designer gave it, pushing
+        // the first real control off the top of the form. A context menu is
+        // attached to a control and shown on demand — it is not a bar.
+        "contextmenustrip" => "vybe-contextmenustrip",
+        // Declared `vybe-*` custom elements. `control_kind` strips `vybe-` and
+        // looks the remainder up against the widget list, so the TAG carries
+        // the kind and these two land on real widgets that already exist
+        // (`checkedlistbox`; `datagrid` folds onto `datagridview`).
+        "checkedlistbox" => "vybe-checkedlistbox",
+        "datagrid" => "vybe-datagrid",
+        // ⚠ These have no widget kind YET, so they render as a label until
+        // `vybe_widgets` grows one — the designed degradation, visible in a
+        // capture instead of the control vanishing. The declaration still buys
+        // construction, identity, geometry, text, events and data binding.
+        "propertygrid" => "vybe-propertygrid",
+        "splitter" => "vybe-splitter",
+        "domainupdown" => "vybe-domainupdown",
+        // A UserControl is a plain composite container, and `<section>` is a
+        // real element that already establishes a containing block.
+        "usercontrol" => "section",
+        "hscrollbar" => "vybe-hscrollbar",
+        "vscrollbar" => "vybe-vscrollbar",
+        "bindingnavigator" => "vybe-bindingnavigator",
+        // ⚠ `vybe-splitter`, not `vybe-splitcontainer`, made this a LABEL.
+        // The tag carries the kind: `control_kind` strips `vybe-` and looks the
+        // remainder up against the widget list, which spells it
+        // `splitcontainer`. A tag naming no known control degrades to a 120x20
+        // label — so a mapping that renames the control silently deletes it.
+        // plib's `TSplitter` is a different control (a bare drag bar); this one
+        // is WinForms' two-panel container.
+        "splitcontainer" => "vybe-splitcontainer",
         "tabcontrol" => "vybe-tabcontrol",
         "tabpage" => "vybe-tabpage",
         "timer" => "vybe-timer",
@@ -517,6 +609,33 @@ fn control_ctor_spec(class_name: &str, element: &str) -> vybe_runtime::namespace
 /// what those tests are for.
 fn descends_from_control(class_name: &str) -> bool {
     namespaces::inherits(class_name, "Control", descriptor_parent)
+}
+
+/// Is this class a NODE IN THE DOCUMENT — the question the roles actually ask.
+///
+/// `descends_from_control` answers a .NET inheritance question, and for almost
+/// every class the two coincide. `ToolStripItem` is where they part: .NET
+/// derives it from `Component`, not `Control`, so a menu item is not a control
+/// — but it is unquestionably an element, and its `Text` is a caption on that
+/// element like every other caption.
+///
+/// Declaring it a `Control` to get the roles would have been the cheap fix and
+/// the wrong one: `mi is Control` must answer False, because that is what .NET
+/// answers. So the hierarchy stays truthful and the GATE moves to the property
+/// that decides it — being element-mapped.
+///
+/// This does NOT loosen the value-type exclusion documented above.
+/// `Point`/`Size`/`Font`/`Pen`/`Brush`/`Graphics` have no arm in
+/// [`html_element_for_control`], so they answer `false` from both halves.
+fn element_backed_control(class_name: &str) -> bool {
+    descends_from_control(class_name) || html_element_for_control(class_name).is_some()
+}
+
+/// Does this class map to an element? The descriptor builder asks, so a class
+/// with no `vybe:gui` factory still gets a constructor — see
+/// `winforms/component_classes.rs`.
+pub(crate) fn is_element_mapped(class_name: &str) -> bool {
+    html_element_for_control(class_name).is_some()
 }
 
 /// A class's own methods followed by every inherited one, nearest first.
@@ -613,12 +732,70 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
             ("iscanceled", ro("dotnet.task_is_canceled")),
         ],
         "list" | "arraylist" => vec![("capacity", ro("dotnet.list_capacity"))],
+        // ── Strips and their items ─────────────────────────────────────────
+        // `Items` IS the strip: WinForms wraps the contents in a
+        // `ToolStripItemCollection`, but the `<menu>` element already is that
+        // container, so the getter hands back the receiver and allocates
+        // nothing. What makes the NEXT hop work is the declared return type
+        // (see `self_member_returns`) — `ms.Items.Add(x)` looks `Add` up on
+        // `ToolStripMenuItem`, and an item and a strip are the same element.
+        //
+        // `Add` is a CHILD append, not an item append: a strip is handed a
+        // control the caller built, where a `ListBox` is handed text and makes
+        // the option itself. The call site cannot tell them apart, which is why
+        // each class declares which one it means rather than the emit guessing
+        // from the argument.
+        //
+        // Arity travels with the node — a bare `CommonEmit` leaf is found as a
+        // NAME and then not called, which is how `b.Hide()` once reached
+        // "undefined is not callable".
+        "menustrip"
+        | "toolstrip"
+        | "statusstrip"
+        | "contextmenustrip"
+        | "toolstripmenuitem"
+        | "toolstripdropdownitem" => vec![
+            ("items", ro("dotnet.self")),
+            ("dropdownitems", ro("dotnet.self")),
+            (
+                "add",
+                namespaces::overloads(vec![(
+                    2,
+                    emit(vybe_compiler::primitives::gui::APPEND_CHILD_EMIT),
+                )]),
+            ),
+        ],
         _ => vec![],
     };
     entries
         .iter()
         .map(|(n, node)| ((*n).to_string(), node.clone()))
         .collect()
+}
+
+/// What a member that IS the receiver READS BACK as.
+///
+/// The load-bearing half of the `dotnet.self` members above: the getter hands
+/// back the receiver, and this is what the NEXT hop resolves against. Without
+/// it `ms.Items.Add(x)` resolves `Add` against nothing and calls `undefined`.
+///
+/// Declaring `ToolStripMenuItem` while the runtime holds the STRIP is sound
+/// only because a strip and an item are the same `<menu>` element with the same
+/// member set — the same deliberate alias plib documents on `TMainMenu.Items`.
+/// Give an item its own tag and this stops being true.
+fn self_member_returns(class_name: &str) -> &'static [(&'static str, &'static str)] {
+    match class_name.to_ascii_lowercase().as_str() {
+        "menustrip"
+        | "toolstrip"
+        | "statusstrip"
+        | "contextmenustrip"
+        | "toolstripmenuitem"
+        | "toolstripdropdownitem" => &[
+            ("items", "ToolStripMenuItem"),
+            ("dropdownitems", "ToolStripMenuItem"),
+        ],
+        _ => &[],
+    }
 }
 
 /// The tree roots this platform registers under — what a `type_scopes`

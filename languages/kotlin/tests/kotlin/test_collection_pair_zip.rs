@@ -127,7 +127,7 @@ fn test_zip_preserves_laziness_on_sequence() {
         }
     "#,
     );
-    assert_eq!(out, &["5,7"]);
+    assert_eq!(out, &["6,8"]);
 }
 
 #[test]

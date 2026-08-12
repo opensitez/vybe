@@ -23,7 +23,7 @@ pub fn parse(source: &str) -> Result<vybe_ast::Module, String> {
     // as a hard overflow, not a hang. The documented alternative (flattening
     // the precedence chain) caps how faithful the grammar can be; a worker
     // thread with headroom does not.
-    let source = source.to_string();
+    let source = normalize_escaped_identifiers(source);
     std::thread::Builder::new()
         .name("kotlin-parse".into())
         .stack_size(256 * 1024 * 1024)
@@ -31,6 +31,98 @@ pub fn parse(source: &str) -> Result<vybe_ast::Module, String> {
         .map_err(|e| format!("parse thread: {e}"))?
         .join()
         .map_err(|_| "Kotlin parse thread panicked".to_string())?
+}
+
+fn normalize_escaped_identifiers(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut out = String::with_capacity(source.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'`' => {
+                let start = i + 1;
+                i = start;
+                while i < bytes.len() && bytes[i] != b'`' {
+                    i += 1;
+                }
+                let name = &source[start..i.min(bytes.len())];
+                out.push_str("__kt_escaped_");
+                for byte in name.as_bytes() {
+                    use std::fmt::Write;
+                    let _ = write!(out, "{byte:02x}");
+                }
+                if i < bytes.len() {
+                    i += 1;
+                }
+            }
+            b'"' if source[i..].starts_with("\"\"\"") => {
+                let start = i;
+                i += 3;
+                while i < bytes.len() && !source[i..].starts_with("\"\"\"") {
+                    i += 1;
+                }
+                if i < bytes.len() {
+                    i += 3;
+                }
+                out.push_str(&source[start..i.min(bytes.len())]);
+            }
+            b'"' => {
+                let start = i;
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' {
+                        i = (i + 2).min(bytes.len());
+                    } else if bytes[i] == b'"' {
+                        i += 1;
+                        break;
+                    } else {
+                        i += 1;
+                    }
+                }
+                out.push_str(&source[start..i.min(bytes.len())]);
+            }
+            b'\'' => {
+                let start = i;
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' {
+                        i = (i + 2).min(bytes.len());
+                    } else if bytes[i] == b'\'' {
+                        i += 1;
+                        break;
+                    } else {
+                        i += 1;
+                    }
+                }
+                out.push_str(&source[start..i.min(bytes.len())]);
+            }
+            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => {
+                let start = i;
+                i += 2;
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                out.push_str(&source[start..i.min(bytes.len())]);
+            }
+            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'*' => {
+                let start = i;
+                i += 2;
+                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    i += 1;
+                }
+                if i + 1 < bytes.len() {
+                    i += 2;
+                }
+                out.push_str(&source[start..i.min(bytes.len())]);
+            }
+            _ => {
+                let ch = source[i..].chars().next().unwrap();
+                out.push(ch);
+                i += ch.len_utf8();
+            }
+        }
+    }
+    out
 }
 
 /// Embedded profile TOML source.

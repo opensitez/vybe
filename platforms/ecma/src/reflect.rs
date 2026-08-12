@@ -70,6 +70,14 @@ fn reflect_get(ctx: &mut HostContext, target: &Value, key: &str, receiver: Value
     }
     {
         let o = obj.lock().unwrap();
+        if let ObjectKind::Array(ref values) = o.kind {
+            if key == "length" {
+                return Value::I32(values.len() as i32);
+            }
+            if let Some(i) = numeric_index(key) {
+                return values.get(i).cloned().unwrap_or(Value::Undefined);
+            }
+        }
         if let ObjectKind::TypedArray(ref ta) = o.kind {
             if let Some(i) = numeric_index(key) {
                 if i < ta.length {
@@ -159,6 +167,29 @@ fn reflect_set(
                     return Value::Bool(true);
                 }
                 return Value::Bool(false);
+            }
+        }
+    }
+    {
+        let mut o = obj.lock().unwrap();
+        if matches!(o.kind, ObjectKind::Array(_)) {
+            if key == "length" {
+                crate::array::apply_js_array_length(ctx, &mut o, &val);
+                return Value::Bool(true);
+            }
+            if let Some(i) = numeric_index(key) {
+                if o.properties.get("__array_length_readonly").is_some() {
+                    return Value::Bool(false);
+                }
+                if let ObjectKind::Array(ref mut values) = o.kind {
+                    if i >= values.len() {
+                        values.resize(i + 1, Value::Undefined);
+                    }
+                    values[i] = val;
+                }
+                drop(o);
+                track_key(obj, key);
+                return Value::Bool(true);
             }
         }
     }
@@ -409,6 +440,11 @@ pub fn register(vm: &mut VM) {
             let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
             if let Some(Value::Object(obj)) = args.first() {
                 // §28.1.8 on a proxy routes through the has trap (§10.5.7).
+                if let Some(proxy) = crate::proxy::is_proxy(args.first().unwrap()) {
+                    if crate::proxy::proxy_is_revoked(&proxy) {
+                        return throw_type_error(ctx, "Cannot perform 'has' on a revoked proxy");
+                    }
+                }
                 if let Some((proxy_target, handler)) = proxy_target_and_handler(obj) {
                     if let Some(trap) = proxy_trap(&handler, "has") {
                         let result = invoke_with_explicit_this(

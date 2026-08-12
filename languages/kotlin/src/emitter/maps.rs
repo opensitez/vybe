@@ -71,6 +71,33 @@ fn call_fn(chunks: &mut [Chunk], current: usize, fn_slot: u16, args: &[u16], lin
     callable::emit_direct_invoke(chunks, current, args.len() as u8, line);
 }
 
+fn set_object_prop_from_local(
+    chunks: &mut [Chunk],
+    current: usize,
+    object: u16,
+    key: &str,
+    value: u16,
+    line: u32,
+) {
+    get(chunks, current, object, line);
+    chunks[current].emit_string_const(key, line);
+    get(chunks, current, value, line);
+    host::emit(&mut chunks[current], "ecma:object", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+}
+
+fn get_object_prop(chunks: &mut [Chunk], current: usize, object: u16, key: &str, line: u32) {
+    get(chunks, current, object, line);
+    chunks[current].emit_string_const(key, line);
+    host::emit(&mut chunks[current], "ecma:object", "get", 2, line);
+}
+
+fn emit_throw_named(chunks: &mut Vec<Chunk>, current: usize, name: &str, line: u32) {
+    chunks[current].emit_string_const("", line);
+    crate::emitter::nullability::emit_exception(chunks, current, 1, name, line);
+    vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
+}
+
 /// Iterate the map in `m`, leaving each key in `key` and value in `value`
 /// for `body`.
 fn for_each_entry(
@@ -712,6 +739,60 @@ pub fn emit_dict_delete_full(chunks: &mut Vec<Chunk>, current: usize, _argc: u8,
     get(chunks, current, existed, line);
 }
 
+/// `clear()` for a Kotlin map: remove both the tracked key list and the
+/// backing object fields. The common dict clear only replaces `__keys`, which
+/// is enough for enumeration but leaves direct lookups/has probes stale.
+pub fn emit_dict_clear_full(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let map = chunks[current].alloc_scratch(1);
+    let keys = chunks[current].alloc_scratch(1);
+    let idx = chunks[current].alloc_scratch(1);
+    let key = chunks[current].alloc_scratch(1);
+    set(chunks, current, map, line);
+    get(chunks, current, map, line);
+    dict::emit_keys(chunks, current, line);
+    set(chunks, current, keys, line);
+    let state = loops::emit_for_in_start(chunks, current, keys, idx, line);
+    set(chunks, current, key, line);
+    get(chunks, current, map, line);
+    get(chunks, current, key, line);
+    host::emit(&mut chunks[current], "ecma:object", "delete", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+    loops::emit_for_in_end(chunks, current, idx, state, line);
+    get(chunks, current, map, line);
+    dict::emit_method_clear_stack(chunks, current, line);
+}
+
+/// `parent.subList(from, to).clear()` — remove the original `[from, to)` range
+/// from the backing list by repeatedly applying the shared remove-at primitive.
+pub fn emit_sublist_clear(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    let to = chunks[current].alloc_scratch(1);
+    let from = chunks[current].alloc_scratch(1);
+    let arr = chunks[current].alloc_scratch(1);
+    let remaining = chunks[current].alloc_scratch(1);
+    set(chunks, current, to, line);
+    set(chunks, current, from, line);
+    set(chunks, current, arr, line);
+    get(chunks, current, to, line);
+    get(chunks, current, from, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    set(chunks, current, remaining, line);
+    let state = loops::emit_loop_start(chunks, current, line);
+    get(chunks, current, remaining, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    ops::emit_dyn_gt(&mut chunks[current], line);
+    loops::emit_loop_cond(chunks, current, line);
+    get(chunks, current, arr, line);
+    get(chunks, current, from, line);
+    common_collections::emit_remove_at(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    get(chunks, current, remaining, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    set(chunks, current, remaining, line);
+    loops::emit_loop_end(chunks, current, state, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
 /// `remove(x)` for ANY receiver: a MutableList removes the first occurrence
 /// and answers a Boolean; a Map removes the key and answers the previous
 /// VALUE (or null). `remove(k, v)` is the conditional Map form → Boolean.
@@ -821,6 +902,192 @@ pub fn emit_remove_any(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     chunks[current].emit_end(line);
 }
 
+/// Kotlin live `map.values.remove(value)` — remove the first backing entry
+/// whose value equals `value`, preserving map insertion order for the rest.
+pub fn emit_map_values_remove(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    let map = chunks[current].alloc_scratch(1);
+    let keys = chunks[current].alloc_scratch(1);
+    let idx = chunks[current].alloc_scratch(1);
+    let key = chunks[current].alloc_scratch(1);
+    let found = chunks[current].alloc_scratch(1);
+    set(chunks, current, value, line);
+    set(chunks, current, map, line);
+    chunks[current].emit_bool_const(false, line);
+    set(chunks, current, found, line);
+    get(chunks, current, map, line);
+    dict::emit_keys(chunks, current, line);
+    set(chunks, current, keys, line);
+    let state = loops::emit_for_in_start(chunks, current, keys, idx, line);
+    set(chunks, current, key, line);
+    get(chunks, current, found, line);
+    ops::emit_dyn_not(&mut chunks[current], line);
+    truthy(chunks, current, line);
+    chunks[current].emit_if(line);
+    get(chunks, current, map, line);
+    get(chunks, current, key, line);
+    dict::emit_get_dynamic(chunks, current, line);
+    get(chunks, current, value, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    truthy(chunks, current, line);
+    chunks[current].emit_if(line);
+    get(chunks, current, map, line);
+    get(chunks, current, key, line);
+    emit_dict_delete_full(chunks, current, 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_bool_const(true, line);
+    set(chunks, current, found, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    loops::emit_for_in_end(chunks, current, idx, state, line);
+    get(chunks, current, found, line);
+    ops::emit_i32_to_bool(&mut chunks[current], line);
+}
+
+pub fn emit_map_entry_iterator(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    let map = chunks[current].alloc_scratch(1);
+    let iterator = chunks[current].alloc_scratch(1);
+    let tmp = chunks[current].alloc_scratch(1);
+    set(chunks, current, map, line);
+    host::emit(&mut chunks[current], "ecma:object", "new", 0, line);
+    set(chunks, current, iterator, line);
+    set_object_prop_from_local(chunks, current, iterator, "__map", map, line);
+
+    get(chunks, current, map, line);
+    dict::emit_keys(chunks, current, line);
+    set(chunks, current, tmp, line);
+    set_object_prop_from_local(chunks, current, iterator, "__keys", tmp, line);
+    get(chunks, current, tmp, line);
+    common_collections::emit_len(chunks, current, line);
+    set(chunks, current, tmp, line);
+    set_object_prop_from_local(chunks, current, iterator, "__expectedSize", tmp, line);
+
+    chunks[current].emit_i32_const(0, line);
+    set(chunks, current, tmp, line);
+    set_object_prop_from_local(chunks, current, iterator, "__index", tmp, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    set(chunks, current, tmp, line);
+    set_object_prop_from_local(chunks, current, iterator, "__lastKey", tmp, line);
+    chunks[current].emit_bool_const(false, line);
+    set(chunks, current, tmp, line);
+    set_object_prop_from_local(chunks, current, iterator, "__canRemove", tmp, line);
+    get(chunks, current, iterator, line);
+}
+
+fn emit_map_entry_iterator_check(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    iterator: u16,
+    line: u32,
+) {
+    get_object_prop(chunks, current, iterator, "__map", line);
+    dict::emit_keys(chunks, current, line);
+    common_collections::emit_len(chunks, current, line);
+    get_object_prop(chunks, current, iterator, "__expectedSize", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    emit_throw_named(chunks, current, "ConcurrentModificationException", line);
+    chunks[current].emit_end(line);
+}
+
+pub fn emit_map_entry_iterator_has_next(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    _argc: u8,
+    line: u32,
+) {
+    let iterator = chunks[current].alloc_scratch(1);
+    set(chunks, current, iterator, line);
+    get_object_prop(chunks, current, iterator, "__index", line);
+    get_object_prop(chunks, current, iterator, "__keys", line);
+    common_collections::emit_len(chunks, current, line);
+    ops::emit_dyn_lt(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_bool_const(true, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_bool_const(false, line);
+    chunks[current].emit_end(line);
+}
+
+pub fn emit_map_entry_iterator_next(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    let iterator = chunks[current].alloc_scratch(1);
+    let index = chunks[current].alloc_scratch(1);
+    let key = chunks[current].alloc_scratch(1);
+    let value = chunks[current].alloc_scratch(1);
+    let entry = chunks[current].alloc_scratch(1);
+    set(chunks, current, iterator, line);
+    emit_map_entry_iterator_check(chunks, current, iterator, line);
+    get_object_prop(chunks, current, iterator, "__index", line);
+    set(chunks, current, index, line);
+    get(chunks, current, index, line);
+    get_object_prop(chunks, current, iterator, "__keys", line);
+    common_collections::emit_len(chunks, current, line);
+    ops::emit_dyn_ge(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    emit_throw_named(chunks, current, "NoSuchElementException", line);
+    chunks[current].emit_end(line);
+
+    get_object_prop(chunks, current, iterator, "__keys", line);
+    get(chunks, current, index, line);
+    common_collections::emit_get(chunks, current, line);
+    set(chunks, current, key, line);
+    set_object_prop_from_local(chunks, current, iterator, "__lastKey", key, line);
+    chunks[current].emit_bool_const(true, line);
+    set(chunks, current, value, line);
+    set_object_prop_from_local(chunks, current, iterator, "__canRemove", value, line);
+    get(chunks, current, index, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    set(chunks, current, value, line);
+    set_object_prop_from_local(chunks, current, iterator, "__index", value, line);
+
+    get_object_prop(chunks, current, iterator, "__map", line);
+    get(chunks, current, key, line);
+    dict::emit_get_dynamic(chunks, current, line);
+    set(chunks, current, value, line);
+    make_entry(chunks, current, key, value, entry, line);
+    get(chunks, current, entry, line);
+}
+
+pub fn emit_map_entry_iterator_remove(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    _argc: u8,
+    line: u32,
+) {
+    let iterator = chunks[current].alloc_scratch(1);
+    let key = chunks[current].alloc_scratch(1);
+    let expected = chunks[current].alloc_scratch(1);
+    set(chunks, current, iterator, line);
+    emit_map_entry_iterator_check(chunks, current, iterator, line);
+    get_object_prop(chunks, current, iterator, "__canRemove", line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    emit_throw_named(chunks, current, "IllegalStateException", line);
+    chunks[current].emit_end(line);
+
+    get_object_prop(chunks, current, iterator, "__lastKey", line);
+    set(chunks, current, key, line);
+    get_object_prop(chunks, current, iterator, "__map", line);
+    get(chunks, current, key, line);
+    emit_dict_delete_full(chunks, current, 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+    get_object_prop(chunks, current, iterator, "__expectedSize", line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    set(chunks, current, expected, line);
+    set_object_prop_from_local(chunks, current, iterator, "__expectedSize", expected, line);
+    chunks[current].emit_bool_const(false, line);
+    set(chunks, current, expected, line);
+    set_object_prop_from_local(chunks, current, iterator, "__canRemove", expected, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
 /// `clear()` for ANY receiver.
 pub fn emit_clear_any(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
     let recv = chunks[current].alloc_scratch(1);
@@ -852,7 +1119,7 @@ pub fn emit_clear_any(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: 
     sets::emit_clear(chunks, current, line);
     chunks[current].emit_else(line);
     get(chunks, current, recv, line);
-    dict::emit_method_clear_stack(chunks, current, line);
+    emit_dict_clear_full(chunks, current, line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
@@ -903,6 +1170,10 @@ pub fn emit_list_get_throwing(chunks: &mut Vec<Chunk>, current: usize, _argc: u8
     let bad = chunks[current].alloc_scratch(1);
     set(chunks, current, i, line);
     set(chunks, current, arr, line);
+    let to_i32 = chunks[current].add_import("wasm:js-number", "toI32");
+    get(chunks, current, i, line);
+    chunks[current].emit_call(to_i32, 1, line);
+    set(chunks, current, i, line);
     get(chunks, current, i, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     ops::emit_dyn_lt(&mut chunks[current], line);

@@ -841,6 +841,21 @@ impl Compiler {
             return;
         };
 
+        if nc
+            .special_methods
+            .iter()
+            .any(|s| s.kind == vybe_ast::ProtocolSlot::GetItem)
+        {
+            self.classes_with_indexer.insert(self.canon(&nc.name));
+        }
+        if nc
+            .special_methods
+            .iter()
+            .any(|s| s.kind == vybe_ast::ProtocolSlot::SetItem)
+        {
+            self.classes_with_index_setter.insert(self.canon(&nc.name));
+        }
+
         // Methods only. Properties are NOT registered: a getter named after a
         // profile value-method (`isEmpty`, `length`, `charAt`) would shadow
         // into the user-method path — measured at 6 dart failures. Fields are

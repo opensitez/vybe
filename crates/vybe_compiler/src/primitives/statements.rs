@@ -210,7 +210,7 @@ impl Compiler {
                             self.set_js_this_from_stack();
                         }
                         self.emit_var_get(name);
-                        self.emit_u8_u8(Op::CALL_REF, 0, 1);
+                        self.emit_direct_callable_invoke(0);
                         if saved_js_this.is_some() {
                             let result_slot = self.define_local("__js_stmt_result");
                             self.emit_u16(Op::LOCAL_SET, result_slot);
@@ -239,7 +239,7 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_SET, obj_tmp);
                         self.emit_u16(Op::LOCAL_GET, fn_tmp);
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                        self.emit_u8_u8(Op::CALL_REF, 1, 1);
+                        self.emit_direct_callable_invoke(1);
                         self.emit(Op::DROP);
                     }
                     _ => {
@@ -2194,7 +2194,7 @@ impl Compiler {
                     .any(|(mn, _)| mn.eq_ignore_ascii_case("__static_init__"))
                 {
                     self.emit_global_read("__static_init__");
-                    self.emit_u8_u8(Op::CALL_REF, 0, 1);
+                    self.emit_direct_callable_invoke(0);
                     self.emit(Op::DROP);
                 }
 
@@ -2352,14 +2352,25 @@ impl Compiler {
             StmtKind::With { items, body, .. } => {
                 self.scope_mut().begin_scope();
                 if let Some(first) = items.first() {
+                    // The target's DECLARED TYPE is what lets a bare name
+                    // inside the block resolve to a declared property at all —
+                    // the same reason the `Using` arm below infers one. Without
+                    // it the synthesised member access has no receiver type and
+                    // falls back to a dynamic lookup, which is how `Caption`
+                    // silently became a field nobody reads.
+                    let target_type = self
+                        .infer_expr_type_hint(&first.expr)
+                        .map(|type_hint| self.resolve_source_type_alias(&type_hint));
                     self.compile_expr(&first.expr)?;
-                    let slot = if let Some(ref var) = first.var {
-                        self.define_local(var)
-                    } else {
-                        self.define_local("__with_target")
+                    // Named per DEPTH so a nested `with` does not shadow the
+                    // one outside it — the binding is now looked up BY NAME.
+                    let binding = match first.var {
+                        Some(ref var) => var.clone(),
+                        None => format!("__with_target_{}", self.with_targets.len()),
                     };
+                    let slot = self.define_local_typed(&binding, target_type.map(Into::into));
                     self.emit_u16(Op::LOCAL_SET, slot);
-                    self.with_targets.push(slot);
+                    self.with_targets.push(binding);
                 }
                 for s in body {
                     self.compile_stmt(s)?;
@@ -2433,11 +2444,17 @@ impl Compiler {
             }
 
             // ── Lock ────────────────────────────────────────────────────
-            StmtKind::Lock { body, .. } => {
-                // No real locking in our VM — just compile body
+            StmtKind::Lock { expr, body } => {
+                let line = self.line;
+                self.compile_expr(expr)?;
+                common::threading::emit_object_monitor_addr(self.chunk(), line);
+                let addr_slot = self.define_local("__lock_addr");
+                self.chunk().emit_op_u16(Op::LOCAL_SET, addr_slot, line);
+                common::threading::emit_lock_acquire(self.chunk(), addr_slot, line);
                 for s in body {
                     self.compile_stmt(s)?;
                 }
+                common::threading::emit_lock_release(self.chunk(), addr_slot, line);
             }
 
             // ── ReDim ───────────────────────────────────────────────────
@@ -4281,10 +4298,31 @@ impl Compiler {
                 if declared_is_object {
                     if let Some(init_type_hint) = init_type_hint.as_deref() {
                         let resolved_init = self.resolve_source_type_alias(init_type_hint);
-                        if self
+                        // …or from a GUI CONTROL. A control IS a DOM element,
+                        // and every property write on it is a DOM operation
+                        // chosen from the receiver's static type — so a control
+                        // that keeps the widened type writes to a plain object
+                        // property instead, with no caption, no geometry and no
+                        // error. The refinement stays limited to these two:
+                        // widening the declared type of every registered type
+                        // would change dispatch for `object x = SomeType(...)`
+                        // in every language that has a namespace tree.
+                        // …or a type the PLATFORM declares. `Dim cmd As Object =
+                        // conn.CreateCommand()` is how every ADO example is
+                        // written, and dropping the concrete type there left
+                        // `cmd.ExecuteNonQuery()` resolving against nothing.
+                        // The refinement only ever narrows a declaration that
+                        // already said "the top type", so a program that named
+                        // a real type is untouched.
+                        let declares_a_type = self
                             .resolve_pending_class_name_for_type_hint(&resolved_init)
                             .is_some()
-                        {
+                            || self.control_element_for_type(&resolved_init).is_some()
+                            || vybe_runtime::namespaces::is_registered_type(
+                                &self.profile.namespaces.type_scopes,
+                                &resolved_init,
+                            );
+                        if declares_a_type {
                             inferred_type_hint = Some(resolved_init);
                         }
                     }
@@ -4368,6 +4406,12 @@ impl Compiler {
                 let is_toplevel = self.scopes.len() == 1 && self.scope().depth == 0;
                 let is_hoisted =
                     *kind == VarDeclKind::Var && self.profile.hoist_var && self.scopes.len() == 1;
+                if is_toplevel
+                    && self.profile.ecma_lexical_declarations
+                    && matches!(kind, VarDeclKind::Let | VarDeclKind::Const)
+                {
+                    self.defined_globals.insert(self.canon(name));
+                }
 
                 if *kind == VarDeclKind::Static {
                     let binding = self.ensure_static_local_binding(
@@ -4902,7 +4946,7 @@ impl Compiler {
                         self.emit_struct_field_op(Op::STRUCT_GET, 0, setter_key);
                         self.emit_u16(Op::LOCAL_GET, class_tmp);
                         self.emit_u16(Op::LOCAL_GET, value_tmp);
-                        self.emit_u8_u8(Op::CALL_REF, 2, 1);
+                        self.emit_direct_callable_invoke(2);
                         self.emit(Op::DROP);
 
                         self.chunk().emit_else(line);
@@ -5001,7 +5045,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, setter_tmp);
                     self.emit_u16(Op::LOCAL_GET, receiver_tmp);
                     self.emit_u16(Op::LOCAL_GET, value_tmp);
-                    self.emit_u8_u8(Op::CALL_REF, 2, 1);
+                    self.emit_direct_callable_invoke(2);
                     self.emit(Op::DROP);
                     self.chunk().emit_end(line);
                     return Ok(());
@@ -5020,6 +5064,16 @@ impl Compiler {
                             self.emit_control_property_set(object, &class_name, field, line)?;
                             return Ok(());
                         }
+                    }
+                    // …and where the receiver's type says NOTHING, ask the
+                    // object itself at run time. A parameter declared as the
+                    // top type (`btn As Object`) has no initializer to recover
+                    // a type from, and late binding is the normal way an
+                    // imperative GUI language passes a control around.
+                    if self.member_access_is_late_bound(object, field) {
+                        let line = self.line;
+                        self.emit_late_bound_property_set(object, field, line)?;
+                        return Ok(());
                     }
                 }
                 // .NET control property write resolves through the component
@@ -5207,7 +5261,7 @@ impl Compiler {
                     self.emit_struct_field_op(Op::STRUCT_GET, 0, setter_key);
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     self.emit_u16(Op::LOCAL_GET, tmp);
-                    self.emit_u8_u8(Op::CALL_REF, 2, 1);
+                    self.emit_direct_callable_invoke(2);
                     self.emit(Op::DROP);
 
                     self.chunk().emit_else(line);
@@ -5344,7 +5398,6 @@ impl Compiler {
                 if !matches!(index.kind, ExprKind::Range { .. } | ExprKind::Slice { .. })
                     && self.expr_has_user_index_setter(object)
                 {
-                    let line = self.line;
                     let value_slot = self.define_local("__idx_set_value");
                     let obj_slot = self.define_local("__idx_set_recv");
                     let key_slot = self.define_local("__idx_set_key");
@@ -5361,7 +5414,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     self.emit_u16(Op::LOCAL_GET, key_slot);
                     self.emit_u16(Op::LOCAL_GET, value_slot);
-                    self.chunk().emit_op_u8_u8(Op::CALL_REF, 3, 1, line);
+                    self.emit_direct_callable_invoke(3);
                     self.emit(Op::DROP);
                     return Ok(());
                 }
@@ -5857,7 +5910,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     self.compile_collection_key(object, index)?;
                     self.emit_u16(Op::LOCAL_GET, tmp);
-                    self.emit_u8_u8(Op::CALL_REF, 3, 1);
+                    self.emit_direct_callable_invoke(3);
                     self.emit(Op::DROP);
 
                     self.chunk().emit_end(line);

@@ -844,7 +844,9 @@ fn walk_procedure_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                             item_name = Some(item_child.as_str().to_string());
                         }
                         Rule::identifier => {
-                            init = Some(Expression::ident(item_child.as_str()));
+                            init = Some(Expression::new(ExprKind::FuncRef(
+                                item_child.as_str().to_string(),
+                            )));
                         }
                         _ => {
                             let text = item_child.as_str().trim();

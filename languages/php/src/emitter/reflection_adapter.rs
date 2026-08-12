@@ -2,7 +2,7 @@
 //!
 //! The walker captures class/function metadata at parse time and passes it
 //! as additional args to the adapter. Methods are bound as named props on a
-//! struct so `$ref->getName()` dispatches via STRUCT_GET + CALL_REF.
+//! struct so `$ref->getName()` dispatches via STRUCT_GET + callable invoke.
 
 use std::sync::Arc;
 use vybe_compiler::primitives::reflection;
@@ -92,7 +92,7 @@ fn build_method_invoke(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     reflection::emit_get_property_in_chunk(&mut c, line);
     c.emit_op_u16(Op::LOCAL_GET, 1, line);
     c.emit_op_u16(Op::LOCAL_GET, 2, line);
-    c.emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(&mut c, 2, line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(3);
     chunks.push(c);

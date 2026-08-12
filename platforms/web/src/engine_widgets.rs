@@ -124,6 +124,16 @@ impl WebEngine for Widgets {
                 doc.set_checked(n, c);
                 DomValue::None
             }
+            DomOp::SelectedIndex(n) => DomValue::Number(f64::from(doc.selected_index(n))),
+            DomOp::SetSelectedIndex(n, i) => {
+                doc.set_selected_index(n, i);
+                DomValue::None
+            }
+            DomOp::ItemText(n, i) => DomValue::Text(doc.item_text(n, i)),
+            DomOp::SetItemText(n, i, t) => {
+                doc.set_item_text(n, i, &t);
+                DomValue::None
+            }
             DomOp::AddItem(n, t) => {
                 doc.add_item(n, &t);
                 DomValue::None

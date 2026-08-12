@@ -1394,24 +1394,40 @@ impl VM {
         self.table_is_64.get(tidx).copied().unwrap_or(false)
     }
 
-    /// Pop a table index/count operand: i64 (trapping on negative) for a
-    /// 64-bit table, else `max(0)` i32. Used by table.grow/fill/copy/init.
-    fn pop_table_count(&mut self, is64: bool) -> Result<usize, VMError> {
+    /// Pop a table index/count operand, widening per the table's index type.
+    /// Used by table.grow/fill/copy/init.
+    ///
+    /// WASM reads these operands as UNSIGNED: `0xffff_fff0` is 4294967280, not
+    /// -16 and not 0. Clamping with `.max(0)` made an out-of-bounds
+    /// `table.fill` silently fill at 0 and `table.grow` report success for an
+    /// impossible delta (table_grow.wast:49).
+    ///
+    /// This NEVER traps. `table.grow` must REPORT -1 for a delta it cannot
+    /// satisfy, so the old `table64_index` (which trapped on a negative i64)
+    /// was wrong here even ignoring the sign — fill/copy/init get their trap
+    /// from their own bounds checks instead. Saturating the widen keeps a
+    /// table64 count honest on a 32-bit host: `usize::MAX` fails every bounds
+    /// check and every grow limit, which is what a 2^64-scale count must do.
+    fn pop_table_count(&mut self, is64: bool) -> usize {
         if is64 {
-            Self::table64_index(self.pop(), "table")
+            usize::try_from(self.pop().as_i64() as u64).unwrap_or(usize::MAX)
         } else {
-            Ok(self.pop().as_i32().max(0) as usize)
+            self.pop().as_i32() as u32 as usize
         }
     }
 
     /// Pop a memory-op count/index operand, widening per the memory's index
-    /// type: i64 for a 64-bit memory, unsigned i32 otherwise. Used by
+    /// type: i64 for a 64-bit memory, i32 otherwise. Used by
     /// `memory.size/grow/copy/fill` — all standard opcodes; memory64 adds none.
+    ///
+    /// Unsigned at BOTH widths, for the same reason as `pop_table_count`: the
+    /// doc here already said "unsigned i32" while the code clamped signed, so
+    /// `memory.fill` at address `0xffff_ffff` wrote at 0 instead of trapping.
     fn pop_mem_index(&mut self, is64: bool) -> usize {
         if is64 {
-            self.pop().as_i64().max(0) as usize
+            usize::try_from(self.pop().as_i64() as u64).unwrap_or(usize::MAX)
         } else {
-            self.pop().as_i32().max(0) as usize
+            self.pop().as_i32() as u32 as usize
         }
     }
 
@@ -4932,7 +4948,7 @@ impl VM {
                 _ if op == Op::TABLE_GROW => {
                     let tidx = self.read_u16() as usize;
                     let is64 = self.tbl_is_64(tidx);
-                    let delta = self.pop_table_count(is64)?;
+                    let delta = self.pop_table_count(is64);
                     let init = self.pop();
                     // WASM spec: growing past the declared max fails, returning -1
                     // (as the index type) without resizing.
@@ -4968,9 +4984,9 @@ impl VM {
                 _ if op == Op::TABLE_FILL => {
                     let tidx = self.read_u16() as usize;
                     let is64 = self.tbl_is_64(tidx);
-                    let count = self.pop_table_count(is64)?;
+                    let count = self.pop_table_count(is64);
                     let value = self.pop();
-                    let dst = self.pop_table_count(is64)?;
+                    let dst = self.pop_table_count(is64);
                     let table = self
                         .table_mut(tidx)
                         .ok_or_else(|| VMError::new("trap: table.fill unknown table"))?;
@@ -4987,9 +5003,9 @@ impl VM {
                     let src_table_idx = self.read_u16() as usize;
                     // table64: operands are i64 if either table is 64-bit.
                     let is64 = self.tbl_is_64(dst_table_idx) || self.tbl_is_64(src_table_idx);
-                    let count = self.pop_table_count(is64)?;
-                    let src = self.pop_table_count(is64)?;
-                    let dst = self.pop_table_count(is64)?;
+                    let count = self.pop_table_count(is64);
+                    let src = self.pop_table_count(is64);
+                    let dst = self.pop_table_count(is64);
                     let source = self
                         .table_ref(src_table_idx)
                         .ok_or_else(|| VMError::new("trap: table.copy unknown table"))?;
@@ -5012,9 +5028,9 @@ impl VM {
                         return Err(VMError::new("table.init: element segment dropped"));
                     }
                     let is64 = self.tbl_is_64(table_idx);
-                    let count = self.pop_table_count(is64)?;
-                    let src = self.pop_table_count(is64)?;
-                    let dst = self.pop_table_count(is64)?;
+                    let count = self.pop_table_count(is64);
+                    let src = self.pop_table_count(is64);
+                    let dst = self.pop_table_count(is64);
                     let elems = self
                         .elem_segments
                         .get(elem_idx as usize)
@@ -5056,6 +5072,19 @@ impl VM {
                     let count = self.pop_mem_index(is64);
                     let val = self.pop().as_i32() as u8;
                     let dst = self.pop_mem_index(is64);
+                    // BOUNDS FIRST, THEN THE BUFFER. The spec traps when
+                    // `dst + count` exceeds the memory and writes nothing, so
+                    // the check has to precede the fill anyway — and building
+                    // `count` bytes before it turns a 4294967280-byte fill into
+                    // a 4GiB allocation instead of a trap. `write_memory_bytes`
+                    // still checks; this one only ensures we never MATERIALIZE
+                    // a buffer the memory could not hold.
+                    let limit = self.mem_len(memidx);
+                    if dst.saturating_add(count) > limit {
+                        return Err(VMError::new(format!(
+                            "trap: memory access out of bounds: addr={dst} size={count} limit={limit}"
+                        )));
+                    }
                     let buf = vec![val; count];
                     self.write_memory_bytes(memidx, dst, &buf)?;
                 }

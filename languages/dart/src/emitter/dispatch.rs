@@ -16,6 +16,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dart.io_read_as_string_sync" => {
             crate::emitter::io_adapter::emit_read_as_string_sync(chunks, current, argc, line)
         }
+        "dart.io_read_as_latin1_string_sync" => {
+            crate::emitter::io_adapter::emit_read_as_latin1_string_sync(chunks, current, argc, line)
+        }
         "dart.io_read_as_bytes_sync" => {
             crate::emitter::io_adapter::emit_read_as_bytes_sync(chunks, current, argc, line)
         }
@@ -25,8 +28,14 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dart.io_write_as_string_sync" => {
             crate::emitter::io_adapter::emit_write_as_string_sync(chunks, current, argc, line)
         }
+        "dart.io_write_as_bytes_sync" => {
+            crate::emitter::io_adapter::emit_write_as_bytes_sync(chunks, current, argc, line)
+        }
         "dart.io_append_as_string_sync" => {
             crate::emitter::io_adapter::emit_append_as_string_sync(chunks, current, argc, line)
+        }
+        "dart.io_append_as_bytes_sync" => {
+            crate::emitter::io_adapter::emit_append_as_bytes_sync(chunks, current, argc, line)
         }
         "dart.io_exists_sync" => {
             crate::emitter::io_adapter::emit_exists_sync(chunks, current, argc, line)
@@ -48,6 +57,147 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dart.io_list_sync" => {
             crate::emitter::io_adapter::emit_list_sync(chunks, current, argc, line)
+        }
+        "dart.io_stat_sync" => {
+            crate::emitter::io_adapter::emit_stat_sync(chunks, current, argc, line)
+        }
+        "dart.io_stat_path" => {
+            crate::emitter::io_adapter::emit_stat_path(chunks, current, argc, line)
+        }
+        "dart.io_last_modified_sync" => {
+            crate::emitter::io_adapter::emit_last_modified_sync(chunks, current, argc, line)
+        }
+        "dart.io_set_last_modified_sync" => {
+            crate::emitter::io_adapter::emit_set_last_modified_sync(chunks, current, argc, line)
+        }
+        "dart.io_set_last_accessed_sync" => {
+            crate::emitter::io_adapter::emit_set_last_accessed_sync(chunks, current, argc, line)
+        }
+        "dart.io_resolve_symbolic_links_sync" => {
+            crate::emitter::io_adapter::emit_resolve_symbolic_links_sync(chunks, current, argc, line)
+        }
+        "dart.io_target_sync" => {
+            crate::emitter::io_adapter::emit_target_sync(chunks, current, argc, line)
+        }
+        "dart.io_update_sync" => {
+            crate::emitter::io_adapter::emit_update_sync(chunks, current, argc, line)
+        }
+        "dart.io_create_temp_sync" => {
+            crate::emitter::io_adapter::emit_create_temp_sync(chunks, current, argc, line)
+        }
+        "dart.io_watch" => {
+            crate::emitter::io_adapter::emit_watch(chunks, current, argc, line)
+        }
+        "dart.io_absolute_handle" => {
+            crate::emitter::io_adapter::emit_absolute_handle(chunks, current, argc, line)
+        }
+        "dart.io_parent_handle" => {
+            crate::emitter::io_adapter::emit_parent_handle(chunks, current, argc, line)
+        }
+        "dart.io_uri_string" => {
+            crate::emitter::io_adapter::emit_uri_string(chunks, current, argc, line)
+        }
+        "dart.io_is_absolute" => {
+            crate::emitter::io_adapter::emit_is_absolute(chunks, current, argc, line)
+        }
+        "dart.io_handle_is_absolute" => {
+            crate::emitter::io_adapter::emit_handle_is_absolute(chunks, current, argc, line)
+        }
+        "dart.io_type_sync" => {
+            crate::emitter::io_adapter::emit_type_sync(chunks, current, argc, line)
+        }
+        "dart.io_identical_sync" => {
+            crate::emitter::io_adapter::emit_identical_sync(chunks, current, argc, line)
+        }
+        "dart.io_set_current_dir" => {
+            crate::emitter::io_adapter::emit_set_current_dir(chunks, current, argc, line)
+        }
+        "dart.io_platform_environment" => {
+            crate::emitter::io_adapter::emit_platform_environment(chunks, current, line)
+        }
+        "dart.io_process_run_sync" => {
+            crate::emitter::io_adapter::emit_process_run_sync(chunks, current, argc, line)
+        }
+        "dart.io_process_start" => {
+            crate::emitter::io_adapter::emit_process_start(chunks, current, argc, line)
+        }
+        "dart.io_process_kill" => {
+            crate::emitter::io_adapter::emit_process_kill(chunks, current, argc, line)
+        }
+        "dart.io_process_stdin_writeln" => {
+            crate::emitter::io_adapter::emit_process_stdin_writeln(chunks, current, argc, line)
+        }
+        "dart.io_process_stdin_add" => {
+            crate::emitter::io_adapter::emit_process_stdin_add(chunks, current, argc, line)
+        }
+        "dart.io_process_stdin_write_char_code" => {
+            crate::emitter::io_adapter::emit_process_stdin_write_char_code(chunks, current, argc, line)
+        }
+        "dart.io_process_stdin_flush" => {
+            crate::emitter::io_adapter::emit_process_stdin_flush(chunks, current, argc, line)
+        }
+        "dart.io_process_stdin_close" => {
+            crate::emitter::io_adapter::emit_process_stdin_close(chunks, current, argc, line)
+        }
+        "dart.io_process_stdin_add_error" => {
+            crate::emitter::io_adapter::emit_process_stdin_add_error(chunks, current, argc, line)
+        }
+        "dart.utf8_encode" => {
+            crate::emitter::io_adapter::emit_utf8_encode(chunks, current, argc, line)
+        }
+        "dart.latin1_encode" => {
+            crate::emitter::io_adapter::emit_latin1_encode(chunks, current, argc, line)
+        }
+        "dart.utf8_decode" => {
+            crate::emitter::io_adapter::emit_utf8_decode(chunks, current, argc, line)
+        }
+        "dart.latin1_decode" => {
+            crate::emitter::io_adapter::emit_latin1_decode(chunks, current, argc, line)
+        }
+        "dart.io_open_sync" => {
+            crate::emitter::io_adapter::emit_open_sync(chunks, current, argc, line)
+        }
+        "dart.io_raf_close_sync" => {
+            crate::emitter::io_adapter::emit_raf_close_sync(chunks, current, argc, line)
+        }
+        "dart.io_raf_flush_sync" => {
+            crate::emitter::io_adapter::emit_raf_flush_sync(chunks, current, argc, line)
+        }
+        "dart.io_raf_lock_sync" => {
+            crate::emitter::io_adapter::emit_raf_lock_sync(chunks, current, argc, line)
+        }
+        "dart.io_raf_unlock_sync" => {
+            crate::emitter::io_adapter::emit_raf_unlock_sync(chunks, current, argc, line)
+        }
+        "dart.io_raf_length_sync" => {
+            crate::emitter::io_adapter::emit_raf_length_sync(chunks, current, argc, line)
+        }
+        "dart.io_raf_truncate_sync" => {
+            crate::emitter::io_adapter::emit_raf_truncate_sync(chunks, current, argc, line)
+        }
+        "dart.io_raf_write_string_sync" => {
+            crate::emitter::io_adapter::emit_raf_write_string_sync(chunks, current, argc, line)
+        }
+        "dart.io_raf_write_byte_sync" => {
+            crate::emitter::io_adapter::emit_raf_write_byte_sync(chunks, current, argc, line)
+        }
+        "dart.io_raf_write_from_sync" => {
+            crate::emitter::io_adapter::emit_raf_write_from_sync(chunks, current, argc, line)
+        }
+        "dart.io_raf_read_byte_sync" => {
+            crate::emitter::io_adapter::emit_raf_read_byte_sync(chunks, current, argc, line)
+        }
+        "dart.io_raf_read_sync" => {
+            crate::emitter::io_adapter::emit_raf_read_sync(chunks, current, argc, line)
+        }
+        "dart.io_raf_read_into_sync" => {
+            crate::emitter::io_adapter::emit_raf_read_into_sync(chunks, current, argc, line)
+        }
+        "dart.io_raf_position_sync" => {
+            crate::emitter::io_adapter::emit_raf_position_sync(chunks, current, argc, line)
+        }
+        "dart.io_raf_set_position_sync" => {
+            crate::emitter::io_adapter::emit_raf_set_position_sync(chunks, current, argc, line)
         }
         "dart.is_empty" => {
             crate::emitter::string_adapter::emit_dart_is_empty(chunks, current, line)
@@ -108,6 +258,24 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // (`core_classes/exceptions.rs`), constructed through `ExprKind::New`.
         "dart.stack_trace" => {
             crate::emitter::string_adapter::emit_dart_stack_trace(chunks, current, line)
+        }
+        "dart.base64_encode" => {
+            crate::emitter::string_adapter::emit_dart_base64_encode(chunks, current, false, line)
+        }
+        "dart.base64_decode" => {
+            crate::emitter::string_adapter::emit_dart_base64_decode(chunks, current, false, line)
+        }
+        "dart.base64_normalize" => {
+            crate::emitter::string_adapter::emit_dart_base64_normalize(chunks, current, false, line)
+        }
+        "dart.base64url_encode" => {
+            crate::emitter::string_adapter::emit_dart_base64_encode(chunks, current, true, line)
+        }
+        "dart.base64url_decode" => {
+            crate::emitter::string_adapter::emit_dart_base64_decode(chunks, current, true, line)
+        }
+        "dart.base64url_normalize" => {
+            crate::emitter::string_adapter::emit_dart_base64_normalize(chunks, current, true, line)
         }
         "dart.index_get" => {
             crate::emitter::string_adapter::emit_dart_index_get(chunks, current, line)
@@ -184,9 +352,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // than the empty `{}` emitters two of them used to be. What remains is
         // the parse and the component reads, which `primitives::url` owns.
         "dart.url_parse" => crate::emitter::core_adapter::emit_url_parse(chunks, current, line),
-        "dart.url_scheme" => {
-            crate::emitter::core_adapter::emit_url_component(chunks, current, UrlField::Scheme, line)
-        }
+        "dart.url_scheme" => crate::emitter::core_adapter::emit_url_component(
+            chunks,
+            current,
+            UrlField::Scheme,
+            line,
+        ),
         "dart.url_host" => {
             crate::emitter::core_adapter::emit_url_component(chunks, current, UrlField::Host, line)
         }
@@ -411,6 +582,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dart.stream_as_future" => {
             crate::emitter::string_adapter::emit_dart_stream_as_future(chunks, current, line)
         }
+        "dart.stream_as_broadcast" => {
+            crate::emitter::string_adapter::emit_dart_stream_as_broadcast(chunks, current, line)
+        }
         "dart.stream_cancel" => {
             crate::emitter::string_adapter::emit_dart_stream_cancel(chunks, current, line)
         }
@@ -419,6 +593,15 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dart.bigint_parse" => {
             crate::emitter::string_adapter::emit_dart_bigint_parse(chunks, current, argc, line)
+        }
+        "dart.bigint_compare_to" => {
+            crate::emitter::string_adapter::emit_dart_bigint_compare_to(chunks, current, line)
+        }
+        "dart.bigint_idiv" => {
+            crate::emitter::string_adapter::emit_dart_bigint_idiv(chunks, current, line)
+        }
+        "dart.bigint_mod" => {
+            crate::emitter::string_adapter::emit_dart_bigint_mod(chunks, current, line)
         }
         "dart.bigint_gcd" => {
             crate::emitter::string_adapter::emit_dart_bigint_gcd(chunks, current, line)
@@ -528,6 +711,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dart.double_to_string" => {
             crate::emitter::string_adapter::emit_dart_double_to_string(chunks, current, line)
+        }
+        "dart.nullable_double_to_string" => {
+            crate::emitter::string_adapter::emit_dart_nullable_double_to_string(
+                chunks, current, line,
+            )
         }
 
         // ── Ruby `obj.dig(k1, k2, ..., kN)` — variadic property walk.

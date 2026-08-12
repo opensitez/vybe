@@ -507,6 +507,26 @@ impl FormApp {
     }
 
     fn fire_load_event(&mut self) {
+        // `Handles Me.Load` is a subscription on the FORM, and a form IS the
+        // document's body — so the listener lives on the body node, not in
+        // `GuiState`'s name-keyed table. Reading only the table meant a
+        // designer form's `Form1_Load` never ran: `TicTacToe` left `turn`
+        // unset, so every cell click hit `If turn <> "X" Then Exit Sub` and the
+        // window looked completely dead while every handler was correctly
+        // wired. The table stays as the fallback for a form built without a
+        // document, which is the same rule the rest of this file paints by.
+        let document_listeners =
+            crate::gui_document::listeners_for(vybe_widgets::dom::DOCUMENT, "load");
+        if !document_listeners.is_empty() {
+            let event = crate::gui_document::event_object("load", vybe_widgets::dom::DOCUMENT);
+            for listener in document_listeners {
+                let mut vm = self.vm.borrow_mut();
+                if let Err(e) = vm.invoke(&listener, &[event.clone()]) {
+                    eprintln!("[LOAD] Error: {e}");
+                }
+            }
+            return;
+        }
         let callback = {
             let g = self.gui.lock().unwrap();
             g.get_event_handler("form1", "Load")
@@ -854,13 +874,48 @@ impl FormApp {
                     .cloned()
                     .unwrap_or_default();
                 let ctrl_lower = binding.control_name.to_lowercase();
+                // A bound control IS an element, so the binding writes to the
+                // DOCUMENT — through `set_text`, the same entry point the guest
+                // reaches for the `text` role, which is what makes an `<input>`
+                // take its `value` and a `<select>` take its options without
+                // this knowing the difference.
+                //
+                // Writing `ctrl_obj.properties["text"]` was the old model: a
+                // plain property on the control OBJECT, which nothing paints
+                // from once the control is a node. Same shape as the `Load`
+                // event and `vybe.gui.setProperty` — an axis converted to the
+                // document with one reader left on the old registry.
+                //
+                // The BOUND PROPERTY decides which write, the same two-way
+                // split the guest's own property path makes: a text-ish role
+                // goes through `set_text`, and anything else becomes an
+                // attribute — which is where an unmapped property belongs on
+                // the web, and exactly what `emit_gui_property_set` does with
+                // one it has no operation for.
+                let bound_to_document = crate::gui_document::node_by_id(&binding.control_name)
+                    .and_then(|node| {
+                        let property = binding.property.to_ascii_lowercase();
+                        match property.as_str() {
+                            "text" | "value" | "caption" => {
+                                crate::gui_document::inspect::set_text(node, &value)
+                            }
+                            _ => crate::gui_document::inspect::set_attribute(
+                                node, &property, &value,
+                            ),
+                        }
+                    })
+                    .is_some();
                 if let Some(vybe_runtime::Value::Object(ctrl_obj)) = fo.properties.get(&ctrl_lower)
                 {
+                    // The object keeps the value too: a guest reading
+                    // `txt.Text` before the next paint asks the object, and a
+                    // form built with no document has only this.
                     ctrl_obj.lock().unwrap().properties.insert(
                         binding.property.to_lowercase(),
                         vybe_runtime::Value::String(Arc::from(value.as_str())),
                     );
                 }
+                let _ = bound_to_document;
             }
         }
         drop(vm);

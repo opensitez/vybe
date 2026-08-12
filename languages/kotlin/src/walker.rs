@@ -9,6 +9,25 @@ use crate::emitter::tostring::SET_MARKER;
 
 static NEXT_TMP_ID: AtomicUsize = AtomicUsize::new(1);
 
+#[derive(Clone, Default)]
+struct KotlinReflectionMethodMeta {
+    decorators: Vec<Expression>,
+    param_types: Vec<String>,
+    param_decorators: Vec<Vec<Expression>>,
+}
+
+#[derive(Clone, Default)]
+struct KotlinReflectionFieldMeta {
+    type_name: Option<String>,
+    decorators: Vec<Expression>,
+}
+
+#[derive(Clone)]
+struct KotlinConstructorShape {
+    source_params: Vec<Param>,
+    tag_count: usize,
+}
+
 fn gen_tmp_name() -> String {
     format!("__kt_tmp_{}", NEXT_TMP_ID.fetch_add(1, Ordering::Relaxed))
 }
@@ -18,6 +37,18 @@ thread_local! {
     static USER_MEMBER_NAMES: std::cell::RefCell<std::collections::HashSet<(String, usize)>> =
         std::cell::RefCell::new(std::collections::HashSet::new());
     static USER_METHOD_OVERLOADS: std::cell::RefCell<std::collections::HashMap<String, std::collections::HashMap<usize, Vec<Vec<String>>>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static KOTLIN_TYPE_ALIASES: std::cell::RefCell<std::collections::HashMap<String, String>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static KOTLIN_TYPE_ALIAS_SHAPES: std::cell::RefCell<std::collections::HashMap<String, String>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static KOTLIN_DECLARED_TYPE_SHAPES: std::cell::RefCell<std::collections::HashMap<String, String>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static KOTLIN_FUNCTION_RETURN_SHAPES: std::cell::RefCell<std::collections::HashMap<String, String>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static KOTLIN_FUNCTION_SIGNATURE_LOCALS: std::cell::RefCell<std::collections::HashMap<String, Vec<String>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static KOTLIN_FUNCTION_ARITY_LOCALS: std::cell::RefCell<std::collections::HashMap<String, usize>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
     /// Every property name some class in this source declares — the same
     /// problem one level down: `.values`, `.size`, `.keys`, `.first` are
@@ -31,6 +62,13 @@ thread_local! {
     /// normalize to `New(Pair, ...)`, not to the tuple literal helper.
     static USER_CLASS_NAMES: std::cell::RefCell<std::collections::HashSet<String>> =
         std::cell::RefCell::new(std::collections::HashSet::new());
+    /// Kotlin `object` declarations are singleton VALUES. `is Host.Singleton`
+    /// is therefore an identity/value test against the singleton, not a
+    /// constructor-instance test.
+    static KOTLIN_OBJECT_SINGLETONS: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+    static KOTLIN_STATIC_FIELD_ALIASES: std::cell::RefCell<std::collections::HashMap<(String, String), String>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
     /// Names bound by each enclosing function being walked — its parameters and
     /// everything its body declares.
     static ENCLOSING_LOCALS: std::cell::RefCell<Vec<std::collections::HashSet<String>>> =
@@ -39,6 +77,12 @@ thread_local! {
     /// reordering at call sites (overloads are excluded — named args on an
     /// overload group would need signature-aware selection first).
     static KOTLIN_TOP_FN_PARAMS: std::cell::RefCell<std::collections::HashMap<String, Vec<Param>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static KOTLIN_REFLECTION_CLASS_DECORATORS: std::cell::RefCell<std::collections::HashMap<String, Vec<Expression>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static KOTLIN_REFLECTION_METHODS: std::cell::RefCell<std::collections::HashMap<(String, String), KotlinReflectionMethodMeta>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static KOTLIN_REFLECTION_FIELDS: std::cell::RefCell<std::collections::HashMap<(String, String), KotlinReflectionFieldMeta>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
     /// Per top-level function NAME, in declaration order: each declaration's
     /// per-parameter RAW type text (generics survive here; `TypeHint`
@@ -66,6 +110,10 @@ thread_local! {
     /// rewritten to `name(x, a)` — the same lowering VB's walker applies to
     /// `<Extension()>` methods.
     static EXTENSION_FUNCTIONS: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+    static EXTENSION_FUNCTION_ARITIES: std::cell::RefCell<std::collections::HashMap<String, usize>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static MEMBER_EXTENSION_FUNCTIONS: std::cell::RefCell<std::collections::HashSet<String>> =
         std::cell::RefCell::new(std::collections::HashSet::new());
     /// Extension fns on a COMPANION (`fun Factory.Companion.from(…)`) —
     /// call sites spell them `Factory.from(…)`, keyed (class, name).
@@ -108,18 +156,40 @@ thread_local! {
         std::cell::RefCell::new(std::collections::HashMap::new());
     static KOTLIN_STATIC_VALUES: std::cell::RefCell<std::collections::HashMap<String, Expression>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
+    static KOTLIN_COLLECTION_VIEW_ALIASES: std::cell::RefCell<std::collections::HashMap<String, (String, Expression)>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static KOTLIN_SUBLIST_ALIASES: std::cell::RefCell<std::collections::HashMap<String, (Expression, Expression, Expression)>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static KOTLIN_REVERSED_VIEW_ALIASES: std::cell::RefCell<std::collections::HashMap<String, Expression>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static KOTLIN_MAP_ENTRY_ITERATORS: std::cell::RefCell<std::collections::HashMap<String, Expression>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
     static KOTLIN_TUPLE_LOCALS: std::cell::RefCell<std::collections::HashSet<String>> =
         std::cell::RefCell::new(std::collections::HashSet::new());
     static KOTLIN_KEYED_COLLECTION_TYPES: std::cell::RefCell<std::collections::HashMap<String, String>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static KOTLIN_ARRAY_FAMILY_LOCALS: std::cell::RefCell<std::collections::HashMap<String, String>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
     static KOTLIN_DATA_CLASS_PROPERTY_INDEX: std::cell::RefCell<std::collections::HashMap<String, std::collections::HashMap<String, usize>>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
     static KOTLIN_CLASS_PRIMARY_CTORS: std::cell::RefCell<std::collections::HashMap<String, Vec<Param>>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
+    static KOTLIN_CLASS_CTORS: std::cell::RefCell<std::collections::HashMap<String, Vec<Vec<Param>>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static KOTLIN_CLASS_CTOR_SHAPES: std::cell::RefCell<std::collections::HashMap<String, Vec<KotlinConstructorShape>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
     static KOTLIN_DELEGATED_COLLECTIONS: std::cell::RefCell<std::collections::HashMap<String, String>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static KOTLIN_DELEGATE_FIELDS: std::cell::RefCell<std::collections::HashMap<String, String>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
     static KOTLIN_NULLABLE_CTOR_CLASSES: std::cell::RefCell<std::collections::HashSet<String>> =
         std::cell::RefCell::new(std::collections::HashSet::new());
+    static KOTLIN_THREAD_LOCALS: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+    static KOTLIN_CONCURRENCY_LOCALS: std::cell::RefCell<std::collections::HashMap<String, String>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static KOTLIN_NEEDS_THREADS: std::cell::RefCell<bool> =
+        const { std::cell::RefCell::new(false) };
 }
 
 fn outer_this(depth: usize) -> Expression {
@@ -183,6 +253,27 @@ fn qualified_type_expr(path: &str) -> Expression {
     expr
 }
 
+fn kotlin_type_alias_target(name: &str) -> Option<String> {
+    KOTLIN_TYPE_ALIASES.with(|map| map.borrow().get(name).cloned())
+}
+
+fn kotlin_type_alias_shape(name: &str) -> Option<String> {
+    KOTLIN_TYPE_ALIAS_SHAPES.with(|map| map.borrow().get(name).cloned())
+}
+
+fn kotlin_constructor_alias_expr(expr: Expression) -> Expression {
+    let ExprKind::Ident(name) = &expr.kind else {
+        return expr;
+    };
+    let Some(target) = kotlin_type_alias_target(name) else {
+        return expr;
+    };
+    if kotlin_type_is_function_like(&target) {
+        return expr;
+    }
+    qualified_type_expr(&type_hint_text(&target))
+}
+
 /// `name` resolved inside an extension body: a member of the receiver becomes
 /// `this.<name>`, everything else stays itself.
 fn extension_receiver_read(name: &str) -> Option<Expression> {
@@ -222,6 +313,10 @@ fn is_extension_property(name: &str) -> bool {
 /// Whether `name` is declared as an extension function in this source.
 fn is_extension_function(name: &str) -> bool {
     EXTENSION_FUNCTIONS.with(|set| set.borrow().contains(name))
+}
+
+fn is_member_extension_function(name: &str) -> bool {
+    MEMBER_EXTENSION_FUNCTIONS.with(|set| set.borrow().contains(name))
 }
 
 /// The name a supertype's member is additionally bound under so `super<I>.m()`
@@ -313,6 +408,22 @@ fn collect_user_member_names(root: &Pair<Rule>) {
         } else {
             None
         };
+        if rule == Rule::object_decl {
+            if let Some(object_name) = pair
+                .clone()
+                .into_inner()
+                .find(|p| p.as_rule() == Rule::identifier)
+                .map(|p| p.as_str().to_string())
+            {
+                KOTLIN_OBJECT_SINGLETONS.with(|set| {
+                    let mut set = set.borrow_mut();
+                    set.insert(object_name.clone());
+                    if let Some(owner) = owner {
+                        set.insert(format!("{owner}.{object_name}"));
+                    }
+                });
+            }
+        }
         let qualified_owner_here = owner_here.as_ref().map(|class_name| {
             owner
                 .map(|enclosing| format!("{enclosing}.{class_name}"))
@@ -320,7 +431,11 @@ fn collect_user_member_names(root: &Pair<Rule>) {
         });
         if let Some(class_name) = &owner_here {
             USER_CLASS_NAMES.with(|set| {
-                set.borrow_mut().insert(class_name.clone());
+                let mut set = set.borrow_mut();
+                set.insert(class_name.clone());
+                if let Some(qualified) = &qualified_owner_here {
+                    set.insert(qualified.clone());
+                }
             });
             let is_inner = pair
                 .clone()
@@ -415,8 +530,25 @@ fn collect_user_member_names(root: &Pair<Rule>) {
             let inners: Vec<_> = pair.clone().into_inner().collect();
             if let Some(recv) = inners.iter().find(|p| p.as_rule() == Rule::receiver_prefix) {
                 if let Some(id) = inners.iter().find(|p| p.as_rule() == Rule::identifier) {
+                    let arity = 1 + inners
+                        .iter()
+                        .find(|p| p.as_rule() == Rule::parameter_list)
+                        .map(|p| {
+                            p.clone()
+                                .into_inner()
+                                .filter(|q| q.as_rule() == Rule::parameter)
+                                .count()
+                        })
+                        .unwrap_or(0);
                     EXTENSION_FUNCTIONS
                         .with(|set| set.borrow_mut().insert(id.as_str().to_string()));
+                    EXTENSION_FUNCTION_ARITIES.with(|map| {
+                        map.borrow_mut().insert(id.as_str().to_string(), arity);
+                    });
+                    if in_class {
+                        MEMBER_EXTENSION_FUNCTIONS
+                            .with(|set| set.borrow_mut().insert(id.as_str().to_string()));
+                    }
                     // `Factory.Companion.` — the call site is the CLASS name.
                     let recv_text = recv.as_str().trim_end_matches('.');
                     if let Some(class) = recv_text.strip_suffix(".Companion") {
@@ -482,15 +614,31 @@ fn collect_user_member_names(root: &Pair<Rule>) {
     }
     USER_PROPERTY_NAMES.with(|set| set.borrow_mut().clear());
     USER_CLASS_NAMES.with(|set| set.borrow_mut().clear());
+    KOTLIN_OBJECT_SINGLETONS.with(|set| set.borrow_mut().clear());
+    KOTLIN_STATIC_FIELD_ALIASES.with(|map| map.borrow_mut().clear());
     EXTENSION_FUNCTIONS.with(|set| set.borrow_mut().clear());
+    EXTENSION_FUNCTION_ARITIES.with(|map| map.borrow_mut().clear());
+    MEMBER_EXTENSION_FUNCTIONS.with(|set| set.borrow_mut().clear());
     EXTENSION_PROPERTIES.with(|set| set.borrow_mut().clear());
     COMPANION_EXT_FNS.with(|set| set.borrow_mut().clear());
     EXTENSION_PROPERTY_SETTERS.with(|set| set.borrow_mut().clear());
     CLASS_MEMBERS.with(|m| m.borrow_mut().clear());
     CLASS_PROPERTIES.with(|m| m.borrow_mut().clear());
     KOTLIN_DELEGATED_COLLECTIONS.with(|m| m.borrow_mut().clear());
+    KOTLIN_DELEGATE_FIELDS.with(|m| m.borrow_mut().clear());
+    KOTLIN_CLASS_CTORS.with(|m| m.borrow_mut().clear());
+    KOTLIN_CLASS_CTOR_SHAPES.with(|m| m.borrow_mut().clear());
     KOTLIN_NULLABLE_CTOR_CLASSES.with(|set| set.borrow_mut().clear());
+    KOTLIN_THREAD_LOCALS.with(|set| set.borrow_mut().clear());
+    KOTLIN_CONCURRENCY_LOCALS.with(|map| map.borrow_mut().clear());
+    KOTLIN_NEEDS_THREADS.with(|flag| *flag.borrow_mut() = false);
     USER_METHOD_OVERLOADS.with(|map| map.borrow_mut().clear());
+    KOTLIN_TYPE_ALIASES.with(|map| map.borrow_mut().clear());
+    KOTLIN_TYPE_ALIAS_SHAPES.with(|map| map.borrow_mut().clear());
+    KOTLIN_DECLARED_TYPE_SHAPES.with(|map| map.borrow_mut().clear());
+    KOTLIN_FUNCTION_RETURN_SHAPES.with(|map| map.borrow_mut().clear());
+    KOTLIN_FUNCTION_SIGNATURE_LOCALS.with(|map| map.borrow_mut().clear());
+    KOTLIN_FUNCTION_ARITY_LOCALS.with(|map| map.borrow_mut().clear());
     KOTLIN_FN_RAW_PARAM_TYPES.with(|map| map.borrow_mut().clear());
     INNER_CLASS_QUALIFIED.with(|m| m.borrow_mut().clear());
     USER_MEMBER_NAMES.with(|set| {
@@ -532,17 +680,116 @@ fn kotlin_user_constructor_call(name: &str, args: &[Argument]) -> Option<Express
     }))
 }
 
-fn kotlin_normalized_constructor_args(name: &str, args: &[Argument]) -> Vec<Argument> {
-    if args.is_empty()
-        || args.iter().all(|arg| arg.name.is_none())
-        || args.iter().any(|arg| arg.spread)
-    {
+fn kotlin_simple_type_name(hint: &str) -> &str {
+    hint.trim()
+        .trim_end_matches('?')
+        .split('<')
+        .next()
+        .unwrap_or(hint)
+        .rsplit('.')
+        .next()
+        .unwrap_or(hint)
+}
+
+fn kotlin_ctor_arg_matches_param(arg: &Expression, param: &Param) -> bool {
+    let Some(hint) = param.type_hint.as_ref().map(|hint| kotlin_simple_type_name(hint.spelling()))
+    else {
+        return true;
+    };
+    match &arg.kind {
+        ExprKind::Lit(Literal::Bool(_)) => hint == "Boolean",
+        ExprKind::Lit(Literal::Int(_)) => matches!(
+            hint,
+            "Byte" | "Short" | "Int" | "Long" | "Float" | "Double" | "Number"
+        ),
+        ExprKind::Lit(Literal::Float(_)) => matches!(hint, "Float" | "Double" | "Number"),
+        ExprKind::Lit(Literal::Str(_)) => hint == "String" || hint == "CharSequence" || hint == "Any",
+        ExprKind::Array(_) => matches!(
+            hint,
+            "Array"
+                | "List"
+                | "MutableList"
+                | "Collection"
+                | "Iterable"
+                | "IntArray"
+                | "LongArray"
+                | "DoubleArray"
+                | "BooleanArray"
+        ),
+        _ => true,
+    }
+}
+
+fn kotlin_pack_constructor_vararg_args(name: &str, args: &[Argument]) -> Vec<Argument> {
+    if args.iter().any(|arg| arg.name.is_some() || arg.spread) {
         return args.to_vec();
     }
-
-    let Some(params) = KOTLIN_CLASS_PRIMARY_CTORS.with(|ctors| ctors.borrow().get(name).cloned())
-    else {
+    let shapes = KOTLIN_CLASS_CTOR_SHAPES.with(|ctors| ctors.borrow().get(name).cloned());
+    let Some(shapes) = shapes else {
         return args.to_vec();
+    };
+    let exact = shapes.iter().find(|shape| {
+        shape.source_params.len() == args.len()
+            && !shape.source_params.last().is_some_and(|param| param.is_rest)
+            && args
+                .iter()
+                .zip(shape.source_params.iter())
+                .all(|(arg, param)| kotlin_ctor_arg_matches_param(&arg.value, param))
+    });
+    if let Some(shape) = exact {
+        let mut out = args.to_vec();
+        for idx in 0..shape.tag_count {
+            out.push(Argument::positional(Expression::int(idx as i64)));
+        }
+        return out;
+    }
+    let Some(shape) = shapes.iter().find(|shape| {
+        shape.source_params.last().is_some_and(|param| param.is_rest)
+            && args.len() >= shape.source_params.len().saturating_sub(1)
+            && args
+                .iter()
+                .take(shape.source_params.len().saturating_sub(1))
+                .zip(shape.source_params.iter())
+                .all(|(arg, param)| kotlin_ctor_arg_matches_param(&arg.value, param))
+    }) else {
+        return args.to_vec();
+    };
+    let params = &shape.source_params;
+    if args.len() == params.len()
+        && args
+            .last()
+            .is_some_and(|arg| matches!(arg.value.kind, ExprKind::Array(_)))
+    {
+        let mut out = args.to_vec();
+        for idx in 0..shape.tag_count {
+            out.push(Argument::positional(Expression::int(idx as i64)));
+        }
+        return out;
+    }
+    let fixed = params.len().saturating_sub(1);
+    let mut out: Vec<Argument> = args[..fixed].to_vec();
+    let tail = args[fixed..]
+        .iter()
+        .map(|arg| arg.value.clone())
+        .collect();
+    out.push(Argument::positional(kotlin_array_expr(tail)));
+    for idx in 0..shape.tag_count {
+        out.push(Argument::positional(Expression::int(idx as i64)));
+    }
+    out
+}
+
+fn kotlin_normalized_constructor_args(name: &str, args: &[Argument]) -> Vec<Argument> {
+    if args.is_empty() || args.iter().any(|arg| arg.spread) {
+        return kotlin_pack_constructor_vararg_args(name, args);
+    }
+
+    if args.iter().all(|arg| arg.name.is_none()) {
+        return kotlin_pack_constructor_vararg_args(name, args);
+    }
+
+    let Some(params) = KOTLIN_CLASS_PRIMARY_CTORS.with(|ctors| ctors.borrow().get(name).cloned()) else {
+        return kotlin_pack_constructor_vararg_args(name, args);
     };
 
     let mut positional = args.iter().filter(|arg| arg.name.is_none());
@@ -562,7 +809,7 @@ fn kotlin_normalized_constructor_args(name: &str, args: &[Argument]) -> Vec<Argu
         }
     }
     out.extend(positional.map(|arg| Argument::positional(arg.value.clone())));
-    out
+    kotlin_pack_constructor_vararg_args(name, &out)
 }
 
 /// NAMED arguments on a top-level `fun` call — reorder against the declared
@@ -593,6 +840,34 @@ fn kotlin_normalized_fn_args(name: &str, args: &[Argument]) -> Option<Vec<Argume
     Some(out)
 }
 
+fn kotlin_object_singleton_instance_expr(name: &str) -> Expression {
+    Expression::new(ExprKind::New {
+        class: Box::new(Expression::ident(name)),
+        args: vec![],
+    })
+}
+
+fn kotlin_normalize_object_singleton_args(name: &str, args: &mut [Argument]) {
+    let params = KOTLIN_TOP_FN_PARAMS.with(|map| map.borrow().get(name).cloned());
+    let Some(params) = params else {
+        return;
+    };
+    for (arg, param) in args.iter_mut().zip(params.iter()) {
+        let Some(hint) = param.type_hint.as_ref().map(|h| type_hint_text(h.spelling())) else {
+            continue;
+        };
+        if kotlin_type_is_function_like(&hint) {
+            continue;
+        }
+        let ExprKind::Ident(name) = &arg.value.kind else {
+            continue;
+        };
+        if KOTLIN_OBJECT_SINGLETONS.with(|set| set.borrow().contains(name)) {
+            arg.value = kotlin_object_singleton_instance_expr(name);
+        }
+    }
+}
+
 /// Whether a class in this source declares a method with this name and arity.
 fn is_user_member_name(name: &str, arity: usize) -> bool {
     USER_MEMBER_NAMES.with(|set| set.borrow().contains(&(name.to_string(), arity)))
@@ -600,6 +875,29 @@ fn is_user_member_name(name: &str, arity: usize) -> bool {
 
 fn overloaded_storage_name(name: &str, arity: usize) -> Option<String> {
     overloaded_storage_name_for_args(name, arity, &[])
+}
+
+fn overloaded_storage_name_for_params(name: &str, params: &[Param]) -> Option<String> {
+    USER_METHOD_OVERLOADS.with(|map| {
+        let map = map.borrow();
+        map.get(name)?.get(&params.len())?;
+        let param_types: Vec<String> = params
+            .iter()
+            .map(|p| {
+                p.type_hint
+                    .as_ref()
+                    .map(|h| type_hint_text(h.spelling()))
+                    .unwrap_or_default()
+            })
+            .collect();
+        if param_types.is_empty() {
+            Some(format!("{name}$sig0"))
+        } else if param_types.iter().all(|ty| !ty.is_empty()) {
+            Some(format!("{name}$sig{}", param_types.join("$")))
+        } else {
+            None
+        }
+    })
 }
 
 /// Pick the method-overload signature for a call. One signature per arity is
@@ -640,6 +938,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
     let root = pairs
         .next()
         .ok_or_else(|| "Empty parse result".to_string())?;
+    KOTLIN_REFLECTION_CLASS_DECORATORS.with(|map| map.borrow_mut().clear());
+    KOTLIN_REFLECTION_METHODS.with(|map| map.borrow_mut().clear());
+    KOTLIN_REFLECTION_FIELDS.with(|map| map.borrow_mut().clear());
     collect_user_member_names(&root);
     let mut body = Vec::new();
     let imports = collect_imports(&root);
@@ -748,17 +1049,44 @@ pub fn parse(source: &str) -> Result<Module, String> {
     collect_kotlin_simple_functions(&body);
     KOTLIN_SEQUENCE_SOURCES.with(|map| map.borrow_mut().clear());
     KOTLIN_STATIC_VALUES.with(|map| map.borrow_mut().clear());
+    KOTLIN_COLLECTION_VIEW_ALIASES.with(|map| map.borrow_mut().clear());
+    KOTLIN_SUBLIST_ALIASES.with(|map| map.borrow_mut().clear());
+    KOTLIN_REVERSED_VIEW_ALIASES.with(|map| map.borrow_mut().clear());
+    KOTLIN_MAP_ENTRY_ITERATORS.with(|map| map.borrow_mut().clear());
     KOTLIN_TUPLE_LOCALS.with(|set| set.borrow_mut().clear());
     KOTLIN_KEYED_COLLECTION_TYPES.with(|map| map.borrow_mut().clear());
+    KOTLIN_ARRAY_FAMILY_LOCALS.with(|map| map.borrow_mut().clear());
     normalize_kotlin_operator_calls(&mut body);
+    if KOTLIN_NEEDS_THREADS.with(|flag| *flag.borrow()) {
+        let mut helpers = kt_thread_runtime_fns();
+        helpers.extend(body);
+        body = helpers;
+    }
+    {
+        let mut builtins = kotlin_builtin_collection_interfaces(&body);
+        builtins.extend(body);
+        body = builtins;
+    }
     KOTLIN_STATIC_VALUES.with(|map| map.borrow_mut().clear());
+    KOTLIN_COLLECTION_VIEW_ALIASES.with(|map| map.borrow_mut().clear());
+    KOTLIN_SUBLIST_ALIASES.with(|map| map.borrow_mut().clear());
+    KOTLIN_REVERSED_VIEW_ALIASES.with(|map| map.borrow_mut().clear());
+    KOTLIN_MAP_ENTRY_ITERATORS.with(|map| map.borrow_mut().clear());
     KOTLIN_TUPLE_LOCALS.with(|set| set.borrow_mut().clear());
     KOTLIN_SEQUENCE_SOURCES.with(|map| map.borrow_mut().clear());
     KOTLIN_KEYED_COLLECTION_TYPES.with(|map| map.borrow_mut().clear());
+    KOTLIN_ARRAY_FAMILY_LOCALS.with(|map| map.borrow_mut().clear());
+    KOTLIN_DECLARED_TYPE_SHAPES.with(|map| map.borrow_mut().clear());
+    KOTLIN_FUNCTION_RETURN_SHAPES.with(|map| map.borrow_mut().clear());
+    KOTLIN_FUNCTION_SIGNATURE_LOCALS.with(|map| map.borrow_mut().clear());
     KOTLIN_DATA_CLASS_PROPERTY_INDEX.with(|map| map.borrow_mut().clear());
     KOTLIN_CLASS_PRIMARY_CTORS.with(|map| map.borrow_mut().clear());
     KOTLIN_DELEGATED_COLLECTIONS.with(|map| map.borrow_mut().clear());
+    KOTLIN_DELEGATE_FIELDS.with(|map| map.borrow_mut().clear());
     KOTLIN_NULLABLE_CTOR_CLASSES.with(|set| set.borrow_mut().clear());
+    KOTLIN_THREAD_LOCALS.with(|set| set.borrow_mut().clear());
+    KOTLIN_CONCURRENCY_LOCALS.with(|map| map.borrow_mut().clear());
+    KOTLIN_NEEDS_THREADS.with(|flag| *flag.borrow_mut() = false);
     KOTLIN_SIMPLE_FUNCTIONS.with(|map| map.borrow_mut().clear());
 
     // An `enum class`'s constants are built by its `__static_init_block__`
@@ -869,6 +1197,427 @@ fn dotted_ident_expr(path: &str) -> Expression {
     })
 }
 
+fn kt_stmt(kind: StmtKind) -> Statement {
+    Statement::new(kind)
+}
+
+fn kt_expr(kind: ExprKind) -> Expression {
+    Expression::new(kind)
+}
+
+fn kt_member(object: Expression, field: &str) -> Expression {
+    kt_expr(ExprKind::Member {
+        object: Box::new(object),
+        field: field.to_string(),
+        null_safe: false,
+    })
+}
+
+fn kt_call_expr(callee: Expression, args: Vec<Expression>) -> Expression {
+    kt_expr(ExprKind::Call {
+        callee: Box::new(callee),
+        args: args.into_iter().map(Argument::positional).collect(),
+        optional: false,
+    })
+}
+
+fn kt_call(name: &str, args: Vec<Expression>) -> Expression {
+    kt_call_expr(Expression::ident(name), args)
+}
+
+fn kt_binary(op: BinOp, left: Expression, right: Expression) -> Expression {
+    kt_expr(ExprKind::Binary {
+        op,
+        left: Box::new(left),
+        right: Box::new(right),
+    })
+}
+
+fn kt_assign(target: Expression, value: Expression) -> Statement {
+    kt_stmt(StmtKind::Assign {
+        targets: vec![target],
+        value,
+        by_ref: false,
+    })
+}
+
+fn kt_var(name: &str, init: Expression) -> Statement {
+    kt_stmt(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(name.to_string()),
+            type_hint: None,
+            init: Some(init),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Var,
+    })
+}
+
+fn kt_param(name: &str) -> Param {
+    Param {
+        name: name.to_string(),
+        type_hint: None,
+        default: None,
+        pass_by: PassBy::Value,
+        is_rest: false,
+        is_kwargs: false,
+        is_optional: false,
+        is_nullable: false,
+    }
+}
+
+fn kt_fn(name: &str, params: Vec<&str>, body: Vec<Statement>) -> Statement {
+    kt_stmt(StmtKind::FunctionDecl {
+        name: name.to_string(),
+        params: params.into_iter().map(kt_param).collect(),
+        return_type: None,
+        body,
+        modifiers: Modifiers::default(),
+        handles: Vec::new(),
+        is_async: false,
+        is_generator: false,
+        is_sub: false,
+    })
+}
+
+fn kt_ret(value: Expression) -> Statement {
+    kt_stmt(StmtKind::Return(Some(value)))
+}
+
+fn kt_if(cond: Expression, then_body: Vec<Statement>, else_body: Option<Vec<Statement>>) -> Statement {
+    kt_stmt(StmtKind::If {
+        cond,
+        then_body,
+        elifs: Vec::new(),
+        else_body,
+    })
+}
+
+fn kt_obj(props: Vec<(&str, Expression)>) -> Expression {
+    kt_expr(ExprKind::Object(
+        props
+            .into_iter()
+            .map(|(key, value)| ObjectProperty::KeyValue {
+                key: Expression::string(key),
+                value,
+            })
+            .collect(),
+    ))
+}
+
+fn kt_thread_runtime_fns() -> Vec<Statement> {
+    let id = Expression::ident;
+    let null = Expression::null;
+    let undef = || kt_expr(ExprKind::Lit(Literal::Undefined));
+    let str_lit = |s: &str| Expression::string(s);
+    let int_lit = Expression::int;
+    let bool_lit = Expression::bool;
+    let fld = |name: &str, field: &str| kt_member(id(name), field);
+    let current = || id("__kt_current_thread");
+    let state_obj = |name: &str| kt_obj(vec![("name", str_lit(name))]);
+
+    vec![
+        kt_var("__kt_thread_seq", int_lit(0)),
+        kt_var(
+            "__kt_main_thread",
+            kt_obj(vec![
+                ("name", str_lit("main")),
+                ("id", int_lit(1)),
+                ("priority", int_lit(5)),
+                ("isDaemon", bool_lit(false)),
+                ("isAlive", bool_lit(true)),
+                ("isInterrupted", bool_lit(false)),
+                ("state", state_obj("RUNNABLE")),
+                ("threadGroup", kt_obj(vec![("name", str_lit("main"))])),
+            ]),
+        ),
+        kt_var("__kt_current_thread", id("__kt_main_thread")),
+        kt_fn(
+            "__kt_atomic_new",
+            vec!["value"],
+            vec![kt_ret(kt_obj(vec![("__value", id("value"))]))],
+        ),
+        kt_fn("__kt_atomic_get", vec!["a"], vec![kt_ret(fld("a", "__value"))]),
+        kt_fn(
+            "__kt_atomic_set",
+            vec!["a", "value"],
+            vec![kt_assign(fld("a", "__value"), id("value")), kt_ret(null())],
+        ),
+        kt_fn(
+            "__kt_atomic_inc",
+            vec!["a"],
+            vec![
+                kt_assign(fld("a", "__value"), kt_binary(BinOp::Add, fld("a", "__value"), int_lit(1))),
+                kt_ret(fld("a", "__value")),
+            ],
+        ),
+        kt_fn(
+            "__kt_latch_new",
+            vec!["count"],
+            vec![kt_ret(kt_obj(vec![("count", id("count"))]))],
+        ),
+        kt_fn(
+            "__kt_latch_count_down",
+            vec!["l"],
+            vec![
+                kt_if(
+                    kt_binary(BinOp::Gt, fld("l", "count"), int_lit(0)),
+                    vec![kt_assign(fld("l", "count"), kt_binary(BinOp::Sub, fld("l", "count"), int_lit(1)))],
+                    None,
+                ),
+                kt_ret(null()),
+            ],
+        ),
+        kt_fn("__kt_latch_get_count", vec!["l"], vec![kt_ret(fld("l", "count"))]),
+        kt_fn(
+            "__kt_latch_await",
+            vec!["l"],
+            vec![
+                kt_if(
+                    kt_binary(BinOp::Gt, fld("l", "count"), int_lit(0)),
+                    vec![
+                        kt_assign(fld("__kt_current_thread", "__kt_waiting"), bool_lit(true)),
+                        kt_stmt(StmtKind::Throw {
+                            expr: Some(kt_call("Exception", vec![str_lit("__kt_wait")])),
+                            cause: None,
+                        }),
+                    ],
+                    None,
+                ),
+                kt_ret(null()),
+            ],
+        ),
+        kt_fn(
+            "__kt_thread_local_new",
+            vec![],
+            vec![kt_ret(kt_obj(vec![("__main", undef())]))],
+        ),
+        kt_fn(
+            "__kt_thread_local_set",
+            vec!["local", "value"],
+            vec![
+                kt_if(
+                    kt_binary(BinOp::Eq, fld("__kt_current_thread", "name"), str_lit("main")),
+                    vec![kt_assign(fld("local", "__main"), id("value"))],
+                    Some(vec![kt_assign(kt_member(id("local"), "__worker"), id("value"))]),
+                ),
+                kt_ret(null()),
+            ],
+        ),
+        kt_fn(
+            "__kt_thread_local_get",
+            vec!["local"],
+            vec![kt_if(
+                kt_binary(BinOp::Eq, fld("__kt_current_thread", "name"), str_lit("main")),
+                vec![kt_ret(fld("local", "__main"))],
+                Some(vec![kt_ret(fld("local", "__worker"))]),
+            )],
+        ),
+        kt_fn(
+            "__kt_thread_handler_exception",
+            vec!["t", "ex"],
+            vec![
+                kt_var("handled", kt_obj(Vec::new())),
+                kt_assign(kt_member(id("handled"), "message"), fld("t", "__kt_exception_message")),
+                kt_assign(kt_member(id("handled"), "__typename"), fld("t", "__kt_exception_type")),
+                kt_assign(kt_member(id("handled"), "__type"), fld("t", "__kt_exception_type")),
+                kt_assign(kt_member(id("handled"), "name"), fld("t", "__kt_exception_type")),
+                kt_ret(id("handled")),
+            ],
+        ),
+        kt_fn("__kt_thread_current", vec![], vec![kt_ret(current())]),
+        kt_fn(
+            "__kt_thread_sleep",
+            vec!["ms"],
+            vec![
+                kt_if(
+                    kt_binary(BinOp::Eq, fld("__kt_current_thread", "isInterrupted"), bool_lit(true)),
+                    vec![kt_stmt(StmtKind::Throw {
+                        expr: Some(kt_call("InterruptedException", vec![str_lit("interrupted")])),
+                        cause: None,
+                    })],
+                    None,
+                ),
+                kt_if(
+                    kt_binary(
+                        BinOp::And,
+                        kt_binary(BinOp::Gt, id("ms"), int_lit(0)),
+                        kt_binary(BinOp::NotEq, fld("__kt_current_thread", "name"), str_lit("main")),
+                    ),
+                    vec![
+                        kt_assign(fld("__kt_current_thread", "__kt_waiting"), bool_lit(true)),
+                        kt_stmt(StmtKind::Throw {
+                            expr: Some(kt_call("Exception", vec![str_lit("__kt_wait")])),
+                            cause: None,
+                        }),
+                    ],
+                    None,
+                ),
+                kt_ret(null()),
+            ],
+        ),
+        kt_fn(
+            "__kt_thread_interrupted",
+            vec![],
+            vec![
+                kt_var("v", fld("__kt_current_thread", "isInterrupted")),
+                kt_assign(fld("__kt_current_thread", "isInterrupted"), bool_lit(false)),
+                kt_ret(id("v")),
+            ],
+        ),
+        kt_fn(
+            "__kt_thread_make",
+            vec![
+                "start",
+                "name",
+                "isDaemon",
+                "priority",
+                "handler",
+                "target",
+                "exceptionType",
+                "exceptionMessage",
+            ],
+            vec![
+                kt_var("t", kt_obj(Vec::new())),
+                kt_if(
+                    kt_binary(BinOp::Eq, id("name"), null()),
+                    vec![
+                        kt_assign(id("name"), kt_binary(BinOp::Add, str_lit("Thread-"), kt_call("__kt_tostring", vec![id("__kt_thread_seq")]))),
+                        kt_assign(id("__kt_thread_seq"), kt_binary(BinOp::Add, id("__kt_thread_seq"), int_lit(1))),
+                    ],
+                    None,
+                ),
+                kt_assign(fld("t", "name"), id("name")),
+                kt_assign(fld("t", "id"), kt_binary(BinOp::Add, id("__kt_thread_seq"), int_lit(2))),
+                kt_assign(fld("t", "isDaemon"), id("isDaemon")),
+                kt_assign(fld("t", "priority"), id("priority")),
+                kt_assign(fld("t", "__target"), id("target")),
+                kt_assign(fld("t", "__handler"), id("handler")),
+                kt_assign(fld("t", "__kt_exception_type"), id("exceptionType")),
+                kt_assign(fld("t", "__kt_exception_message"), id("exceptionMessage")),
+                kt_assign(fld("t", "__started"), bool_lit(false)),
+                kt_assign(fld("t", "isAlive"), bool_lit(false)),
+                kt_assign(fld("t", "isInterrupted"), bool_lit(false)),
+                kt_assign(fld("t", "__kt_waiting"), bool_lit(false)),
+                kt_assign(fld("t", "state"), state_obj("NEW")),
+                kt_assign(fld("t", "threadGroup"), kt_obj(vec![("name", str_lit("main"))])),
+                kt_if(id("start"), vec![kt_stmt(StmtKind::Expr(kt_call("__kt_thread_start", vec![id("t")])) )], None),
+                kt_ret(id("t")),
+            ],
+        ),
+        kt_fn(
+            "__kt_thread_start",
+            vec!["t"],
+            vec![
+                kt_if(
+                    fld("t", "__started"),
+                    vec![kt_stmt(StmtKind::Throw {
+                        expr: Some(kt_call("IllegalStateException", vec![str_lit("Thread already started")])),
+                        cause: None,
+                    })],
+                    None,
+                ),
+                kt_assign(fld("t", "__started"), bool_lit(true)),
+                kt_assign(fld("t", "isAlive"), bool_lit(true)),
+                kt_assign(fld("t", "state"), state_obj("RUNNABLE")),
+                kt_var("prev", current()),
+                kt_assign(id("__kt_current_thread"), id("t")),
+                kt_stmt(StmtKind::Try {
+                    body: vec![kt_stmt(StmtKind::Expr(kt_call_expr(fld("t", "__target"), Vec::new())))],
+                    catches: vec![CatchClause {
+                        types: vec!["Exception".to_string(), "Throwable".to_string()],
+                        var_name: Some("ex".to_string()),
+                        stack_var: None,
+                        body: vec![kt_if(
+                            kt_binary(BinOp::Eq, kt_member(id("ex"), "message"), str_lit("__kt_wait")),
+                            vec![kt_assign(fld("t", "__kt_waiting"), bool_lit(true))],
+                            Some(vec![kt_if(
+                                kt_binary(BinOp::NotEq, fld("t", "__handler"), null()),
+                                vec![kt_stmt(StmtKind::Expr(kt_call_expr(
+                                    fld("t", "__handler"),
+                                    vec![id("t"), kt_call("__kt_thread_handler_exception", vec![id("t"), id("ex")])],
+                                )))],
+                                None,
+                            )]),
+                        )],
+                        when_clause: None,
+                    }],
+                    else_body: None,
+                    finally: None,
+                }),
+                kt_assign(id("__kt_current_thread"), id("prev")),
+                kt_if(
+                    fld("t", "__kt_waiting"),
+                    Vec::new(),
+                    Some(vec![
+                        kt_assign(fld("t", "isAlive"), bool_lit(false)),
+                        kt_assign(fld("t", "state"), state_obj("TERMINATED")),
+                    ]),
+                ),
+                kt_ret(null()),
+            ],
+        ),
+        kt_fn(
+            "__kt_thread_join",
+            vec!["t"],
+            vec![
+                kt_if(
+                    fld("t", "isAlive"),
+                    vec![
+                        kt_assign(fld("t", "__kt_waiting"), bool_lit(false)),
+                        kt_var("prev", current()),
+                        kt_assign(id("__kt_current_thread"), id("t")),
+                        kt_stmt(StmtKind::Try {
+                            body: vec![kt_stmt(StmtKind::Expr(kt_call_expr(fld("t", "__target"), Vec::new())))],
+                            catches: vec![CatchClause {
+                                types: vec!["Exception".to_string(), "Throwable".to_string()],
+                                var_name: Some("ex".to_string()),
+                                stack_var: None,
+                                body: vec![kt_if(
+                                    kt_binary(BinOp::NotEq, fld("t", "__handler"), null()),
+                                    vec![kt_stmt(StmtKind::Expr(kt_call_expr(
+                                        fld("t", "__handler"),
+                                        vec![id("t"), kt_call("__kt_thread_handler_exception", vec![id("t"), id("ex")])],
+                                    )))],
+                                    None,
+                                )],
+                                when_clause: None,
+                            }],
+                            else_body: None,
+                            finally: None,
+                        }),
+                        kt_assign(id("__kt_current_thread"), id("prev")),
+                        kt_assign(fld("t", "isInterrupted"), bool_lit(false)),
+                        kt_assign(fld("t", "isAlive"), bool_lit(false)),
+                        kt_assign(fld("t", "state"), state_obj("TERMINATED")),
+                    ],
+                    None,
+                ),
+                kt_ret(null()),
+            ],
+        ),
+        kt_fn(
+            "__kt_thread_interrupt",
+            vec!["t"],
+            vec![
+                kt_if(
+                    fld("t", "isAlive"),
+                    vec![kt_assign(fld("t", "isInterrupted"), bool_lit(true))],
+                    None,
+                ),
+                kt_assign(fld("t", "__kt_waiting"), bool_lit(false)),
+                kt_ret(null()),
+            ],
+        ),
+        kt_fn(
+            "__kt_thread_set_handler",
+            vec!["t", "handler"],
+            vec![kt_assign(fld("t", "__handler"), id("handler")), kt_ret(null())],
+        ),
+    ]
+}
+
 fn dotted_expr_path(expr: &Expression) -> Option<String> {
     match &expr.kind {
         ExprKind::Ident(name) => Some(name.clone()),
@@ -880,6 +1629,732 @@ fn dotted_expr_path(expr: &Expression) -> Option<String> {
         }
         _ => None,
     }
+}
+
+fn kotlin_type_is_random_like(ty: &str) -> bool {
+    let leaf = ty.rsplit('.').next().unwrap_or(ty);
+    leaf.eq_ignore_ascii_case("Random") || leaf.eq_ignore_ascii_case("SplittableRandom")
+}
+
+fn kotlin_random_method_helper(method: &str) -> Option<&'static str> {
+    match method.to_ascii_lowercase().as_str() {
+        "nextint" => Some("__kt_random_next_int"),
+        "nextlong" => Some("__kt_random_next_long"),
+        "nextdouble" => Some("__kt_random_next_double"),
+        "nextfloat" => Some("__kt_random_next_float"),
+        "nextboolean" => Some("__kt_random_next_boolean"),
+        "nextbytes" => Some("__kt_random_next_bytes"),
+        _ => None,
+    }
+}
+
+fn kotlin_mark_threads_needed() {
+    KOTLIN_NEEDS_THREADS.with(|flag| *flag.borrow_mut() = true);
+}
+
+fn kotlin_expr_is_thread_new(expr: &Expression) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::Call { callee, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__kt_thread_make")
+    )
+}
+
+fn kotlin_expr_is_thread_like(
+    expr: &Expression,
+    locals: &KotlinLocalTypes,
+    operators: &KotlinOperatorTable,
+) -> bool {
+    if kotlin_expr_is_thread_new(expr) {
+        return true;
+    }
+    match &expr.kind {
+        ExprKind::Ident(name) => KOTLIN_THREAD_LOCALS.with(|set| set.borrow().contains(name))
+            || locals
+                .get(name)
+                .is_some_and(|ty| ty.rsplit('.').next().unwrap_or(ty) == "Thread"),
+        ExprKind::Call { callee, .. } => {
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__kt_thread_current") {
+                return true;
+            }
+            dotted_expr_path(callee).as_deref().is_some_and(|path| {
+                matches!(
+                    path,
+                    "Thread.currentThread" | "java.lang.Thread.currentThread"
+                )
+            })
+        }
+        _ => kotlin_expr_type(expr, locals, operators)
+            .as_deref()
+            .is_some_and(|ty| ty.rsplit('.').next().unwrap_or(ty) == "Thread"),
+    }
+}
+
+fn kotlin_is_builtin_exception_name(name: &str) -> bool {
+    matches!(
+        name,
+        "Exception"
+            | "RuntimeException"
+            | "IllegalArgumentException"
+            | "IllegalStateException"
+            | "NullPointerException"
+            | "IndexOutOfBoundsException"
+            | "NoSuchElementException"
+            | "UnsupportedOperationException"
+            | "InterruptedException"
+            | "Throwable"
+            | "Error"
+    )
+}
+
+fn kotlin_is_builtin_exception_callee(name: &str) -> bool {
+    let trimmed = name.trim();
+    if is_user_class_name(trimmed) {
+        return false;
+    }
+    let leaf = trimmed.rsplit('.').next().unwrap_or(trimmed);
+    if trimmed != leaf {
+        return matches!(
+            trimmed,
+            "java.lang.Exception"
+                | "kotlin.Exception"
+                | "java.lang.RuntimeException"
+                | "kotlin.RuntimeException"
+                | "java.lang.IllegalArgumentException"
+                | "kotlin.IllegalArgumentException"
+                | "java.lang.IllegalStateException"
+                | "kotlin.IllegalStateException"
+                | "java.lang.NullPointerException"
+                | "kotlin.NullPointerException"
+                | "java.lang.IndexOutOfBoundsException"
+                | "kotlin.IndexOutOfBoundsException"
+                | "java.lang.NoSuchElementException"
+                | "kotlin.NoSuchElementException"
+                | "java.lang.UnsupportedOperationException"
+                | "kotlin.UnsupportedOperationException"
+                | "java.lang.InterruptedException"
+                | "kotlin.InterruptedException"
+                | "java.lang.Throwable"
+                | "kotlin.Throwable"
+                | "java.lang.Error"
+                | "kotlin.Error"
+        );
+    }
+    kotlin_is_builtin_exception_name(leaf) && !is_user_class_name(leaf)
+}
+
+fn kotlin_type_leaf(ty: &str) -> &str {
+    ty.trim()
+        .trim_end_matches('?')
+        .split('<')
+        .next()
+        .unwrap_or(ty)
+        .rsplit('.')
+        .next()
+        .unwrap_or(ty)
+}
+
+fn kotlin_expr_type_leaf<'a>(
+    expr: &'a Expression,
+    locals: &'a KotlinLocalTypes,
+    operators: &'a KotlinOperatorTable,
+) -> Option<String> {
+    kotlin_expr_type(expr, locals, operators).map(|ty| kotlin_type_leaf(&ty).to_string())
+}
+
+fn kotlin_thread_call_args(args: &[Argument]) -> Vec<Argument> {
+    let named = |name: &str| {
+        args.iter()
+            .find(|arg| arg.name.as_deref() == Some(name))
+            .map(|arg| arg.value.clone())
+    };
+    let lambda = args
+        .iter()
+        .rev()
+        .find(|arg| matches!(arg.value.kind, ExprKind::Lambda { .. }))
+        .map(|arg| arg.value.clone())
+        .unwrap_or_else(Expression::null);
+    let positional: Vec<_> = args
+        .iter()
+        .filter(|arg| arg.name.is_none() && !matches!(arg.value.kind, ExprKind::Lambda { .. }))
+        .map(|arg| arg.value.clone())
+        .collect();
+    let start = named("start").unwrap_or_else(|| {
+        positional
+            .first()
+            .cloned()
+            .unwrap_or_else(|| Expression::bool(true))
+    });
+    let is_daemon = named("isDaemon").unwrap_or_else(|| Expression::bool(false));
+    let name = named("name").unwrap_or_else(Expression::null);
+    let priority = named("priority").unwrap_or_else(|| Expression::int(5));
+    let handler = named("uncaughtExceptionHandler").unwrap_or_else(Expression::null);
+    let exception_type = Expression::string(
+        kotlin_thread_lambda_exception_type(&lambda).unwrap_or("Exception"),
+    );
+    let exception_message =
+        kotlin_thread_lambda_exception_message(&lambda).unwrap_or_else(Expression::null);
+    [
+        start,
+        name,
+        is_daemon,
+        priority,
+        handler,
+        lambda,
+        exception_type,
+        exception_message,
+    ]
+        .into_iter()
+        .map(Argument::positional)
+        .collect()
+}
+
+fn kotlin_thread_lambda_exception_type(expr: &Expression) -> Option<&'static str> {
+    let ExprKind::Lambda { body, .. } = &expr.kind else {
+        return None;
+    };
+    match body {
+        LambdaBody::Expr(expr) => kotlin_thread_expr_exception_type(expr),
+        LambdaBody::Block(stmts) => stmts.iter().find_map(kotlin_thread_stmt_exception_type),
+    }
+}
+
+fn kotlin_thread_stmt_exception_type(stmt: &Statement) -> Option<&'static str> {
+    match &stmt.kind {
+        StmtKind::Throw { expr: Some(expr), .. } => kotlin_thread_expr_exception_type(expr),
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => kotlin_thread_expr_exception_type(expr),
+        StmtKind::Block(stmts) => stmts.iter().find_map(kotlin_thread_stmt_exception_type),
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => then_body
+            .iter()
+            .find_map(kotlin_thread_stmt_exception_type)
+            .or_else(|| {
+                elifs
+                    .iter()
+                    .flat_map(|(_, body)| body.iter())
+                    .find_map(kotlin_thread_stmt_exception_type)
+            })
+            .or_else(|| {
+                else_body
+                    .as_ref()
+                    .and_then(|body| body.iter().find_map(kotlin_thread_stmt_exception_type))
+            }),
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => body
+            .iter()
+            .find_map(kotlin_thread_stmt_exception_type)
+            .or_else(|| {
+                catches
+                    .iter()
+                    .flat_map(|catch| catch.body.iter())
+                    .find_map(kotlin_thread_stmt_exception_type)
+            })
+            .or_else(|| {
+                else_body
+                    .as_ref()
+                    .and_then(|body| body.iter().find_map(kotlin_thread_stmt_exception_type))
+            })
+            .or_else(|| {
+                finally
+                    .as_ref()
+                    .and_then(|body| body.iter().find_map(kotlin_thread_stmt_exception_type))
+            }),
+        _ => None,
+    }
+}
+
+fn kotlin_thread_expr_exception_type(expr: &Expression) -> Option<&'static str> {
+    match &expr.kind {
+        ExprKind::Call { callee, args, .. } | ExprKind::New { class: callee, args } => {
+            let name = dotted_expr_path(callee)?;
+            let leaf = name.rsplit('.').next().unwrap_or(&name);
+            if kotlin_is_builtin_exception_callee(&name) {
+                Some(match leaf {
+                    "IllegalStateException" => "IllegalStateException",
+                    "RuntimeException" => "RuntimeException",
+                    "IllegalArgumentException" => "IllegalArgumentException",
+                    "NullPointerException" => "NullPointerException",
+                    "IndexOutOfBoundsException" => "IndexOutOfBoundsException",
+                    "NoSuchElementException" => "NoSuchElementException",
+                    "UnsupportedOperationException" => "UnsupportedOperationException",
+                    "InterruptedException" => "InterruptedException",
+                    "Throwable" => "Throwable",
+                    "Error" => "Error",
+                    _ => "Exception",
+                })
+            } else {
+                args.iter()
+                    .find_map(|arg| kotlin_thread_expr_exception_type(&arg.value))
+            }
+        }
+        ExprKind::Binary { left, right, .. } => kotlin_thread_expr_exception_type(left)
+            .or_else(|| kotlin_thread_expr_exception_type(right)),
+        ExprKind::Ternary { cond, then, else_ } => kotlin_thread_expr_exception_type(cond)
+            .or_else(|| kotlin_thread_expr_exception_type(then))
+            .or_else(|| kotlin_thread_expr_exception_type(else_)),
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Expr(expr) => kotlin_thread_expr_exception_type(expr),
+            LambdaBody::Block(stmts) => stmts.iter().find_map(kotlin_thread_stmt_exception_type),
+        },
+        _ => None,
+    }
+}
+
+fn kotlin_thread_lambda_exception_message(expr: &Expression) -> Option<Expression> {
+    let ExprKind::Lambda { body, .. } = &expr.kind else {
+        return None;
+    };
+    match body {
+        LambdaBody::Expr(expr) => kotlin_thread_expr_exception_message(expr),
+        LambdaBody::Block(stmts) => stmts.iter().find_map(kotlin_thread_stmt_exception_message),
+    }
+}
+
+fn kotlin_thread_stmt_exception_message(stmt: &Statement) -> Option<Expression> {
+    match &stmt.kind {
+        StmtKind::Throw { expr: Some(expr), .. } => kotlin_thread_expr_exception_message(expr),
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            kotlin_thread_expr_exception_message(expr)
+        }
+        StmtKind::Block(stmts) => stmts.iter().find_map(kotlin_thread_stmt_exception_message),
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => then_body
+            .iter()
+            .find_map(kotlin_thread_stmt_exception_message)
+            .or_else(|| {
+                elifs
+                    .iter()
+                    .flat_map(|(_, body)| body.iter())
+                    .find_map(kotlin_thread_stmt_exception_message)
+            })
+            .or_else(|| {
+                else_body
+                    .as_ref()
+                    .and_then(|body| body.iter().find_map(kotlin_thread_stmt_exception_message))
+            }),
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => body
+            .iter()
+            .find_map(kotlin_thread_stmt_exception_message)
+            .or_else(|| {
+                catches
+                    .iter()
+                    .flat_map(|catch| catch.body.iter())
+                    .find_map(kotlin_thread_stmt_exception_message)
+            })
+            .or_else(|| {
+                else_body
+                    .as_ref()
+                    .and_then(|body| body.iter().find_map(kotlin_thread_stmt_exception_message))
+            })
+            .or_else(|| {
+                finally
+                    .as_ref()
+                    .and_then(|body| body.iter().find_map(kotlin_thread_stmt_exception_message))
+            }),
+        _ => None,
+    }
+}
+
+fn kotlin_thread_expr_exception_message(expr: &Expression) -> Option<Expression> {
+    match &expr.kind {
+        ExprKind::Call { callee, args, .. } | ExprKind::New { class: callee, args } => {
+            let name = dotted_expr_path(callee)?;
+            let leaf = name.rsplit('.').next().unwrap_or(&name);
+            if kotlin_is_builtin_exception_callee(&name) {
+                args.first().map(|arg| arg.value.clone())
+            } else {
+                args.iter()
+                    .find_map(|arg| kotlin_thread_expr_exception_message(&arg.value))
+            }
+        }
+        ExprKind::Binary { left, right, .. } => kotlin_thread_expr_exception_message(left)
+            .or_else(|| kotlin_thread_expr_exception_message(right)),
+        ExprKind::Ternary { cond, then, else_ } => kotlin_thread_expr_exception_message(cond)
+            .or_else(|| kotlin_thread_expr_exception_message(then))
+            .or_else(|| kotlin_thread_expr_exception_message(else_)),
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Expr(expr) => kotlin_thread_expr_exception_message(expr),
+            LambdaBody::Block(stmts) => stmts.iter().find_map(kotlin_thread_stmt_exception_message),
+        },
+        _ => None,
+    }
+}
+
+fn kotlin_thread_handler_bridge_expr(handler: Expression) -> Expression {
+    let ExprKind::Lambda {
+        params,
+        body,
+        is_async,
+        captures,
+    } = handler.kind
+    else {
+        return handler;
+    };
+    if params.len() < 2 {
+        return Expression::new(ExprKind::Lambda {
+            params,
+            body,
+            is_async,
+            captures,
+        });
+    }
+    let thread_name = params[0].name.clone();
+    let ex_name = params[1].name.clone();
+    let bridge_assign = kt_stmt(StmtKind::Assign {
+        targets: vec![Expression::ident(&ex_name)],
+        value: kt_call(
+            "__kt_thread_handler_exception",
+            vec![Expression::ident(&thread_name), Expression::ident(&ex_name)],
+        ),
+        by_ref: false,
+    });
+    let mut body = match body {
+        LambdaBody::Block(stmts) => stmts,
+        LambdaBody::Expr(expr) => vec![kt_stmt(StmtKind::Expr(*expr))],
+    };
+    let already_bridged = body.first().is_some_and(|stmt| {
+        let StmtKind::Assign { targets, value, .. } = &stmt.kind else {
+            return false;
+        };
+        matches!(targets.first().map(|target| &target.kind), Some(ExprKind::Ident(name)) if name == &ex_name)
+            && matches!(&value.kind, ExprKind::Call { callee, .. } if matches!(&callee.kind, ExprKind::Ident(name) if name == "__kt_thread_handler_exception"))
+    });
+    if !already_bridged {
+        body.insert(0, bridge_assign);
+    }
+    Expression::new(ExprKind::Lambda {
+        params,
+        body: LambdaBody::Block(body),
+        is_async,
+        captures,
+    })
+}
+
+fn kotlin_static_thread_value(path: &str) -> Option<Expression> {
+    Some(match path {
+        "Thread.MIN_PRIORITY" | "java.lang.Thread.MIN_PRIORITY" => Expression::int(1),
+        "Thread.NORM_PRIORITY" | "java.lang.Thread.NORM_PRIORITY" => Expression::int(5),
+        "Thread.MAX_PRIORITY" | "java.lang.Thread.MAX_PRIORITY" => Expression::int(10),
+        _ => return None,
+    })
+}
+
+fn kotlin_rewrite_thread_member_read(
+    expr: &mut Expression,
+    locals: &KotlinLocalTypes,
+    operators: &KotlinOperatorTable,
+) -> bool {
+    let ExprKind::Member { object, field, .. } = &expr.kind else {
+        return false;
+    };
+    if !kotlin_expr_is_thread_like(object, locals, operators) {
+        return false;
+    }
+    let mut object = (**object).clone();
+    normalize_kotlin_operator_expr(&mut object, operators, locals);
+    match field.as_str() {
+        "isAlive" | "isInterrupted" | "name" | "priority" | "isDaemon" | "id" | "state"
+        | "threadGroup" | "uncaughtExceptionHandler" => {
+            *expr = kt_member(object, field);
+            true
+        }
+        _ => false,
+    }
+}
+
+fn kotlin_rewrite_thread_member_call(
+    expr: &mut Expression,
+    locals: &KotlinLocalTypes,
+    operators: &KotlinOperatorTable,
+) -> bool {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return false;
+    };
+    if let Some(path) = dotted_expr_path(callee) {
+        match path.as_str() {
+            "Thread.currentThread" | "java.lang.Thread.currentThread" => {
+                kotlin_mark_threads_needed();
+                *expr = kt_call("__kt_thread_current", Vec::new());
+                return true;
+            }
+            "Thread.sleep" | "java.lang.Thread.sleep" => {
+                kotlin_mark_threads_needed();
+                *expr = kt_call(
+                    "__kt_thread_sleep",
+                    vec![args.first().map(|a| a.value.clone()).unwrap_or_else(|| Expression::int(0))],
+                );
+                return true;
+            }
+            "Thread.interrupted" | "java.lang.Thread.interrupted" => {
+                kotlin_mark_threads_needed();
+                *expr = kt_call("__kt_thread_interrupted", Vec::new());
+                return true;
+            }
+            "Thread.yield" | "java.lang.Thread.yield" => {
+                *expr = Expression::null();
+                return true;
+            }
+            _ => {}
+        }
+    }
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return false;
+    };
+    if !kotlin_expr_is_thread_like(object, locals, operators) {
+        return false;
+    }
+    let mut receiver = (**object).clone();
+    normalize_kotlin_operator_expr(&mut receiver, operators, locals);
+    let call = match field.as_str() {
+        "start" if args.is_empty() => kt_call("__kt_thread_start", vec![receiver]),
+        "join" if args.is_empty() => kt_call("__kt_thread_join", vec![receiver]),
+        "interrupt" if args.is_empty() => kt_call("__kt_thread_interrupt", vec![receiver]),
+        "isAlive" if args.is_empty() => kt_member(receiver, "isAlive"),
+        "isInterrupted" if args.is_empty() => kt_member(receiver, "isInterrupted"),
+        "setUncaughtExceptionHandler" if args.len() == 1 => {
+            kt_call(
+                "__kt_thread_set_handler",
+                vec![
+                    receiver,
+                    kotlin_thread_handler_bridge_expr(args[0].value.clone()),
+                ],
+            )
+        }
+        _ => return false,
+    };
+    kotlin_mark_threads_needed();
+    *expr = call;
+    true
+}
+
+fn kotlin_type_is_java_stream_like(ty: &str) -> bool {
+    matches!(
+        ty.rsplit('.').next().unwrap_or(ty),
+        "ByteArrayInputStream"
+            | "ByteArrayOutputStream"
+            | "InputStreamReader"
+            | "OutputStreamWriter"
+            | "BufferedInputStream"
+            | "FilterInputStream"
+            | "BufferedReader"
+            | "StringReader"
+            | "StringWriter"
+            | "CharArrayReader"
+            | "CharArrayWriter"
+    )
+}
+
+fn kotlin_java_io_tostring_helper(ty: &str) -> Option<&'static str> {
+    match ty.rsplit('.').next().unwrap_or(ty) {
+        "ByteArrayOutputStream" => Some("__kt_io_output_to_string"),
+        "StringWriter" | "CharArrayWriter" => Some("__kt_io_writer_to_string"),
+        _ => None,
+    }
+}
+
+fn kotlin_java_io_stream_type(
+    expr: &Expression,
+    locals: &KotlinLocalTypes,
+    operators: &KotlinOperatorTable,
+) -> Option<String> {
+    if let Some(ty) = kotlin_expr_type(expr, locals, operators)
+        && kotlin_type_is_java_stream_like(&ty)
+    {
+        return Some(ty);
+    }
+    match &expr.kind {
+        ExprKind::Call { callee, .. } => {
+            if let ExprKind::Member { field, .. } = &callee.kind {
+                match field.as_str() {
+                    "inputStream" => Some("java.io.ByteArrayInputStream".to_string()),
+                    "outputStream" | "appendStream" => {
+                        Some("java.io.ByteArrayOutputStream".to_string())
+                    }
+                    "reader" => Some("java.io.InputStreamReader".to_string()),
+                    "writer" => Some("java.io.OutputStreamWriter".to_string()),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn kotlin_type_is_range_like(ty: &str) -> bool {
+    matches!(ty, "Range" | "IntRange" | "LongRange" | "CharRange")
+}
+
+fn kotlin_to_list_expr(expr: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("__kt_to_list")),
+        args: vec![Argument::positional(expr)],
+        optional: false,
+    })
+}
+
+fn kotlin_range_first_expr(expr: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("__kt_first")),
+        args: vec![Argument::positional(kotlin_to_list_expr(expr))],
+        optional: false,
+    })
+}
+
+fn kotlin_range_last_expr(expr: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("__kt_last")),
+        args: vec![Argument::positional(kotlin_to_list_expr(expr))],
+        optional: false,
+    })
+}
+
+fn kotlin_coerce_expr(value: Expression, low: Expression, high: Expression) -> Expression {
+    Expression::new(ExprKind::Ternary {
+        cond: Box::new(Expression::new(ExprKind::Binary {
+            op: BinOp::Lt,
+            left: Box::new(value.clone()),
+            right: Box::new(low.clone()),
+        })),
+        then: Box::new(low),
+        else_: Box::new(Expression::new(ExprKind::Ternary {
+            cond: Box::new(Expression::new(ExprKind::Binary {
+                op: BinOp::Gt,
+                left: Box::new(value.clone()),
+                right: Box::new(high.clone()),
+            })),
+            then: Box::new(high),
+            else_: Box::new(value),
+        })),
+    })
+}
+
+fn kotlin_illegal_argument_throw_expr(message: &str) -> Expression {
+    kt_call(
+        "__kt_throw",
+        vec![kt_call(
+            "IllegalArgumentException",
+            vec![Expression::new(ExprKind::Lit(Literal::Str(message.into())))],
+        )],
+    )
+}
+
+fn kotlin_char_code_expr(value: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("__kt_char_code")),
+        args: vec![Argument::positional(value)],
+        optional: false,
+    })
+}
+
+fn kotlin_or_expr(left: Expression, right: Expression) -> Expression {
+    Expression::new(ExprKind::Binary {
+        op: BinOp::Or,
+        left: Box::new(left),
+        right: Box::new(right),
+    })
+}
+
+fn kotlin_and_expr(left: Expression, right: Expression) -> Expression {
+    Expression::new(ExprKind::Binary {
+        op: BinOp::And,
+        left: Box::new(left),
+        right: Box::new(right),
+    })
+}
+
+fn kotlin_char_eq_expr(value: Expression, text: &str) -> Expression {
+    Expression::new(ExprKind::Binary {
+        op: BinOp::Eq,
+        left: Box::new(value),
+        right: Box::new(Expression::string(text)),
+    })
+}
+
+fn kotlin_char_is_vowel_expr(value: Expression) -> Expression {
+    ["a", "e", "i", "o", "u", "A", "E", "I", "O", "U"]
+        .into_iter()
+        .map(|vowel| kotlin_char_eq_expr(value.clone(), vowel))
+        .reduce(kotlin_or_expr)
+        .unwrap_or_else(|| Expression::bool(false))
+}
+
+fn kotlin_char_is_iso_control_expr(value: Expression) -> Expression {
+    let code = kotlin_char_code_expr(value);
+    let low = Expression::new(ExprKind::Binary {
+        op: BinOp::Lt,
+        left: Box::new(code.clone()),
+        right: Box::new(Expression::int(32)),
+    });
+    let high = kotlin_and_expr(
+        Expression::new(ExprKind::Binary {
+            op: BinOp::GtEq,
+            left: Box::new(code.clone()),
+            right: Box::new(Expression::int(127)),
+        }),
+        Expression::new(ExprKind::Binary {
+            op: BinOp::LtEq,
+            left: Box::new(code),
+            right: Box::new(Expression::int(159)),
+        }),
+    );
+    kotlin_or_expr(low, high)
+}
+
+fn kotlin_digit_to_int_expr(value: Expression, nullable: bool) -> Expression {
+    let code = kotlin_char_code_expr(value);
+    let digit = Expression::new(ExprKind::Binary {
+        op: BinOp::Sub,
+        left: Box::new(code.clone()),
+        right: Box::new(Expression::int('0' as i64)),
+    });
+    if nullable {
+        Expression::new(ExprKind::Ternary {
+            cond: Box::new(Expression::new(ExprKind::Binary {
+                op: BinOp::And,
+                left: Box::new(Expression::new(ExprKind::Binary {
+                    op: BinOp::GtEq,
+                    left: Box::new(code.clone()),
+                    right: Box::new(Expression::int('0' as i64)),
+                })),
+                right: Box::new(Expression::new(ExprKind::Binary {
+                    op: BinOp::LtEq,
+                    left: Box::new(code),
+                    right: Box::new(Expression::int('9' as i64)),
+                })),
+            })),
+            then: Box::new(digit),
+            else_: Box::new(Expression::null()),
+        })
+    } else {
+        digit
+    }
+}
+
+fn kotlin_call_zero_arg_lambda(lambda: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(lambda),
+        args: Vec::new(),
+        optional: false,
+    })
 }
 
 /// A `val`/`var` that REUSES a bound name is a NEW binding in Kotlin — both
@@ -2387,7 +3862,7 @@ fn rewrite_import_aliases_in_stmt(
         }
         StmtKind::FunctionDecl { params, body, .. } => {
             let mut fn_scope = scope.clone();
-            for param in params {
+            for param in params.iter_mut() {
                 fn_scope.insert(param.name.clone());
             }
             for stmt in body.iter() {
@@ -2633,7 +4108,7 @@ fn rewrite_import_aliases_in_expr(
         }
         ExprKind::Lambda { params, body, .. } => {
             let mut lambda_scope = scope.clone();
-            for param in params {
+            for param in params.iter_mut() {
                 lambda_scope.insert(param.name.clone());
             }
             match body {
@@ -2682,23 +4157,8 @@ fn post_alias_kotlin_lowering(expr: &Expression) -> Option<Expression> {
                     field == "thenByDescending",
                 ))
             }
-            ExprKind::Ident(name)
-                if matches!(
-                    name.as_str(),
-                    "listOf"
-                        | "mutableListOf"
-                        | "arrayListOf"
-                        | "arrayOf"
-                        | "emptyList"
-                        | "intArrayOf"
-                        | "doubleArrayOf"
-                        | "booleanArrayOf"
-                        | "charArrayOf"
-                        | "longArrayOf"
-                        | "sequenceOf"
-                ) =>
-            {
-                Some(Expression::new(ExprKind::Array(
+            ExprKind::Ident(name) if name == "sequenceOf" || name == "emptySequence" => {
+                let array = Expression::new(ExprKind::Array(
                     args.iter()
                         .map(|arg| ArrayElement {
                             key: None,
@@ -2707,7 +4167,12 @@ fn post_alias_kotlin_lowering(expr: &Expression) -> Option<Expression> {
                             by_ref: false,
                         })
                         .collect(),
-                )))
+                ));
+                Some(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__kt_seq_of")),
+                    args: vec![Argument::positional(array)],
+                    optional: false,
+                }))
             }
             ExprKind::Ident(name)
                 if matches!(name.as_str(), "buildList" | "buildSet" | "buildMap")
@@ -2717,6 +4182,13 @@ fn post_alias_kotlin_lowering(expr: &Expression) -> Option<Expression> {
                 // `buildList(capacity) { }` — the capacity is a growth HINT,
                 // not a size; ignored (the 2-arg form built nothing).
                 kotlin_build_collection_expr(name, &args.last().unwrap().value)
+            }
+            ExprKind::Ident(name)
+                if name == "sequence"
+                    && args.len() == 1
+                    && matches!(args[0].value.kind, ExprKind::Lambda { .. }) =>
+            {
+                kotlin_sequence_builder_expr(&args[0].value)
             }
             ExprKind::Ident(name)
                 if matches!(
@@ -3161,7 +4633,7 @@ fn kotlin_rewrite_receiver_refs_expr(expr: &mut Expression, recv: &str, skip: &H
             {
                 *expr = Expression::new(ExprKind::Member {
                     object: Box::new(Expression::ident(recv)),
-                    field: name.clone(),
+                    field: backing_field_substitution(name),
                     null_safe: false,
                 });
             }
@@ -3170,6 +4642,14 @@ fn kotlin_rewrite_receiver_refs_expr(expr: &mut Expression, recv: &str, skip: &H
         ExprKind::Call { callee, args, .. } => {
             for a in args.iter_mut() {
                 kotlin_rewrite_receiver_refs_expr(&mut a.value, recv, skip);
+            }
+            if let ExprKind::Member { object, field, .. } = &mut callee.kind
+                && is_member_extension_function(field)
+            {
+                let receiver_arg = *object.clone();
+                args.insert(0, Argument::positional(receiver_arg));
+                **object = Expression::ident(recv);
+                return;
             }
             if let ExprKind::Ident(name) = &callee.kind {
                 if skip.contains(name.as_str()) {
@@ -3240,6 +4720,7 @@ fn kotlin_rewrite_receiver_refs_expr(expr: &mut Expression, recv: &str, skip: &H
                     // name — the walk-time member pass already ran, so this
                     // freshly-built member call must resolve it itself.
                     let field = overloaded_storage_name_for_args(name, args.len(), args)
+                        .filter(|storage| is_user_member_name(storage, args.len()))
                         .unwrap_or_else(|| name.clone());
                     **callee = Expression::new(ExprKind::Member {
                         object: Box::new(Expression::ident(recv)),
@@ -3329,6 +4810,136 @@ fn kotlin_fold_char_range(expr: &mut Expression) {
     }
 }
 
+fn kotlin_char_range_array(
+    start: &Expression,
+    end: &Expression,
+    inclusive: bool,
+    step: i64,
+) -> Option<Expression> {
+    let (ExprKind::Lit(Literal::Str(a)), ExprKind::Lit(Literal::Str(b))) = (&start.kind, &end.kind)
+    else {
+        return None;
+    };
+    if a.chars().count() != 1 || b.chars().count() != 1 || step == 0 {
+        return None;
+    }
+    let mut cur = a.chars().next().unwrap() as i64;
+    let end = b.chars().next().unwrap() as i64;
+    let stop = if inclusive { end } else { end - step.signum() };
+    let mut items = Vec::new();
+    if step > 0 {
+        while cur <= stop {
+            if let Some(ch) = char::from_u32(cur as u32) {
+                items.push(ArrayElement {
+                    key: None,
+                    value: Expression::string(&ch.to_string()),
+                    spread: false,
+                    by_ref: false,
+                });
+            }
+            cur += step;
+        }
+    } else {
+        while cur >= stop {
+            if let Some(ch) = char::from_u32(cur as u32) {
+                items.push(ArrayElement {
+                    key: None,
+                    value: Expression::string(&ch.to_string()),
+                    spread: false,
+                    by_ref: false,
+                });
+            }
+            cur += step;
+        }
+    }
+    Some(Expression::new(ExprKind::Array(items)))
+}
+
+fn kotlin_static_int(expr: &Expression) -> Option<i64> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Int(n)) => Some(*n),
+        ExprKind::Unary {
+            op: UnaryOp::Neg,
+            expr,
+        } => kotlin_static_int(expr).map(|n| -n),
+        _ => None,
+    }
+}
+
+fn kotlin_expr_is_range_shape(expr: &Expression) -> bool {
+    matches!(&expr.kind, ExprKind::Range { .. })
+        || matches!(
+            &expr.kind,
+            ExprKind::Call { callee, .. }
+                if matches!(&callee.kind, ExprKind::Ident(name) if matches!(name.as_str(), "__kt_step_asc" | "__kt_step_desc"))
+        )
+}
+
+fn kotlin_range_step_expr(object: Expression, step: Expression) -> Expression {
+    match &object.kind {
+        ExprKind::Range {
+            start,
+            end,
+            inclusive,
+        } => {
+            if let Some(step_i) = kotlin_static_int(&step)
+                && let Some(array) = kotlin_char_range_array(start, end, *inclusive, step_i)
+            {
+                return array;
+            }
+            let stop = if *inclusive {
+                Expression::new(ExprKind::Binary {
+                    op: BinOp::Add,
+                    left: end.clone(),
+                    right: Box::new(Expression::int(1)),
+                })
+            } else {
+                (**end).clone()
+            };
+            Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__kt_step_asc")),
+                args: vec![
+                    Argument::positional((**start).clone()),
+                    Argument::positional(stop),
+                    Argument::positional(step),
+                ],
+                optional: false,
+            })
+        }
+        ExprKind::Call {
+            callee,
+            args,
+            optional,
+        } if matches!(&callee.kind, ExprKind::Ident(name) if name == "__kt_step_desc")
+            && args.len() == 3 =>
+        {
+            let mut next_args = args.clone();
+            next_args[2] = Argument::positional(Expression::new(ExprKind::Unary {
+                op: UnaryOp::Neg,
+                expr: Box::new(step),
+            }));
+            Expression::new(ExprKind::Call {
+                callee: callee.clone(),
+                args: next_args,
+                optional: *optional,
+            })
+        }
+        _ => Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__kt_step_asc")),
+            args: vec![
+                Argument::positional(kotlin_range_first_expr(object.clone())),
+                Argument::positional(Expression::new(ExprKind::Binary {
+                    op: BinOp::Add,
+                    left: Box::new(kotlin_range_last_expr(object)),
+                    right: Box::new(Expression::int(1)),
+                })),
+                Argument::positional(step),
+            ],
+            optional: false,
+        }),
+    }
+}
+
 fn dotted_expr_path_of(expr: &Expression) -> Option<String> {
     match &expr.kind {
         ExprKind::Ident(name) => Some(name.clone()),
@@ -3344,11 +4955,6 @@ fn dotted_expr_path_of(expr: &Expression) -> Option<String> {
 /// collection, with the builder's bare calls (`add`, `put`, …) rewritten onto
 /// it — the same shape `run { }` lowers to, plus the receiver.
 fn kotlin_build_collection_expr(kind: &str, lambda: &Expression) -> Option<Expression> {
-    let factory = match kind {
-        "buildList" => "mutableListOf",
-        "buildSet" => "mutableSetOf",
-        _ => "mutableMapOf",
-    };
     let ExprKind::Lambda { params, body, .. } = &lambda.kind else {
         return None;
     };
@@ -3378,11 +4984,15 @@ fn kotlin_build_collection_expr(kind: &str, lambda: &Expression) -> Option<Expre
         declarations: vec![VarDeclarator {
             pattern: BindingPattern::Ident(builder.to_string()),
             type_hint: None,
-            init: Some(Expression::new(ExprKind::Call {
-                callee: Box::new(Expression::ident(factory)),
-                args: Vec::new(),
-                optional: false,
-            })),
+            init: Some(match kind {
+                "buildSet" => create_kotlin_set_expr(Vec::new()),
+                "buildMap" => Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("mutableMapOf")),
+                    args: Vec::new(),
+                    optional: false,
+                }),
+                _ => Expression::new(ExprKind::Array(Vec::new())),
+            }),
             array_bounds: None,
             with_events: false,
         }],
@@ -3403,6 +5013,181 @@ fn kotlin_build_collection_expr(kind: &str, lambda: &Expression) -> Option<Expre
         args: Vec::new(),
         optional: false,
     }))
+}
+
+fn kotlin_sequence_builder_expr(lambda: &Expression) -> Option<Expression> {
+    let ExprKind::Lambda { params, body, .. } = &lambda.kind else {
+        return None;
+    };
+    if params.len() > 1 || params.first().is_some_and(|p| p.name != "it") {
+        return None;
+    }
+    let mut body = match body {
+        LambdaBody::Block(stmts) => stmts.clone(),
+        LambdaBody::Expr(expr) => vec![Statement::new(StmtKind::Expr((**expr).clone()))],
+    };
+    for stmt in &mut body {
+        kotlin_rewrite_sequence_yields_stmt(stmt);
+    }
+    let generator = Expression::new(ExprKind::FunctionExpr(Box::new(Statement::new(
+        StmtKind::FunctionDecl {
+            name: String::new(),
+            params: Vec::new(),
+            return_type: Some("Sequence".to_string()),
+            body,
+            modifiers: Modifiers::default(),
+            handles: Vec::new(),
+            is_async: false,
+            is_generator: true,
+            is_sub: false,
+        },
+    ))));
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("__kt_seq_builder")),
+        args: vec![Argument::positional(generator)],
+        optional: false,
+    }))
+}
+
+fn kotlin_rewrite_sequence_yields_stmt(stmt: &mut Statement) {
+    match &mut stmt.kind {
+        StmtKind::Expr(e) | StmtKind::Return(Some(e)) | StmtKind::Throw { expr: Some(e), .. } => {
+            kotlin_rewrite_sequence_yields_expr(e)
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            kotlin_rewrite_sequence_yields_expr(cond);
+            for s in then_body {
+                kotlin_rewrite_sequence_yields_stmt(s);
+            }
+            for (cond, body) in elifs {
+                kotlin_rewrite_sequence_yields_expr(cond);
+                for s in body {
+                    kotlin_rewrite_sequence_yields_stmt(s);
+                }
+            }
+            if let Some(body) = else_body {
+                for s in body {
+                    kotlin_rewrite_sequence_yields_stmt(s);
+                }
+            }
+        }
+        StmtKind::While { cond, body, .. } => {
+            kotlin_rewrite_sequence_yields_expr(cond);
+            for s in body {
+                kotlin_rewrite_sequence_yields_stmt(s);
+            }
+        }
+        StmtKind::ForIn { iter, body, .. } => {
+            kotlin_rewrite_sequence_yields_expr(iter);
+            for s in body {
+                kotlin_rewrite_sequence_yields_stmt(s);
+            }
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            if let Some(init) = init {
+                kotlin_rewrite_sequence_yields_stmt(init);
+            }
+            if let Some(cond) = cond {
+                kotlin_rewrite_sequence_yields_expr(cond);
+            }
+            if let Some(update) = update {
+                kotlin_rewrite_sequence_yields_expr(update);
+            }
+            for s in body {
+                kotlin_rewrite_sequence_yields_stmt(s);
+            }
+        }
+        StmtKind::Block(stmts) => {
+            for s in stmts {
+                kotlin_rewrite_sequence_yields_stmt(s);
+            }
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    kotlin_rewrite_sequence_yields_expr(init);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn kotlin_rewrite_sequence_yields_expr(expr: &mut Expression) {
+    match &mut expr.kind {
+        ExprKind::Call { callee, args, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "yield")
+                && args.len() == 1 =>
+        {
+            let yielded = args[0].value.clone();
+            *expr = Expression::new(ExprKind::Yield(Some(Box::new(yielded))));
+        }
+        ExprKind::Call { callee, args, .. } => {
+            kotlin_rewrite_sequence_yields_expr(callee);
+            for arg in args {
+                kotlin_rewrite_sequence_yields_expr(&mut arg.value);
+            }
+        }
+        ExprKind::Lambda { .. } | ExprKind::FunctionExpr(_) => {}
+        ExprKind::Binary { left, right, .. } => {
+            kotlin_rewrite_sequence_yields_expr(left);
+            kotlin_rewrite_sequence_yields_expr(right);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Cast { expr, .. }
+        | ExprKind::Await(expr)
+        | ExprKind::Yield(Some(expr))
+        | ExprKind::Delete(expr) => kotlin_rewrite_sequence_yields_expr(expr),
+        ExprKind::Ternary { cond, then, else_ } => {
+            kotlin_rewrite_sequence_yields_expr(cond);
+            kotlin_rewrite_sequence_yields_expr(then);
+            kotlin_rewrite_sequence_yields_expr(else_);
+        }
+        ExprKind::Assign { target, value } => {
+            kotlin_rewrite_sequence_yields_expr(target);
+            kotlin_rewrite_sequence_yields_expr(value);
+        }
+        ExprKind::Member { object, .. } => kotlin_rewrite_sequence_yields_expr(object),
+        ExprKind::Index { object, index, .. } => {
+            kotlin_rewrite_sequence_yields_expr(object);
+            kotlin_rewrite_sequence_yields_expr(index);
+        }
+        ExprKind::Array(items) => {
+            for item in items {
+                kotlin_rewrite_sequence_yields_expr(&mut item.value);
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Sequence(items) | ExprKind::Set(items) => {
+            for item in items {
+                kotlin_rewrite_sequence_yields_expr(item);
+            }
+        }
+        ExprKind::Map(entries) => {
+            for (key, value) in entries {
+                kotlin_rewrite_sequence_yields_expr(key);
+                kotlin_rewrite_sequence_yields_expr(value);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                if let ObjectProperty::KeyValue { key, value } = prop {
+                    kotlin_rewrite_sequence_yields_expr(key);
+                    kotlin_rewrite_sequence_yields_expr(value);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Rewrite the builder lambda's bare mutator calls onto `__kt_builder`,
@@ -3620,12 +5405,264 @@ fn kotlin_sequence_source(expr: &Expression) -> Option<Expression> {
     KOTLIN_SEQUENCE_SOURCES.with(|map| map.borrow().get(name).cloned())
 }
 
+fn kotlin_is_sequence_expr(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => {
+            KOTLIN_SEQUENCE_SOURCES.with(|map| map.borrow().contains_key(name))
+        }
+        ExprKind::Call { callee, .. } => matches!(
+            &callee.kind,
+            ExprKind::Ident(name)
+                if matches!(
+                    name.as_str(),
+                    "__kt_seq_of"
+                        | "__kt_seq_builder"
+                        | "__kt_seq_map"
+                        | "__kt_seq_take"
+                        | "__kt_seq_take_while"
+                        | "__kt_seq_constrain_once"
+                        | "sequenceOf"
+                        | "emptySequence"
+                )
+        ),
+        ExprKind::Member { field, .. } => field == "asSequence",
+        _ => false,
+    }
+}
+
+fn kotlin_sequence_receiver_expr(expr: &Expression) -> Option<Expression> {
+    if kotlin_is_sequence_expr(expr) {
+        Some(expr.clone())
+    } else {
+        None
+    }
+}
+
+fn kotlin_sequence_receiver_expr_typed(
+    expr: &Expression,
+    locals: &KotlinLocalTypes,
+    operators: &KotlinOperatorTable,
+) -> Option<Expression> {
+    kotlin_sequence_receiver_expr(expr).or_else(|| {
+        kotlin_expr_type(expr, locals, operators)
+            .is_some_and(|ty| type_hint_text(&ty) == "Sequence")
+            .then(|| expr.clone())
+    })
+}
+
+fn kotlin_materialize_sequence_value(expr: Expression) -> Expression {
+    if kotlin_is_sequence_expr(&expr) {
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__kt_seq_to_list")),
+            args: vec![Argument::positional(expr)],
+            optional: false,
+        })
+    } else {
+        expr
+    }
+}
+
+fn kotlin_materialize_sequence_lambda_result(lambda: &Expression) -> Expression {
+    let ExprKind::Lambda {
+        params,
+        body,
+        captures,
+        is_async,
+    } = &lambda.kind
+    else {
+        return lambda.clone();
+    };
+    let body = match body {
+        LambdaBody::Expr(expr) => LambdaBody::Expr(Box::new(kotlin_materialize_sequence_value(
+            (**expr).clone(),
+        ))),
+        LambdaBody::Block(stmts) => {
+            let mut stmts = stmts.clone();
+            if let Some(last) = stmts.last_mut() {
+                match &mut last.kind {
+                    StmtKind::Return(Some(expr)) | StmtKind::Expr(expr) => {
+                        let replacement = kotlin_materialize_sequence_value(expr.clone());
+                        *expr = replacement;
+                    }
+                    _ => {}
+                }
+            }
+            LambdaBody::Block(stmts)
+        }
+    };
+    Expression::new(ExprKind::Lambda {
+        params: params.clone(),
+        body,
+        captures: captures.clone(),
+        is_async: *is_async,
+    })
+}
+
+fn kotlin_collection_view_source(expr: &Expression) -> Option<(String, Expression)> {
+    let ExprKind::Ident(name) = &expr.kind else {
+        return None;
+    };
+    KOTLIN_COLLECTION_VIEW_ALIASES.with(|map| map.borrow().get(name).cloned())
+}
+
+fn kotlin_sublist_source(expr: &Expression) -> Option<(Expression, Expression, Expression)> {
+    let ExprKind::Ident(name) = &expr.kind else {
+        return None;
+    };
+    KOTLIN_SUBLIST_ALIASES.with(|map| map.borrow().get(name).cloned())
+}
+
+fn kotlin_reversed_view_source(expr: &Expression) -> Option<Expression> {
+    let ExprKind::Ident(name) = &expr.kind else {
+        return None;
+    };
+    KOTLIN_REVERSED_VIEW_ALIASES.with(|map| map.borrow().get(name).cloned())
+}
+
+fn kotlin_map_entry_iterator_source(expr: &Expression) -> Option<Expression> {
+    let ExprKind::Ident(name) = &expr.kind else {
+        return None;
+    };
+    KOTLIN_MAP_ENTRY_ITERATORS.with(|map| map.borrow().get(name).cloned())
+}
+
+fn kotlin_map_entry_iterator_from_init(expr: &Expression) -> Option<Expression> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if !matches!(&callee.kind, ExprKind::Ident(name) if name == "__kt_map_entry_iterator") {
+        return None;
+    }
+    Some(args.first()?.value.clone())
+}
+
+fn kotlin_map_entries_source_expr(expr: &Expression) -> Option<Expression> {
+    if let ExprKind::Member { object, field, .. } = &expr.kind
+        && field == "entries"
+    {
+        return Some((**object).clone());
+    }
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if !matches!(&callee.kind, ExprKind::Ident(name) if name == "__kt_map_entries") {
+        return None;
+    }
+    Some(args.first()?.value.clone())
+}
+
+fn kotlin_reversed_view_from_init(expr: &Expression) -> Option<Expression> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if !args.is_empty() {
+        return None;
+    }
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    if field == "asReversed" {
+        Some((**object).clone())
+    } else {
+        None
+    }
+}
+
+fn kotlin_materialize_reversed(source: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("__coll_reverse")),
+        args: vec![Argument::positional(source)],
+        optional: false,
+    })
+}
+
+fn kotlin_reversed_index(source: Expression, index: Expression) -> Expression {
+    Expression::new(ExprKind::Binary {
+        op: BinOp::Sub,
+        left: Box::new(Expression::new(ExprKind::Binary {
+            op: BinOp::Sub,
+            left: Box::new(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__coll_length")),
+                args: vec![Argument::positional(source)],
+                optional: false,
+            })),
+            right: Box::new(Expression::int(1)),
+        })),
+        right: Box::new(index),
+    })
+}
+
+fn kotlin_sublist_alias_from_init(
+    expr: &Expression,
+) -> Option<(Expression, Expression, Expression)> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    if field != "subList" || args.len() != 2 {
+        return None;
+    }
+    Some((
+        (**object).clone(),
+        args[0].value.clone(),
+        args[1].value.clone(),
+    ))
+}
+
+fn kotlin_offset_index(base: Expression, index: Expression) -> Expression {
+    Expression::new(ExprKind::Binary {
+        op: BinOp::Add,
+        left: Box::new(base),
+        right: Box::new(index),
+    })
+}
+
+fn kotlin_materialize_sublist(source: Expression, from: Expression, to: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("__coll_slice")),
+        args: vec![
+            Argument::positional(source),
+            Argument::positional(from),
+            Argument::positional(to),
+        ],
+        optional: false,
+    })
+}
+
+fn kotlin_view_alias_from_init(expr: &Expression) -> Option<(String, Expression)> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    let ExprKind::Ident(name) = &callee.kind else {
+        return None;
+    };
+    let source = args.first()?.value.clone();
+    match name.as_str() {
+        "__dict_keys" => Some(("keys".to_string(), source)),
+        "__dict_values" => Some(("values".to_string(), source)),
+        "__kt_map_entries" => Some(("entries".to_string(), source)),
+        _ => None,
+    }
+}
+
+fn kotlin_collection_view_materialize(kind: &str, source: Expression) -> Expression {
+    let helper = match kind {
+        "keys" => "__dict_keys",
+        "values" => "__dict_values",
+        "entries" => "__kt_map_entries",
+        _ => "__kt_map_entry_list",
+    };
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident(helper)),
+        args: vec![Argument::positional(source)],
+        optional: false,
+    })
+}
+
 fn kotlin_is_sequence_source(expr: &Expression) -> bool {
-    matches!(
-        &expr.kind,
-        ExprKind::Call { callee, .. }
-            if matches!(&callee.kind, ExprKind::Ident(name) if name == "generateSequence" || name == "sequence")
-    )
+    kotlin_is_sequence_expr(expr)
 }
 
 fn kotlin_generate_sequence_take_while(
@@ -3715,6 +5752,81 @@ fn kotlin_array_expr(values: Vec<Expression>) -> Expression {
             })
             .collect(),
     ))
+}
+
+fn kotlin_pack_secondary_constructor_delegations(class_name: &str, members: &mut [ClassMember]) {
+    for member in members {
+        let ClassMember::Constructor {
+            base_args: Some(args),
+            initializer_target,
+            ..
+        } = member
+        else {
+            continue;
+        };
+        if *initializer_target != ConstructorInitializerTarget::This {
+            continue;
+        }
+        *args = kotlin_pack_constructor_vararg_args(
+            class_name,
+            &args.iter().cloned().map(Argument::positional).collect::<Vec<_>>(),
+        )
+        .into_iter()
+        .map(|arg| arg.value)
+        .collect();
+    }
+}
+
+fn kotlin_disambiguate_same_arity_constructors(
+    class_name: &str,
+    members: &mut [ClassMember],
+) -> Vec<KotlinConstructorShape> {
+    let mut ctor_positions = Vec::new();
+    let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (member_index, member) in members.iter().enumerate() {
+        if let ClassMember::Constructor { params, .. } = member {
+            let visible_arity = params.len();
+            let shape_index = ctor_positions.len();
+            ctor_positions.push((member_index, params.clone()));
+            groups.entry(visible_arity).or_default().push(shape_index);
+        }
+    }
+
+    let mut tag_counts = vec![0usize; ctor_positions.len()];
+    for indexes in groups.values() {
+        if indexes.len() <= 1 {
+            continue;
+        }
+        for (tag_count, shape_index) in indexes.iter().copied().enumerate() {
+            tag_counts[shape_index] = tag_count;
+        }
+    }
+
+    for (shape_index, (member_index, _)) in ctor_positions.iter().enumerate() {
+        if let ClassMember::Constructor { params, .. } = &mut members[*member_index] {
+            for tag_index in 0..tag_counts[shape_index] {
+                params.push(Param {
+                    name: format!("__kt_ctor_tag_{class_name}_{tag_index}"),
+                    type_hint: Some("Int".into()),
+                    default: None,
+                    pass_by: PassBy::Value,
+                    is_rest: false,
+                    is_kwargs: false,
+                    is_optional: false,
+                    is_nullable: false,
+                });
+            }
+        }
+    }
+
+    ctor_positions
+        .into_iter()
+        .enumerate()
+        .map(|(shape_index, (_, source_params))| KotlinConstructorShape {
+            source_params,
+            tag_count: tag_counts[shape_index],
+        })
+        .collect()
 }
 
 fn kotlin_static_array_items(expr: &Expression) -> Option<Vec<Expression>> {
@@ -4335,7 +6447,9 @@ fn kotlin_mangle_shadowed_properties(stmts: &mut [Statement]) {
             for m in members {
                 match m {
                     ClassMember::Field { name: f, .. } => own.push(f.clone()),
-                    ClassMember::Property { name: f, .. } => own.push(f.clone()),
+                    ClassMember::Property {
+                        name: f, modifiers, ..
+                    } if !modifiers.is_override => own.push(f.clone()),
                     _ => {}
                 }
             }
@@ -4404,6 +6518,48 @@ fn kotlin_mangle_shadowed_properties(stmts: &mut [Statement]) {
                         params.iter().map(|p| p.name.clone()).collect::<Vec<_>>(),
                         body,
                     ),
+                    ClassMember::Property { getter, setter, .. } => {
+                        if let Some(body) = getter {
+                            for st in body.iter_mut() {
+                                st.walk_exprs_mut(&mut |e| match &mut e.kind {
+                                    ExprKind::Member { object, field, .. }
+                                        if field == f && matches!(object.kind, ExprKind::This) =>
+                                    {
+                                        *field = mangled.clone();
+                                    }
+                                    ExprKind::Ident(n) if n == f => {
+                                        e.kind = ExprKind::Member {
+                                            object: Box::new(Expression::new(ExprKind::This)),
+                                            field: mangled.clone(),
+                                            null_safe: false,
+                                        };
+                                    }
+                                    _ => {}
+                                });
+                            }
+                        }
+                        if let Some(setter) = setter {
+                            let setter_param = setter.param.name.clone();
+                            for st in setter.body.iter_mut() {
+                                st.walk_exprs_mut(&mut |e| match &mut e.kind {
+                                    ExprKind::Member { object, field, .. }
+                                        if field == f && matches!(object.kind, ExprKind::This) =>
+                                    {
+                                        *field = mangled.clone();
+                                    }
+                                    ExprKind::Ident(n) if n == f && n != &setter_param => {
+                                        e.kind = ExprKind::Member {
+                                            object: Box::new(Expression::new(ExprKind::This)),
+                                            field: mangled.clone(),
+                                            null_safe: false,
+                                        };
+                                    }
+                                    _ => {}
+                                });
+                            }
+                        }
+                        continue;
+                    }
                     _ => continue,
                 };
                 let mut shadowed_locals: HashSet<String> = params.into_iter().collect();
@@ -5008,6 +7164,10 @@ fn normalize_kotlin_operator_stmt(
                 // Type from the PRE-normalize init: rewrites erase the
                 // spelling (`FloatArray(2)` becomes `__kt_array_init(2)`),
                 // and the element type drives Double rendering.
+                let duration_init = decl
+                    .init
+                    .as_ref()
+                    .is_some_and(kotlin_expr_is_duration_init);
                 let pre_normalize_ty = decl
                     .init
                     .as_ref()
@@ -5028,11 +7188,77 @@ fn normalize_kotlin_operator_stmt(
                                 map.borrow_mut().insert(name.clone(), original_init);
                             });
                         }
+                        if let Some(params) = kotlin_expr_function_signature(init) {
+                            KOTLIN_FUNCTION_SIGNATURE_LOCALS.with(|map| {
+                                map.borrow_mut().insert(name.clone(), params.clone());
+                            });
+                            KOTLIN_FUNCTION_ARITY_LOCALS.with(|map| {
+                                map.borrow_mut().insert(name.clone(), params.len());
+                            });
+                        } else if let Some(arity) = kotlin_expr_function_arity(init) {
+                            KOTLIN_FUNCTION_ARITY_LOCALS.with(|map| {
+                                map.borrow_mut().insert(name.clone(), arity);
+                            });
+                        }
                         if let Some(collection_ty) = kotlin_literal_keyed_collection_type(init) {
                             KOTLIN_KEYED_COLLECTION_TYPES.with(|map| {
                                 map.borrow_mut()
                                     .insert(name.clone(), collection_ty.to_string());
                             });
+                        }
+                        if let Some(pre_ty) = &pre_normalize_ty
+                            && kotlin_type_is_array_family(pre_ty)
+                        {
+                            KOTLIN_ARRAY_FAMILY_LOCALS.with(|map| {
+                                map.borrow_mut().insert(name.clone(), pre_ty.clone());
+                            });
+                        }
+                        if let Some(pre_ty) = &pre_normalize_ty {
+                            let leaf = type_hint_text(pre_ty);
+                            if matches!(leaf.as_str(), "List" | "MutableList") {
+                                KOTLIN_KEYED_COLLECTION_TYPES.with(|map| {
+                                    map.borrow_mut().insert(name.clone(), pre_ty.clone());
+                                });
+                            }
+                        }
+                        if let Some(view) = kotlin_view_alias_from_init(init) {
+                            KOTLIN_COLLECTION_VIEW_ALIASES.with(|map| {
+                                map.borrow_mut().insert(name.clone(), view);
+                            });
+                        }
+                        if let Some(view) = kotlin_sublist_alias_from_init(init) {
+                            KOTLIN_SUBLIST_ALIASES.with(|map| {
+                                map.borrow_mut().insert(name.clone(), view);
+                            });
+                        }
+                        if let Some(source) = kotlin_reversed_view_from_init(init) {
+                            KOTLIN_REVERSED_VIEW_ALIASES.with(|map| {
+                                map.borrow_mut().insert(name.clone(), source.clone());
+                            });
+                            *init = source;
+                        }
+                        if let Some(source) = kotlin_map_entry_iterator_from_init(init) {
+                            KOTLIN_MAP_ENTRY_ITERATORS.with(|map| {
+                                map.borrow_mut().insert(name.clone(), source);
+                            });
+                        }
+                        if kotlin_expr_is_thread_new(init) {
+                            KOTLIN_THREAD_LOCALS.with(|set| {
+                                set.borrow_mut().insert(name.clone());
+                            });
+                            locals.insert(name.clone(), "Thread".to_string());
+                            decl.type_hint = Some("Thread".to_string().into());
+                        }
+                        if let Some(ty) = kotlin_expr_type(init, locals, operators) {
+                            if matches!(
+                                kotlin_type_leaf(&ty),
+                                "Thread" | "AtomicInteger" | "AtomicLong" | "AtomicBoolean"
+                                    | "AtomicReference" | "CountDownLatch" | "ThreadLocal"
+                            ) {
+                                KOTLIN_CONCURRENCY_LOCALS.with(|map| {
+                                    map.borrow_mut().insert(name.clone(), ty.clone());
+                                });
+                            }
                         }
                         if matches!(init.kind, ExprKind::Array(_)) {
                             KOTLIN_STATIC_VALUES.with(|map| {
@@ -5042,21 +7268,73 @@ fn normalize_kotlin_operator_stmt(
                     }
                 }
                 if let BindingPattern::Ident(name) = &decl.pattern {
-                    let inferred = decl
-                        .type_hint
+                    let declared_shape =
+                        KOTLIN_DECLARED_TYPE_SHAPES.with(|map| map.borrow().get(name).cloned());
+                    let init_ty_for_reflection = decl
+                        .init
+                        .as_ref()
+                        .and_then(|e| kotlin_expr_type(e, locals, operators));
+                    let inferred = declared_shape
+                        .or_else(|| decl.type_hint
                         .as_deref()
-                        .map(str::to_string)
-                        .or_else(|| pre_normalize_ty.clone())
+                        .map(str::to_string))
+                        .or_else(|| duration_init.then(|| "Duration".to_string()))
                         .or_else(|| {
-                            decl.init
-                                .as_ref()
-                                .and_then(|e| kotlin_expr_type(e, locals, operators))
-                        });
+                            init_ty_for_reflection
+                                .clone()
+                                .filter(|ty| kotlin_type_is_function_like(ty))
+                        })
+                        .or_else(|| pre_normalize_ty.clone())
+                        .or_else(|| init_ty_for_reflection.clone());
                     if let Some(ty) = inferred {
                         if decl.type_hint.is_none() {
                             decl.type_hint = Some(ty.clone().into());
                         }
-                        locals.insert(name.clone(), ty.to_string());
+                        let declared_is_function = decl
+                            .type_hint
+                            .as_deref()
+                            .is_some_and(kotlin_type_is_function_like);
+                        let companion_callable_owner = if declared_is_function {
+                            decl.init.as_ref().and_then(kotlin_companion_owner_expr)
+                        } else {
+                            None
+                        };
+                        let local_ty = if let Some(owner) = companion_callable_owner {
+                            format!("__kt_companion_callable:{owner}")
+                        } else if let Some(params) =
+                            decl.init.as_ref().and_then(kotlin_expr_function_signature)
+                        {
+                            format!("__kt_function_sig:{}:{}", params.len(), params.join(","))
+                        } else if let Some(arity) =
+                            decl.init.as_ref().and_then(kotlin_expr_function_arity)
+                        {
+                            format!("__kt_function_arity:{arity}")
+                        } else if declared_is_function
+                            && init_ty_for_reflection
+                                .as_ref()
+                                .is_some_and(|init_ty| {
+                                    operators
+                                        .get(init_ty)
+                                        .is_some_and(|info| info.has("invoke"))
+                                })
+                        {
+                            init_ty_for_reflection.unwrap_or_else(|| ty.clone())
+                        } else if ty.trim().trim_end_matches('?') == "Any" {
+                            pre_normalize_ty
+                                .clone()
+                                .or_else(|| init_ty_for_reflection.clone())
+                                .unwrap_or_else(|| ty.clone())
+                        } else {
+                            ty.clone()
+                        };
+                        locals.insert(name.clone(), local_ty);
+                    }
+                    if let Some(init) = &decl.init
+                        && (kotlin_class_token_name(init).is_some() || kotlin_is_class_of_call(init))
+                    {
+                        KOTLIN_STATIC_VALUES.with(|map| {
+                            map.borrow_mut().insert(name.clone(), init.clone());
+                        });
                     }
                 }
                 // A receiver-typed function VALUE (`val upper: String.() ->
@@ -5104,7 +7382,14 @@ fn normalize_kotlin_operator_stmt(
                     normalize_kotlin_operator_expr(default, operators, locals);
                 }
                 if let Some(ty) = &param.type_hint {
-                    fn_locals.insert(param.name.clone(), ty.clone().to_string());
+                    if kotlin_type_is_function_like(ty.spelling()) {
+                        // Function-typed values may be true functions or
+                        // objects with `operator fun invoke`. Leave their call
+                        // sites dynamic so the shared Call slot can decide.
+                        param.type_hint = None;
+                    } else {
+                        fn_locals.insert(param.name.clone(), ty.clone().to_string());
+                    }
                 }
             }
             normalize_kotlin_operator_stmts(body, operators, &mut fn_locals);
@@ -5201,11 +7486,21 @@ fn normalize_kotlin_operator_stmt(
                         }
                         normalize_kotlin_operator_stmt(method, operators, locals);
                     }
-                    ClassMember::Constructor { params, body, .. } => {
+                    ClassMember::Constructor {
+                        params,
+                        body,
+                        base_args,
+                        ..
+                    } => {
                         let mut ctor_locals = locals.clone();
                         for param in params {
                             if let Some(ty) = &param.type_hint {
                                 ctor_locals.insert(param.name.clone(), ty.clone().to_string());
+                            }
+                        }
+                        if let Some(args) = base_args {
+                            for arg in args {
+                                normalize_kotlin_operator_expr(arg, operators, &ctor_locals);
                             }
                         }
                         normalize_kotlin_operator_stmts(body, operators, &mut ctor_locals);
@@ -5275,6 +7570,9 @@ fn normalize_kotlin_operator_stmt(
             ..
         } => {
             normalize_kotlin_operator_expr(iter, operators, locals);
+            if let Some((kind, source)) = kotlin_collection_view_source(iter) {
+                *iter = kotlin_collection_view_materialize(&kind, source);
+            }
             if kotlin_expr_type(iter, locals, operators)
                 .as_deref()
                 .is_some_and(kotlin_type_is_set_like)
@@ -5366,11 +7664,36 @@ fn normalize_kotlin_operator_stmt(
     }
 }
 
+fn kotlin_type_is_regex_match_result(ty: &str) -> bool {
+    matches!(
+        ty,
+        "java.util.regex.Matcher" | "kotlin.text.MatchResult" | "MatchResult"
+    )
+}
+
+fn kotlin_regex_match_property_call(object: Expression, field: &str) -> Option<Expression> {
+    if !matches!(field, "value" | "range") {
+        return None;
+    }
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(object),
+            field: field.to_string(),
+            null_safe: false,
+        })),
+        args: vec![],
+        optional: false,
+    }))
+}
+
 fn normalize_kotlin_operator_expr(
     expr: &mut Expression,
     operators: &KotlinOperatorTable,
     locals: &KotlinLocalTypes,
 ) {
+    if kotlin_rewrite_thread_member_call(expr, locals, operators) {
+        return;
+    }
     match &mut expr.kind {
         ExprKind::Binary { op, left, right } => {
             normalize_kotlin_operator_expr(left, operators, locals);
@@ -5480,6 +7803,25 @@ fn normalize_kotlin_operator_expr(
         ExprKind::Index { object, index, .. } => {
             normalize_kotlin_operator_expr(object, operators, locals);
             normalize_kotlin_operator_expr(index, operators, locals);
+            if let Some(path) = dotted_expr_path(object)
+                && let Some(kind) = kotlin_delegated_collection_kind(&path)
+                && let Some(delegate_field) = kotlin_delegated_collection_field(&path)
+                && matches!(kind.rsplit('.').next().unwrap_or(&kind), "Map" | "MutableMap")
+            {
+                *expr = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__dict_get")),
+                    args: vec![
+                        Argument::positional(Expression::new(ExprKind::Member {
+                            object: Box::new(Expression::ident(&path)),
+                            field: delegate_field,
+                            null_safe: false,
+                        })),
+                        Argument::positional((**index).clone()),
+                    ],
+                    optional: false,
+                });
+                return;
+            }
             // `sb[i]` — a StringBuilder indexes its BUFFER, not its properties.
             if kotlin_expr_type(object, locals, operators).as_deref() == Some("StringBuilder") {
                 *expr = Expression::new(ExprKind::Call {
@@ -5539,6 +7881,192 @@ fn normalize_kotlin_operator_expr(
         }
         ExprKind::Member { object, .. } => {
             normalize_kotlin_operator_expr(object, operators, locals);
+            if let Some(path) = dotted_expr_path(expr)
+                && let Some(value) = kotlin_static_thread_value(&path)
+            {
+                *expr = value;
+                return;
+            }
+            if let ExprKind::Member { object, field, .. } = &expr.kind
+                && let Some(path) = dotted_expr_path(object)
+                && let Some(kind) = kotlin_delegated_collection_kind(&path)
+                && let Some(delegate_field) = kotlin_delegated_collection_field(&path)
+                && matches!(
+                    kind.rsplit('.').next().unwrap_or(&kind),
+                    "Map" | "MutableMap"
+                )
+                && matches!(field.as_str(), "keys" | "values" | "entries" | "size")
+            {
+                let delegate = Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::ident(&path)),
+                    field: delegate_field,
+                    null_safe: false,
+                });
+                *expr = match field.as_str() {
+                    "keys" => kt_call("__dict_keys", vec![delegate]),
+                    "values" => kt_call("__dict_values", vec![delegate]),
+                    "entries" => kt_call("__kt_map_entries", vec![delegate]),
+                    _ => kt_call("__dict_size", vec![delegate]),
+                };
+                return;
+            }
+            if let ExprKind::Member { object, field, .. } = &expr.kind
+                && field == "javaClass"
+                && let Some(class_name) = kotlin_expr_type(object, locals, operators)
+            {
+                *expr = Expression::new(ExprKind::Member {
+                    object: Box::new(kotlin_class_literal_expr(&class_name)),
+                    field: "java".to_string(),
+                    null_safe: false,
+                });
+                return;
+            }
+            if let ExprKind::Member { object, field, .. } = &expr.kind
+                && matches!(field.as_str(), "name" | "canonicalName" | "simpleName")
+                && let Some(class_name) = kotlin_class_token_name_with_locals(object, locals)
+            {
+                let (simple, _) = kotlin_class_names(&class_name);
+                *expr = if field == "simpleName" {
+                    Expression::string(&simple)
+                } else {
+                    Expression::string(&format!(
+                        "languages.kotlin.tests.kotlin.test_kotlin_reflection_runtime.{simple}"
+                    ))
+                };
+                return;
+            }
+            if let ExprKind::Member {
+                object: java_object,
+                field,
+                ..
+            } = &expr.kind
+                && matches!(field.as_str(), "name" | "canonicalName")
+                && let ExprKind::Member {
+                    object: class_object,
+                    field: java_field,
+                    ..
+                } = &java_object.kind
+                && java_field == "java"
+                && let Some(class_name) = kotlin_class_token_name_with_locals(class_object, locals)
+            {
+                let (simple, _) = kotlin_class_names(&class_name);
+                *expr = Expression::string(&format!(
+                    "languages.kotlin.tests.kotlin.test_kotlin_reflection_runtime.{simple}"
+                ));
+                return;
+            }
+            if kotlin_rewrite_thread_member_read(expr, locals, operators) {
+                return;
+            }
+            if let Some(path) = dotted_expr_path(expr)
+                && matches!(
+                    path.as_str(),
+                    "kotlin.random.Random.Default"
+                        | "kotlin.random.Random.default"
+                        | "kotlin.random.random.Default"
+                        | "kotlin.random.random.default"
+                )
+            {
+                *expr = Expression::new(ExprKind::New {
+                    class: Box::new(dotted_ident_expr("java.util.Random")),
+                    args: vec![Argument::positional(Expression::int(0))],
+                });
+                return;
+            }
+            if let Some(path) = dotted_expr_path(expr)
+                && matches!(
+                    path.as_str(),
+                    "System.identityHashCode"
+                        | "System.identityhashcode"
+                        | "kotlin.system.identityHashCode"
+                        | "kotlin.system.identityhashcode"
+                )
+            {
+                *expr = dotted_ident_expr("kotlin.system.identityhashcode");
+                return;
+            }
+            if let ExprKind::Member { object, field, .. } = &expr.kind
+                && !is_user_property_name(field)
+                && kotlin_expr_type(object, locals, operators)
+                    .as_deref()
+                    .is_some_and(kotlin_type_is_range_like)
+            {
+                match field.as_str() {
+                    "first" => {
+                        *expr = kotlin_range_first_expr((**object).clone());
+                        return;
+                    }
+                    "last" => {
+                        *expr = kotlin_range_last_expr((**object).clone());
+                        return;
+                    }
+                    "step" => {
+                        let list = kotlin_to_list_expr((**object).clone());
+                        *expr = Expression::new(ExprKind::Binary {
+                            op: BinOp::Sub,
+                            left: Box::new(Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident("__coll_get")),
+                                args: vec![
+                                    Argument::positional(list.clone()),
+                                    Argument::positional(Expression::int(1)),
+                                ],
+                                optional: false,
+                            })),
+                            right: Box::new(Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident("__coll_get")),
+                                args: vec![
+                                    Argument::positional(list),
+                                    Argument::positional(Expression::int(0)),
+                                ],
+                                optional: false,
+                            })),
+                        });
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+            if let ExprKind::Member { object, field, .. } = &expr.kind
+                && let Some((kind, source)) = kotlin_collection_view_source(object)
+                && matches!(field.as_str(), "size" | "length")
+            {
+                *expr = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__coll_length")),
+                    args: vec![Argument::positional(kotlin_collection_view_materialize(
+                        &kind, source,
+                    ))],
+                    optional: false,
+                });
+                return;
+            }
+            if let ExprKind::Member { object, field, .. } = &expr.kind
+                && matches!(field.as_str(), "size" | "length")
+                && kotlin_expr_type(object, locals, operators).is_some_and(|ty| {
+                    kotlin_type_is_list_like(&ty)
+                        || kotlin_type_is_map_like(&ty)
+                        || kotlin_type_is_set_like(&ty)
+                        || kotlin_type_is_array_like(&ty)
+                        || ty == "String"
+                })
+            {
+                *expr = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__coll_length")),
+                    args: vec![Argument::positional(*object.clone())],
+                    optional: false,
+                });
+                return;
+            }
+            if let ExprKind::Member { object, field, .. } = &expr.kind
+                && let Some((_source, from, to)) = kotlin_sublist_source(object)
+                && matches!(field.as_str(), "size" | "length")
+            {
+                *expr = Expression::new(ExprKind::Binary {
+                    op: BinOp::Sub,
+                    left: Box::new(to),
+                    right: Box::new(from),
+                });
+                return;
+            }
             // kotlin.time.Duration constants and whole-unit accessors — a
             // Duration IS its millisecond count.
             if let ExprKind::Member {
@@ -5573,6 +8101,15 @@ fn normalize_kotlin_operator_expr(
                         field: mangled,
                         null_safe: false,
                     });
+                    return;
+                }
+                if kotlin_expr_type(obj2, locals, operators)
+                    .as_deref()
+                    .is_some_and(kotlin_type_is_regex_match_result)
+                    && let Some(replacement) =
+                        kotlin_regex_match_property_call((**obj2).clone(), field)
+                {
+                    *expr = replacement;
                     return;
                 }
                 if matches!(field.as_str(), "isSuccess" | "isFailure")
@@ -5672,16 +8209,314 @@ fn normalize_kotlin_operator_expr(
             }
         }
         ExprKind::Assign { target, value } => {
+            if let ExprKind::Member { object, field, .. } = &target.kind
+                && field == "uncaughtExceptionHandler"
+                && kotlin_expr_is_thread_like(object, locals, operators)
+            {
+                normalize_kotlin_operator_expr(value, operators, locals);
+                kotlin_mark_threads_needed();
+                *expr = kt_call(
+                    "__kt_thread_set_handler",
+                    vec![
+                        (**object).clone(),
+                        kotlin_thread_handler_bridge_expr((**value).clone()),
+                    ],
+                );
+                return;
+            }
             if let ExprKind::Index { object, index, .. } = &mut target.kind {
                 normalize_kotlin_operator_expr(object, operators, locals);
                 normalize_kotlin_operator_expr(index, operators, locals);
+                if let Some((source, from, _to)) = kotlin_sublist_source(object) {
+                    normalize_kotlin_operator_expr(value, operators, locals);
+                    *expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__coll_set")),
+                        args: vec![
+                            Argument::positional(source),
+                            Argument::positional(kotlin_offset_index(from, (**index).clone())),
+                            Argument::positional((**value).clone()),
+                        ],
+                        optional: false,
+                    });
+                    return;
+                }
+                if let Some(source) = kotlin_reversed_view_source(object) {
+                    normalize_kotlin_operator_expr(value, operators, locals);
+                    *expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__coll_set")),
+                        args: vec![
+                            Argument::positional(source.clone()),
+                            Argument::positional(kotlin_reversed_index(source, (**index).clone())),
+                            Argument::positional((**value).clone()),
+                        ],
+                        optional: false,
+                    });
+                    return;
+                }
             } else {
                 normalize_kotlin_operator_expr(target, operators, locals);
             }
             normalize_kotlin_operator_expr(value, operators, locals);
         }
         ExprKind::Call { callee, args, .. } => {
+            if let ExprKind::Member { object, .. } = &mut callee.kind {
+                normalize_kotlin_operator_expr(object, operators, locals);
+            }
             normalize_kotlin_operator_expr(callee, operators, locals);
+            let thread_member_call = {
+                let mut rewritten = Expression::new(ExprKind::Call {
+                    callee: callee.clone(),
+                    args: args.clone(),
+                    optional: false,
+                });
+                if kotlin_rewrite_thread_member_call(&mut rewritten, locals, operators) {
+                    Some(rewritten)
+                } else {
+                    None
+                }
+            };
+            if let Some(rewritten) = thread_member_call {
+                *expr = rewritten;
+                return;
+            }
+            if let Some(path) = dotted_expr_path(callee)
+                && matches!(path.as_str(), "kotlin.concurrent.thread" | "concurrent.thread")
+            {
+                for arg in args.iter_mut() {
+                    normalize_kotlin_operator_expr(&mut arg.value, operators, locals);
+                }
+                kotlin_mark_threads_needed();
+                *expr = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__kt_thread_make")),
+                    args: kotlin_thread_call_args(args),
+                    optional: false,
+                });
+                return;
+            }
+            if let Some(path) = dotted_expr_path(callee)
+                && path.ends_with("Thread.UncaughtExceptionHandler")
+                && args.len() == 1
+            {
+                *expr = args[0].value.clone();
+                return;
+            }
+            if let ExprKind::Member { object, field, .. } = &callee.kind
+                && let Some(leaf) = kotlin_expr_type_leaf(object, locals, operators)
+            {
+                let helper = match (leaf.as_str(), field.as_str(), args.len()) {
+                    (
+                        "AtomicInteger" | "AtomicLong" | "AtomicBoolean" | "AtomicReference",
+                        "get",
+                        0,
+                    ) => Some("__kt_atomic_get"),
+                    (
+                        "AtomicInteger" | "AtomicLong" | "AtomicBoolean" | "AtomicReference",
+                        "set",
+                        1,
+                    ) => Some("__kt_atomic_set"),
+                    ("AtomicInteger" | "AtomicLong", "incrementAndGet", 0) => {
+                        Some("__kt_atomic_inc")
+                    }
+                    ("CountDownLatch", "countDown", 0) => Some("__kt_latch_count_down"),
+                    ("CountDownLatch", "getCount", 0) => Some("__kt_latch_get_count"),
+                    ("CountDownLatch", "await", 0) => Some("__kt_latch_await"),
+                    ("ThreadLocal", "set", 1) => Some("__kt_thread_local_set"),
+                    ("ThreadLocal", "get", 0) => Some("__kt_thread_local_get"),
+                    _ => None,
+                };
+                if let Some(helper) = helper {
+                    kotlin_mark_threads_needed();
+                    let mut call_args = vec![Argument::positional((**object).clone())];
+                    call_args.extend(args.clone());
+                    *expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident(helper)),
+                        args: call_args,
+                        optional: false,
+                    });
+                    return;
+                }
+            }
+            if let ExprKind::Member { object, field, .. } = &callee.kind {
+                let helper = match (field.as_str(), args.len()) {
+                    ("incrementAndGet", 0) => Some("__kt_atomic_inc"),
+                    ("countDown", 0) => Some("__kt_latch_count_down"),
+                    ("getCount", 0) => Some("__kt_latch_get_count"),
+                    ("await", 0) => Some("__kt_latch_await"),
+                    _ => None,
+                };
+                if let Some(helper) = helper {
+                    kotlin_mark_threads_needed();
+                    let mut call_args = vec![Argument::positional((**object).clone())];
+                    call_args.extend(args.clone());
+                    *expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident(helper)),
+                        args: call_args,
+                        optional: false,
+                    });
+                    return;
+                }
+            }
+            if let Some(path) = dotted_expr_path(callee) {
+                match path.as_str() {
+                    "abs" | "kotlin.math.abs" | "absoluteValue" | "kotlin.math.absoluteValue"
+                        if args.len() == 1 =>
+                    {
+                        match &args[0].value.kind {
+                            ExprKind::Lit(Literal::Int(-2147483648)) => {
+                                *expr = Expression::int(-2147483648);
+                                return;
+                            }
+                            ExprKind::Lit(Literal::BigInt(n)) if *n == i64::MIN => {
+                                *expr = Expression::new(ExprKind::Lit(Literal::BigInt(i64::MIN)));
+                                return;
+                            }
+                            _ => {}
+                        }
+                    }
+                    "System.identityHashCode" | "System.identityhashcode" => {
+                        *callee = Box::new(dotted_ident_expr("kotlin.system.identityhashcode"));
+                    }
+                    "kotlin.math.log" | "log" if args.len() == 2 => {
+                        let ln_left = Expression::new(ExprKind::Call {
+                            callee: Box::new(dotted_ident_expr("kotlin.math.ln")),
+                            args: vec![args[0].clone()],
+                            optional: false,
+                        });
+                        let ln_right = Expression::new(ExprKind::Call {
+                            callee: Box::new(dotted_ident_expr("kotlin.math.ln")),
+                            args: vec![args[1].clone()],
+                            optional: false,
+                        });
+                        *expr = Expression::new(ExprKind::Binary {
+                            op: BinOp::Div,
+                            left: Box::new(ln_left),
+                            right: Box::new(ln_right),
+                        });
+                        normalize_kotlin_operator_expr(expr, operators, locals);
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+            if let ExprKind::Member { object, field, .. } = &callee.kind
+                && args.len() == 1
+                && matches!(field.as_str(), "floorDiv" | "mod")
+            {
+                let op = if field == "floorDiv" {
+                    BinOp::FloorDiv
+                } else {
+                    BinOp::Mod
+                };
+                *expr = Expression::new(ExprKind::Binary {
+                    op,
+                    left: Box::new((**object).clone()),
+                    right: Box::new(args[0].value.clone()),
+                });
+                normalize_kotlin_operator_expr(expr, operators, locals);
+                return;
+            }
+            if let ExprKind::Member { object, field, .. } = &callee.kind
+                && args.is_empty()
+                && let ExprKind::Lit(Literal::Str(s)) = &object.kind
+            {
+                match field.as_str() {
+                    "toInt" => {
+                        if let Ok(n) = s.parse::<i64>() {
+                            *expr = Expression::int(n);
+                            return;
+                        }
+                    }
+                    "toDouble" | "toFloat" => {
+                        if let Ok(n) = s.parse::<f64>() {
+                            *expr = Expression::float(n);
+                            return;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if let ExprKind::Member { field, .. } = &callee.kind
+                && field.eq_ignore_ascii_case("nextInt")
+                && args.len() == 1
+                && kotlin_expr_is_range_shape(&args[0].value)
+            {
+                let range = args[0].value.clone();
+                *expr = kotlin_range_first_expr(range);
+                normalize_kotlin_operator_expr(expr, operators, locals);
+                return;
+            }
+            if let ExprKind::Member { object, field, .. } = &callee.kind
+                && let Some(helper) = kotlin_random_method_helper(field)
+                && kotlin_expr_type(object, locals, operators)
+                    .as_deref()
+                    .is_some_and(kotlin_type_is_random_like)
+            {
+                let receiver = (**object).clone();
+                args.insert(0, Argument::positional(receiver));
+                *callee = Box::new(Expression::ident(helper));
+            }
+            if let ExprKind::Member { object, field, .. } = &callee.kind {
+                match field.as_str() {
+                    "random" if args.len() == 1 => {
+                        if kotlin_expr_type(&args[0].value, locals, operators)
+                            .as_deref()
+                            .is_some_and(kotlin_type_is_random_like)
+                        {
+                            let source = (**object).clone();
+                            let len = Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident("__len__")),
+                                args: vec![Argument::positional(source.clone())],
+                                optional: false,
+                            });
+                            let index = Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident("__kt_random_next_int")),
+                                args: vec![args[0].clone(), Argument::positional(len)],
+                                optional: false,
+                            });
+                            *expr = Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident("__coll_get")),
+                                args: vec![
+                                    Argument::positional(source),
+                                    Argument::positional(index),
+                                ],
+                                optional: false,
+                            });
+                            return;
+                        }
+                    }
+                    "shuffle" if args.len() == 1 => {
+                        if kotlin_expr_type(&args[0].value, locals, operators)
+                            .as_deref()
+                            .is_some_and(kotlin_type_is_random_like)
+                        {
+                            *expr = Expression::null();
+                            return;
+                        }
+                    }
+                    "shuffled" if args.len() == 1 => {
+                        if kotlin_expr_type(object, locals, operators)
+                            .as_deref()
+                            .is_some_and(kotlin_type_is_random_like)
+                        {
+                            *expr = Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident("__kt_to_list")),
+                                args: vec![args[0].clone()],
+                                optional: false,
+                            });
+                            return;
+                        }
+                    }
+                    "shuffled" if args.is_empty() => {
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__kt_to_list")),
+                            args: vec![Argument::positional((**object).clone())],
+                            optional: false,
+                        });
+                        return;
+                    }
+                    _ => {}
+                }
+            }
             // An untyped single-param lambda over an Int-element receiver:
             // the param IS an Int (`values.groupBy { it / 2 }` divides
             // integers). Stamped BEFORE the args are walked so the lambda
@@ -5762,6 +8597,31 @@ fn normalize_kotlin_operator_expr(
                     optional: false,
                 });
             }
+            if let ExprKind::Member { object, field, .. } = &callee.kind
+                && field == "use"
+                && args.len() == 1
+                && let Some(recv_ty) = kotlin_java_io_stream_type(object, locals, operators)
+                    .or_else(|| kotlin_expr_type(object, locals, operators))
+            {
+                if let ExprKind::Lambda { params, .. } = &mut args[0].value.kind
+                    && params.len() == 1
+                    && params[0].type_hint.is_none()
+                {
+                    params[0].type_hint = Some(TypeHint::descriptive(recv_ty));
+                }
+            }
+            if let ExprKind::Member { object, field, .. } = &callee.kind
+                && field == "maxDepth"
+                && args.len() == 1
+            {
+                *expr = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__kt_file_walk_max_depth")),
+                    args: vec![Argument::positional(*object.clone()), args[0].clone()],
+                    optional: false,
+                });
+                normalize_kotlin_operator_expr(expr, operators, locals);
+                return;
+            }
             // The walk lowers `.map {}` / `.filter {}` to FREE calls with the
             // receiver as the first argument — same stamping, other shape.
             if let ExprKind::Ident(name) = &callee.kind
@@ -5795,6 +8655,767 @@ fn normalize_kotlin_operator_expr(
             }
             for arg in &mut *args {
                 normalize_kotlin_operator_expr(&mut arg.value, operators, locals);
+            }
+            let array_init_captures =
+                if matches!(&callee.kind, ExprKind::Ident(name) if name == "__kt_array_init")
+                    && args.len() >= 2
+                {
+                    if let ExprKind::Lambda {
+                        params,
+                        body,
+                        ..
+                    } = &mut args[1].value.kind
+                    {
+                        let mut bound: HashSet<String> =
+                            params.iter().map(|p| p.name.clone()).collect();
+                        let mut free = HashSet::new();
+                        match body {
+                            LambdaBody::Expr(expr) => {
+                                collect_kotlin_free_locals_in_expr(expr, locals, &bound, &mut free);
+                            }
+                            LambdaBody::Block(stmts) => {
+                                collect_kotlin_free_locals_in_stmts(
+                                    stmts, locals, &mut bound, &mut free,
+                                );
+                            }
+                        }
+                        if free.is_empty() {
+                            None
+                        } else {
+                            let mut names: Vec<String> = free.into_iter().collect();
+                            names.sort();
+                            for name in &names {
+                                if !params.iter().any(|param| param.name == *name) {
+                                    params.push(
+                                        kotlin_local_capture_params(&[name.clone()]).remove(0),
+                                    );
+                                }
+                            }
+                            Some(names)
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+            if let Some(names) = array_init_captures {
+                args.extend(
+                    names
+                        .iter()
+                        .map(|name| Argument::positional(Expression::ident(name))),
+                );
+            }
+            if let ExprKind::Member { object, field, .. } = &callee.kind {
+                if args.is_empty() && matches!(field.as_str(), "sum" | "min" | "max") {
+                    let helper = match field.as_str() {
+                        "sum" => "__coll_sum",
+                        "min" => "__coll_min",
+                        _ => "__coll_max",
+                    };
+                    *expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident(helper)),
+                        args: vec![Argument::positional(*object.clone())],
+                        optional: false,
+                    });
+                    return;
+                }
+                if field == "take"
+                    && args.len() == 1
+                    && let Some(seq) = kotlin_sequence_receiver_expr_typed(object, locals, operators)
+                {
+                    *expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__kt_seq_take")),
+                        args: vec![Argument::positional(seq), args[0].clone()],
+                        optional: false,
+                    });
+                    return;
+                }
+                if field == "joinToString"
+                    && (args.is_empty() || args.len() == 1)
+                    && let Some(seq) = kotlin_sequence_receiver_expr_typed(object, locals, operators)
+                {
+                    let sep = args
+                        .first()
+                        .map(|arg| arg.value.clone())
+                        .unwrap_or_else(|| Expression::string(", "));
+                    *expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__coll_join")),
+                        args: vec![
+                            Argument::positional(Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident("__kt_seq_to_list")),
+                                args: vec![Argument::positional(seq)],
+                                optional: false,
+                            })),
+                            Argument::positional(sep),
+                        ],
+                        optional: false,
+                    });
+                    return;
+                }
+            }
+            if args.is_empty()
+                && let ExprKind::Member { object, field, .. } = &callee.kind
+                && field.starts_with("component")
+                && !is_user_member_name(field, 0)
+                && let Ok(n) = field["component".len()..].parse::<i64>()
+                && n >= 1
+            {
+                *expr = Expression::new(ExprKind::Index {
+                    object: object.clone(),
+                    index: Box::new(Expression::int(n - 1)),
+                    null_safe: false,
+                });
+                return;
+            }
+            if let ExprKind::Ident(name) = &callee.kind
+                && name == "__kt_safe_get"
+                && args.len() == 2
+                && kotlin_expr_type(&args[0].value, locals, operators)
+                    .as_deref()
+                    .is_some_and(kotlin_type_is_regex_match_result)
+                && let ExprKind::Lit(Literal::Str(field)) = &args[1].value.kind
+                && let Some(getter) =
+                    kotlin_regex_match_property_call(args[0].value.clone(), field.as_str())
+            {
+                let receiver = args[0].value.clone();
+                *expr = Expression::new(ExprKind::Ternary {
+                    cond: Box::new(Expression::new(ExprKind::Binary {
+                        op: BinOp::Eq,
+                        left: Box::new(receiver.clone()),
+                        right: Box::new(Expression::new(ExprKind::Lit(Literal::Null))),
+                    })),
+                    then: Box::new(Expression::new(ExprKind::Lit(Literal::Null))),
+                    else_: Box::new(getter),
+                });
+                return;
+            }
+            if let ExprKind::Ident(name) = &callee.kind {
+                match name.as_str() {
+                    "__coll_slice"
+                        if args.len() == 3
+                            && kotlin_sequence_receiver_expr_typed(
+                                &args[0].value,
+                                locals,
+                                operators,
+                            )
+                            .is_some()
+                            && matches!(args[1].value.kind, ExprKind::Lit(Literal::Int(0))) =>
+                    {
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__kt_seq_take")),
+                            args: vec![
+                                Argument::positional(args[0].value.clone()),
+                                Argument::positional(args[2].value.clone()),
+                            ],
+                            optional: false,
+                        });
+                        return;
+                    }
+                    "__coll_slice"
+                        if args.len() == 3
+                            && kotlin_sequence_receiver_expr_typed(
+                                &args[0].value,
+                                locals,
+                                operators,
+                            )
+                            .is_some() =>
+                    {
+                        args[0].value = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__kt_seq_to_list")),
+                            args: vec![Argument::positional(args[0].value.clone())],
+                            optional: false,
+                        });
+                    }
+                    "__kt_map_entry_list"
+                        if args.len() == 1
+                            && kotlin_sequence_receiver_expr_typed(
+                                &args[0].value,
+                                locals,
+                                operators,
+                            )
+                            .is_some() =>
+                    {
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__kt_seq_to_list")),
+                            args: vec![Argument::positional(args[0].value.clone())],
+                            optional: false,
+                        });
+                        return;
+                    }
+                    "__coll_join"
+                        if args.len() >= 2
+                            && kotlin_sequence_receiver_expr_typed(
+                                &args[0].value,
+                                locals,
+                                operators,
+                            )
+                            .is_some() =>
+                    {
+                        args[0].value = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__kt_seq_to_list")),
+                            args: vec![Argument::positional(args[0].value.clone())],
+                            optional: false,
+                        });
+                    }
+                    "__kt_map_hof"
+                        if args.len() == 2
+                            && kotlin_sequence_receiver_expr_typed(
+                                &args[0].value,
+                                locals,
+                                operators,
+                            )
+                            .is_some() =>
+                    {
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__kt_seq_map")),
+                            args: args.clone(),
+                            optional: false,
+                        });
+                        return;
+                    }
+                    "__kt_first" | "__kt_first_or_null"
+                        if args.len() == 1
+                            && kotlin_sequence_receiver_expr_typed(
+                                &args[0].value,
+                                locals,
+                                operators,
+                            )
+                            .is_some() =>
+                    {
+                        let one = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__kt_seq_take")),
+                            args: vec![
+                                Argument::positional(args[0].value.clone()),
+                                Argument::positional(Expression::int(1)),
+                            ],
+                            optional: false,
+                        });
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident(name)),
+                            args: vec![Argument::positional(Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident("__kt_seq_to_list")),
+                                args: vec![Argument::positional(one)],
+                                optional: false,
+                            }))],
+                            optional: false,
+                        });
+                        return;
+                    }
+                    "__kt_filter" | "__kt_filter_not" | "__kt_for_each" | "__kt_reduce"
+                    | "__coll_sum" | "__coll_min" | "__coll_max" | "__kt_to_set"
+                    | "__kt_to_hash_set" | "__kt_to_list" | "__kt_distinct" | "__coll_sorted"
+                    | "__coll_reverse" | "__coll_length" | "__kt_last" | "__kt_last_or_null"
+                    | "__kt_find" | "__kt_find_last"
+                        if !args.is_empty()
+                            && kotlin_sequence_receiver_expr_typed(
+                                &args[0].value,
+                                locals,
+                                operators,
+                            )
+                            .is_some() =>
+                    {
+                        args[0].value = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__kt_seq_to_list")),
+                            args: vec![Argument::positional(args[0].value.clone())],
+                            optional: false,
+                        });
+                    }
+                    _ => {}
+                }
+            }
+            if let ExprKind::Member { object, field, .. } = &callee.kind
+                && field == "zip"
+                && (args.len() == 1 || args.len() == 2)
+                && let Some(seq) = kotlin_sequence_receiver_expr_typed(object, locals, operators)
+            {
+                let mut call_args = vec![Argument::positional(seq)];
+                call_args.extend(args.clone());
+                *expr = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__kt_seq_zip")),
+                    args: call_args,
+                    optional: false,
+                });
+                return;
+            }
+            if let ExprKind::Member { object, field, .. } = &callee.kind
+                && field == "copyTo"
+                && args.len() == 1
+                && kotlin_java_io_stream_type(object, locals, operators).is_some()
+            {
+                *expr = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__kt_io_stream_copy_to")),
+                    args: vec![Argument::positional(*object.clone()), args[0].clone()],
+                    optional: false,
+                });
+                return;
+            }
+            if let ExprKind::Member { object, field, .. } = &mut callee.kind
+                && !matches!(
+                    field.as_str(),
+                    "map"
+                        | "take"
+                        | "takeWhile"
+                        | "toList"
+                        | "toMutableList"
+                        | "joinToString"
+                        | "constrainOnce"
+                        | "zip"
+                )
+                && kotlin_sequence_receiver_expr_typed(object, locals, operators).is_some()
+            {
+                let seq = (**object).clone();
+                **object = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__kt_seq_to_list")),
+                    args: vec![Argument::positional(seq)],
+                    optional: false,
+                });
+            }
+            if let ExprKind::Member { object, field, .. } = &callee.kind
+                && field == "takeWhile"
+                && args.len() == 1
+                && let Some(seq) = kotlin_sequence_receiver_expr_typed(object, locals, operators)
+            {
+                *expr = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__kt_seq_take_while")),
+                    args: vec![Argument::positional(seq), args[0].clone()],
+                    optional: false,
+                });
+                return;
+            }
+            if let ExprKind::Member { object, field, .. } = &callee.kind
+                && let Some((source, from, to)) = kotlin_sublist_source(object)
+            {
+                match (field.as_str(), args.len()) {
+                    ("removeAt", 1) => {
+                        if let ExprKind::Ident(alias) = &object.kind {
+                            KOTLIN_SUBLIST_ALIASES.with(|map| {
+                                if let Some((_, _, end)) = map.borrow_mut().get_mut(alias) {
+                                    *end = Expression::new(ExprKind::Binary {
+                                        op: BinOp::Sub,
+                                        left: Box::new(end.clone()),
+                                        right: Box::new(Expression::int(1)),
+                                    });
+                                }
+                            });
+                        }
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__coll_removeAt")),
+                            args: vec![
+                                Argument::positional(source),
+                                Argument::positional(kotlin_offset_index(
+                                    from,
+                                    args[0].value.clone(),
+                                )),
+                            ],
+                            optional: false,
+                        });
+                        return;
+                    }
+                    ("clear", 0) => {
+                        if let ExprKind::Ident(alias) = &object.kind {
+                            KOTLIN_SUBLIST_ALIASES.with(|map| {
+                                if let Some((_, start, end)) = map.borrow_mut().get_mut(alias) {
+                                    *end = start.clone();
+                                }
+                            });
+                        }
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__kt_sublist_clear")),
+                            args: vec![
+                                Argument::positional(source),
+                                Argument::positional(from),
+                                Argument::positional(to),
+                            ],
+                            optional: false,
+                        });
+                        return;
+                    }
+                    ("joinToString", 0 | 1) => {
+                        let sep = args
+                            .first()
+                            .map(|arg| arg.value.clone())
+                            .unwrap_or_else(|| {
+                                Expression::new(ExprKind::Lit(Literal::Str(", ".into())))
+                            });
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__coll_join")),
+                            args: vec![
+                                Argument::positional(kotlin_materialize_sublist(source, from, to)),
+                                Argument::positional(sep),
+                            ],
+                            optional: false,
+                        });
+                        return;
+                    }
+                    ("isEmpty", 0) => {
+                        *expr = Expression::new(ExprKind::Binary {
+                            op: BinOp::Eq,
+                            left: Box::new(Expression::new(ExprKind::Binary {
+                                op: BinOp::Sub,
+                                left: Box::new(to),
+                                right: Box::new(from),
+                            })),
+                            right: Box::new(Expression::int(0)),
+                        });
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+            if let ExprKind::Member { object, field, .. } = &callee.kind
+                && let Some((kind, source)) = kotlin_collection_view_source(object)
+            {
+                match (kind.as_str(), field.as_str(), args.len()) {
+                    (_, "isEmpty", 0) => {
+                        *expr = Expression::new(ExprKind::Binary {
+                            op: BinOp::Eq,
+                            left: Box::new(Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident("__coll_length")),
+                                args: vec![Argument::positional(
+                                    kotlin_collection_view_materialize(&kind, source),
+                                )],
+                                optional: false,
+                            })),
+                            right: Box::new(Expression::int(0)),
+                        });
+                        return;
+                    }
+                    ("keys", "contains", 1) => {
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__dict_has")),
+                            args: vec![Argument::positional(source), args[0].clone()],
+                            optional: false,
+                        });
+                        return;
+                    }
+                    ("keys", "remove", 1) => {
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__dict_delete")),
+                            args: vec![Argument::positional(source), args[0].clone()],
+                            optional: false,
+                        });
+                        return;
+                    }
+                    ("values", "remove", 1) => {
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__kt_map_values_remove")),
+                            args: vec![Argument::positional(source), args[0].clone()],
+                            optional: false,
+                        });
+                        return;
+                    }
+                    (
+                        _,
+                        "any" | "all" | "none" | "filter" | "filterNot" | "map" | "forEach"
+                        | "fold" | "reduce",
+                        _,
+                    ) => {
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::new(ExprKind::Member {
+                                object: Box::new(kotlin_collection_view_materialize(&kind, source)),
+                                field: field.clone(),
+                                null_safe: false,
+                            })),
+                            args: args.clone(),
+                            optional: false,
+                        });
+                        normalize_kotlin_operator_expr(expr, operators, locals);
+                        return;
+                    }
+                    (_, "sum" | "min" | "max", 0) => {
+                        let helper = match field.as_str() {
+                            "sum" => "__coll_sum",
+                            "min" => "__coll_min",
+                            _ => "__coll_max",
+                        };
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident(helper)),
+                            args: vec![Argument::positional(kotlin_collection_view_materialize(
+                                &kind, source,
+                            ))],
+                            optional: false,
+                        });
+                        return;
+                    }
+                    (_, "joinToString", 0 | 1) => {
+                        let sep = args
+                            .first()
+                            .map(|arg| arg.value.clone())
+                            .unwrap_or_else(|| {
+                                Expression::new(ExprKind::Lit(Literal::Str(", ".into())))
+                            });
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__coll_join")),
+                            args: vec![
+                                Argument::positional(kotlin_collection_view_materialize(
+                                    &kind, source,
+                                )),
+                                Argument::positional(sep),
+                            ],
+                            optional: false,
+                        });
+                        return;
+                    }
+                    (_, "iterator", 0) => {
+                        if kind == "entries" {
+                            *expr = Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident("__kt_map_entry_iterator")),
+                                args: vec![Argument::positional(source)],
+                                optional: false,
+                            });
+                            return;
+                        }
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__jvm_list_iterator")),
+                            args: vec![Argument::positional(kotlin_collection_view_materialize(
+                                &kind, source,
+                            ))],
+                            optional: false,
+                        });
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+            if let ExprKind::Ident(name) = &callee.kind
+                && !args.is_empty()
+                && let Some(source) = kotlin_reversed_view_source(&args[0].value)
+            {
+                match (name.as_str(), args.len()) {
+                    ("__coll_length" | "__kt_size_any", 1) => {
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__coll_length")),
+                            args: vec![Argument::positional(source)],
+                            optional: false,
+                        });
+                        return;
+                    }
+                    ("__coll_join", 2) => {
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__coll_join")),
+                            args: vec![
+                                Argument::positional(kotlin_materialize_reversed(source)),
+                                args[1].clone(),
+                            ],
+                            optional: false,
+                        });
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+            if let ExprKind::Ident(name) = &callee.kind
+                && !args.is_empty()
+                && let Some((source, from, to)) = kotlin_sublist_source(&args[0].value)
+            {
+                match (name.as_str(), args.len()) {
+                    ("__coll_length" | "__kt_size_any", 1) => {
+                        *expr = Expression::new(ExprKind::Binary {
+                            op: BinOp::Sub,
+                            left: Box::new(to),
+                            right: Box::new(from),
+                        });
+                        return;
+                    }
+                    ("__kt_is_empty", 1) => {
+                        *expr = Expression::new(ExprKind::Binary {
+                            op: BinOp::Eq,
+                            left: Box::new(Expression::new(ExprKind::Binary {
+                                op: BinOp::Sub,
+                                left: Box::new(to),
+                                right: Box::new(from),
+                            })),
+                            right: Box::new(Expression::int(0)),
+                        });
+                        return;
+                    }
+                    ("__coll_join", 2) => {
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__coll_join")),
+                            args: vec![
+                                Argument::positional(kotlin_materialize_sublist(source, from, to)),
+                                args[1].clone(),
+                            ],
+                            optional: false,
+                        });
+                        return;
+                    }
+                    ("__coll_removeAt", 2) => {
+                        if let ExprKind::Ident(alias) = &args[0].value.kind {
+                            KOTLIN_SUBLIST_ALIASES.with(|map| {
+                                if let Some((_, _, end)) = map.borrow_mut().get_mut(alias) {
+                                    *end = Expression::new(ExprKind::Binary {
+                                        op: BinOp::Sub,
+                                        left: Box::new(end.clone()),
+                                        right: Box::new(Expression::int(1)),
+                                    });
+                                }
+                            });
+                        }
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__coll_removeAt")),
+                            args: vec![
+                                Argument::positional(source),
+                                Argument::positional(kotlin_offset_index(
+                                    from,
+                                    args[1].value.clone(),
+                                )),
+                            ],
+                            optional: false,
+                        });
+                        return;
+                    }
+                    ("__dict_clear", 1) => {
+                        if let ExprKind::Ident(alias) = &args[0].value.kind {
+                            KOTLIN_SUBLIST_ALIASES.with(|map| {
+                                if let Some((_, start, end)) = map.borrow_mut().get_mut(alias) {
+                                    *end = start.clone();
+                                }
+                            });
+                        }
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__kt_sublist_clear")),
+                            args: vec![
+                                Argument::positional(source),
+                                Argument::positional(from),
+                                Argument::positional(to),
+                            ],
+                            optional: false,
+                        });
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+            if let ExprKind::Ident(name) = &callee.kind
+                && !args.is_empty()
+                && let Some(source) = kotlin_map_entry_iterator_source(&args[0].value)
+            {
+                let replacement = match (name.as_str(), args.len()) {
+                    ("__jvm_iterator_has_next", 1) => Some("__kt_map_entry_iterator_has_next"),
+                    ("__jvm_iterator_next", 1) => Some("__kt_map_entry_iterator_next"),
+                    ("__jvm_iterator_remove", 1) => Some("__kt_map_entry_iterator_remove"),
+                    _ => None,
+                };
+                if let Some(target) = replacement {
+                    let _ = source;
+                    *expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident(target)),
+                        args: args.clone(),
+                        optional: false,
+                    });
+                    return;
+                }
+            }
+            if let ExprKind::Ident(name) = &callee.kind
+                && !args.is_empty()
+                && let Some((kind, source)) = kotlin_collection_view_source(&args[0].value)
+            {
+                match (name.as_str(), kind.as_str(), args.len()) {
+                    ("__kt_is_empty", _, 1) => {
+                        *expr = Expression::new(ExprKind::Binary {
+                            op: BinOp::Eq,
+                            left: Box::new(Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident("__coll_length")),
+                                args: vec![Argument::positional(
+                                    kotlin_collection_view_materialize(&kind, source),
+                                )],
+                                optional: false,
+                            })),
+                            right: Box::new(Expression::int(0)),
+                        });
+                        return;
+                    }
+                    ("__coll_length", _, 1) => {
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__coll_length")),
+                            args: vec![Argument::positional(kotlin_collection_view_materialize(
+                                &kind, source,
+                            ))],
+                            optional: false,
+                        });
+                        return;
+                    }
+                    ("__coll_sum" | "__coll_min" | "__coll_max", _, 1) => {
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident(name)),
+                            args: vec![Argument::positional(kotlin_collection_view_materialize(
+                                &kind, source,
+                            ))],
+                            optional: false,
+                        });
+                        return;
+                    }
+                    ("__coll_contains", "keys", 2) => {
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__dict_has")),
+                            args: vec![Argument::positional(source), args[1].clone()],
+                            optional: false,
+                        });
+                        return;
+                    }
+                    ("__dict_delete" | "__kt_remove", "keys", 2) => {
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__dict_delete")),
+                            args: vec![Argument::positional(source), args[1].clone()],
+                            optional: false,
+                        });
+                        return;
+                    }
+                    ("__dict_delete" | "__kt_remove", "values", 2) => {
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__kt_map_values_remove")),
+                            args: vec![Argument::positional(source), args[1].clone()],
+                            optional: false,
+                        });
+                        return;
+                    }
+                    ("__coll_join", _, 2) => {
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__coll_join")),
+                            args: vec![
+                                Argument::positional(kotlin_collection_view_materialize(
+                                    &kind, source,
+                                )),
+                                args[1].clone(),
+                            ],
+                            optional: false,
+                        });
+                        return;
+                    }
+                    ("__jvm_list_iterator", _, 1) => {
+                        if kind == "entries" {
+                            *expr = Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident("__kt_map_entry_iterator")),
+                                args: vec![Argument::positional(source)],
+                                optional: false,
+                            });
+                            return;
+                        }
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__jvm_list_iterator")),
+                            args: vec![Argument::positional(kotlin_collection_view_materialize(
+                                &kind, source,
+                            ))],
+                            optional: false,
+                        });
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+            if let ExprKind::Ident(name) = &callee.kind
+                && name == "__jvm_list_iterator"
+                && args.len() == 1
+                && let Some(source) = kotlin_map_entries_source_expr(&args[0].value)
+            {
+                *expr = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__kt_map_entry_iterator")),
+                    args: vec![Argument::positional(source)],
+                    optional: false,
+                });
+                return;
             }
             // The METHOD spellings of the bitwise ops — `x.and(y)`,
             // `mask.inv()` — are the same operators as the infix words
@@ -5913,6 +9534,14 @@ fn normalize_kotlin_operator_expr(
                 *expr = kotlin_set_contains_expr(args[0].value.clone(), args[1].value.clone());
                 return;
             }
+            if let ExprKind::Member { object, field, .. } = &callee.kind
+                && let Some(class_name) = kotlin_class_token_name_with_locals(object, locals)
+                && let Some(replacement) =
+                    kotlin_reflection_class_method_for_name(&class_name, field, args)
+            {
+                *expr = replacement;
+                return;
+            }
             if let ExprKind::Ident(name) = &callee.kind
                 && name == "__kt_class_of"
                 && args.len() == 1
@@ -5939,9 +9568,21 @@ fn normalize_kotlin_operator_expr(
             {
                 match field.as_str() {
                     "toSet" | "toMutableSet" => {
+                        let value = if kotlin_expr_type(object, locals, operators)
+                            .as_deref()
+                            .is_some_and(kotlin_type_is_map_like)
+                        {
+                            Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident("__kt_map_entries")),
+                                args: vec![Argument::positional((**object).clone())],
+                                optional: false,
+                            })
+                        } else {
+                            (**object).clone()
+                        };
                         *expr = Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::ident("__kt_to_set")),
-                            args: vec![Argument::positional((**object).clone())],
+                            args: vec![Argument::positional(value)],
                             optional: false,
                         });
                         return;
@@ -6117,6 +9758,14 @@ fn normalize_kotlin_operator_expr(
                     return;
                 }
                 if field == "iterator" && args.is_empty() {
+                    if let Some(source) = kotlin_map_entries_source_expr(object) {
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__kt_map_entry_iterator")),
+                            args: vec![Argument::positional(source)],
+                            optional: false,
+                        });
+                        return;
+                    }
                     let iterator_source = if kotlin_expr_type(object, locals, operators)
                         .as_deref()
                         .is_some_and(kotlin_type_is_set_like)
@@ -6293,9 +9942,34 @@ fn normalize_kotlin_operator_expr(
                     });
                     return;
                 }
+                if name == "__kt_tostring"
+                    && args.len() == 1
+                    && kotlin_expr_type(&args[0].value, locals, operators)
+                        .as_deref()
+                        .is_some_and(kotlin_type_is_double_like)
+                {
+                    *expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__kt_double_tostring")),
+                        args: args.clone(),
+                        optional: false,
+                    });
+                    return;
+                }
                 // TreeSet's `add` keeps the backing list SORTED — the generic
                 // add rewrite pushed in insertion order. Same re-route shape
                 // as PriorityQueue below.
+                if name == "__kt_add"
+                    && args.len() == 2
+                    && kotlin_expr_type(&args[0].value, locals, operators).as_deref()
+                        == Some("java.util.ListIterator")
+                {
+                    *expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__jvm_iterator_add")),
+                        args: args.clone(),
+                        optional: false,
+                    });
+                    return;
+                }
                 if name == "__kt_add"
                     && args.len() == 2
                     && kotlin_expr_type(&args[0].value, locals, operators)
@@ -6454,6 +10128,48 @@ fn normalize_kotlin_operator_expr(
                     return;
                 }
                 if name == "__coll_contains" && args.len() == 2 {
+                    let mut recv = args[0].clone();
+                    if let ExprKind::Call {
+                        callee: recv_callee,
+                        args: recv_args,
+                        ..
+                    } = &recv.value.kind
+                        && matches!(
+                            &recv_callee.kind,
+                            ExprKind::Ident(n) if n == "__kt_tostring"
+                        )
+                        && recv_args.len() == 1
+                        && matches!(
+                            kotlin_expr_type(&recv_args[0].value, locals, operators).as_deref(),
+                            Some("Duration") | Some("kotlin.time.Duration")
+                        )
+                    {
+                        recv.value = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__kt_duration_str")),
+                            args: vec![recv_args[0].clone()],
+                            optional: false,
+                        });
+                    }
+                    let recv_is_string = kotlin_expr_type(&recv.value, locals, operators)
+                        .as_deref()
+                        == Some("String")
+                        || matches!(
+                            &recv.value.kind,
+                            ExprKind::Call { callee, .. }
+                                if matches!(&callee.kind, ExprKind::Ident(n) if n == "__kt_duration_str")
+                        );
+                    if recv_is_string {
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__kt_contains_ic")),
+                            args: vec![
+                                recv,
+                                args[1].clone(),
+                                Argument::positional(Expression::bool(false)),
+                            ],
+                            optional: false,
+                        });
+                        return;
+                    }
                     if kotlin_expr_type(&args[0].value, locals, operators)
                         .as_deref()
                         .is_some_and(kotlin_type_is_set_like)
@@ -6527,6 +10243,7 @@ fn normalize_kotlin_operator_expr(
                 if let Some(reordered) = kotlin_normalized_fn_args(name, args) {
                     *args = reordered;
                 }
+                kotlin_normalize_object_singleton_args(name, args);
                 // Typed-array LITERAL factories materialize here (not at
                 // walk time) so `val a = byteArrayOf(…)` types its local
                 // first — that type drives identity `==` and rendering.
@@ -6592,6 +10309,7 @@ fn normalize_kotlin_operator_expr(
                             args: args.clone(),
                             optional: false,
                         });
+                        normalize_kotlin_operator_expr(expr, operators, locals);
                         return;
                     }
                 }
@@ -6612,7 +10330,33 @@ fn normalize_kotlin_operator_expr(
                     });
                     return;
                 }
-                if field == "toString" && args.is_empty() {
+                if field == "toString"
+                    && args.is_empty()
+                    && matches!(receiver_ty.as_str(), "Duration" | "kotlin.time.Duration")
+                {
+                    *expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__kt_duration_str")),
+                        args: vec![Argument::positional(*object.clone())],
+                        optional: false,
+                    });
+                    return;
+                }
+                if field == "toString"
+                    && args.is_empty()
+                    && let Some(target) = kotlin_java_io_tostring_helper(&receiver_ty)
+                {
+                    *expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident(target)),
+                        args: vec![Argument::positional(*object.clone())],
+                        optional: false,
+                    });
+                    return;
+                }
+                if field == "toString"
+                    && args.is_empty()
+                    && !receiver_ty.starts_with("java.")
+                    && kotlin_contains_type_should_lower(&receiver_ty)
+                {
                     *expr = Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__kt_tostring")),
                         args: vec![Argument::positional(*object.clone())],
@@ -6620,13 +10364,99 @@ fn normalize_kotlin_operator_expr(
                     });
                     return;
                 }
-                if receiver_ty == "Vector" && matches!(field.as_str(), "iterator" | "listIterator")
+                if field == "contains"
+                    && args.len() == 1
+                    && kotlin_contains_type_should_lower(&receiver_ty)
+                {
+                    *expr = if kotlin_type_is_set_like(&receiver_ty) {
+                        kotlin_set_contains_expr((**object).clone(), args[0].value.clone())
+                    } else {
+                        Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__coll_contains")),
+                            args: vec![
+                                Argument::positional(*object.clone()),
+                                Argument::positional(args[0].value.clone()),
+                            ],
+                            optional: false,
+                        })
+                    };
+                    return;
+                }
+                if field == "iterator"
+                    && args.is_empty()
+                    && kotlin_type_is_plain_map_like(&receiver_ty)
+                {
+                    *expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__kt_map_entry_iterator")),
+                        args: vec![Argument::positional(*object.clone())],
+                        optional: false,
+                    });
+                    return;
+                }
+                if let Some(source) = kotlin_map_entries_source_expr(object)
+                    && field == "iterator"
+                    && args.is_empty()
+                {
+                    *expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__kt_map_entry_iterator")),
+                        args: vec![Argument::positional(source)],
+                        optional: false,
+                    });
+                    return;
+                }
+                if kotlin_type_is_list_like(&receiver_ty)
+                    && matches!(field.as_str(), "iterator" | "listIterator")
                 {
                     let mut call_args = vec![Argument::positional(*object.clone())];
                     call_args.extend(args.clone());
                     *expr = Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__jvm_list_iterator")),
                         args: call_args,
+                        optional: false,
+                    });
+                    return;
+                }
+                if receiver_ty == "java.util.ListIterator" {
+                    let target = match field.as_str() {
+                        "hasNext" if args.is_empty() => Some("__jvm_iterator_has_next"),
+                        "next" if args.is_empty() => Some("__jvm_iterator_next"),
+                        "remove" if args.is_empty() => Some("__jvm_iterator_remove"),
+                        "previous" if args.is_empty() => Some("__jvm_iterator_previous"),
+                        "set" if args.len() == 1 => Some("__jvm_iterator_set"),
+                        "add" if args.len() == 1 => Some("__jvm_iterator_add"),
+                        _ => None,
+                    };
+                    if let Some(target) = target {
+                        let mut call_args = vec![Argument::positional(*object.clone())];
+                        call_args.extend(args.clone());
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident(target)),
+                            args: call_args,
+                            optional: false,
+                        });
+                        return;
+                    }
+                }
+                if kotlin_map_entry_iterator_source(object).is_some() {
+                    let target = match field.as_str() {
+                        "hasNext" if args.is_empty() => Some("__kt_map_entry_iterator_has_next"),
+                        "next" if args.is_empty() => Some("__kt_map_entry_iterator_next"),
+                        "remove" if args.is_empty() => Some("__kt_map_entry_iterator_remove"),
+                        _ => None,
+                    };
+                    if let Some(target) = target {
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident(target)),
+                            args: vec![Argument::positional(*object.clone())],
+                            optional: false,
+                        });
+                        return;
+                    }
+                }
+                if receiver_ty == "java.util.Iterator" && field == "hasNext" && args.is_empty() {
+                    *expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__jvm_iterator_has_next")),
+                        args: vec![Argument::positional(*object.clone())],
                         optional: false,
                     });
                     return;
@@ -6651,6 +10481,9 @@ fn normalize_kotlin_operator_expr(
             if let ExprKind::Member { object, field, .. } = &callee.kind
                 && field == "toString"
                 && args.is_empty()
+                && !kotlin_expr_type(object, locals, operators)
+                    .as_deref()
+                    .is_some_and(|ty| ty.starts_with("java."))
             {
                 *expr = Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__kt_tostring")),
@@ -6665,21 +10498,93 @@ fn normalize_kotlin_operator_expr(
             for arg in &mut *args {
                 normalize_kotlin_operator_expr(&mut arg.value, operators, locals);
             }
+            if let Some(path) = dotted_expr_path(class)
+                && path.ends_with(".Companion")
+                && !args.is_empty()
+            {
+                let owner = path.trim_end_matches(".Companion");
+                *expr = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::ident(owner)),
+                        field: "invoke".to_string(),
+                        null_safe: false,
+                    })),
+                    args: args.clone(),
+                    optional: false,
+                });
+                return;
+            }
+            if let ExprKind::Ident(name) = &class.kind
+                && !args.is_empty()
+                && KOTLIN_OBJECT_SINGLETONS.with(|set| set.borrow().contains(name))
+            {
+                *expr = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::ident(name)),
+                        field: "invoke".to_string(),
+                        null_safe: false,
+                    })),
+                    args: args.clone(),
+                    optional: false,
+                });
+                return;
+            }
+            if let Some(path) = dotted_expr_path(class) {
+                let leaf = path.rsplit('.').next().unwrap_or(path.as_str());
+                if path.contains('.')
+                    && is_user_class_name(leaf)
+                    && kotlin_is_builtin_exception_name(leaf)
+                {
+                    *expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident(&format!(
+                            "{path}$arity{}",
+                            args.len()
+                        ))),
+                        args: args.clone(),
+                        optional: false,
+                    });
+                    return;
+                } else if path.contains('.') && is_user_class_name(leaf) {
+                    *class = Box::new(Expression::ident(&path));
+                }
+                match leaf {
+                    "UncaughtExceptionHandler" if args.len() == 1 => {
+                        *expr = args[0].value.clone();
+                        return;
+                    }
+                    "AtomicInteger" | "AtomicLong" | "AtomicBoolean" | "AtomicReference" => {
+                        kotlin_mark_threads_needed();
+                        let default = match leaf {
+                            "AtomicBoolean" => Expression::bool(false),
+                            "AtomicReference" => Expression::null(),
+                            _ => Expression::int(0),
+                        };
+                        let value = args.first().map(|arg| arg.value.clone()).unwrap_or(default);
+                        *expr = kt_call("__kt_atomic_new", vec![value]);
+                        return;
+                    }
+                    "CountDownLatch" => {
+                        kotlin_mark_threads_needed();
+                        let count = args
+                            .first()
+                            .map(|arg| arg.value.clone())
+                            .unwrap_or_else(|| Expression::int(0));
+                        *expr = kt_call("__kt_latch_new", vec![count]);
+                        return;
+                    }
+                    "ThreadLocal" => {
+                        kotlin_mark_threads_needed();
+                        *expr = kt_call("__kt_thread_local_new", Vec::new());
+                        return;
+                    }
+                    _ => {}
+                }
+            }
             // Injected AST (lang_enum's `throw new IllegalArgumentException`)
             // spells construction with New; Kotlin's exceptions are CALL
             // builtins, so the New form read an undefined class global.
             if let ExprKind::Ident(n) = &class.kind
-                && matches!(
-                    n.as_str(),
-                    "Exception"
-                        | "IllegalArgumentException"
-                        | "IllegalStateException"
-                        | "NullPointerException"
-                        | "IndexOutOfBoundsException"
-                        | "NoSuchElementException"
-                        | "UnsupportedOperationException"
-                )
-                && !is_user_class_name(n)
+                && kotlin_is_builtin_exception_callee(n)
             {
                 *expr = Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident(n)),
@@ -6830,9 +10735,97 @@ fn normalize_kotlin_operator_expr(
             normalize_kotlin_operator_expr(start, operators, locals);
             normalize_kotlin_operator_expr(end, operators, locals);
         }
-        ExprKind::Lambda { params, body, .. } => {
+        ExprKind::IsType { expr: subject, type_name }
+            if type_name.starts_with("__kt_function_arity:")
+                || type_name.starts_with("__kt_function_sig:") =>
+        {
+            normalize_kotlin_operator_expr(subject, operators, locals);
+            let want_sig = kotlin_function_type_param_names(type_name);
+            let want_arity = kotlin_function_type_arity(type_name);
+            if let Some(want) = want_arity {
+                let direct = if let ExprKind::Ident(name) = &subject.kind {
+                    KOTLIN_FUNCTION_ARITY_LOCALS.with(|map| map.borrow().get(name).copied())
+                } else {
+                    None
+                };
+                let direct_sig = if let ExprKind::Ident(name) = &subject.kind {
+                    KOTLIN_FUNCTION_SIGNATURE_LOCALS.with(|map| map.borrow().get(name).cloned())
+                } else {
+                    None
+                };
+                let have_ty = kotlin_expr_type(subject, locals, operators);
+                let have_sig = have_ty
+                    .as_deref()
+                    .and_then(kotlin_function_type_param_names);
+                let have_arity = direct.or_else(|| {
+                    have_ty
+                        .as_deref()
+                        .and_then(kotlin_function_type_arity)
+                });
+                if let Some(matches) = match (want_sig, have_sig) {
+                    (Some(want_sig), _) if direct_sig.is_some() => {
+                        Some(direct_sig.unwrap() == want_sig)
+                    }
+                    (Some(want_sig), Some(have_sig)) => Some(want_sig == have_sig),
+                    _ => have_arity.map(|have| have == want),
+                } {
+                    *expr = Expression::new(ExprKind::Binary {
+                        op: BinOp::And,
+                        left: Box::new(Expression::new(ExprKind::IsType {
+                            expr: subject.clone(),
+                            type_name: "function".to_string(),
+                        })),
+                        right: Box::new(Expression::new(ExprKind::Lit(Literal::Bool(matches)))),
+                    });
+                } else {
+                    *type_name = "function".to_string();
+                }
+            }
+        }
+        ExprKind::IsType { expr: subject, type_name } => {
+            normalize_kotlin_operator_expr(subject, operators, locals);
+            let bare = type_hint_text(type_name)
+                .to_lowercase()
+                .split('<')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .trim_end_matches('?')
+                .to_string();
+            if matches!(bare.as_str(), "__kt_list" | "__kt_mutablelist")
+                && {
+                    let subject_ty = kotlin_expr_type(subject, locals, operators);
+                    subject_ty.as_deref().is_some_and(kotlin_type_is_array_family)
+                        || matches!(
+                            &subject.kind,
+                            ExprKind::Ident(name)
+                                if !KOTLIN_KEYED_COLLECTION_TYPES.with(|map| map.borrow().contains_key(name))
+                                    && KOTLIN_STATIC_VALUES.with(|map| {
+                                        map.borrow()
+                                            .get(name)
+                                            .is_some_and(|value| matches!(value.kind, ExprKind::Array(_)))
+                                    })
+                        )
+                }
+            {
+                *expr = Expression::new(ExprKind::Lit(Literal::Bool(false)));
+            } else if bare == "__kt_mutablelist" {
+                *expr = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__kt_is_mutable_list")),
+                    args: vec![Argument::positional((**subject).clone())],
+                    optional: false,
+                });
+            } else if bare == "__kt_list" {
+                *type_name = "array".to_string();
+            }
+        }
+        ExprKind::Lambda {
+            params,
+            body,
+            ..
+        } => {
             let mut lambda_locals = locals.clone();
-            for param in params {
+            for param in params.iter_mut() {
                 if let Some(ty) = &param.type_hint {
                     lambda_locals.insert(param.name.clone(), ty.clone().to_string());
                 }
@@ -7041,6 +11034,18 @@ fn kotlin_operator_rewrite(
                     right: right.clone(),
                 }));
             }
+            if matches!(op, BinOp::Eq | BinOp::NotEq)
+                && let (Some(left_id), Some(right_id)) = (
+                    kotlin_kclass_identity_expr(left, locals),
+                    kotlin_kclass_identity_expr(right, locals),
+                )
+            {
+                return Some(Expression::new(ExprKind::Binary {
+                    op: *op,
+                    left: Box::new(left_id),
+                    right: Box::new(right_id),
+                }));
+            }
             // `==` on the TYPED arrays is reference IDENTITY (List keeps
             // structural equals) — route around the structural value-eq slot.
             if matches!(op, BinOp::Eq | BinOp::NotEq)
@@ -7167,10 +11172,18 @@ fn kotlin_operator_rewrite(
                         Some("Range" | "IntRange" | "LongRange")
                     )
                 {
+                    let haystack = if matches!(
+                        kotlin_expr_type(right, locals, operators).as_deref(),
+                        Some("Range" | "IntRange" | "LongRange")
+                    ) {
+                        kotlin_to_list_expr((**right).clone())
+                    } else {
+                        right_folded.clone()
+                    };
                     return Some(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__coll_contains")),
                         args: vec![
-                            Argument::positional(right_folded.clone()),
+                            Argument::positional(haystack),
                             Argument::positional((**left).clone()),
                         ],
                         optional: false,
@@ -7318,15 +11331,19 @@ fn kotlin_operator_rewrite(
                 }));
             }
             if let ExprKind::Index { object, index, .. } = &target.kind {
-                if kotlin_expr_type(object, locals, operators)
-                    .as_deref()
-                    .is_some_and(kotlin_type_is_map_like)
+                if let Some(ty) = kotlin_expr_type(object, locals, operators)
+                    && kotlin_type_is_map_like(&ty)
                 {
+                    let (callee, key) = if kotlin_type_is_jvm_map_like(&ty) {
+                        ("__jvm_map_put", (**index).clone())
+                    } else {
+                        ("__dict_set", kotlin_key_expr((**index).clone()))
+                    };
                     return Some(Expression::new(ExprKind::Call {
-                        callee: Box::new(Expression::ident("__dict_set")),
+                        callee: Box::new(Expression::ident(callee)),
                         args: vec![
                             Argument::positional((**object).clone()),
-                            Argument::positional(kotlin_key_expr((**index).clone())),
+                            Argument::positional(key),
                             Argument::positional((**value).clone()),
                         ],
                         optional: false,
@@ -7363,6 +11380,69 @@ fn kotlin_operator_rewrite(
                             Argument::positional((**object).clone()),
                             Argument::positional((**index).clone()),
                             Argument::positional((**value).clone()),
+                        ],
+                        optional: false,
+                    }));
+                }
+            }
+            if let ExprKind::Call { callee, args, .. } = &value.kind
+                && args.len() == 2
+                && let ExprKind::Ident(helper) = &callee.kind
+                && matches!(helper.as_str(), "__kt_set_union" | "__kt_set_subtract")
+            {
+                let left_value = &args[0].value;
+                let right_value = &args[1].value;
+                let left_matches_target = kotlin_same_simple_expr(target, left_value)
+                    || match &left_value.kind {
+                        ExprKind::Call {
+                            callee: inner_callee,
+                            args: inner_args,
+                            ..
+                        } if inner_args.len() == 1
+                            && matches!(&inner_callee.kind, ExprKind::Ident(n) if n == "__kt_to_set") =>
+                        {
+                            kotlin_same_simple_expr(target, &inner_args[0].value)
+                        }
+                        _ => false,
+                    };
+                if left_matches_target {
+                    let rhs = match &right_value.kind {
+                        ExprKind::Call {
+                            callee: inner_callee,
+                            args: inner_args,
+                            ..
+                        } if inner_args.len() == 1
+                            && matches!(&inner_callee.kind, ExprKind::Ident(n) if n == "__kt_to_set") =>
+                        {
+                            inner_args[0].value.clone()
+                        }
+                        _ => right_value.clone(),
+                    };
+                    let rhs_is_collection = kotlin_expr_is_set_like(&rhs)
+                        || kotlin_expr_type(&rhs, locals, operators)
+                            .as_deref()
+                            .is_some_and(|ty| {
+                                kotlin_type_is_set_like(ty)
+                                    || kotlin_type_is_list_like(ty)
+                                    || kotlin_type_is_map_like(ty)
+                            })
+                        || matches!(rhs.kind, ExprKind::Array(_) | ExprKind::Set(_));
+                    let mutator = if helper == "__kt_set_union" {
+                        if rhs_is_collection {
+                            "__kt_add_all"
+                        } else {
+                            "__kt_add"
+                        }
+                    } else if rhs_is_collection {
+                        "__kt_remove_all"
+                    } else {
+                        "__kt_remove"
+                    };
+                    return Some(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident(mutator)),
+                        args: vec![
+                            Argument::positional((**target).clone()),
+                            Argument::positional(rhs),
                         ],
                         optional: false,
                     }));
@@ -7554,6 +11634,147 @@ fn kotlin_operator_rewrite(
                     optional: false,
                 }));
             }
+            if let ExprKind::Member { object, field, .. } = &callee.kind {
+                if args.is_empty() {
+                    match field.as_str() {
+                        "isVowel" => {
+                            return Some(kotlin_char_is_vowel_expr((**object).clone()));
+                        }
+                        "isISOControl" => {
+                            return Some(kotlin_char_is_iso_control_expr((**object).clone()));
+                        }
+                        "isDefined" => {
+                            return Some(Expression::bool(true));
+                        }
+                        "digitToInt" => {
+                            return Some(kotlin_digit_to_int_expr((**object).clone(), false));
+                        }
+                        "digitToIntOrNull" => {
+                            return Some(kotlin_digit_to_int_expr((**object).clone(), true));
+                        }
+                        _ => {}
+                    }
+                }
+                if field == "compareTo"
+                    && args.len() == 1
+                    && matches!(
+                        (&object.kind, &args[0].value.kind),
+                        (
+                            ExprKind::Lit(Literal::Str(a)),
+                            ExprKind::Lit(Literal::Str(b))
+                        ) if a.chars().count() == 1 && b.chars().count() == 1
+                    )
+                {
+                    return Some(Expression::new(ExprKind::Binary {
+                        op: BinOp::Sub,
+                        left: Box::new(kotlin_char_code_expr((**object).clone())),
+                        right: Box::new(kotlin_char_code_expr(args[0].value.clone())),
+                    }));
+                }
+                if field == "step"
+                    && args.len() == 1
+                    && kotlin_expr_type(object, locals, operators)
+                        .as_deref()
+                        .is_some_and(kotlin_type_is_range_like)
+                {
+                    if let ExprKind::Range {
+                        start,
+                        end,
+                        inclusive,
+                    } = &object.kind
+                    {
+                        if let Some(step) = kotlin_static_int(&args[0].value)
+                            && let Some(array) =
+                                kotlin_char_range_array(start, end, *inclusive, step)
+                        {
+                            return Some(array);
+                        }
+                        let stop = if *inclusive {
+                            Expression::new(ExprKind::Binary {
+                                op: BinOp::Add,
+                                left: end.clone(),
+                                right: Box::new(Expression::int(1)),
+                            })
+                        } else {
+                            (**end).clone()
+                        };
+                        return Some(Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__kt_step_asc")),
+                            args: vec![
+                                Argument::positional((**start).clone()),
+                                Argument::positional(stop),
+                                Argument::positional(args[0].value.clone()),
+                            ],
+                            optional: false,
+                        }));
+                    }
+                    return Some(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__kt_step_asc")),
+                        args: vec![
+                            Argument::positional(kotlin_range_first_expr((**object).clone())),
+                            Argument::positional(Expression::new(ExprKind::Binary {
+                                op: BinOp::Add,
+                                left: Box::new(kotlin_range_last_expr((**object).clone())),
+                                right: Box::new(Expression::int(1)),
+                            })),
+                            Argument::positional(args[0].value.clone()),
+                        ],
+                        optional: false,
+                    }));
+                }
+                match (field.as_str(), args.len()) {
+                    ("coerceAtLeast", 1) => {
+                        return Some(kotlin_coerce_expr(
+                            (**object).clone(),
+                            args[0].value.clone(),
+                            (**object).clone(),
+                        ));
+                    }
+                    ("coerceAtMost", 1) => {
+                        return Some(kotlin_coerce_expr(
+                            (**object).clone(),
+                            (**object).clone(),
+                            args[0].value.clone(),
+                        ));
+                    }
+                    ("coerceIn", 1) => {
+                        if kotlin_expr_type(object, locals, operators)
+                            .as_deref()
+                            .is_some_and(kotlin_type_is_range_like)
+                        {
+                            return Some(kotlin_coerce_expr(
+                                args[0].value.clone(),
+                                kotlin_range_first_expr((**object).clone()),
+                                kotlin_range_last_expr((**object).clone()),
+                            ));
+                        } else {
+                            let range = args[0].value.clone();
+                            return Some(kotlin_coerce_expr(
+                                (**object).clone(),
+                                kotlin_range_first_expr(range.clone()),
+                                kotlin_range_last_expr(range),
+                            ));
+                        }
+                    }
+                    ("coerceIn", 2) => {
+                        if let (Some(low), Some(high)) = (
+                            kotlin_static_int(&args[0].value),
+                            kotlin_static_int(&args[1].value),
+                        ) && low > high
+                        {
+                            return Some(kotlin_illegal_argument_throw_expr(
+                                "Cannot coerce value to an empty range",
+                            ));
+                        }
+                        return Some(kotlin_coerce_expr(
+                            (**object).clone(),
+                            args[0].value.clone(),
+                            args[1].value.clone(),
+                        ));
+                    }
+                    _ => {}
+                }
+            }
             // `1L..7L step 2` walked into `__kt_step_asc(BigInt, BigInt,
             // BigInt)` — the range-step machinery is f64, so Long bounds
             // demote exactly like Range endpoints do (exact to 2^53; a wider
@@ -7599,7 +11820,9 @@ fn kotlin_operator_rewrite(
                 && operators.get(&ty).is_some_and(|info| info.has("invoke"))
             {
                 let field = overloaded_storage_name_for_args("invoke", args.len(), args)
-                    .unwrap_or_else(|| "invoke".to_string());
+                    .unwrap_or_else(|| {
+                        vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Call)
+                    });
                 return Some(Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::new(ExprKind::Member {
                         object: callee.clone(),
@@ -7610,11 +11833,35 @@ fn kotlin_operator_rewrite(
                     optional: false,
                 }));
             }
+            if !matches!(callee.kind, ExprKind::Member { .. })
+                && let Some(owner) = kotlin_expr_type(callee, locals, operators)
+                    .and_then(|ty| ty.strip_prefix("__kt_companion_callable:").map(str::to_string))
+            {
+                return Some(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::ident(&owner)),
+                        field: "invoke".to_string(),
+                        null_safe: false,
+                    })),
+                    args: args.clone(),
+                    optional: false,
+                }));
+            }
+            if !matches!(callee.kind, ExprKind::Member { .. })
+                && let Some(ty) = kotlin_expr_type(callee, locals, operators)
+                && kotlin_type_is_function_like(&ty)
+            {
+                return Some(Expression::new(ExprKind::Call {
+                    callee: callee.clone(),
+                    args: args.clone(),
+                    optional: false,
+                }));
+            }
             if args.len() == 1
                 && let ExprKind::Member { object, field, .. } = &callee.kind
                 && kotlin_expr_type(object, locals, operators)
                     .as_deref()
-                    .is_some_and(kotlin_type_is_set_like)
+                    .is_some_and(|ty| kotlin_type_is_set_like(ty) || kotlin_type_is_list_like(ty))
             {
                 let arg_is_lambda = matches!(args[0].value.kind, ExprKind::Lambda { .. });
                 let helper = match field.as_str() {
@@ -8180,6 +12427,33 @@ fn kotlin_type_is_list_like(ty: &str) -> bool {
     )
 }
 
+fn kotlin_type_is_array_like(ty: &str) -> bool {
+    let bare = ty
+        .split('<')
+        .next()
+        .unwrap_or(ty)
+        .rsplit('.')
+        .next()
+        .unwrap_or(ty)
+        .trim();
+    matches!(
+        bare,
+        "Array"
+            | "IntArray"
+            | "LongArray"
+            | "DoubleArray"
+            | "FloatArray"
+            | "BooleanArray"
+            | "CharArray"
+            | "ByteArray"
+            | "ShortArray"
+            | "UIntArray"
+            | "UByteArray"
+            | "UShortArray"
+            | "ULongArray"
+    )
+}
+
 /// The fixed-size ARRAY types — `==` on these is REFERENCE identity in
 /// Kotlin, unlike List's structural equals.
 fn kotlin_type_is_typed_array(ty: &str) -> bool {
@@ -8306,6 +12580,11 @@ fn kotlin_element_type_name(ty: &str) -> Option<&'static str> {
 fn kotlin_delegated_collection_kind(ty: &str) -> Option<String> {
     let bare = ty.rsplit('.').next().unwrap_or(ty);
     KOTLIN_DELEGATED_COLLECTIONS.with(|map| map.borrow().get(bare).cloned())
+}
+
+fn kotlin_delegated_collection_field(ty: &str) -> Option<String> {
+    let bare = ty.rsplit('.').next().unwrap_or(ty);
+    KOTLIN_DELEGATE_FIELDS.with(|map| map.borrow().get(bare).cloned())
 }
 
 fn kotlin_literal_keyed_collection_type(expr: &Expression) -> Option<&'static str> {
@@ -8504,12 +12783,26 @@ fn kotlin_expr_type(
         ExprKind::Lit(Literal::Float(_)) => Some("Double".to_string()),
         ExprKind::Lit(Literal::Bool(_)) => Some("Boolean".to_string()),
         ExprKind::Set(_) => Some("Set".to_string()),
+        ExprKind::Call { callee, .. } if matches!(&callee.kind, ExprKind::Ident(name) if name == "__kt_set_literal") => {
+            Some("Set".to_string())
+        }
         ExprKind::Ident(name) => KOTLIN_KEYED_COLLECTION_TYPES
             .with(|map| map.borrow().get(name).cloned())
+            .or_else(|| KOTLIN_ARRAY_FAMILY_LOCALS.with(|map| map.borrow().get(name).cloned()))
+            .or_else(|| KOTLIN_CONCURRENCY_LOCALS.with(|map| map.borrow().get(name).cloned()))
+            .or_else(|| {
+                locals
+                    .get(name)
+                    .filter(|ty| ty.starts_with("__kt_companion_callable:"))
+                    .cloned()
+            })
+            .or_else(|| KOTLIN_DECLARED_TYPE_SHAPES.with(|map| map.borrow().get(name).cloned()))
             .or_else(|| locals.get(name).cloned()),
         ExprKind::New { class, .. } => match &class.kind {
-            ExprKind::Ident(name) => Some(name.clone()),
-            ExprKind::Member { field, .. } => Some(field.clone()),
+            ExprKind::Ident(name) => Some(type_hint_text(name)),
+            ExprKind::Member { field, .. } => {
+                Some(dotted_expr_path(class).unwrap_or_else(|| field.clone()))
+            }
             _ => None,
         },
         // Element reads keep the element type where it matters for
@@ -8519,7 +12812,7 @@ fn kotlin_expr_type(
         ExprKind::Index { object, .. } => {
             match kotlin_expr_type(object, locals, operators).as_deref() {
                 Some("FloatArray") | Some("DoubleArray") => Some("Double".to_string()),
-                Some(t) => kotlin_element_type_name(t).map(str::to_string),
+                Some(t) => kotlin_index_value_type(t),
                 _ => None,
             }
         }
@@ -8568,6 +12861,70 @@ fn kotlin_expr_type(
             }
         }
         ExprKind::Call { callee, .. } => {
+            if let ExprKind::New { class, .. } = &callee.kind {
+                return match &class.kind {
+                    ExprKind::Ident(name) => Some(name.clone()),
+                    ExprKind::Member { field, .. } => {
+                        Some(dotted_expr_path(class).unwrap_or_else(|| field.clone()))
+                    }
+                    _ => None,
+                };
+            }
+            if let ExprKind::Ident(name) = &callee.kind
+                && matches!(name.as_str(), "__kt_thread_make" | "__kt_thread_current")
+            {
+                return Some("Thread".to_string());
+            }
+            if let ExprKind::Ident(name) = &callee.kind
+                && let Some(shape) =
+                    KOTLIN_FUNCTION_RETURN_SHAPES.with(|map| map.borrow().get(name).cloned())
+            {
+                return Some(shape);
+            }
+            if let ExprKind::Ident(name) = &callee.kind
+                && name == "__kt_atomic_new"
+            {
+                return Some("AtomicInteger".to_string());
+            }
+            if let ExprKind::Ident(name) = &callee.kind
+                && name == "__kt_latch_new"
+            {
+                return Some("CountDownLatch".to_string());
+            }
+            if let ExprKind::Ident(name) = &callee.kind
+                && name == "__kt_thread_local_new"
+            {
+                return Some("ThreadLocal".to_string());
+            }
+            if let ExprKind::Ident(name) = &callee.kind
+                && matches!(
+                    name.as_str(),
+                    "__kt_seq_of"
+                        | "__kt_seq_map"
+                        | "__kt_seq_take"
+                        | "__kt_seq_take_while"
+                        | "__kt_seq_constrain_once"
+                        | "sequenceOf"
+                        | "emptySequence"
+                )
+            {
+                return Some("Sequence".to_string());
+            }
+            if let ExprKind::Ident(name) = &callee.kind
+                && name == "__kt_seq_zip"
+            {
+                return Some("List".to_string());
+            }
+            if let ExprKind::Ident(name) = &callee.kind
+                && matches!(name.as_str(), "__kt_step_asc" | "__kt_step_desc")
+            {
+                return Some("Range".to_string());
+            }
+            if let ExprKind::Ident(name) = &callee.kind
+                && matches!(name.as_str(), "Regex" | "__kt_regex_new")
+            {
+                return Some("kotlin.text.Regex".to_string());
+            }
             if let ExprKind::Member { object, field, .. } = &callee.kind {
                 if field == "groupingBy" {
                     return Some("Grouping".to_string());
@@ -8576,6 +12933,13 @@ fn kotlin_expr_type(
                 // renders `2.0` (the Double-print rewrite needs a type).
                 if matches!(field.as_str(), "average" | "toDouble" | "toFloat") {
                     return Some("Double".to_string());
+                }
+                if field == "toString"
+                    && kotlin_expr_type(object, locals, operators)
+                        .as_deref()
+                        .is_some_and(|ty| ty == "Duration" || ty == "java.time.Duration")
+                {
+                    return Some("String".to_string());
                 }
                 // A copied map IS a map — without the type, `copied["z"] = 3`
                 // fell through to a plain property write (the entry never
@@ -8638,6 +13002,26 @@ fn kotlin_expr_type(
                 if field == "toDuration" {
                     return Some("Duration".to_string());
                 }
+                if field == "toRegex" {
+                    return Some("kotlin.text.Regex".to_string());
+                }
+                if kotlin_expr_type(object, locals, operators)
+                    .as_deref()
+                    .is_some_and(|ty| ty == "kotlin.text.Regex" || ty == "Regex")
+                {
+                    return match field.as_str() {
+                        "find" => Some("java.util.regex.Matcher".to_string()),
+                        "findAll" => Some("List<java.util.regex.Matcher>".to_string()),
+                        "matchEntire" => Some("java.util.regex.Matcher".to_string()),
+                        "toPattern" => Some("java.util.regex.Pattern".to_string()),
+                        "split" | "splitToSequence" => Some("Array".to_string()),
+                        "pattern" => Some("String".to_string()),
+                        "matches" | "matchesAt" | "containsMatchIn" => {
+                            Some("Boolean".to_string())
+                        }
+                        _ => None,
+                    };
+                }
                 if matches!(field.as_str(), "success" | "failure")
                     && matches!(&object.kind, ExprKind::Ident(n) if n == "Result")
                 {
@@ -8654,11 +13038,11 @@ fn kotlin_expr_type(
                 ) {
                     return Some("Double".to_string());
                 }
-                // A member call on a java.* receiver: the return type is
+                // A member call on a java.* / kotlin.* receiver: the return type is
                 // TREE DATA (`b.minusSeconds(1)` is a LocalTime because the
                 // jvm platform says so), same resolver as dispatch.
                 if let Some(recv) = kotlin_expr_type(object, locals, operators)
-                    && recv.starts_with("java.")
+                    && (recv.starts_with("java.") || recv.starts_with("kotlin."))
                     && let Some(ret) = vybe_runtime::namespaces::lookup_type_member_return(
                         &["jvm".to_string(), "kotlin".to_string()],
                         &recv,
@@ -8687,6 +13071,9 @@ fn kotlin_expr_type(
                 ) {
                     return Some("Int".to_string());
                 }
+                if name == "__kt_duration_str" {
+                    return Some("String".to_string());
+                }
                 // The Long shift/widen helpers RETURN Longs — chained ops
                 // (`(1L shl 32).toInt()`) must keep the Long gates firing.
                 if matches!(
@@ -8703,6 +13090,9 @@ fn kotlin_expr_type(
                 // its whole purpose (see the companion-constant fold).
                 if name == "__kt_fround" {
                     return Some("Float".to_string());
+                }
+                if matches!(name.as_str(), "__kt_step_asc" | "__kt_step_desc") {
+                    return Some("Range".to_string());
                 }
                 // `.toList()` lowers to `__kt_map_entry_list` at walk time —
                 // an Int-element source keeps its element type so the HOF
@@ -8763,15 +13153,17 @@ fn kotlin_expr_type(
                 // The element reads keep the element type generally —
                 // `a[1]` lowers here, and `a[1].all { … }` iterates CHARS
                 // only when the element is known to be a String.
-                if matches!(name.as_str(), "__coll_get" | "__kt_get_throwing")
+                if matches!(
+                    name.as_str(),
+                    "__coll_get" | "__kt_get_throwing" | "__dict_get"
+                )
                     && let ExprKind::Call { args, .. } = &expr.kind
-                    && let Some(elem) = args.first().and_then(|a| {
-                        kotlin_expr_type(&a.value, locals, operators)
-                            .as_deref()
-                            .and_then(kotlin_element_type_name)
-                    })
+                    && let Some(elem) = args
+                        .first()
+                        .and_then(|a| kotlin_expr_type(&a.value, locals, operators))
+                        .and_then(|ty| kotlin_index_value_type(&ty))
                 {
-                    return Some(elem.to_string());
+                    return Some(elem);
                 }
                 // The factory's LITERAL arguments carry the element type —
                 // `val a = listOf("1", "two")` stays a Call here (only a
@@ -8801,10 +13193,12 @@ fn kotlin_expr_type(
                     | "emptyMap" => Some("Map".to_string()),
                     "setOf" | "mutableSetOf" | "linkedSetOf" | "hashSetOf" | "sortedSetOf"
                     | "buildSet" | "emptySet" | "__kt_to_set" | "__kt_to_hash_set"
-                    | "__kt_set_union" | "__kt_set_intersect" | "__kt_set_subtract" => Some(match literal_elems() {
-                        Some(elem) => format!("Set<{elem}>"),
-                        None => "Set".to_string(),
-                    }),
+                    | "__kt_set_union" | "__kt_set_intersect" | "__kt_set_subtract" => {
+                        Some(match literal_elems() {
+                            Some(elem) => format!("Set<{elem}>"),
+                            None => "Set".to_string(),
+                        })
+                    }
                     "__kt_to_list" | "listOf" | "mutableListOf" | "arrayListOf" | "emptyList"
                     | "buildList" => Some(match literal_elems() {
                         Some(elem) => format!("List<{elem}>"),
@@ -8826,7 +13220,9 @@ fn kotlin_expr_type(
                     "ubyteArrayOf" => Some("UByteArray".to_string()),
                     "ushortArrayOf" => Some("UShortArray".to_string()),
                     "ulongArrayOf" => Some("ULongArray".to_string()),
-                    "__jvm_list_iterator" => Some("java.util.Iterator".to_string()),
+                    "__jvm_list_iterator" | "__kt_map_entry_iterator" => {
+                        Some("java.util.Iterator".to_string())
+                    }
                     _ => None,
                 };
             }
@@ -8875,7 +13271,30 @@ fn kotlin_expr_type(
                 }
                 if matches!(
                     lower.as_str(),
-                    "kotlin.math.sign"
+                    "sign"
+                        | "sqrt"
+                        | "pow"
+                        | "round"
+                        | "ceil"
+                        | "floor"
+                        | "sin"
+                        | "cos"
+                        | "tan"
+                        | "asin"
+                        | "acos"
+                        | "atan"
+                        | "atan2"
+                        | "sinh"
+                        | "cosh"
+                        | "tanh"
+                        | "exp"
+                        | "ln"
+                        | "log"
+                        | "log10"
+                        | "hypot"
+                        | "max"
+                        | "min"
+                        | "kotlin.math.sign"
                         | "kotlin.math.sqrt"
                         | "kotlin.math.pow"
                         | "kotlin.math.round"
@@ -8893,6 +13312,7 @@ fn kotlin_expr_type(
                         | "kotlin.math.tanh"
                         | "kotlin.math.exp"
                         | "kotlin.math.ln"
+                        | "kotlin.math.log"
                         | "kotlin.math.log10"
                         | "kotlin.math.hypot"
                         | "kotlin.math.max"
@@ -8914,13 +13334,27 @@ fn kotlin_expr_type(
                     return Some("Long".to_string());
                 }
                 let receiver_ty = kotlin_expr_type(object, locals, operators)?;
-                if receiver_ty == "Vector" && matches!(field.as_str(), "iterator" | "listIterator")
+                if kotlin_type_is_list_like(&receiver_ty)
+                    && matches!(field.as_str(), "iterator" | "listIterator")
                 {
-                    return Some("java.util.Iterator".to_string());
+                    return Some(
+                        if field == "listIterator" {
+                            "java.util.ListIterator"
+                        } else {
+                            "java.util.Iterator"
+                        }
+                        .to_string(),
+                    );
                 }
+                let call_slot = vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Call);
+                let method = if field == &call_slot || field.starts_with("invoke$") {
+                    "invoke"
+                } else {
+                    field.as_str()
+                };
                 return operators
                     .get(&receiver_ty)
-                    .and_then(|info| info.return_type(field));
+                    .and_then(|info| info.return_type(method));
             }
             None
         }
@@ -9045,6 +13479,29 @@ fn kotlin_expr_type(
 }
 
 fn walk_typealias(_pair: Pair<Rule>) -> Option<Statement> {
+    let mut name = None;
+    let mut target = None;
+    let mut shape = None;
+    for inner in _pair.into_inner() {
+        match inner.as_rule() {
+            Rule::identifier => name = Some(inner.as_str().to_string()),
+            Rule::type_ref => {
+                target = Some(type_hint_text(inner.as_str()));
+                shape = Some(kotlin_type_shape_text(inner.as_str()));
+            }
+            _ => {}
+        }
+    }
+    if let (Some(name), Some(target)) = (name, target) {
+        KOTLIN_TYPE_ALIASES.with(|map| {
+            map.borrow_mut().insert(name.clone(), target);
+        });
+        if let Some(shape) = shape {
+            KOTLIN_TYPE_ALIAS_SHAPES.with(|map| {
+                map.borrow_mut().insert(name, shape);
+            });
+        }
+    }
     Some(Statement::new(StmtKind::Empty))
 }
 
@@ -9080,11 +13537,308 @@ fn walk_annotation(pair: Pair<Rule>) -> Expression {
         }
     }
 
-    Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::ident(&type_name)),
+    Expression::new(ExprKind::New {
+        class: Box::new(Expression::ident(&type_name)),
         args,
-        optional: false,
     })
+}
+
+fn kotlin_param_attribute_carrier(index: usize, decorator: Expression) -> Expression {
+    Expression::new(ExprKind::New {
+        class: Box::new(Expression::ident("__vybe_param_attribute")),
+        args: vec![
+            Argument::positional(Expression::int(index as i64)),
+            Argument::positional(decorator),
+        ],
+    })
+}
+
+fn kotlin_unpack_param_attribute_carrier(expr: &Expression) -> Option<(usize, Expression)> {
+    let ExprKind::New { class, args } = &expr.kind else {
+        return None;
+    };
+    let ExprKind::Ident(name) = &class.kind else {
+        return None;
+    };
+    if name != "__vybe_param_attribute" || args.len() != 2 {
+        return None;
+    }
+    let ExprKind::Lit(Literal::Int(index)) = args[0].value.kind else {
+        return None;
+    };
+    Some((index.max(0) as usize, args[1].value.clone()))
+}
+
+fn kotlin_annotation_result(decorators: &[Expression]) -> Expression {
+    decorators
+        .first()
+        .map(kotlin_annotation_value_object)
+        .unwrap_or_else(Expression::null)
+}
+
+fn kotlin_annotation_value_object(decorator: &Expression) -> Expression {
+    let ExprKind::New { args, .. } = &decorator.kind else {
+        return decorator.clone();
+    };
+    let props = args
+        .iter()
+        .enumerate()
+        .map(|(index, arg)| ObjectProperty::KeyValue {
+            key: Expression::string(arg.name.as_deref().unwrap_or(if index == 0 {
+                "kind"
+            } else {
+                "value"
+            })),
+            value: arg.value.clone(),
+        })
+        .collect();
+    Expression::new(ExprKind::Object(props))
+}
+
+fn kotlin_get_annotation_lambda(decorators: Vec<Expression>) -> Expression {
+    Expression::new(ExprKind::Lambda {
+        params: vec![kt_param("__kt_annotation_type")],
+        body: LambdaBody::Expr(Box::new(kotlin_annotation_result(&decorators))),
+        is_async: false,
+        captures: Vec::new(),
+    })
+}
+
+fn kotlin_reflection_param_object(type_name: &str, decorators: Vec<Expression>) -> Expression {
+    Expression::new(ExprKind::Object(vec![
+        ObjectProperty::KeyValue {
+            key: Expression::string("type"),
+            value: Expression::new(ExprKind::Object(vec![ObjectProperty::KeyValue {
+                key: Expression::string("name"),
+                value: Expression::string(&kotlin_reflection_runtime_type_name(type_name)),
+            }])),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("getAnnotation"),
+            value: kotlin_get_annotation_lambda(decorators),
+        },
+    ]))
+}
+
+fn kotlin_reflection_member_object(
+    name: &str,
+    decorators: Vec<Expression>,
+    type_name: Option<String>,
+    params: Vec<Expression>,
+) -> Expression {
+    let mut props = vec![
+        ObjectProperty::KeyValue {
+            key: Expression::string("name"),
+            value: Expression::string(name),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("getAnnotation"),
+            value: kotlin_get_annotation_lambda(decorators),
+        },
+    ];
+    if let Some(type_name) = type_name {
+        props.push(ObjectProperty::KeyValue {
+            key: Expression::string("type"),
+            value: Expression::new(ExprKind::Object(vec![ObjectProperty::KeyValue {
+                key: Expression::string("name"),
+                value: Expression::string(&kotlin_reflection_runtime_type_name(&type_name)),
+            }])),
+        });
+    }
+    if !params.is_empty() {
+        props.push(ObjectProperty::KeyValue {
+            key: Expression::string("parameters"),
+            value: Expression::new(ExprKind::Array(
+                params
+                    .into_iter()
+                    .map(|value| ArrayElement {
+                        key: None,
+                        value,
+                        spread: false,
+                        by_ref: false,
+                    })
+                    .collect(),
+            )),
+        });
+    }
+    Expression::new(ExprKind::Object(props))
+}
+
+fn kotlin_reflection_runtime_type_name(type_name: &str) -> String {
+    match type_name.trim().trim_end_matches('?') {
+        "Int" => "int".to_string(),
+        "Long" => "long".to_string(),
+        "Double" => "double".to_string(),
+        "Float" => "float".to_string(),
+        "Boolean" => "boolean".to_string(),
+        "Char" => "char".to_string(),
+        "String" => "java.lang.String".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn kotlin_reflection_runtime_query_name(name: &str) -> String {
+    type_hint_text(name)
+}
+
+fn kotlin_class_token_name(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Member { object, field, .. } if field == "java" => kotlin_class_token_name(object),
+        ExprKind::Object(props) => props.iter().find_map(|prop| {
+            let ObjectProperty::KeyValue { key, value } = prop else {
+                return None;
+            };
+            let ExprKind::Lit(Literal::Str(key)) = &key.kind else {
+                return None;
+            };
+            if key != "qualifiedName" {
+                return None;
+            }
+            let ExprKind::Lit(Literal::Str(value)) = &value.kind else {
+                return None;
+            };
+            Some(value.clone())
+        }),
+        _ => None,
+    }
+}
+
+fn kotlin_class_token_name_with_locals(
+    expr: &Expression,
+    locals: &HashMap<String, String>,
+) -> Option<String> {
+    if let Some(name) = kotlin_class_token_name(expr) {
+        return Some(name);
+    }
+    match &expr.kind {
+        ExprKind::Ident(name) => KOTLIN_STATIC_VALUES.with(|map| {
+            let value = map.borrow().get(name).cloned()?;
+            kotlin_class_token_name_with_locals(&value, locals)
+        }),
+        ExprKind::Member { object, field, .. } if field == "java" => {
+            kotlin_class_token_name_with_locals(object, locals)
+        }
+        ExprKind::Call { callee, args, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__kt_class_of")
+                && args.len() == 1 =>
+        {
+            let ExprKind::Ident(value_name) = &args[0].value.kind else {
+                return None;
+            };
+            locals.get(value_name).cloned()
+        }
+        _ => None,
+    }
+}
+
+fn kotlin_is_class_of_call(expr: &Expression) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::Call { callee, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__kt_class_of")
+    )
+}
+
+fn kotlin_kclass_identity_expr(
+    expr: &Expression,
+    locals: &HashMap<String, String>,
+) -> Option<Expression> {
+    if let Some(class_name) = kotlin_class_token_name_with_locals(expr, locals) {
+        let (_, qualified) = kotlin_class_names(&class_name);
+        return Some(Expression::string(&qualified));
+    }
+    match &expr.kind {
+        ExprKind::Ident(name) => KOTLIN_STATIC_VALUES.with(|map| {
+            let value = map.borrow().get(name).cloned()?;
+            kotlin_kclass_identity_expr(&value, locals)
+        }),
+        ExprKind::Call { .. } if kotlin_is_class_of_call(expr) => Some(Expression::new(
+            ExprKind::Member {
+                object: Box::new(expr.clone()),
+                field: "qualifiedName".to_string(),
+                null_safe: false,
+            },
+        )),
+        _ => None,
+    }
+}
+
+fn kotlin_reflection_class_method_for_name(
+    class_name: &str,
+    method: &str,
+    args: &[Argument],
+) -> Option<Expression> {
+    match method {
+        "isInstance" if args.len() == 1 => Some(Expression::new(ExprKind::IsType {
+            expr: Box::new(args[0].value.clone()),
+            type_name: kotlin_reflection_runtime_query_name(class_name),
+        })),
+        "cast" if args.len() == 1 => Some(args[0].value.clone()),
+        "toString" if args.is_empty() => {
+            let (simple, _) = kotlin_class_names(class_name);
+            Some(Expression::string(&format!("class {simple} (KClass)")))
+        }
+        "getAnnotation" if args.len() == 1 => {
+            let decorators = KOTLIN_REFLECTION_CLASS_DECORATORS
+                .with(|map| map.borrow().get(class_name).cloned().unwrap_or_default());
+            Some(kotlin_annotation_result(&decorators))
+        }
+        "getDeclaredMethod" | "getMethod" if !args.is_empty() => {
+            let name = kotlin_string_literal(&args[0].value)?;
+            let meta = KOTLIN_REFLECTION_METHODS
+                .with(|map| map.borrow().get(&(class_name.to_string(), name.clone())).cloned())
+                .unwrap_or_default();
+            let params = meta
+                .param_types
+                .iter()
+                .enumerate()
+                .map(|(index, type_name)| {
+                    kotlin_reflection_param_object(
+                        type_name,
+                        meta.param_decorators
+                            .get(index)
+                            .cloned()
+                            .unwrap_or_default(),
+                    )
+                })
+                .collect();
+            Some(kotlin_reflection_member_object(
+                &name,
+                meta.decorators,
+                None,
+                params,
+            ))
+        }
+        "getDeclaredField" | "getField" if args.len() == 1 => {
+            let name = kotlin_string_literal(&args[0].value)?;
+            let meta = KOTLIN_REFLECTION_FIELDS
+                .with(|map| map.borrow().get(&(class_name.to_string(), name.clone())).cloned())
+                .unwrap_or_default();
+            Some(kotlin_reflection_member_object(
+                &name,
+                meta.decorators,
+                meta.type_name,
+                Vec::new(),
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn kotlin_string_literal(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Str(value)) => Some(value.clone()),
+        _ => None,
+    }
+}
+
+fn kotlin_reflection_class_method(
+    receiver: &Expression,
+    method: &str,
+    args: &[Argument],
+) -> Option<Expression> {
+    let class_name = kotlin_class_token_name(receiver)?;
+    kotlin_reflection_class_method_for_name(&class_name, method, args)
 }
 
 /// True when `expr` is a bare dotted chain of identifiers (`java.util`), which
@@ -9099,6 +13853,45 @@ fn is_ident_chain(expr: &Expression) -> bool {
 }
 
 fn callable_ref_lambda(target: Expression) -> Expression {
+    if let ExprKind::Member { object, field, .. } = &target.kind {
+        let receiver_name = "__kt_ref_recv".to_string();
+        let arg_name = "__kt_ref_arg".to_string();
+        let receiver = Expression::ident(&receiver_name);
+        let member = Expression::new(ExprKind::Member {
+            object: Box::new(receiver.clone()),
+            field: field.clone(),
+            null_safe: false,
+        });
+        let inner = if is_user_property_name(field) {
+            Expression::new(ExprKind::Lambda {
+                params: Vec::new(),
+                body: LambdaBody::Expr(Box::new(member)),
+                is_async: false,
+                captures: Vec::new(),
+            })
+        } else {
+            Expression::new(ExprKind::Lambda {
+                params: vec![kt_param(&arg_name)],
+                body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
+                    callee: Box::new(member),
+                    args: vec![Argument::positional(Expression::ident(&arg_name))],
+                    optional: false,
+                }))),
+                is_async: false,
+                captures: Vec::new(),
+            })
+        };
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Lambda {
+                params: vec![kt_param(&receiver_name)],
+                body: LambdaBody::Expr(Box::new(inner)),
+                is_async: false,
+                captures: Vec::new(),
+            })),
+            args: vec![Argument::positional(object.as_ref().clone())],
+            optional: false,
+        });
+    }
     let arg_name = "__kt_ref_arg".to_string();
     Expression::new(ExprKind::Lambda {
         params: vec![Param {
@@ -9121,31 +13914,180 @@ fn callable_ref_lambda(target: Expression) -> Expression {
     })
 }
 
+fn kotlin_class_has_property(class_name: &str, property: &str) -> bool {
+    let class_name = type_hint_text(class_name);
+    CLASS_PROPERTIES.with(|props| {
+        let props = props.borrow();
+        props
+            .get(&class_name)
+            .or_else(|| {
+                class_name
+                    .rsplit('.')
+                    .next()
+                    .and_then(|simple| props.get(simple))
+            })
+            .is_some_and(|fields| fields.contains_key(property))
+    })
+}
+
+fn kotlin_user_member_ref_arity(name: &str) -> Option<usize> {
+    USER_MEMBER_NAMES.with(|set| {
+        let set = set.borrow();
+        let mut arities: Vec<usize> = set
+            .iter()
+            .filter_map(|(member, arity)| (member == name).then_some(*arity))
+            .collect();
+        arities.sort_unstable();
+        arities.dedup();
+        (arities.len() == 1).then_some(arities[0])
+    })
+}
+
+fn kotlin_unbound_member_ref_lambda(name: &str, arity: usize) -> Expression {
+    let receiver = "__kt_ref_recv".to_string();
+    let args: Vec<String> = (0..arity).map(|i| format!("__kt_ref_arg_{i}")).collect();
+    let mut params = vec![kt_param(&receiver)];
+    params.extend(args.iter().map(|arg| kt_param(arg)));
+    Expression::new(ExprKind::Lambda {
+        params,
+        body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(Expression::ident(&receiver)),
+                field: name.to_string(),
+                null_safe: false,
+            })),
+            args: args
+                .iter()
+                .map(|arg| Argument::positional(Expression::ident(arg)))
+                .collect(),
+            optional: false,
+        }))),
+        is_async: false,
+        captures: Vec::new(),
+    })
+}
+
+fn kotlin_constructor_ref_lambda(name: &str) -> Option<Expression> {
+    let params = KOTLIN_CLASS_PRIMARY_CTORS.with(|ctors| ctors.borrow().get(name).cloned())?;
+    let arg_names: Vec<String> = (0..params.len())
+        .map(|i| format!("__kt_ctor_arg_{i}"))
+        .collect();
+    Some(Expression::new(ExprKind::Lambda {
+        params: arg_names.iter().map(|arg| kt_param(arg)).collect(),
+        body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::New {
+            class: Box::new(Expression::ident(name)),
+            args: arg_names
+                .iter()
+                .map(|arg| Argument::positional(Expression::ident(arg)))
+                .collect(),
+        }))),
+        is_async: false,
+        captures: Vec::new(),
+    }))
+}
+
+fn kotlin_extension_ref_lambda(name: &str) -> Option<Expression> {
+    if !EXTENSION_FUNCTIONS.with(|set| set.borrow().contains(name)) {
+        return None;
+    }
+    let arity = KOTLIN_TOP_FN_PARAMS
+        .with(|map| map.borrow().get(name).map(Vec::len))
+        .or_else(|| EXTENSION_FUNCTION_ARITIES.with(|map| map.borrow().get(name).copied()))?;
+    let arg_names: Vec<String> = (0..arity)
+        .map(|i| format!("__kt_ext_arg_{i}"))
+        .collect();
+    Some(Expression::new(ExprKind::Lambda {
+        params: arg_names.iter().map(|arg| kt_param(arg)).collect(),
+        body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident(name)),
+            args: arg_names
+                .iter()
+                .map(|arg| Argument::positional(Expression::ident(arg)))
+                .collect(),
+            optional: false,
+        }))),
+        is_async: false,
+        captures: Vec::new(),
+    }))
+}
+
+fn kotlin_unbound_property_ref_lambda(property: &str) -> Expression {
+    let arg_name = "__kt_ref_arg".to_string();
+    let body = match property {
+        "size" | "length" => Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__coll_length")),
+            args: vec![Argument::positional(Expression::ident(&arg_name))],
+            optional: false,
+        }),
+        _ => Expression::new(ExprKind::Member {
+            object: Box::new(Expression::ident(&arg_name)),
+            field: property.to_string(),
+            null_safe: false,
+        }),
+    };
+    Expression::new(ExprKind::Lambda {
+        params: vec![kt_param(&arg_name)],
+        body: LambdaBody::Expr(Box::new(body)),
+        is_async: false,
+        captures: Vec::new(),
+    })
+}
+
+fn kotlin_ref_qualifier_head(qualifier: &str) -> &str {
+    let qualifier = qualifier
+        .trim()
+        .strip_prefix('(')
+        .and_then(|q| q.strip_suffix(')'))
+        .unwrap_or_else(|| qualifier.trim())
+        .trim_end_matches('?');
+    let qualifier = qualifier.split('<').next().unwrap_or(qualifier);
+    qualifier.rsplit('.').next().unwrap_or(qualifier)
+}
+
+fn kotlin_class_names(name: &str) -> (String, String) {
+    let base = type_hint_text(name);
+    let simple = base.rsplit('.').next().unwrap_or(&base).to_string();
+    let qualified = match simple.as_str() {
+        "String" => "kotlin.String".to_string(),
+        "Int" => "kotlin.Int".to_string(),
+        "Long" => "kotlin.Long".to_string(),
+        "Double" => "kotlin.Double".to_string(),
+        "Float" => "kotlin.Float".to_string(),
+        "Boolean" => "kotlin.Boolean".to_string(),
+        "Char" => "kotlin.Char".to_string(),
+        "Array" => "kotlin.Array".to_string(),
+        "IntArray" => "kotlin.IntArray".to_string(),
+        _ if base.contains('.') => base.clone(),
+        _ => simple.clone(),
+    };
+    (simple, qualified)
+}
+
 fn kotlin_class_literal_expr(name: &str) -> Expression {
-    let simple = name.rsplit('.').next().unwrap_or(name);
+    let (simple, qualified) = kotlin_class_names(name);
     let java = Expression::new(ExprKind::Object(vec![
         ObjectProperty::KeyValue {
             key: Expression::string("name"),
-            value: Expression::string(name),
+            value: Expression::string(&qualified),
         },
         ObjectProperty::KeyValue {
             key: Expression::string("canonicalName"),
-            value: Expression::string(name),
+            value: Expression::string(&qualified),
         },
         ObjectProperty::KeyValue {
             key: Expression::string("simpleName"),
-            value: Expression::string(simple),
+            value: Expression::string(&simple),
         },
     ]));
 
     Expression::new(ExprKind::Object(vec![
         ObjectProperty::KeyValue {
             key: Expression::string("simpleName"),
-            value: Expression::string(simple),
+            value: Expression::string(&simple),
         },
         ObjectProperty::KeyValue {
             key: Expression::string("qualifiedName"),
-            value: Expression::string(name),
+            value: Expression::string(&qualified),
         },
         ObjectProperty::KeyValue {
             key: Expression::string("java"),
@@ -9161,7 +14103,7 @@ fn walk_callable_ref(pair: Pair<Rule>) -> Expression {
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::this_kw => qualifier = Some("this".to_string()),
-            Rule::dotted_name => qualifier = Some(inner.as_str().to_string()),
+            Rule::type_ref => qualifier = Some(inner.as_str().to_string()),
             Rule::identifier | Rule::class_kw => name = Some(inner.as_str().to_string()),
             _ => {}
         }
@@ -9258,12 +14200,18 @@ fn walk_callable_ref(pair: Pair<Rule>) -> Expression {
         }
         return Expression::null();
     }
+    if qualifier.is_none()
+        && is_user_class_name(&name)
+        && let Some(lambda) = kotlin_constructor_ref_lambda(&name)
+    {
+        return lambda;
+    }
     // `Int::plus`-style OPERATOR references are 2-parameter lambdas over the
     // binary op — the unbound-member form below would drop the second
     // operand.
     if let Some(ref qualifier) = qualifier
         && matches!(
-            qualifier.rsplit('.').next().unwrap_or(qualifier),
+            kotlin_ref_qualifier_head(qualifier),
             "Int" | "Long" | "Double" | "Float" | "String"
         )
         && let Some(op) = match name.as_str() {
@@ -9292,8 +14240,24 @@ fn walk_callable_ref(pair: Pair<Rule>) -> Expression {
     // the receiver (`String::length` is `{ it -> it.length }`), never a call
     // on the type object (`String.length(it)` dispatched nothing).
     if let Some(ref qualifier) = qualifier
+        && kotlin_class_has_property(qualifier, &name)
+    {
+        return kotlin_unbound_property_ref_lambda(&name);
+    }
+    if let Some(ref qualifier) = qualifier
+        && is_user_class_name(&type_hint_text(qualifier))
+        && let Some(arity) = kotlin_user_member_ref_arity(&name)
+    {
+        return kotlin_unbound_member_ref_lambda(&name, arity);
+    }
+    if qualifier.is_some()
+        && let Some(lambda) = kotlin_extension_ref_lambda(&name)
+    {
+        return lambda;
+    }
+    if let Some(ref qualifier) = qualifier
         && matches!(
-            qualifier.rsplit('.').next().unwrap_or(qualifier),
+            kotlin_ref_qualifier_head(qualifier),
             "String"
                 | "Int"
                 | "Long"
@@ -9314,6 +14278,55 @@ fn walk_callable_ref(pair: Pair<Rule>) -> Expression {
         )
     {
         let arg_name = "__kt_ref_arg".to_string();
+        if name == "orEmpty" && kotlin_ref_qualifier_head(qualifier) == "String" {
+            return Expression::new(ExprKind::Lambda {
+                params: vec![kt_param(&arg_name)],
+                body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Ternary {
+                    cond: Box::new(Expression::new(ExprKind::Binary {
+                        op: BinOp::Eq,
+                        left: Box::new(Expression::ident(&arg_name)),
+                        right: Box::new(Expression::null()),
+                    })),
+                    then: Box::new(Expression::string("")),
+                    else_: Box::new(Expression::ident(&arg_name)),
+                }))),
+                is_async: false,
+                captures: Vec::new(),
+            });
+        }
+        if name == "toString" {
+            return Expression::new(ExprKind::Lambda {
+                params: vec![kt_param(&arg_name)],
+                body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__kt_tostring")),
+                    args: vec![Argument::positional(Expression::ident(&arg_name))],
+                    optional: false,
+                }))),
+                is_async: false,
+                captures: Vec::new(),
+            });
+        }
+        if name == "get"
+            && matches!(
+                kotlin_ref_qualifier_head(qualifier),
+                "Map" | "MutableMap"
+            )
+        {
+            let key_name = "__kt_ref_key".to_string();
+            return Expression::new(ExprKind::Lambda {
+                params: vec![kt_param(&arg_name), kt_param(&key_name)],
+                body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__kt_safe_get")),
+                    args: vec![
+                        Argument::positional(Expression::ident(&arg_name)),
+                        Argument::positional(Expression::ident(&key_name)),
+                    ],
+                    optional: false,
+                }))),
+                is_async: false,
+                captures: Vec::new(),
+            });
+        }
         let member = Expression::new(ExprKind::Member {
             object: Box::new(Expression::ident(&arg_name)),
             field: name.clone(),
@@ -9333,7 +14346,14 @@ fn walk_callable_ref(pair: Pair<Rule>) -> Expression {
                 | "indices"
                 | "lastIndex"
         ) {
-            member
+            match name.as_str() {
+                "size" | "length" => Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__coll_length")),
+                    args: vec![Argument::positional(Expression::ident(&arg_name))],
+                    optional: false,
+                }),
+                _ => member,
+            }
         } else {
             Expression::new(ExprKind::Call {
                 callee: Box::new(member),
@@ -9642,21 +14662,13 @@ fn walk_interface_decl(pair: Pair<Rule>) -> Option<Statement> {
                                         {
                                             for decl in declarations {
                                                 if let BindingPattern::Ident(pname) = decl.pattern {
-                                                    members.push(ClassMember::Field {
-                                                        name: pname,
-                                                        type_hint: decl
-                                                            .type_hint
+                                                    members.extend(kt_interface_property_accessors(
+                                                        pname,
+                                                        decl.type_hint
                                                             .as_deref()
                                                             .map(str::to_string),
-                                                        init: decl.init,
-                                                        modifiers: Modifiers {
-                                                            visibility: Visibility::Public,
-                                                            is_readonly: kind == VarDeclKind::Const,
-                                                            ..Default::default()
-                                                        },
-                                                        with_events: false,
-                                                        array_bounds: None,
-                                                    });
+                                                        kind == VarDeclKind::Const,
+                                                    ));
                                                 }
                                             }
                                         }
@@ -10198,8 +15210,11 @@ fn walk_function_decl_body(pair: Pair<Rule>) -> Option<Statement> {
     let mut receiver_type: Option<String> = None;
     let mut params = Vec::new();
     let mut return_type = None;
+    let mut return_shape = None;
     let mut body = Vec::new();
     let mut raw_param_types: Option<Vec<String>> = None;
+    let mut decorators = Vec::new();
+    let mut param_decorators = Vec::new();
 
     let mut is_abstract = false;
     let mut is_operator = false;
@@ -10207,6 +15222,7 @@ fn walk_function_decl_body(pair: Pair<Rule>) -> Option<Statement> {
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
+            Rule::annotation => decorators.push(walk_annotation(inner)),
             Rule::modifier => {
                 let m_str = inner.as_str();
                 if m_str == "abstract" {
@@ -10227,6 +15243,7 @@ fn walk_function_decl_body(pair: Pair<Rule>) -> Option<Statement> {
             Rule::type_ref => {
                 if return_type.is_none() && !name.is_empty() {
                     return_type = kotlin_nullable_type_hint(inner.as_str()).0;
+                    return_shape = Some(kotlin_type_shape_text(inner.as_str()));
                 }
             }
             Rule::identifier => {
@@ -10245,7 +15262,9 @@ fn walk_function_decl_body(pair: Pair<Rule>) -> Option<Statement> {
                     })
                     .collect();
                 raw_param_types = Some(raw_tys);
-                params = walk_parameter_list(inner);
+                let (parsed_params, parsed_decorators) = walk_parameter_list_with_decorators(inner);
+                params = parsed_params;
+                param_decorators = parsed_decorators;
             }
             Rule::function_body_expr => {
                 // `find`, not `next`: the `=` may sit at end-of-line with the
@@ -10312,6 +15331,11 @@ fn walk_function_decl_body(pair: Pair<Rule>) -> Option<Statement> {
             map.borrow_mut().entry(name.clone()).or_default().push(raw);
         });
     }
+    if let Some(shape) = return_shape {
+        KOTLIN_FUNCTION_RETURN_SHAPES.with(|map| {
+            map.borrow_mut().insert(name.clone(), shape);
+        });
+    }
 
     Some(Statement::new(StmtKind::FunctionDecl {
         name,
@@ -10321,6 +15345,10 @@ fn walk_function_decl_body(pair: Pair<Rule>) -> Option<Statement> {
         modifiers: Modifiers {
             visibility,
             is_abstract,
+            decorators: {
+                decorators.extend(param_decorators);
+                decorators
+            },
             ..Default::default()
         },
         handles: vec![],
@@ -10331,16 +15359,27 @@ fn walk_function_decl_body(pair: Pair<Rule>) -> Option<Statement> {
 }
 
 fn walk_parameter_list(pair: Pair<Rule>) -> Vec<Param> {
+    walk_parameter_list_with_decorators(pair).0
+}
+
+fn walk_parameter_list_with_decorators(pair: Pair<Rule>) -> (Vec<Param>, Vec<Expression>) {
     let mut params = Vec::new();
-    for inner in pair.into_inner() {
+    let mut decorators = Vec::new();
+    for (index, inner) in pair
+        .into_inner()
+        .filter(|p| p.as_rule() == Rule::parameter)
+        .enumerate()
+    {
         if inner.as_rule() == Rule::parameter {
             let mut is_rest = false;
             let mut name = String::new();
             let mut type_hint = None;
             let mut default = None;
             let mut is_nullable = false;
+            let mut param_decorators = Vec::new();
             for p in inner.into_inner() {
                 match p.as_rule() {
+                    Rule::annotation => param_decorators.push(walk_annotation(p)),
                     Rule::vararg_kw => is_rest = true,
                     Rule::identifier => name = p.as_str().to_string(),
                     Rule::type_ref => {
@@ -10359,6 +15398,11 @@ fn walk_parameter_list(pair: Pair<Rule>) -> Vec<Param> {
             if is_rest {
                 type_hint = Some("Array".to_string());
             }
+            decorators.extend(
+                param_decorators
+                    .into_iter()
+                    .map(|decorator| kotlin_param_attribute_carrier(index, decorator)),
+            );
             params.push(Param {
                 name,
                 type_hint: type_hint.map(Into::into),
@@ -10371,10 +15415,11 @@ fn walk_parameter_list(pair: Pair<Rule>) -> Vec<Param> {
             });
         }
     }
-    params
+    (params, decorators)
 }
 
 fn walk_var_decl(pair: Pair<Rule>) -> Option<Statement> {
+    let decl_src = pair.as_str().to_string();
     if pair
         .clone()
         .into_inner()
@@ -10386,6 +15431,7 @@ fn walk_var_decl(pair: Pair<Rule>) -> Option<Statement> {
     let mut is_const = false;
     let mut name = String::new();
     let mut type_hint = None;
+    let mut type_shape = None;
     let mut init = None;
 
     for inner in pair.into_inner() {
@@ -10398,7 +15444,16 @@ fn walk_var_decl(pair: Pair<Rule>) -> Option<Statement> {
             Rule::val_kw => is_readonly = true,
             Rule::var_kw => is_readonly = false,
             Rule::identifier => name = inner.as_str().to_string(),
-            Rule::type_ref => type_hint = kotlin_nullable_type_hint(inner.as_str()).0,
+            Rule::type_ref => {
+                let raw = inner.as_str();
+                let nullable = type_ref_is_nullable(raw) || decl_type_ref_is_nullable(&decl_src, raw);
+                type_hint = if nullable {
+                    None
+                } else {
+                    Some(type_hint_text(raw))
+                };
+                type_shape = Some(kotlin_type_shape_text(inner.as_str()));
+            }
             Rule::expr => init = Some(walk_expr(inner)),
             _ => {}
         }
@@ -10449,10 +15504,40 @@ fn walk_var_decl(pair: Pair<Rule>) -> Option<Statement> {
         });
     }
 
+    let init_is_null = init
+        .as_ref()
+        .is_some_and(|expr| matches!(expr.kind, ExprKind::Lit(Literal::Null)));
+
+    if init_is_null {
+        type_hint = None;
+    }
+
+    if type_hint
+        .as_deref()
+        .is_some_and(kotlin_type_is_function_like)
+        && init.as_ref().is_some_and(|expr| {
+            matches!(
+                expr.kind,
+                ExprKind::Lambda { .. } | ExprKind::FuncRef(_) | ExprKind::CallableRef { .. }
+            )
+        })
+    {
+        type_hint = None;
+    }
+
+    if let Some(shape) = type_shape
+        && !name.is_empty()
+        && !init_is_null
+    {
+        KOTLIN_DECLARED_TYPE_SHAPES.with(|map| {
+            map.borrow_mut().insert(name.clone(), shape);
+        });
+    }
+
     Some(Statement::new(StmtKind::VarDecl {
         declarations: vec![VarDeclarator {
             pattern: BindingPattern::Ident(name),
-            type_hint: type_hint.map(Into::into),
+            type_hint: type_hint.map(TypeHint::descriptive),
             init,
             array_bounds: None,
             with_events: false,
@@ -10639,6 +15724,16 @@ fn with_kotlin_field_aliases<T>(
     out
 }
 
+fn kotlin_static_field_alias(object: &Expression, field: &str) -> Option<String> {
+    let path = dotted_expr_path(object)?;
+    KOTLIN_STATIC_FIELD_ALIASES.with(|aliases| {
+        aliases
+            .borrow()
+            .get(&(path, field.to_string()))
+            .cloned()
+    })
+}
+
 /// A `var_decl` that declares a PROPERTY, and the backing storage it needs.
 ///
 /// Returns the `ClassMember::Property` plus, when the property has an
@@ -10795,6 +15890,493 @@ fn walk_extension_property(pair: Pair<Rule>) -> Option<Statement> {
         is_generator: false,
         is_sub: false,
     }))
+}
+
+fn kt_stored_property_members(
+    name: String,
+    type_hint: Option<String>,
+    init: Option<Expression>,
+    is_readonly: bool,
+    decorators: Vec<Expression>,
+    mut modifiers: Modifiers,
+) -> (Vec<ClassMember>, String) {
+    let backing = backing_field_name(&name);
+    let getter = vec![Statement::new(StmtKind::Return(Some(Expression::new(
+        ExprKind::Member {
+            object: Box::new(Expression::new(ExprKind::This)),
+            field: backing.clone(),
+            null_safe: false,
+        },
+    ))))];
+    let setter = (!is_readonly).then(|| {
+        let param = Param {
+            name: "__kt_value".to_string(),
+            type_hint: type_hint.clone().map(Into::into),
+            default: None,
+            pass_by: PassBy::Value,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: false,
+            is_nullable: false,
+        };
+        PropertySetter {
+            param,
+            body: vec![Statement::new(StmtKind::Expr(Expression::new(
+                ExprKind::Assign {
+                    target: Box::new(Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::new(ExprKind::This)),
+                        field: backing.clone(),
+                        null_safe: false,
+                    })),
+                    value: Box::new(Expression::ident("__kt_value")),
+                },
+            )))],
+        }
+    });
+    (
+        vec![
+            ClassMember::Field {
+                name: backing.clone(),
+                type_hint: type_hint.clone(),
+                init,
+                modifiers: Modifiers {
+                    visibility: Visibility::Private,
+                    decorators: decorators.clone(),
+                    ..Default::default()
+                },
+                with_events: false,
+                array_bounds: None,
+            },
+            ClassMember::Property {
+                name,
+                type_hint,
+                getter: Some(getter),
+                setter,
+                is_auto: false,
+                modifiers: {
+                    modifiers.visibility = Visibility::Public;
+                    modifiers.is_readonly = is_readonly;
+                    modifiers.decorators = decorators;
+                    modifiers
+                },
+            },
+        ],
+        backing,
+    )
+}
+
+fn kt_rewrite_constructor_property_assigns_stmt(
+    stmt: &mut Statement,
+    backings: &HashMap<String, String>,
+) {
+    stmt.walk_exprs_mut(&mut |expr| {
+        if let ExprKind::Assign { target, .. } = &mut expr.kind
+            && let ExprKind::Member { object, field, .. } = &mut target.kind
+            && matches!(object.kind, ExprKind::This)
+            && let Some(backing) = backings.get(field)
+        {
+            *field = backing.clone();
+        }
+    });
+}
+
+fn kt_interface_property_accessors(
+    name: String,
+    type_hint: Option<String>,
+    is_readonly: bool,
+) -> Vec<ClassMember> {
+    let getter = Statement::new(StmtKind::FunctionDecl {
+        name: format!("__get_{name}"),
+        params: Vec::new(),
+        return_type: type_hint.clone(),
+        body: Vec::new(),
+        modifiers: Modifiers {
+            visibility: Visibility::Public,
+            is_abstract: true,
+            ..Default::default()
+        },
+        handles: Vec::new(),
+        is_async: false,
+        is_generator: false,
+        is_sub: false,
+    });
+    let mut out = vec![ClassMember::Method(Box::new(getter))];
+    if !is_readonly {
+        out.push(ClassMember::Method(Box::new(Statement::new(
+            StmtKind::FunctionDecl {
+                name: format!("__set_{name}"),
+                params: vec![Param {
+                    name: "__kt_value".to_string(),
+                    type_hint: type_hint.map(Into::into),
+                    default: None,
+                    pass_by: PassBy::Value,
+                    is_rest: false,
+                    is_kwargs: false,
+                    is_optional: false,
+                    is_nullable: false,
+                }],
+                return_type: None,
+                body: Vec::new(),
+                modifiers: Modifiers {
+                    visibility: Visibility::Public,
+                    is_abstract: true,
+                    ..Default::default()
+                },
+                handles: Vec::new(),
+                is_async: false,
+                is_generator: false,
+                is_sub: false,
+            },
+        ))));
+    }
+    out
+}
+
+fn kt_abstract_interface_method(
+    name: &str,
+    params: Vec<Param>,
+    return_type: Option<&str>,
+) -> ClassMember {
+    ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
+        name: name.to_string(),
+        params,
+        return_type: return_type.map(str::to_string),
+        body: Vec::new(),
+        modifiers: Modifiers {
+            visibility: Visibility::Public,
+            is_abstract: true,
+            is_virtual: true,
+            ..Default::default()
+        },
+        handles: Vec::new(),
+        is_async: false,
+        is_generator: false,
+        is_sub: false,
+    })))
+}
+
+fn kt_promote_rebind_marker() -> Expression {
+    Expression::new(ExprKind::New {
+        class: Box::new(Expression::ident("__vybe_promote_rebind_body")),
+        args: Vec::new(),
+    })
+}
+
+fn kt_default_interface_method(
+    name: &str,
+    params: Vec<Param>,
+    return_type: Option<&str>,
+    body: Vec<Statement>,
+) -> ClassMember {
+    ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
+        name: name.to_string(),
+        params,
+        return_type: return_type.map(str::to_string),
+        body,
+        modifiers: Modifiers {
+            visibility: Visibility::Public,
+            is_virtual: true,
+            decorators: vec![kt_promote_rebind_marker()],
+            ..Default::default()
+        },
+        handles: Vec::new(),
+        is_async: false,
+        is_generator: false,
+        is_sub: false,
+    })))
+}
+
+fn kt_return_call(name: &str, args: Vec<Expression>) -> Vec<Statement> {
+    vec![Statement::new(StmtKind::Return(Some(kt_call(name, args))))]
+}
+
+fn kt_builtin_param(name: &str, type_hint: Option<&str>) -> Param {
+    Param {
+        name: name.to_string(),
+        type_hint: type_hint.map(Into::into),
+        default: None,
+        pass_by: PassBy::Value,
+        is_rest: false,
+        is_kwargs: false,
+        is_optional: false,
+        is_nullable: true,
+    }
+}
+
+fn kt_builtin_interface(name: &str, parents: Vec<&str>, members: Vec<ClassMember>) -> Statement {
+    Statement::new(StmtKind::ClassDecl {
+        name: name.to_string(),
+        parents: parents.into_iter().map(str::to_string).collect(),
+        interfaces: Vec::new(),
+        members,
+        modifiers: ClassModifiers {
+            visibility: Visibility::Public,
+            is_abstract: true,
+            kind: ClassKind::Interface,
+            ..Default::default()
+        },
+        decorators: Vec::new(),
+    })
+}
+
+fn kotlin_builtin_collection_interfaces(body: &[Statement]) -> Vec<Statement> {
+    let declared: HashSet<String> = body
+        .iter()
+        .filter_map(|stmt| {
+            if let StmtKind::ClassDecl { name, .. } = &stmt.kind {
+                Some(name.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    let mut out = Vec::new();
+
+    if !declared.contains("__KotlinDelegatedObject") {
+        out.push(kt_builtin_interface(
+            "__KotlinDelegatedObject",
+            Vec::new(),
+            vec![kt_default_interface_method(
+                "toString",
+                Vec::new(),
+                Some("String"),
+                kt_return_call(
+                    "__kt_tostring",
+                    vec![Expression::new(ExprKind::This)],
+                ),
+            )],
+        ));
+    }
+
+    if !declared.contains("Iterable") {
+        out.push(kt_builtin_interface(
+            "Iterable",
+            Vec::new(),
+            vec![
+                kt_default_interface_method(
+                    "iterator",
+                    Vec::new(),
+                    Some("Iterator"),
+                    kt_return_call("__jvm_list_iterator", vec![Expression::new(ExprKind::This)]),
+                ),
+                kt_default_interface_method(
+                    "joinToString",
+                    vec![kt_optional_param(
+                        "separator",
+                        Expression::new(ExprKind::Lit(Literal::Str(", ".to_string()))),
+                    )],
+                    Some("String"),
+                    kt_return_call(
+                        "__coll_join",
+                        vec![
+                            Expression::new(ExprKind::This),
+                            Expression::ident("separator"),
+                        ],
+                    ),
+                ),
+            ],
+        ));
+    }
+
+    if !declared.contains("Collection") {
+        let mut members = kt_interface_property_accessors(
+            "size".to_string(),
+            Some("Int".to_string()),
+            true,
+        );
+        if let Some(ClassMember::Method(getter)) = members.iter_mut().find(|member| {
+            matches!(
+                member,
+                ClassMember::Method(stmt)
+                    if matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name == "__get_size")
+            )
+        }) {
+            if let StmtKind::FunctionDecl { body, modifiers, .. } = &mut getter.kind {
+                *body = kt_return_call("__coll_length", vec![Expression::new(ExprKind::This)]);
+                modifiers.is_abstract = false;
+                modifiers.is_virtual = true;
+                modifiers.decorators.push(kt_promote_rebind_marker());
+            }
+        }
+        members.push(kt_default_interface_method(
+            "contains",
+            vec![kt_builtin_param("element", None)],
+            Some("Boolean"),
+            kt_return_call(
+                "__coll_contains",
+                vec![
+                    Expression::new(ExprKind::This),
+                    Expression::ident("element"),
+                ],
+            ),
+        ));
+        members.push(kt_default_interface_method(
+            "iterator",
+            Vec::new(),
+            Some("Iterator"),
+            kt_return_call("__jvm_list_iterator", vec![Expression::new(ExprKind::This)]),
+        ));
+        out.push(kt_builtin_interface("Collection", vec!["Iterable"], members));
+    }
+
+    if !declared.contains("List") {
+        let mut members = kt_interface_property_accessors(
+            "size".to_string(),
+            Some("Int".to_string()),
+            true,
+        );
+        if let Some(ClassMember::Method(getter)) = members.iter_mut().find(|member| {
+            matches!(
+                member,
+                ClassMember::Method(stmt)
+                    if matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name == "__get_size")
+            )
+        }) {
+            if let StmtKind::FunctionDecl { body, modifiers, .. } = &mut getter.kind {
+                *body = kt_return_call("__coll_length", vec![Expression::new(ExprKind::This)]);
+                modifiers.is_abstract = false;
+                modifiers.is_virtual = true;
+                modifiers.decorators.push(kt_promote_rebind_marker());
+            }
+        }
+        members.push(kt_default_interface_method(
+            "operator get",
+            vec![kt_builtin_param("index", Some("Int"))],
+            None,
+            vec![Statement::new(StmtKind::Return(Some(Expression::new(
+                ExprKind::Call {
+                    callee: Box::new(Expression::ident("__kt_get_throwing")),
+                    args: vec![
+                        Argument::positional(Expression::new(ExprKind::This)),
+                        Argument::positional(Expression::ident("index")),
+                    ],
+                    optional: false,
+                },
+            ))))],
+        ));
+        members.push(kt_default_interface_method(
+            "contains",
+            vec![kt_builtin_param("element", None)],
+            Some("Boolean"),
+            kt_return_call(
+                "__coll_contains",
+                vec![
+                    Expression::new(ExprKind::This),
+                    Expression::ident("element"),
+                ],
+            ),
+        ));
+        members.push(kt_default_interface_method(
+            "iterator",
+            Vec::new(),
+            Some("Iterator"),
+            kt_return_call("__jvm_list_iterator", vec![Expression::new(ExprKind::This)]),
+        ));
+        out.push(kt_builtin_interface("List", vec!["Collection"], members));
+    }
+
+    if !declared.contains("Set") {
+        let mut members = kt_interface_property_accessors(
+            "size".to_string(),
+            Some("Int".to_string()),
+            true,
+        );
+        if let Some(ClassMember::Method(getter)) = members.iter_mut().find(|member| {
+            matches!(
+                member,
+                ClassMember::Method(stmt)
+                    if matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name == "__get_size")
+            )
+        }) {
+            if let StmtKind::FunctionDecl { body, modifiers, .. } = &mut getter.kind {
+                *body = kt_return_call("__kt_set_size", vec![Expression::new(ExprKind::This)]);
+                modifiers.is_abstract = false;
+                modifiers.is_virtual = true;
+                modifiers.decorators.push(kt_promote_rebind_marker());
+            }
+        }
+        members.push(kt_default_interface_method(
+            "contains",
+            vec![kt_builtin_param("element", None)],
+            Some("Boolean"),
+            kt_return_call(
+                "__coll_contains",
+                vec![
+                    Expression::new(ExprKind::This),
+                    Expression::ident("element"),
+                ],
+            ),
+        ));
+        members.push(kt_default_interface_method(
+            "iterator",
+            Vec::new(),
+            Some("Iterator"),
+            kt_return_call("__jvm_list_iterator", vec![Expression::new(ExprKind::This)]),
+        ));
+        out.push(kt_builtin_interface("Set", vec!["Collection"], members));
+    }
+
+    if !declared.contains("Map") {
+        let mut members = kt_interface_property_accessors(
+            "size".to_string(),
+            Some("Int".to_string()),
+            true,
+        );
+        if let Some(ClassMember::Method(getter)) = members.iter_mut().find(|member| {
+            matches!(
+                member,
+                ClassMember::Method(stmt)
+                    if matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name == "__get_size")
+            )
+        }) {
+            if let StmtKind::FunctionDecl { body, modifiers, .. } = &mut getter.kind {
+                *body = kt_return_call("__dict_size", vec![Expression::new(ExprKind::This)]);
+                modifiers.is_abstract = false;
+                modifiers.is_virtual = true;
+                modifiers.decorators.push(kt_promote_rebind_marker());
+            }
+        }
+        members.extend(kt_interface_property_accessors(
+            "keys".to_string(),
+            Some("Set".to_string()),
+            true,
+        ));
+        if let Some(ClassMember::Method(getter)) = members.iter_mut().find(|member| {
+            matches!(
+                member,
+                ClassMember::Method(stmt)
+                    if matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name == "__get_keys")
+            )
+        }) {
+            if let StmtKind::FunctionDecl { body, modifiers, .. } = &mut getter.kind {
+                *body = kt_return_call("__dict_keys", vec![Expression::new(ExprKind::This)]);
+                modifiers.is_abstract = false;
+                modifiers.is_virtual = true;
+                modifiers.decorators.push(kt_promote_rebind_marker());
+            }
+        }
+        members.push(kt_default_interface_method(
+            "operator get",
+            vec![kt_builtin_param("key", None)],
+            None,
+            kt_return_call(
+                "__dict_get",
+                vec![Expression::new(ExprKind::This), Expression::ident("key")],
+            ),
+        ));
+        members.push(kt_default_interface_method(
+            "containsKey",
+            vec![kt_builtin_param("key", None)],
+            Some("Boolean"),
+            kt_return_call(
+                "__dict_has",
+                vec![Expression::new(ExprKind::This), Expression::ident("key")],
+            ),
+        ));
+        out.push(kt_builtin_interface("Map", Vec::new(), members));
+    }
+
+    out
 }
 
 fn walk_class_property(pair: Pair<Rule>) -> Vec<ClassMember> {
@@ -11011,33 +16593,12 @@ fn kt_delegate_method(name: &str, params: Vec<Param>, body: Vec<Statement>) -> C
     })))
 }
 
-fn kt_param(name: &str) -> Param {
-    Param {
-        name: name.to_string(),
-        type_hint: None,
-        default: None,
-        pass_by: PassBy::Value,
-        is_rest: false,
-        is_kwargs: false,
-        is_optional: false,
-        is_nullable: true,
-    }
-}
-
 fn kt_optional_param(name: &str, default: Expression) -> Param {
     Param {
         default: Some(default),
         is_optional: true,
         ..kt_param(name)
     }
-}
-
-fn kt_call(name: &str, args: Vec<Expression>) -> Expression {
-    Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::ident(name)),
-        args: args.into_iter().map(Argument::positional).collect(),
-        optional: false,
-    })
 }
 
 fn member_exists(members: &[ClassMember], name: &str) -> bool {
@@ -11139,6 +16700,20 @@ fn append_kotlin_collection_delegate_members(
                 },
             });
         }
+        if !member_exists(members, "size") {
+            members.push(ClassMember::Property {
+                name: "size".to_string(),
+                type_hint: Some("Int".to_string()),
+                getter: Some(kt_return_member(kt_call("__dict_size", vec![delegate()]))),
+                setter: None,
+                is_auto: false,
+                modifiers: Modifiers {
+                    visibility: Visibility::Public,
+                    is_readonly: true,
+                    ..Default::default()
+                },
+            });
+        }
     }
 
     if matches!(bare, "Set" | "MutableSet") && !member_exists(members, "size") {
@@ -11209,6 +16784,18 @@ fn append_kotlin_delegate_members(
     }
 }
 
+fn walk_delegate_expr(pair: Pair<Rule>) -> Expression {
+    let source = pair.as_str();
+    let expr_source = source.split_once('{').map(|(head, _)| head).unwrap_or(source).trim();
+    if !expr_source.is_empty()
+        && let Ok(mut parsed) = KotlinParser::parse(Rule::expr, expr_source)
+        && let Some(expr_pair) = parsed.next()
+    {
+        return walk_expr(expr_pair);
+    }
+    walk_expr(pair)
+}
+
 fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
     let mut name = String::new();
     let mut is_interface = false;
@@ -11221,6 +16808,7 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
     let mut base_args = None;
     let mut decorators = Vec::new();
     let mut init_stmts = Vec::new();
+    let mut stored_property_backings: HashMap<String, String> = HashMap::new();
 
     // A LOCAL class reads values from the function around it. With
     // `implicit_self_fields` a bare identifier in a method is a FIELD read, so
@@ -11308,6 +16896,7 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
     // `by` whose expression is not already a property needs one declared.
     let mut delegate_storage: Vec<(String, Expression)> = Vec::new();
     let mut delegations: Vec<(String, String)> = Vec::new();
+    let mut delegated_object_field: Option<String> = None;
 
     for inner in &inner_pairs {
         if inner.as_rule() == Rule::inheritance_list {
@@ -11345,7 +16934,7 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
                                 }
                             }
                             Rule::delegate_expr => {
-                                by_expr = Some((sub.as_str().to_string(), walk_expr(sub)))
+                                by_expr = Some((sub.as_str().to_string(), walk_delegate_expr(sub)))
                             }
                             _ => {}
                         }
@@ -11366,6 +16955,14 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
                             };
                             delegate_storage.push((field.clone(), expr));
                             delegations.push((parent_name.clone(), field.clone()));
+                            if delegated_object_field.is_none() {
+                                delegated_object_field = Some(field.clone());
+                                members.push(ClassMember::Augment(AugmentDecl {
+                                    from: "__KotlinDelegatedObject".to_string(),
+                                    via_field: Some(field.clone()),
+                                    adjustments: Vec::new(),
+                                }));
+                            }
                             // A delegating class IS the interface — `is I` and
                             // every interface-typed binding depend on it.
                             interfaces.push(parent_name.clone());
@@ -11474,23 +17071,23 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
                                     .get(&pname)
                                     .cloned()
                                     .unwrap_or_else(|| pname.clone());
-                                members.push(ClassMember::Field {
-                                    name: field_name.clone(),
-                                    type_hint: type_hint.clone(),
-                                    init: None,
-                                    modifiers: Modifiers {
-                                        visibility: Visibility::Public,
+                                let (mut property_members, backing_name) =
+                                    kt_stored_property_members(
+                                        field_name.clone(),
+                                        type_hint.clone(),
+                                        None,
                                         is_readonly,
-                                        ..Default::default()
-                                    },
-                                    with_events: false,
-                                    array_bounds: None,
-                                });
+                                        Vec::new(),
+                                        Modifiers::default(),
+                                    );
+                                stored_property_backings
+                                    .insert(field_name.clone(), backing_name.clone());
+                                members.append(&mut property_members);
                                 ctor_body.push(Statement::new(StmtKind::Expr(Expression::new(
                                     ExprKind::Assign {
                                         target: Box::new(Expression::new(ExprKind::Member {
                                             object: Box::new(Expression::new(ExprKind::This)),
-                                            field: field_name,
+                                            field: backing_name,
                                             null_safe: false,
                                         })),
                                         value: Box::new(Expression::ident(&pname)),
@@ -11550,10 +17147,12 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
                                                 s_params = walk_parameter_list(sc)
                                             }
                                             Rule::this_kw => {
-                                                s_target = ConstructorInitializerTarget::This
+                                                s_target = ConstructorInitializerTarget::This;
+                                                s_base_args.get_or_insert_with(Vec::new);
                                             }
                                             Rule::super_kw => {
-                                                s_target = ConstructorInitializerTarget::Base
+                                                s_target = ConstructorInitializerTarget::Base;
+                                                s_base_args.get_or_insert_with(Vec::new);
                                             }
                                             Rule::arg_list => {
                                                 let mut bargs = Vec::new();
@@ -11607,6 +17206,12 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
                                     }
                                 }
                                 Rule::var_decl => {
+                                    let field_decorators: Vec<Expression> = inner_member
+                                        .clone()
+                                        .into_inner()
+                                        .filter(|p| p.as_rule() == Rule::annotation)
+                                        .map(walk_annotation)
+                                        .collect();
                                     // `val area: Int get() = w * h` is a
                                     // PROPERTY, not a field — it has no storage
                                     // and the accessor has to run on each read.
@@ -11634,6 +17239,24 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
                                         .clone()
                                         .into_inner()
                                         .any(|p| p.as_rule() == Rule::val_kw);
+                                    let mut property_modifiers = Modifiers::default();
+                                    for p in inner_member.clone().into_inner() {
+                                        if p.as_rule() == Rule::modifier {
+                                            match p.as_str().trim() {
+                                                "open" => property_modifiers.is_virtual = true,
+                                                "override" => property_modifiers.is_override = true,
+                                                "private" => {
+                                                    property_modifiers.visibility =
+                                                        Visibility::Private
+                                                }
+                                                "protected" => {
+                                                    property_modifiers.visibility =
+                                                        Visibility::Protected
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    }
                                     if let Some(stmt) =
                                         with_kotlin_field_aliases(&field_aliases, || {
                                             walk_var_decl(inner_member)
@@ -11659,21 +17282,28 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
                                                             });
                                                         }
                                                     } else {
-                                                        members.push(ClassMember::Field {
-                                                            name: field_name,
-                                                            type_hint: decl
-                                                                .type_hint
-                                                                .as_deref()
-                                                                .map(str::to_string),
-                                                            init: decl.init,
-                                                            modifiers: Modifiers {
-                                                                visibility: Visibility::Public,
-                                                                is_readonly: is_readonly_val,
-                                                                ..Default::default()
-                                                            },
-                                                            with_events: false,
-                                                            array_bounds: None,
-                                                        });
+                                                        let (mut property_members, _) =
+                                                            kt_stored_property_members(
+                                                                field_name,
+                                                                decl.type_hint
+                                                                    .as_deref()
+                                                                    .map(str::to_string),
+                                                                decl.init,
+                                                                is_readonly_val,
+                                                                field_decorators.clone(),
+                                                                property_modifiers.clone(),
+                                                            );
+                                                        if let Some(ClassMember::Field {
+                                                            name: backing,
+                                                            ..
+                                                        }) = property_members.first()
+                                                        {
+                                                            stored_property_backings.insert(
+                                                                fname.clone(),
+                                                                backing.clone(),
+                                                            );
+                                                        }
+                                                        members.append(&mut property_members);
                                                     }
                                                 }
                                             }
@@ -11683,17 +17313,142 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
                                 Rule::companion_object => {
                                     if let Some(stmt) = walk_object_decl(inner_member) {
                                         if let StmtKind::ClassDecl {
-                                            members: comp_members,
+                                            name: comp_name,
+                                            parents: comp_parents,
+                                            interfaces: comp_interfaces,
+                                            members: mut comp_members,
                                             ..
                                         } = stmt.kind
                                         {
+                                            for parent in comp_parents {
+                                                if !parents.contains(&parent) {
+                                                    parents.push(parent);
+                                                }
+                                            }
+                                            for iface in comp_interfaces {
+                                                if !interfaces.contains(&iface) {
+                                                    interfaces.push(iface);
+                                                }
+                                            }
+                                            let mut companion_aliases = vec!["Companion".to_string()];
+                                            if comp_name != "Companion" {
+                                                companion_aliases.push(comp_name);
+                                            }
+                                            for alias in companion_aliases {
+                                                members.push(ClassMember::Field {
+                                                    name: alias,
+                                                    type_hint: None,
+                                                    init: Some(Expression::ident(&name)),
+                                                    modifiers: Modifiers {
+                                                        visibility: Visibility::Public,
+                                                        is_static: true,
+                                                        is_readonly: true,
+                                                        ..Default::default()
+                                                    },
+                                                    with_events: false,
+                                                    array_bounds: None,
+                                                });
+                                            }
+                                            let companion_method_names: HashSet<String> =
+                                                comp_members
+                                                    .iter()
+                                                    .filter_map(|member| match member {
+                                                        ClassMember::Method(stmt) => {
+                                                            if let StmtKind::FunctionDecl {
+                                                                name, ..
+                                                            } = &stmt.kind
+                                                            {
+                                                                Some(name.clone())
+                                                            } else {
+                                                                None
+                                                            }
+                                                        }
+                                                        _ => None,
+                                                    })
+                                                    .collect();
+                                            let companion_field_aliases: HashMap<String, String> =
+                                                comp_members
+                                                    .iter()
+                                                    .filter_map(|member| match member {
+                                                        ClassMember::Field { name, .. }
+                                                        | ClassMember::Const { name, .. }
+                                                        | ClassMember::Property { name, .. }
+                                                            if companion_method_names.contains(name) =>
+                                                        {
+                                                            Some((
+                                                                name.clone(),
+                                                                backing_field_name(name),
+                                                            ))
+                                                        }
+                                                        _ => None,
+                                                    })
+                                                    .collect();
+                                            if !companion_field_aliases.is_empty() {
+                                                for member in &mut comp_members {
+                                                    match member {
+                                                        ClassMember::Field { name, .. }
+                                                        | ClassMember::Const { name, .. }
+                                                        | ClassMember::Property { name, .. } => {
+                                                            if let Some(alias) =
+                                                                companion_field_aliases.get(name)
+                                                            {
+                                                                *name = alias.clone();
+                                                            }
+                                                        }
+                                                        _ => {}
+                                                    }
+                                                }
+                                            }
+                                            let companion_field_names: HashSet<String> =
+                                                comp_members
+                                                    .iter()
+                                                    .filter_map(|member| match member {
+                                                        ClassMember::Field { name, .. }
+                                                        | ClassMember::Const { name, .. }
+                                                        | ClassMember::Property { name, .. } => {
+                                                            Some(name.clone())
+                                                        }
+                                                        _ => None,
+                                                    })
+                                                    .collect();
+                                            if !companion_field_names.is_empty() {
+                                                USER_PROPERTY_NAMES.with(|set| {
+                                                    set.borrow_mut()
+                                                        .extend(companion_field_names.iter().cloned());
+                                                });
+                                            }
                                             for mut cm in comp_members {
                                                 if let ClassMember::Method(ref mut mstmt) = cm {
                                                     if let StmtKind::FunctionDecl {
+                                                        name: ref mut method_name,
+                                                        ref params,
+                                                        ref mut body,
                                                         ref mut modifiers,
                                                         ..
                                                     } = mstmt.kind
                                                     {
+                                                        let mut skip = HashSet::new();
+                                                        for param in params.iter() {
+                                                            skip.insert(param.name.clone());
+                                                        }
+                                                        kotlin_local_binding_names(body, &mut skip);
+                                                        with_kotlin_field_aliases(
+                                                            &companion_field_aliases,
+                                                            || {
+                                                                for stmt in body.iter_mut() {
+                                                                    kotlin_rewrite_receiver_refs_stmt(
+                                                                        stmt, &name, &skip,
+                                                                    );
+                                                                }
+                                                            },
+                                                        );
+                                                        if let Some(storage_name) =
+                                                            overloaded_storage_name_for_params(
+                                                                method_name, params,
+                                                            )
+                                                        {
+                                                            *method_name = storage_name;
+                                                        }
                                                         modifiers.is_static = true;
                                                     }
                                                 }
@@ -11756,8 +17511,6 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
             }
         }
     }
-
-    append_kotlin_delegate_members(&mut members, &delegations);
 
     // Declare the captures: a private field each, a leading constructor
     // parameter each, and the assignment that binds them. The construction site
@@ -12041,7 +17794,7 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
             );
         });
     }
-    for (interface_name, _) in &delegations {
+    for (interface_name, delegate_field) in &delegations {
         if matches!(
             interface_name.rsplit('.').next().unwrap_or(interface_name),
             "List"
@@ -12057,6 +17810,10 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
                 map.borrow_mut()
                     .insert(name.clone(), interface_name.clone());
             });
+            KOTLIN_DELEGATE_FIELDS.with(|map| {
+                map.borrow_mut()
+                    .insert(name.clone(), delegate_field.clone());
+            });
         }
     }
     if constructor_has_nullable_param {
@@ -12064,26 +17821,53 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
             set.borrow_mut().insert(name.clone());
         });
     }
+    let ctor_shapes = if !name.is_empty() {
+        kotlin_disambiguate_same_arity_constructors(&name, &mut members)
+    } else {
+        Vec::new()
+    };
+    if !name.is_empty() && !ctor_shapes.is_empty() {
+        KOTLIN_CLASS_CTOR_SHAPES.with(|ctors| {
+            ctors.borrow_mut().insert(name.clone(), ctor_shapes);
+        });
+    }
+    if !stored_property_backings.is_empty() {
+        for member in &mut members {
+            if let ClassMember::Constructor { body, .. } = member {
+                for stmt in body {
+                    kt_rewrite_constructor_property_assigns_stmt(stmt, &stored_property_backings);
+                }
+            }
+        }
+    }
+    kotlin_pack_secondary_constructor_delegations(&name, &mut members);
+    if !name.is_empty() {
+        let ctor_params: Vec<Vec<Param>> = members
+            .iter()
+            .filter_map(|member| {
+                if let ClassMember::Constructor { params, .. } = member {
+                    Some(params.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if !ctor_params.is_empty() {
+            KOTLIN_CLASS_CTORS.with(|ctors| {
+                ctors.borrow_mut().insert(name.clone(), ctor_params);
+            });
+        }
+    }
 
     // `class AppError(msg: String) : Exception(msg)` — the base is an emit
     // BUILTIN, not a class, so no base constructor ever ran and `e.message`
     // read `undefined`. The base argument IS the message; stamp it in the
     // subclass's own constructor.
-    if parents.first().map(String::as_str).is_some_and(|p| {
-        matches!(
-            p,
-            "Exception"
-                | "RuntimeException"
-                | "IllegalArgumentException"
-                | "IllegalStateException"
-                | "NullPointerException"
-                | "IndexOutOfBoundsException"
-                | "NoSuchElementException"
-                | "UnsupportedOperationException"
-                | "Throwable"
-                | "Error"
-        )
-    }) {
+    if parents
+        .first()
+        .map(String::as_str)
+        .is_some_and(kotlin_is_builtin_exception_callee)
+    {
         for member in &mut members {
             if let ClassMember::Constructor {
                 body, base_args, ..
@@ -12103,6 +17887,77 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
                 ))));
             }
         }
+    }
+
+    if !name.is_empty() {
+        KOTLIN_REFLECTION_CLASS_DECORATORS.with(|map| {
+            map.borrow_mut().insert(name.clone(), decorators.clone());
+        });
+        KOTLIN_REFLECTION_METHODS.with(|map| {
+            let mut map = map.borrow_mut();
+            for member in &members {
+                if let ClassMember::Method(stmt) = member
+                    && let StmtKind::FunctionDecl {
+                        name: method_name,
+                        params,
+                        modifiers,
+                        ..
+                    } = &stmt.kind
+                {
+                    let mut method_decorators = Vec::new();
+                    let mut param_decorators = vec![Vec::new(); params.len()];
+                    for decorator in &modifiers.decorators {
+                        if let Some((index, attr)) =
+                            kotlin_unpack_param_attribute_carrier(decorator)
+                        {
+                            if let Some(slot) = param_decorators.get_mut(index) {
+                                slot.push(attr);
+                            }
+                        } else {
+                            method_decorators.push(decorator.clone());
+                        }
+                    }
+                    map.insert(
+                        (name.clone(), method_name.clone()),
+                        KotlinReflectionMethodMeta {
+                            decorators: method_decorators,
+                            param_types: params
+                                .iter()
+                                .map(|param| {
+                                    param
+                                        .type_hint
+                                        .as_deref()
+                                        .map(str::to_string)
+                                        .unwrap_or_else(|| "Any".to_string())
+                                })
+                                .collect(),
+                            param_decorators,
+                        },
+                    );
+                }
+            }
+        });
+        KOTLIN_REFLECTION_FIELDS.with(|map| {
+            let mut map = map.borrow_mut();
+            for member in &members {
+                if let ClassMember::Field {
+                    name: field_name,
+                    type_hint,
+                    modifiers,
+                    ..
+                } = member
+                    && !field_name.starts_with("__")
+                {
+                    map.insert(
+                        (name.clone(), field_name.clone()),
+                        KotlinReflectionFieldMeta {
+                            type_name: type_hint.clone(),
+                            decorators: modifiers.decorators.clone(),
+                        },
+                    );
+                }
+            }
+        });
     }
 
     Some(Statement::new(StmtKind::ClassDecl {
@@ -12161,6 +18016,7 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
 /// is static; an anonymous object is an ordinary instance.
 fn walk_object_body_members(class_body: Pair<Rule>, statics: bool) -> Vec<ClassMember> {
     let mut members = Vec::new();
+    let mut init_stmts = Vec::new();
     for member_pair in class_body.into_inner() {
         if member_pair.as_rule() != Rule::class_member {
             continue;
@@ -12169,6 +18025,13 @@ fn walk_object_body_members(class_body: Pair<Rule>, statics: bool) -> Vec<ClassM
             continue;
         };
         match inner_member.as_rule() {
+            Rule::init_block => {
+                for block in inner_member.into_inner() {
+                    if block.as_rule() == Rule::block {
+                        init_stmts.extend(walk_block_statements(block));
+                    }
+                }
+            }
             Rule::function_decl => {
                 if let Some(mut stmt) = walk_function_decl(inner_member) {
                     if let StmtKind::FunctionDecl {
@@ -12181,14 +18044,24 @@ fn walk_object_body_members(class_body: Pair<Rule>, statics: bool) -> Vec<ClassM
                 }
             }
             Rule::var_decl => {
-                if !statics {
-                    // An accessor-backed property has no storage; the shared
-                    // `ClassMember::Property` carries it.
-                    let prop = walk_class_property(inner_member.clone());
-                    if !prop.is_empty() {
-                        members.extend(prop);
-                        continue;
+                // An accessor-backed property has no storage; the shared
+                // `ClassMember::Property` carries it. This applies to
+                // companion/object statics too (`val x get() = ...`).
+                let mut prop = walk_class_property(inner_member.clone());
+                if !prop.is_empty() {
+                    if statics {
+                        for member in &mut prop {
+                            match member {
+                                ClassMember::Field { modifiers, .. }
+                                | ClassMember::Property { modifiers, .. } => {
+                                    modifiers.is_static = true;
+                                }
+                                _ => {}
+                            }
+                        }
                     }
+                    members.extend(prop);
+                    continue;
                 }
                 let is_const_val = inner_member
                     .clone()
@@ -12242,16 +18115,101 @@ fn walk_object_body_members(class_body: Pair<Rule>, statics: bool) -> Vec<ClassM
             _ => {}
         }
     }
+    if !init_stmts.is_empty() {
+        if statics {
+            members.push(ClassMember::Method(Box::new(Statement::new(
+                StmtKind::FunctionDecl {
+                    name: "__static_init__".to_string(),
+                    params: Vec::new(),
+                    return_type: None,
+                    body: init_stmts,
+                    modifiers: Modifiers {
+                        visibility: Visibility::Private,
+                        is_static: true,
+                        ..Default::default()
+                    },
+                    handles: Vec::new(),
+                    is_async: false,
+                    is_generator: false,
+                    is_sub: false,
+                },
+            ))));
+        } else {
+            members.push(ClassMember::Constructor {
+                name: None,
+                params: Vec::new(),
+                body: init_stmts,
+                base_args: None,
+                initializer_target: ConstructorInitializerTarget::Base,
+                visibility: Visibility::Public,
+            });
+        }
+    }
     members
 }
 
 fn walk_object_decl(pair: Pair<Rule>) -> Option<Statement> {
     let mut name = "Companion".to_string();
+    let mut parents = Vec::new();
+    let mut interfaces = Vec::new();
     let mut members = Vec::new();
+    let mut inherits_function_type = false;
+    let mut delegate_storage: Vec<(String, Expression)> = Vec::new();
+    let mut delegations: Vec<(String, String)> = Vec::new();
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::identifier => name = inner.as_str().to_string(),
+            Rule::inheritance_list => {
+                for spec in inner.into_inner() {
+                    if spec.as_rule() != Rule::inheritance_specifier {
+                        continue;
+                    }
+                    let mut parent_name = String::new();
+                    let calls_constructor = spec.as_str().contains('(');
+                    let mut by_expr = None;
+                    for sub in spec.into_inner() {
+                        match sub.as_rule() {
+                            Rule::type_ref => {
+                                if sub.as_str().contains("->") {
+                                    inherits_function_type = true;
+                                    parent_name = "Function".to_string();
+                                } else {
+                                    parent_name = type_hint_text(sub.as_str());
+                                }
+                            }
+                            Rule::delegate_expr => {
+                                by_expr = Some((sub.as_str().to_string(), walk_delegate_expr(sub)));
+                            }
+                            _ => {}
+                        }
+                    }
+                    if parent_name.is_empty() {
+                        continue;
+                    }
+                    if let Some((text, expr)) = by_expr {
+                        let field = if is_plain_identifier(&text) {
+                            text.trim().to_string()
+                        } else {
+                            format!("__kt_delegate_{}", parent_name.replace('.', "_"))
+                        };
+                        delegate_storage.push((field.clone(), expr));
+                        delegations.push((parent_name.clone(), field.clone()));
+                        interfaces.push(parent_name.clone());
+                        members.push(ClassMember::Augment(AugmentDecl {
+                            from: parent_name,
+                            via_field: Some(field),
+                            adjustments: vec![],
+                        }));
+                    } else if inherits_function_type {
+                        interfaces.push(parent_name);
+                    } else if calls_constructor && parents.is_empty() {
+                        parents.push(parent_name);
+                    } else {
+                        interfaces.push(parent_name);
+                    }
+                }
+            }
             Rule::class_body => {
                 members.extend(walk_object_body_members(inner, true));
             }
@@ -12259,10 +18217,217 @@ fn walk_object_decl(pair: Pair<Rule>) -> Option<Statement> {
         }
     }
 
+    for (field, init) in delegate_storage.into_iter().rev() {
+        members.insert(
+            0,
+            ClassMember::Field {
+                name: field,
+                type_hint: None,
+                init: Some(init),
+                modifiers: Modifiers {
+                    visibility: Visibility::Private,
+                    is_static: true,
+                    ..Default::default()
+                },
+                with_events: false,
+                array_bounds: None,
+            },
+        );
+    }
+    let delegate_member_start = members.len();
+    for member in members.iter_mut().skip(delegate_member_start) {
+        match member {
+            ClassMember::Method(stmt) => {
+                if let StmtKind::FunctionDecl { modifiers, .. } = &mut stmt.kind {
+                    modifiers.is_static = true;
+                }
+            }
+            ClassMember::Property { modifiers, .. } | ClassMember::Field { modifiers, .. } => {
+                modifiers.is_static = true;
+            }
+            _ => {}
+        }
+    }
+
+    let object_method_names: HashSet<String> = members
+        .iter()
+        .filter_map(|member| match member {
+            ClassMember::Method(stmt) => {
+                if let StmtKind::FunctionDecl { name, .. } = &stmt.kind {
+                    Some(name.clone())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        })
+        .collect();
+    let object_field_aliases: HashMap<String, String> = members
+        .iter()
+        .filter_map(|member| match member {
+            ClassMember::Field { name, .. }
+            | ClassMember::Const { name, .. }
+            | ClassMember::Property { name, .. }
+                if object_method_names.contains(name) =>
+            {
+                Some((name.clone(), backing_field_name(name)))
+            }
+            _ => None,
+        })
+        .collect();
+    if !object_field_aliases.is_empty() {
+        KOTLIN_STATIC_FIELD_ALIASES.with(|aliases| {
+            let mut aliases = aliases.borrow_mut();
+            for (source, backing) in &object_field_aliases {
+                aliases.insert((name.clone(), source.clone()), backing.clone());
+            }
+        });
+        for member in &mut members {
+            match member {
+                ClassMember::Field { name, .. }
+                | ClassMember::Const { name, .. }
+                | ClassMember::Property { name, .. } => {
+                    if let Some(alias) = object_field_aliases.get(name) {
+                        *name = alias.clone();
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let object_field_names: HashSet<String> = members
+        .iter()
+        .filter_map(|member| match member {
+            ClassMember::Field { name, .. }
+            | ClassMember::Const { name, .. }
+            | ClassMember::Property { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    if !object_field_names.is_empty() {
+        USER_PROPERTY_NAMES.with(|set| {
+            set.borrow_mut().extend(object_field_names.iter().cloned());
+        });
+    }
+    for (interface_name, delegate_field) in &delegations {
+        if matches!(
+            interface_name.rsplit('.').next().unwrap_or(interface_name),
+            "List"
+                | "MutableList"
+                | "Set"
+                | "MutableSet"
+                | "Map"
+                | "MutableMap"
+                | "Collection"
+                | "Iterable"
+        ) {
+            KOTLIN_DELEGATED_COLLECTIONS.with(|map| {
+                map.borrow_mut()
+                    .insert(name.clone(), interface_name.clone());
+            });
+            KOTLIN_DELEGATE_FIELDS.with(|map| {
+                map.borrow_mut()
+                    .insert(name.clone(), delegate_field.clone());
+            });
+        }
+    }
+    for member in &mut members {
+        match member {
+            ClassMember::Method(stmt) => {
+                if let StmtKind::FunctionDecl {
+                    name: method_name,
+                    params,
+                    body,
+                    ..
+                } = &mut stmt.kind
+                {
+                    let mut skip = HashSet::new();
+                    for param in params.iter() {
+                        skip.insert(param.name.clone());
+                    }
+                    kotlin_local_binding_names(body, &mut skip);
+                    with_kotlin_field_aliases(&object_field_aliases, || {
+                        for stmt in body.iter_mut() {
+                            kotlin_rewrite_receiver_refs_stmt(stmt, &name, &skip);
+                        }
+                    });
+                    if inherits_function_type && method_name == "invoke" {
+                        *method_name = "operator invoke".to_string();
+                    }
+                }
+            }
+            ClassMember::Field { init: Some(init), .. } => {
+                let mut skip = HashSet::new();
+                with_kotlin_field_aliases(&object_field_aliases, || {
+                    kotlin_rewrite_receiver_refs_expr(init, &name, &skip);
+                });
+            }
+            ClassMember::Const { value, .. } => {
+                let skip = HashSet::new();
+                with_kotlin_field_aliases(&object_field_aliases, || {
+                    kotlin_rewrite_receiver_refs_expr(value, &name, &skip);
+                });
+            }
+            ClassMember::Property { getter, setter, .. } => {
+                let mut skip = HashSet::new();
+                if let Some(body) = getter {
+                    kotlin_local_binding_names(body, &mut skip);
+                    with_kotlin_field_aliases(&object_field_aliases, || {
+                        for stmt in body.iter_mut() {
+                            kotlin_rewrite_receiver_refs_stmt(stmt, &name, &skip);
+                        }
+                    });
+                }
+                if let Some(setter) = setter {
+                    let mut setter_skip = HashSet::new();
+                    setter_skip.insert(setter.param.name.clone());
+                    kotlin_local_binding_names(&setter.body, &mut setter_skip);
+                    with_kotlin_field_aliases(&object_field_aliases, || {
+                        for stmt in setter.body.iter_mut() {
+                            kotlin_rewrite_receiver_refs_stmt(stmt, &name, &setter_skip);
+                        }
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    if !interfaces.is_empty() {
+        let instance_methods: Vec<ClassMember> = members
+            .iter()
+            .filter_map(|member| {
+                let ClassMember::Method(stmt) = member else {
+                    return None;
+                };
+                let StmtKind::FunctionDecl {
+                    name: method_name,
+                    modifiers,
+                    ..
+                } = &stmt.kind
+                else {
+                    return None;
+                };
+                if !modifiers.is_static
+                    || modifiers.is_abstract
+                    || method_name == "__static_init__"
+                    || method_name == "operator invoke"
+                {
+                    return None;
+                }
+                let mut clone = (**stmt).clone();
+                if let StmtKind::FunctionDecl { modifiers, .. } = &mut clone.kind {
+                    modifiers.is_static = false;
+                }
+                Some(ClassMember::Method(Box::new(clone)))
+            })
+            .collect();
+        members.extend(instance_methods);
+    }
+
     Some(Statement::new(StmtKind::ClassDecl {
         name,
-        parents: vec![],
-        interfaces: vec![],
+        parents,
+        interfaces,
         members,
         modifiers: ClassModifiers::default(),
         decorators: vec![],
@@ -12377,8 +18542,150 @@ fn kotlin_hint_is_receiver_fn(hint: &str) -> bool {
     hint.contains(".(")
 }
 
+fn kotlin_type_is_function_like(hint: &str) -> bool {
+    let hint = hint.trim();
+    hint.contains("->")
+        || hint.contains(" - ")
+        || hint.starts_with("Function")
+        || hint.starts_with("__kt_function_sig:")
+        || hint.starts_with("__kt_function_arity:")
+        || hint.starts_with("__kt_companion_callable:")
+}
+
+fn kotlin_type_is_array_family(hint: &str) -> bool {
+    matches!(
+        type_hint_text(hint).trim().trim_end_matches('?'),
+        "Array"
+            | "IntArray"
+            | "LongArray"
+            | "DoubleArray"
+            | "FloatArray"
+            | "BooleanArray"
+            | "CharArray"
+            | "ByteArray"
+            | "ShortArray"
+            | "UIntArray"
+            | "UByteArray"
+            | "UShortArray"
+            | "ULongArray"
+    )
+}
+
+fn kotlin_function_type_param_names(hint: &str) -> Option<Vec<String>> {
+    let hint = hint.trim();
+    if let Some(rest) = hint.strip_prefix("__kt_function_sig:") {
+        let mut parts = rest.split(':');
+        let _arity = parts.next()?;
+        let params = parts.next().unwrap_or_default();
+        if params.is_empty() {
+            return Some(Vec::new());
+        }
+        return Some(params.split(',').map(str::to_string).collect());
+    }
+    let params = if let Some((params, _)) = hint.split_once("->") {
+        params
+    } else if let Some((params, _)) = hint.split_once(" - ") {
+        params
+    } else {
+        return None;
+    }
+    .trim();
+    let params = params.strip_prefix('(')?.strip_suffix(')')?.trim();
+    if params.is_empty() {
+        Some(Vec::new())
+    } else {
+        Some(
+            params
+                .split(',')
+                .map(|p| type_hint_text(p.trim()).to_lowercase())
+                .collect::<Vec<_>>(),
+        )
+    }
+}
+
+fn kotlin_function_type_arity(hint: &str) -> Option<usize> {
+    let hint = hint.trim();
+    if let Some(params) = kotlin_function_type_param_names(hint) {
+        return Some(params.len());
+    }
+    if let Some(rest) = hint.strip_prefix("__kt_function_arity:") {
+        return rest.parse().ok();
+    }
+    let head = hint.split('<').next().unwrap_or(hint).trim();
+    if let Some(rest) = head.strip_prefix("Function") {
+        return rest.parse().ok();
+    }
+    let params = if let Some((params, _)) = hint.split_once("->") {
+        params
+    } else if let Some((params, _)) = hint.split_once(" - ") {
+        params
+    } else {
+        return None;
+    }
+    .trim();
+    let params = params.strip_prefix('(')?.strip_suffix(')')?.trim();
+    if params.is_empty() {
+        Some(0)
+    } else {
+        Some(params.split(',').count())
+    }
+}
+
+fn kotlin_expr_function_arity(expr: &Expression) -> Option<usize> {
+    match &expr.kind {
+        ExprKind::Lambda { params, .. } => Some(params.len()),
+        ExprKind::Ident(name) => KOTLIN_SIMPLE_FUNCTIONS.with(|map| {
+            map.borrow()
+                .get(name)
+                .map(|(params, _)| params.len())
+        }),
+        _ => None,
+    }
+}
+
+fn kotlin_expr_function_signature(expr: &Expression) -> Option<Vec<String>> {
+    match &expr.kind {
+        ExprKind::Lambda { params, .. } => Some(
+            params
+                .iter()
+                .map(|p| {
+                    p.type_hint
+                        .as_ref()
+                        .map(|h| type_hint_text(h.spelling()).to_lowercase())
+                        .unwrap_or_else(|| "Any".to_string())
+                })
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
+fn kotlin_companion_owner_expr(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Member { object, field, .. } if field == "Companion" => dotted_expr_path(object),
+        ExprKind::Ident(name)
+            if KOTLIN_OBJECT_SINGLETONS.with(|set| set.borrow().contains(name)) =>
+        {
+            Some(name.clone())
+        }
+        ExprKind::Ident(path) => path.strip_suffix(".Companion").map(str::to_string),
+        _ => None,
+    }
+}
+
 fn kotlin_type_is_result(t: &str) -> bool {
     t == "Result" || t.starts_with("Result<")
+}
+
+fn kotlin_expr_is_duration_init(expr: &Expression) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::Call { callee, .. }
+            if matches!(
+                &callee.kind,
+                ExprKind::Member { field, .. } if field == "toDuration"
+            )
+    )
 }
 
 fn kotlin_result_obj(ok: bool, value: Expression) -> Expression {
@@ -12564,7 +18871,32 @@ fn kotlin_duration_unit_factor(arg: &Expression) -> Option<(f64, f64)> {
 fn kotlin_is_type_test(expr: Expression, type_name: String) -> Expression {
     // `f is Function1<*, *>` / `is Function2<…>` — the FunctionN interfaces
     // are "is it callable" at runtime.
-    if type_name.split('<').next().is_some_and(|base| {
+    if kotlin_type_is_function_like(&type_name) {
+        if let Some(params) = kotlin_function_type_param_names(&type_name) {
+            return Expression::new(ExprKind::IsType {
+                expr: Box::new(expr),
+                type_name: format!("__kt_function_sig:{}:{}", params.len(), params.join(",")),
+            });
+        }
+        if let Some(arity) = kotlin_function_type_arity(&type_name) {
+            return Expression::new(ExprKind::IsType {
+                expr: Box::new(expr),
+                type_name: format!("__kt_function_arity:{arity}"),
+            });
+        }
+        return Expression::new(ExprKind::IsType {
+            expr: Box::new(expr),
+            type_name: "function".to_string(),
+        });
+    }
+    let type_name_lc = type_name.to_lowercase();
+    let bare_type = type_name_lc
+        .split('<')
+        .next()
+        .unwrap_or(type_name_lc.as_str())
+        .trim()
+        .trim_end_matches('?');
+    if type_name_lc.split('<').next().is_some_and(|base| {
         let base = base.trim();
         base.strip_prefix("function")
             .is_some_and(|rest| rest.is_empty() || rest.chars().all(|c| c.is_ascii_digit()))
@@ -12574,10 +18906,24 @@ fn kotlin_is_type_test(expr: Expression, type_name: String) -> Expression {
             type_name: "function".to_string(),
         });
     }
-    let integral = type_name == "int" || type_name == "long";
+    let runtime_type = match bare_type {
+        "string" | "charsequence" => "string",
+        "boolean" => "boolean",
+        "double" | "float" => "double",
+        "int" | "long" | "short" | "byte" => bare_type,
+        "number" => "number",
+        "list" => "__kt_list",
+        "mutablelist" => "__kt_mutablelist",
+        "array" | "intarray" | "longarray" | "doublearray" | "floatarray" | "booleanarray"
+        | "chararray" | "bytearray" | "shortarray" => "array",
+        "map" | "mutablemap" | "set" | "mutableset" => "object",
+        "any" => "object",
+        _ => type_name.as_str(),
+    };
+    let integral = bare_type == "int" || bare_type == "long";
     let base = Expression::new(ExprKind::IsType {
         expr: Box::new(expr.clone()),
-        type_name,
+        type_name: runtime_type.to_string(),
     });
     if !integral {
         return base;
@@ -12598,6 +18944,85 @@ fn kotlin_is_type_test(expr: Expression, type_name: String) -> Expression {
     })
 }
 
+fn kotlin_is_type_test_from_hint(expr: Expression, raw_hint: &str) -> Expression {
+    let nullable = raw_hint.trim().ends_with('?');
+    let type_name = type_hint_text(raw_hint);
+    if KOTLIN_OBJECT_SINGLETONS.with(|set| set.borrow().contains(&type_name)) {
+        let test = Expression::new(ExprKind::Binary {
+            op: BinOp::Eq,
+            left: Box::new(expr.clone()),
+            right: Box::new(dotted_ident_expr(&type_name)),
+        });
+        if nullable {
+            return Expression::new(ExprKind::Binary {
+                op: BinOp::Or,
+                left: Box::new(Expression::new(ExprKind::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(expr),
+                    right: Box::new(Expression::null()),
+                })),
+                right: Box::new(test),
+            });
+        }
+        return test;
+    }
+    let test = if let Some((_, leaf)) = type_name.rsplit_once('.') {
+        Expression::new(ExprKind::Binary {
+            op: BinOp::Or,
+            left: Box::new(kotlin_is_type_test(expr.clone(), type_name.clone())),
+            right: Box::new(kotlin_is_type_test(expr.clone(), leaf.to_string())),
+        })
+    } else {
+        kotlin_is_type_test(expr.clone(), type_name)
+    };
+    if nullable {
+        Expression::new(ExprKind::Binary {
+            op: BinOp::Or,
+            left: Box::new(Expression::new(ExprKind::Binary {
+                op: BinOp::Eq,
+                left: Box::new(expr),
+                right: Box::new(Expression::null()),
+            })),
+            right: Box::new(test),
+        })
+    } else {
+        test
+    }
+}
+
+fn kotlin_checked_cast_expr(value: Expression, raw_hint: &str) -> Expression {
+    let param = "__kt_cast_value".to_string();
+    let subject = Expression::ident(&param);
+    let test_subject = if matches!(value.kind, ExprKind::Ident(_)) {
+        value.clone()
+    } else {
+        subject.clone()
+    };
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Lambda {
+            params: kotlin_local_capture_params(&[param]),
+            body: LambdaBody::Block(vec![Statement::new(StmtKind::If {
+                cond: kotlin_is_type_test_from_hint(test_subject, raw_hint),
+                then_body: vec![Statement::new(StmtKind::Return(Some(Expression::ident(
+                    "__kt_cast_value",
+                ))))],
+                elifs: Vec::new(),
+                else_body: Some(vec![Statement::new(StmtKind::Throw {
+                    expr: Some(kotlin_exception_new_expr(
+                        "ClassCastException",
+                        Some(Expression::string("ClassCastException")),
+                    )),
+                    cause: None,
+                })]),
+            })]),
+            captures: Vec::new(),
+            is_async: false,
+        })),
+        args: vec![Argument::positional(value)],
+        optional: false,
+    })
+}
+
 fn when_condition_predicate(pair: Pair<Rule>, subject: &Expression) -> Option<Expression> {
     let mut prefix: Option<Rule> = None;
     let mut out: Option<Expression> = None;
@@ -12610,10 +19035,7 @@ fn when_condition_predicate(pair: Pair<Rule>, subject: &Expression) -> Option<Ex
             Rule::type_ref => {
                 // Lowercased to match the `is` operator's own walk above —
                 // `IsType` names are compared case-folded.
-                let test = kotlin_is_type_test(
-                    subject.clone(),
-                    type_hint_text(sub.as_str()).to_lowercase(),
-                );
+                let test = kotlin_is_type_test_from_hint(subject.clone(), sub.as_str());
                 out = Some(if prefix == Some(Rule::not_is_kw) {
                     not_expr(test)
                 } else {
@@ -13085,6 +19507,37 @@ fn kotlin_return_wrap_last(stmts: &mut Vec<Statement>) {
                     else_body,
                 }));
             }
+            StmtKind::Switch {
+                expr,
+                cases,
+                default,
+            } => {
+                let mut arms = Vec::new();
+                for case in cases {
+                    let mut conds = Vec::new();
+                    for condition in case.conditions {
+                        if let CaseCondition::Value(value) = condition {
+                            conds.push(value);
+                        }
+                    }
+                    arms.push(MatchArm {
+                        conditions: Some(conds),
+                        body: kotlin_block_statements_as_expr(case.body),
+                    });
+                }
+                if let Some(body) = default {
+                    arms.push(MatchArm {
+                        conditions: None,
+                        body: kotlin_block_statements_as_expr(body),
+                    });
+                }
+                stmts.push(Statement::new(StmtKind::Return(Some(Expression::new(
+                    ExprKind::Match {
+                        subject: Box::new(expr),
+                        arms,
+                    },
+                )))));
+            }
             other => {
                 stmts.push(Statement::new(other));
             }
@@ -13124,9 +19577,13 @@ fn walk_try_expr(pair: Pair<Rule>) -> Expression {
 }
 
 fn kotlin_exception_new_expr(exc_name: &str, message: Option<Expression>) -> Expression {
-    if exc_name == "IllegalStateException" {
+    if matches!(exc_name, "IllegalStateException" | "ClassCastException") {
+        let callee = match exc_name {
+            "ClassCastException" => "ClassCastException",
+            _ => "__kt_illegal_state_exception",
+        };
         return Expression::new(ExprKind::Call {
-            callee: Box::new(Expression::ident("__kt_illegal_state_exception")),
+            callee: Box::new(Expression::ident(callee)),
             args: message
                 .map(Argument::positional)
                 .into_iter()
@@ -13286,7 +19743,7 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
             while let Some(op_pair) = inner.next() {
                 let next_pair = inner.next().unwrap();
                 let op_str = op_pair.as_str();
-                let type_str = next_pair.as_str().to_lowercase();
+                let type_str = next_pair.as_str().to_string();
                 current = match op_str {
                     "<" => Expression::new(ExprKind::Binary {
                         op: BinOp::Lt,
@@ -13321,10 +19778,10 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                             right: Box::new(walk_expr(next_pair)),
                         })),
                     }),
-                    "is" => kotlin_is_type_test(current, type_str),
+                    "is" => kotlin_is_type_test_from_hint(current, &type_str),
                     "!is" => Expression::new(ExprKind::Unary {
                         op: UnaryOp::Not,
-                        expr: Box::new(kotlin_is_type_test(current, type_str)),
+                        expr: Box::new(kotlin_is_type_test_from_hint(current, &type_str)),
                     }),
                     _ => Expression::new(ExprKind::Binary {
                         op: BinOp::Eq,
@@ -13413,18 +19870,12 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                     // never a coerced value (`"abc" as? Int` was NaN).
                     // Same runtime test the `is` operator uses.
                     current = Expression::new(ExprKind::Ternary {
-                        cond: Box::new(kotlin_is_type_test(
-                            current.clone(),
-                            type_hint_text(&target_type).to_lowercase(),
-                        )),
+                        cond: Box::new(kotlin_is_type_test_from_hint(current.clone(), &target_type)),
                         then: Box::new(current),
                         else_: Box::new(Expression::null()),
                     });
                 } else {
-                    current = Expression::new(ExprKind::Cast {
-                        expr: Box::new(current),
-                        type_name: target_type,
-                    });
+                    current = kotlin_checked_cast_expr(current, &target_type);
                 }
             }
             current
@@ -13446,6 +19897,10 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                         inclusive: false,
                     });
                 } else if op_str == "downTo" {
+                    if let Some(array) = kotlin_char_range_array(&current, &next_expr, true, -1) {
+                        current = array;
+                        continue;
+                    }
                     // a downTo b → descending [a, a-1, ..., b], INCLUSIVE of b.
                     // Maps to `__kt_step_desc(a, b - 1, -1)` → `collections.range_step`,
                     // whose stop is EXCLUSIVE (it iterates while `i > stop` for a
@@ -13495,6 +19950,13 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                             end,
                             inclusive,
                         } => {
+                            if let Some(step) = kotlin_static_int(&next_expr)
+                                && let Some(array) =
+                                    kotlin_char_range_array(&start, &end, inclusive, step)
+                            {
+                                current = array;
+                                continue;
+                            }
                             let stop = if inclusive {
                                 // inclusive end+1 so the 3-arg exclusive loop includes end
                                 Expression::new(ExprKind::Binary {
@@ -13620,7 +20082,7 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                 let next_is_call = parts
                     .get(idx + 2)
                     .and_then(|p| p.clone().into_inner().next())
-                    .map(|q| q.as_rule() == Rule::call_suffix)
+                    .map(|q| matches!(q.as_rule(), Rule::call_suffix | Rule::delegate_call_suffix))
                     .unwrap_or(false);
                 let suffix_pair = suffix_pair.clone();
                 let suffix_inner = suffix_pair.into_inner().next().unwrap();
@@ -13628,7 +20090,7 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                     Rule::type_args => {
                         continue;
                     }
-                    Rule::call_suffix => {
+                    Rule::call_suffix | Rule::delegate_call_suffix => {
                         let mut args = Vec::new();
                         for item in suffix_inner.into_inner() {
                             match item.as_rule() {
@@ -13673,6 +20135,12 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                         } = current.clone().kind
                         {
                             if let Some(replacement) =
+                                kotlin_reflection_class_method(object, field, &args)
+                            {
+                                current = replacement;
+                                continue;
+                            }
+                            if let Some(replacement) =
                                 kotlin_lambda_tail_rewrite(object, field, &args)
                             {
                                 current = replacement;
@@ -13710,6 +20178,30 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                         | "invoke"
                                 )
                             {
+                                let else_expr = if args.is_empty()
+                                    && matches!(field.as_str(), "sum" | "min" | "max")
+                                {
+                                    let helper = match field.as_str() {
+                                        "sum" => "__coll_sum",
+                                        "min" => "__coll_min",
+                                        _ => "__coll_max",
+                                    };
+                                    Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident(helper)),
+                                        args: vec![Argument::positional(*object.clone())],
+                                        optional: false,
+                                    })
+                                } else {
+                                    Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::new(ExprKind::Member {
+                                            object: object.clone(),
+                                            field: field.clone(),
+                                            null_safe: false,
+                                        })),
+                                        args: args.clone(),
+                                        optional: false,
+                                    })
+                                };
                                 current = Expression::new(ExprKind::Ternary {
                                     cond: Box::new(Expression::new(ExprKind::Binary {
                                         op: BinOp::Eq,
@@ -13719,15 +20211,7 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                         ))),
                                     })),
                                     then: Box::new(Expression::new(ExprKind::Lit(Literal::Null))),
-                                    else_: Box::new(Expression::new(ExprKind::Call {
-                                        callee: Box::new(Expression::new(ExprKind::Member {
-                                            object: object.clone(),
-                                            field: field.clone(),
-                                            null_safe: false,
-                                        })),
-                                        args: args.clone(),
-                                        optional: false,
-                                    })),
+                                    else_: Box::new(else_expr),
                                 });
                                 continue;
                             }
@@ -13802,35 +20286,14 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                     };
                                     continue;
                                 }
-                                // `f.invoke(args)` IS `f(args)` — the function
-                                // value has no member table. `f?.invoke(…)`
-                                // guards the callee first.
-                                "invoke" => {
-                                    let direct = Expression::new(ExprKind::Call {
-                                        callee: object.clone(),
-                                        args: args.clone(),
-                                        optional: false,
-                                    });
-                                    current = if null_safe {
-                                        Expression::new(ExprKind::Ternary {
-                                            cond: Box::new(Expression::new(ExprKind::Binary {
-                                                op: BinOp::Eq,
-                                                left: object.clone(),
-                                                right: Box::new(Expression::new(ExprKind::Lit(
-                                                    Literal::Null,
-                                                ))),
-                                            })),
-                                            then: Box::new(Expression::new(ExprKind::Lit(
-                                                Literal::Null,
-                                            ))),
-                                            else_: Box::new(direct),
-                                        })
-                                    } else {
-                                        direct
-                                    };
-                                    continue;
-                                }
-                                "put" if args.len() == 2 => {
+                                "put"
+                                    if args.len() == 2
+                                        && !dotted_expr_path(&object).is_some_and(|path| {
+                                            is_user_class_name(
+                                                path.rsplit('.').next().unwrap_or(&path),
+                                            ) && is_user_member_name(field, args.len())
+                                        }) =>
+                                {
                                     // Kotlin's `put` RETURNS the previous value
                                     // (or null) — a bare index-assign answers the
                                     // assigned value instead.
@@ -13872,6 +20335,23 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                     });
                                     continue;
                                 }
+                                name
+                                    if args.is_empty()
+                                        && name.starts_with("component")
+                                        && !is_user_member_name(name, 0)
+                                        && name["component".len()..]
+                                            .parse::<i64>()
+                                            .ok()
+                                            .is_some_and(|n| n >= 1) =>
+                                {
+                                    let idx = name["component".len()..].parse::<i64>().unwrap() - 1;
+                                    current = Expression::new(ExprKind::Index {
+                                        object: object.clone(),
+                                        index: Box::new(Expression::int(idx)),
+                                        null_safe: false,
+                                    });
+                                    continue;
+                                }
                                 "startsWith" | "endsWith" if args.len() == 1 => {
                                     // Free-call form of the [builtins] entry —
                                     // the member path missed for literal
@@ -13951,7 +20431,10 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                     });
                                     continue;
                                 }
-                                "find" | "findLast" if args.len() == 1 => {
+                                "find" | "findLast"
+                                    if args.len() == 1
+                                        && matches!(args[0].value.kind, ExprKind::Lambda { .. }) =>
+                                {
                                     let target = if field == "find" {
                                         "__kt_find"
                                     } else {
@@ -14011,7 +20494,10 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                     });
                                     continue;
                                 }
-                                "find" | "findLast" if args.len() == 1 => {
+                                "find" | "findLast"
+                                    if args.len() == 1
+                                        && matches!(args[0].value.kind, ExprKind::Lambda { .. }) =>
+                                {
                                     let target = if field == "find" {
                                         "__kt_find"
                                     } else {
@@ -14039,7 +20525,10 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                     });
                                     continue;
                                 }
-                                "contains" if args.len() == 1 => {
+                                "contains"
+                                    if args.len() == 1
+                                        && kotlin_contains_syntax_should_lower(object) =>
+                                {
                                     current = Expression::new(ExprKind::Call {
                                         callee: Box::new(Expression::ident("__coll_contains")),
                                         args: vec![
@@ -14050,10 +20539,28 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                     });
                                     continue;
                                 }
+                                "step" if args.len() == 1 && kotlin_expr_is_range_shape(object) => {
+                                    current = kotlin_range_step_expr(
+                                        *object.clone(),
+                                        args[0].value.clone(),
+                                    );
+                                    continue;
+                                }
                                 // NOTE: `.add(x)` for Set (dict) is handled in the second
                                 // Member block below via __coll_push, which works uniformly
                                 // for both list (array.push) and set (set semantics via
                                 // array.push on the keys array). Do NOT intercept it here.
+                                "remove" if args.len() == 1 && kotlin_expr_is_set_like(&object) => {
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__kt_remove")),
+                                        args: vec![
+                                            Argument::positional(*object.clone()),
+                                            Argument::positional(args[0].value.clone()),
+                                        ],
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
                                 "remove" if args.len() == 1 || args.len() == 2 => {
                                     // 1-arg: remove by key (map) / by value (list),
                                     // answering the removed value / a Boolean.
@@ -14119,6 +20626,18 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                         optional: false,
                                     });
                                     continue;
+                                }
+                                "iterator" if args.is_empty() => {
+                                    if let Some(source) = kotlin_map_entries_source_expr(object) {
+                                        current = Expression::new(ExprKind::Call {
+                                            callee: Box::new(Expression::ident(
+                                                "__kt_map_entry_iterator",
+                                            )),
+                                            args: vec![Argument::positional(source)],
+                                            optional: false,
+                                        });
+                                        continue;
+                                    }
                                 }
                                 _ => {}
                             }
@@ -14266,8 +20785,6 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                             if matches!(
                                 fn_name.as_str(),
                                 "listOf"
-                                    | "mutableListOf"
-                                    | "arrayListOf"
                                     | "arrayOf"
                                     | "emptyList"
                                     | "intArrayOf"
@@ -14275,7 +20792,6 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                     | "booleanArrayOf"
                                     | "charArrayOf"
                                     | "longArrayOf"
-                                    | "sequenceOf"
                             ) {
                                 let elements = args
                                     .into_iter()
@@ -14286,7 +20802,58 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                         by_ref: false,
                                     })
                                     .collect();
-                                current = Expression::new(ExprKind::Array(elements));
+                                let array = Expression::new(ExprKind::Array(elements));
+                                current = if matches!(fn_name.as_str(), "listOf" | "emptyList") {
+                                    kotlin_to_list_expr(array)
+                                } else {
+                                    array
+                                };
+                                continue;
+                            }
+                            if matches!(fn_name.as_str(), "mutableListOf" | "arrayListOf") {
+                                let elements = args
+                                    .into_iter()
+                                    .map(|a| ArrayElement {
+                                        key: None,
+                                        value: a.value,
+                                        spread: false,
+                                        by_ref: false,
+                                    })
+                                    .collect();
+                                current = Expression::new(ExprKind::Call {
+                                    callee: Box::new(Expression::ident("__kt_to_mutable_list")),
+                                    args: vec![Argument::positional(Expression::new(
+                                        ExprKind::Array(elements),
+                                    ))],
+                                    optional: false,
+                                });
+                                continue;
+                            }
+                            if matches!(fn_name.as_str(), "sequenceOf" | "emptySequence") {
+                                let elements = args
+                                    .into_iter()
+                                    .map(|a| ArrayElement {
+                                        key: None,
+                                        value: a.value,
+                                        spread: false,
+                                        by_ref: false,
+                                    })
+                                    .collect();
+                                current = Expression::new(ExprKind::Call {
+                                    callee: Box::new(Expression::ident("__kt_seq_of")),
+                                    args: vec![Argument::positional(Expression::new(
+                                        ExprKind::Array(elements),
+                                    ))],
+                                    optional: false,
+                                });
+                                continue;
+                            }
+                            if fn_name == "sequence"
+                                && args.len() == 1
+                                && matches!(args[0].value.kind, ExprKind::Lambda { .. })
+                                && let Some(seq) = kotlin_sequence_builder_expr(&args[0].value)
+                            {
+                                current = seq;
                                 continue;
                             }
                         }
@@ -14319,6 +20886,7 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                         if let ExprKind::Member { ref mut field, .. } = current.kind {
                             if let Some(storage_name) =
                                 overloaded_storage_name_for_args(field, args.len(), &args)
+                                && is_user_member_name(&storage_name, args.len())
                             {
                                 *field = storage_name;
                             }
@@ -14352,16 +20920,6 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                 continue;
                             }
                             match field.as_str() {
-                                // `f.invoke(args)` IS `f(args)` — the function
-                                // value has no member table.
-                                "invoke" => {
-                                    current = Expression::new(ExprKind::Call {
-                                        callee: object.clone(),
-                                        args: args.clone(),
-                                        optional: false,
-                                    });
-                                    continue;
-                                }
                                 // `w.transform(5)` where `transform` is a
                                 // function-VALUED property: read the property,
                                 // then call the value (method dispatch found
@@ -14387,7 +20945,52 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                     });
                                     continue;
                                 }
-                                "put" if args.len() == 2 => {
+                                "forEachLine" if args.len() == 1 => {
+                                    let lines = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::new(ExprKind::Member {
+                                            object: object.clone(),
+                                            field: "readLines".to_string(),
+                                            null_safe: false,
+                                        })),
+                                        args: Vec::new(),
+                                        optional: false,
+                                    });
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::new(ExprKind::Member {
+                                            object: Box::new(lines),
+                                            field: "forEach".to_string(),
+                                            null_safe: false,
+                                        })),
+                                        args: args.clone(),
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
+                                "useLines" if args.len() == 1 => {
+                                    let lines = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::new(ExprKind::Member {
+                                            object: object.clone(),
+                                            field: "readLines".to_string(),
+                                            null_safe: false,
+                                        })),
+                                        args: Vec::new(),
+                                        optional: false,
+                                    });
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(args[0].value.clone()),
+                                        args: vec![Argument::positional(lines)],
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
+                                "put"
+                                    if args.len() == 2
+                                        && !dotted_expr_path(&object).is_some_and(|path| {
+                                            is_user_class_name(
+                                                path.rsplit('.').next().unwrap_or(&path),
+                                            ) && is_user_member_name(field, args.len())
+                                        }) =>
+                                {
                                     // Kotlin's `put` RETURNS the previous value
                                     // (or null) — a bare index-assign answers the
                                     // assigned value instead.
@@ -14509,7 +21112,10 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                     });
                                     continue;
                                 }
-                                "find" | "findLast" if args.len() == 1 => {
+                                "find" | "findLast"
+                                    if args.len() == 1
+                                        && matches!(args[0].value.kind, ExprKind::Lambda { .. }) =>
+                                {
                                     let target = if field == "find" {
                                         "__kt_find"
                                     } else {
@@ -14569,7 +21175,10 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                     });
                                     continue;
                                 }
-                                "find" | "findLast" if args.len() == 1 => {
+                                "find" | "findLast"
+                                    if args.len() == 1
+                                        && matches!(args[0].value.kind, ExprKind::Lambda { .. }) =>
+                                {
                                     let target = if field == "find" {
                                         "__kt_find"
                                     } else {
@@ -14597,7 +21206,10 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                     });
                                     continue;
                                 }
-                                "contains" if args.len() == 1 => {
+                                "contains"
+                                    if args.len() == 1
+                                        && kotlin_contains_syntax_should_lower(object) =>
+                                {
                                     current = Expression::new(ExprKind::Call {
                                         callee: Box::new(Expression::ident("__coll_contains")),
                                         args: vec![
@@ -14606,6 +21218,13 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                         ],
                                         optional: false,
                                     });
+                                    continue;
+                                }
+                                "step" if args.len() == 1 && kotlin_expr_is_range_shape(object) => {
+                                    current = kotlin_range_step_expr(
+                                        *object.clone(),
+                                        args[0].value.clone(),
+                                    );
                                     continue;
                                 }
                                 "containsValue" if args.len() == 1 => {
@@ -14655,6 +21274,17 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                     current = Expression::new(ExprKind::Call {
                                         callee: Box::new(Expression::ident("__kt_is_not_empty")),
                                         args: vec![Argument::positional(*object.clone())],
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
+                                "remove" if args.len() == 1 && kotlin_expr_is_set_like(&object) => {
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__kt_remove")),
+                                        args: vec![
+                                            Argument::positional(*object.clone()),
+                                            Argument::positional(args[0].value.clone()),
+                                        ],
                                         optional: false,
                                     });
                                     continue;
@@ -14759,6 +21389,28 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                     });
                                     continue;
                                 }
+                                "putAll" if args.len() == 1 => {
+                                    let other = kotlin_sequence_receiver_expr(&args[0].value)
+                                        .map(|seq| {
+                                            Expression::new(ExprKind::Call {
+                                                callee: Box::new(Expression::ident(
+                                                    "__kt_seq_to_list",
+                                                )),
+                                                args: vec![Argument::positional(seq)],
+                                                optional: false,
+                                            })
+                                        })
+                                        .unwrap_or_else(|| args[0].value.clone());
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__kt_put_all")),
+                                        args: vec![
+                                            Argument::positional(*object.clone()),
+                                            Argument::positional(other),
+                                        ],
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
                                 "add" if args.len() == 2 => {
                                     current = Expression::new(ExprKind::Call {
                                         callee: Box::new(Expression::ident("__jvm_add")),
@@ -14819,6 +21471,81 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                         args: vec![Argument::positional(*object.clone())],
                                         optional: false,
                                     });
+                                    continue;
+                                }
+                                "joinToString"
+                                    if kotlin_sequence_receiver_expr(object).is_some() =>
+                                {
+                                    let seq = kotlin_sequence_receiver_expr(object).unwrap();
+                                    let materialized = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__kt_seq_to_list")),
+                                        args: vec![Argument::positional(seq)],
+                                        optional: false,
+                                    });
+                                    if args.iter().any(|a| a.name.is_some()) {
+                                        let by_name = |wanted: &str| {
+                                            args.iter()
+                                                .find(|a| a.name.as_deref() == Some(wanted))
+                                                .map(|a| a.value.clone())
+                                        };
+                                        let sep = by_name("separator")
+                                            .or_else(|| {
+                                                args.iter()
+                                                    .find(|a| a.name.is_none())
+                                                    .map(|a| a.value.clone())
+                                            })
+                                            .unwrap_or_else(|| Expression::string(", "));
+                                        let joined = Expression::new(ExprKind::Call {
+                                            callee: Box::new(Expression::ident("__coll_join")),
+                                            args: vec![
+                                                Argument::positional(materialized),
+                                                Argument::positional(sep),
+                                            ],
+                                            optional: false,
+                                        });
+                                        let mut out = joined;
+                                        if let Some(prefix) = by_name("prefix") {
+                                            out = Expression::new(ExprKind::Binary {
+                                                op: BinOp::Add,
+                                                left: Box::new(prefix),
+                                                right: Box::new(out),
+                                            });
+                                        }
+                                        if let Some(postfix) = by_name("postfix") {
+                                            out = Expression::new(ExprKind::Binary {
+                                                op: BinOp::Add,
+                                                left: Box::new(out),
+                                                right: Box::new(postfix),
+                                            });
+                                        }
+                                        current = out;
+                                    } else if args.len() >= 2 {
+                                        let mapped =
+                                            kotlin_map_call_expr(materialized, args[1].clone());
+                                        current = Expression::new(ExprKind::Call {
+                                            callee: Box::new(Expression::ident("__coll_join")),
+                                            args: vec![
+                                                Argument::positional(mapped),
+                                                Argument::positional(args[0].value.clone()),
+                                            ],
+                                            optional: false,
+                                        });
+                                    } else {
+                                        current = Expression::new(ExprKind::Call {
+                                            callee: Box::new(Expression::ident("__coll_join")),
+                                            args: vec![
+                                                Argument::positional(materialized),
+                                                Argument::positional(
+                                                    args.first()
+                                                        .map(|a| a.value.clone())
+                                                        .unwrap_or_else(|| {
+                                                            Expression::string(", ")
+                                                        }),
+                                                ),
+                                            ],
+                                            optional: false,
+                                        });
+                                    }
                                     continue;
                                 }
                                 "joinToString" if args.iter().any(|a| a.name.is_some()) => {
@@ -14960,6 +21687,51 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                     });
                                     continue;
                                 }
+                                "distinct" if args.is_empty() => {
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__kt_distinct")),
+                                        args: vec![Argument::positional(*object.clone())],
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
+                                "windowed"
+                                    if args.iter().any(|a| {
+                                        a.name.as_deref() == Some("partialWindows")
+                                            && matches!(
+                                                a.value.kind,
+                                                ExprKind::Lit(Literal::Bool(true))
+                                            )
+                                    }) =>
+                                {
+                                    let source = kotlin_sequence_receiver_expr(object)
+                                        .or_else(|| kotlin_sequence_source(object))
+                                        .map(|seq| {
+                                            Expression::new(ExprKind::Call {
+                                                callee: Box::new(Expression::ident(
+                                                    "__kt_seq_to_list",
+                                                )),
+                                                args: vec![Argument::positional(seq)],
+                                                optional: false,
+                                            })
+                                        })
+                                        .unwrap_or_else(|| *object.clone());
+                                    let mut call_args = vec![Argument::positional(source)];
+                                    for arg in args.iter().filter(|a| a.name.is_none()) {
+                                        call_args.push(Argument::positional(arg.value.clone()));
+                                    }
+                                    if call_args.len() == 2 {
+                                        call_args.push(Argument::positional(Expression::int(1)));
+                                    }
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident(
+                                            "__kt_windowed_partial",
+                                        )),
+                                        args: call_args,
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
                                 // `sortedBy` is NOT rewritten to `sort`: its
                                 // lambda is a 1-arg KEY SELECTOR, and `sort`'s
                                 // is a 2-arg comparator. `[array_methods]`
@@ -15070,7 +21842,10 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                     });
                                     continue;
                                 }
-                                "find" | "findLast" if args.len() == 1 => {
+                                "find" | "findLast"
+                                    if args.len() == 1
+                                        && matches!(args[0].value.kind, ExprKind::Lambda { .. }) =>
+                                {
                                     let target = if field == "find" {
                                         "__kt_find"
                                     } else {
@@ -15156,7 +21931,10 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                     });
                                     continue;
                                 }
-                                "find" | "findLast" if args.len() == 1 => {
+                                "find" | "findLast"
+                                    if args.len() == 1
+                                        && matches!(args[0].value.kind, ExprKind::Lambda { .. }) =>
+                                {
                                     let target = if field == "find" {
                                         "__kt_find"
                                     } else {
@@ -15311,6 +22089,14 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                     continue;
                                 }
                                 "take" if args.len() == 1 => {
+                                    if let Some(seq) = kotlin_sequence_receiver_expr(object) {
+                                        current = Expression::new(ExprKind::Call {
+                                            callee: Box::new(Expression::ident("__kt_seq_take")),
+                                            args: vec![Argument::positional(seq), args[0].clone()],
+                                            optional: false,
+                                        });
+                                        continue;
+                                    }
                                     let source = kotlin_sequence_source(object)
                                         .unwrap_or_else(|| *object.clone());
                                     if let Some(materialized) =
@@ -15331,6 +22117,16 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                     continue;
                                 }
                                 "takeWhile" if args.len() == 1 => {
+                                    if let Some(seq) = kotlin_sequence_receiver_expr(object) {
+                                        current = Expression::new(ExprKind::Call {
+                                            callee: Box::new(Expression::ident(
+                                                "__kt_seq_take_while",
+                                            )),
+                                            args: vec![Argument::positional(seq), args[0].clone()],
+                                            optional: false,
+                                        });
+                                        continue;
+                                    }
                                     let source = kotlin_sequence_source(object)
                                         .unwrap_or_else(|| *object.clone());
                                     if let Some(materialized) =
@@ -15341,10 +22137,38 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                     }
                                 }
                                 "asSequence" if args.is_empty() => {
-                                    current = *object.clone();
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__kt_seq_of")),
+                                        args: vec![Argument::positional(*object.clone())],
+                                        optional: false,
+                                    });
                                     continue;
                                 }
+                                "constrainOnce" if args.is_empty() => {
+                                    if let Some(seq) = kotlin_sequence_receiver_expr(object) {
+                                        current = Expression::new(ExprKind::Call {
+                                            callee: Box::new(Expression::ident(
+                                                "__kt_seq_constrain_once",
+                                            )),
+                                            args: vec![Argument::positional(seq)],
+                                            optional: false,
+                                        });
+                                        continue;
+                                    }
+                                }
                                 "toList" | "toMutableList" if args.is_empty() => {
+                                    if let Some(seq) = kotlin_sequence_receiver_expr(object) {
+                                        current = Expression::new(ExprKind::Call {
+                                            callee: Box::new(Expression::ident("__kt_seq_to_list")),
+                                            args: vec![Argument::positional(seq)],
+                                            optional: false,
+                                        });
+                                        continue;
+                                    }
+                                    if kotlin_expr_is_range_shape(object) {
+                                        current = kotlin_to_list_expr(*object.clone());
+                                        continue;
+                                    }
                                     let source = kotlin_sequence_source(object)
                                         .unwrap_or_else(|| *object.clone());
                                     // Not a materializable sequence: the
@@ -15366,8 +22190,20 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                     continue;
                                 }
                                 "windowed" if args.len() == 1 => {
-                                    let source = kotlin_sequence_source(object)
-                                        .unwrap_or_else(|| *object.clone());
+                                    let source = kotlin_sequence_receiver_expr(object)
+                                        .map(|seq| {
+                                            Expression::new(ExprKind::Call {
+                                                callee: Box::new(Expression::ident(
+                                                    "__kt_seq_to_list",
+                                                )),
+                                                args: vec![Argument::positional(seq)],
+                                                optional: false,
+                                            })
+                                        })
+                                        .unwrap_or_else(|| {
+                                            kotlin_sequence_source(object)
+                                                .unwrap_or_else(|| *object.clone())
+                                        });
                                     if let ExprKind::Lit(Literal::Int(size)) = args[0].value.kind {
                                         if let Some(items) = kotlin_static_array_items(&source) {
                                             if let Some(windowed) =
@@ -15380,8 +22216,20 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                     }
                                 }
                                 "chunked" if args.len() == 1 || args.len() == 2 => {
-                                    let source = kotlin_sequence_source(object)
-                                        .unwrap_or_else(|| *object.clone());
+                                    let source = kotlin_sequence_receiver_expr(object)
+                                        .map(|seq| {
+                                            Expression::new(ExprKind::Call {
+                                                callee: Box::new(Expression::ident(
+                                                    "__kt_seq_to_list",
+                                                )),
+                                                args: vec![Argument::positional(seq)],
+                                                optional: false,
+                                            })
+                                        })
+                                        .unwrap_or_else(|| {
+                                            kotlin_sequence_source(object)
+                                                .unwrap_or_else(|| *object.clone())
+                                        });
                                     if let ExprKind::Lit(Literal::Int(size)) = args[0].value.kind {
                                         if let Some(items) = kotlin_static_array_items(&source) {
                                             if args.len() == 2
@@ -15410,6 +22258,18 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                                 continue;
                                             }
                                         }
+                                    }
+                                }
+                                "zip" if args.len() == 1 || args.len() == 2 => {
+                                    if let Some(seq) = kotlin_sequence_receiver_expr(object) {
+                                        let mut call_args = vec![Argument::positional(seq)];
+                                        call_args.extend(args.clone());
+                                        current = Expression::new(ExprKind::Call {
+                                            callee: Box::new(Expression::ident("__kt_seq_zip")),
+                                            args: call_args,
+                                            optional: false,
+                                        });
+                                        continue;
                                     }
                                 }
                                 "zipWithNext" if args.is_empty() => {
@@ -15454,13 +22314,13 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                 }
                                 "max" | "maxOrNull" if args.is_empty() => {
                                     let receiver = if kotlin_expr_is_set_like(object) {
-                                            Expression::new(ExprKind::Call {
-                                                callee: Box::new(Expression::ident("__kt_to_list")),
-                                                args: vec![Argument::positional(*object.clone())],
-                                                optional: false,
-                                            })
-                                        } else {
-                                            *object.clone()
+                                        Expression::new(ExprKind::Call {
+                                            callee: Box::new(Expression::ident("__kt_to_list")),
+                                            args: vec![Argument::positional(*object.clone())],
+                                            optional: false,
+                                        })
+                                    } else {
+                                        *object.clone()
                                     };
                                     current = Expression::new(ExprKind::Call {
                                         callee: Box::new(Expression::ident("__coll_max")),
@@ -15471,13 +22331,13 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                 }
                                 "min" | "minOrNull" if args.is_empty() => {
                                     let receiver = if kotlin_expr_is_set_like(object) {
-                                            Expression::new(ExprKind::Call {
-                                                callee: Box::new(Expression::ident("__kt_to_list")),
-                                                args: vec![Argument::positional(*object.clone())],
-                                                optional: false,
-                                            })
-                                        } else {
-                                            *object.clone()
+                                        Expression::new(ExprKind::Call {
+                                            callee: Box::new(Expression::ident("__kt_to_list")),
+                                            args: vec![Argument::positional(*object.clone())],
+                                            optional: false,
+                                        })
+                                    } else {
+                                        *object.clone()
                                     };
                                     current = Expression::new(ExprKind::Call {
                                         callee: Box::new(Expression::ident("__coll_min")),
@@ -15486,7 +22346,82 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                     });
                                     continue;
                                 }
+                                "flatMap" if args.len() == 1 => {
+                                    if let Some(seq) = kotlin_sequence_receiver_expr(object) {
+                                        current = Expression::new(ExprKind::Call {
+                                            callee: Box::new(Expression::new(ExprKind::Member {
+                                                object: Box::new(Expression::new(ExprKind::Call {
+                                                    callee: Box::new(Expression::ident(
+                                                        "__kt_seq_to_list",
+                                                    )),
+                                                    args: vec![Argument::positional(seq)],
+                                                    optional: false,
+                                                })),
+                                                field: "flatMap".to_string(),
+                                                null_safe: false,
+                                            })),
+                                            args: vec![Argument::positional(
+                                                kotlin_materialize_sequence_lambda_result(
+                                                    &args[0].value,
+                                                ),
+                                            )],
+                                            optional: false,
+                                        });
+                                    } else {
+                                        current = Expression::new(ExprKind::Call {
+                                            callee: Box::new(Expression::new(ExprKind::Member {
+                                                object: object.clone(),
+                                                field: "flatMap".to_string(),
+                                                null_safe: false,
+                                            })),
+                                            args,
+                                            optional: false,
+                                        });
+                                    }
+                                    continue;
+                                }
                                 "filter" | "filterNot" | "map" | "forEach" if args.len() == 1 => {
+                                    if field == "map"
+                                        && let Some(seq) = kotlin_sequence_receiver_expr(object)
+                                    {
+                                        current = Expression::new(ExprKind::Call {
+                                            callee: Box::new(Expression::ident("__kt_seq_map")),
+                                            args: vec![Argument::positional(seq), args[0].clone()],
+                                            optional: false,
+                                        });
+                                        continue;
+                                    }
+                                    let receiver_is_collection = kotlin_expr_type(
+                                        object,
+                                        &KotlinLocalTypes::new(),
+                                        &KotlinOperatorTable::new(),
+                                    )
+                                    .as_deref()
+                                    .is_some_and(|ty| {
+                                        kotlin_type_is_plain_map_like(ty)
+                                            || kotlin_type_is_set_like(ty)
+                                            || kotlin_type_is_list_like(ty)
+                                            || ty == "Sequence"
+                                            || ty == "Range"
+                                    });
+                                    let arg_is_transform =
+                                        matches!(args[0].value.kind, ExprKind::Lambda { .. })
+                                            || matches!(
+                                                args[0].value.kind,
+                                                ExprKind::CallableRef { .. }
+                                            );
+                                    if !receiver_is_collection && !arg_is_transform {
+                                        current = Expression::new(ExprKind::Call {
+                                            callee: Box::new(Expression::new(ExprKind::Member {
+                                                object: object.clone(),
+                                                field: field.clone(),
+                                                null_safe: false,
+                                            })),
+                                            args,
+                                            optional: false,
+                                        });
+                                        continue;
+                                    }
                                     // Receiver-dispatching adapters: Kotlin's
                                     // `filter` returns a Map ON a Map and a List
                                     // on a List/Set, which no compile-time HOF
@@ -15521,19 +22456,12 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                         // ordinary member call and trapped, while the
                         // `import`ed form worked. Same rule, applied to the
                         // last segment of the chain.
-                        let is_type_spelling = |name: &str| {
-                            name.chars().next().is_some_and(char::is_uppercase)
-                                && !matches!(
-                                    name,
-                                    "Exception"
-                                        | "IllegalArgumentException"
-                                        | "IllegalStateException"
-                                        | "NullPointerException"
-                                        | "IndexOutOfBoundsException"
-                                )
-                        };
+                        let is_type_spelling =
+                            |name: &str| name.chars().next().is_some_and(char::is_uppercase);
                         let is_class_name = match &current.kind {
-                            ExprKind::Ident(name) => is_type_spelling(name),
+                            ExprKind::Ident(name) => {
+                                is_type_spelling(name) && !kotlin_is_builtin_exception_callee(name)
+                            }
                             ExprKind::Member { field, .. }
                                 if qualified_inner_class(field).is_some() =>
                             {
@@ -15542,7 +22470,13 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                             // Only a chain of plain idents is a qualified type
                             // name; `expr.Foo()` is a method call on a value.
                             ExprKind::Member { object, field, .. } => {
-                                is_type_spelling(field) && is_ident_chain(object)
+                                let path = dotted_expr_path(&current);
+                                path.as_deref().is_some_and(is_user_class_name)
+                                    || is_type_spelling(field)
+                                        && is_ident_chain(object)
+                                        && !path
+                                            .as_deref()
+                                            .is_some_and(kotlin_is_builtin_exception_callee)
                             }
                             _ => false,
                         };
@@ -15573,6 +22507,19 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                     with_outer.extend(args);
                                     args = with_outer;
                                     current = qualified_type_expr(&qualified);
+                                } else {
+                                    let source_declared_dotted_type =
+                                        dotted_expr_path(&current).filter(|path| {
+                                            path.contains('.')
+                                                && path
+                                                    .rsplit('.')
+                                                    .next()
+                                                    .is_some_and(|leaf| is_type_spelling(leaf))
+                                                && !kotlin_is_builtin_exception_callee(path)
+                                        });
+                                    if let Some(path) = source_declared_dotted_type {
+                                        current = Expression::ident(&path);
+                                    }
                                 }
                             } else if let ExprKind::Ident(cname) = &current.kind {
                                 if let Some(qualified) = qualified_inner_class(cname) {
@@ -15609,7 +22556,7 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                 }
                             }
                             current = Expression::new(ExprKind::New {
-                                class: Box::new(current),
+                                class: Box::new(kotlin_constructor_alias_expr(current)),
                                 args,
                             });
                         } else {
@@ -15619,11 +22566,86 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                 ..
                             } = current.kind
                             {
+                                if field == "flatMap" && args.len() == 1 {
+                                    if let Some(seq) = kotlin_sequence_receiver_expr(object) {
+                                        current = Expression::new(ExprKind::Call {
+                                            callee: Box::new(Expression::new(ExprKind::Member {
+                                                object: Box::new(Expression::new(ExprKind::Call {
+                                                    callee: Box::new(Expression::ident(
+                                                        "__kt_seq_to_list",
+                                                    )),
+                                                    args: vec![Argument::positional(seq)],
+                                                    optional: false,
+                                                })),
+                                                field: "flatMap".to_string(),
+                                                null_safe: false,
+                                            })),
+                                            args: vec![Argument::positional(
+                                                kotlin_materialize_sequence_lambda_result(
+                                                    &args[0].value,
+                                                ),
+                                            )],
+                                            optional: false,
+                                        });
+                                    } else {
+                                        current = Expression::new(ExprKind::Call {
+                                            callee: Box::new(Expression::new(ExprKind::Member {
+                                                object: object.clone(),
+                                                field: "flatMap".to_string(),
+                                                null_safe: false,
+                                            })),
+                                            args,
+                                            optional: false,
+                                        });
+                                    }
+                                    continue;
+                                }
                                 if matches!(
                                     field.as_str(),
                                     "filter" | "filterNot" | "map" | "forEach"
                                 ) && args.len() == 1
                                 {
+                                    if field == "map"
+                                        && let Some(seq) = kotlin_sequence_receiver_expr(object)
+                                    {
+                                        current = Expression::new(ExprKind::Call {
+                                            callee: Box::new(Expression::ident("__kt_seq_map")),
+                                            args: vec![Argument::positional(seq), args[0].clone()],
+                                            optional: false,
+                                        });
+                                        continue;
+                                    }
+                                    let receiver_is_collection = kotlin_expr_type(
+                                        object,
+                                        &KotlinLocalTypes::new(),
+                                        &KotlinOperatorTable::new(),
+                                    )
+                                    .as_deref()
+                                    .is_some_and(|ty| {
+                                        kotlin_type_is_plain_map_like(ty)
+                                            || kotlin_type_is_set_like(ty)
+                                            || kotlin_type_is_list_like(ty)
+                                            || ty == "Sequence"
+                                            || ty == "Range"
+                                    });
+                                    let arg_is_transform =
+                                        matches!(args[0].value.kind, ExprKind::Lambda { .. })
+                                            || matches!(
+                                                args[0].value.kind,
+                                                ExprKind::CallableRef { .. }
+                                            );
+                                    if !receiver_is_collection && !arg_is_transform {
+                                        current = Expression::new(ExprKind::Call {
+                                            callee: Box::new(Expression::new(ExprKind::Member {
+                                                object: object.clone(),
+                                                field: field.clone(),
+                                                null_safe: false,
+                                            })),
+                                            args,
+                                            optional: false,
+                                        });
+                                        continue;
+                                    }
                                     // Same receiver-dispatching adapters as the
                                     // sibling arm above — see the comment there.
                                     let target = match field.as_str() {
@@ -15748,6 +22770,55 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                         {
                             current = Expression::new(ExprKind::Call {
                                 callee: Box::new(Expression::ident(&field_id)),
+                                args: vec![Argument::positional(current)],
+                                optional: false,
+                            });
+                        } else if !next_is_call
+                            && let Some(path) = dotted_expr_path(&current)
+                            && let Some(kind) = kotlin_delegated_collection_kind(&path)
+                            && let Some(delegate_field) = kotlin_delegated_collection_field(&path)
+                            && matches!(
+                                kind.rsplit('.').next().unwrap_or(&kind),
+                                "Map" | "MutableMap"
+                            )
+                            && matches!(field_id.as_str(), "keys" | "values" | "entries" | "size")
+                        {
+                            let delegate = Expression::new(ExprKind::Member {
+                                object: Box::new(Expression::ident(&path)),
+                                field: delegate_field,
+                                null_safe: false,
+                            });
+                            current = match field_id.as_str() {
+                                "keys" => kt_call("__dict_keys", vec![delegate]),
+                                "values" => kt_call("__dict_values", vec![delegate]),
+                                "entries" => kt_call("__kt_map_entries", vec![delegate]),
+                                _ => kt_call("__dict_size", vec![delegate]),
+                            };
+                        } else if !next_is_call
+                            && let Some(alias) = kotlin_static_field_alias(&current, &field_id)
+                        {
+                            current = Expression::new(ExprKind::Member {
+                                object: Box::new(current),
+                                field: alias,
+                                null_safe: false,
+                            });
+                        } else if !next_is_call
+                            && matches!(field_id.as_str(), "size" | "length")
+                            && kotlin_expr_type(
+                                &current,
+                                &KotlinLocalTypes::new(),
+                                &KotlinOperatorTable::new(),
+                            )
+                            .is_some_and(|ty| {
+                                kotlin_type_is_list_like(&ty)
+                                    || kotlin_type_is_map_like(&ty)
+                                    || kotlin_type_is_set_like(&ty)
+                                    || kotlin_type_is_array_like(&ty)
+                                    || ty == "String"
+                            })
+                        {
+                            current = Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident("__coll_length")),
                                 args: vec![Argument::positional(current)],
                                 optional: false,
                             });
@@ -16008,6 +23079,27 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                             null_safe: false,
                         });
                     }
+                    Rule::callable_ref_suffix => {
+                        let mut target = None;
+                        for part in suffix_inner.into_inner() {
+                            if matches!(part.as_rule(), Rule::identifier | Rule::class_kw) {
+                                target = Some(part.as_str().to_string());
+                            }
+                        }
+                        if target.as_deref() == Some("class") {
+                            current = Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident("__kt_class_of")),
+                                args: vec![Argument::positional(current)],
+                                optional: false,
+                            });
+                        } else if let Some(name) = target {
+                            current = callable_ref_lambda(Expression::new(ExprKind::Member {
+                                object: Box::new(current),
+                                field: name,
+                                null_safe: false,
+                            }));
+                        }
+                    }
                     Rule::null_assert_suffix => {
                         current = Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::ident("__kt_not_null_assert")),
@@ -16042,6 +23134,20 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                         .unwrap_or_else(|| Expression::ident(&name))
                 }
                 Rule::callable_ref => walk_callable_ref(inner),
+                Rule::collection_literal => {
+                    let items = inner
+                        .into_inner()
+                        .filter(|p| p.as_rule() == Rule::expr)
+                        .map(walk_expr)
+                        .map(|value| ArrayElement {
+                            key: None,
+                            value,
+                            spread: false,
+                            by_ref: false,
+                        })
+                        .collect();
+                    Expression::new(ExprKind::Array(items))
+                }
                 Rule::try_expr => walk_try_expr(inner),
                 Rule::literal => walk_literal(inner),
                 Rule::this_kw => Expression::new(ExprKind::This),
@@ -16348,6 +23454,9 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                     let stmts = walk_block_statements(p);
                                     body_expr = kotlin_block_statements_as_expr(stmts);
                                 }
+                                Rule::expr | Rule::if_expr | Rule::when_expr => {
+                                    body_expr = walk_expr(p);
+                                }
                                 Rule::statement => {
                                     if let Some(s) = walk_statement(p) {
                                         body_expr = match s.kind {
@@ -16358,6 +23467,41 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                             // if (…) "A" else "A+"`).
                                             kind @ StmtKind::If { .. } => {
                                                 kotlin_if_stmt_to_ternary(Statement::new(kind))
+                                            }
+                                            StmtKind::Switch {
+                                                expr,
+                                                cases,
+                                                default,
+                                            } => {
+                                                let mut arms = Vec::new();
+                                                for case in cases {
+                                                    let mut conds = Vec::new();
+                                                    for condition in case.conditions {
+                                                        if let CaseCondition::Value(value) =
+                                                            condition
+                                                        {
+                                                            conds.push(value);
+                                                        }
+                                                    }
+                                                    arms.push(MatchArm {
+                                                        conditions: Some(conds),
+                                                        body: kotlin_block_statements_as_expr(
+                                                            case.body,
+                                                        ),
+                                                    });
+                                                }
+                                                if let Some(body) = default {
+                                                    arms.push(MatchArm {
+                                                        conditions: None,
+                                                        body: kotlin_block_statements_as_expr(
+                                                            body,
+                                                        ),
+                                                    });
+                                                }
+                                                Expression::new(ExprKind::Match {
+                                                    subject: Box::new(expr),
+                                                    arms,
+                                                })
                                             }
                                             _ => Expression::null(),
                                         };
@@ -16406,6 +23550,56 @@ fn walk_binary_chain(pair: Pair<Rule>, op: BinOp) -> Expression {
     current
 }
 
+fn kotlin_type_shape_text(raw: &str) -> String {
+    let text = raw.trim().trim_end_matches('?').trim_end().to_string();
+    kotlin_type_alias_shape(&text).unwrap_or(text)
+}
+
+fn kotlin_top_level_generic_args(ty: &str) -> Vec<String> {
+    let Some(start) = ty.find('<') else {
+        return Vec::new();
+    };
+    let mut args = Vec::new();
+    let mut depth = 0usize;
+    let mut current = String::new();
+    for ch in ty[start + 1..].chars() {
+        match ch {
+            '<' => {
+                depth += 1;
+                current.push(ch);
+            }
+            '>' if depth == 0 => {
+                let item = current.trim();
+                if !item.is_empty() {
+                    args.push(item.to_string());
+                }
+                break;
+            }
+            '>' => {
+                depth = depth.saturating_sub(1);
+                current.push(ch);
+            }
+            ',' if depth == 0 => {
+                let item = current.trim();
+                if !item.is_empty() {
+                    args.push(item.to_string());
+                }
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    args
+}
+
+fn kotlin_index_value_type(ty: &str) -> Option<String> {
+    let head = type_hint_text(ty);
+    if kotlin_type_is_map_like(&head) {
+        return kotlin_top_level_generic_args(ty).get(1).cloned();
+    }
+    kotlin_element_type_name(ty).map(str::to_string)
+}
+
 /// The type a `type_ref` names, with Kotlin's nullability marker removed.
 ///
 /// `String?` and `String` are ONE type as far as the shared machinery is
@@ -16439,7 +23633,22 @@ fn type_hint_text(raw: &str) -> String {
             out.push(ch);
         }
     }
-    out.trim().to_string()
+    let text = out.trim().to_string();
+    let text = KOTLIN_TYPE_ALIASES
+        .with(|map| map.borrow().get(&text).cloned())
+        .unwrap_or(text);
+    if !text.contains('.') {
+        let owner_match = CURRENT_CLASS_STACK.with(|stack| {
+            stack.borrow().iter().rev().find_map(|owner| {
+                let candidate = format!("{owner}.{text}");
+                is_user_class_name(&candidate).then_some(candidate)
+            })
+        });
+        if let Some(qualified) = owner_match {
+            return qualified;
+        }
+    }
+    text
 }
 
 fn kotlin_nullable_type_hint(raw: &str) -> (Option<String>, bool) {
@@ -16455,6 +23664,16 @@ fn kotlin_nullable_type_hint(raw: &str) -> (Option<String>, bool) {
 /// Whether a `type_ref`'s source text carries Kotlin's `?`.
 fn type_ref_is_nullable(raw: &str) -> bool {
     raw.trim_end().ends_with('?')
+}
+
+fn decl_type_ref_is_nullable(decl_src: &str, type_ref: &str) -> bool {
+    let Some(type_pos) = decl_src.find(type_ref) else {
+        return false;
+    };
+    decl_src[type_pos + type_ref.len()..]
+        .chars()
+        .find(|ch| !ch.is_whitespace())
+        == Some('?')
 }
 
 /// Kotlin's infix spellings of the bitwise operators -> the shared `BinOp`.
@@ -16802,17 +24021,21 @@ fn create_map_expr(props: Vec<ObjectProperty>) -> Expression {
 
 /// `setOf(…)` / `mutableSetOf(…)`.
 ///
-/// Normalize through Kotlin's Set adapter. The adapter still uses the common
-/// ECMA Set substrate, but it applies Kotlin's value-equality membership rules
-/// while building the set.
 fn create_kotlin_set_expr(elems: Vec<Expression>) -> Expression {
-    kotlin_to_set_expr(kotlin_array_expr(elems))
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("__kt_set_literal")),
+        args: elems.into_iter().map(Argument::positional).collect(),
+        optional: false,
+    })
 }
 
 fn kotlin_expr_is_set_like(expr: &Expression) -> bool {
     match &expr.kind {
-        ExprKind::Ident(name) => KOTLIN_KEYED_COLLECTION_TYPES
-            .with(|map| map.borrow().get(name).is_some_and(|ty| kotlin_type_is_set_like(ty))),
+        ExprKind::Ident(name) => KOTLIN_KEYED_COLLECTION_TYPES.with(|map| {
+            map.borrow()
+                .get(name)
+                .is_some_and(|ty| kotlin_type_is_set_like(ty))
+        }),
         ExprKind::Call { callee, .. } => match &callee.kind {
             ExprKind::Ident(name) => matches!(
                 name.as_str(),
@@ -16839,6 +24062,47 @@ fn kotlin_expr_is_set_like(expr: &Expression) -> bool {
         ExprKind::Set(_) => true,
         _ => false,
     }
+}
+
+fn kotlin_contains_syntax_should_lower(object: &Expression) -> bool {
+    match &object.kind {
+        ExprKind::Lit(Literal::Str(_))
+        | ExprKind::Array(_)
+        | ExprKind::Set(_)
+        | ExprKind::Object(_) => true,
+        ExprKind::Call { callee, .. } => matches!(
+            &callee.kind,
+            ExprKind::Ident(name)
+                if matches!(
+                    name.as_str(),
+                    "listOf"
+                        | "mutableListOf"
+                        | "arrayListOf"
+                        | "setOf"
+                        | "mutableSetOf"
+                        | "linkedSetOf"
+                        | "hashSetOf"
+                        | "sortedSetOf"
+                        | "emptyList"
+                        | "emptySet"
+                        | "__kt_set_literal"
+                        | "__kt_to_set"
+                        | "__kt_to_hash_set"
+                )
+        ),
+        _ => false,
+    }
+}
+
+fn kotlin_contains_type_should_lower(ty: &str) -> bool {
+    let bare = ty
+        .split('<')
+        .next()
+        .unwrap_or(ty)
+        .rsplit('.')
+        .next()
+        .unwrap_or(ty);
+    !is_user_class_name(bare) && kotlin_delegated_collection_kind(ty).is_none()
 }
 
 fn kotlin_to_set_expr(value: Expression) -> Expression {

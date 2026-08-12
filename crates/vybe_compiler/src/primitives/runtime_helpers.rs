@@ -23,6 +23,7 @@
 //!   sin/cos/tan/asin/acos/atan/atan2/log/log10/exp/sign/clamp → number
 
 use crate::primitives::instructions::core_wasm;
+use crate::primitives::sets;
 use std::sync::Arc;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
@@ -2439,8 +2440,7 @@ fn build_pascal_set_include(_imports: &mut Chunk) -> Chunk {
     c.local_count = 2;
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    let idx = c.add_import("ecma:set", "add");
-    c.emit_call(idx, 2, 0);
+    sets::emit_add_chunk(&mut c, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }
@@ -2451,8 +2451,7 @@ fn build_pascal_set_exclude(_imports: &mut Chunk) -> Chunk {
     c.local_count = 2;
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    let idx = c.add_import("ecma:set", "delete");
-    c.emit_call(idx, 2, 0);
+    sets::emit_delete_chunk(&mut c, 0);
     c.emit_op(Op::DROP, 0);
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     c.emit_op(Op::RETURN, 0);
@@ -2465,8 +2464,7 @@ fn build_pascal_set_union(_imports: &mut Chunk) -> Chunk {
     c.local_count = 2;
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    let idx = c.add_import("ecma:set", "union");
-    c.emit_call(idx, 2, 0);
+    sets::emit_union_chunk(&mut c, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }
@@ -2477,8 +2475,7 @@ fn build_pascal_set_intersection(_imports: &mut Chunk) -> Chunk {
     c.local_count = 2;
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    let idx = c.add_import("ecma:set", "intersection");
-    c.emit_call(idx, 2, 0);
+    sets::emit_intersection_chunk(&mut c, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }
@@ -2489,8 +2486,7 @@ fn build_pascal_set_difference(_imports: &mut Chunk) -> Chunk {
     c.local_count = 2;
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    let idx = c.add_import("ecma:set", "difference");
-    c.emit_call(idx, 2, 0);
+    sets::emit_difference_chunk(&mut c, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }
@@ -2501,8 +2497,7 @@ fn build_pascal_set_contains(_imports: &mut Chunk) -> Chunk {
     c.local_count = 2;
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    let idx = c.add_import("ecma:set", "has");
-    c.emit_call(idx, 2, 0);
+    sets::emit_has_chunk(&mut c, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }

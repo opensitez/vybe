@@ -31,9 +31,7 @@ pub enum GclMethodTarget {
     },
     /// A shared emit in `primitives/gui.rs`, named rather than called through a
     /// host function — the same way a property role binds.
-    Common {
-        emit: &'static str,
-    },
+    Common { emit: &'static str },
 }
 
 impl GclMethodTarget {
@@ -164,6 +162,84 @@ const ADD_METHODS: &[GclMethod] = &[GclMethod {
     },
 }];
 
+/// `SetFocus`, on every control that can take focus.
+///
+/// The verb IS `HTMLElement.focus()` — one of the few toolkit methods the web
+/// platform names outright — so it needs no emit of its own: `gui.ctrl.<verb>`
+/// imports `web:html`'s function of that name, and `focus(doc, node)` is
+/// already the two-argument shape that lowering emits.
+///
+/// Declared on `TWinControl` rather than `TControl` because that IS the VCL's
+/// own line: a `TControl` has no window handle and cannot be focused. `TLabel`
+/// descends from `TControl` and correctly does not inherit this.
+const WIN_CONTROL_METHODS: &[GclMethod] = &[
+    GclMethod {
+        name: "Add",
+        arity: 2,
+        target: GclMethodTarget::Common {
+            emit: gui::APPEND_CHILD_EMIT,
+        },
+    },
+    GclMethod {
+        name: "SetFocus",
+        arity: 1,
+        target: GclMethodTarget::Common {
+            emit: "gui.ctrl.focus",
+        },
+    },
+];
+
+/// `Add` for a list whose entries are STRINGS — `FList.Items.Add('alpha')`.
+///
+/// The same spelling as `ADD_METHODS` and a different operation, which is why
+/// each class declares which one it means: a container is handed a control it
+/// did not make, a list is handed text and makes the `<option>` itself. The
+/// call site cannot tell them apart, and guessing from the argument's type
+/// would be a guess.
+const ITEM_METHODS: &[GclMethod] = &[
+    GclMethod {
+        name: "Add",
+        arity: 2,
+        target: GclMethodTarget::Common {
+            emit: gui::APPEND_ITEM_EMIT,
+        },
+    },
+    // `Items.Clear` — `select.length = 0`, which `web:html` already exposes as
+    // `clearItems(doc, node)`. The same spelling on a TEdit or TMemo means
+    // something else entirely (empty the TEXT, not the option list), which is
+    // why it is declared here on the list classes and not on `TWinControl`.
+    GclMethod {
+        name: "Clear",
+        arity: 1,
+        target: GclMethodTarget::Common {
+            emit: "gui.ctrl.clearItems",
+        },
+    },
+    // `Items.Delete(i)` — `select.remove(i)`. Delphi's `TStrings` spells
+    // removal `Delete`; the DOM spells it `remove`. One operation.
+    GclMethod {
+        name: "Delete",
+        arity: 2,
+        target: GclMethodTarget::Common {
+            emit: gui::REMOVE_ITEM_EMIT,
+        },
+    },
+];
+
+/// `Clear` for a control whose contents are TEXT — `FInput.Clear`.
+///
+/// The list classes declare the same spelling against `clearItems` (see
+/// `ITEM_METHODS`); a text field has no option list to empty, its `Clear` is
+/// `value = ""`. Nothing at the call site distinguishes them, so each class
+/// says which it means.
+const TEXT_METHODS: &[GclMethod] = &[GclMethod {
+    name: "Clear",
+    arity: 1,
+    target: GclMethodTarget::Common {
+        emit: "gui.ctrl.clear",
+    },
+}];
+
 /// Members that ARE the control, as `(class, member, reads back as)`.
 ///
 /// VCL wraps a control's contents in a helper object — `TMainMenu.Items` is a
@@ -178,18 +254,46 @@ const ADD_METHODS: &[GclMethod] = &[GclMethod {
 ///
 /// The menu entries declare `TMenuItem` while the getter hands back the
 /// receiver, so for `TMainMenu` the compiler believes `TMenuItem` and the
-/// runtime holds the `TMainMenu` element. That is sound only because both are
-/// `vybe-menustrip` with the same member set — it is a deliberate alias, not a
-/// coincidence to preserve blindly.
+/// runtime holds the `TMainMenu` element. That is sound only because a menu and
+/// an item are the SAME element here — both are `menu`, with the same member
+/// set, and `MenuStrip` is both the bar and the submenu a bar item opens. It is
+/// a deliberate alias, not a coincidence to preserve blindly: give a menu item
+/// its own tag and this line stops being true. (HTML would wrap each item in an
+/// `<li>`; nothing renders the wrapper, so nothing here allocates one.)
 ///
-/// Distinct from `TListBox.Items`, which is a list of STRINGS and takes the
-/// `items` role instead.
+/// A list's `Items` is the same shape for the same reason — `<select>` and
+/// `<ul>` ARE their option list, there is no second object — but it reads back
+/// as the list's OWN class, because what `Add` means differs: a menu is handed
+/// a control, a list is handed text (`ADD_METHODS` vs `ITEM_METHODS`).
 pub const SELF_MEMBERS: &[(&str, &str, &str)] = &[
     ("TMainMenu", "Items", "TMenuItem"),
     ("TPopupMenu", "Items", "TMenuItem"),
     ("TMenuItem", "Items", "TMenuItem"),
     ("TMemo", "Lines", "TMemo"),
+    ("TListBox", "Items", "TListBox"),
+    ("TComboBox", "Items", "TComboBox"),
+    ("TRadioGroup", "Items", "TRadioGroup"),
 ];
+
+/// Classes whose option list is readable and writable BY INDEX — `Items[i]`.
+///
+/// Registered as the instance property `Item`, which is the name the index site
+/// already looks for: a type declaring `Item` with a common emit in each
+/// direction makes `x[i]` lower to that emit. .NET spells the same thing
+/// `this[int]` and Delphi spells it `TStrings.Strings[i]`, its default indexed
+/// property — one concept, and no new compiler mechanism to reach it.
+///
+/// Both directions are required. The index site asks for the pair and declines
+/// the branch unless it gets both, which is what stops a type offering a
+/// readable index and a write that goes nowhere.
+///
+/// `TRadioGroup` is deliberately NOT here even though it declares `Items`. It
+/// is a `<fieldset>`, not a `<select>`, and its options are child
+/// `<input type=radio>` elements rather than an option list — so the widget has
+/// no item to answer with and `Items[0]` reads `""`. Measured, not assumed.
+/// Listing it would have bought an empty string in place of a caption, which is
+/// the same silent-wrong-answer this whole change set exists to remove.
+pub const INDEXED_ITEM_CLASSES: &[&str] = &["TListBox", "TComboBox"];
 
 const EMPTY_METHODS: &[GclMethod] = &[];
 
@@ -239,7 +343,7 @@ static CLASSES: &[GclClass] = &[
         name: "TWinControl",
         parent: Some("TControl"),
         properties: &["Controls"],
-        methods: ADD_METHODS,
+        methods: WIN_CONTROL_METHODS,
         ctor_arity: 1,
         widget_host_fn: None,
     },
@@ -257,14 +361,14 @@ static CLASSES: &[GclClass] = &[
         "TWinControl",
         "input:text",
         TEXT_PROPERTIES,
-        EMPTY_METHODS
+        TEXT_METHODS
     ),
     widget_class!(
         "TMemo",
         "TWinControl",
         "textarea",
         MEMO_PROPERTIES,
-        EMPTY_METHODS
+        TEXT_METHODS
     ),
     widget_class!(
         "TCheckBox",
@@ -285,21 +389,32 @@ static CLASSES: &[GclClass] = &[
         "TWinControl",
         "fieldset",
         LIST_PROPERTIES,
-        EMPTY_METHODS
+        ITEM_METHODS
     ),
     widget_class!(
         "TComboBox",
         "TWinControl",
         "select",
         LIST_PROPERTIES,
-        EMPTY_METHODS
+        ITEM_METHODS
     ),
     widget_class!(
         "TListBox",
         "TWinControl",
-        "ul",
+        // HTML's list box IS `<select size="N">` — the spec's own rule is that
+        // a size above 1 renders as a list and 1 (or absent) as a dropdown, so
+        // this and `TComboBox` are the same element differing by one attribute,
+        // exactly as they are in the VCL.
+        //
+        // It was `<ul>`, which RENDERS as a list box and cannot answer a single
+        // question about one: no `selectedIndex`, no indexed option text, no
+        // `remove(i)`. `ItemIndex`, `Items[i]` and `Items.Delete` all read null
+        // in silence. Adding those to `<ul>` in `web:html` would have been
+        // inventing surface the spec does not have — the element was wrong, not
+        // the platform.
+        "select:6",
         LIST_PROPERTIES,
-        EMPTY_METHODS
+        ITEM_METHODS
     ),
     widget_class!("TGroupBox", "TWinControl", "fieldset", &[], EMPTY_METHODS),
     widget_class!("TPanel", "TWinControl", "div", &[], EMPTY_METHODS),
@@ -402,24 +517,28 @@ static CLASSES: &[GclClass] = &[
         FILE_DIALOG_PROPERTIES,
         EMPTY_METHODS
     ),
+    // `menu` is a real HTML element and the document already knows it —
+    // `vybe-menustrip` was a `vybe:gui` pseudo-tag that no `control_kind` arm
+    // matched, so every menu and every item came out a 120x20 LABEL stacked at
+    // the origin. A menu ITEM is the same tag on purpose: see `SELF_MEMBERS`.
     widget_class!(
         "TMainMenu",
         "TComponent",
-        "vybe-menustrip",
+        "menu",
         MENU_PROPERTIES,
         ADD_METHODS
     ),
     widget_class!(
         "TPopupMenu",
         "TComponent",
-        "vybe-menustrip",
+        "menu",
         MENU_PROPERTIES,
         ADD_METHODS
     ),
     widget_class!(
         "TMenuItem",
         "TComponent",
-        "vybe-menustrip",
+        "menu",
         MENU_PROPERTIES,
         ADD_METHODS
     ),

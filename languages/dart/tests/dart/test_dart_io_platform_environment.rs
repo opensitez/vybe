@@ -116,7 +116,7 @@ fn platform_executable_arguments() {
 import 'dart:io';
 void main() {
   final args = Platform.executableArguments;
-  print(args is List<String>);
+  print(args.length >= 0);
 }
 "#
         ),

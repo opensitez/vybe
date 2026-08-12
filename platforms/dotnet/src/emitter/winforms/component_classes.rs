@@ -149,13 +149,27 @@ fn class_to_component_class(class: &DotnetClass) -> ClassType {
             // Drawing Body methods (Graphics/Pen/Brush: DrawLine, FillRectangle,
             // transforms, …) resolve through the descriptor and lower inline at
             // the call site via `builder::emit_body_inline` — the drawing object
-            // needs no ctor-bound thunk. No-op Body methods fall through to the
-            // profile's `noop` value-method.
+            // needs no ctor-bound thunk.
             MethodTarget::Body(_) if !method.target.is_noop() => {
                 out = out.with_method(MethodDef::new(
                     method.name,
                     param_count,
                     MethodBody::Common(format!("dotnet.drawing.{}", method.name)),
+                ));
+            }
+            // A no-op is still a DECLARED method. This used to say the profile's
+            // `noop` value-method would answer instead, and nothing consumed
+            // `noop_methods` any more — so `Me.SuspendLayout()` resolved to a
+            // `struct.get suspendlayout` on the element, which is `undefined`,
+            // and every designer-generated `InitializeComponent` died on its
+            // first line. Declaring it is what makes it resolvable at all;
+            // `dotnet.winforms_noop` is the emit that does nothing, and the
+            // descriptor carries the arity so an override still wins.
+            MethodTarget::Body(_) => {
+                out = out.with_method(MethodDef::new(
+                    method.name,
+                    param_count,
+                    MethodBody::Common("dotnet.winforms_noop".to_string()),
                 ));
             }
             _ => {}
@@ -167,6 +181,21 @@ fn class_to_component_class(class: &DotnetClass) -> ClassType {
             ConstructorDef::new(class.ctor_arity)
                 .with_backing(HostTarget::new(class.widget_host_module, host_fn)),
         );
+    } else if crate::emitter::tree_register::is_element_mapped(class.name) {
+        // An element-mapped class is CONSTRUCTIBLE without a `vybe:gui`
+        // factory: the element mapping is what materializes it, and the
+        // registrar turns that into a `CtorSpec` whose `control_fn` creates
+        // the node. The backing stays `None` on purpose — there is no host
+        // function to call, and inventing one would put the object back on
+        // the path this platform is being converted off.
+        //
+        // Without this, a class that has no `vybe:gui` twin gets NO
+        // constructor at all and `New ToolStripMenuItem()` reaches
+        // "undefined is not callable". `vybe:gui` only registers `new_*` for
+        // the names in its own `control_types` list, and menu ITEMS are not
+        // in it — which is precisely why they need this door rather than a
+        // new entry in a host list.
+        out = out.with_constructor(ConstructorDef::new(class.ctor_arity));
     }
 
     out

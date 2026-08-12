@@ -3649,8 +3649,11 @@ fn collect_csharp_set_locals_in_body(body: &[Statement], out: &mut HashSet<Strin
                             .as_deref()
                             .map(csharp_type_hint_is_set)
                             .unwrap_or(false);
-                        let initialized_as_set =
-                            decl.init.as_ref().map(csharp_expr_is_set_new).unwrap_or(false);
+                        let initialized_as_set = decl
+                            .init
+                            .as_ref()
+                            .map(csharp_expr_is_set_new)
+                            .unwrap_or(false);
                         if typed_as_set || initialized_as_set {
                             out.insert(name.clone());
                         }
@@ -4487,7 +4490,9 @@ fn rewrite_set_algebra_bool_calls_in_expr(expr: &mut Expression, set_locals: &Ha
             rewrite_set_algebra_bool_calls_in_expr(then, set_locals);
             rewrite_set_algebra_bool_calls_in_expr(else_, set_locals);
         }
-        ExprKind::Member { object, .. } => rewrite_set_algebra_bool_calls_in_expr(object, set_locals),
+        ExprKind::Member { object, .. } => {
+            rewrite_set_algebra_bool_calls_in_expr(object, set_locals)
+        }
         ExprKind::Index { object, index, .. } => {
             rewrite_set_algebra_bool_calls_in_expr(object, set_locals);
             rewrite_set_algebra_bool_calls_in_expr(index, set_locals);
@@ -4496,9 +4501,8 @@ fn rewrite_set_algebra_bool_calls_in_expr(expr: &mut Expression, set_locals: &Ha
             if let ExprKind::Member { object, field, .. } = &callee.kind {
                 if field.eq_ignore_ascii_case("Contains")
                     && args.len() == 2
-                    && expr_dotted_name(object).is_some_and(|name| {
-                        name.eq_ignore_ascii_case("System.MemoryExtensions")
-                    })
+                    && expr_dotted_name(object)
+                        .is_some_and(|name| name.eq_ignore_ascii_case("System.MemoryExtensions"))
                     && matches!(&args[0].value.kind, ExprKind::Ident(name) if set_locals.contains(name))
                 {
                     rewrite_set_algebra_bool_calls_in_expr(&mut args[1].value, set_locals);
@@ -4572,7 +4576,9 @@ fn rewrite_set_algebra_bool_calls_in_expr(expr: &mut Expression, set_locals: &Ha
                     ObjectProperty::KeyValue { value, .. } => {
                         rewrite_set_algebra_bool_calls_in_expr(value, set_locals);
                     }
-                    ObjectProperty::Spread(expr) => rewrite_set_algebra_bool_calls_in_expr(expr, set_locals),
+                    ObjectProperty::Spread(expr) => {
+                        rewrite_set_algebra_bool_calls_in_expr(expr, set_locals)
+                    }
                     ObjectProperty::Method { value, .. } => {
                         rewrite_set_algebra_bool_calls_in_stmt(value, set_locals);
                     }
@@ -5659,11 +5665,7 @@ fn rewrite_extension_calls_in_expr(
         } => {
             rewrite_extension_calls_in_expr(target, extension_methods, extension_containers);
             if let Some(receiver) = receiver {
-                rewrite_extension_calls_in_expr(
-                    receiver,
-                    extension_methods,
-                    extension_containers,
-                );
+                rewrite_extension_calls_in_expr(receiver, extension_methods, extension_containers);
             }
             if let Some(CallableAdapter::Expr { body, .. }) = adapter {
                 rewrite_extension_calls_in_expr(body, extension_methods, extension_containers);
@@ -17543,6 +17545,17 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
             if let Some(rewritten) =
                 dotnet_lowering::try_parse_desugar(recv, &callee, &args[0].value, &args[1].value)
             {
+                return rewritten;
+            }
+        }
+        if field.eq_ignore_ascii_case("TryFromBase64Chars") && args.len() == 3 && args[2].by_ref {
+            let recv = expr_dotted_name(object);
+            if let Some(rewritten) = dotnet_lowering::try_from_base64_chars_desugar(
+                recv.as_deref(),
+                &args[0].value,
+                &args[1].value,
+                &args[2].value,
+            ) {
                 return rewritten;
             }
         }

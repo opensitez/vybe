@@ -6441,6 +6441,61 @@ fn thread_fns() -> Vec<Statement> {
         vec![ret(ident("__j_current_thread"))],
     ));
     out.push(function_stmt(
+        "__j_monitor_enter",
+        vec!["monitor"],
+        vec![
+            if_stmt(
+                binary(
+                    BinOp::Eq,
+                    fld("monitor", "__j_monitor_owner"),
+                    ident("__j_current_thread"),
+                ),
+                vec![
+                    assign(
+                        fld("monitor", "__j_monitor_depth"),
+                        add(fld("monitor", "__j_monitor_depth"), int_lit(1)),
+                    ),
+                    ret(null_lit()),
+                ],
+                None,
+            ),
+            assign(
+                fld("monitor", "__j_monitor_owner"),
+                ident("__j_current_thread"),
+            ),
+            assign(fld("monitor", "__j_monitor_depth"), int_lit(1)),
+            ret(null_lit()),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_monitor_exit",
+        vec!["monitor"],
+        vec![
+            if_stmt(
+                binary(
+                    BinOp::NotEq,
+                    fld("monitor", "__j_monitor_owner"),
+                    ident("__j_current_thread"),
+                ),
+                vec![ret(null_lit())],
+                None,
+            ),
+            assign(
+                fld("monitor", "__j_monitor_depth"),
+                sub(fld("monitor", "__j_monitor_depth"), int_lit(1)),
+            ),
+            if_stmt(
+                binary(BinOp::LtEq, fld("monitor", "__j_monitor_depth"), int_lit(0)),
+                vec![
+                    assign(fld("monitor", "__j_monitor_owner"), undefined_lit()),
+                    assign(fld("monitor", "__j_monitor_depth"), int_lit(0)),
+                ],
+                None,
+            ),
+            ret(null_lit()),
+        ],
+    ));
+    out.push(function_stmt(
         "__j_runnable_run",
         vec!["r"],
         vec![

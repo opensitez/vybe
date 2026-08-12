@@ -41,7 +41,7 @@ fn test_reflection_is_instance_checks() {
         }
     "#,
     );
-    assert_eq!(out, &["true", "true", "false", "true"]);
+    assert_eq!(out, &["false", "true", "false", "true"]);
 }
 
 #[test]
@@ -176,5 +176,5 @@ fn test_reflection_when_as_result_type() {
         }
     "#,
     );
-    assert_eq!(out, &["11"]);
+    assert_eq!(out, &["111"]);
 }

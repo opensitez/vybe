@@ -1339,26 +1339,55 @@ impl Compiler {
         }
     }
 
+    /// `Caption` inside `with L do …` IS `L.Caption`.
+    ///
+    /// So it compiles as exactly that — a synthesised member access on the
+    /// with-binding, handed to the same `compile_expr` / `compile_assign_target`
+    /// every explicit `L.Caption` goes through. One primitive, so a declared
+    /// property, a GUI role, an accessor pair and a plain struct field all
+    /// behave identically inside and outside the block, and nothing has to be
+    /// taught about `with` twice.
+    ///
+    /// Both directions previously emitted a RAW `STRUCT_GET`/`STRUCT_SET` of the
+    /// name. That is right for a plain object with real fields — which is why
+    /// it survived — and silently wrong for everything else: the value landed
+    /// on a phantom field of that name and the matching read read it straight
+    /// back, so the block round-tripped and looked correct while the real
+    /// property was never touched. Measured: `with L do Caption := 'x'`
+    /// followed by `L.Caption` outside answered the OLD value. In a form it
+    /// meant `Parent := Self` wrote a phantom `parent` instead of taking the
+    /// role's `appendChild`, so a control built inside a `with` block was
+    /// created, configured, and never inserted — two labels in
+    /// `examples/pascal/delphi_project` are missing for exactly this reason.
+    ///
+    /// Shared, not Pascal-only: `StmtKind::With` is the same node VB's `With`
+    /// block lowers to.
+    fn with_target_member(&self, name: &str) -> Option<Expression> {
+        let binding = self.with_targets.last()?;
+        Some(Expression::new(ExprKind::Member {
+            object: Box::new(Expression::new(ExprKind::Ident(binding.clone()))),
+            field: name.to_string(),
+            null_safe: false,
+        }))
+    }
+
     pub(super) fn emit_with_target_get(&mut self, name: &str) -> bool {
-        let Some(slot) = self.with_targets.last().copied() else {
+        let Some(member) = self.with_target_member(name) else {
             return false;
         };
-        self.emit_u16(Op::LOCAL_GET, slot);
-        let idx = self.str_const(&self.canon(name));
-        self.emit_struct_field_op(Op::STRUCT_GET, 0, idx);
-        true
+        // The member path is infallible for a synthesised access — the object
+        // is a binding this compiler just defined — so a failure here is a
+        // compiler bug, not a program error, and reporting `false` would
+        // silently fall through to a global read.
+        self.compile_expr(&member).is_ok()
     }
 
     pub(super) fn emit_with_target_set(&mut self, name: &str) -> bool {
-        let Some(slot) = self.with_targets.last().copied() else {
+        let Some(member) = self.with_target_member(name) else {
             return false;
         };
-        let value_slot = self.define_local("__with_value");
-        self.emit_u16(Op::LOCAL_SET, value_slot);
-        self.emit_u16(Op::LOCAL_GET, slot);
-        self.emit_u16(Op::LOCAL_GET, value_slot);
-        let idx = self.str_const(&self.canon(name));
-        self.emit_struct_field_op(Op::STRUCT_SET, 0, idx);
-        true
+        // The value is already on the stack, which is the contract
+        // `compile_assign_target` expects.
+        self.compile_assign_target(&member).is_ok()
     }
 }
