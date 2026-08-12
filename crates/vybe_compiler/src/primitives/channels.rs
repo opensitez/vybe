@@ -1074,7 +1074,7 @@ pub fn build_task_new(imports: &mut Chunk) -> Chunk {
 
     c.emit_struct_new(0, 0, line);
     c.emit_op_u16(Op::LOCAL_SET, obj, line);
-    let mut set = |c: &mut Chunk, name: &str, push: &dyn Fn(&mut Chunk)| {
+    let set = |c: &mut Chunk, name: &str, push: &dyn Fn(&mut Chunk)| {
         c.emit_op_u16(Op::LOCAL_GET, obj, line);
         push(c);
         let k = key(c, name);

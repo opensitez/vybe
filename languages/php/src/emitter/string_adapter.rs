@@ -561,7 +561,7 @@ pub fn emit_str_pad(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     lset(chunk, s_slot, line);
 
     // STR_PAD_LEFT = 0, STR_PAD_RIGHT = 1, STR_PAD_BOTH = 2.
-    let mut arm = |chunks: &mut [Chunk], current: usize, side: strings::PadSide| {
+    let arm = |chunks: &mut [Chunk], current: usize, side: strings::PadSide| {
         lget(&mut chunks[current], s_slot, line);
         lget(&mut chunks[current], target_slot, line);
         lget(&mut chunks[current], pad_slot, line);

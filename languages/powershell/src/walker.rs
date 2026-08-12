@@ -2725,10 +2725,10 @@ fn walk_arg_list(pair: Pair<Rule>) -> Vec<Expression> {
     pair.into_inner().map(walk_expr).collect()
 }
 
-/// The PowerShell-private spelling for a method the runtime collection registry
-/// claims but a bare `@{…}` object cannot answer, or `None` to leave the name
-/// alone. Every name here is dictionary-only: no list/set receiver spells it the
-/// same way, so the rewrite cannot capture a call meant for another type.
+// The PowerShell-private spelling for a method the runtime collection registry
+// claims but a bare `@{…}` object cannot answer, or `None` to leave the name
+// alone. Every name here is dictionary-only: no list/set receiver spells it the
+// same way, so the rewrite cannot capture a call meant for another type.
 // Method names declared by classes in the script being walked, folded to
 // lowercase. Read by the hashtable rewrites so a user method always wins.
 thread_local! {
@@ -4070,6 +4070,7 @@ fn split_command_tokens(input: &str) -> Vec<String> {
     tokens
 }
 
+#[allow(dead_code)]
 trait IdentEmpty {
     fn as_ident_empty(&self) -> bool;
 }

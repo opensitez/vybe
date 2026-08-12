@@ -196,6 +196,7 @@ fn dart_call_or_new(callee: Expression, args: Vec<Argument>) -> ExprKind {
 /// blanket rewrite — and it bails when the user declares their own `Type`.
 /// Returns the rewritten `Call`, or `None` when nothing matches.
 /// True when `name` is a widget/value type registered in the Flutter catalog.
+#[allow(dead_code)]
 fn is_flutter_catalog_class(name: &str) -> bool {
     vybe_platform_flutter::emitter::flutter_classes()
         .iter()
@@ -2775,6 +2776,7 @@ fn rewrite_this_to_dart_extension_receiver_expr(expr: &mut Expression) {
     }
 }
 
+#[allow(dead_code)]
 fn same_name_property_member_exists(members: &[ClassMember], incoming: &ClassMember) -> bool {
     let ClassMember::Property { name, .. } = incoming else {
         return false;
@@ -8357,9 +8359,9 @@ fn rewrite_top_level_accessor_expr(
     }
 }
 
-/// The value half of a `const` expression, built with no canonicalization —
-/// the caller has already decided that THIS occurrence is the one that gets
-/// built, and every other occurrence becomes a reference to it.
+// The value half of a `const` expression, built with no canonicalization —
+// the caller has already decided that THIS occurrence is the one that gets
+// built, and every other occurrence becomes a reference to it.
 thread_local! {
     /// Canonicalized `const` expressions for the program being parsed, in
     /// creation order: `(source key, lowered value, binding name)`.

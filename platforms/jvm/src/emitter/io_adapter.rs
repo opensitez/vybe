@@ -80,6 +80,7 @@ fn object_set_bool(
     chunks[current].emit_op(Op::DROP, line);
 }
 
+#[allow(dead_code)]
 fn object_delete(chunks: &mut [Chunk], current: usize, obj: u16, name: &str, line: u32) {
     get(&mut chunks[current], obj, line);
     chunks[current].emit_string_const(name, line);

@@ -5,18 +5,16 @@
 //! shared class pipeline as JS/PHP/Ruby/Python. Lua-specific names are resolved
 //! here; downstream class emission stays language-neutral.
 
-use vybe_ast::class_normalize::{
-    NormalMembers, access_from_visibility, from_method_stmt, types::*,
-};
+use vybe_ast::class_normalize::{NormalMembers, from_method_stmt, types::*};
 use vybe_ast::{ClassMember, ClassModifiers, Span, StmtKind};
 
 pub fn normalize_class(
     span: Span,
-    name: &str,
-    parents: &[String],
-    interfaces: &[String],
+    _name: &str,
+    _parents: &[String],
+    _interfaces: &[String],
     members: &[ClassMember],
-    modifiers: &ClassModifiers,
+    _modifiers: &ClassModifiers,
 ) -> NormalClass {
     let mut m = NormalMembers::default();
 

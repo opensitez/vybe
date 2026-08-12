@@ -7,6 +7,7 @@ use vybe_runtime::{Chunk, Value};
 use vybe_compiler::primitives::collections;
 
 const ENV_OVERRIDES_GLOBAL: &str = "__dotnet_environment_overrides";
+#[allow(dead_code)]
 const ENV_EXIT_CODE_GLOBAL: &str = "__dotnet_environment_exit_code";
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {

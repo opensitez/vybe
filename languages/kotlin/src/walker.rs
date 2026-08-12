@@ -873,6 +873,7 @@ fn is_user_member_name(name: &str, arity: usize) -> bool {
     USER_MEMBER_NAMES.with(|set| set.borrow().contains(&(name.to_string(), arity)))
 }
 
+#[allow(dead_code)]
 fn overloaded_storage_name(name: &str, arity: usize) -> Option<String> {
     overloaded_storage_name_for_args(name, arity, &[])
 }
@@ -1976,7 +1977,7 @@ fn kotlin_thread_expr_exception_message(expr: &Expression) -> Option<Expression>
     match &expr.kind {
         ExprKind::Call { callee, args, .. } | ExprKind::New { class: callee, args } => {
             let name = dotted_expr_path(callee)?;
-            let leaf = name.rsplit('.').next().unwrap_or(&name);
+            let _leaf = name.rsplit('.').next().unwrap_or(&name);
             if kotlin_is_builtin_exception_callee(&name) {
                 args.first().map(|arg| arg.value.clone())
             } else {
@@ -2349,6 +2350,7 @@ fn kotlin_digit_to_int_expr(value: Expression, nullable: bool) -> Expression {
     }
 }
 
+#[allow(dead_code)]
 fn kotlin_call_zero_arg_lambda(lambda: Expression) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(lambda),
@@ -7833,37 +7835,9 @@ fn normalize_kotlin_operator_expr(
                     args: vec![Argument::positional((**index).clone())],
                     optional: false,
                 });
-            } else if kotlin_expr_type(object, locals, operators)
-                .as_deref()
-                .map(|t| t.split('<').next().unwrap_or(t) == "String")
-                .unwrap_or(false)
-            {
-                // `s[i]` on a String THROWS out of bounds in Kotlin.
-                *expr = Expression::new(ExprKind::Call {
-                    callee: Box::new(Expression::ident("__kt_char_at")),
-                    args: vec![
-                        Argument::positional((**object).clone()),
-                        Argument::positional((**index).clone()),
-                    ],
-                    optional: false,
-                });
+                return;
             }
-        }
-        ExprKind::Index { object, index, .. } => {
-            normalize_kotlin_operator_expr(object, operators, locals);
-            normalize_kotlin_operator_expr(index, operators, locals);
-            // `sb[i]` — a StringBuilder indexes its BUFFER, not its properties.
-            if kotlin_expr_type(object, locals, operators).as_deref() == Some("StringBuilder") {
-                *expr = Expression::new(ExprKind::Call {
-                    callee: Box::new(Expression::new(ExprKind::Member {
-                        object: object.clone(),
-                        field: "charAt".to_string(),
-                        null_safe: false,
-                    })),
-                    args: vec![Argument::positional((**index).clone())],
-                    optional: false,
-                });
-            } else if kotlin_expr_type(object, locals, operators)
+            if kotlin_expr_type(object, locals, operators)
                 .as_deref()
                 .map(|t| t.split('<').next().unwrap_or(t) == "String")
                 .unwrap_or(false)
@@ -7877,6 +7851,36 @@ fn normalize_kotlin_operator_expr(
                     ],
                     optional: false,
                 });
+                return;
+            }
+            if kotlin_expr_type(object, locals, operators)
+                .as_deref()
+                .is_some_and(kotlin_type_is_set_like)
+            {
+                *object = Box::new(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__kt_to_list")),
+                    args: vec![Argument::positional((**object).clone())],
+                    optional: false,
+                }));
+                return;
+            } else if let Some(kind) = kotlin_expr_type(object, locals, operators)
+                .and_then(|ty| kotlin_delegated_collection_kind(&ty))
+            {
+                if matches!(
+                    kind.rsplit('.').next().unwrap_or(&kind),
+                    "List" | "MutableList" | "Map" | "MutableMap"
+                ) {
+                    *expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::new(ExprKind::Member {
+                            object: object.clone(),
+                            field: "get".to_string(),
+                            null_safe: false,
+                        })),
+                        args: vec![Argument::positional((**index).clone())],
+                        optional: false,
+                    });
+                    return;
+                }
             }
         }
         ExprKind::Member { object, .. } => {
@@ -7885,6 +7889,17 @@ fn normalize_kotlin_operator_expr(
                 && let Some(value) = kotlin_static_thread_value(&path)
             {
                 *expr = value;
+                return;
+            }
+            if let ExprKind::Member { object, field, .. } = &expr.kind
+                && field == "next"
+                && let Some(index) = kotlin_data_class_property_index(object, field, locals, operators)
+            {
+                *expr = Expression::new(ExprKind::Index {
+                    object: object.clone(),
+                    index: Box::new(Expression::int(index as i64)),
+                    null_safe: false,
+                });
                 return;
             }
             if let ExprKind::Member { object, field, .. } = &expr.kind
@@ -10648,59 +10663,6 @@ fn normalize_kotlin_operator_expr(
                 *args = kotlin_normalized_constructor_args(name, args);
             }
         }
-        ExprKind::Member {
-            object,
-            field,
-            null_safe,
-        } => {
-            normalize_kotlin_operator_expr(object, operators, locals);
-            if !*null_safe
-                && field == "next"
-                && let Some(index) =
-                    kotlin_data_class_property_index(object, field, locals, operators)
-            {
-                *expr = Expression::new(ExprKind::Index {
-                    object: object.clone(),
-                    index: Box::new(Expression::int(index as i64)),
-                    null_safe: false,
-                });
-                return;
-            }
-        }
-        ExprKind::Index { object, index, .. } => {
-            normalize_kotlin_operator_expr(object, operators, locals);
-            normalize_kotlin_operator_expr(index, operators, locals);
-            if kotlin_expr_type(object, locals, operators)
-                .as_deref()
-                .is_some_and(kotlin_type_is_set_like)
-            {
-                *object = Box::new(Expression::new(ExprKind::Call {
-                    callee: Box::new(Expression::ident("__kt_to_list")),
-                    args: vec![Argument::positional((**object).clone())],
-                    optional: false,
-                }));
-                return;
-            }
-            if let Some(kind) = kotlin_expr_type(object, locals, operators)
-                .and_then(|ty| kotlin_delegated_collection_kind(&ty))
-            {
-                if matches!(
-                    kind.rsplit('.').next().unwrap_or(&kind),
-                    "List" | "MutableList" | "Map" | "MutableMap"
-                ) {
-                    *expr = Expression::new(ExprKind::Call {
-                        callee: Box::new(Expression::new(ExprKind::Member {
-                            object: object.clone(),
-                            field: "get".to_string(),
-                            null_safe: false,
-                        })),
-                        args: vec![Argument::positional((**index).clone())],
-                        optional: false,
-                    });
-                    return;
-                }
-            }
-        }
         ExprKind::Ternary { cond, then, else_ } => {
             normalize_kotlin_operator_expr(cond, operators, locals);
             normalize_kotlin_operator_expr(then, operators, locals);
@@ -12674,6 +12636,7 @@ fn kotlin_key_expr(expr: Expression) -> Expression {
     }
 }
 
+#[allow(dead_code)]
 fn kotlin_dict_get_expr(object: Expression, key: Expression) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident("__dict_get")),
@@ -12682,6 +12645,7 @@ fn kotlin_dict_get_expr(object: Expression, key: Expression) -> Expression {
     })
 }
 
+#[allow(dead_code)]
 fn kotlin_dict_has_expr(object: Expression, key: Expression) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident("__dict_has")),
@@ -15568,24 +15532,24 @@ fn kt_is_string_expr(expr: &Expression) -> bool {
     }
 }
 
-/// A class-body `val`/`var` that declares `get()` / `set(v)` accessors.
-///
-/// Kotlin's properties are not fields: `val area: Int get() = w * h` has no
-/// storage at all, and `var celsius` with a custom setter must run the setter
-/// on assignment. The walker used to drop the accessors on the floor and emit a
-/// plain `ClassMember::Field`, so the getter never ran and the property read as
-/// `undefined`. `ClassMember::Property` is the model's own shape for this —
-/// C# `{ get; set; }` and Pascal properties already use it, and the compiler
-/// installs `__get_`/`__set_` accessors from it.
-///
-/// Returns `None` for a plain stored property, which stays a field.
+// A class-body `val`/`var` that declares `get()` / `set(v)` accessors.
+//
+// Kotlin's properties are not fields: `val area: Int get() = w * h` has no
+// storage at all, and `var celsius` with a custom setter must run the setter
+// on assignment. The walker used to drop the accessors on the floor and emit a
+// plain `ClassMember::Field`, so the getter never ran and the property read as
+// `undefined`. `ClassMember::Property` is the model's own shape for this —
+// C# `{ get; set; }` and Pascal properties already use it, and the compiler
+// installs `__get_`/`__set_` accessors from it.
+//
+// Returns `None` for a plain stored property, which stays a field.
 thread_local! {
-    /// The storage a `field` identifier means, while an accessor body is being
-    /// walked. Empty everywhere else, so `field` stays an ordinary name.
+    // The storage a `field` identifier means, while an accessor body is being
+    // walked. Empty everywhere else, so `field` stays an ordinary name.
     static BACKING_FIELD: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
-    /// Class-local backing names for Kotlin properties that share their source
-    /// spelling with a method. The shared class shape has one member table, so
-    /// the frontend must keep the storage and callable names distinct.
+    // Class-local backing names for Kotlin properties that share their source
+    // spelling with a method. The shared class shape has one member table, so
+    // the frontend must keep the storage and callable names distinct.
     static KOTLIN_CLASS_FIELD_ALIASES: std::cell::RefCell<Vec<std::collections::HashMap<String, String>>> =
         std::cell::RefCell::new(Vec::new());
 }
@@ -16032,6 +15996,7 @@ fn kt_interface_property_accessors(
     out
 }
 
+#[allow(dead_code)]
 fn kt_abstract_interface_method(
     name: &str,
     params: Vec<Param>,
@@ -16521,6 +16486,7 @@ fn is_plain_identifier(text: &str) -> bool {
         && !text.starts_with(|c: char| c.is_ascii_digit())
 }
 
+#[allow(dead_code)]
 fn kt_this_member(field: &str) -> Expression {
     Expression::new(ExprKind::Member {
         object: Box::new(Expression::new(ExprKind::This)),
@@ -16529,6 +16495,7 @@ fn kt_this_member(field: &str) -> Expression {
     })
 }
 
+#[allow(dead_code)]
 fn kt_delegate_member(delegate_field: &str, field: &str) -> Expression {
     Expression::new(ExprKind::Member {
         object: Box::new(kt_this_member(delegate_field)),
@@ -16537,10 +16504,12 @@ fn kt_delegate_member(delegate_field: &str, field: &str) -> Expression {
     })
 }
 
+#[allow(dead_code)]
 fn kt_return_member(expr: Expression) -> Vec<Statement> {
     vec![Statement::new(StmtKind::Return(Some(expr)))]
 }
 
+#[allow(dead_code)]
 fn kt_delegate_property(delegate_field: &str, name: &str, readonly: bool) -> ClassMember {
     let setter = (!readonly).then(|| {
         let param = Param {
@@ -16576,6 +16545,7 @@ fn kt_delegate_property(delegate_field: &str, name: &str, readonly: bool) -> Cla
     }
 }
 
+#[allow(dead_code)]
 fn kt_delegate_method(name: &str, params: Vec<Param>, body: Vec<Statement>) -> ClassMember {
     ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
         name: name.to_string(),
@@ -16601,6 +16571,7 @@ fn kt_optional_param(name: &str, default: Expression) -> Param {
     }
 }
 
+#[allow(dead_code)]
 fn member_exists(members: &[ClassMember], name: &str) -> bool {
     members.iter().any(|member| match member {
         ClassMember::Method(stmt) => {
@@ -16611,6 +16582,7 @@ fn member_exists(members: &[ClassMember], name: &str) -> bool {
     })
 }
 
+#[allow(dead_code)]
 fn append_kotlin_collection_delegate_members(
     members: &mut Vec<ClassMember>,
     interface_name: &str,
@@ -16755,6 +16727,7 @@ fn append_kotlin_collection_delegate_members(
     }
 }
 
+#[allow(dead_code)]
 fn append_kotlin_delegate_members(
     members: &mut Vec<ClassMember>,
     delegations: &[(String, String)],
@@ -18357,7 +18330,7 @@ fn walk_object_decl(pair: Pair<Rule>) -> Option<Statement> {
                 }
             }
             ClassMember::Field { init: Some(init), .. } => {
-                let mut skip = HashSet::new();
+                let skip = HashSet::new();
                 with_kotlin_field_aliases(&object_field_aliases, || {
                     kotlin_rewrite_receiver_refs_expr(init, &name, &skip);
                 });

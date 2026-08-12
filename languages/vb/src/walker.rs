@@ -20012,6 +20012,7 @@ fn vb_filled_array_expr(length: Expression, default_value: Expression) -> Expres
     })
 }
 
+#[allow(dead_code)]
 fn vb_multidim_array_expr(bounds: &[Expression], default_value: Expression) -> Expression {
     let Some((first, rest)) = bounds.split_first() else {
         return default_value;
@@ -23846,6 +23847,7 @@ fn is_vb_datetime_constructor_expr(expr: &Expression) -> bool {
         .unwrap_or(false)
 }
 
+#[allow(dead_code)]
 fn normalize_vb_datetime_kind_constructor_args(class_name: &str, args: &mut Vec<Argument>) {
     let canonical = vb_canonical_type_name(class_name);
     if args.len() != 7

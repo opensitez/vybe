@@ -4749,6 +4749,7 @@ fn lambda_param(name: &str) -> Param {
     }
 }
 
+#[allow(dead_code)]
 fn lambda_param_optional(name: &str, default: Expression) -> Param {
     Param {
         name: name.into(),
@@ -5432,6 +5433,7 @@ fn py_counter_binary(op: BinOp, left: &Expression, right: &Expression) -> Option
     ))
 }
 
+#[allow(dead_code)]
 fn other_attr(field: &str) -> Expression {
     Expression::new(ExprKind::Member {
         object: Box::new(Expression::new(ExprKind::Ident("other".into()))),
@@ -14471,6 +14473,7 @@ fn py_codec_decode_lambda(codec: &str) -> Expression {
     })
 }
 
+#[allow(dead_code)]
 fn py_codec_incremental_factory(codec: &str, encode: bool) -> Expression {
     let method = if encode { "encode" } else { "decode" };
     let helper = if encode {

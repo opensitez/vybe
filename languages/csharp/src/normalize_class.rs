@@ -26,16 +26,16 @@
 use vybe_ast::class_normalize::{NormalMembers, build_normal_method, from_method_stmt, types::*};
 use vybe_ast::{
     ClassMember, ClassModifiers, ConstructorInitializerTarget, Modifiers, PropertySetter, Span,
-    StmtKind, Visibility,
+    StmtKind,
 };
 
 pub fn normalize_class(
     span: Span,
-    name: &str,
+    _name: &str,
     parents: &[String],
-    interfaces: &[String],
+    _interfaces: &[String],
     members: &[ClassMember],
-    modifiers: &ClassModifiers,
+    _modifiers: &ClassModifiers,
 ) -> NormalClass {
     let mut out = NormalMembers::default();
 

@@ -1688,6 +1688,7 @@ impl Compiler {
         let l = self.line;
         self.chunks[self.current].emit_array_new_fixed(typeidx, count, l);
     }
+    #[allow(dead_code)]
     pub(crate) fn emit_u8(&mut self, op: Op, v: u8) {
         let l = self.line;
         self.chunks[self.current].emit_op_u8(op, v, l);

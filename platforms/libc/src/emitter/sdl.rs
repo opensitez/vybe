@@ -157,6 +157,7 @@ fn emit_string_concat(chunks: &mut [Chunk], current: usize, left: u16, right: u1
     chunks[current].emit_call(concat_idx, 2u8, line);
 }
 
+#[allow(dead_code)]
 fn emit_number_from_property(
     chunks: &mut [Chunk],
     current: usize,

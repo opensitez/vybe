@@ -46,7 +46,7 @@ const DART_MIXIN: AugmentationPolicy = AugmentationPolicy {
 
 pub fn normalize_class(
     span: Span,
-    name: &str,
+    _name: &str,
     parents: &[String],
     _interfaces: &[String],
     members: &[ClassMember],

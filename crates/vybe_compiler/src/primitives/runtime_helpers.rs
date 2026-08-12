@@ -1532,8 +1532,6 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
 use crate::primitives::generators::{build_async_generator_next, build_generator_next};
 
 fn build_generator_self() -> Chunk {
-    use std::sync::Arc;
-
     let mut c = Chunk::new("__stdlib_generator_self");
     c.arity = 0;
     c.local_count = 0;
@@ -2502,7 +2500,7 @@ fn build_pascal_set_contains(_imports: &mut Chunk) -> Chunk {
     c
 }
 
-fn emit_pascal_write_buffer(c: &mut Chunk, buffer_key: u16, line: u32) {
+fn emit_pascal_write_buffer(c: &mut Chunk, _buffer_key: u16, line: u32) {
     let undefined_key = c.add_constant(Value::String(Arc::from("undefined")));
     let empty_key = c.add_constant(Value::String(Arc::from("")));
 

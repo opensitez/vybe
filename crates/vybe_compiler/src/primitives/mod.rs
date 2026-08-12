@@ -329,6 +329,7 @@ pub(crate) struct ReflectionMethodMetadata {
     pub params: Vec<ReflectionParamMetadata>,
     pub is_static: bool,
     pub return_type: Option<String>,
+    #[allow(dead_code)]
     pub visibility: Visibility,
     pub is_abstract: bool,
     pub is_virtual: bool,
@@ -2606,6 +2607,7 @@ impl Compiler {
         }
     }
 
+    #[allow(dead_code)]
     fn shared_global_slot(&self, name: &str) -> u16 {
         *self
             .shared_global_slots

@@ -1578,7 +1578,6 @@ pub fn emit_dart_index_get(chunks: &mut [Chunk], current: usize, line: u32) {
 /// CALL_IMPORT indexes them (registering on chunks[0] made the index
 /// misresolve whenever the tables diverged).
 pub fn emit_dart_print(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    use vybe_runtime::Op as VOp;
     emit_dart_to_string(chunks, current, line);
     let log_idx = chunks[current].add_import("web:console", "log");
     chunks[current].emit_call(log_idx, 1, line);
@@ -2001,7 +2000,6 @@ pub fn emit_dart_length(chunks: &mut [Chunk], current: usize, line: u32) {
 /// StringBuilder → user `.length` getter. Still the answer for every receiver
 /// that carries no slot.
 fn emit_dart_length_probe(chunks: &mut [Chunk], current: usize, receiver_slot: u16, line: u32) {
-    use vybe_runtime::Op as VOp;
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
     host::emit(&mut chunks[current], "wasm:js-string", "test", 1, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);

@@ -898,6 +898,7 @@ impl Compiler {
         }
     }
 
+    #[allow(dead_code)]
     fn match_method_overload_chunk(
         &self,
         overloads: &[PendingMethodOverload],
@@ -1103,6 +1104,7 @@ impl Compiler {
                 .any(|name| name == &method_key)
     }
 
+    #[allow(dead_code)]
     pub(super) fn resolve_static_method_overload_chunk_for_type(
         &self,
         type_hint: &str,
@@ -1307,6 +1309,7 @@ impl Compiler {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub(super) fn emit_direct_static_method_call(
         &mut self,
         chunk_idx: usize,

@@ -261,6 +261,7 @@ pub(super) fn or(a: Expression, b: Expression) -> Expression {
 }
 
 /// `<a> && <b>`
+#[allow(dead_code)]
 pub(super) fn and(a: Expression, b: Expression) -> Expression {
     binary(vybe_ast::BinOp::And, a, b)
 }

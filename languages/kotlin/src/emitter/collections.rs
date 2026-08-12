@@ -655,6 +655,7 @@ pub fn emit_set_delete_value_eq(chunks: &mut Vec<Chunk>, current: usize, line: u
     get(&mut chunks[current], removed, line);
 }
 
+#[allow(dead_code)]
 fn emit_set_from_filter(chunks: &mut Vec<Chunk>, current: usize, keep_present: bool, line: u32) {
     let right = chunks[current].alloc_scratch(1);
     let left = chunks[current].alloc_scratch(1);

@@ -23,6 +23,7 @@ use vybe_runtime::opcode::Op;
 
 use vybe_compiler::primitives::tuples;
 
+#[allow(dead_code)]
 /// `substring(start, END)` runs to the end of the string.
 const END: i32 = 0x7FFF_FFFF;
 

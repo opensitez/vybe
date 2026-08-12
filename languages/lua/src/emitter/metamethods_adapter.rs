@@ -2056,6 +2056,7 @@ fn emit_lua_key_eq(chunk: &mut Chunk, line: u32) {
     chunk.emit_end(line);
 }
 
+#[allow(dead_code)]
 fn raw_ne(chunk: &mut Chunk, line: u32) {
     vybe_compiler::primitives::ops::emit_dyn_ne(chunk, line);
     vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);

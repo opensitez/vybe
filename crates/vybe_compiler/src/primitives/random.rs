@@ -17,9 +17,7 @@
 //! reinventing them.
 
 use crate::primitives::instructions::core_wasm;
-use std::sync::Arc;
 use vybe_runtime::Chunk;
-use vybe_runtime::Value;
 use vybe_runtime::opcode::Op;
 
 const RNG_GLOBAL: &str = "__vybe_rng";

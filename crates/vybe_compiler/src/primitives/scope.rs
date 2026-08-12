@@ -327,6 +327,7 @@ impl Scope {
     /// The full declared type, not just its spelling — the caller needs
     /// [`vybe_ast::TypeBinding`], which `resolve_type` drops on the way to
     /// `&str`. Same exact-then-folded order as [`Scope::resolve_type`].
+    #[allow(dead_code)]
     pub fn resolve_declared(&self, name: &str) -> Option<&vybe_ast::TypeHint> {
         for l in self.locals.iter().rev() {
             if l.name == name {

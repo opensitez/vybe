@@ -11,7 +11,6 @@
 
 use crate::primitives::runtime_helpers::build_runtime_helpers;
 use std::collections::BTreeSet;
-use std::sync::Arc;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 

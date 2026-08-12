@@ -44,8 +44,8 @@ struct HttpTypeIds {
     future_trailers: usize,
     outgoing_response: usize,
     outgoing_body: usize,
-    incoming_request: usize,
-    response_outparam: usize,
+    _incoming_request: usize,
+    _response_outparam: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -364,8 +364,8 @@ fn register_resource_types(vm: &mut VM) -> HttpTypeIds {
         future_trailers: resource(vm, "future-trailers", "HttpFutureTrailers"),
         outgoing_response: resource(vm, "outgoing-response", "HttpOutgoingResponse"),
         outgoing_body: resource(vm, "outgoing-body", "HttpOutgoingBody"),
-        incoming_request: resource(vm, "incoming-request", "HttpIncomingRequest"),
-        response_outparam: resource(vm, "response-outparam", "HttpResponseOutparam"),
+        _incoming_request: resource(vm, "incoming-request", "HttpIncomingRequest"),
+        _response_outparam: resource(vm, "response-outparam", "HttpResponseOutparam"),
     }
 }
 

@@ -39,7 +39,7 @@
 //! the args using temp local slots (no `SWAP` / `INSERT` opcodes).
 
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::Chunk;
 
 /// Emit a polymorphic `receiver.method(args)` invocation.
 ///

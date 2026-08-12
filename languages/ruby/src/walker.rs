@@ -5708,6 +5708,7 @@ fn ruby_expr_may_be_exception(expr: &Expression) -> bool {
     }
 }
 
+#[allow(dead_code)]
 fn is_ruby_exception_name(name: &str) -> bool {
     matches!(
         name,

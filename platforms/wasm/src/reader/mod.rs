@@ -917,7 +917,7 @@ fn validate_instruction_stream(
     elem_count: usize,
     has_data_count_section: bool,
     uses_memory64: bool,
-    uses_table64: bool,
+    _uses_table64: bool,
 ) -> Result<(), String> {
     let mut pos = 0;
     let mut st = ArityStack::new(result_arity);
@@ -1773,7 +1773,7 @@ fn translate_wasm_to_chunk(
     func_arities: &[u8],
     func_results: &[u8],
     uses_memory64: bool,
-    uses_table64: bool,
+    _uses_table64: bool,
     types: &[(Vec<u8>, Vec<u8>)],
     tag_arities: &[u8],
 ) -> Chunk {

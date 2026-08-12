@@ -225,6 +225,7 @@ fn lt(l: Expression, r: Expression) -> Expression {
 fn lte(l: Expression, r: Expression) -> Expression {
     bin(BinOp::LtEq, l, r)
 }
+#[allow(dead_code)]
 fn eq(l: Expression, r: Expression) -> Expression {
     bin(BinOp::Eq, l, r)
 }

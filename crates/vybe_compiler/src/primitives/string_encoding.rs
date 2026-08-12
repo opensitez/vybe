@@ -51,6 +51,7 @@ fn push_str(chunk: &mut Chunk, v: &str, line: u32) {
     push_const(chunk, Value::String(Arc::from(v)), line);
 }
 
+#[allow(dead_code)]
 fn call_import(
     chunks: &mut [Chunk],
     current: usize,

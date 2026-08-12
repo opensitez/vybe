@@ -15506,6 +15506,7 @@ fn java_type_base_simple_name(type_name: &str) -> &str {
     java_type_simple_name(type_name).trim()
 }
 
+#[allow(dead_code)]
 fn java_print_arg_needs_tostring(
     arg: &Expression,
     tostring_classes: &std::collections::HashSet<String>,
@@ -15519,6 +15520,7 @@ fn java_print_arg_needs_tostring(
     java_expr_enum_type(arg, enum_values, current_class, locals).is_some()
 }
 
+#[allow(dead_code)]
 fn java_tostring_call(receiver: Expression) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Member {
@@ -15531,6 +15533,7 @@ fn java_tostring_call(receiver: Expression) -> Expression {
     })
 }
 
+#[allow(dead_code)]
 fn java_expr_enum_type(
     expr: &Expression,
     enum_values: &std::collections::HashMap<String, Vec<String>>,
@@ -15667,6 +15670,7 @@ fn java_class_field_type(class_name: &str, field_name: &str) -> Option<String> {
     })
 }
 
+#[allow(dead_code)]
 fn java_expr_has_user_tostring(
     expr: &Expression,
     tostring_classes: &std::collections::HashSet<String>,
@@ -18057,6 +18061,7 @@ fn java_expr_is_thread_like_receiver(
     }
 }
 
+#[allow(dead_code)]
 fn java_resolve_runnable_target(target: Expression) -> Expression {
     if let ExprKind::Ident(name) = &target.kind {
         if let Some(resolved) =
@@ -18068,6 +18073,7 @@ fn java_resolve_runnable_target(target: Expression) -> Expression {
     target
 }
 
+#[allow(dead_code)]
 fn java_rewrite_spawned_thread_sleep_expr(expr: &mut Expression) {
     match &mut expr.kind {
         ExprKind::Call { callee, args, .. } => {
@@ -18141,6 +18147,7 @@ fn java_rewrite_spawned_thread_sleep_expr(expr: &mut Expression) {
     }
 }
 
+#[allow(dead_code)]
 fn java_rewrite_spawned_thread_sleep_stmt(stmt: &mut Statement) {
     match &mut stmt.kind {
         StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {

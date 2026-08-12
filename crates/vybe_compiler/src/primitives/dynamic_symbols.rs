@@ -7,10 +7,8 @@
 //! resolver, try again"; each language still owns its callback storage and
 //! source spelling.
 
-use std::sync::Arc;
-
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::Chunk;
 
 use super::*;
 

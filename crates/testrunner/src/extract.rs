@@ -1373,7 +1373,7 @@ fn macro_matcher_params(matcher: &str) -> Vec<String> {
     let mut depth = 0i32;
     let mut start = 0usize;
     let mut i = 0usize;
-    let mut push = |frag: &str, params: &mut Vec<String>| {
+    let push = |frag: &str, params: &mut Vec<String>| {
         let f = frag.as_bytes();
         let mut j = 0usize;
         while j < f.len() {

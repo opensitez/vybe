@@ -776,6 +776,7 @@ struct ClassMeta {
     is_final: bool,
     methods: Vec<MethodMeta>,
     has_destructor: bool,
+    #[allow(dead_code)]
     destructor_body: Option<Vec<Statement>>,
     fields: Vec<FieldMeta>,
     field_defaults: Vec<(String, Expression)>,
@@ -4317,6 +4318,7 @@ enum PhpPreludeGroup {
 /// would have turned every uncaught-throw test into a false pass.
 /// `getFile()`/`getLine()` currently return empty in vybe, so those slots render
 /// blank — the shape is right and that gap is separately fixable.
+#[allow(dead_code)]
 const UNCAUGHT_HANDLER_PHP: &str = r##"
 echo "
 Fatal error: Uncaught " . get_class($__vybe_uncaught) . ": " . $__vybe_uncaught->getMessage() . " in " . $__vybe_uncaught->getFile() . ":" . $__vybe_uncaught->getLine() . "
@@ -4326,6 +4328,7 @@ Stack trace:
 ";
 "##;
 
+#[allow(dead_code)]
 fn cached_php_uncaught_handler() -> Vec<Statement> {
     static HANDLER: std::sync::OnceLock<Vec<Statement>> = std::sync::OnceLock::new();
     HANDLER
@@ -9077,6 +9080,7 @@ fn class_has_destructor(c: &str) -> bool {
     })
 }
 
+#[allow(dead_code)]
 fn class_destructor_body(c: &str) -> Option<Vec<Statement>> {
     let mut names = vec![c.to_string()];
     names.extend(class_parent_chain(c));
@@ -24454,6 +24458,7 @@ fn php_parse_dateinterval_datestring(s: &str) -> (i64, i64, i64, i64, i64, i64) 
     (y, mo, d, h, mi, se)
 }
 
+#[allow(dead_code)]
 fn php_dateinterval_format_literal_to_ast(
     fmt: &str,
     interval: &Expression,

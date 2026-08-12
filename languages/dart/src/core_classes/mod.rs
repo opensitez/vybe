@@ -121,7 +121,7 @@ pub fn declarations_for(source: &str, is_user_declared: impl Fn(&str) -> bool) -
         }
         i += 1;
     }
-    let mut out: Vec<Statement> = CORE_CLASSES
+    let out: Vec<Statement> = CORE_CLASSES
         .iter()
         .filter(|(name, _)| needed.contains(name) && !is_user_declared(name))
         .map(|(_, build)| build())

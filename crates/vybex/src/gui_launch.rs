@@ -27,11 +27,9 @@ use vybe_widgets::{
     // Widget trait + events/commands
     PanelWidget,
     Pixmap,
-    RenderContext,
     SwashCache,
     WidgetCommand,
     WidgetEvent,
-    fill_background,
     run_app,
 };
 

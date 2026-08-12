@@ -9,9 +9,7 @@
 use crate::primitives::Target;
 #[allow(unused_imports)]
 use crate::primitives::instructions::core_wasm;
-use std::sync::Arc;
 use vybe_runtime::Chunk;
-use vybe_runtime::Value;
 use vybe_runtime::opcode::Op;
 
 // ── `ecma:array.*` import helpers (Phase D) ─────────────────

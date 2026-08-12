@@ -44,11 +44,11 @@ use vybe_ast::{
 /// known limitation; see `test_class_patterns::class_extends_expression`).
 pub fn normalize_class(
     span: Span,
-    name: &str,
-    parents: &[String],
+    _name: &str,
+    _parents: &[String],
     _interfaces: &[String], // JS has no interface concept
     members: &[ClassMember],
-    modifiers: &ClassModifiers,
+    _modifiers: &ClassModifiers,
 ) -> NormalClass {
     let mut out = NormalMembers::default();
 

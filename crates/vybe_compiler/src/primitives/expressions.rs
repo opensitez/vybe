@@ -2282,7 +2282,7 @@ impl Compiler {
                     // distinction is the actual question, hence `resolve_exact`.
                     let prefers_type_lookup =
                         self.prefers_type_qualified_member_lookup(obj_name, field);
-                    let obj_is_local = self.scope().resolve_exact(obj_name).is_some()
+                    let _obj_is_local = self.scope().resolve_exact(obj_name).is_some()
                         || self.has_static_local_binding(obj_name)
                         || (self.scope().resolve(obj_name).is_some() && !prefers_type_lookup);
                     // `Color.Green` is an ordinary static member read of the
@@ -6783,7 +6783,7 @@ impl Compiler {
                             // path the auto-base construction uses. Control
                             // leaves no longer have a ctor global to CALL_REF.
                             if self.is_framework_control_parent(&parent_name) {
-                                let canonical = common::gui::canonical_control_name(&parent_name);
+                                let _canonical = common::gui::canonical_control_name(&parent_name);
                                 for a in args {
                                     self.compile_expr(&a.value)?;
                                 }

@@ -221,6 +221,7 @@ fn split_top_level(args: &str) -> Vec<String> {
     parts
 }
 
+#[allow(dead_code)]
 struct Span {
     start: usize,
     args_start: usize,

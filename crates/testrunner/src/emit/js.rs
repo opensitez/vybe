@@ -180,6 +180,7 @@ fn skip_literal(bytes: &[u8], at: usize) -> Option<usize> {
     Some(bytes.len())
 }
 
+#[allow(dead_code)]
 fn has_word(src: &str, word: &str) -> bool {
     let bytes = src.as_bytes();
     let mut i = 0usize;

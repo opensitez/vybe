@@ -2773,6 +2773,7 @@ fn walk_local(pair: Pair<Rule>, index_base: usize) -> Result<Vec<Statement>, Str
 // emits the right WASM structured-control opcodes (BLOCK, LOOP, BR, BR_IF,
 // RETURN, UNREACHABLE).  Value-producing instructions become expressions.
 
+#[allow(dead_code)]
 fn walk_instr_as_stmts(
     pair: Pair<Rule>,
     labels: &mut LabelStack,
@@ -2814,6 +2815,7 @@ fn walk_instr_as_expr(pair: Pair<Rule>, labels: &mut LabelStack) -> Result<Expre
 
 // ── Plain instructions ────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 fn walk_plain_instr_as_stmts(
     pair: Pair<Rule>,
     _span: Span,
@@ -2847,6 +2849,7 @@ fn walk_plain_instr_as_expr(
 
 // ── Folded instructions ───────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 fn walk_folded_instr_as_stmts(
     pair: Pair<Rule>,
     span: Span,
@@ -5058,6 +5061,7 @@ fn walk_assert_trap(pair: Pair<Rule>) -> Result<Statement, String> {
     ))
 }
 
+#[allow(dead_code)]
 fn walk_assert_generic(pair: Pair<Rule>, fn_name: &str) -> Result<Statement, String> {
     let span = to_span(&pair);
     let mut message = String::new();
