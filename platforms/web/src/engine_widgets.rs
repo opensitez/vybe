@@ -147,6 +147,42 @@ impl WebEngine for Widgets {
                 DomValue::None
             }
 
+            // Forwarded whole rather than assembled here: `open` is a
+            // reflected attribute, the user-agent stylesheet's rules for a
+            // dialog are the toolkit's to apply, and the TOP LAYER a modal
+            // enters is a paint-order fact only the renderer can honour.
+            // Spelling that out in this file would put a browser's rules
+            // outside the engine that draws them.
+            DomOp::ShowDialog { node, modal } => {
+                doc.show_dialog(node, modal);
+                DomValue::None
+            }
+            DomOp::CloseDialog(node) => {
+                doc.close_dialog(node);
+                DomValue::None
+            }
+            DomOp::DialogOpen(node) => DomValue::Bool(doc.dialog_open(node)),
+
+            // `showPicker()` — which picker is decided by the input's TYPE,
+            // as HTML decides it. The toolkit's file chooser is a real native
+            // dialog, so the pick lands in `value` exactly as a browser's
+            // does. A type with no picker returns without doing anything,
+            // which is the spec's own answer for a non-picker element — but
+            // see the module note: `color` HAS a picker in HTML and does not
+            // have one here yet, so that arm is a GAP wearing the same shape.
+            DomOp::ShowPicker(node) => {
+                let input_type = doc
+                    .node(node)
+                    .map(|n| n.input_type.clone())
+                    .unwrap_or_default();
+                if input_type == "file"
+                    && let Some(path) = vybe_widgets::dialogs::FileDialog::new("Open").open()
+                {
+                    doc.set_value(node, &path.to_string_lossy());
+                }
+                DomValue::None
+            }
+
             DomOp::DrainEvents => DomValue::Events(
                 doc.drain_events()
                     .into_iter()
@@ -188,6 +224,17 @@ impl WebEngine for Widgets {
                 WindowValue::Pair(x, y)
             }
             WindowOp::Name(w) => WindowValue::Text(wnd::name(w)),
+            // The message box `vybe_widgets` already has. `alert` is one
+            // button, `confirm` is OK/Cancel answering a boolean — which is
+            // exactly `DialogChoice::Ok`, so nothing new is drawn or invented.
+            WindowOp::Alert(message) => {
+                vybe_widgets::dialogs::MessageBox::new(message, "").show();
+                WindowValue::None
+            }
+            WindowOp::Confirm(message) => WindowValue::Bool(matches!(
+                vybe_widgets::dialogs::MessageBox::ok_cancel(message, ""),
+                vybe_widgets::dialogs::DialogChoice::Ok
+            )),
         }
     }
 

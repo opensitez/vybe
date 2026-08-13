@@ -101,6 +101,34 @@ pub enum DomOp {
     RemoveItem(NodeId, usize),
     ClearItems(NodeId),
 
+    // ── HTMLDialogElement ────────────────────────────────────────────────
+    /// `dialog.show()` when `modal` is false, `dialog.showModal()` when true.
+    ///
+    /// Both set the `open` attribute — that is what "open" MEANS for a
+    /// dialog, and it is a reflected attribute, so it belongs in the tree
+    /// rather than beside it. `modal` is carried rather than flattened away
+    /// because the UA stylesheet gives `dialog:modal` a different box:
+    /// `position: fixed` against the viewport instead of in-flow.
+    ///
+    /// What `modal` does NOT get here is the top layer or the inertness of
+    /// everything behind it. Both are renderer behaviour with nowhere to live
+    /// in a tree — `:modal` has no attribute to carry them — so a modal
+    /// dialog currently renders as an open, viewport-positioned one.
+    ShowDialog {
+        node: NodeId,
+        modal: bool,
+    },
+    /// `dialog.close()` — clears `open`. The `close` EVENT and `returnValue`
+    /// are the surface's job: neither is a reflected attribute.
+    CloseDialog(NodeId),
+    /// `dialog.open` — the reflected boolean attribute, read back.
+    DialogOpen(NodeId),
+
+    /// `input.showPicker()` — HTML's "show the picker, if applicable" for the
+    /// input types that own one (`file`, `color`, `date`, …). What a picker
+    /// IS belongs to the engine; there is no second colour dialog here.
+    ShowPicker(NodeId),
+
     /// Drain what the user did, as DOM events (`click`, `input`, `change`).
     /// The surface turns each into an `Event` object and calls the listeners
     /// registered on that node.
@@ -149,6 +177,17 @@ pub enum WindowOp {
     ScreenPosition(WindowId),
     /// `window.name`
     Name(WindowId),
+    /// `window.alert(message)` — a modal one-button box. Blocking is not an
+    /// implementation shortcut here, it IS the spec: `alert` suspends script
+    /// until dismissed, and so does the toolkit call every frontend spells it
+    /// with (`ShowMessage`, `MessageBox.Show`).
+    ///
+    /// No `WindowId`: `alert` is invoked on the global object in every real
+    /// page, and a guest that has never opened a window still has one to talk
+    /// to. Adding an id would make the common call the awkward one.
+    Alert(String),
+    /// `window.confirm(message)` — two buttons, `true` for OK.
+    Confirm(String),
 }
 
 #[derive(Clone, Debug)]

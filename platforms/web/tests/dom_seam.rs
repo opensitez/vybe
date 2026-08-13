@@ -233,3 +233,77 @@ fn a_click_comes_back_as_a_dom_event() {
         again
     );
 }
+
+fn is_open(doc: u64, dialog: u64) -> bool {
+    matches!(apply(doc, DomOp::DialogOpen(dialog)), DomValue::Bool(true))
+}
+
+#[test]
+fn a_dialog_is_closed_until_shown_and_closed_again_after() {
+    let doc = setup();
+    let dlg = create(doc, "dialog", "");
+    apply(
+        doc,
+        DomOp::AppendChild {
+            parent: DOCUMENT,
+            child: dlg,
+        },
+    );
+    assert!(!is_open(doc, dlg), "a fresh dialog must not be open");
+
+    apply(
+        doc,
+        DomOp::ShowDialog {
+            node: dlg,
+            modal: false,
+        },
+    );
+    assert!(is_open(doc, dlg), "show() must set the open attribute");
+
+    apply(doc, DomOp::CloseDialog(dlg));
+    assert!(!is_open(doc, dlg), "close() must clear the open attribute");
+}
+
+#[test]
+fn only_a_modal_dialog_is_positioned_against_the_viewport() {
+    // The UA stylesheet's own distinction: `dialog:modal` is `position:
+    // fixed`, a non-modal dialog stays in flow. If both looked the same,
+    // `showModal` would be `show` under another name.
+    let doc = setup();
+    let plain = create(doc, "dialog", "");
+    let modal = create(doc, "dialog", "");
+    for child in [plain, modal] {
+        apply(
+            doc,
+            DomOp::AppendChild {
+                parent: DOCUMENT,
+                child,
+            },
+        );
+    }
+
+    apply(
+        doc,
+        DomOp::ShowDialog {
+            node: plain,
+            modal: false,
+        },
+    );
+    apply(
+        doc,
+        DomOp::ShowDialog {
+            node: modal,
+            modal: true,
+        },
+    );
+
+    assert_eq!(
+        text(apply(doc, DomOp::GetStyleProperty(modal, "position".into()))),
+        "fixed"
+    );
+    assert_ne!(
+        text(apply(doc, DomOp::GetStyleProperty(plain, "position".into()))),
+        "fixed",
+        "a non-modal dialog stays in flow"
+    );
+}

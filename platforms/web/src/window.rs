@@ -160,6 +160,30 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
+    // window.alert(message) / window.confirm(message)
+    //
+    // Spelled without a `Window` argument on purpose: both are called on the
+    // global object in every real page (`alert("hi")`), and a guest that never
+    // opened a window still has one to talk to.
+    vm.register_host_fn(
+        "web:window",
+        "alert",
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            window(WindowOp::Alert(str_arg(args, 0)));
+            Value::Null
+        }),
+    );
+    vm.register_host_fn(
+        "web:window",
+        "confirm",
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            match window(WindowOp::Confirm(str_arg(args, 0))) {
+                WindowValue::Bool(ok) => Value::Bool(ok),
+                _ => Value::Bool(false),
+            }
+        }),
+    );
+
     // window.name
     vm.register_host_fn(
         "web:window",
