@@ -199,7 +199,7 @@ pub fn controls() -> Vec<DomControl> {
             let id = named.get(&node).cloned().unwrap_or_default();
             // The widget the element renders as is named after the node — the
             // convention `Document::node_for_widget` parses back the other way.
-            let rect = d.form().get_control_rect(&format!("n{node}"));
+            let rect = d.rect(node);
             let tag = d.node(node).map(|n| n.tag.clone()).unwrap_or_default();
             let mut properties = Vec::new();
             let text = d.text_content(node);

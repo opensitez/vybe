@@ -100,6 +100,15 @@ pub struct Document {
     /// The document element's own `style`. `DOCUMENT` is not in `nodes` — it is
     /// the form — so its declarations live beside them.
     document_style: Style,
+    /// THE TOP LAYER — HTML's own name for it, and its own ordered set.
+    ///
+    /// `showModal()` puts a dialog here; `close()` takes it out. Membership is
+    /// what makes a modal paint above everything, and it is deliberately NOT
+    /// a `z-index`: the top layer outranks the whole cascade, which is why a
+    /// modal beats a `z-index: 9999` sibling in a browser. Modelling it as a
+    /// separate paint pass is what makes that true here rather than
+    /// approximately true.
+    top_layer: Vec<NodeId>,
 }
 
 impl Document {
@@ -116,6 +125,7 @@ impl Document {
             next_id: 0,
             detached: HashMap::new(),
             document_style: Style::new(),
+            top_layer: Vec::new(),
         }
     }
 
@@ -149,6 +159,101 @@ impl Document {
     /// while the controls sat in the document all along.
     pub fn render(&mut self, ctx: &mut RenderContext) {
         self.form.render(ctx);
+        // Then the top layer, in the order dialogs entered it — the second
+        // pass IS what "above everything" means. Each modal gets its
+        // `::backdrop` painted immediately beneath it, so a stack of two
+        // modals dims twice, exactly as a browser does.
+        for node in self.top_layer.clone() {
+            self.render_backdrop(ctx);
+            let name = Self::widget_name(node);
+            if let Some(widget) = find_widget_mut(&mut self.form, &name) {
+                widget.render(ctx);
+            }
+        }
+    }
+
+    /// `dialog::backdrop` — the sheet between the page and a modal.
+    ///
+    /// It covers the VIEWPORT rather than the dialog's parent, because the
+    /// backdrop's containing block is the viewport however deeply nested the
+    /// dialog is. The colour is the usual user-agent default; a `::backdrop`
+    /// rule cannot override it yet, since the cascade has no pseudo-elements.
+    fn render_backdrop(&mut self, ctx: &mut RenderContext) {
+        let viewport = self.form.rect();
+        let scale = ctx.scale;
+        let Some(rect) = tiny_skia::Rect::from_xywh(
+            viewport.x * scale,
+            viewport.y * scale,
+            viewport.w * scale,
+            viewport.h * scale,
+        ) else {
+            return;
+        };
+        let mut paint = tiny_skia::Paint::default();
+        paint.set_color_rgba8(0, 0, 0, 26);
+        ctx.pixmap
+            .fill_rect(rect, &paint, tiny_skia::Transform::identity(), None);
+    }
+
+    // ── HTMLDialogElement ───────────────────────────────────────────────
+
+    /// `dialog.show()` (`modal` false) / `dialog.showModal()` (`modal` true).
+    ///
+    /// `open` is a reflected attribute, so opening a dialog is recorded on the
+    /// element itself. The rest is the user-agent stylesheet, applied here
+    /// because this document has no UA sheet to cascade from: a dialog is
+    /// `display: none` until opened, and a MODAL one is positioned against
+    /// the viewport and centred in it (`position: fixed; margin: auto`).
+    pub fn show_dialog(&mut self, node: NodeId, modal: bool) {
+        let Some(dom_node) = self.nodes.get_mut(&node) else {
+            return;
+        };
+        dom_node.attributes.insert("open".to_string(), String::new());
+        self.command(node, &WidgetCommand::SetVisible(true));
+        if !modal {
+            return;
+        }
+        self.set_style_property(node, "position", "fixed");
+        self.centre_in_viewport(node);
+        if !self.top_layer.contains(&node) {
+            self.top_layer.push(node);
+        }
+    }
+
+    /// `dialog.close()` — clears `open` and leaves the top layer.
+    ///
+    /// The `close` event and `returnValue` are not here: neither is a
+    /// reflected attribute, so neither is the tree's to remember.
+    pub fn close_dialog(&mut self, node: NodeId) {
+        if let Some(dom_node) = self.nodes.get_mut(&node) {
+            dom_node.attributes.remove("open");
+        }
+        self.command(node, &WidgetCommand::SetVisible(false));
+        self.top_layer.retain(|open| *open != node);
+    }
+
+    /// `dialog.open` — read straight off the reflected attribute.
+    pub fn dialog_open(&self, node: NodeId) -> bool {
+        self.nodes
+            .get(&node)
+            .is_some_and(|n| n.attributes.contains_key("open"))
+    }
+
+    /// `dialog:modal { margin: auto }` — centred in the viewport, keeping the
+    /// size the dialog already has.
+    fn centre_in_viewport(&mut self, node: NodeId) {
+        let viewport = self.form.rect();
+        let name = Self::widget_name(node);
+        let Some(widget) = find_widget_mut(&mut self.form, &name) else {
+            return;
+        };
+        let rect = widget.rect();
+        widget.set_rect(LayoutRect::new(
+            viewport.x + ((viewport.w - rect.w) / 2.0).max(0.0),
+            viewport.y + ((viewport.h - rect.h) / 2.0).max(0.0),
+            rect.w,
+            rect.h,
+        ));
     }
 
     pub fn form(&self) -> &Form {
@@ -196,6 +301,12 @@ impl Document {
                 "SetBordered".into(),
                 CommandValue::Bool(true),
             ));
+        }
+        // `dialog:not([open]) { display: none }` — the other UA rule that
+        // makes a dialog a dialog. Without it a form's secondary window is
+        // painted from the moment it is built, before anything shows it.
+        if tag == "dialog" {
+            widget.handle_command(&WidgetCommand::SetVisible(false));
         }
         self.detached.insert(id, widget);
         self.nodes.insert(
@@ -702,7 +813,13 @@ impl Document {
                 // the value just written. The rect was never missing; it was
                 // overwritten.
                 if matches!(property.as_str(), "left" | "top") {
-                    if self.positions_itself(node) {
+                    if self.declared_position(node) == "relative" {
+                        // In flow, so the coordinate is an OFFSET the container
+                        // applies — it has to be told the new one, then asked
+                        // to arrange again.
+                        self.set_child_relative(node);
+                        self.relayout_parent(node);
+                    } else if self.positions_itself(node) {
                         self.set_child_flow(node, false);
                     } else {
                         // `left` is inert on a static box in CSS. The write
@@ -830,13 +947,11 @@ impl Document {
             // Addressed to the PARENT, because the container is what arranges —
             // the same reason `dock` is resolved by `relayout_docked` rather
             // than by the child.
-            "position" => {
-                let in_flow = !matches!(
-                    value.trim().to_ascii_lowercase().as_str(),
-                    "absolute" | "fixed"
-                );
-                self.set_child_flow(node, in_flow);
-            }
+            "position" => match value.trim().to_ascii_lowercase().as_str() {
+                "absolute" | "fixed" => self.set_child_flow(node, false),
+                "relative" => self.set_child_relative(node),
+                _ => self.set_child_flow(node, true),
+            },
             "flex-direction" => {
                 let direction = value.trim().to_ascii_lowercase();
                 self.command(
@@ -963,14 +1078,33 @@ impl Document {
     /// frontend sets geometry before appending as often as after, and a
     /// container that never heard about a child cannot leave it alone.
     fn set_child_flow(&mut self, node: NodeId, in_flow: bool) {
+        let placement = if in_flow { "flow" } else { "absolute" }.to_string();
+        self.send_child_placement(node, placement);
+    }
+
+    /// `position: relative` — arranged by the container, then offset.
+    ///
+    /// The offsets are the DECLARED `left`/`top`, not a resolved coordinate:
+    /// the container has not placed the child yet, so there is no flow
+    /// position to add them to until it does.
+    fn set_child_relative(&mut self, node: NodeId) {
+        let (dx, dy) = self
+            .style(node)
+            .map(|s| (parse_px(&s.get("left")), parse_px(&s.get("top"))))
+            .unwrap_or((None, None));
+        let placement = format!(
+            "relative:{},{}",
+            dx.unwrap_or(0.0),
+            dy.unwrap_or(0.0)
+        );
+        self.send_child_placement(node, placement);
+    }
+
+    fn send_child_placement(&mut self, node: NodeId, placement: String) {
         let Some(parent) = self.nodes.get(&node).and_then(|n| n.parent) else {
             return;
         };
-        let spec = format!(
-            "{}={}",
-            Self::widget_name(node),
-            if in_flow { "flow" } else { "absolute" }
-        );
+        let spec = format!("{}={}", Self::widget_name(node), placement);
         if parent == DOCUMENT {
             self.form.handle_command(&WidgetCommand::Custom(
                 "SetChildFlow".into(),
@@ -1021,7 +1155,10 @@ impl Document {
     /// This is the whole rule; there is no container special case. A frontend
     /// whose children are parent-relative — VCL, WinForms, Flutter's
     /// `Positioned`, all of them — gets that by its containers **declaring**
-    /// `position: relative`, which `primitives/gui.rs` emits at construction.
+    /// `position: absolute`, which `primitives/gui.rs` emits at construction.
+    /// Either positioned value would serve here, since both establish a
+    /// containing block; `absolute` is emitted because these frontends also
+    /// mean "placed AT my own coordinates", which `relative` does not say.
     /// The declaration is in the document, so a real engine handed the same
     /// markup places the same controls in the same places. A behavioural
     /// assumption here would render correctly and be wrong in a browser, which
@@ -1211,12 +1348,14 @@ impl Document {
             // `static` is the author saying the container decides, and it wins
             // over the inference below.
             "static" => return false,
-            // `relative` is offset FROM the flow position, so a box with
-            // coordinates keeps them — the container must not recompute it.
-            // Without this, declaring containers `relative` (which they must
-            // be, to be containing blocks) would make a nested panel lose the
-            // coordinates it had before the declaration existed.
-            "relative" | "" => {}
+            // `relative` is IN flow — the container arranges it and then
+            // offsets it, which `set_child_relative` tells the container to
+            // do. It used to be lumped in with `absolute` here, because
+            // containers were declared `relative` while meaning "placed at my
+            // coordinates"; they declare `absolute` now, so relative is free
+            // to mean what CSS says.
+            "relative" => return false,
+            "" => {}
             _ => return false,
         }
         !style.get("left").is_empty() || !style.get("top").is_empty()
@@ -1374,6 +1513,19 @@ impl Document {
             CommandValue::Index(i) => i as i32,
             _ => -1,
         }
+    }
+
+    /// An element's laid-out rect.
+    ///
+    /// Goes through the document's own widget lookup, which walks the tree —
+    /// unlike `Form::get_control_rect`, whose `find_rect` default matches only
+    /// the widget itself and is not overridden by any container. That made
+    /// **every nested control** report no rect while rendering perfectly, and
+    /// a debugger dump saying "never laid out" for a control you can see is
+    /// worse than saying nothing: it sent a session hunting container layout
+    /// that was working.
+    pub fn rect(&mut self, node: NodeId) -> Option<LayoutRect> {
+        self.widget_mut(node).map(|w| w.rect())
     }
 
     /// `select.options[i].text` — the item at an index, `""` when out of range.
@@ -1838,6 +1990,53 @@ fn capitalize(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Render a document into a fresh pixmap and hand back the pixels.
+    fn painted(doc: &mut Document, width: u32, height: u32) -> tiny_skia::Pixmap {
+        let mut pixmap = tiny_skia::Pixmap::new(width, height).unwrap();
+        let mut font_system = cosmic_text::FontSystem::new();
+        let mut swash_cache = cosmic_text::SwashCache::new();
+        doc.set_viewport(width as f32, height as f32);
+        doc.render(&mut RenderContext {
+            pixmap: &mut pixmap,
+            font_system: &mut font_system,
+            swash_cache: &mut swash_cache,
+            scale: 1.0,
+        });
+        pixmap
+    }
+
+    #[test]
+    fn a_modal_paints_over_the_page_from_the_top_layer() {
+        // The whole point of the top layer: the modal's pass runs AFTER the
+        // document's, so its backdrop dims a button that was painted first —
+        // and would dim it just the same if the button came later in the
+        // tree or carried a large z-index, neither of which the top layer
+        // consults.
+        let mut doc = Document::new("t");
+        let button = doc.create_element("button", "");
+        doc.append_child(DOCUMENT, button);
+        let dialog = doc.create_element("dialog", "");
+        doc.append_child(DOCUMENT, dialog);
+
+        let before = painted(&mut doc, 200, 100);
+        doc.show_dialog(dialog, true);
+        let after = painted(&mut doc, 200, 100);
+
+        // The page's background is opaque, so the backdrop shows up as a
+        // DARKER pixel, not a more opaque one.
+        let sample = |p: &tiny_skia::Pixmap| {
+            let px = p.pixel(20, 20).unwrap();
+            u32::from(px.red()) + u32::from(px.green()) + u32::from(px.blue())
+        };
+        assert!(
+            sample(&after) < sample(&before),
+            "an open modal must lay its backdrop over what the page already \
+             painted: brightness {} before, {} after",
+            sample(&before),
+            sample(&after)
+        );
+    }
 
     #[test]
     fn created_element_is_not_in_the_document() {
@@ -2314,6 +2513,87 @@ mod tests {
         assert_eq!(doc.style_property(b, "width"), "200px");
         doc.set_style_property(b, "height", "10%");
         assert_eq!(doc.style_property(b, "height"), "30px");
+    }
+
+    #[test]
+    fn relative_keeps_its_flow_slot_and_absolute_gives_it_up() {
+        // THE difference between the two, and the only one that matters to a
+        // sibling: a relative box is still arranged — it keeps the space the
+        // flow gave it and is merely drawn offset — while an absolute box
+        // leaves the flow and its siblings close up behind it.
+        //
+        // They were the same thing until now: any positioned box carrying
+        // coordinates was pulled out of flow, so `position: relative` could
+        // not be spelled at all.
+        let offset_of = |mode: &str| {
+            let mut doc = Document::new("t");
+            let panel = doc.create_element("div", "");
+            doc.append_child(DOCUMENT, panel);
+            doc.set_style_property(panel, "position", "absolute");
+            doc.set_style_property(panel, "width", "400px");
+            doc.set_style_property(panel, "height", "300px");
+            doc.set_style_property(panel, "flex-direction", "column");
+
+            let first = doc.create_element("button", "");
+            doc.append_child(panel, first);
+            let second = doc.create_element("button", "");
+            doc.append_child(panel, second);
+
+            doc.set_style_property(first, "position", mode);
+            doc.set_style_property(first, "left", "25px");
+            doc.set_style_property(first, "top", "10px");
+
+            (
+                doc.rect(first).expect("first is in the document"),
+                doc.rect(second).expect("second is in the document"),
+            )
+        };
+
+        let (rel_first, rel_second) = offset_of("relative");
+        let (_, abs_second) = offset_of("absolute");
+
+        assert_ne!(
+            rel_second.y, abs_second.y,
+            "the sibling must move when the first child leaves the flow, and \
+             stay put when it is merely offset"
+        );
+        assert!(
+            rel_first.x >= 25.0,
+            "a relative box is drawn offset from its flow slot, got x={}",
+            rel_first.x
+        );
+    }
+
+    #[test]
+    fn an_absolute_child_resolves_against_the_nearest_positioned_ancestor() {
+        // The canonical CSS arrangement — absolute inside relative — plus the
+        // half that makes it a RULE rather than "the parent wins": a `static`
+        // box in between is skipped, because a static box is not a containing
+        // block. Nesting alone would answer the inner div both times.
+        let mut doc = Document::new("t");
+        let positioned = container_with(&mut doc, 400.0, 300.0);
+        doc.set_style_property(positioned, "left", "40px");
+        doc.set_style_property(positioned, "top", "20px");
+
+        let passthrough = doc.create_element("div", "");
+        doc.append_child(positioned, passthrough);
+        doc.set_style_property(passthrough, "position", "static");
+        doc.set_style_property(passthrough, "left", "100px");
+        doc.set_style_property(passthrough, "top", "100px");
+
+        let b = doc.create_element("button", "");
+        doc.append_child(passthrough, b);
+        doc.set_style_property(b, "position", "absolute");
+        doc.set_style_property(b, "left", "10px");
+        doc.set_style_property(b, "top", "5px");
+
+        let rect = doc.rect(b).expect("the button is in the document");
+        assert_eq!(
+            (rect.x, rect.y),
+            (50.0, 25.0),
+            "absolute must resolve against the RELATIVE ancestor (40,20), not \
+             the static div between them"
+        );
     }
 
     #[test]

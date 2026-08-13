@@ -87,6 +87,14 @@ pub struct FlowLayoutPanel {
     /// not *missing* a rect — it had the wrong one, which is why it rendered
     /// in flow order rather than at nonsense coordinates.
     out_of_flow: std::collections::HashSet<String>,
+    /// `position: relative` children, and how far each is offset.
+    ///
+    /// The OTHER half of positioning, and deliberately not the same set as
+    /// `out_of_flow`: a relative box KEEPS its flow slot — its siblings do not
+    /// close up behind it — and is merely drawn offset from where the flow put
+    /// it. Only `absolute`/`fixed` leave the flow. Treating the two alike is
+    /// what left `relative` with no way to mean what CSS says it means.
+    relative_offset: std::collections::HashMap<String, (f32, f32)>,
 }
 
 impl FlowLayoutPanel {
@@ -119,6 +127,7 @@ impl FlowLayoutPanel {
             bordered: false,
             caption: String::new(),
             out_of_flow: std::collections::HashSet::new(),
+            relative_offset: std::collections::HashMap::new(),
         }
     }
 
@@ -283,6 +292,7 @@ impl FlowLayoutPanel {
         let mut cx = r.x + self.padding + lead;
         let cy = r.y + self.top_inset();
         let out_of_flow = self.out_of_flow.clone();
+        let relative = self.relative_offset.clone();
         let child_flex = self.child_flex.clone();
         let natural_sizes = self.natural.clone();
         let child_align = self.child_align.clone();
@@ -313,7 +323,11 @@ impl FlowLayoutPanel {
                 .max(1.0);
             let mode = child_align.get(&name).unwrap_or(&align);
             let (offset, ch) = Self::align_with(mode, inner_h, natural);
-            child.set_rect(LayoutRect::new(cx, cy + offset, cw, ch));
+            // The flow slot, then the relative offset on top of it. `cx`
+            // advances by the SLOT, so offsetting a child never moves its
+            // siblings — the half that distinguishes relative from absolute.
+            let (dx, dy) = relative.get(&name).copied().unwrap_or((0.0, 0.0));
+            child.set_rect(LayoutRect::new(cx + dx, cy + offset + dy, cw, ch));
             cx += cw + spacing + extra;
         }
     }
@@ -357,6 +371,7 @@ impl FlowLayoutPanel {
         let cx = r.x + self.padding;
         let mut cy = r.y + self.top_inset() + lead;
         let out_of_flow = self.out_of_flow.clone();
+        let relative = self.relative_offset.clone();
         let child_flex = self.child_flex.clone();
         let natural_sizes = self.natural.clone();
         let child_align = self.child_align.clone();
@@ -385,7 +400,8 @@ impl FlowLayoutPanel {
                 .max(1.0);
             let mode = child_align.get(&name).unwrap_or(&align);
             let (offset, cw) = Self::align_with(mode, inner_w, natural);
-            child.set_rect(LayoutRect::new(cx + offset, cy, cw, ch));
+            let (dx, dy) = relative.get(&name).copied().unwrap_or((0.0, 0.0));
+            child.set_rect(LayoutRect::new(cx + offset + dx, cy + dy, cw, ch));
             cy += ch + spacing + extra;
         }
     }
@@ -626,14 +642,34 @@ impl PanelWidget for FlowLayoutPanel {
                 CommandValue::None
             }
             // CSS layout, addressed to the container because the container is
-            // what arranges. `SetChildFlow` names a child and says whether this
-            // panel arranges it (`position: static`) or leaves it where its own
-            // coordinates put it (`position: absolute`).
+            // what arranges. `SetChildFlow` names a child and says which of the
+            // three placements it has: this panel arranges it (`static`), it
+            // keeps its own coordinates (`absolute`/`fixed`), or this panel
+            // arranges it and THEN offsets it (`relative:dx,dy`).
             WidgetCommand::Custom(name, value) if name == "SetChildFlow" => {
                 if let CommandValue::Text(spec) = value {
                     match spec.split_once('=') {
                         Some((child, "flow")) => {
                             self.out_of_flow.remove(child);
+                            self.relative_offset.remove(child);
+                        }
+                        // `relative` is IN flow — the container still arranges
+                        // it, and the offset is applied to the slot it was
+                        // given. So it never enters `out_of_flow`, and its
+                        // siblings keep sitting where they would if the offset
+                        // were zero. That is the whole difference from
+                        // `absolute`, and the reason both are needed.
+                        Some((child, rest)) if rest.starts_with("relative:") => {
+                            self.out_of_flow.remove(child);
+                            let offsets = &rest["relative:".len()..];
+                            let (dx, dy) = offsets.split_once(',').unwrap_or(("0", "0"));
+                            self.relative_offset.insert(
+                                child.to_string(),
+                                (
+                                    dx.trim().parse().unwrap_or(0.0),
+                                    dy.trim().parse().unwrap_or(0.0),
+                                ),
+                            );
                         }
                         Some((child, _)) => {
                             // Only on the TRANSITION into out-of-flow. Being
