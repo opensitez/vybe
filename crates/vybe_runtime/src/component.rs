@@ -63,6 +63,21 @@ pub enum ValType {
     Result(Box<ValType>, Box<ValType>),
     /// Any — for dynamic languages that don't specify types
     Any,
+    /// `own<T>` — an owned resource handle. The receiver takes ownership and is
+    /// responsible for dropping it.
+    ///
+    /// Named by resource type (`"node"`, `"file-handle"`), not by index: a
+    /// declaration binds to whatever is registered under that name, the same
+    /// rule the type table already uses for a supertype it does not define.
+    Own(String),
+    /// `borrow<T>` — a borrowed resource handle. Valid for the duration of the
+    /// call and never dropped by the callee.
+    ///
+    /// This is the ordinary shape for DOM operations: `append-child(borrow<node>,
+    /// borrow<node>)` neither consumes its parent nor its child. Without the
+    /// distinction every handle looks owned, and a host that dropped one would
+    /// be indistinguishable from one that did not.
+    Borrow(String),
 }
 
 /// An interface — a named collection of function signatures.

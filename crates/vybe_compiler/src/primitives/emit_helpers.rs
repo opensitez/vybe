@@ -32,6 +32,12 @@ impl Compiler {
         let ht = crate::primitives::classes::heaptype_for_name(&mut self.chunks, name);
         self.chunks[self.current].emit_ref_type_op(op, ht, line);
     }
+    /// Emit a host call.
+    ///
+    /// Arity against a DECLARED signature is checked in `Chunk::emit_call`, not
+    /// here: 181 sites emit a host call without going through this helper, so a
+    /// check here covered barely half of them — including `createElement`,
+    /// which `emit_control_element` emits directly.
     pub(crate) fn emit_host_call(&mut self, idx: u16, argc: u8) {
         let l = self.line;
         self.chunks[self.current].emit_call(idx, argc, l);

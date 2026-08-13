@@ -673,6 +673,90 @@ pub(crate) struct ExceptionHandler {
     pub(crate) group: u64,
 }
 
+/// How a host function relates to a Component Model resource.
+///
+/// A DOM node, a file handle and a database connection are all resources: the
+/// host owns the thing, the guest holds a handle. Saying which resource a
+/// function belongs to — and whether it takes `self` — is what makes
+/// `append-child` a method on `node` rather than a free function that happens
+/// to take a node-shaped value first.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResourceBinding {
+    /// The resource type this function is a method on (`"node"`).
+    pub resource: String,
+    /// A constructor yields a fresh handle; a destructor consumes one.
+    pub kind: ResourceMemberKind,
+    /// `borrow<self>` (read-only, not dropped) vs `own<self>` (consuming).
+    /// Every DOM operation borrows.
+    pub borrows_self: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResourceMemberKind {
+    Constructor,
+    Method,
+    Static,
+    Destructor,
+}
+
+/// Everything a host function DECLARES about itself.
+///
+/// One record, not a parameter list. Each dimension is a field with a default,
+/// so a new one — effects, capabilities, whatever comes next — is additive and
+/// no existing registration moves. That is the property this type exists for:
+/// the registration API is changed once and then never again.
+///
+/// `sig: None` is the honest default. The registry has never carried
+/// signatures, so `mount_host_exports` mounts every leaf with `arity: None`;
+/// a declaration is what upgrades a `(module, func)` string pair into a typed
+/// interface member, which is what `namespaceplan.md` requires of a leaf.
+pub struct HostFnDecl {
+    pub module: String,
+    pub name: String,
+    pub call: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>,
+    /// The Component Model signature. `None` = undeclared, not "no arguments".
+    pub sig: Option<crate::component::FuncSig>,
+    /// The resource this function is a member of, when it is one.
+    pub resource: Option<ResourceBinding>,
+}
+
+impl HostFnDecl {
+    /// An undeclared registration — exactly what `register_host_fn` produces.
+    pub fn new(
+        module: impl Into<String>,
+        name: impl Into<String>,
+        call: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>,
+    ) -> Self {
+        Self {
+            module: module.into(),
+            name: name.into(),
+            call,
+            sig: None,
+            resource: None,
+        }
+    }
+
+    pub fn with_sig(mut self, sig: crate::component::FuncSig) -> Self {
+        self.sig = Some(sig);
+        self
+    }
+
+    /// Declare this function a method on a resource, borrowing `self`.
+    pub fn method_on(mut self, resource: impl Into<String>) -> Self {
+        self.resource = Some(ResourceBinding {
+            resource: resource.into(),
+            kind: ResourceMemberKind::Method,
+            borrows_self: true,
+        });
+        self
+    }
+
+    pub fn resource_member(mut self, binding: ResourceBinding) -> Self {
+        self.resource = Some(binding);
+        self
+    }
+}
+
 /// A language-agnostic bytecode virtual machine.
 ///
 /// The VM has no built-in functions or language-specific semantics.
@@ -2023,6 +2107,38 @@ impl VM {
     /// Also adds it to the function table for call_indirect dispatch,
     /// and records the export in the per-module `ModuleRecord` so the
     /// Linker (ESM host-import resolver) can see it.
+    /// Register a host function from a DECLARATION RECORD.
+    ///
+    /// One parameter, not a growing list of them. Every dimension a host
+    /// function might declare — its signature today, its resource binding
+    /// tomorrow, effects or capabilities after that — is a FIELD with a
+    /// default, so adding one touches no existing caller. That property is the
+    /// whole point: the 1,898 `register_host_fn` sites in this tree must never
+    /// have to move again.
+    ///
+    /// [`Self::register_host_fn`] is this function with everything defaulted —
+    /// not a legacy path, not a second mechanism, just the record with `sig:
+    /// None`. An undeclared function behaves exactly as it always has:
+    /// `mount_host_exports` mounts it with `arity: None`, which reports
+    /// honestly that the registry never knew.
+    pub fn register_host(&mut self, decl: HostFnDecl) {
+        let HostFnDecl {
+            module,
+            name,
+            call,
+            sig,
+            resource,
+        } = decl;
+        if let Some(sig) = sig {
+            // PROCESS-GLOBAL, not a VM field: the consumer is the COMPILER,
+            // which never holds a VM. The namespace tree is global for the same
+            // reason, and `mount_host_exports` already reads the capability
+            // context that way.
+            crate::declare_host_signature(&module, &name, sig, resource);
+        }
+        self.register_host_fn(&module, &name, call);
+    }
+
     pub fn register_host_fn(
         &mut self,
         module: &str,

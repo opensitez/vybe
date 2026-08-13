@@ -2826,7 +2826,7 @@ impl Compiler {
                         self.chunk().emit_else(line);
                         self.emit_u16(Op::LOCAL_GET, value_slot);
                         inst!(self, recipes::is_object);
-                        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+                        // `ref.test` already yields the i32 this block returns.
                         self.chunk().emit_end(line);
                     }
                 } else {
@@ -2857,7 +2857,7 @@ impl Compiler {
                         self.chunk().emit_else(line);
                         self.emit_u16(Op::LOCAL_GET, value_slot);
                         inst!(self, recipes::is_object);
-                        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+                        // `ref.test` already yields the i32 this block returns.
                         self.chunk().emit_end(line);
                         self.chunk().emit_end(line);
                     }
@@ -3370,12 +3370,30 @@ impl Compiler {
                         line,
                     );
                 } else {
-                    // A computed name has no global to read at compile time.
-                    for arg in args.iter() {
+                    // A computed name cannot be read as a global at compile
+                    // time, but it can still be RESOLVED at run time — one
+                    // comparison per declared symbol, which is the only shape
+                    // the closed host surface allows
+                    // (`emit_symbol_ref_by_runtime_name`).
+                    //
+                    // This used to drop the arguments and answer `false`
+                    // unconditionally, so `class_exists($name)` reported a
+                    // loaded class missing and `function_exists($f)` reported
+                    // `strlen` missing — a silent wrong answer to the standard
+                    // feature-detection idiom, and one that also made
+                    // `if (!function_exists($f)) { … }` take the wrong branch.
+                    for arg in args.iter().skip(1) {
                         self.compile_expr(arg)?;
                         self.emit(Op::DROP);
                     }
-                    self.emit_const(Value::Bool(false));
+                    let name_expr = args[0];
+                    self.emit_symbol_ref_by_runtime_name(name_expr)?;
+                    let line = self.line;
+                    crate::primitives::dynamic_symbols::emit_symbol_kind_test(
+                        self.chunk(),
+                        expected_kind,
+                        line,
+                    );
                 }
             }
             "php_define" => {

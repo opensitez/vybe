@@ -420,7 +420,7 @@ pub fn emit_entry_control(
 ) {
     chunk.emit_op_u16(Op::LOCAL_GET, control_slot, line);
     recipes::is_object(chunk, line);
-    ops::emit_dyn_to_bool(chunk, line);
+    // `ref.test` already yields an i32; `Op::IF` consumes it directly.
     chunk.emit_if(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, control_slot, line);
@@ -479,7 +479,7 @@ pub fn emit_resume_dispatch(
 
     chunk.emit_op_u16(Op::LOCAL_GET, resume_slot, line);
     recipes::is_object(chunk, line);
-    ops::emit_dyn_to_bool(chunk, line);
+    // `ref.test` already yields an i32; `Op::IF` consumes it directly.
     chunk.emit_if(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, resume_slot, line);
@@ -853,7 +853,6 @@ pub fn build_generator_next(imports: &mut Chunk) -> Chunk {
     c.emit_struct_field_op(Op::STRUCT_SET, 0, value_key, 0);
     c.emit_dup(0);
     c.emit_op_u16(Op::LOCAL_GET, has_more_local, 0);
-    ops::emit_dyn_to_bool_into(imports, &mut c, 0);
     ops::emit_dyn_not_into(imports, &mut c, 0);
     c.emit_struct_field_op(Op::STRUCT_SET, 0, done_key, 0);
     c.emit_op(Op::RETURN, 0);
@@ -917,7 +916,6 @@ pub fn build_async_generator_next(imports: &mut Chunk) -> Chunk {
     // next() — drive one step; emit_next pushes [value, has_more].
     crate::primitives::globals::emit_read(&mut c, "__js_this", 0);
     emit_next(&mut c, 0);
-    ops::emit_dyn_to_bool_into(imports, &mut c, 0);
     ops::emit_dyn_not_into(imports, &mut c, 0); // i32 done = !has_more
     c.emit_op_u16(Op::LOCAL_SET, done_local, 0);
     c.emit_op_u16(Op::LOCAL_SET, value_local, 0);

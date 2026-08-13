@@ -719,6 +719,20 @@ pub struct Compiler {
     /// `using Demo.Core`) that expose declarations under that namespace to
     /// unqualified source lookup.
     source_namespace_imports: Vec<String>,
+    /// The `user.<unit>.*` root of namespaceplan.md, held per COMPILATION UNIT
+    /// instead of in `vybe_runtime::namespaces`.
+    ///
+    /// User declarations are a *mount*, not tree data. The global registry is
+    /// process-global, merges on registration and never unregisters, while
+    /// `--serve` compiles many units in one process — registering
+    /// `myapp.models.customer` there would leave it resolvable while compiling
+    /// the NEXT program, and silently, as a stale resolution rather than an
+    /// error. The plan's own gotcha: "mounts are per-VM; tree registration is
+    /// process-global data (immutable after startup) — keep them distinct."
+    ///
+    /// It is walked by the SAME `resolve_segments` as every platform root, so
+    /// this is one more root in one resolver, not a second resolver.
+    user_namespace_tree: crate::primitives::namespaces::Subtree,
     /// Snapshot of the current module's source imports.
     ///
     /// Used for narrow source-shape decisions that depend on the ambient
@@ -2462,6 +2476,7 @@ impl Compiler {
             ambient_tree_roots: Vec::new(),
             source_type_aliases: HashMap::new(),
             source_namespace_imports: Vec::new(),
+            user_namespace_tree: Default::default(),
             current_module_imports: Vec::new(),
             active_namespaces: None,
             module_exports: HashMap::new(),
@@ -2821,6 +2836,7 @@ impl Compiler {
         let merged_body = merged_body;
 
         self.predeclare_type_names(&merged_body, None);
+        self.build_user_namespace_tree();
         self.collect_module_variable_names(&merged_body);
         self.collect_reflection_metadata(&merged_body);
 

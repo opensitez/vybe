@@ -1498,9 +1498,10 @@ pub fn emit_compact_adjacent(chunks: &mut [Chunk], current: usize, line: u32) {
     lget(&mut chunks[current], value_slot, line);
     lget(&mut chunks[current], prev_slot, line);
     crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    // `emit_dyn_not` coerces on the way in and yields i32, which `emit_if`
+    // consumes directly — the ToBoolean ladders on either side of it were both
+    // no-ops. See `loops::emit_loop_cond`.
     crate::primitives::ops::emit_dyn_not(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     lget(&mut chunks[current], out_slot, line);
     lget(&mut chunks[current], value_slot, line);
@@ -1650,9 +1651,7 @@ pub fn emit_map_copy(chunks: &mut [Chunk], current: usize, line: u32) {
     lget(&mut chunks[current], dst_slot, line);
     lget(&mut chunks[current], key_slot, line);
     emit_import_call(chunks, current, "ecma:object", "hasOwn", 2, line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     crate::primitives::ops::emit_dyn_not(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     lget(&mut chunks[current], count_slot, line);
     chunks[current].emit_i32_const(1, line);

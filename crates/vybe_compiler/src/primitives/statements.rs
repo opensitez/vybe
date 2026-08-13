@@ -68,7 +68,79 @@ impl Compiler {
         }
     }
 
+    /// Reclaim emitter scratch locals at the statement boundary.
+    ///
+    /// `Chunk::alloc_scratch` is a bump allocator over `local_count` with no
+    /// free: every helper that needs a temporary (`emit_invoke_method`,
+    /// `emit_get_range`, the multi-value tuple temp, …) permanently consumes
+    /// slots. Scratch is dead once the statement that asked for it finishes,
+    /// so a function of N statements paid N × scratch instead of max(scratch).
+    /// A 2500-assertion `.wast` script lowers into ONE function body and blew
+    /// past the u16 slot space — `local_count` overflowed rather than reusing
+    /// slots that had been dead for thousands of statements.
+    ///
+    /// Save/restore, not reset-to-floor: restoring to the pre-statement mark
+    /// (never below it) is what makes this safe under nesting. A `for` that
+    /// allocates its iterator scratch at mark M compiles its body statements
+    /// at mark M+1, so slot M is never handed out again while it is live.
+    ///
+    /// Three floors the mark alone doesn't cover:
+    ///   * `scope.next_slot` — a `let` inside this statement pushed
+    ///     `local_count` up for a NAMED local that outlives it (`define_local`
+    ///     in `control_flow.rs`). Dropping back to the mark would let the next
+    ///     sibling statement's scratch overwrite it — the variadic-param
+    ///     corruption class.
+    ///   * `dup_slot` — cached on the chunk and reused by every later
+    ///     `emit_dup`, so it must never fall inside the reclaimable range.
+    ///     `define_local` already reserves it exactly this way; this is the
+    ///     same policy, not a second one.
+    ///   * `capture_locals` — `capture_local_slot` memoizes one slot per
+    ///     upvalue index for the WHOLE function, but allocates it with
+    ///     `define_local` into whatever scope happens to be innermost at the
+    ///     first use. Once that block scope pops, `scope.next_slot` no longer
+    ///     covers the slot, and only the old never-reclaim behaviour was
+    ///     keeping it alive. The closure env array lives in one of these.
+    ///
+    /// `dup_slot` and `capture_locals` are the complete set of slots cached
+    /// beyond the scope that declared them — everything else either lives
+    /// below `scope.next_slot` or is allocated and consumed inside one
+    /// statement.
     pub(super) fn compile_stmt(&mut self, stmt: &Statement) -> Result<(), String> {
+        // The chunk is captured BEFORE the statement: a nested function or
+        // lambda declaration switches `self.current` while it compiles, so
+        // reading it afterwards could reclaim against the wrong chunk.
+        let cur = self.current;
+        let mark = self.chunks[cur].local_count;
+        let result = self.compile_stmt_inner(stmt);
+        let floor = self.scopes.last().map_or(0, |s| s.next_slot);
+        let mut restore = mark.max(floor);
+        if let Some(dup_slot) = self.chunks[cur].dup_slot {
+            restore = restore.max(dup_slot + 1);
+        }
+        if let Some(&max_capture) = self.capture_locals.values().max() {
+            restore = restore.max(max_capture + 1);
+        }
+        // `local_count` is TWO facts in one field: the bump pointer for the
+        // next allocation, AND the peak the frame must be sized to. Only the
+        // first is reclaimable. `define_local` temps raise `local_count` but
+        // not `scratch_high_water`, so before lowering the pointer the peak
+        // has to be banked — otherwise `finalize_local_count` sizes the frame
+        // from a scope that has since popped, the frame comes up short, and
+        // `LOCAL_SET` writes past it into the caller's stack region instead of
+        // trapping. That is what made `r += vals[i].toUpperCase()` return the
+        // receiver: the emitted bytecode was correct, the frame holding it
+        // wasn't.
+        let peak = self.chunks[cur].local_count;
+        if peak > self.chunks[cur].scratch_high_water {
+            self.chunks[cur].scratch_high_water = peak;
+        }
+        if restore < peak {
+            self.chunks[cur].local_count = restore;
+        }
+        result
+    }
+
+    fn compile_stmt_inner(&mut self, stmt: &Statement) -> Result<(), String> {
         self.line = stmt.span.start_line;
         if std::env::var("VYBE_DBG_CTRL").is_ok() {
             let what = match &stmt.kind {
@@ -4352,6 +4424,13 @@ impl Compiler {
                     declared.binding = declared_binding;
                     declared
                 });
+                // The last step of reducing a spelling to a type: a qualified
+                // user type (`MyApp.Models.Customer`) becomes the one identity
+                // its `NamespaceDecl` produced. Alias resolution above answers
+                // source-level type ALIASES; this answers namespace
+                // QUALIFICATION, and both have to happen before the hint is
+                // stored, because every consumer downstream compares it by name.
+                let inferred_type_hint = self.canonicalize_declared_type_hint(inferred_type_hint);
                 let is_pascal_type_alias_decl = self.profile.const_without_init_is_type_alias
                     && *kind == VarDeclKind::Const
                     && decl.init.is_none()
@@ -5952,7 +6031,7 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
                         inst!(self, recipes::is_object);
                         let line = self.line;
-                        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+                        // `ref.test` already yields an i32; `Op::IF` takes it.
                         self.chunk().emit_if(line);
 
                         let kind_key = self.str_const("__ref_kind");

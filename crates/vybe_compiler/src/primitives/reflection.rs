@@ -2201,7 +2201,7 @@ pub fn emit_is_instance_of(
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     let ht = crate::primitives::classes::heaptype_for_name(chunks, type_name);
     chunks[current].emit_ref_type_op(Op::REF_TEST, ht, line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    // `ref.test` already yields an i32; `Op::IF` takes it.
     chunks[current].emit_if_value(line);
     chunks[current].emit_i32_const(1, line);
     chunks[current].emit_else(line);

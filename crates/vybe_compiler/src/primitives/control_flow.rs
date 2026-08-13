@@ -995,7 +995,8 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, ptr_slot);
         inst!(self, recipes::is_object);
         let line = self.line;
-        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+        // `ref.test` pushes `Value::I32(0|1)` and `Op::IF` takes an i32 — the
+        // ToBoolean ladder here was a no-op. See `operators::emit_to_primitive`.
         self.chunk().emit_if(line);
 
         let kind_key = self.str_const("__ref_kind");
@@ -1050,7 +1051,8 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, base_slot);
         inst!(self, recipes::is_object);
         let line = self.line;
-        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+        // `ref.test` pushes `Value::I32(0|1)` and `Op::IF` takes an i32 — the
+        // ToBoolean ladder here was a no-op. See `operators::emit_to_primitive`.
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, base_slot);
@@ -1608,6 +1610,7 @@ impl Compiler {
         name: &str,
         type_hint: Option<vybe_ast::TypeHint>,
     ) -> u16 {
+        let type_hint = self.canonicalize_declared_type_hint(type_hint);
         {
             let scope = self.scopes.last_mut().unwrap();
             let chunk_locals = self.chunks[self.current].local_count;

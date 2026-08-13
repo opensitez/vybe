@@ -52,11 +52,51 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
 
     let want = vb_string(&expected.join("\n"));
     let body = close_main_with(body.trim(), &format!("__Check({want})"));
+    let (options, body) = hoist_option_statements(&body);
 
     Emitted {
-        text: format!("{header}\n{harness}\n\n{}\n", body.trim_end()),
+        text: format!("{header}{options}\n{harness}\n\n{}\n", body.trim_end()),
         pairing: Pairing::Direct,
     }
+}
+
+/// Lift `Option …` above the harness.
+///
+/// VB requires every `Option` statement to precede all declarations and
+/// `Imports` — BC30627, "'Option' statements must precede any declarations or
+/// 'Imports' statements". The harness module IS a declaration and it is emitted
+/// first, so a case whose source opens with `Option Strict Off` landed ~40
+/// lines down and real VB rejected the whole file.
+///
+/// vybex does not care; `vbc` does. The format's entire value is that ONE file
+/// runs on both runtimes — `testrunner run … --runtime` against real VB.NET is
+/// how a red test gets split into "our bug" and "wrong expectation", and that
+/// door was closed for every VB case carrying an `Option` line.
+///
+/// Comments may precede an `Option`, so the `' vybe-test:` header stays put.
+/// Only the four real forms are matched, so a string or identifier beginning
+/// with the word cannot be hoisted out of the program.
+fn hoist_option_statements(body: &str) -> (String, String) {
+    let mut options: Vec<String> = Vec::new();
+    let mut rest: Vec<&str> = Vec::new();
+    for line in body.lines() {
+        let lowered = line.trim_start().to_ascii_lowercase();
+        let is_option = lowered.starts_with("option strict")
+            || lowered.starts_with("option explicit")
+            || lowered.starts_with("option compare")
+            || lowered.starts_with("option infer");
+        if is_option {
+            options.push(line.trim().to_string());
+        } else {
+            rest.push(line);
+        }
+    }
+    let hoisted = if options.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", options.join("\n"))
+    };
+    (hoisted, rest.join("\n"))
 }
 
 /// Put `__Check(…)` at the END of `Sub Main`, where every print has already

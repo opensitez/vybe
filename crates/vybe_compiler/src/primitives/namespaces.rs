@@ -35,6 +35,20 @@ pub fn resolve_path(segments: &[&str]) -> Option<ResolutionTarget> {
     resolve_segments(&guard.tree, segments, 0)
 }
 
+/// Walk an EXPLICIT forest instead of the process-global registry.
+///
+/// The `user.<unit>.*` root of namespaceplan.md lives on the `Compiler` rather
+/// than in `vybe_runtime::namespaces` (per-unit mount vs. process-global tree),
+/// but it must resolve by the same rules as `dotnet.*` or `ecma.*`. Sharing
+/// `resolve_segments` is what makes the user root one more root in ONE
+/// resolver rather than a second resolver wearing a tree's clothes.
+pub(crate) fn resolve_in(forest: &Subtree, segments: &[&str]) -> Option<ResolutionTarget> {
+    if segments.is_empty() {
+        return None;
+    }
+    resolve_segments(forest, segments, 0)
+}
+
 pub(crate) fn normalize_source_path(name: &str) -> String {
     name.trim_start_matches(['\\', '.'])
         .split(['\\', '.'])

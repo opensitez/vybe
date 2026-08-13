@@ -218,7 +218,6 @@ pub fn emit_soundex(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     lget(chunk, digit_slot, line);
     lget(chunk, last_slot, line);
     crate::primitives::ops::emit_dyn_eq(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     crate::primitives::ops::emit_dyn_not(chunk, line);
     chunk.emit_if(line);
     // different non-zero: append
@@ -589,7 +588,6 @@ pub fn emit_similar_text(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     lget(chunk, used_slot, line);
     lget(chunk, j_slot, line);
     chunk.emit_op(Op::ARRAY_GET, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     crate::primitives::ops::emit_dyn_not(chunk, line);
     chunk.emit_if(line); // if !used[j]
 
@@ -732,7 +730,6 @@ pub fn emit_metaphone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     }
     // if !is_vowel: append if code in A-Z range
     lget(chunk, is_vowel_slot, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     crate::primitives::ops::emit_dyn_not(chunk, line);
     chunk.emit_if(line);
     // not a vowel: append if 65 <= code <= 90

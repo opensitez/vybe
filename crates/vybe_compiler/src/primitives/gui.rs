@@ -118,7 +118,15 @@ pub fn canonical_control_name(name: &str) -> String {
         "errorprovider" => "ErrorProvider",
         "helpprovider" => "HelpProvider",
         "backgroundworker" => "BackgroundWorker",
-        "bindingsource" => "BindingSource",
+        // `BindingSource` is NOT here. Naming a type in this table is what makes
+        // `New <Type>()` an ELEMENT construction: `constructed_control_type_name`
+        // gates on exactly this answer, and a name with no HTML counterpart
+        // falls through to `ControlElement::custom` → `<vybe-bindingsource>`.
+        // A binding source is a cursor over data — it has no element, nothing
+        // paints it, and every member is a position or a list. Listed here it
+        // got a document node, its `Position` became a CSS write, and the
+        // platform's own constructor never ran. `BindingNavigator` stays: that
+        // one IS a toolbar the user sees.
         "bindingnavigator" => "BindingNavigator",
 
         // ── Forms ──
@@ -516,6 +524,33 @@ fn property_op(role: &str, setting: bool) -> (&'static str, &'static str, Option
             },
             None,
         ),
+        // A control's `Hint` IS the `title` attribute — HTML's own tooltip,
+        // shown by every browser on hover with no script. The role was already
+        // named `tooltip` and had no arm, so it wrote `tooltip="…"`, an
+        // attribute nothing has ever read.
+        "tooltip" => (
+            DOM_MODULE,
+            if setting {
+                "setAttribute"
+            } else {
+                "getAttribute"
+            },
+            Some("title"),
+        ),
+        // VCL's `Tag` is a scratch integer the application gives meaning to.
+        // HTML has exactly that: a `data-*` attribute is author data the UA
+        // ignores. It round-tripped before as a bare `tag="…"`, which works and
+        // is non-conforming markup — `data-tag` is the same behaviour spelled
+        // the way the spec allows.
+        "tag" => (
+            DOM_MODULE,
+            if setting {
+                "setAttribute"
+            } else {
+                "getAttribute"
+            },
+            Some("data-tag"),
+        ),
         // A control's `Name` IS the element id — what `getElementById` and
         // `<label for>` resolve. Not HTML's `name`, the submission key.
         "name" => (
@@ -569,6 +604,19 @@ fn property_op(role: &str, setting: bool) -> (&'static str, &'static str, Option
                 "getStyleProperty"
             },
             Some("color"),
+        ),
+        // Scrolling is a CSS property, not a control mode — `overflow` is the
+        // whole of what a toolkit's `ScrollBars` means, and the frontend's
+        // constants are declared as the CSS keywords so no enum is translated
+        // on the way.
+        "overflow" => (
+            CSSOM_MODULE,
+            if setting {
+                "setStyleProperty"
+            } else {
+                "getStyleProperty"
+            },
+            Some("overflow"),
         ),
         // `dock` joins these because it is geometry too, just expressed as a
         // rule instead of a number: the container computes the rect from it.
@@ -771,6 +819,91 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, child);
         let idx = self.import(DOM_MODULE, "appendChild");
         self.emit_host_call(idx, 3);
+    }
+
+    /// Apply one declared constructor argument to the control being built.
+    ///
+    /// A DECLARATIVE frontend puts configuration in the constructor —
+    /// `ElevatedButton(onPressed: f, child: Text('7'))` — so the same two
+    /// operations an imperative frontend spells as later statements arrive at
+    /// the construction site instead. `FieldGui` is the adapter's declaration of
+    /// which one each argument is, and this is where it becomes bytecode: the
+    /// emit stays in `gui.rs`, and the construction site only calls it.
+    ///
+    /// Stack in `[control, value]`, out `[]` — the value is consumed.
+    ///
+    /// This is what replaces stamping an `__ops` array for a realizer written in
+    /// the target language to walk. A role only exists at compile time (it is
+    /// carried in the emit NAME, `gui.prop_set.<role>`), so target-language
+    /// source can only ever re-derive it — which is the duplicated role→DOM
+    /// match the plan forbids. Applying it here is the one place the role is
+    /// still known.
+    pub fn emit_gui_field(
+        &mut self,
+        field: &vybe_runtime::namespaces::FieldGui,
+        line: u32,
+    ) {
+        use vybe_runtime::namespaces::FieldGui;
+        match field {
+            // A child widget nests; a scalar sets the property. Both spellings
+            // reach an operation that already exists, so neither needs a new
+            // one.
+            FieldGui::NestOrProp(key) => {
+                let role = key.to_ascii_lowercase();
+                self.emit_gui_property_set(&role, line);
+            }
+            // A LIST of children — `Column(children: [...])`. Each element
+            // appends, in order.
+            //
+            // The value is an array, not one widget, so this is a loop and not
+            // a single `appendChild`. Passing the array itself would append one
+            // node that is not an element and silently produce an empty
+            // container.
+            FieldGui::Children => {
+                let list = self.define_local("__gui_children");
+                let parent = self.define_local("__gui_children_parent");
+                let index = self.define_local("__gui_children_i");
+                let count = self.define_local("__gui_children_n");
+                self.emit_u16(Op::LOCAL_SET, list);
+                self.emit_u16(Op::LOCAL_SET, parent);
+
+                self.emit_u16(Op::LOCAL_GET, list);
+                collections::emit_array_length(self.chunk(), line);
+                self.emit_u16(Op::LOCAL_SET, count);
+                self.emit_const(Value::I32(0));
+                self.emit_u16(Op::LOCAL_SET, index);
+
+                let current = self.current;
+                let state =
+                    crate::primitives::loops::emit_loop_start(&mut self.chunks, current, line);
+                self.emit_u16(Op::LOCAL_GET, index);
+                self.emit_u16(Op::LOCAL_GET, count);
+                ops::emit_dyn_lt(&mut self.chunks[current], line);
+                crate::primitives::loops::emit_loop_cond(&mut self.chunks, current, line);
+
+                self.emit_u16(Op::LOCAL_GET, parent);
+                self.emit_u16(Op::LOCAL_GET, list);
+                self.emit_u16(Op::LOCAL_GET, index);
+                collections::emit_get(&mut self.chunks, current, line);
+                self.emit_gui_append_child(line);
+
+                self.emit_u16(Op::LOCAL_GET, index);
+                self.emit_const(Value::I32(1));
+                self.emit(Op::I32_ADD);
+                self.emit_u16(Op::LOCAL_SET, index);
+                crate::primitives::loops::emit_loop_end(&mut self.chunks, current, state, line);
+            }
+            // A handler wires to the control's event. `on` + the type is the
+            // whole rule — the same one a property-spelled handler goes through.
+            FieldGui::Event(name) => {
+                let role = format!("on{}", name.to_ascii_lowercase());
+                self.emit_gui_property_set(&role, line);
+            }
+            // The child's text IS this control's caption, not a nested control.
+            FieldGui::Caption => {
+                self.emit_gui_property_set("text", line);
+            }
+        }
     }
 
     /// Lower `gui.ctrl.<verb>` — stack in `[control]`, out `[value]`.
@@ -1759,7 +1892,7 @@ impl Compiler {
         Ok(true)
     }
 
-    /// Declare a container `position: relative`.
+    /// Declare a container `position: absolute`.
     ///
     /// A child's `Left`/`Top` is relative to its parent in every framework here
     /// — VCL, WinForms and Flutter's `Positioned` all mean it. CSS spells that
@@ -1768,14 +1901,24 @@ impl Compiler {
     /// container has to say it is positioned, or a browser handed this document
     /// would place every nested control against the body.
     ///
+    /// `absolute` rather than `relative`, and the difference is not cosmetic.
+    /// Both are positioned, so both establish a containing block — but a
+    /// container in these frameworks carries its OWN `Left`/`Top` too, and
+    /// those two values mean different things per CSS: an absolute box is
+    /// placed AT its coordinates, a relative box keeps its flow slot and is
+    /// merely offset from it. Declaring `relative` said the second and meant
+    /// the first, which only worked because the widget layer treated any
+    /// positioned box with coordinates as out of flow. That conflation is what
+    /// left `position: relative` with no way to mean what CSS says it means.
+    ///
     /// It is DECLARED, into the document, rather than assumed by the widget
     /// layer. A behavioural assumption would render correctly here and wrongly
     /// in a real engine — which defeats the point of being HTML underneath. The
     /// emitted markup is now what you would write by hand:
     ///
     /// ```html
-    /// <div style="position: relative; left: 10px; top: 10px">
-    ///   <button style="left: 20px; top: 50px">…</button>
+    /// <div style="position: absolute; left: 10px; top: 10px">
+    ///   <button style="position: absolute; left: 20px; top: 50px">…</button>
     /// </div>
     /// ```
     ///
@@ -1789,7 +1932,7 @@ impl Compiler {
         self.chunk().emit_call(doc_idx, 0, line);
         self.emit_u16(Op::LOCAL_GET, element);
         emit_string_const(self.chunk(), "position", line);
-        emit_string_const(self.chunk(), "relative", line);
+        emit_string_const(self.chunk(), "absolute", line);
         let set_idx = self.import(CSSOM_MODULE, "setStyleProperty");
         self.emit_host_call(set_idx, 4);
         // A host call leaves its result on the stack — the convention every

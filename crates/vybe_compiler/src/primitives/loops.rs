@@ -81,8 +81,13 @@ pub fn emit_loop_start(chunks: &mut [Chunk], current: usize, line: u32) -> LoopS
 }
 
 /// After condition is on stack: convert to bool, branch out of block if false.
+///
+/// `emit_dyn_not` IS `emit_dyn_to_bool` followed by `I32_EQZ` (`ops.rs`), so it
+/// already coerces whatever the caller left on the stack. A separate
+/// `emit_dyn_to_bool` in front of it ran the ~33-instruction ToBoolean ladder a
+/// second time, on a value that was by then an i32 0/1 — a no-op costing 24
+/// executed instructions and 4 host calls on EVERY iteration of EVERY loop.
 pub fn emit_loop_cond(chunks: &mut [Chunk], current: usize, line: u32) {
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     crate::primitives::ops::emit_dyn_not(&mut chunks[current], line);
     // br_if_label 1 = break out of loop to block end (depth 0=loop, 1=block)
     chunks[current].emit_br_if(1, line);
@@ -134,9 +139,12 @@ pub fn emit_do_loop_end(
     negate: bool,
     line: u32,
 ) {
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    // `emit_dyn_not` already coerces (it is `emit_dyn_to_bool` + `I32_EQZ`), so
+    // the two arms are exclusive rather than stacked — see `emit_loop_cond`.
     if negate {
         crate::primitives::ops::emit_dyn_not(&mut chunks[current], line);
+    } else {
+        crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     }
     // br_if_label 0 = continue loop if condition is true
     chunks[current].emit_br_if(0, line);

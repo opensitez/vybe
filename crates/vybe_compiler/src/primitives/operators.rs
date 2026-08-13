@@ -27,7 +27,12 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, value_slot);
         inst!(self, recipes::is_object);
         let line = self.line;
-        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+        // `is_object` is `ref.test struct` — it already yields an i32, and
+        // `Op::IF` takes an i32 (or a Bool) directly. Running
+        // `emit_dyn_to_bool` on it re-ran the ~33-instruction ToBoolean ladder
+        // over a value that was already 0/1, TWICE per relational operator
+        // (`coerce_top_two_to_primitive`) and twice per `- * /`
+        // (`coerce_top_two_to_number`).
         self.chunk().emit_if_value(line);
         self.emit_u16(Op::LOCAL_GET, value_slot);
         let idx = self.import("ecma:value", "toPrimitive");

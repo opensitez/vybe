@@ -352,10 +352,16 @@ pub struct Chunk {
     pub is_generator: bool,
     /// Shared scratch local for emit_dup (local.tee + local.get).
     pub dup_slot: Option<u16>,
-    /// High-water mark for scratch locals allocated by emitter helpers.
+    /// Peak `local_count` reached anywhere in this chunk — the frame size.
     /// The compiler MUST set `local_count = local_count.max(scratch_high_water)`
     /// at function finalization. This ensures `alloc_scratch` allocations
     /// are always included regardless of which compilation path runs.
+    ///
+    /// `local_count` alone cannot answer this: it is the bump pointer for the
+    /// NEXT allocation, and the compiler reclaims dead scratch at statement
+    /// boundaries, so it falls as well as rises. This field only ever rises.
+    /// Named as `scratch_` for the allocator that first needed it; every
+    /// allocation path banks its peak here.
     pub scratch_high_water: u16,
     /// Number of captured variables (closures). The VM populates
     /// local slots [capture_base..capture_base+capture_count) from
@@ -486,6 +492,17 @@ impl Chunk {
     }
 
     /// Add an import and return its index (used by CallHost operand).
+    /// The `(module, name)` an import index names, if it is one.
+    ///
+    /// The import table already holds the pair, so a caller holding only the
+    /// index can recover what it is calling — needed to check a call against a
+    /// DECLARED host signature without threading names through every emit site.
+    pub fn import_at(&self, idx: u16) -> Option<(String, String)> {
+        self.imports
+            .get(idx as usize)
+            .map(|i| (i.module.clone(), i.name.clone()))
+    }
+
     pub fn add_import(&mut self, module: impl Into<String>, name: impl Into<String>) -> u16 {
         let import = Import {
             module: module.into(),
@@ -946,6 +963,24 @@ impl Chunk {
     /// chunk-scoped (this chunk's import table); argc is VM-internal — the
     /// .wasm writer drops it and serializes `0x10` + LEB(funcidx).
     pub fn emit_call(&mut self, import_idx: u16, argc: u8, line: u32) {
+        // Every host call funnels through here — the 282 `emit_host_call`
+        // sites and the 181 that reach for `emit_call` directly. Checking at
+        // this one point is what makes the declaration cover all of them;
+        // checking a helper covered barely half, and `emit_control_element`
+        // (which calls `createElement`, the first function declared) was on
+        // the uncovered side.
+        //
+        // Only a DECLARED function is checked. No entry means unknown, not
+        // zero — every unmigrated registration is left exactly as it was.
+        if let Some(import) = self.imports.get(import_idx as usize) {
+            if let Some(declared) = crate::host_arity_mismatch(&import.module, &import.name, argc) {
+                eprintln!(
+                    "[vybe] host call arity: {}:{} declares {declared} parameter(s), \
+                     called with {argc} (line {line})",
+                    import.module, import.name
+                );
+            }
+        }
         self.emit_op(Op::CALL, line);
         self.emit((import_idx >> 8) as u8, line);
         self.emit((import_idx & 0xff) as u8, line);

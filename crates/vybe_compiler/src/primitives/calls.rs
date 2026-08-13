@@ -6403,7 +6403,6 @@ impl Compiler {
                         crate::primitives::ops::emit_dyn_lt(self.chunk(), line);
                     };
                     let line = self.line;
-                    crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
                     crate::primitives::ops::emit_dyn_not(self.chunk(), line);
                     self.chunk().emit_br_if(1, line);
 
@@ -6669,7 +6668,6 @@ impl Compiler {
                                 crate::primitives::ops::emit_dyn_lt(self.chunk(), line);
                             };
                             let line = self.line;
-                            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
                             crate::primitives::ops::emit_dyn_not(self.chunk(), line);
                             self.chunk().emit_br_if(1, line);
                             // acc = fn(acc, arr[i], i)  — ECMA-262 §23.1.3.26 passes (acc, elem, index, array)
@@ -7038,7 +7036,6 @@ impl Compiler {
                             crate::primitives::ops::emit_dyn_ge(self.chunk(), line);
                         };
                         let line = self.line;
-                        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
                         crate::primitives::ops::emit_dyn_not(self.chunk(), line);
                         self.chunk().emit_br_if(1, line);
                         // acc = fn(acc, arr[i], i)  — ECMA-262 §23.1.3.27
@@ -7086,7 +7083,6 @@ impl Compiler {
                             crate::primitives::ops::emit_dyn_ge(self.chunk(), line);
                         };
                         let line = self.line;
-                        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
                         crate::primitives::ops::emit_dyn_not(self.chunk(), line);
                         self.chunk().emit_br_if(1, line);
                         let elem_slot = self.define_local("__fl_elem");
@@ -7142,7 +7138,6 @@ impl Compiler {
                             crate::primitives::ops::emit_dyn_ge(self.chunk(), line);
                         };
                         let line = self.line;
-                        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
                         crate::primitives::ops::emit_dyn_not(self.chunk(), line);
                         self.chunk().emit_br_if(1, line);
                         let elem_slot2 = self.define_local("__fli_elem");
@@ -7202,7 +7197,6 @@ impl Compiler {
                             crate::primitives::ops::emit_dyn_ge(self.chunk(), line);
                         };
                         let line = self.line;
-                        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
                         crate::primitives::ops::emit_dyn_not(self.chunk(), line);
                         self.chunk().emit_br_if(1, line);
                         // elem = arr[i]

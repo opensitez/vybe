@@ -247,7 +247,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, value_slot);
         inst!(self, recipes::is_object);
         let line = self.line;
-        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+        // `ref.test` already yields an i32; `Op::IF` consumes it directly.
         self.chunk().emit_if_value(line);
         {
             let line = self.line;
@@ -343,7 +343,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, value_slot);
         inst!(self, recipes::is_object);
         let line = self.line;
-        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+        // `ref.test` already yields an i32; `Op::IF` consumes it directly.
         self.chunk().emit_if_value(line);
         {
             let current = self.current;
@@ -518,7 +518,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, value_slot);
         inst!(self, recipes::is_object);
         let obj_line = self.line;
-        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), obj_line);
+        // `ref.test` already yields an i32; `Op::IF` consumes it directly.
         self.chunk().emit_if_value(obj_line);
         {
             let line = self.line;
@@ -578,7 +578,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, value_slot);
         inst!(self, recipes::is_object);
         let line = self.line;
-        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+        // `ref.test` already yields an i32; `Op::IF` consumes it directly.
         self.chunk().emit_if_value(line);
         let key = self.str_const(&vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Int));
         self.emit_u16(Op::LOCAL_GET, value_slot);

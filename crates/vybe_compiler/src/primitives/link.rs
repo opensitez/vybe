@@ -237,6 +237,69 @@ impl Compiler {
         }
     }
 
+    /// Build the `user.<unit>.*` root from the declarations predeclaration has
+    /// already found.
+    ///
+    /// Derived from `defined_classes`/`defined_functions` rather than threaded
+    /// through every arm of `predeclare_type_names`: those sets ALREADY hold
+    /// the one canonical identity a `NamespaceDecl` produces
+    /// (`myapp.models.customer`), so re-walking the AST to compute it a second
+    /// time would be a second answer to a question already answered — which is
+    /// how the flat name maps this replaces came to exist.
+    ///
+    /// Must run AFTER predeclaration completes: a type may be used before it is
+    /// declared, which is the whole reason the predeclare pass exists.
+    pub(super) fn build_user_namespace_tree(&mut self) {
+        use crate::primitives::namespaces::{NamespaceNode, Subtree};
+
+        fn user_type_node() -> NamespaceNode {
+            // `ctor: None` — construction of a user class is NOT a tree
+            // concern; it goes through the compiler's own class emission. The
+            // node exists so a qualified NAME resolves to the one identity,
+            // and `ResolutionTarget::Ctor { path }` carries exactly that.
+            NamespaceNode::Type {
+                ctor: None,
+                ctor_call: None,
+                statics: Subtree::new(),
+                methods: Subtree::new(),
+                member_returns: Default::default(),
+            }
+        }
+
+        fn insert(tree: &mut Subtree, path: &str, leaf: NamespaceNode) {
+            let segments: Vec<&str> = path.split('.').filter(|s| !s.is_empty()).collect();
+            let Some((last, prefix)) = segments.split_last() else {
+                return;
+            };
+            let mut current = tree;
+            for segment in prefix {
+                // A name can be BOTH a namespace and a type (a nested type's
+                // outer class). Descending into a Type's `statics` is what the
+                // shared walk already does, so mirror it here rather than
+                // clobbering the type with a namespace.
+                let entry = current
+                    .entry((*segment).to_string())
+                    .or_insert_with(|| NamespaceNode::Namespace(Subtree::new()));
+                current = match entry {
+                    NamespaceNode::Namespace(children) => children,
+                    NamespaceNode::Type { statics, .. } => statics,
+                    // A leaf already occupies this segment: the remaining path
+                    // is not reachable. Leave the leaf alone — silently
+                    // replacing it would be exactly the last-registration-wins
+                    // collision the tree exists to prevent.
+                    _ => return,
+                };
+            }
+            current.entry((*last).to_string()).or_insert(leaf);
+        }
+
+        let mut tree = Subtree::new();
+        for class in &self.defined_classes {
+            insert(&mut tree, class, user_type_node());
+        }
+        self.user_namespace_tree = tree;
+    }
+
     pub(super) fn predeclare_type_names(&mut self, body: &[Statement], namespace: Option<&str>) {
         fn namespace_member_name(
             compiler: &Compiler,
@@ -1425,25 +1488,26 @@ impl Compiler {
         trimmed
     }
 
+    /// Source type name → the one canonical identity.
+    ///
+    /// The exact / enclosing-namespace / imported-prefix tiers are now ONE
+    /// implementation, in `resolver.rs`, walking the `user.<unit>.*` root with
+    /// the same `resolve_segments` every platform root uses — this function no
+    /// longer carries a private copy of that policy.
+    ///
+    /// What remains here is the last-segment fallback, which is NOT part of
+    /// the plan's resolution order: it answers a bare `Customer` with
+    /// `myapp.models.customer` when nothing imported that namespace, which
+    /// real .NET rejects (BC30002). It is kept because programs in the suite
+    /// depend on it; retiring it is a behaviour change that needs its own
+    /// decision, not a side effect of this one.
     pub(crate) fn resolve_source_namespace_type(&self, name: &str) -> Option<String> {
         let name = self.canon(&Self::strip_global_namespace_prefix(name).replace('\\', "."));
         if name.is_empty() {
             return None;
         }
-        if self.defined_classes.contains(&name) {
-            return Some(name);
-        }
-        for ns in self.source_namespace_contexts() {
-            let qualified = self.canon(&format!("{ns}.{name}"));
-            if self.defined_classes.contains(&qualified) {
-                return Some(qualified);
-            }
-        }
-        for prefix in &self.source_namespace_imports {
-            let qualified = self.canon(&format!("{prefix}.{name}"));
-            if self.defined_classes.contains(&qualified) {
-                return Some(qualified);
-            }
+        if let Some(resolved) = self.resolve_user_namespace_type(&name) {
+            return Some(resolved);
         }
         let suffix = format!(".{name}");
         let mut matches = self
@@ -1485,7 +1549,7 @@ impl Compiler {
         None
     }
 
-    fn source_namespace_contexts(&self) -> Vec<String> {
+    pub(super) fn source_namespace_contexts(&self) -> Vec<String> {
         let mut namespaces = Vec::new();
         if let Some(ns) = self.current_namespace.as_deref() {
             if !ns.is_empty() {

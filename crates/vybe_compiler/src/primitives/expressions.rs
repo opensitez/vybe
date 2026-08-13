@@ -54,8 +54,6 @@ impl Compiler {
         let sig = super::CallSignature::from_params(&params);
         let ordered = self.reorder_named_args_with_signatures(args, &[sig]);
 
-        use crate::primitives::namespaces::FieldGui;
-
         // A GUI control IS its element — `CtorSpec`'s own contract says "the
         // object IS the control". It used to build a plain config object and
         // defer to a runtime realizer that would create the backing control
@@ -72,7 +70,17 @@ impl Compiler {
             let line = self.line;
             self.emit_control_element(&control_type, 0, line);
         } else {
-            self.emit_struct_new(0, 0);
+            // Allocate with the type, the way every user class does. `typeidx`
+            // 0 meant an UNTYPED allocation — `obj.type_id` stayed 0 and the
+            // `__type`/`__types` strings stamped below were the only identity
+            // the object had, so `ref.test` could not answer and `test_type`
+            // fell back to a string scan.
+            //
+            // WASM GC assigns a type only at allocation, so this is the one
+            // point it can be done.
+            let typeidx =
+                crate::primitives::classes::reserve_platform_type(&mut self.chunks, &spec.ancestry);
+            self.emit_struct_new(typeidx, 0);
         }
         self.emit_u16(Op::LOCAL_SET, this_slot);
 
@@ -147,27 +155,30 @@ impl Compiler {
             self.emit_struct_field_op(Op::STRUCT_SET, 0, fk);
         }
 
-        // For GUI widgets, stamp __ops = [[kind,key,value],…] — the realizer's
-        // instruction list. kind: 0 NestOrProp(key), 1 Children, 2 Event(name),
-        // 3 Caption.
+        // APPLY each declared argument to the control, here, where the role is
+        // still known.
+        //
+        // This replaced stamping `__ops = [[kind,key,value],…]` — an
+        // instruction list for a realizer written in the target language to
+        // walk at run time. That realizer had to build a SECOND control tree
+        // beside the document, because a role only exists at compile time (it
+        // is carried in the emit NAME) and target-language source can only
+        // re-derive it. `vybe_widgets`' document is the state; a frontend
+        // adapts to it and does not keep a parallel model.
+        //
+        // Only for a DECLARATIVE frontend: `field_gui` is empty when a
+        // frontend constructs bare and configures afterwards, so an imperative
+        // one emits nothing here and is untouched.
         if spec.control_fn.is_some() {
-            self.emit_u16(Op::LOCAL_GET, this_slot);
-            for (i, field) in spec.fields.iter().enumerate() {
-                let (kind, key): (i32, &str) = match spec.field_gui.get(i) {
-                    Some(FieldGui::Children) => (1, ""),
-                    Some(FieldGui::Event(name)) => (2, name.as_str()),
-                    Some(FieldGui::Caption) => (3, ""),
-                    Some(FieldGui::NestOrProp(k)) => (0, k.as_str()),
-                    None => (0, field.as_str()),
+            for (i, _field) in spec.fields.iter().enumerate() {
+                let Some(field_gui) = spec.field_gui.get(i) else {
+                    continue;
                 };
-                self.emit_const(Value::I32(kind));
-                self.emit_const(Value::String(std::sync::Arc::from(key)));
+                let line = self.line;
+                self.emit_u16(Op::LOCAL_GET, this_slot);
                 self.emit_u16(Op::LOCAL_GET, arg_slots[i]);
-                self.emit_array_new_fixed(0, 3);
+                self.emit_gui_field(field_gui, line);
             }
-            self.emit_array_new_fixed(0, spec.fields.len() as u16);
-            let ok = self.str_const("__ops");
-            self.emit_struct_field_op(Op::STRUCT_SET, 0, ok);
         }
 
         self.emit_u16(Op::LOCAL_GET, this_slot);
@@ -611,7 +622,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, yielded_slot);
         inst!(self, recipes::is_object);
         let line = self.line;
-        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+        // `ref.test` already yields an i32; `Op::IF` consumes it directly.
         self.chunk().emit_if_value(line);
 
         self.emit_u16(Op::LOCAL_GET, yielded_slot);
@@ -655,7 +666,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, yielded_slot);
         inst!(self, recipes::is_object);
         let line = self.line;
-        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+        // `ref.test` already yields an i32; `Op::IF` consumes it directly.
         self.chunk().emit_if_value(line);
 
         self.emit_u16(Op::LOCAL_GET, yielded_slot);
@@ -4865,7 +4876,17 @@ impl Compiler {
                     self.restore_js_new_target(saved_js_new_target);
                     return Ok(());
                 }
-                self.compile_expr(class)?;
+                // The class expression is not a name this compilation saw, so
+                // it is a DESIGNATOR: the class, or a string naming it. One
+                // rule, shared with `StaticAccess` — see
+                // `emit_class_designator`.
+                //
+                // Without it a computed class name reached `call_ref` as a
+                // string and trapped with *"string is not callable"*, so
+                // `new $cls()` — the whole factory/DI idiom — worked only
+                // where the frontend could const-fold the name to a literal.
+                self.emit_class_designator(class)?;
+
                 for a in args {
                     self.compile_expr(&a.value)?;
                 }
@@ -5877,7 +5898,6 @@ impl Compiler {
 
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     self.emit_ref_type_test(Op::REF_TEST, "list", line);
-                    crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
                     self.chunk().emit_if(line);
                     self.emit_const(Value::I32(1));
                     self.emit_u16(Op::LOCAL_SET, matched_slot);
@@ -5898,7 +5918,7 @@ impl Compiler {
                     if canon_type == "IEnumerable" {
                         self.emit_u16(Op::LOCAL_GET, obj_slot);
                         inst!(self, recipes::is_object);
-                        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+                        // `ref.test` already yields an i32; `Op::IF` takes it.
                         self.chunk().emit_if(line);
                         self.emit_const(Value::I32(1));
                         self.emit_u16(Op::LOCAL_SET, matched_slot);
@@ -7367,8 +7387,13 @@ impl Compiler {
                     }
                 }
 
-                // class::member → look up class, then get static member
-                self.compile_expr(class)?;
+                // class::member → look up class, then get static member.
+                //
+                // `class` is a DESIGNATOR, so it may be a string naming the
+                // class rather than the class itself (`$cls::method()`). Same
+                // rule as `New` — see `emit_class_designator`. Reading a
+                // member off the raw string used to yield `undefined`.
+                self.emit_class_designator(class)?;
                 if let ExprKind::Ident(name) = &member.kind {
                     let class_slot = self.define_local("__static_access_read_class");
                     self.emit_u16(Op::LOCAL_SET, class_slot);

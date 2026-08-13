@@ -6096,6 +6096,50 @@ pub fn heaptype_for_name(
     }
 }
 
+/// Reserve the WASM GC type for a registered platform type and DECLARE its
+/// supertype chain by index.
+///
+/// A platform type is a type. Its instances must be allocated the way every
+/// user class already is — `struct.new_default $T` with a real typeidx, so the
+/// VM sets `obj.type_id` at allocation and `ref.test` / `ref.cast` answer from
+/// the type registry. The construction path for registered types passed
+/// **typeidx 0** and then wrote `__type` / `__types` STRINGS onto an untyped
+/// object, which is a second identity system beside the one WASM already
+/// implements — and the reason `test_type` needs a five-step fallback and why a
+/// bare `Text` collides in a flat name map.
+///
+/// `ancestry` is self-first (`["Text", "StatelessWidget", "Widget"]`), which is
+/// exactly a subtype chain: each entry's supertype is the next one. Declaring
+/// it by INDEX is what `register_type` already does for a user class's parent
+/// and interfaces, and it is what lets `is_subtype` answer for a type this
+/// module does not define — the entry is a declaration that binds to whatever
+/// is registered under that name at load.
+///
+/// An existing entry's supertype is never overwritten: a user class of the same
+/// name owns its own declaration.
+pub fn reserve_platform_type(chunks: &mut [Chunk], ancestry: &[String]) -> u16 {
+    if ancestry.is_empty() {
+        return 0;
+    }
+    // Reserve every link first, so each index exists before anything points at
+    // it — a forward reference in the chain is normal, not an error.
+    let indices: Vec<u16> = ancestry
+        .iter()
+        .map(|name| reserve_type_slot(chunks, name))
+        .collect();
+    for pair in indices.windows(2) {
+        let (child, parent) = (pair[0], pair[1]);
+        if child == 0 || child == parent {
+            continue;
+        }
+        let entry = &mut chunks[0].types[child as usize - 1];
+        if entry.parent_index == 0 {
+            entry.parent_index = parent;
+        }
+    }
+    indices[0]
+}
+
 pub fn reserve_type_slot(chunks: &mut [Chunk], name: &str) -> u16 {
     if let Some(pos) = chunks[0].types.iter().position(|t| t.name == name) {
         return pos as u16 + 1;

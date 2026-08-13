@@ -397,6 +397,12 @@ pub fn emit_symbol_kind_test(
     chunk.emit_op_u16(Op::LOCAL_GET, kind_slot, line);
     chunk.emit_string_const(kind.as_str(), line);
     crate::primitives::ops::emit_dyn_eq(chunk, line);
+    // `emit_dyn_eq` yields an i32, and every other arm of this function yields
+    // a BOOL. Without this the answer's type depends on which arm ran:
+    // `class_exists($c)` came back as integer `1`, so `=== true` was false and
+    // `gettype()` said "integer". Only the stamp-present arm could reach it,
+    // which is why a literal name looked correct.
+    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_end(line);
 
     chunk.emit_else(line);
@@ -469,6 +475,108 @@ pub fn emit_receiver_missing_symbol_get(
 }
 
 impl Compiler {
+    /// Resolve the symbol whose NAME is only known at runtime.
+    ///
+    /// Stack: `[] -> [symbol | undefined]`; the name expression is compiled
+    /// here.
+    ///
+    /// Same shape, and for the same reason, as
+    /// `globals::emit_global_namespace_index_get`: `GLOBAL_GET` takes the name
+    /// as a u16 IMMEDIATE and the host surface is closed — no host fn may be
+    /// added to reflect `vm.globals` — so a runtime key cannot index the map
+    /// directly. What composes from existing ops is one comparison per
+    /// DECLARED symbol, each guarding a real read. The read is
+    /// [`Self::emit_constructor_global_ref`] rather than a raw global, so a
+    /// name that matches a class still runs the language's autoloaders.
+    ///
+    /// A name the module never declared leaves `undefined`, which is exactly
+    /// what a miss on the literal path reads, so both paths agree.
+    ///
+    /// ⚠ It answers for what the MODULE declared. A builtin that never becomes
+    /// a global — php's `strlen` — is resolved by the frontend's own table
+    /// when the name is a literal, and that table is not reachable from a
+    /// runtime string. Names of that kind still miss.
+    pub(crate) fn emit_symbol_ref_by_runtime_name(
+        &mut self,
+        name: &Expression,
+    ) -> Result<(), String> {
+        self.compile_expr(name)?;
+        self.emit_symbol_ref_for_name_on_stack();
+        Ok(())
+    }
+
+    /// Compile a **class designator** — an expression that denotes a class.
+    ///
+    /// A designator is either the class itself or a STRING naming it, and
+    /// which one it is cannot be known before the expression runs. So the
+    /// question is asked at run time rather than decided by the frontend:
+    /// `typeof x === "string"` resolves the name, anything else is already the
+    /// class. PHP states the same rule in its own error — *"Class name must be
+    /// a valid object or a string"* — and it is expressed here without a
+    /// profile flag, a language name or a per-language table, so every
+    /// frontend that has designators gets it.
+    ///
+    /// `New` and `StaticAccess` are the two nodes that carry one. Both call
+    /// this, so `new $cls()` and `$cls::method()` cannot answer differently.
+    ///
+    /// Stack: `[] -> [class]`.
+    pub(crate) fn emit_class_designator(&mut self, class: &Expression) -> Result<(), String> {
+        let line = self.line;
+        // Both slots are defined BEFORE the branch. `emit_symbol_ref_for_name_on_stack`
+        // opens one `if`/`end` per declared symbol, and nesting that inside a
+        // value-producing block while also defining its locals there emitted
+        // bytecode the VM rejected outright (`Invalid opcode`). A plain `if`
+        // that writes a pre-declared slot keeps every block value-less, so the
+        // nesting depth stops mattering.
+        let slot = self.define_local("__class_designator");
+        let out = self.define_local("__class_designator_out");
+        self.compile_expr(class)?;
+        self.emit_u16(Op::LOCAL_SET, slot);
+        self.emit_u16(Op::LOCAL_GET, slot);
+        self.emit_u16(Op::LOCAL_SET, out);
+
+        self.emit_u16(Op::LOCAL_GET, slot);
+        crate::primitives::reflection::emit_typeof_in_chunk(self.chunk(), line);
+        self.emit_const(Value::String(std::sync::Arc::from("string")));
+        crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
+        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+        self.chunk().emit_if(line);
+        self.emit_u16(Op::LOCAL_GET, slot);
+        self.emit_symbol_ref_for_name_on_stack();
+        self.emit_u16(Op::LOCAL_SET, out);
+        self.chunk().emit_end(line);
+
+        self.emit_u16(Op::LOCAL_GET, out);
+        Ok(())
+    }
+
+    /// [`Self::emit_symbol_ref_by_runtime_name`] with the name already on the
+    /// stack. Stack: `[name] -> [symbol | undefined]`.
+    pub(crate) fn emit_symbol_ref_for_name_on_stack(&mut self) {
+        let line = self.line;
+        let key_slot = self.define_local("__symbol_key");
+        self.emit_u16(Op::LOCAL_SET, key_slot);
+
+        let result_slot = self.define_local("__symbol_result");
+        crate::primitives::instructions::core_wasm::undefined(self.chunk(), line);
+        self.emit_u16(Op::LOCAL_SET, result_slot);
+
+        let mut candidates: Vec<String> = self.defined_globals.iter().cloned().collect();
+        candidates.sort();
+        for global in candidates {
+            self.emit_u16(Op::LOCAL_GET, key_slot);
+            self.emit_const(Value::String(std::sync::Arc::from(global.as_str())));
+            crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
+            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+            self.chunk().emit_if(line);
+            self.emit_constructor_global_ref(&global, &global);
+            self.emit_u16(Op::LOCAL_SET, result_slot);
+            self.chunk().emit_end(line);
+        }
+
+        self.emit_u16(Op::LOCAL_GET, result_slot);
+    }
+
     /// Push a reference to the class constructor global `ctor_global`.
     /// Dynamic-symbol-aware languages can invoke their registered type
     /// resolver before the final lookup; others use a plain global read.

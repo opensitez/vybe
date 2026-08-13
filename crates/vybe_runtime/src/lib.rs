@@ -67,3 +67,128 @@ pub use framework::{
 };
 pub use inventory;
 pub use project::ProjectConfig;
+
+// ── Declared host signatures ────────────────────────────────────────────────
+//
+// Process-global, because the CONSUMER is the compiler and the compiler never
+// holds a VM. The namespace tree is global for exactly the same reason, and
+// `mount_host_exports` already reads the capability context that way.
+//
+// Sparse ON PURPOSE. A function with no entry is UNDECLARED, which is the
+// honest state of every registration that has not migrated to `HostFnDecl`.
+// Nothing infers a signature from absence — an undeclared call is left alone,
+// not assumed to take zero arguments.
+
+static HOST_SIGNATURES: std::sync::OnceLock<
+    std::sync::RwLock<
+        std::collections::HashMap<
+            (String, String),
+            (FuncSig, Option<crate::vm::ResourceBinding>),
+        >,
+    >,
+> = std::sync::OnceLock::new();
+
+fn host_signatures()
+-> &'static std::sync::RwLock<
+    std::collections::HashMap<(String, String), (FuncSig, Option<crate::vm::ResourceBinding>)>,
+> {
+    HOST_SIGNATURES.get_or_init(Default::default)
+}
+
+/// Record what a host function declares about itself. Written by
+/// `VM::register_host`; read by the compiler.
+pub fn declare_host_signature(
+    module: &str,
+    name: &str,
+    sig: FuncSig,
+    resource: Option<crate::vm::ResourceBinding>,
+) {
+    if let Ok(mut map) = host_signatures().write() {
+        map.insert((module.to_string(), name.to_string()), (sig, resource));
+    }
+}
+
+/// The declared parameter count, or `None` when the function never declared
+/// one. `None` means UNKNOWN — never zero.
+pub fn declared_host_arity(module: &str, name: &str) -> Option<u8> {
+    let map = host_signatures().read().ok()?;
+    let (sig, _) = map.get(&(module.to_string(), name.to_string()))?;
+    u8::try_from(sig.params.len()).ok()
+}
+
+/// The declared signature and resource binding, when there is one.
+pub fn declared_host_signature(
+    module: &str,
+    name: &str,
+) -> Option<(FuncSig, Option<crate::vm::ResourceBinding>)> {
+    let map = host_signatures().read().ok()?;
+    map.get(&(module.to_string(), name.to_string())).cloned()
+}
+
+/// The declared arity, when it CONTRADICTS `argc`. `None` means "no
+/// complaint" — either undeclared, or declared and matching.
+///
+/// Extracted as a predicate so the check is testable directly: an emit site
+/// that prints has no return value to assert on, and "no warning appeared" is
+/// equally consistent with "the check passed" and "the check never ran".
+pub fn host_arity_mismatch(module: &str, name: &str, argc: u8) -> Option<u8> {
+    let declared = declared_host_arity(module, name)?;
+    (declared != argc).then_some(declared)
+}
+
+#[cfg(test)]
+mod host_signature_tests {
+    use super::*;
+
+    #[test]
+    fn an_undeclared_function_is_never_reported() {
+        // Unknown is not zero. Every registration that has not migrated to
+        // `HostFnDecl` must be left alone, whatever it is called with.
+        assert_eq!(host_arity_mismatch("web:dom", "neverDeclared", 7), None);
+    }
+
+    #[test]
+    fn a_declared_function_reports_only_a_real_mismatch() {
+        declare_host_signature(
+            "test:iface",
+            "appendChild",
+            FuncSig {
+                name: "append-child".into(),
+                params: vec![
+                    ValType::Borrow("document".into()),
+                    ValType::Borrow("node".into()),
+                    ValType::Borrow("node".into()),
+                ],
+                results: vec![],
+            },
+            None,
+        );
+        assert_eq!(host_arity_mismatch("test:iface", "appendChild", 3), None);
+        // The bug this exists to catch: the child forgotten, a null passed in
+        // its place, and the failure surfacing somewhere else entirely.
+        assert_eq!(host_arity_mismatch("test:iface", "appendChild", 2), Some(3));
+    }
+
+    #[test]
+    fn a_declaration_carries_its_resource_binding() {
+        declare_host_signature(
+            "test:iface",
+            "setTextContent",
+            FuncSig {
+                name: "set-text-content".into(),
+                params: vec![ValType::Borrow("node".into()), ValType::String],
+                results: vec![],
+            },
+            Some(crate::vm::ResourceBinding {
+                resource: "node".into(),
+                kind: crate::vm::ResourceMemberKind::Method,
+                borrows_self: true,
+            }),
+        );
+        let (sig, resource) = declared_host_signature("test:iface", "setTextContent").unwrap();
+        assert_eq!(sig.params.len(), 2);
+        let binding = resource.expect("declared as a method on a resource");
+        assert_eq!(binding.resource, "node");
+        assert!(binding.borrows_self, "a DOM op borrows, it does not consume");
+    }
+}

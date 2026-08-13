@@ -230,6 +230,102 @@ impl Compiler {
         namespaces::resolve_path(&refs).map(Resolution::Tree)
     }
 
+    /// Resolve a source-level type name against the `user.<unit>.*` root.
+    ///
+    /// Returns the ONE canonical identity a `NamespaceDecl` produced, which is
+    /// the name every downstream consumer already keys on
+    /// (`defined_classes`, `normalized_classes`, the declared-type hint).
+    ///
+    /// The lookup order is the plan's, applied to the user root:
+    ///
+    /// 1. the spelling as written — a fully-qualified `MyApp.Models.Customer`,
+    /// 2. relative to the enclosing `Namespace` — a sibling type named bare,
+    /// 3. under each imported namespace — `Imports MyApp.Models` + `Customer`.
+    ///
+    /// Locals are NOT consulted here: a type position is not a value position,
+    /// and a variable named `Customer` does not shadow the type `Customer`.
+    pub(crate) fn resolve_user_namespace_type(&self, name: &str) -> Option<String> {
+        let normalized = namespaces::normalize_source_path(name);
+        if normalized.is_empty() {
+            return None;
+        }
+        let canon = self.canon(&normalized);
+        let segments: Vec<&str> = canon.split('.').filter(|s| !s.is_empty()).collect();
+        if segments.is_empty() {
+            return None;
+        }
+
+        let walk = |prefix: Option<&str>| -> Option<String> {
+            let mut path: Vec<&str> = Vec::new();
+            if let Some(prefix) = prefix {
+                path.extend(prefix.split('.').filter(|s| !s.is_empty()));
+            }
+            path.extend_from_slice(&segments);
+            match namespaces::resolve_in(&self.user_namespace_tree, &path) {
+                Some(ResolutionTarget::Ctor { path, .. }) => Some(path),
+                // A NamespaceObject means the name is a namespace, not a type
+                // — `MyApp.Models` in a type position resolves to nothing, the
+                // same answer real compilers give.
+                _ => None,
+            }
+        };
+
+        if let Some(hit) = walk(None) {
+            return Some(hit);
+        }
+        // Enclosing namespace, innermost first: inside `A.B`, `T` finds `A.B.T`
+        // before `A.T` — the shadowing rule every namespaced language shares.
+        // `source_namespace_contexts` supplies the enclosing `Namespace` AND
+        // the namespace of the class being compiled, which are not the same
+        // thing: a method body compiles with `current_namespace` already
+        // unwound.
+        for context in self.source_namespace_contexts() {
+            let mut scope: Vec<&str> = context.split('.').filter(|s| !s.is_empty()).collect();
+            while !scope.is_empty() {
+                if let Some(hit) = walk(Some(&scope.join("."))) {
+                    return Some(hit);
+                }
+                scope.pop();
+            }
+        }
+        for prefix in &self.source_namespace_imports {
+            if let Some(hit) = walk(Some(prefix)) {
+                return Some(hit);
+            }
+        }
+        None
+    }
+
+    /// A DECLARED type hint, reduced to the one canonical identity.
+    ///
+    /// `Dim c As MyApp.Models.Customer` and `Dim c As Customer` name one class,
+    /// and every consumer of a hint keys on the identity `NamespaceDecl`
+    /// lowering produced. Without this the qualified spelling matched nothing,
+    /// the local silently degraded to dynamic, and its property writes went to
+    /// the object's dynamic bag while the class's own methods kept reading the
+    /// declared field — one property with two storages.
+    ///
+    /// Only a spelling that RESOLVES is rewritten, so a builtin (`Integer`), a
+    /// platform type (`System.Text.StringBuilder`) and an unknown name are all
+    /// passed through untouched.
+    pub(crate) fn canonicalize_declared_type_hint(
+        &self,
+        type_hint: Option<vybe_ast::TypeHint>,
+    ) -> Option<vybe_ast::TypeHint> {
+        let mut type_hint = type_hint?;
+        let spelling = type_hint.spelling();
+        // Only a plain dotted name. A generic argument list or an array suffix
+        // is a COMPOSITE spelling whose parts each need resolving; rewriting
+        // the whole string against a type name would corrupt it.
+        if !spelling.contains('.') || spelling.contains(['<', '[', '(', ' ', ',']) {
+            return Some(type_hint);
+        }
+        if let Some(canonical) = self.resolve_user_namespace_type(spelling) {
+            type_hint.set_spelling(canonical);
+        }
+        Some(type_hint)
+    }
+
     /// Sorted dump of every Link-phase (name → target) binding — the
     /// resolution-snapshot harness reads this to prove later phases don't
     /// silently change what any name resolves to.
@@ -262,6 +358,56 @@ impl Compiler {
     pub fn linked_resolution_snapshot(mut self, module: &crate::ast::Module) -> Vec<String> {
         self.link(module);
         self.resolution_snapshot()
+    }
+}
+
+#[cfg(test)]
+mod user_root_tests {
+    use crate::primitives::Compiler;
+
+    /// The `user.<unit>.*` root resolves a class declared inside a
+    /// `Namespace` by every spelling that names it.
+    fn compiler_with(classes: &[&str]) -> Compiler {
+        // A bare profile: the user root is language-neutral, and linking a
+        // language crate just to get one would make this test depend on
+        // whichever language happened to register first.
+        let profile = crate::profile::parse_profile("[compiler]\n").expect("bare profile");
+        let mut compiler = Compiler::with_profile(profile);
+        for class in classes {
+            compiler.defined_classes.insert((*class).to_string());
+        }
+        compiler.build_user_namespace_tree();
+        compiler
+    }
+
+    #[test]
+    fn qualified_spelling_resolves_to_the_declared_identity() {
+        let c = compiler_with(&["myapp.models.customer"]);
+        assert_eq!(
+            c.resolve_user_namespace_type("myapp.models.customer").as_deref(),
+            Some("myapp.models.customer")
+        );
+    }
+
+    #[test]
+    fn single_segment_namespace_resolves() {
+        let c = compiler_with(&["myapp.customer"]);
+        assert_eq!(
+            c.resolve_user_namespace_type("myapp.customer").as_deref(),
+            Some("myapp.customer")
+        );
+    }
+
+    #[test]
+    fn a_namespace_is_not_a_type() {
+        let c = compiler_with(&["myapp.models.customer"]);
+        assert_eq!(c.resolve_user_namespace_type("myapp.models"), None);
+    }
+
+    #[test]
+    fn unknown_name_resolves_to_nothing() {
+        let c = compiler_with(&["myapp.models.customer"]);
+        assert_eq!(c.resolve_user_namespace_type("myapp.models.order"), None);
     }
 }
 

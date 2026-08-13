@@ -75,7 +75,6 @@ fn loop_break_unless_lt(chunk: &mut Chunk, i_slot: u16, n_slot: u16, line: u32) 
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
     crate::primitives::ops::emit_dyn_lt(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     crate::primitives::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(1, line);
 }
