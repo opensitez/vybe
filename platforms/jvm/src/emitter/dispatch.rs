@@ -937,6 +937,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "jvm.java.get" => collection::emit_get(chunks, current, line),
         "jvm.java.list_set" => collection::emit_set(chunks, current, line),
         "jvm.java.size" => collection::emit_size(chunks, current, line),
+        "jvm.java.collection_to_string" => {
+            collection::emit_collection_to_string(chunks, current, line)
+        }
         "jvm.java.contains" => collection::emit_contains(chunks, current, line),
         "jvm.java.is_empty" => collection::emit_is_empty(chunks, current, line),
         "jvm.java.list_clear" => collection::emit_clear(chunks, current, line),

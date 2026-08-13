@@ -655,7 +655,17 @@ pub fn emit_set_delete_value_eq(chunks: &mut Vec<Chunk>, current: usize, line: u
     get(&mut chunks[current], removed, line);
 }
 
-#[allow(dead_code)]
+/// `intersect` / `subtract`: keep each element of the LEFT collection whose
+/// render key is (`keep_present`) or is not present on the right.
+///
+/// Stack: `[left, right] -> [kotlin set]`. Iterating the left operand is what
+/// gives Kotlin's documented ordering — the result follows the receiver.
+///
+/// This walks the dict backing on both sides rather than handing the operands
+/// to `common_sets`, because a Kotlin set is NOT an ECMA Set: `emit_to_hash_set`
+/// builds a `dict` keyed by the Kotlin render string and stamped with
+/// `SET_MARKER`. Calling `ecma:set.intersection` on one answers an empty Set —
+/// silently, since a plain object is a legal argument.
 fn emit_set_from_filter(chunks: &mut Vec<Chunk>, current: usize, keep_present: bool, line: u32) {
     let right = chunks[current].alloc_scratch(1);
     let left = chunks[current].alloc_scratch(1);
@@ -704,7 +714,10 @@ fn emit_set_from_filter(chunks: &mut Vec<Chunk>, current: usize, keep_present: b
         ops::emit_dyn_not(&mut chunks[current], line);
     }
     ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if_value(line);
+    // A STATEMENT `if`: the body consumes its own value (`emit_set_add` answers
+    // a changed-flag, dropped right after) and there is no `else`, so the
+    // value-producing form would leave the arms unbalanced.
+    chunks[current].emit_if(line);
     get(&mut chunks[current], out, line);
     get(&mut chunks[current], key, line);
     get(&mut chunks[current], value, line);
@@ -723,52 +736,32 @@ fn emit_set_from_filter(chunks: &mut Vec<Chunk>, current: usize, keep_present: b
     get(&mut chunks[current], out, line);
 }
 
+/// Kotlin `union`: every element of the left operand in order, then each
+/// element of the right that is not already there.
+///
+/// Concatenating the two value arrays and re-running `emit_to_hash_set` gives
+/// exactly that — it already dedupes by the Kotlin render key, keeps insertion
+/// order, and stamps `SET_MARKER` — so the one representation of a Kotlin set
+/// stays in one place. The operands may be lists as well as sets (Kotlin
+/// declares `union` on `Iterable`), which `emit_collection_values_array`
+/// already normalizes.
 pub fn emit_set_union(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
     let right = chunks[current].alloc_scratch(1);
     let left = chunks[current].alloc_scratch(1);
-    let left_set = chunks[current].alloc_scratch(1);
-    let right_set = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], right, line);
     set(&mut chunks[current], left, line);
-    get(&mut chunks[current], left, line);
-    emit_to_set(chunks, current, 1, line);
-    set(&mut chunks[current], left_set, line);
-    get(&mut chunks[current], right, line);
-    emit_to_set(chunks, current, 1, line);
-    set(&mut chunks[current], right_set, line);
-    get(&mut chunks[current], left_set, line);
-    get(&mut chunks[current], right_set, line);
-    common_sets::emit_union(chunks, current, line);
+    emit_collection_values_array(chunks, current, left, line);
+    emit_collection_values_array(chunks, current, right, line);
+    common_collections::emit_concat(chunks, current, line);
+    emit_to_hash_set(chunks, current, 1, line);
 }
 
 pub fn emit_set_intersect(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
-    let right = chunks[current].alloc_scratch(1);
-    let left = chunks[current].alloc_scratch(1);
-    let right_set = chunks[current].alloc_scratch(1);
-    set(&mut chunks[current], right, line);
-    set(&mut chunks[current], left, line);
-    get(&mut chunks[current], right, line);
-    emit_to_set(chunks, current, 1, line);
-    set(&mut chunks[current], right_set, line);
-    get(&mut chunks[current], left, line);
-    emit_to_set(chunks, current, 1, line);
-    get(&mut chunks[current], right_set, line);
-    common_sets::emit_intersection(chunks, current, line);
+    emit_set_from_filter(chunks, current, true, line);
 }
 
 pub fn emit_set_subtract(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
-    let right = chunks[current].alloc_scratch(1);
-    let left = chunks[current].alloc_scratch(1);
-    let right_set = chunks[current].alloc_scratch(1);
-    set(&mut chunks[current], right, line);
-    set(&mut chunks[current], left, line);
-    get(&mut chunks[current], right, line);
-    emit_to_set(chunks, current, 1, line);
-    set(&mut chunks[current], right_set, line);
-    get(&mut chunks[current], left, line);
-    emit_to_set(chunks, current, 1, line);
-    get(&mut chunks[current], right_set, line);
-    common_sets::emit_difference(chunks, current, line);
+    emit_set_from_filter(chunks, current, false, line);
 }
 
 /// Kotlin `MutableCollection.addAll(values)`.

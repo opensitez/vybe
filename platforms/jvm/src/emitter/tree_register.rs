@@ -708,6 +708,10 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
         ("Collection", "isempty", "jvm.java.is_empty", 0, 0),
         ("Collection", "contains", "jvm.java.contains", 1, 1),
         ("Collection", "clear", "jvm.java.list_clear", 0, 0),
+        // `AbstractCollection.toString()` — see `emit_collection_to_string` for
+        // why this cannot be a runtime probe: a `List` and a Java array are the
+        // same ECMA array, and Java renders only one of them element-wise.
+        ("Collection", "tostring", "jvm.java.collection_to_string", 0, 0),
         // `Collection.remove(Object)` is BY VALUE — `jvm.java.list_remove` at
         // this arity is `emit_remove_at`, i.e. by INDEX, which a `Set` has no
         // notion of. `List` overrides below with the index overload that is
@@ -1008,13 +1012,30 @@ fn insert_java_util_regex(root: &mut Subtree) {
                 "replaceFirst".to_string(),
                 common_method("jvm.java.regex_pattern_replace_first", 1, 1),
             ),
+            // `value`/`range` are PROPERTIES, not zero-arg methods. Kotlin
+            // spells them as reads — `pattern.find(s)?.value` — and a member
+            // READ never consults this `methods` subtree for a `Fn`/`CommonEmit`
+            // leaf, so the read fell through to the dynamic path, produced the
+            // matched text, and the surrounding force-call then CALLED it:
+            // `string is not callable (type: 42)`.
+            //
+            // A `Property` leaf answers BOTH spellings: the shared member read
+            // resolves it through `lookup_type_property_target`, and
+            // `lookup_type_instance_target` unwraps `get` at argc 0, so Java's
+            // own `m.value()` call form is unchanged.
             (
                 "value".to_string(),
-                common_method("jvm.java.regex_match_result_value", 0, 0),
+                namespaces::property(
+                    Some(common_emit("jvm.java.regex_match_result_value")),
+                    None,
+                ),
             ),
             (
                 "range".to_string(),
-                common_method("jvm.java.regex_match_result_range", 0, 0),
+                namespaces::property(
+                    Some(common_emit("jvm.java.regex_match_result_range")),
+                    None,
+                ),
             ),
         ]
         .into_iter()

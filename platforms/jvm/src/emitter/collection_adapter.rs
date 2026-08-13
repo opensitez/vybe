@@ -920,6 +920,36 @@ pub fn emit_size(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_end(line);
 }
 
+/// `AbstractCollection.toString()` — `[a, b, c]`, the rendering every
+/// `List`/`Set`/`Queue`/`Deque` inherits.
+///
+/// It has to be declared ON THE TYPE, because no runtime probe can answer it.
+/// `jvm.java.to_string` (`object_adapter`) deliberately routes an ECMA array to
+/// the plain coercion, since Java renders a real array `int[]` as `[I@1b6d35`
+/// and NOT as its elements. A `java.util.ArrayList` is backed by the same ECMA
+/// array, so it took that leg too and `list.toString()` answered `1,2,3`
+/// instead of `[1, 2, 3]` — while `println(list)` was right, which is what made
+/// it look like a printing quirk. The type node is the only place that knows a
+/// `Collection` is not an array.
+///
+/// The set leg is the file's standing idiom (`emit_size`, `emit_contains`): a
+/// JVM `HashSet` is a real ECMA Set, so it is flattened to its values before
+/// the shared array renderer — the same one `Arrays.toString` uses, so both
+/// spellings agree by construction.
+pub fn emit_collection_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], value, line);
+    emit_is_ecma_set(chunks, current, value, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], value, line);
+    sets::emit_values_array(chunks, current, line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], value, line);
+    chunks[current].emit_end(line);
+    crate::emitter::arrays_adapter::emit_to_string(chunks, current, line);
+}
+
 pub fn emit_contains(chunks: &mut [Chunk], current: usize, line: u32) {
     let needle = chunks[current].alloc_scratch(1);
     let value = chunks[current].alloc_scratch(1);

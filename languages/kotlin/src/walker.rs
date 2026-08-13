@@ -16084,6 +16084,138 @@ fn kt_builtin_interface(name: &str, parents: Vec<&str>, members: Vec<ClassMember
     })
 }
 
+/// Which builtin collection interfaces this program actually implements,
+/// closed over the injected hierarchy (`List`/`Set` → `Collection` → `Iterable`).
+///
+/// **Declaring one is not free.** These interfaces exist for exactly one job:
+/// giving a user class its inherited defaults, so `class R : Iterable<Int>`
+/// answers `iterator()` and `joinToString()`. But declaring them makes
+/// `Iterable`/`Collection`/`List`/`Set`/`Map` PENDING CLASS NAMES — and
+/// `listOf(…)`/`arrayOf(…)` infer those exact spellings. `calls.rs`'s
+/// `user_typed_receiver_shadow` (a DIRECT receiver whose static type resolves
+/// to a user class) then fired on every named collection local and skipped
+/// value-method dispatch outright, so `xs.count { }` became a dynamic member
+/// read of `count` on a plain array: `undefined is not callable`. Measured on
+/// `count`, `none`, `sumOf`, `groupBy`, `average`, `last`, `zip`,
+/// `zipWithNext`, `partition`, `chunked`, `withIndex`, `flatten` and more —
+/// the emitters were all correct and unreachable.
+///
+/// Two things made it look like a pile of unrelated missing features:
+/// `listOf(1,2).count { }` WORKS (a literal receiver is not direct, so no
+/// shadow), and the names the walker rewrites to a private spelling
+/// (`first` → `__kt_first`, `distinct` → `__kt_distinct`) work too, because a
+/// `__kt_*` call is not a member call at all.
+///
+/// So: declare the interface when something implements it, and not otherwise.
+/// The scan is RECURSIVE because Kotlin allows a local class — every test that
+/// implements one of these writes `class R : Iterable<Int>` inside `fun main`.
+fn kotlin_implemented_builtin_interfaces(stmts: &[Statement]) -> HashSet<String> {
+    fn bare(name: &str) -> String {
+        let name = name.split('<').next().unwrap_or(name).trim();
+        let name = name.rsplit('.').next().unwrap_or(name);
+        // The read-only and mutable spellings share one declaration.
+        match name {
+            "MutableIterable" => "Iterable",
+            "MutableCollection" => "Collection",
+            "MutableList" => "List",
+            "MutableSet" => "Set",
+            "MutableMap" => "Map",
+            other => other,
+        }
+        .to_string()
+    }
+
+    fn visit(stmt: &Statement, out: &mut HashSet<String>) {
+        match &stmt.kind {
+            StmtKind::ClassDecl {
+                parents,
+                interfaces,
+                members,
+                ..
+            } => {
+                for super_name in parents.iter().chain(interfaces.iter()) {
+                    out.insert(bare(super_name));
+                }
+                for member in members {
+                    match member {
+                        ClassMember::Constructor { body, .. } => visit_all(body, out),
+                        ClassMember::NestedType(nested) => visit(nested, out),
+                        _ => {}
+                    }
+                }
+            }
+            StmtKind::InterfaceDecl { parents, .. } => {
+                for super_name in parents {
+                    out.insert(bare(super_name));
+                }
+            }
+            StmtKind::FunctionDecl { body, .. }
+            | StmtKind::Block(body)
+            | StmtKind::NamespaceDecl { body, .. }
+            | StmtKind::For { body, .. }
+            | StmtKind::ForIn { body, .. }
+            | StmtKind::While { body, .. }
+            | StmtKind::DoWhile { body, .. }
+            | StmtKind::With { body, .. } => visit_all(body, out),
+            StmtKind::If {
+                then_body,
+                elifs,
+                else_body,
+                ..
+            } => {
+                visit_all(then_body, out);
+                for (_, arm) in elifs {
+                    visit_all(arm, out);
+                }
+                if let Some(arm) = else_body {
+                    visit_all(arm, out);
+                }
+            }
+            StmtKind::Try {
+                body,
+                catches,
+                else_body,
+                finally,
+            } => {
+                visit_all(body, out);
+                for catch in catches {
+                    visit_all(&catch.body, out);
+                }
+                for arm in else_body.iter().chain(finally.iter()) {
+                    visit_all(arm, out);
+                }
+            }
+            StmtKind::Switch { cases, default, .. } => {
+                for case in cases {
+                    visit_all(&case.body, out);
+                }
+                if let Some(arm) = default {
+                    visit_all(arm, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn visit_all(stmts: &[Statement], out: &mut HashSet<String>) {
+        for stmt in stmts {
+            visit(stmt, out);
+        }
+    }
+
+    let mut out = HashSet::new();
+    visit_all(stmts, &mut out);
+    // A supertype drags in the ones it inherits from, or its `parents` entry
+    // would name an interface that was never emitted.
+    if out.contains("List") || out.contains("Set") {
+        out.insert("Collection".to_string());
+    }
+    if out.contains("Collection") {
+        out.insert("Iterable".to_string());
+    }
+    out
+}
+
 fn kotlin_builtin_collection_interfaces(body: &[Statement]) -> Vec<Statement> {
     let declared: HashSet<String> = body
         .iter()
@@ -16095,6 +16227,7 @@ fn kotlin_builtin_collection_interfaces(body: &[Statement]) -> Vec<Statement> {
             }
         })
         .collect();
+    let implemented = kotlin_implemented_builtin_interfaces(body);
     let mut out = Vec::new();
 
     if !declared.contains("__KotlinDelegatedObject") {
@@ -16113,7 +16246,7 @@ fn kotlin_builtin_collection_interfaces(body: &[Statement]) -> Vec<Statement> {
         ));
     }
 
-    if !declared.contains("Iterable") {
+    if implemented.contains("Iterable") && !declared.contains("Iterable") {
         out.push(kt_builtin_interface(
             "Iterable",
             Vec::new(),
@@ -16143,7 +16276,7 @@ fn kotlin_builtin_collection_interfaces(body: &[Statement]) -> Vec<Statement> {
         ));
     }
 
-    if !declared.contains("Collection") {
+    if implemented.contains("Collection") && !declared.contains("Collection") {
         let mut members = kt_interface_property_accessors(
             "size".to_string(),
             Some("Int".to_string()),
@@ -16184,7 +16317,7 @@ fn kotlin_builtin_collection_interfaces(body: &[Statement]) -> Vec<Statement> {
         out.push(kt_builtin_interface("Collection", vec!["Iterable"], members));
     }
 
-    if !declared.contains("List") {
+    if implemented.contains("List") && !declared.contains("List") {
         let mut members = kt_interface_property_accessors(
             "size".to_string(),
             Some("Int".to_string()),
@@ -16240,7 +16373,7 @@ fn kotlin_builtin_collection_interfaces(body: &[Statement]) -> Vec<Statement> {
         out.push(kt_builtin_interface("List", vec!["Collection"], members));
     }
 
-    if !declared.contains("Set") {
+    if implemented.contains("Set") && !declared.contains("Set") {
         let mut members = kt_interface_property_accessors(
             "size".to_string(),
             Some("Int".to_string()),
@@ -16281,7 +16414,7 @@ fn kotlin_builtin_collection_interfaces(body: &[Statement]) -> Vec<Statement> {
         out.push(kt_builtin_interface("Set", vec!["Collection"], members));
     }
 
-    if !declared.contains("Map") {
+    if implemented.contains("Map") && !declared.contains("Map") {
         let mut members = kt_interface_property_accessors(
             "size".to_string(),
             Some("Int".to_string()),
