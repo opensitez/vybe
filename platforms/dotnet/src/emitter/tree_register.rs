@@ -732,6 +732,14 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
             ("iscanceled", ro("dotnet.task_is_canceled")),
         ],
         "list" | "arraylist" => vec![("capacity", ro("dotnet.list_capacity"))],
+        // The two members a cursor cannot store — both are derived from
+        // whatever `DataSource` currently points at, so a field would go stale
+        // the moment the source changed. `Position`, `DataMember`, `Filter` and
+        // `Sort` are NOT here: those are real fields the constructor writes.
+        "bindingsource" => vec![
+            ("count", ro("dotnet.bindingsource_count")),
+            ("current", ro("dotnet.bindingsource_current")),
+        ],
         // ── Strips and their items ─────────────────────────────────────────
         // `Items` IS the strip: WinForms wraps the contents in a
         // `ToolStripItemCollection`, but the `<menu>` element already is that

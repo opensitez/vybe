@@ -98,6 +98,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         directives: Default::default(),
     };
     normalize_vb_type_hint_whitespace(&mut module);
+    normalize_vb_split_object_initializers(&mut module);
     rewrite_vb_import_aliases(&mut module);
     normalize_vb_system_static_receivers(&mut module);
     normalize_vb_xml_surface(&mut module, xml_namespaces);
@@ -164,6 +165,251 @@ pub fn parse(source: &str) -> Result<Module, String> {
 
 fn normalize_vb_type_hint_whitespace(module: &mut Module) {
     normalize_vb_type_hint_whitespace_statements(&mut module.body);
+}
+
+/// `Dim x As Object` immediately followed by `x = <value>` — ONE declaration,
+/// spelled over two statements.
+///
+/// VB writes an object local's initialization two ways and only one of them
+/// reached the AST. `Dim a As Object = New StringBuilder()` works today: the
+/// declarator keeps its `Object` hint and the initializer sits right there, so
+/// the receiver's type is readable at every later `a.Append(…)`. Split the same
+/// declaration in two —
+///
+/// ```vb
+/// Dim b As Object
+/// b = New System.Text.StringBuilder()
+/// ```
+///
+/// — and the declarator carries `init: None`. Nothing in the AST said what `b`
+/// holds, so the receiver was untyped and the member call resolved by METHOD
+/// NAME instead: `Append` is also a LINQ name, so `b.Append("x")` became a LINQ
+/// `Append` over an iterable, ran the iterator machinery across a StringBuilder
+/// struct and appended NOTHING — silently, with `b.ToString()` then answering
+/// `[object StringBuilder]`. The same table caught `Min`, which is why
+/// `o.Min(10, 20)` reached the one-argument `min(iterable)` with two arguments
+/// on the stack.
+///
+/// This is a spelling difference, so it is normalized away rather than taught
+/// to the compiler: both forms become the same AST and the one that already
+/// works is the one that survives. Nothing about the RUNTIME type was missing —
+/// the object is stamped `__type = "StringBuilder"` either way. What was
+/// missing is the STATIC type at the call site, because a platform type's
+/// members are compile-time emits with nothing on the object to dispatch to.
+///
+/// Deliberately narrow: only `Object` declarations, only a single declarator,
+/// and only when the assignment is the very next statement — so no statement is
+/// reordered and no other declaration changes meaning.
+fn normalize_vb_split_object_initializers(module: &mut Module) {
+    fold_vb_split_object_initializer_statements(&mut module.body);
+}
+
+fn fold_vb_split_object_initializer_statements(body: &mut Vec<Statement>) {
+    let mut index = 0;
+    while index < body.len() {
+        if let Some(value) = vb_split_object_initializer_value(body, index) {
+            if let StmtKind::VarDecl { declarations, .. } = &mut body[index].kind {
+                declarations[0].init = Some(value);
+            }
+            body.remove(index + 1);
+        }
+        fold_vb_split_object_initializers_in_statement(&mut body[index]);
+        index += 1;
+    }
+}
+
+/// The value of an `x = <value>` that immediately follows a bare
+/// `Dim x As Object` — `None` unless the two statements are exactly that.
+fn vb_split_object_initializer_value(body: &[Statement], index: usize) -> Option<Expression> {
+    let StmtKind::VarDecl { declarations, kind } = &body.get(index)?.kind else {
+        return None;
+    };
+    if !matches!(kind, VarDeclKind::Dim) {
+        return None;
+    }
+    // `Dim a, b As Object` declares two names on one statement; the assignment
+    // that follows initializes at most one of them.
+    let [decl] = declarations.as_slice() else {
+        return None;
+    };
+    if decl.init.is_some() || decl.array_bounds.is_some() || decl.with_events {
+        return None;
+    }
+    let BindingPattern::Ident(name) = &decl.pattern else {
+        return None;
+    };
+    if vb_canonical_type_name(decl.type_hint.as_deref()?) != "Object" {
+        return None;
+    }
+    let StmtKind::Assign {
+        targets,
+        value,
+        by_ref,
+    } = &body.get(index + 1)?.kind
+    else {
+        return None;
+    };
+    // A by-reference binding aliases storage; it is not an initializer.
+    if *by_ref {
+        return None;
+    }
+    let [target] = targets.as_slice() else {
+        return None;
+    };
+    let ExprKind::Ident(target_name) = &target.kind else {
+        return None;
+    };
+    if !target_name.eq_ignore_ascii_case(name) {
+        return None;
+    }
+    // `Dim x As Object` then `x = f(x)` reads the variable it declares, so the
+    // assignment is not the declaration's initializer.
+    if vb_expr_reads_ident(value, name) {
+        return None;
+    }
+    Some(value.clone())
+}
+
+/// Does `expr` mention `name` as an identifier anywhere?
+///
+/// Conservative by construction: a lambda answers `true` unconditionally
+/// because its body can capture the name, and every unlisted expression answers
+/// `false` only because it holds no sub-expression. A false positive costs one
+/// declined fold; a false negative would move a read across its own
+/// declaration.
+fn vb_expr_reads_ident(expr: &Expression, name: &str) -> bool {
+    let reads = |expr: &Expression| vb_expr_reads_ident(expr, name);
+    match &expr.kind {
+        ExprKind::Ident(ident) => ident.eq_ignore_ascii_case(name),
+        ExprKind::Member { object, .. } => reads(object),
+        ExprKind::Call { callee, args, .. } => {
+            reads(callee) || args.iter().any(|arg| reads(&arg.value))
+        }
+        ExprKind::New { class, args } => reads(class) || args.iter().any(|arg| reads(&arg.value)),
+        ExprKind::Index { object, index, .. } => reads(object) || reads(index),
+        ExprKind::Binary { left, right, .. } => reads(left) || reads(right),
+        ExprKind::Unary { expr, .. }
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Await(expr)
+        | ExprKind::Yield(Some(expr))
+        | ExprKind::Cast { expr, .. } => reads(expr),
+        ExprKind::Ternary { cond, then, else_ } => reads(cond) || reads(then) || reads(else_),
+        ExprKind::Array(items) => items.iter().any(|item| reads(&item.value)),
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+            items.iter().any(reads)
+        }
+        ExprKind::Assign { target, value } => reads(target) || reads(value),
+        ExprKind::Lambda { .. } => true,
+        _ => false,
+    }
+}
+
+fn fold_vb_split_object_initializers_in_statement(stmt: &mut Statement) {
+    match &mut stmt.kind {
+        StmtKind::Block(body)
+        | StmtKind::Lock { body, .. }
+        | StmtKind::Using { body, .. }
+        | StmtKind::DoWhile { body, .. }
+        | StmtKind::FunctionDecl { body, .. }
+        | StmtKind::NamespaceDecl { body, .. } => {
+            fold_vb_split_object_initializer_statements(body);
+        }
+        StmtKind::For { init, body, .. } => {
+            if let Some(init) = init {
+                fold_vb_split_object_initializers_in_statement(init);
+            }
+            fold_vb_split_object_initializer_statements(body);
+        }
+        StmtKind::ForIn {
+            body, else_body, ..
+        }
+        | StmtKind::While {
+            body, else_body, ..
+        } => {
+            fold_vb_split_object_initializer_statements(body);
+            if let Some(else_body) = else_body {
+                fold_vb_split_object_initializer_statements(else_body);
+            }
+        }
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
+            fold_vb_split_object_initializer_statements(then_body);
+            for (_, body) in elifs {
+                fold_vb_split_object_initializer_statements(body);
+            }
+            if let Some(else_body) = else_body {
+                fold_vb_split_object_initializer_statements(else_body);
+            }
+        }
+        StmtKind::Switch {
+            cases, default, ..
+        } => {
+            for case in cases {
+                fold_vb_split_object_initializer_statements(&mut case.body);
+            }
+            if let Some(default) = default {
+                fold_vb_split_object_initializer_statements(default);
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            fold_vb_split_object_initializer_statements(body);
+            for catch in catches {
+                fold_vb_split_object_initializer_statements(&mut catch.body);
+            }
+            if let Some(else_body) = else_body {
+                fold_vb_split_object_initializer_statements(else_body);
+            }
+            if let Some(finally) = finally {
+                fold_vb_split_object_initializer_statements(finally);
+            }
+        }
+        // NOT `With`. The fold MOVES an expression out of its own statement and
+        // into the declarator above it, and inside a `With` block a leading-dot
+        // expression is relative to the block's receiver. `StmtKind::With`
+        // survives unresolved this early in the pipeline — nothing before this
+        // pass rewrites `.Member` to `obj.Member` — so a folded `x = .Member`
+        // would be a receiver-relative expression moved by one statement. The
+        // form does not occur inside a `With` anywhere in the suite, so
+        // declining costs nothing and `With` is already delicate
+        // ([[project_with_block_writes_a_phantom_field]]).
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                fold_vb_split_object_initializers_in_member(member);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn fold_vb_split_object_initializers_in_member(member: &mut ClassMember) {
+    match member {
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            fold_vb_split_object_initializers_in_statement(stmt);
+        }
+        ClassMember::Constructor { body, .. } => {
+            fold_vb_split_object_initializer_statements(body);
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                fold_vb_split_object_initializer_statements(getter);
+            }
+            if let Some(setter) = setter {
+                fold_vb_split_object_initializer_statements(&mut setter.body);
+            }
+        }
+        _ => {}
+    }
 }
 
 #[derive(Clone, Default)]

@@ -2630,6 +2630,55 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::core::parse_adapter::emit_parse_char(chunks, current, line)
         }
 
+        // ── System.Windows.Forms.BindingSource — the data cursor ────
+        "dotnet.bindingsource_new" => {
+            crate::emitter::core::bindingsource_adapter::emit_bindingsource_new(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.bindingsource_move_first" => {
+            crate::emitter::core::bindingsource_adapter::emit_bindingsource_move(
+                chunks,
+                current,
+                crate::emitter::core::bindingsource_adapter::Move::First,
+                line,
+            )
+        }
+        "dotnet.bindingsource_move_next" => {
+            crate::emitter::core::bindingsource_adapter::emit_bindingsource_move(
+                chunks,
+                current,
+                crate::emitter::core::bindingsource_adapter::Move::Next,
+                line,
+            )
+        }
+        "dotnet.bindingsource_move_previous" => {
+            crate::emitter::core::bindingsource_adapter::emit_bindingsource_move(
+                chunks,
+                current,
+                crate::emitter::core::bindingsource_adapter::Move::Previous,
+                line,
+            )
+        }
+        "dotnet.bindingsource_move_last" => {
+            crate::emitter::core::bindingsource_adapter::emit_bindingsource_move(
+                chunks,
+                current,
+                crate::emitter::core::bindingsource_adapter::Move::Last,
+                line,
+            )
+        }
+        "dotnet.bindingsource_count" => {
+            crate::emitter::core::bindingsource_adapter::emit_bindingsource_count(
+                chunks, current, line,
+            )
+        }
+        "dotnet.bindingsource_current" => {
+            crate::emitter::core::bindingsource_adapter::emit_bindingsource_current(
+                chunks, current, line,
+            )
+        }
+
         // ── .NET System.Data adapter ────────────────────────────────
         "dotnet.datatable_new" => {
             crate::emitter::core::datatable_adapter::emit_datatable_new(chunks, current, argc, line)

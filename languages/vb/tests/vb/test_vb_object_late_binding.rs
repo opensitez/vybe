@@ -36,6 +36,35 @@ fn late_binding_method_call() {
         vec!["OK"]
     );
 }
+/// `Dim obj As Object` and its first assignment as SEPARATE statements — the
+/// other half of the spelling every test above uses inline. Ground truth
+/// (dotnet 10): `OK`.
+#[test]
+fn late_binding_split_declaration_and_assignment() {
+    assert_eq!(
+        run_vb(
+            "Option Strict Off\nClass C\nPublic Function M1() As String\nReturn \"OK\"\nEnd Function\nEnd Class\nModule M\nSub Main()\nDim obj As Object\nobj = New C()\nConsole.WriteLine(obj.M1())\nEnd Sub\nEnd Module"
+        ),
+        vec!["OK"]
+    );
+}
+
+/// The same split spelling against a PLATFORM type, whose members are
+/// compile-time emits with nothing on the object to dispatch to. This is the
+/// case that broke: `Append` is also a LINQ name, so an untyped receiver sent
+/// the call to LINQ `Append` over an iterable and it appended nothing —
+/// silently, with `ToString()` answering `[object StringBuilder]`.
+/// Ground truth (dotnet 10): `built`.
+#[test]
+fn late_binding_split_declaration_platform_type() {
+    assert_eq!(
+        run_vb(
+            "Option Strict Off\nModule M\nSub Main()\nDim sb As Object\nsb = New System.Text.StringBuilder()\nsb.Append(\"built\")\nConsole.WriteLine(sb.ToString())\nEnd Sub\nEnd Module"
+        ),
+        vec!["built"]
+    );
+}
+
 #[test]
 fn late_binding_property_get() {
     assert_eq!(

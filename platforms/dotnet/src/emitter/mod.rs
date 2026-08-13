@@ -1511,6 +1511,29 @@ pub fn declared_instance_property_types(
         "sqlcommand" | "oledbcommand" | "adodbcommand" => {
             &[("Parameters", "SqlParameterCollection")]
         }
+        // The cursor's own state. These are plain struct fields the ADODB
+        // adapter and `wasi:sql` already write — what was missing is any
+        // statement of WHAT they are, and a frontend that has to decide an
+        // operator's meaning from the operand's type cannot decide without one.
+        //
+        // VB's `Not` is bitwise on a number and logical on a Boolean, chosen at
+        // COMPILE time from the inferred type. With `EOF` undeclared,
+        // `Do While Not rs.EOF` took the bitwise arm — `Not False` is `-1` and
+        // `Not True` is `-2`, both truthy — so the loop walked the real rows and
+        // then spun forever on empty ones.
+        // Only the BOOLEANS. `RecordCount`/`FieldCount`/`Position`/`Count` are
+        // every one of them stored as an `f64` — `collections::emit_len` yields
+        // `ecma:array.length`, `wasi:sql` writes `Value::F64(cols.len())`, and
+        // this adapter's own constructors write `Value::F64(0.0)`. Declaring
+        // them `Int32` would state a width the storage does not have, which is
+        // the same type-vs-storage split that made `EOF` loop forever, pointed
+        // the other way. Nothing needs them declared: VB's `Not` is bitwise on
+        // a numeric whether or not the type is known, so the declaration only
+        // ever mattered for the Booleans.
+        "recordset" => &[("EOF", "Boolean"), ("IsClosed", "Boolean")],
+        "sqldatareader" | "oledbdatareader" | "datareader" => {
+            &[("HasRows", "Boolean"), ("IsClosed", "Boolean")]
+        }
         _ => &[],
     }
 }

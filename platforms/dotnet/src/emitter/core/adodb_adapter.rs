@@ -76,6 +76,22 @@ fn set_object_const_prop(chunk: &mut Chunk, object_local: u16, key: &str, value:
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
 }
 
+/// A comparison result that is about to be STORED as `EOF`/`IsClosed`, turned
+/// into a real `Bool`.
+///
+/// `emit_dyn_eq`/`emit_dyn_ge` answer with a WASM `i32` 0/1, which is right for
+/// a branch condition and wrong for a value. VB's `Not` is *bitwise* on a
+/// number — `Not 0` is `-1` and `Not 1` is `-2`, both truthy — so
+/// `Do While Not rs.EOF` never terminated once `EOF` came from a comparison
+/// rather than from the constant the constructor writes. The recordset walked
+/// its real rows and then spun forever emitting empty ones.
+///
+/// `emit_i32_to_bool` documents this exact split: branch conditions accept
+/// both, so the wrapper belongs in value positions only.
+fn comparison_to_bool(chunk: &mut Chunk, line: u32) {
+    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
+}
+
 fn get_prop_to_local(
     chunk: &mut Chunk,
     object_local: u16,
@@ -123,6 +139,7 @@ fn emit_reader_to_adodb_recordset(
         chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
         core_wasm::i32_const(chunk, line, 0);
         vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+        comparison_to_bool(chunk, line);
         let eof_slot = reserve_slot(chunk);
         chunk.emit_op_u16(Op::LOCAL_SET, eof_slot, line);
         (count_slot, eof_slot)
@@ -403,6 +420,7 @@ pub fn emit_adodb_recordset_open(chunks: &mut [Chunk], current: usize, _argc: u8
         chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
         core_wasm::i32_const(chunk, line, 0);
         vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+        comparison_to_bool(chunk, line);
         chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
         slot
     };
@@ -450,6 +468,7 @@ pub fn emit_adodb_recordset_move_next(chunks: &mut [Chunk], current: usize, line
         chunk.emit_op_u16(Op::LOCAL_GET, pos_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
         vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
+        comparison_to_bool(chunk, line);
         let eof_slot = reserve_slot(chunk);
         chunk.emit_op_u16(Op::LOCAL_SET, eof_slot, line);
         (len_slot, eof_slot)
@@ -480,6 +499,7 @@ pub fn emit_adodb_recordset_move_first(chunks: &mut [Chunk], current: usize, lin
         chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
         core_wasm::i32_const(chunk, line, 0);
         vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+        comparison_to_bool(chunk, line);
         let eof_slot = reserve_slot(chunk);
         chunk.emit_op_u16(Op::LOCAL_SET, eof_slot, line);
         eof_slot

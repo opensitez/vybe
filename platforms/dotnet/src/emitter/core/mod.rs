@@ -1,5 +1,6 @@
 pub mod adodb_adapter;
 pub mod array_adapter;
+pub mod bindingsource_adapter;
 pub mod bitconverter_adapter;
 pub mod collections_adapter;
 pub mod component_classes;

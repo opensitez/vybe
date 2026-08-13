@@ -18,42 +18,15 @@ pub fn classes() -> &'static [DotnetClass] {
             widget_host_fn: Some("new_Timer"),
             widget_host_module: "vybe:gui",
         },
-        DotnetClass {
-            name: "BindingSource",
-            parent: Some("Component"),
-            properties: &[
-                "AllowNew",
-                "Count",
-                "CurrencyManager",
-                "Current",
-                "DataMember",
-                "DataSource",
-                "Filter",
-                "IsBindingSuspended",
-                "IsFixedSize",
-                "IsReadOnly",
-                "IsSorted",
-                "IsSynchronized",
-                "Item",
-                "List",
-                "Position",
-                "RaiseListChangedEvents",
-                "Sort",
-                "SortDescriptions",
-                "SortDirection",
-                "SortProperty",
-                "SupportsAdvancedSorting",
-                "SupportsChangeNotification",
-                "SupportsFiltering",
-                "SupportsSearching",
-                "SupportsSorting",
-                "SyncRoot",
-            ],
-            methods: &[],
-            ctor_arity: 0,
-            widget_host_fn: Some("new_BindingSource"),
-            widget_host_module: "vybe:gui",
-        },
+        // `BindingSource` is NOT declared here. It is a cursor over data, not a
+        // control: it has no element, nothing paints it, and every member is a
+        // position or a list. Declared in this table it got a `vybe:gui`
+        // backing object and property accessors keyed by CONTROL NAME, so
+        // `bs.Position` read back `""` and `bs.MoveFirst()` was `undefined`
+        // (`methods: &[]`). It lives in
+        // `core/component_classes_data_drawing.rs` next to `DataTable` and
+        // `DataRow`, with real fields and real emits — see
+        // `core/bindingsource_adapter.rs`.
         DotnetClass {
             name: "ImageList",
             parent: Some("Component"),

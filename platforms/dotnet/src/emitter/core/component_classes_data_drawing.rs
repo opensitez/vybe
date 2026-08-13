@@ -51,6 +51,65 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.datarow_is_null".into()),
                 )),
         ),
+        // The cursor a data form navigates with. Registered under its real .NET
+        // namespace so `New System.Windows.Forms.BindingSource()` and the bare
+        // `New BindingSource()` resolve exactly as before — what changed is
+        // WHAT it is: a data object with real fields, not a `vybe:gui` control
+        // whose properties were keyed by a control name it never had.
+        //
+        // `Position`, `DataSource`, `DataMember`, `Filter` and `Sort` are plain
+        // struct fields the constructor initializes; only the members that must
+        // be COMPUTED from the source (`Count`, `Current`) get accessors, and
+        // they register in `tree_register::shared_emit_accessors`.
+        //
+        // `EndEdit`/`CancelCurrentEdit` are declared no-ops, and truthfully so:
+        // there is no pending-edit buffer in this model — a bound control writes
+        // through on change — so there is nothing for either verb to commit or
+        // discard. `ResetBindings` is the same: `sync_bound_controls` re-reads
+        // the source on its own pass.
+        DotnetClassExport::new(
+            "dotnet.System.Windows.Forms",
+            ClassType::new("BindingSource")
+                .with_parent("Component")
+                .with_constructor(
+                    ConstructorDef::new(0).with_common_backing("dotnet.bindingsource_new"),
+                )
+                .with_method(MethodDef::new(
+                    "MoveFirst",
+                    0,
+                    MethodBody::Common("dotnet.bindingsource_move_first".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "MoveNext",
+                    0,
+                    MethodBody::Common("dotnet.bindingsource_move_next".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "MovePrevious",
+                    0,
+                    MethodBody::Common("dotnet.bindingsource_move_previous".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "MoveLast",
+                    0,
+                    MethodBody::Common("dotnet.bindingsource_move_last".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "EndEdit",
+                    0,
+                    MethodBody::Common("dotnet.winforms_noop".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "CancelCurrentEdit",
+                    0,
+                    MethodBody::Common("dotnet.winforms_noop".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ResetBindings",
+                    0,
+                    MethodBody::Common("dotnet.winforms_noop".into()),
+                )),
+        ),
         DotnetClassExport::new(
             "dotnet.System.Data",
             ClassType::new("DataAdapter")
