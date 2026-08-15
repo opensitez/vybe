@@ -134,12 +134,45 @@ impl Document {
         let Some(dom_node) = self.node(node) else {
             return;
         };
+        // A node that is not an element has no tag, no attributes and no end
+        // tag — it serialises as its data. Falling through to the element path
+        // wrote `<>…</>` for both, which is not markup at all: the tree could
+        // hold a text node and a comment long before it could write one back.
+        match dom_node.kind {
+            crate::dom::NodeKind::Text => {
+                let _ = write!(out, "{indent}{}", escape_text(&dom_node.data));
+                return;
+            }
+            // Comment data is NOT escaped: `<!--` … `-->` is a raw run, and
+            // `&amp;` inside one is four characters, not one.
+            crate::dom::NodeKind::Comment => {
+                let _ = write!(out, "{indent}<!--{}-->", dom_node.data);
+                return;
+            }
+            // XML-only productions, serialised as themselves. Neither escapes
+            // its data: `<![CDATA[` … `]]>` and `<?` … `?>` are raw runs, and
+            // an `&amp;` inside one is five characters rather than one.
+            crate::dom::NodeKind::CData => {
+                let _ = write!(out, "{indent}<![CDATA[{}]]>", dom_node.data);
+                return;
+            }
+            crate::dom::NodeKind::ProcessingInstruction => {
+                let data = &dom_node.data;
+                let _ = if data.is_empty() {
+                    write!(out, "{indent}<?{}?>", dom_node.tag)
+                } else {
+                    write!(out, "{indent}<?{} {}?>", dom_node.tag, data)
+                };
+                return;
+            }
+            crate::dom::NodeKind::Element => {}
+        }
         let tag = dom_node.tag.clone();
 
         let mut attributes: Vec<(String, String)> = dom_node
             .attributes
             .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
+            .map(|a| (a.name.clone(), a.value.clone()))
             .collect();
         // The create-time disambiguator is not in the attribute map — it is a
         // field on the node, because with the tag it is what decides which

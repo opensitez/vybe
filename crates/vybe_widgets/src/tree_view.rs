@@ -390,6 +390,14 @@ impl TreeView {
         None
     }
 
+    /// Draw one row's label, in **physical** coordinates.
+    ///
+    /// This was a second copy of the shaping-and-blit loop — same metrics, same
+    /// premultiply arithmetic, same `draw_pixmap` offsets — with two
+    /// differences that were both bugs: no zero-size-glyph guard, and an
+    /// `unwrap()` on `Pixmap::new` that would panic on one. It now delegates to
+    /// the one shaping path, so a font declaration reaching a tree is a matter
+    /// of giving `TreeView` a [`FontSpec`] rather than of rewriting this.
     pub fn draw_text_static_internal(
         pix: &mut Pixmap,
         fs: &mut FontSystem,
@@ -400,43 +408,8 @@ impl TreeView {
         col: CosmicColor,
         scale: f32,
     ) {
-        let mut lab = Buffer::new(fs, Metrics::new(14.0, 20.0).scale(scale));
-        lab.set_text(
-            fs,
-            text,
-            &Attrs::new().family(Family::Monospace).color(col),
-            cosmic_text::Shaping::Advanced,
-            None,
-        );
-        lab.shape_until_scroll(fs, false);
-        for r in lab.layout_runs() {
-            for g in r.glyphs {
-                let pg = g.physical((x, y + r.line_y), 1.0);
-                if let Some(im) = sc.get_image(fs, pg.cache_key) {
-                    let mut p =
-                        Pixmap::new(im.placement.width.max(1), im.placement.height.max(1)).unwrap();
-                    let (cr, cg, cb, ca) = (col.r(), col.g(), col.b(), col.a());
-                    for (pix_slot, &al) in p.pixels_mut().iter_mut().zip(im.data.iter()) {
-                        let af = (al as f32 / 255.0) * (ca as f32 / 255.0);
-                        *pix_slot = tiny_skia::ColorU8::from_rgba(
-                            (cr as f32 * af) as u8,
-                            (cg as f32 * af) as u8,
-                            (cb as f32 * af) as u8,
-                            (255.0 * af) as u8,
-                        )
-                        .premultiply();
-                    }
-                    pix.draw_pixmap(
-                        pg.x + im.placement.left,
-                        pg.y - im.placement.top,
-                        p.as_ref(),
-                        &tiny_skia::PixmapPaint::default(),
-                        Transform::identity(),
-                        None,
-                    );
-                }
-            }
-        }
+        let spec = crate::ide_text::FontSpec::mono(14.0).with_line_height(20.0);
+        crate::ide_text::draw_text_spec_physical(pix, fs, sc, text, x, y, &spec, col, scale);
     }
 }
 

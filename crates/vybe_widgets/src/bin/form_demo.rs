@@ -40,7 +40,7 @@ impl FormDemoApp {
 
         // Title label
         let mut title = Label::new("Vybe Toolkit Demo");
-        title.font_size = 18.0;
+        title.font.size = 18.0;
         title.colors.foreground = (30, 30, 30, 255);
         self.form.add_control(title, 20.0, 15.0, 300.0, 30.0);
 

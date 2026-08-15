@@ -24,9 +24,20 @@ use std::sync::{Arc, Mutex};
 
 use vybe_runtime::event_loop::monotonic_now_ms;
 use vybe_runtime::scheduler::DeferredSource;
-use vybe_runtime::{HostContext, VM, Value};
+use vybe_runtime::vm::HostFnDecl;
+use vybe_runtime::{FuncSig, HostContext, VM, ValType, Value};
 
 use crate::engine::{ScheduleOp, ScheduleValue, schedule};
+
+/// Declare a `web:timers` function. No resource: a timer id is a plain integer
+/// the guest holds, not a handle the host owns.
+fn timer_sig(name: &str, params: Vec<ValType>, results: Vec<ValType>) -> FuncSig {
+    FuncSig {
+        name: name.to_string(),
+        params,
+        results,
+    }
+}
 
 /// One scheduled callback.
 ///
@@ -160,6 +171,19 @@ impl DeferredSource for TimerCallbacks {
     }
 }
 
+/// `setTimeout` and `setInterval` are deliberately left UNDECLARED.
+///
+/// Their IDL is `setTimeout(handler, optional long timeout = 0, any... args)` —
+/// both an optional parameter and a variadic tail, and `setTimeout(fn)` with no
+/// delay is ordinary guest code. The Component Model has no optional parameter
+/// (an IDL `optional` is `option<T>`, still positional) and `FuncSig` carries a
+/// fixed `Vec<ValType>`, so any single arity declared here would be wrong for
+/// some legal call.
+///
+/// Declaring `2` would fire the arity check on every `setTimeout(fn)`. A
+/// warning that appears on correct code is worse than no warning at all: it
+/// teaches everyone to ignore the one that matters. Undeclared means UNKNOWN,
+/// which is the truth.
 pub fn register(vm: &mut VM) {
     let timers = Arc::new(TimerCallbacks::new());
     vm.register_deferred_source(timers.clone());
@@ -177,13 +201,21 @@ pub fn register(vm: &mut VM) {
     );
 
     let t = timers.clone();
-    vm.register_host_fn(
-        "web:timers",
-        "clearTimeout",
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            t.clear(args.first().map(|v| v.as_f64() as u64).unwrap_or(0));
-            Value::Undefined
-        }),
+    // `clearTimeout`/`clearInterval` take exactly the id, so they declare.
+    //
+    // `setTimeout`/`setInterval` deliberately do NOT — see the note above
+    // `register`. Declaring is per-function precisely so a module can be half
+    // declared when half of it has a stable parameter list.
+    vm.register_host(
+        HostFnDecl::new(
+            "web:timers",
+            "clearTimeout",
+            Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+                t.clear(args.first().map(|v| v.as_f64() as u64).unwrap_or(0));
+                Value::Undefined
+            }),
+        )
+        .with_sig(timer_sig("clear-timeout", vec![ValType::F64], vec![])),
     );
 
     // setInterval(handler, delay?, ...args) → id
@@ -204,26 +236,34 @@ pub fn register(vm: &mut VM) {
     );
 
     let t = timers.clone();
-    vm.register_host_fn(
-        "web:timers",
-        "clearInterval",
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            t.clear(args.first().map(|v| v.as_f64() as u64).unwrap_or(0));
-            Value::Undefined
-        }),
+    vm.register_host(
+        HostFnDecl::new(
+            "web:timers",
+            "clearInterval",
+            Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+                t.clear(args.first().map(|v| v.as_f64() as u64).unwrap_or(0));
+                Value::Undefined
+            }),
+        )
+        .with_sig(timer_sig("clear-interval", vec![ValType::F64], vec![])),
     );
 
     // queueMicrotask(callback) — WHATWG HTML §8.2.4.1.
     // Schedules callback as a microtask, running it after the current task
     // completes but before any macrotasks (timers).
-    vm.register_host_fn(
-        "web:timers",
-        "queueMicrotask",
-        Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            if let Some(cb) = args.first().cloned() {
-                ctx.queue_ready(cb, Value::Undefined);
-            }
-            Value::Undefined
-        }),
+    vm.register_host(
+        HostFnDecl::new(
+            "web:timers",
+            "queueMicrotask",
+            Box::new(|ctx: &mut HostContext, args: &[Value]| {
+                if let Some(cb) = args.first().cloned() {
+                    ctx.queue_ready(cb, Value::Undefined);
+                }
+                Value::Undefined
+            }),
+        )
+        // One parameter and no optional tail — unlike its two neighbours, this
+        // one really is fixed.
+        .with_sig(timer_sig("queue-microtask", vec![ValType::Any], vec![])),
     );
 }

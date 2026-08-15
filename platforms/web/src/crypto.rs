@@ -13,7 +13,18 @@
 use sha2::{Digest, Sha256, Sha384, Sha512};
 use std::sync::{Arc, Mutex};
 use vybe_runtime::value::{Object, ObjectKind};
-use vybe_runtime::{HostContext, VM, Value};
+use vybe_runtime::vm::HostFnDecl;
+use vybe_runtime::{FuncSig, HostContext, VM, ValType, Value};
+
+/// Declare a `web:crypto` function. No resource: `crypto` is a namespace, not a
+/// handle — `randomUUID` has nothing to be a method ON.
+fn crypto_sig(name: &str, params: Vec<ValType>, results: Vec<ValType>) -> FuncSig {
+    FuncSig {
+        name: name.to_string(),
+        params,
+        results,
+    }
+}
 
 // Reuses the sha1/md5 crates already in the workspace so subtle.digest
 // covers the W3C mandatory algorithm list without new deps.
@@ -48,10 +59,11 @@ fn make_promise_fulfilled(value: Value) -> Value {
 
 pub fn register(vm: &mut VM) {
     // crypto.randomUUID() — RFC 4122 v4 UUID per W3C §2.2.4.
-    vm.register_host_fn(
-        "web:crypto",
-        "randomUUID",
-        Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
+    vm.register_host(
+        HostFnDecl::new(
+            "web:crypto",
+            "randomUUID",
+            Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
             let a = random_u64();
             let b = random_u64();
             let s = format!(
@@ -62,16 +74,22 @@ pub fn register(vm: &mut VM) {
                 (b >> 48) as u16 & 0x3FFF | 0x8000,
                 b & 0xFFFFFFFFFFFF,
             );
-            Value::String(Arc::from(s.as_str()))
-        }),
+                Value::String(Arc::from(s.as_str()))
+            }),
+        )
+        .with_sig(crypto_sig("random-uuid", vec![], vec![ValType::String])),
     );
 
     // crypto.getRandomValues(typedArray) — W3C §2.2.3. Fills the array
     // with cryptographically random bytes (xorshift MVP) and returns it.
-    vm.register_host_fn(
-        "web:crypto",
-        "getRandomValues",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+    //
+    // It takes the array and RETURNS THE SAME ARRAY — the spec fills in place
+    // and hands the argument back, so the result is not a second buffer.
+    vm.register_host(
+        HostFnDecl::new(
+            "web:crypto",
+            "getRandomValues",
+            Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             if let Some(Value::Object(arr)) = args.first() {
                 let mut o = arr.lock().unwrap();
                 if let ObjectKind::Array(ref mut v) = o.kind {
@@ -80,18 +98,25 @@ pub fn register(vm: &mut VM) {
                     }
                 }
             }
-            args.first().cloned().unwrap_or(Value::Null)
-        }),
+                args.first().cloned().unwrap_or(Value::Null)
+            }),
+        )
+        .with_sig(crypto_sig(
+            "get-random-values",
+            vec![ValType::Any],
+            vec![ValType::Any],
+        )),
     );
 
     // crypto.subtle.digest(algorithm, data) → Promise<ArrayBuffer>
     //
     // Algorithm: case-insensitive "SHA-1" / "SHA-256" / "SHA-384" / "SHA-512" / "MD5".
     // Data: ArrayBuffer or TypedArray. Result: ArrayBuffer holding the digest bytes.
-    vm.register_host_fn(
-        "web:crypto",
-        "digest",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+    vm.register_host(
+        HostFnDecl::new(
+            "web:crypto",
+            "digest",
+            Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let algo = args
                 .first()
                 .map(|v| format!("{}", v).to_uppercase())
@@ -109,7 +134,18 @@ pub fn register(vm: &mut VM) {
             buf_obj.kind = ObjectKind::ArrayBuffer(make_buffer_state(digest_bytes));
             let buffer = Value::Object(vybe_runtime::heap::alloc(buf_obj));
             make_promise_fulfilled(buffer)
-        }),
+            }),
+        )
+        // `Any` for both the data and the result, deliberately: the IDL takes a
+        // `BufferSource` (ArrayBuffer OR any TypedArray view) and answers a
+        // `Promise<ArrayBuffer>`. `ValType` can express neither the union nor
+        // the promise, and claiming `List(U8)` would be a narrower type than
+        // the function honours.
+        .with_sig(crypto_sig(
+            "digest",
+            vec![ValType::String, ValType::Any],
+            vec![ValType::Any],
+        )),
     );
 }
 

@@ -3,7 +3,7 @@
 use super::WidgetColors;
 use super::layout::{
     CommandValue, KeyEvent, LayoutRect, MouseButton as LayoutMouseButton, MouseEvent,
-    MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, WidgetId,
+    MouseEventKind, PanelWidget, RenderContext, TextAlign, WidgetCommand, WidgetEvent, WidgetId,
 };
 use cosmic_text::Color as CosmicColor;
 
@@ -25,7 +25,12 @@ pub struct TextInput {
     pub focused: bool,
     pub hovered: bool,
     pub colors: WidgetColors,
-    pub font_size: f32,
+    /// The field's text style — same reasoning as `Button::font`.
+    pub font: crate::ide_text::FontSpec,
+    /// CSS `text-align` — VCL's `Alignment`, WinForms' `TextAlign`. A
+    /// calculator display is the canonical case and the reason it is here
+    /// rather than on the label alone.
+    pub text_align: TextAlign,
     pub width: f32,
     pub height: f32,
     pub id: WidgetId,
@@ -34,6 +39,16 @@ pub struct TextInput {
     pending_events: Vec<WidgetEvent>,
     /// Whether a mouse drag selection is in progress.
     dragging: bool,
+    /// Where each line was actually DRAWN, as an offset from the field's left
+    /// edge, recorded by the last render.
+    ///
+    /// The caret, the selection rect and the hit test all have to land on the
+    /// same pixels as the glyphs, and with an alignment that offset is no
+    /// longer the constant `padding` — it depends on the measured width of the
+    /// line, which needs a font system. Render has one; the event path does
+    /// not. So the number is measured once, where it is knowable, and read
+    /// back where it is needed, rather than estimated twice and disagreed on.
+    line_origins: Vec<f32>,
 }
 
 impl TextInput {
@@ -51,7 +66,8 @@ impl TextInput {
             focused: false,
             hovered: false,
             colors: WidgetColors::default(),
-            font_size: 14.0,
+            font: crate::ide_text::FontSpec::sans(14.0),
+            text_align: TextAlign::Left,
             width: 200.0,
             height: 24.0,
             id: WidgetId::next(),
@@ -59,6 +75,22 @@ impl TextInput {
             rect: LayoutRect::zero(),
             pending_events: Vec::new(),
             dragging: false,
+            line_origins: Vec::new(),
+        }
+    }
+
+    /// Where a line of `width` pixels starts, as an offset from the left edge.
+    ///
+    /// The one place the alignment is turned into a number. `Left` is the
+    /// padding a field has always had; the other two measure from the opposite
+    /// edge, which is what makes a right-aligned display line up on the right
+    /// however long the number is.
+    fn line_origin(&self, line_width: f32) -> f32 {
+        const PADDING: f32 = 4.0;
+        match self.text_align {
+            TextAlign::Left => PADDING,
+            TextAlign::Center => ((self.rect.w - line_width) / 2.0).max(PADDING),
+            TextAlign::Right => (self.rect.w - PADDING - line_width).max(PADDING),
         }
     }
 
@@ -136,7 +168,7 @@ impl TextInput {
     /// caret and the hit-test land on the same rows the glyphs do.
     /// Mirrors `Metrics::new(size, size * 1.3)` in `ide_text`.
     fn line_height(&self) -> f32 {
-        self.font_size * 1.3
+        self.font.resolved_line_height()
     }
 
     /// `(start_byte, text)` per line. A single-line field is simply one line,
@@ -205,7 +237,11 @@ impl TextInput {
         if text.is_empty() {
             return start;
         }
-        let local_x = x - self.rect.x - padding;
+        // Measured at render, because that is where a font system exists —
+        // see `line_origins`. A field that has never been drawn falls back to
+        // the padding, which is the left-aligned answer and the old constant.
+        let origin = self.line_origins.get(index).copied().unwrap_or(padding);
+        let local_x = x - self.rect.x - origin;
         let chars = text.chars().count();
         let advance = self.width / chars.max(1) as f32;
         let column = ((local_x / advance).round().max(0.0) as usize).min(chars);
@@ -345,7 +381,8 @@ impl TextInput {
         let mut pos = 0;
         for ch in text.chars() {
             pos += ch.len_utf8();
-            let w = super::ide_text::measure_text(font_system, &text[..pos], self.font_size, scale);
+            let w =
+                super::ide_text::measure_text_spec(font_system, &text[..pos], &self.font, scale);
             let dist = (w - local_x).abs();
             if dist < best_dist {
                 best_dist = dist;
@@ -436,7 +473,7 @@ impl PanelWidget for TextInput {
         let ty = if self.multiline {
             r.y + padding
         } else {
-            r.y + (r.h - self.font_size) / 2.0 - 1.0
+            r.y + (r.h - self.font.size) / 2.0 - 1.0
         };
         let line_h = self.line_height();
         // One line for a single-line field, so the loops below are the general
@@ -462,8 +499,19 @@ impl PanelWidget for TextInput {
             if end == 0 {
                 return 0.0;
             }
-            super::ide_text::measure_text(ctx.font_system, &text[..end], self.font_size, ctx.scale)
+            super::ide_text::measure_text_spec(ctx.font_system, &text[..end], &self.font, ctx.scale)
         };
+        // Each line's own origin, from its own measured width — a shorter line
+        // in a right-aligned field starts further right. Recorded on the field
+        // so the event path can reach the same number.
+        let origins: Vec<f32> = lines
+            .iter()
+            .map(|(_, text)| {
+                let width = prefix_x(ctx, text, text.len());
+                self.line_origin(width)
+            })
+            .collect();
+        let origin_of = |i: usize| origins.get(i).copied().unwrap_or(padding);
 
         // Selection highlight — one rect per line it covers.
         if self.focused && !is_ph {
@@ -475,7 +523,7 @@ impl PanelWidget for TextInput {
                     }
                     let x_start = prefix_x(ctx, text, from - start);
                     let x_end = prefix_x(ctx, text, to - start);
-                    let sx = (r.x + padding + x_start) * ctx.scale;
+                    let sx = (r.x + origin_of(i) + x_start) * ctx.scale;
                     let sw = (x_end - x_start) * ctx.scale;
                     let (sy, sh) = if self.multiline {
                         ((ty + i as f32 * line_h) * ctx.scale, line_h * ctx.scale)
@@ -498,14 +546,14 @@ impl PanelWidget for TextInput {
             if self.multiline && y + line_h > r.y + r.h {
                 break;
             }
-            super::ide_text::draw_text(
+            super::ide_text::draw_text_spec(
                 ctx.pixmap,
                 ctx.font_system,
                 ctx.swash_cache,
                 text,
-                r.x + padding,
+                r.x + origin_of(i),
                 y,
-                self.font_size,
+                &self.font,
                 CosmicColor::rgba(cr, cg, cb, 255),
                 ctx.scale,
             );
@@ -517,7 +565,7 @@ impl PanelWidget for TextInput {
             let cursor_x = lines
                 .get(line)
                 .map_or(0.0, |(_, text)| prefix_x(ctx, text, col));
-            let cx = (r.x + padding + cursor_x) * ctx.scale;
+            let cx = (r.x + origin_of(line) + cursor_x) * ctx.scale;
             let (cy_top, cy_bot) = if self.multiline {
                 let top = ty + line as f32 * line_h;
                 ((top * ctx.scale), (top + line_h) * ctx.scale)
@@ -542,6 +590,8 @@ impl PanelWidget for TextInput {
                 );
             }
         }
+        // Hand the measured origins to the event path.
+        self.line_origins = origins;
     }
 
     fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
@@ -779,6 +829,15 @@ impl PanelWidget for TextInput {
 
     fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
         match cmd {
+            WidgetCommand::Custom(key, val) if self.font.apply_command(key, val) => {
+                CommandValue::None
+            }
+            WidgetCommand::Custom(key, CommandValue::Text(value)) if key == "SetTextAlign" => {
+                if let Some(align) = TextAlign::from_css(value) {
+                    self.text_align = align;
+                }
+                CommandValue::None
+            }
             WidgetCommand::SetText(t) => {
                 // Programmatic write. Fire TextChanged on actual value
                 // change so user-installed handlers see it the same way

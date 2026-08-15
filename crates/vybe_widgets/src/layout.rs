@@ -6,9 +6,10 @@
 //! - `RenderContext` — bundle of rendering resources
 //! - `PanelWidget` trait — implemented by all toolkit panels and containers
 
-use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache};
+use crate::ide_text::FontSpec;
+use cosmic_text::{Color, FontSystem, SwashCache};
 use std::sync::atomic::{AtomicU64, Ordering};
-use tiny_skia::{ColorU8, Pixmap, PixmapPaint, Transform};
+use tiny_skia::{ColorU8, Pixmap};
 use winit::window::CursorIcon;
 
 // ── WidgetId ───────────────────────────────────────────────────────────
@@ -167,48 +168,40 @@ pub struct RenderContext<'a> {
 }
 
 impl<'a> RenderContext<'a> {
-    /// Draw monospace UI text at physical pixel coordinates.
+    /// Draw the toolkit's default UI text at physical pixel coordinates.
+    ///
+    /// The style is a [`FontSpec`] like any other — this one just happens to
+    /// carry the defaults this helper has always used. Callers with a declared
+    /// style call [`RenderContext::draw_text_styled`] instead of having their
+    /// font decided for them here.
     pub fn draw_text(&mut self, text: &str, x: f32, y: f32, r: u8, g: u8, b: u8, a: u8) {
-        let col = Color::rgba(r, g, b, a);
-        let mut lab = Buffer::new(self.font_system, Metrics::new(14.0, 20.0).scale(self.scale));
-        lab.set_text(
+        let spec = FontSpec::mono(14.0).with_line_height(20.0);
+        self.draw_text_styled(text, x, y, &spec, r, g, b, a);
+    }
+
+    /// Draw one line in a fully specified style, at physical pixel coordinates.
+    pub fn draw_text_styled(
+        &mut self,
+        text: &str,
+        x: f32,
+        y: f32,
+        spec: &FontSpec,
+        r: u8,
+        g: u8,
+        b: u8,
+        a: u8,
+    ) {
+        crate::ide_text::draw_text_spec_physical(
+            self.pixmap,
             self.font_system,
+            self.swash_cache,
             text,
-            &Attrs::new().family(Family::Monospace).color(col),
-            Shaping::Advanced,
-            None,
+            x,
+            y,
+            spec,
+            Color::rgba(r, g, b, a),
+            self.scale,
         );
-        lab.shape_until_scroll(self.font_system, false);
-        for run in lab.layout_runs() {
-            for g in run.glyphs {
-                let pg = g.physical((x, y + run.line_y), 1.0);
-                if let Some(img) = self.swash_cache.get_image(self.font_system, pg.cache_key) {
-                    if let Some(mut p) =
-                        Pixmap::new(img.placement.width.max(1), img.placement.height.max(1))
-                    {
-                        let (cr, cg, cb, ca) = (col.r(), col.g(), col.b(), col.a());
-                        for (idx, &al) in img.data.iter().enumerate() {
-                            let af = (al as f32 / 255.0) * (ca as f32 / 255.0);
-                            p.pixels_mut()[idx] = ColorU8::from_rgba(
-                                (cr as f32 * af) as u8,
-                                (cg as f32 * af) as u8,
-                                (cb as f32 * af) as u8,
-                                (255.0 * af) as u8,
-                            )
-                            .premultiply();
-                        }
-                        self.pixmap.draw_pixmap(
-                            pg.x + img.placement.left,
-                            pg.y - img.placement.top,
-                            p.as_ref(),
-                            &PixmapPaint::default(),
-                            Transform::identity(),
-                            None,
-                        );
-                    }
-                }
-            }
-        }
     }
 
     /// Draw monospace UI text with a custom font size at physical pixel coordinates.
@@ -223,49 +216,10 @@ impl<'a> RenderContext<'a> {
         b: u8,
         a: u8,
     ) {
-        let col = Color::rgba(r, g, b, a);
-        let mut lab = Buffer::new(
-            self.font_system,
-            Metrics::new(font_size, font_size * 1.5).scale(self.scale),
-        );
-        lab.set_text(
-            self.font_system,
-            text,
-            &Attrs::new().family(Family::Monospace).color(col),
-            Shaping::Advanced,
-            None,
-        );
-        lab.shape_until_scroll(self.font_system, false);
-        for run in lab.layout_runs() {
-            for g in run.glyphs {
-                let pg = g.physical((x, y + run.line_y), 1.0);
-                if let Some(img) = self.swash_cache.get_image(self.font_system, pg.cache_key) {
-                    if let Some(mut p) =
-                        Pixmap::new(img.placement.width.max(1), img.placement.height.max(1))
-                    {
-                        let (cr, cg, cb, ca) = (col.r(), col.g(), col.b(), col.a());
-                        for (idx, &al) in img.data.iter().enumerate() {
-                            let af = (al as f32 / 255.0) * (ca as f32 / 255.0);
-                            p.pixels_mut()[idx] = ColorU8::from_rgba(
-                                (cr as f32 * af) as u8,
-                                (cg as f32 * af) as u8,
-                                (cb as f32 * af) as u8,
-                                (255.0 * af) as u8,
-                            )
-                            .premultiply();
-                        }
-                        self.pixmap.draw_pixmap(
-                            pg.x + img.placement.left,
-                            pg.y - img.placement.top,
-                            p.as_ref(),
-                            &PixmapPaint::default(),
-                            Transform::identity(),
-                            None,
-                        );
-                    }
-                }
-            }
-        }
+        // 1.5, not the module default of 1.3 — this helper has always used a
+        // looser line, and the line box is what a baseline sits inside.
+        let spec = FontSpec::mono(font_size).with_line_height(font_size * 1.5);
+        self.draw_text_styled(text, x, y, &spec, r, g, b, a);
     }
 }
 
@@ -315,6 +269,27 @@ pub enum CommandValue {
     Index(usize),
     /// An RGBA colour.
     Color(u8, u8, u8, u8),
+    /// A box's inline content — see [`InlineRun`].
+    Runs(Vec<InlineRun>),
+}
+
+/// **A styled span of a box's text** — wxhtmledit's `InlineRun`.
+///
+/// The thing that makes `a <strong>b</strong> c` one line of mixed text rather
+/// than a paragraph with a block stacked underneath it. An inline element is
+/// **not a box**: it contributes a differently-styled run of its parent's text,
+/// which is why `<strong>` has no rect, no padding and no position of its own,
+/// and why asking a toolkit for "the strong widget" is the wrong question.
+///
+/// The style is resolved — the cascade has already run — because a run is
+/// produced from a computed style rather than from declarations. That is the
+/// same reason wxhtmledit propagates `box.style` into `inlineContent` right
+/// after `InheritFromParent`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InlineRun {
+    pub text: String,
+    pub font: crate::ide_text::FontSpec,
+    pub color: (u8, u8, u8, u8),
 }
 
 /// Read a `Custom` command payload as a number. Commands cross the host
@@ -329,67 +304,204 @@ pub fn command_number(val: &CommandValue) -> Option<f64> {
     }
 }
 
+/// The order children are PAINTED in — CSS 2.1 Appendix E, the parts of it a
+/// toolkit needs.
+///
+/// **Three buckets, not two.** A positioned box with a NEGATIVE `z-index`
+/// paints *below* the in-flow content, not above it with the other positioned
+/// boxes — that is the whole point of `z-index: -1`, and getting it wrong makes
+/// a "send behind" impossible to express. (wxhtmledit's `CollectPaintOrder`
+/// has exactly two buckets and this exact bug.)
+///
+///   1. positioned, `z-index` < 0   — behind everything
+///   2. everything in normal flow   — document order
+///   3. positioned, `z-index` >= 0  — sorted, stably
+///
+/// A **stable** sort throughout, so equal `z-index` keeps document order and
+/// the default — no `z-index` declared anywhere — is exactly document order.
+///
+/// `is_positioned` is asked rather than assumed because "positioned" means
+/// `position` is not `static`, which only the caller knows: for a flow
+/// container it is the out-of-flow/relative sets, and for a form whose children
+/// all carry coordinates it is simply true.
+pub fn paint_order(
+    count: usize,
+    is_positioned: impl Fn(usize) -> bool,
+    z_of: impl Fn(usize) -> i32,
+) -> Vec<usize> {
+    let mut below = Vec::new();
+    let mut flow = Vec::new();
+    let mut above = Vec::new();
+    for i in 0..count {
+        if !is_positioned(i) {
+            flow.push(i);
+        } else if z_of(i) < 0 {
+            below.push(i);
+        } else {
+            above.push(i);
+        }
+    }
+    below.sort_by_key(|i| z_of(*i));
+    above.sort_by_key(|i| z_of(*i));
+    below.extend(flow);
+    below.extend(above);
+    below
+}
+
+#[cfg(test)]
+mod color_tests {
+    use super::parse_color;
+
+    #[test]
+    fn the_widget_path_and_the_css_path_are_one_parser() {
+        // These were two implementations with two grammars. Each line below
+        // answered `None` here and a colour in `css.rs` — a value's meaning
+        // decided by which of two functions it happened to reach.
+        assert_eq!(parse_color("#f00"), Some((255, 0, 0, 255)), "CSS shorthand");
+        assert_eq!(
+            parse_color("rgb(255, 0, 0)"),
+            Some((255, 0, 0, 255)),
+            "rgb() is CSS's own syntax and was unparseable here"
+        );
+        assert_eq!(parse_color("navy"), Some((0, 0, 128, 255)), "a CSS colour");
+        assert_eq!(parse_color("rgba(0, 0, 255, 0.5)").map(|c| c.3), Some(128));
+    }
+
+    #[test]
+    fn eight_digit_hex_is_rgba_which_is_a_deliberate_behaviour_change() {
+        // The contradiction, not a gap: `#RRGGBBAA` was read as RGBA by
+        // `css.rs` and as ARGB here, so `#FF0000FF` was RED down one path and
+        // BLUE down the other. CSS Color 4 says the alpha is LAST, so CSS
+        // wins and this path changed.
+        assert_eq!(
+            parse_color("#FF0000FF"),
+            Some((255, 0, 0, 255)),
+            "alpha is the LAST byte — this used to answer blue"
+        );
+        assert_eq!(parse_color("#00FF0080").map(|c| c.3), Some(128));
+    }
+
+    #[test]
+    fn a_packed_integer_is_still_argb_because_the_toolkits_say_so() {
+        // The other channel order survives as its own case rather than as a
+        // clash: Flutter's `Color.value`, WinForms' `Color.ToArgb` and VCL's
+        // `TColor` all hand over ARGB, and CSS has no syntax that collides.
+        assert_eq!(parse_color("0xFF0000FF"), Some((0, 0, 255, 255)), "ARGB");
+        // No alpha byte means opaque, not invisible.
+        assert_eq!(parse_color("0x2196F3").map(|c| c.3), Some(255));
+        assert_eq!(parse_color("4294901760"), Some((255, 0, 0, 255)));
+    }
+
+    #[test]
+    fn the_toolkit_only_colour_names_survived_the_move() {
+        assert_eq!(parse_color("lightgray"), Some((211, 211, 211, 255)));
+        assert_eq!(parse_color("darkgrey"), Some((169, 169, 169, 255)));
+        assert_eq!(parse_color("transparent"), Some((0, 0, 0, 0)));
+        assert_eq!(parse_color("nonsense"), None);
+    }
+}
+
+#[cfg(test)]
+mod paint_order_tests {
+    use super::paint_order;
+
+    #[test]
+    fn a_negative_z_index_paints_behind_the_normal_flow() {
+        // THE rule two buckets get wrong. Index 0 is positioned at z = -1, 1 is
+        // in flow, 2 is positioned at z = 0. A "flow first, then positioned"
+        // split puts 0 on top of 1; CSS puts it underneath, which is the only
+        // thing `z-index: -1` is for.
+        let positioned = |i: usize| i != 1;
+        let z = |i: usize| if i == 0 { -1 } else { 0 };
+        assert_eq!(paint_order(3, positioned, z), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn equal_z_keeps_document_order_so_declaring_nothing_changes_nothing() {
+        let order = paint_order(4, |_| true, |_| 0);
+        assert_eq!(order, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn positioned_boxes_paint_over_the_flow_whatever_the_tree_says() {
+        // 0 is positioned and FIRST in the tree; 1 and 2 are in flow. The
+        // positioned box still paints last — a `position: relative` with no
+        // offset covering its siblings is the same rule.
+        let order = paint_order(3, |i| i == 0, |_| 0);
+        assert_eq!(order, vec![1, 2, 0]);
+    }
+}
+
+/// Read a `Custom` command payload as four per-side edges.
+///
+/// A bare number is uniform — that is CSS's own one-value shorthand, and it is
+/// what every caller predating per-side padding sends. Four comma-separated
+/// numbers are `top,right,bottom,left`, CSS order, so a caller that has already
+/// resolved a shorthand does not have to re-serialise it as CSS text and have
+/// it re-parsed here.
+pub fn command_edges(val: &CommandValue) -> Option<crate::css::Edges> {
+    if let CommandValue::Text(s) = val {
+        let parts: Vec<&str> = s.split(',').collect();
+        if parts.len() == 4 {
+            let side = |i: usize| parts[i].trim().parse::<f32>().ok();
+            return Some(crate::css::Edges {
+                top: side(0)?,
+                right: side(1)?,
+                bottom: side(2)?,
+                left: side(3)?,
+            });
+        }
+    }
+    command_number(val).map(|n| crate::css::Edges::uniform(n as f32))
+}
+
 /// Read a `Custom` command payload as an RGBA colour: a `Color` payload, a
 /// `#RRGGBB`/`#AARRGGBB` string, a named colour, or a packed ARGB integer
 /// (what Flutter's `Color(0xFF2196F3)` carries).
 pub fn command_color(val: &CommandValue) -> Option<(u8, u8, u8, u8)> {
     match val {
         CommandValue::Color(r, g, b, a) => Some((*r, *g, *b, *a)),
-        CommandValue::Number(n) => Some(argb_u32_to_rgba(*n as u32)),
+        CommandValue::Number(n) => {
+            Some(argb_u32_to_rgba(crate::css::opaque_if_no_alpha(*n as u32)))
+        }
         CommandValue::Text(s) => parse_color(s),
         _ => None,
     }
 }
 
 /// Split a packed `0xAARRGGBB` integer into RGBA components.
+///
+/// Alpha comes out verbatim. The "a six-digit constant means opaque, not
+/// invisible" rule belongs where the *syntax* is read
+/// (`css::opaque_if_no_alpha`), because only there is it known that the input
+/// had no alpha byte at all. Applying it here instead made `transparent`
+/// inexpressible: it parses to `0x00000000`, and this promoted it back to
+/// opaque black on the way out.
 fn argb_u32_to_rgba(v: u32) -> (u8, u8, u8, u8) {
     let a = ((v >> 24) & 0xFF) as u8;
     let r = ((v >> 16) & 0xFF) as u8;
     let g = ((v >> 8) & 0xFF) as u8;
     let b = (v & 0xFF) as u8;
-    // A packed value with no alpha byte (`0x2196F3`) means fully opaque
-    // rather than fully transparent.
-    (r, g, b, if a == 0 { 255 } else { a })
+    (r, g, b, a)
 }
 
-/// Parse a colour string: `#RRGGBB`, `#AARRGGBB`, a decimal/hex ARGB integer,
-/// or one of the common colour names.
+/// Parse a colour string into RGBA channels.
+///
+/// **One parser, in `css.rs`, where a CSS value belongs.** This was a second
+/// implementation with a different grammar, and the two disagreed on real
+/// input:
+///
+/// - `#f00` — CSS shorthand. Parsed there, `None` here.
+/// - `rgb()` / `rgba()` — parsed there, `None` here.
+/// - Ten named colours (`silver`, `maroon`, `lime`, `navy`, `teal`, `aqua`, …)
+///   — known there, `None` here.
+/// - **`#RRGGBBAA` — read as RGBA there and as ARGB here.** Not a gap, a
+///   contradiction: `#FF0000FF` was red down one path and blue down the other,
+///   decided by which of two functions a value happened to reach. CSS is
+///   right, so CSS wins, and the toolkits' packed-integer form (which really
+///   is ARGB) moved across as its own case rather than as a clash.
 pub fn parse_color(s: &str) -> Option<(u8, u8, u8, u8)> {
-    let s = s.trim();
-    if let Some(hex) = s.strip_prefix('#') {
-        if hex.len() == 6 {
-            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-            return Some((r, g, b, 255));
-        }
-        if hex.len() == 8 {
-            return Some(argb_u32_to_rgba(u32::from_str_radix(hex, 16).ok()?));
-        }
-        return None;
-    }
-    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
-        return Some(argb_u32_to_rgba(u32::from_str_radix(hex, 16).ok()?));
-    }
-    // A bare integer is a packed ARGB value (Flutter `Color.value`).
-    if let Ok(v) = s.parse::<u32>() {
-        return Some(argb_u32_to_rgba(v));
-    }
-    match s.to_lowercase().as_str() {
-        "red" => Some((255, 0, 0, 255)),
-        "green" => Some((0, 128, 0, 255)),
-        "blue" => Some((0, 0, 255, 255)),
-        "white" => Some((255, 255, 255, 255)),
-        "black" => Some((0, 0, 0, 255)),
-        "yellow" => Some((255, 255, 0, 255)),
-        "orange" => Some((255, 165, 0, 255)),
-        "purple" => Some((128, 0, 128, 255)),
-        "gray" | "grey" => Some((128, 128, 128, 255)),
-        "lightgray" | "lightgrey" => Some((211, 211, 211, 255)),
-        "darkgray" | "darkgrey" => Some((169, 169, 169, 255)),
-        "transparent" => Some((0, 0, 0, 0)),
-        _ => None,
-    }
+    crate::css::parse_color(s).map(argb_u32_to_rgba)
 }
 
 /// Tri-state check state for checkboxes.
@@ -433,6 +545,27 @@ pub enum TextAlign {
     Left,
     Center,
     Right,
+}
+
+impl TextAlign {
+    /// A CSS `text-align` keyword, or the `SetTextAlign` payload that carries
+    /// one.
+    ///
+    /// `start`/`end` are the logical spellings and mean left/right in a
+    /// left-to-right document, which is the only direction the toolkit lays
+    /// out; `justify` has no line breaker behind it and reads as `left` rather
+    /// than as a silently different alignment.
+    ///
+    /// Stated once, here, because a widget that parsed the keyword itself is
+    /// how three controls end up disagreeing about what `center` means.
+    pub fn from_css(value: &str) -> Option<TextAlign> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "left" | "start" | "justify" => Some(TextAlign::Left),
+            "center" | "centre" => Some(TextAlign::Center),
+            "right" | "end" => Some(TextAlign::Right),
+            _ => None,
+        }
+    }
 }
 
 // ── Anchor ──────────────────────────────────────────────────────────────
@@ -734,6 +867,22 @@ pub trait PanelWidget: Send + Sync {
     /// ownership, arrange, and return `None`. This is how the host bridge lets
     /// vybe_widgets own the widget tree + layout instead of flat-positioning.
     fn add_child(&mut self, child: Box<dyn PanelWidget>) -> Option<Box<dyn PanelWidget>> {
+        Some(child)
+    }
+
+    /// Nest `child` at `index` among this container's children.
+    ///
+    /// Default REFUSES by handing the child back, exactly as `add_child` does
+    /// — and deliberately does not fall back to appending. `insertBefore`
+    /// differs from `appendChild` only in where the child lands, so a
+    /// container that quietly appended would leave the DOM reading back one
+    /// order while the window showed another, which is the least findable
+    /// class of bug this toolkit has.
+    fn insert_child(
+        &mut self,
+        _index: usize,
+        child: Box<dyn PanelWidget>,
+    ) -> Option<Box<dyn PanelWidget>> {
         Some(child)
     }
 

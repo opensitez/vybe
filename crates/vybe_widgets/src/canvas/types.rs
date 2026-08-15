@@ -108,6 +108,64 @@ pub enum FontStyle {
     Italic,
 }
 
+/// `textAlign` — which end of the text the `x` in `fillText(text, x, y)` names.
+///
+/// `start`/`end` are the logical spellings and equal `left`/`right` in a
+/// left-to-right context, which is the only direction this canvas lays out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TextAlign {
+    #[default]
+    Start,
+    End,
+    Left,
+    Right,
+    Center,
+}
+
+impl TextAlign {
+    pub fn parse(value: &str) -> Option<TextAlign> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "start" => Some(TextAlign::Start),
+            "end" => Some(TextAlign::End),
+            "left" => Some(TextAlign::Left),
+            "right" => Some(TextAlign::Right),
+            "center" | "centre" => Some(TextAlign::Center),
+            _ => None,
+        }
+    }
+}
+
+/// `textBaseline` — which horizontal line of the text the `y` names.
+///
+/// **The default is `alphabetic`**, and that is not a detail: it means `y` is
+/// the baseline, so the glyphs sit ABOVE it. Treating `y` as the top of the
+/// text — which this canvas did, with a comment admitting it — puts every
+/// string roughly one ascent too low.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TextBaseline {
+    Top,
+    Hanging,
+    Middle,
+    #[default]
+    Alphabetic,
+    Ideographic,
+    Bottom,
+}
+
+impl TextBaseline {
+    pub fn parse(value: &str) -> Option<TextBaseline> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "top" => Some(TextBaseline::Top),
+            "hanging" => Some(TextBaseline::Hanging),
+            "middle" => Some(TextBaseline::Middle),
+            "alphabetic" => Some(TextBaseline::Alphabetic),
+            "ideographic" => Some(TextBaseline::Ideographic),
+            "bottom" => Some(TextBaseline::Bottom),
+            _ => None,
+        }
+    }
+}
+
 impl Default for FontStyle {
     fn default() -> Self {
         FontStyle::Normal

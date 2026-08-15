@@ -33,6 +33,8 @@ pub struct Form {
     pub background: (u8, u8, u8, u8),
     rect: LayoutRect,
     controls: Vec<Box<dyn PanelWidget>>,
+    /// Per-control `z-index`. Absent is `0`; `auto` removes the entry.
+    child_z: HashMap<String, i32>,
     focus: FocusManager,
     pending_events: Vec<WidgetEvent>,
     /// Children staged for a parent whose widget isn't attached yet — the
@@ -53,6 +55,7 @@ impl Form {
             background: (240, 240, 240, 255),
             rect: LayoutRect::zero(),
             controls: Vec::new(),
+            child_z: HashMap::new(),
             focus: FocusManager::new(),
             pending_events: Vec::new(),
             pending_children: HashMap::new(),
@@ -199,37 +202,39 @@ impl Form {
     }
 
     /// Render host overlays on top of controls (owner-draw).
-    pub fn render_overlays(
-        &self,
-        ctx: &mut RenderContext,
-        overlays: &std::collections::HashMap<String, crate::canvas::RecordingCanvas>,
-    ) {
-        use crate::canvas::{Canvas as _CanvasTrait, TinySkiaCanvas};
-        for (name, canvas) in overlays {
-            // A name that matches no CHILD control is drawn against the FORM
-            // itself, in form coordinates. `find_canvas_mut` documents the
-            // overlay path as covering "Button, Label, Form, …", but
-            // `get_control_rect` only searches children, so a form-level
-            // recording used to be dropped here without a trace — the drawing
-            // calls all succeeded and the window came up blank. That is the
-            // whole point of owner-draw for a window surface: SDL draws on the
-            // window, not on a child widget.
-            let rect = self.get_control_rect(name).unwrap_or(self.rect);
-            {
-                let r = rect;
-                let scale = ctx.scale;
-                let mut overlay =
-                    TinySkiaCanvas::with_text(&mut ctx.pixmap, ctx.font_system, ctx.swash_cache);
-                overlay.translate(r.x * scale, r.y * scale);
-                if (scale - 1.0).abs() > f32::EPSILON {
-                    overlay.scale(scale, scale);
-                }
-
-                // Replay ops!
-                canvas.replay(&mut overlay);
-            }
-        }
+    /// Put `controls` into paint order.
+    ///
+    /// Shares `layout::paint_order` with the flow container rather than sorting
+    /// here: there is one stacking rule and it should have one implementation.
+    /// Every body-level control is positioned, so the negative-z bucket is what
+    /// puts a `z-index: -1` control behind its siblings.
+    fn reorder_for_paint(&mut self) {
+        let order = crate::layout::paint_order(
+            self.controls.len(),
+            |_| true,
+            |i| {
+                self.child_z
+                    .get(self.controls[i].name())
+                    .copied()
+                    .unwrap_or(0)
+            },
+        );
+        let mut taken: Vec<Option<Box<dyn PanelWidget>>> =
+            self.controls.drain(..).map(Some).collect();
+        self.controls = order.into_iter().filter_map(|i| taken[i].take()).collect();
     }
+
+    // `render_overlays` was here and is deleted.
+    //
+    // It replayed a name-keyed map of recordings onto the form, and its ONLY
+    // caller was `gui_capture.rs` — never the window runner. So a drawing that
+    // reached the overlay map appeared in `--capture` and nowhere else, which
+    // made the screenshot the least trustworthy thing in the pipeline.
+    //
+    // A `<canvas>` is an element in the document now. It has a rect, it paints
+    // in tree order with every other control, and a capture and a window show
+    // the same pixels because they run the same code — not because two paths
+    // were kept in agreement.
 
     /// Mutable access to the form's child controls slice. Used by the
     /// host bridge to walk widgets and downcast them when looking up a
@@ -383,6 +388,39 @@ impl PanelWidget for Form {
                 CommandValue::None
             }
             WidgetCommand::GetText => CommandValue::Text(self.title.clone()),
+            // `z-index` on a body-level control. The form has no flow layout —
+            // every control it holds carries its own coordinates, so all of
+            // them are positioned and the paint order is entirely the sort.
+            //
+            // Applied by REORDERING `controls` rather than by ordering the
+            // render loop, so hit-testing follows painting: the box drawn on
+            // top is the box that gets the click, which is the one thing a
+            // separate paint order would silently get wrong.
+            WidgetCommand::Custom(name, value) if name == "SetChildZ" => {
+                if let CommandValue::Text(spec) = value {
+                    if let Some((child, z)) = spec.rsplit_once('=') {
+                        match z.trim().parse::<i32>() {
+                            Ok(z) => {
+                                self.child_z.insert(child.to_string(), z);
+                            }
+                            Err(_) => {
+                                self.child_z.remove(child);
+                            }
+                        }
+                        self.reorder_for_paint();
+                    }
+                }
+                CommandValue::None
+            }
+            // `SetChildMargin` deliberately has no arm.
+            //
+            // A margin is space a container puts BETWEEN siblings, and the form
+            // has no flow: every control it holds carries its own coordinates.
+            // The other half of what a margin does — displacing a positioned
+            // box from its own offsets — belongs to the offsets, and the
+            // document applies it when it writes `left`/`top`. So there is
+            // nothing left here to act on, and inventing a flow for the body to
+            // have something to do with it would be the wrong answer twice.
             _ => CommandValue::None,
         }
     }

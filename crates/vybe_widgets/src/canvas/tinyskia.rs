@@ -105,6 +105,8 @@ struct PaintState {
     dash_intervals: Vec<f32>,
     dash_offset: f32,
     image_smoothing: bool,
+    text_align: super::TextAlign,
+    text_baseline: super::TextBaseline,
 }
 
 impl Default for PaintState {
@@ -123,6 +125,9 @@ impl Default for PaintState {
             dash_offset: 0.0,
             // HTML5 canvas defaults `imageSmoothingEnabled` to true.
             image_smoothing: true,
+            // …and `textAlign` to `start`, `textBaseline` to `alphabetic`.
+            text_align: super::TextAlign::default(),
+            text_baseline: super::TextBaseline::default(),
         }
     }
 }
@@ -164,9 +169,15 @@ impl<'a> TinySkiaCanvas<'a> {
     }
 
     /// Measure the logical width and height of `text` in the current
-    /// font. Returns `(0.0, 0.0)` if no text context is attached. Used
-    /// by the host bridge's `canvasMeasureText` to back any
-    /// framework-side `MeasureText` API.
+    /// font. Returns `(0.0, 0.0)` if no text context is attached.
+    ///
+    /// **Implemented here and reachable from nowhere.** `measureText` is the
+    /// one canvas operation that ASKS rather than paints, and the seam only
+    /// carries `Op2D`, which is fire-and-forget — so there is no wire format
+    /// for an answer to come back through. `CanvasBackend` needs a query
+    /// method before `web:canvas` can expose it, and `.NET`'s
+    /// `Graphics.MeasureString` is the caller waiting on it. Same shape
+    /// `ellipse` had: the engine had done the work and no page could reach it.
     pub fn measure_text(&mut self, text: &str) -> (f32, f32) {
         let Some(tc) = self.text_ctx.as_mut() else {
             return (0.0, 0.0);
@@ -254,6 +265,12 @@ impl<'a> Canvas for TinySkiaCanvas<'a> {
 
     fn set_image_smoothing(&mut self, enabled: bool) {
         self.state.image_smoothing = enabled;
+    }
+    fn set_text_align(&mut self, align: super::TextAlign) {
+        self.state.text_align = align;
+    }
+    fn set_text_baseline(&mut self, baseline: super::TextBaseline) {
+        self.state.text_baseline = baseline;
     }
     fn set_font(&mut self, font: &Font) {
         self.state.font = font.clone();
@@ -441,12 +458,42 @@ impl<'a> Canvas for TinySkiaCanvas<'a> {
         let px = x * self.state.transform.sx + self.state.transform.tx;
         let py = y * self.state.transform.sy + self.state.transform.ty;
 
-        // cosmic-text positions glyphs relative to the buffer's
-        // top-left. .NET (and HTML5 canvas) `fill_text(x, y)` positions
-        // text by its baseline, but for our purposes we treat (x, y)
-        // as the top-left of the first line — that's the simplest
-        // mapping and matches how the rest of the toolkit's text
-        // helpers work.
+        // **`textAlign` and `textBaseline` — what `x` and `y` actually name.**
+        //
+        // cosmic-text positions glyphs from the buffer's top-left, so drawing
+        // at `(px, py)` unmodified means `x` = left edge and `y` = TOP. That is
+        // `textAlign: left` with `textBaseline: top`, and the canvas spec's
+        // defaults are `start` and **`alphabetic`** — `y` is the BASELINE, with
+        // the glyphs sitting above it. Every string was landing about one
+        // ascent too low, which the old comment here acknowledged rather than
+        // fixed.
+        //
+        // Both offsets need the laid-out line, so they are read from the
+        // shaped buffer rather than estimated: `line_w` is the advance and
+        // `line_y` is the baseline's distance from the top.
+        let (line_w, baseline) = buf
+            .layout_runs()
+            .next()
+            .map(|run| (run.line_w, run.line_y))
+            .unwrap_or((0.0, 0.0));
+        let line_height = metrics.line_height;
+        let px = match self.state.text_align {
+            // Logical `start`/`end` equal left/right in a left-to-right
+            // context, which is the only direction this canvas lays out.
+            super::TextAlign::Start | super::TextAlign::Left => px,
+            super::TextAlign::End | super::TextAlign::Right => px - line_w,
+            super::TextAlign::Center => px - line_w / 2.0,
+        };
+        let py = match self.state.text_baseline {
+            // `hanging` is not the same line as `top` in a font with real
+            // metrics, but both sit at the head of the em box and this shaping
+            // path surfaces only one of them — stated rather than pretended.
+            super::TextBaseline::Top | super::TextBaseline::Hanging => py,
+            super::TextBaseline::Middle => py - line_height / 2.0,
+            super::TextBaseline::Alphabetic => py - baseline,
+            super::TextBaseline::Ideographic | super::TextBaseline::Bottom => py - line_height,
+        };
+
         crate::ide_text::draw_buffer(
             self.pixmap,
             tc.font_system,
@@ -524,6 +571,36 @@ impl<'a> Canvas for TinySkiaCanvas<'a> {
         }
     }
 
+    /// A raw pixel write — no transform, no clip, no alpha, no blending.
+    ///
+    /// Every other method here composes with `self.state`. This one must not,
+    /// and it is the easiest arm in the file to get wrong by copying its
+    /// neighbour: routing it through the paint state would make a software
+    /// renderer's frame land somewhere else, tinted, or clipped away.
+    /// `BlendMode::Source` REPLACES rather than composites, which is what
+    /// "these are the pixels" means when the source has alpha.
+    fn put_image_data(&mut self, img: &Image, dx: f32, dy: f32) {
+        let Some(src) = PixmapRef::from_bytes(&img.pixels, img.width, img.height) else {
+            return;
+        };
+        let pp = PixmapPaint {
+            opacity: 1.0,
+            blend_mode: tiny_skia::BlendMode::Source,
+            quality: FilterQuality::Nearest,
+        };
+        // `draw_pixmap` takes an INTEGER destination, which suits a raw write:
+        // the spec's `dx`/`dy` are longs, so there is no sub-pixel case to
+        // lose here.
+        self.pixmap.draw_pixmap(
+            dx as i32,
+            dy as i32,
+            src,
+            &pp,
+            tiny_skia::Transform::identity(),
+            None,
+        );
+    }
+
     // ─── State stack ────────────────────────────────────────────────────
 
     fn save(&mut self) {
@@ -561,6 +638,12 @@ impl<'a> Canvas for TinySkiaCanvas<'a> {
 
     fn reset_transform(&mut self) {
         self.state.transform = Transform::identity();
+    }
+
+    /// tiny-skia's path builder already knows where the path ends, so this is
+    /// a read rather than state of our own to keep in step.
+    fn current_point(&self) -> Option<(f32, f32)> {
+        self.path.last_point().map(|p| (p.x, p.y))
     }
 }
 

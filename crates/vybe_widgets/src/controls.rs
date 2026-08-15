@@ -149,3 +149,47 @@ pub fn make_widget(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::layout::{CommandValue, WidgetCommand};
+
+    /// Every text-bearing control must answer the font axis.
+    ///
+    /// A missing arm is invisible: `handle_command` returns `CommandValue::None`
+    /// whether it acted or not, so a declaration reaching a widget with no arm
+    /// is discarded in silence — which is what `Select`, `ListBox`, `Tabs` and
+    /// `DataGrid` all did, `DataGrid` by having no `handle_command` at all.
+    /// Reading the field back is the only way to tell the two apart.
+    macro_rules! assert_font_reaches {
+        ($widget:expr) => {{
+            let mut w = $widget;
+            w.handle_command(&WidgetCommand::Custom(
+                "SetFontFamily".into(),
+                CommandValue::Text("monospace".into()),
+            ));
+            w.handle_command(&WidgetCommand::Custom(
+                "SetFontWeight".into(),
+                CommandValue::Text("bold".into()),
+            ));
+            assert_eq!(
+                (w.font.family.as_str(), w.font.weight),
+                ("monospace", 700),
+                concat!(stringify!($widget), " dropped a font declaration")
+            );
+        }};
+    }
+
+    #[test]
+    fn a_font_declaration_reaches_every_text_bearing_control() {
+        assert_font_reaches!(Button::new("ok"));
+        assert_font_reaches!(Checkbox::new("on"));
+        assert_font_reaches!(Label::new("hi"));
+        assert_font_reaches!(Select::new(vec!["a".to_string()]));
+        assert_font_reaches!(ListBox::new());
+        assert_font_reaches!(Tabs::new(&["one"]));
+        assert_font_reaches!(DataGrid::new(&["col"]));
+        assert_font_reaches!(TextInput::new());
+    }
+}

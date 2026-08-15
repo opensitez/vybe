@@ -138,7 +138,7 @@ pub fn register(vm: &mut VM) {
             // = string, args[2] = type) and the flat shorthand
             // (args[0] = string, args[1] = type) so callers that don't
             // construct a parser still work.
-            let (xml_arg, _type_arg) = match args.first() {
+            let (xml_arg, type_arg) = match args.first() {
                 Some(Value::Object(o))
                     if o.lock()
                         .unwrap()
@@ -165,7 +165,17 @@ pub fn register(vm: &mut VM) {
                 Value::String(s) => s.to_string(),
                 other => format!("{}", other),
             };
-            match parse_xml(&xml) {
+            // The type argument decides the GRAMMAR, which is the whole
+            // reason the spec has one. `text/html` reads HTML; every other
+            // type — and an absent one — reads XML, which is what the
+            // `parse` shorthand and every existing caller already get.
+            // Discarding this argument is why a bare `<br>` used to produce
+            // a `<parsererror>` document.
+            let grammar = match &type_arg {
+                Value::String(t) if t.trim().eq_ignore_ascii_case("text/html") => Grammar::Html,
+                _ => Grammar::Xml,
+            };
+            match parse_markup(&xml, grammar) {
                 Ok(doc) => doc,
                 Err(_) => parse_error_document(&xml),
             }
@@ -996,10 +1006,292 @@ pub fn register(vm: &mut VM) {
 
 // ── Parser entry point ────────────────────────────────────────────
 
+// ── HTML tolerance ────────────────────────────────────────────────
+//
+// `parseFromString(s, "text/html")` used to discard its type argument and
+// read HTML with an XML lexer. That is not a stricter reading of HTML — it
+// is the wrong grammar: a bare `<br>` is well-formed HTML and a fatal XML
+// error, so an ordinary page produced a `<parsererror>` document and
+// nothing else. What follows is the part of HTML that XML does not have.
+//
+// Scope, stated so it is a boundary rather than an oversight: the
+// tokenizer's void-element rule, the in-body insertion mode's
+// implied-end-tag rules, tag/attribute name folding, tolerated end tags,
+// and the common named character references. NOT the full tree
+// construction algorithm — no adoption agency, no foster parenting, no
+// `<head>`/`<body>` auto-insertion, no template contents. Markup needing
+// those parses without error and produces a tree a browser would nest
+// differently. `__parseRecoveries` below is how that stays visible.
+
+/// Which grammar the reader is reading.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Grammar {
+    Xml,
+    Html,
+}
+
+/// Elements with no content and no end tag.
+///
+/// <https://html.spec.whatwg.org/multipage/syntax.html#void-elements>
+///
+/// This is the single rule that decides whether real-world HTML parses at
+/// all: without it `<br>` opens an element that is never closed and every
+/// following sibling nests one level deeper.
+const VOID_ELEMENTS: &[&str] = &[
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track",
+    "wbr",
+];
+
+/// Elements whose content is raw text, not markup.
+///
+/// <https://html.spec.whatwg.org/multipage/syntax.html#raw-text-elements>
+///
+/// Inside these, `<` and `&` are ordinary characters. Read as markup,
+/// `if (a < b)` opens an element named `b)` and the rest of the script
+/// disappears into it — measured, and it happened SILENTLY: no error, no
+/// recovery, just a script whose text stopped at the comparison.
+const RAW_TEXT_ELEMENTS: &[&str] = &["script", "style"];
+
+/// Block-level start tags that close an open `<p>`.
+///
+/// <https://html.spec.whatwg.org/multipage/syntax.html#optional-tags>
+const CLOSES_A_PARAGRAPH: &[&str] = &[
+    "address",
+    "article",
+    "aside",
+    "blockquote",
+    "details",
+    "div",
+    "dl",
+    "fieldset",
+    "figcaption",
+    "figure",
+    "footer",
+    "form",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "header",
+    "hgroup",
+    "hr",
+    "main",
+    "menu",
+    "nav",
+    "ol",
+    "p",
+    "pre",
+    "section",
+    "table",
+    "ul",
+];
+
+/// Does starting `opening` imply the end of an open `open` element?
+///
+/// The omitted-end-tag rules, which is why `<li>a<li>b` is two siblings in
+/// a browser and was two NESTED items under an XML reading.
+fn implies_end_of(open: &str, opening: &str) -> bool {
+    match open {
+        "p" => CLOSES_A_PARAGRAPH.contains(&opening),
+        "li" => opening == "li",
+        "dt" | "dd" => opening == "dt" || opening == "dd",
+        "option" => opening == "option" || opening == "optgroup",
+        "optgroup" => opening == "optgroup",
+        "tr" => opening == "tr",
+        "td" | "th" => opening == "td" || opening == "th" || opening == "tr",
+        "thead" | "tbody" => opening == "tbody" || opening == "tfoot",
+        _ => false,
+    }
+}
+
+/// The named character references worth carrying.
+///
+/// HTML defines about 2200 and they are a generated table; this is the set
+/// that appears in ordinary prose. An unlisted name is left as written
+/// rather than dropped — `&fnof;` reads back as `&fnof;`, which is wrong
+/// but visible, where an empty string would silently delete text.
+fn html_entity(name: &str) -> Option<&'static str> {
+    Some(match name {
+        // The five XML predefines itself. `unescape_with` does NOT keep them
+        // — it routes every named reference to the resolver — so leaving
+        // them out made `&amp;` read back as the literal `&amp;` in HTML
+        // while still decoding in XML.
+        "amp" => "&",
+        "lt" => "<",
+        "gt" => ">",
+        "quot" => "\"",
+        "apos" => "'",
+        "nbsp" => "\u{a0}",
+        "copy" => "©",
+        "reg" => "®",
+        "trade" => "™",
+        "mdash" => "—",
+        "ndash" => "–",
+        "hellip" => "…",
+        "ldquo" => "“",
+        "rdquo" => "”",
+        "lsquo" => "‘",
+        "rsquo" => "’",
+        "laquo" => "«",
+        "raquo" => "»",
+        "bull" => "•",
+        "middot" => "·",
+        "deg" => "°",
+        "plusmn" => "±",
+        "times" => "×",
+        "divide" => "÷",
+        "frac12" => "½",
+        "frac14" => "¼",
+        "frac34" => "¾",
+        "sup2" => "²",
+        "sup3" => "³",
+        "para" => "¶",
+        "sect" => "§",
+        "dagger" => "†",
+        "euro" => "€",
+        "pound" => "£",
+        "yen" => "¥",
+        "cent" => "¢",
+        "larr" => "←",
+        "rarr" => "→",
+        "harr" => "↔",
+        "ne" => "≠",
+        "le" => "≤",
+        "ge" => "≥",
+        _ => return None,
+    })
+}
+
+/// Escape the interior of every raw-text element, in the SOURCE.
+///
+/// Inside `<script>` and `<style>`, `<` and `&` are ordinary characters. No
+/// setting makes an XML lexer believe that — quick-xml's `read_text` still
+/// tokenises what it reads, so `if (a < b)` opened an element named `b)` and
+/// the rest of the script vanished into it, silently. The tokenizer is the
+/// wrong tool, so the source is fixed before the tokenizer sees it: escape
+/// the interior and `decode_text` puts it back on the way out, unchanged.
+///
+/// This is what the wxhtmledit reference does too — `ExtractStyleBlocks`
+/// pulls the blocks out of the HTML string before parsing rather than
+/// teaching the parser about them.
+fn escape_raw_text(src: &str) -> String {
+    let lower = src.to_ascii_lowercase();
+    let mut out = String::with_capacity(src.len());
+    let mut cursor = 0usize;
+    while cursor < src.len() {
+        // The next raw-text start tag, whichever comes first.
+        let next = RAW_TEXT_ELEMENTS
+            .iter()
+            .filter_map(|tag| {
+                let open = format!("<{tag}");
+                lower[cursor..].find(&open).map(|at| (cursor + at, *tag))
+            })
+            .min_by_key(|(at, _)| *at);
+        let Some((start, tag)) = next else { break };
+        // Skip the rest of the start tag; an unterminated one is not a
+        // raw-text element, it is the end of the input.
+        let Some(open_end) = lower[start..].find('>').map(|at| start + at + 1) else {
+            break;
+        };
+        let close = format!("</{tag}");
+        let Some(interior_end) = lower[open_end..].find(&close).map(|at| open_end + at) else {
+            // Unterminated: everything after it is raw text.
+            out.push_str(&src[cursor..open_end]);
+            out.push_str(&escape_markup(&src[open_end..]));
+            return out;
+        };
+        out.push_str(&src[cursor..open_end]);
+        out.push_str(&escape_markup(&src[open_end..interior_end]));
+        cursor = interior_end;
+    }
+    out.push_str(&src[cursor..]);
+    out
+}
+
+/// `<` and `&` as character references, so a lexer reads them as text.
+fn escape_markup(raw: &str) -> String {
+    raw.replace('&', "&amp;").replace('<', "&lt;")
+}
+
+/// Decode a text run's character references.
+///
+/// XML predefines five entities and treats every other name as a fatal
+/// error; HTML predefines thousands. `unescape_with` keeps quick-xml's
+/// numeric-reference handling and answers named ones from the table above.
+fn decode_text(raw: &quick_xml::events::BytesText<'_>, grammar: Grammar) -> String {
+    match grammar {
+        Grammar::Xml => raw.unescape().map(|c| c.into_owned()).unwrap_or_default(),
+        Grammar::Html => raw
+            .unescape_with(html_entity)
+            .map(|c| c.into_owned())
+            // An unresolvable reference must not eat the run it sits in.
+            .unwrap_or_else(|_| String::from_utf8_lossy(raw.as_ref()).into_owned()),
+    }
+}
+
+/// A start tag's element name, folded for HTML.
+///
+/// HTML tag names are ASCII case-insensitive and `<DIV>` is a `div`. Folding
+/// here rather than at each lookup is what keeps everything downstream —
+/// `VOID_ELEMENTS`, `implies_end_of`, and in the toolkit `control_kind` and
+/// `ua::declarations_for` — able to compare against lowercase literals.
+fn element_name(e: &quick_xml::events::BytesStart<'_>, grammar: Grammar) -> String {
+    let raw = String::from_utf8_lossy(e.name().as_ref()).into_owned();
+    match grammar {
+        Grammar::Xml => raw,
+        Grammar::Html => raw.to_ascii_lowercase(),
+    }
+}
+
+fn end_tag_name(e: &quick_xml::events::BytesEnd<'_>) -> String {
+    String::from_utf8_lossy(e.name().as_ref())
+        .into_owned()
+        .to_ascii_lowercase()
+}
+
 fn parse_xml(xml: &str) -> Result<Value, String> {
+    parse_markup(xml, Grammar::Xml)
+}
+
+fn parse_markup(xml: &str, grammar: Grammar) -> Result<Value, String> {
+    // Raw-text interiors are neutralised before the lexer runs — see
+    // `escape_raw_text`. XML has no raw-text elements, so it is untouched.
+    let owned;
+    let xml = match grammar {
+        Grammar::Xml => xml,
+        Grammar::Html => {
+            owned = escape_raw_text(xml);
+            owned.as_str()
+        }
+    };
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(false);
     reader.config_mut().expand_empty_elements = false;
+    // An end tag that does not match the open element is a fatal error in
+    // XML and everyday practice in HTML. Turning the check off is what lets
+    // the recovery below run at all — with it on, quick-xml ends the parse
+    // before the stack can be unwound to the right element.
+    if grammar == Grammar::Html {
+        reader.config_mut().check_end_names = false;
+        // Separate check, separate flag: `check_end_names` tolerates an end
+        // tag that does not match the OPEN element, this one tolerates an
+        // end tag matching nothing at all. `</div>` with no `<div>` is a
+        // fatal XML error and something a browser simply ignores.
+        reader.config_mut().allow_unmatched_ends = true;
+    }
+
+    // The open elements, by name, parallel to `node_stack`. Needed because
+    // an HTML end tag closes the nearest matching ancestor rather than
+    // whatever happens to be on top, and the node objects do not carry a
+    // cheap name to compare against.
+    let mut open_names: Vec<String> = Vec::new();
+    // What the parser had to repair. Once the parser is tolerant, malformed
+    // input stops announcing itself with a `<parsererror>` document and
+    // starts producing a plausible-but-different tree; this is the only
+    // thing left that says so.
+    let mut recoveries: Vec<String> = Vec::new();
 
     // Build the Document node first; its childNodes will be populated
     // as we read events.
@@ -1017,25 +1309,67 @@ fn parse_xml(xml: &str) -> Result<Value, String> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
-                let elem = make_element_from_start(&e);
+                let elem = make_element_from_start(&e, grammar);
+                let name = element_name(&e, grammar);
+                // An omitted end tag: `<li>a<li>b` is two siblings, not two
+                // nested items. Close every open element the new one ends
+                // before the new one is attached, or it lands inside its
+                // predecessor.
+                if grammar == Grammar::Html {
+                    while let Some(open) = open_names.last() {
+                        if !implies_end_of(open, &name) {
+                            break;
+                        }
+                        recoveries.push(format!("implied </{open}> before <{name}>"));
+                        open_names.pop();
+                        node_stack.pop();
+                    }
+                }
                 push_child(&node_stack, elem.clone());
+                // A void element is complete at its start tag. Pushing it
+                // would swallow every following sibling as its child.
+                if grammar == Grammar::Html && VOID_ELEMENTS.contains(&name.as_str()) {
+                    continue;
+                }
                 if let Value::Object(o) = elem {
                     node_stack.push(o);
+                    open_names.push(name);
                 }
             }
             Ok(Event::Empty(e)) => {
-                let elem = make_element_from_start(&e);
+                let elem = make_element_from_start(&e, grammar);
                 push_child(&node_stack, elem);
                 // Empty/self-closing — no push to stack; siblings
                 // continue at the current parent.
             }
-            Ok(Event::End(_)) => {
-                if node_stack.len() > 1 {
+            Ok(Event::End(e)) => {
+                if grammar == Grammar::Html {
+                    let name = end_tag_name(&e);
+                    // Close the NEAREST matching ancestor, not whatever is on
+                    // top: `<b><i>x</b>` ends the bold, and the italic goes
+                    // with it. A browser would reopen the italic afterwards —
+                    // that is the adoption agency algorithm, which is out of
+                    // scope, so the divergence is recorded rather than hidden.
+                    match open_names.iter().rposition(|open| *open == name) {
+                        Some(index) => {
+                            if index + 1 < open_names.len() {
+                                let unclosed = open_names[index + 1..].join(", ");
+                                recoveries
+                                    .push(format!("</{name}> closed still-open {unclosed}"));
+                            }
+                            open_names.truncate(index);
+                            node_stack.truncate(index + 1);
+                        }
+                        // An end tag with nothing open to match it is
+                        // ignored, which is what a browser does.
+                        None => recoveries.push(format!("stray </{name}> ignored")),
+                    }
+                } else if node_stack.len() > 1 {
                     node_stack.pop();
                 }
             }
             Ok(Event::Text(t)) => {
-                let text = t.unescape().map(|c| c.into_owned()).unwrap_or_default();
+                let text = decode_text(&t, grammar);
                 if !text.is_empty() {
                     let node = make_node(TEXT_NODE, "#text", Some(&text));
                     push_child(&node_stack, node);
@@ -1084,6 +1418,19 @@ fn parse_xml(xml: &str) -> Result<Value, String> {
     };
     finalize_node_tree(&doc_arc, None, Some(&doc_arc));
     set_document_element(&doc_arc);
+
+    // What the parser repaired, on the document, always — an empty array
+    // when nothing was repaired, so "no recoveries" is an answer rather
+    // than a missing property. A tolerant parser has no other way to say
+    // that the tree it returned is not the tree it was given.
+    if grammar == Grammar::Html {
+        let entries = recoveries.iter().map(|r| s(r)).collect::<Vec<_>>();
+        doc_arc
+            .lock()
+            .unwrap()
+            .properties
+            .insert("__parseRecoveries".into(), make_array(entries));
+    }
 
     Ok(document_obj)
 }
@@ -1141,8 +1488,8 @@ fn parse_error_document(xml: &str) -> Value {
 
 // ── Element construction ──────────────────────────────────────────
 
-fn make_element_from_start(e: &quick_xml::events::BytesStart) -> Value {
-    let raw_name = String::from_utf8_lossy(e.name().as_ref()).into_owned();
+fn make_element_from_start(e: &quick_xml::events::BytesStart, grammar: Grammar) -> Value {
+    let raw_name = element_name(e, grammar);
     // Split optional prefix per Namespaces in XML 1.0 §3.
     let (prefix, local_name) = match raw_name.split_once(':') {
         Some((p, ln)) => (Some(p.to_string()), ln.to_string()),
@@ -1171,11 +1518,20 @@ fn make_element_from_start(e: &quick_xml::events::BytesStart) -> Value {
     let mut id_val = String::new();
     let mut class_val = String::new();
     for attr in e.attributes().with_checks(false).flatten() {
-        let key = String::from_utf8_lossy(attr.key.as_ref()).into_owned();
-        let val = attr
-            .unescape_value()
-            .map(|c| c.into_owned())
-            .unwrap_or_default();
+        let key = {
+            let raw = String::from_utf8_lossy(attr.key.as_ref()).into_owned();
+            // HTML attribute names fold too, so `<div CLASS=x>` sets `class`
+            // and `getAttribute("class")` finds it.
+            match grammar {
+                Grammar::Xml => raw,
+                Grammar::Html => raw.to_ascii_lowercase(),
+            }
+        };
+        let val = match grammar {
+            Grammar::Xml => attr.unescape_value().map(|c| c.into_owned()),
+            Grammar::Html => attr.unescape_value_with(html_entity).map(|c| c.into_owned()),
+        }
+        .unwrap_or_default();
         if key == "id" {
             id_val = val.clone();
         } else if key == "class" {
@@ -2640,5 +2996,222 @@ fn find_by_local_name(node: &Arc<Mutex<Object>>, local: &str, out: &mut Vec<Valu
                 find_by_local_name(&c, local, out);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod html_grammar_tests {
+    use super::*;
+    use vybe_runtime::value::ObjectKind;
+
+    /// A node's property, as a string.
+    fn prop(node: &Value, name: &str) -> String {
+        let Value::Object(o) = node else {
+            return String::new();
+        };
+        match o.lock().unwrap().properties.get(name) {
+            Some(Value::String(s)) => s.to_string(),
+            Some(other) => format!("{other}"),
+            None => String::new(),
+        }
+    }
+
+    /// A node's array-valued property.
+    fn list(node: &Value, name: &str) -> Vec<Value> {
+        let Value::Object(o) = node else {
+            return vec![];
+        };
+        let guard = o.lock().unwrap();
+        match guard.properties.get(name) {
+            Some(Value::Object(arr)) => match &arr.lock().unwrap().kind {
+                ObjectKind::Array(elements) => elements.clone(),
+                _ => vec![],
+            },
+            _ => vec![],
+        }
+    }
+
+    fn children(node: &Value) -> Vec<Value> {
+        list(node, "children")
+    }
+
+    /// Parse as HTML and hand back the root element.
+    fn html(src: &str) -> Value {
+        let doc = parse_markup(src, Grammar::Html).expect("HTML never fails to parse");
+        let root = prop(&doc, "documentElement");
+        assert!(!root.is_empty(), "a parsed document has a root element");
+        let Value::Object(o) = &doc else {
+            unreachable!()
+        };
+        let root = o
+            .lock()
+            .unwrap()
+            .properties
+            .get("documentElement")
+            .cloned()
+            .expect("documentElement");
+        root
+    }
+
+    fn recoveries(src: &str) -> Vec<String> {
+        let doc = parse_markup(src, Grammar::Html).expect("HTML never fails to parse");
+        list(&doc, "__parseRecoveries")
+            .iter()
+            .map(|v| match v {
+                Value::String(s) => s.to_string(),
+                other => format!("{other}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_void_element_does_not_swallow_its_siblings() {
+        // The rule that decides whether real HTML parses at all. Read as XML
+        // this is a fatal error; read as HTML it is three children of <p>.
+        let root = html("<p>one<br>two<img src=x>three</p>");
+        assert_eq!(prop(&root, "tagName"), "p");
+        let kids = children(&root);
+        assert_eq!(
+            kids.iter().map(|k| prop(k, "tagName")).collect::<Vec<_>>(),
+            vec!["br", "img"],
+            "the <br> and <img> are SIBLINGS, not a nest"
+        );
+        assert_eq!(
+            prop(&root, "textContent"),
+            "onetwothree",
+            "and the text around them all belongs to the paragraph"
+        );
+    }
+
+    #[test]
+    fn the_same_markup_is_a_parse_error_as_xml() {
+        // The other half of the claim: this is not a stricter XML reading,
+        // it is a different grammar. Without a type argument nothing changes.
+        assert!(
+            parse_markup("<p>one<br>two</p>", Grammar::Xml).is_err(),
+            "a bare <br> is a fatal XML error, which is why the type \
+             argument had to start meaning something"
+        );
+    }
+
+    #[test]
+    fn an_omitted_end_tag_makes_siblings_not_a_nest() {
+        let root = html("<ul><li>one<li>two<li>three</ul>");
+        let items = children(&root);
+        assert_eq!(items.len(), 3, "three list items, all siblings");
+        for item in &items {
+            assert_eq!(prop(item, "tagName"), "li");
+            assert!(
+                children(item).is_empty(),
+                "an <li> must not contain the ones after it"
+            );
+        }
+    }
+
+    #[test]
+    fn a_paragraph_is_closed_by_the_next_block() {
+        let root = html("<div><p>one<p>two<ul><li>x</ul></div>");
+        let kids = children(&root);
+        assert_eq!(
+            kids.iter().map(|k| prop(k, "tagName")).collect::<Vec<_>>(),
+            vec!["p", "p", "ul"],
+            "both paragraphs and the list are siblings inside the div"
+        );
+    }
+
+    #[test]
+    fn tag_and_attribute_names_fold_to_lowercase() {
+        // Everything downstream compares against lowercase literals —
+        // VOID_ELEMENTS here, `control_kind` and `ua::declarations_for` in
+        // the toolkit. Folding at the parse is what makes those hit.
+        let root = html("<DIV CLASS='x'><BR></DIV>");
+        assert_eq!(prop(&root, "tagName"), "div");
+        assert_eq!(prop(&root, "className"), "x");
+        assert_eq!(
+            children(&root)
+                .iter()
+                .map(|k| prop(k, "tagName"))
+                .collect::<Vec<_>>(),
+            vec!["br"],
+            "an uppercase <BR> is still void"
+        );
+    }
+
+    #[test]
+    fn common_named_entities_decode_and_an_unknown_one_survives() {
+        assert_eq!(
+            prop(&html("<p>a&nbsp;b&mdash;c</p>"), "textContent"),
+            "a\u{a0}b—c"
+        );
+        // An unlisted name is left as written rather than deleting the run
+        // it sits in — wrong, but visible.
+        assert!(
+            prop(&html("<p>x&fnof;y</p>"), "textContent").contains('x'),
+            "an unknown entity must not eat its text run"
+        );
+    }
+
+    #[test]
+    fn the_five_xml_predefined_entities_still_decode_in_html() {
+        // `unescape_with` routes EVERY named reference to the resolver,
+        // including the five XML predefines — so leaving them out of the
+        // table made `&amp;` read back as the literal `&amp;` in HTML while
+        // still decoding in XML. Found by probing, not by reasoning.
+        assert_eq!(prop(&html("<p>a &amp; b</p>"), "textContent"), "a & b");
+        assert_eq!(prop(&html("<p>&lt;tag&gt;</p>"), "textContent"), "<tag>");
+    }
+
+    #[test]
+    fn raw_text_is_not_read_as_markup() {
+        // Measured before the fix: this truncated to `"if (a "` — no error,
+        // no recovery, the rest of the script swallowed by an element named
+        // `b)`. The silent-wrong-answer case the recovery list exists for,
+        // which is exactly why it could not be left to the recovery list.
+        let root = html("<script>if (a < b) { x() }</script>");
+        assert_eq!(prop(&root, "tagName"), "script");
+        assert_eq!(
+            prop(&root, "textContent"),
+            "if (a < b) { x() }",
+            "a script's text survives its own comparisons"
+        );
+
+        let style = html("<style>p { color: red }</style>");
+        assert_eq!(prop(&style, "textContent"), "p { color: red }");
+    }
+
+    #[test]
+    fn recovery_is_reported_because_a_tolerant_parser_stops_erroring() {
+        // The signal that replaces `<parsererror>`. Once malformed input
+        // parses, "it worked" and "I repaired it" look identical from the
+        // outside unless the parser says so.
+        assert!(
+            recoveries("<p>clean</p>").is_empty(),
+            "well-formed HTML reports no repairs"
+        );
+        let repaired = recoveries("<ul><li>one<li>two</ul>");
+        assert!(
+            repaired.iter().any(|r| r.contains("implied </li>")),
+            "the implied end tag is reported, got {repaired:?}"
+        );
+        let stray = recoveries("<p>x</p></div>");
+        assert!(
+            stray.iter().any(|r| r.contains("stray </div>")),
+            "an unmatched end tag is reported, got {stray:?}"
+        );
+    }
+
+    #[test]
+    fn an_end_tag_closes_the_nearest_matching_ancestor() {
+        // `<b><i>x</b>` — the bold ends and takes the italic with it. A
+        // browser reopens the italic afterwards (the adoption agency
+        // algorithm), which is out of scope; this asserts what we DO, and
+        // that we said so.
+        let root = html("<b><i>x</b>y");
+        assert_eq!(prop(&root, "tagName"), "b");
+        let repaired = recoveries("<b><i>x</b>y");
+        assert!(
+            repaired.iter().any(|r| r.contains("still-open i")),
+            "the divergence is recorded, got {repaired:?}"
+        );
     }
 }

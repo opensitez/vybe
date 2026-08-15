@@ -605,6 +605,23 @@ fn property_op(role: &str, setting: bool) -> (&'static str, &'static str, Option
             },
             Some("color"),
         ),
+        // Where the caption sits inside the control's own box. VCL spells it
+        // `Alignment`, WinForms `TextAlign`, and both mean CSS `text-align` —
+        // an INHERITED property, so a form declaring it once is how a whole
+        // panel of labels lines up.
+        //
+        // Left unmapped it wrote `alignment="right"`, an attribute no element
+        // reads: the calculator's display declared `taRightJustify` and its
+        // text sat on the left.
+        "textalign" => (
+            CSSOM_MODULE,
+            if setting {
+                "setStyleProperty"
+            } else {
+                "getStyleProperty"
+            },
+            Some("text-align"),
+        ),
         // Scrolling is a CSS property, not a control mode — `overflow` is the
         // whole of what a toolkit's `ScrollBars` means, and the frontend's
         // constants are declared as the CSS keywords so no enum is translated

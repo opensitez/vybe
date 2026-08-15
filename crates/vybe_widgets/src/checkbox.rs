@@ -19,6 +19,8 @@ pub struct Checkbox {
     pub id: WidgetId,
     pub name: String,
     rect: LayoutRect,
+    /// The label's text style — same reasoning as `Button::font`.
+    pub font: crate::ide_text::FontSpec,
     pending_events: Vec<WidgetEvent>,
 }
 
@@ -34,6 +36,7 @@ impl Checkbox {
             size: 16.0,
             id: WidgetId::next(),
             name: label.to_string(),
+            font: crate::ide_text::FontSpec::sans(13.0),
             rect: LayoutRect::zero(),
             pending_events: Vec::new(),
         }
@@ -180,17 +183,16 @@ impl PanelWidget for Checkbox {
         // Render label text next to checkbox
         if !self.label.is_empty() {
             let (fr, fg, fb, _) = self.colors.foreground;
-            let font_size = 13.0;
             let tx = r.x + self.size + 6.0;
-            let ty = r.y + (r.h - font_size) / 2.0 - 1.0;
-            super::ide_text::draw_text(
+            let ty = r.y + (r.h - self.font.size) / 2.0 - 1.0;
+            super::ide_text::draw_text_spec(
                 ctx.pixmap,
                 ctx.font_system,
                 ctx.swash_cache,
                 &self.label,
                 tx,
                 ty,
-                font_size,
+                &self.font,
                 CosmicColor::rgba(fr, fg, fb, 255),
                 ctx.scale,
             );
@@ -242,6 +244,9 @@ impl PanelWidget for Checkbox {
                 CommandValue::None
             }
             WidgetCommand::GetText => CommandValue::Text(self.label.clone()),
+            WidgetCommand::Custom(key, val) if self.font.apply_command(key, val) => {
+                CommandValue::None
+            }
             WidgetCommand::SetChecked(c) => {
                 let new_state = if *c {
                     CheckState::Checked

@@ -309,6 +309,12 @@ fn as_number(v: DomValue) -> Value {
 const NODE: &str = "node";
 const DOCUMENT_RES: &str = "document";
 
+/// `results` is the COMPONENT MODEL result — a void operation declares none.
+///
+/// That is not the same thing as what the VM does: every host call leaves one
+/// value on the stack whatever it returns, which is why the `gui::emit_*`
+/// helpers drop it. A setter declaring `vec![]` while its closure answers
+/// `Value::Null` is those two conventions meeting, not a mismatch.
 fn node_method(name: &str, params: Vec<ValType>, results: Vec<ValType>) -> FuncSig {
     FuncSig {
         name: name.to_string(),
@@ -493,7 +499,10 @@ pub fn register(vm: &mut VM) {
         .resource_member(ResourceBinding {
             resource: DOCUMENT_RES.to_string(),
             kind: ResourceMemberKind::Static,
-            borrows_self: true,
+            // A static has no self to borrow. Every method below says `true`
+            // because it holds a `borrow<document>`; this one is how you GET
+            // that handle, so there is nothing yet to hold.
+            borrows_self: false,
         }),
     );
 

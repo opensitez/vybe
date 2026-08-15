@@ -52,6 +52,150 @@ pub enum Length {
     Auto,
 }
 
+/// Where an item sits on one grid axis — `grid-column` / `grid-row`.
+///
+/// Three forms, because CSS has three and they are genuinely different
+/// questions: `auto` lets the placement cursor decide, a LINE pins the item to
+/// a numbered grid line, and a SPAN says how many tracks it covers without
+/// saying where it starts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GridLine {
+    Auto,
+    /// A 1-based grid line, as CSS numbers them.
+    Line(i32),
+    Span(u32),
+}
+
+impl GridLine {
+    pub fn parse(token: &str) -> Option<GridLine> {
+        let token = token.trim();
+        if token.is_empty() || token.eq_ignore_ascii_case("auto") {
+            return Some(GridLine::Auto);
+        }
+        if let Some(n) = token.to_ascii_lowercase().strip_prefix("span") {
+            return n.trim().parse::<u32>().ok().map(GridLine::Span);
+        }
+        token.parse::<i32>().ok().map(GridLine::Line)
+    }
+
+    pub fn as_css(self) -> String {
+        match self {
+            GridLine::Auto => "auto".to_string(),
+            GridLine::Line(n) => n.to_string(),
+            GridLine::Span(n) => format!("span {n}"),
+        }
+    }
+}
+
+/// `grid-column: <start> / <end>` — the shorthand, which is why it answers two
+/// values. A missing `/` means the start alone, with the end left `auto`.
+pub fn parse_grid_placement(value: &str) -> (Option<GridLine>, Option<GridLine>) {
+    match value.split_once('/') {
+        Some((start, end)) => (GridLine::parse(start), GridLine::parse(end)),
+        None => (GridLine::parse(value), None),
+    }
+}
+
+/// One track of a grid template — a column width or a row height.
+///
+/// A [`Length`] cannot spell this: `fr` is a **fraction of the leftover**, so
+/// it is not a length at all until every fixed track has been subtracted. That
+/// is the whole reason grid needs its own size type rather than reusing the box
+/// one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TrackSize {
+    Px(f32),
+    Percent(f32),
+    /// `1fr` — a share of what is left after the fixed tracks and the gaps.
+    Fr(f32),
+    /// `auto` — as big as the largest item in the track.
+    Auto,
+}
+
+impl TrackSize {
+    pub fn parse(token: &str) -> Option<TrackSize> {
+        let token = token.trim();
+        let lower = token.to_ascii_lowercase();
+        if let Some(n) = lower.strip_suffix("fr") {
+            return n.trim().parse::<f32>().ok().map(TrackSize::Fr);
+        }
+        match parse_length(token)? {
+            Length::Px(v) => Some(TrackSize::Px(v)),
+            Length::Percent(p) => Some(TrackSize::Percent(p)),
+            Length::Auto => Some(TrackSize::Auto),
+        }
+    }
+
+    pub fn as_css(self) -> String {
+        match self {
+            TrackSize::Px(v) => format!("{v}px"),
+            TrackSize::Percent(p) => format!("{p}%"),
+            TrackSize::Fr(f) => format!("{f}fr"),
+            TrackSize::Auto => "auto".to_string(),
+        }
+    }
+}
+
+/// Serialise a track list back to CSS, so the cascade diff can carry it to the
+/// widget as a string like every other declaration.
+pub fn track_list_css(tracks: &[TrackSize]) -> String {
+    tracks
+        .iter()
+        .map(|t| t.as_css())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// `grid-template-columns` / `grid-template-rows`.
+///
+/// Handles `repeat(n, …)`, including nested lists, because a template written
+/// any other way is unreadable past three columns. An unparseable token drops
+/// the whole declaration rather than silently shortening the grid — a template
+/// with a missing track would place every item in the wrong cell.
+pub fn parse_track_list(input: &str) -> Option<Vec<TrackSize>> {
+    let mut out: Vec<TrackSize> = Vec::new();
+    let mut rest = input.trim();
+    while !rest.is_empty() {
+        let lower = rest.to_ascii_lowercase();
+        if lower.starts_with("repeat(") {
+            let after = &rest["repeat(".len()..];
+            let close = matching_paren(after)?;
+            let (count, list) = after[..close].split_once(',')?;
+            let count: usize = count.trim().parse().ok()?;
+            let tracks = parse_track_list(list)?;
+            // A bound, because `repeat(100000, 1fr)` is a denial of service
+            // rather than a layout. CSS has no such limit; a renderer does.
+            if count * tracks.len() > 1024 {
+                return None;
+            }
+            for _ in 0..count {
+                out.extend(tracks.iter().copied());
+            }
+            rest = after[close + 1..].trim_start();
+            continue;
+        }
+        let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        let (token, remainder) = rest.split_at(end);
+        out.push(TrackSize::parse(token)?);
+        rest = remainder.trim_start();
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// Index of the `)` closing a `(` that has already been consumed.
+fn matching_paren(input: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    for (i, ch) in input.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' if depth == 0 => return Some(i),
+            ')' => depth -= 1,
+            _ => {}
+        }
+    }
+    None
+}
+
 impl Length {
     /// The pixel value, when it is one. `Percent` and `Auto` answer `None` —
     /// both need a containing block.
@@ -174,6 +318,23 @@ keyword_enum! {
 }
 
 keyword_enum! {
+    /// What a declared `width` and `height` MEASURE.
+    ///
+    /// The initial value is CSS's: `content-box`, so `width: 100px` plus
+    /// `padding: 10px` is a 120px box. The toolkits this compiler targets mean
+    /// the opposite — a VCL or WinForms control's `Width` includes its border
+    /// and padding — but that is a statement those frontends make about their
+    /// own controls, not a property of the box model, and it is declared as
+    /// `box-sizing: border-box` on the elements it is true of (see
+    /// [`crate::ua`]'s control rule). A frontend with different conventions,
+    /// Flutter included, declares its own and gets it.
+    BoxSizing {
+        BorderBox => "border-box",
+        ContentBox => "content-box",
+    }
+}
+
+keyword_enum! {
     TextAlign {
         Left => "left",
         Right => "right",
@@ -281,7 +442,32 @@ pub struct CssProperties {
     pub flex_wrap: Option<FlexWrap>,
     pub justify_content: Option<JustifyContent>,
     pub align_items: Option<AlignItems>,
+    /// `align-content` — how WRAPPED LINES are distributed along the cross
+    /// axis. Meaningless until lines can wrap, which is why it did not exist
+    /// before `flex-wrap` was implemented. Flutter reaches it as
+    /// `Wrap.runAlignment`.
+    pub align_content: Option<JustifyContent>,
     pub gap: Option<Length>,
+    /// The two gap axes as their own fields.
+    ///
+    /// `gap` alone cannot carry them: all three spellings used to parse into
+    /// the single field above, so a rule saying `column-gap: 20px; row-gap:
+    /// 10px` reached the cascade as ONE value and both axes got whichever
+    /// declaration came last. The shorthand still fills all three, which is
+    /// what makes `gap: 8px` keep working unchanged.
+    pub row_gap: Option<Length>,
+    pub column_gap: Option<Length>,
+
+    // Grid container. Two track lists and nothing else yet: auto-placement
+    // fills them row-major, which is what a template alone means in CSS.
+    pub grid_template_columns: Option<Vec<TrackSize>>,
+    pub grid_template_rows: Option<Vec<TrackSize>>,
+
+    // Grid item — where this box sits in its parent's grid.
+    pub grid_column_start: Option<GridLine>,
+    pub grid_column_end: Option<GridLine>,
+    pub grid_row_start: Option<GridLine>,
+    pub grid_row_end: Option<GridLine>,
 
     // Flex item
     pub flex_grow: Option<f32>,
@@ -303,6 +489,9 @@ pub struct CssProperties {
     pub border_style: Sides<BorderStyle>,
     pub border_color: Sides<u32>,
     pub border_radius: Option<f32>,
+    /// What `width`/`height` measure. Unset means the CSS initial value,
+    /// `content-box` — see [`BoxSizing`].
+    pub box_sizing: Option<BoxSizing>,
 
     // Paint
     pub color: Option<u32>,
@@ -341,7 +530,16 @@ impl CssProperties {
             flex_wrap,
             justify_content,
             align_items,
+            align_content,
             gap,
+            row_gap,
+            column_gap,
+            grid_template_columns,
+            grid_template_rows,
+            grid_column_start,
+            grid_column_end,
+            grid_row_start,
+            grid_row_end,
             flex_grow,
             flex_shrink,
             flex_basis,
@@ -354,6 +552,7 @@ impl CssProperties {
             max_width,
             max_height,
             border_radius,
+            box_sizing,
             color,
             background_color,
             opacity,
@@ -396,6 +595,419 @@ impl CssProperties {
     pub fn is_flex_container(&self) -> bool {
         self.display == Some(Display::Flex)
     }
+
+    /// The subset a child starts from — CSS inheritance.
+    ///
+    /// Everything else is dropped, which is the whole point: `width`,
+    /// `position` and `background-color` are per-box answers and a child that
+    /// picked them up from its parent would be nested inside a copy of it.
+    ///
+    /// **Not here, deliberately:**
+    ///
+    /// - `underline` / `line_through`. `text-decoration` is *not* an inherited
+    ///   property. A decoration drawn by an ancestor is painted across its
+    ///   in-flow descendants by the inline formatting context — a different
+    ///   mechanism with a visible difference: an inherited underline would be
+    ///   re-drawn at each descendant's own baseline and colour, a propagated
+    ///   one is drawn once, by the ancestor, in the ancestor's colour. Without
+    ///   inline runs there is nothing here to propagate *through*, so the
+    ///   honest answer is that it does not reach descendants yet.
+    /// - `visibility_hidden`. It *is* inherited, but the field is a sticky
+    ///   `bool` — `merge` can only ever turn it on. `visibility: visible` on
+    ///   the child of a hidden parent is the one thing the property is for,
+    ///   and a one-way rule cannot express it. It needs an `Option` first.
+    /// - `opacity`. Not inherited: descendants render *into* the ancestor's
+    ///   opacity group rather than each taking the value.
+    pub fn inherited(&self) -> CssProperties {
+        CssProperties {
+            color: self.color,
+            font_family: self.font_family.clone(),
+            font_size: self.font_size,
+            font_weight: self.font_weight,
+            font_style: self.font_style,
+            text_align: self.text_align,
+            line_height: self.line_height,
+            ..CssProperties::default()
+        }
+    }
+
+    /// The inherited subset written back out as declarations.
+    ///
+    /// The widget is told about a property by being handed a declaration, so an
+    /// *inherited* value — which by definition was never declared on this
+    /// element — has to be spelled to reach it. Serialising the computed value
+    /// is what a browser's `getComputedStyle` does, and it keeps one channel to
+    /// the widget instead of a second, typed one beside it.
+    pub fn inherited_declarations(&self) -> Vec<(&'static str, String)> {
+        let mut out = Vec::new();
+        if let Some(color) = self.color {
+            out.push(("color", serialize_color(color)));
+        }
+        if let Some(family) = &self.font_family {
+            out.push(("font-family", family.clone()));
+        }
+        if let Some(size) = self.font_size {
+            out.push(("font-size", format!("{size}px")));
+        }
+        if let Some(weight) = self.font_weight {
+            out.push(("font-weight", weight.to_string()));
+        }
+        if let Some(style) = self.font_style {
+            out.push((
+                "font-style",
+                match style {
+                    FontStyle::Italic => "italic",
+                    FontStyle::Oblique => "oblique",
+                    FontStyle::Normal => "normal",
+                }
+                .to_string(),
+            ));
+        }
+        if let Some(align) = self.text_align {
+            out.push((
+                "text-align",
+                match align {
+                    TextAlign::Left => "left",
+                    TextAlign::Center => "center",
+                    TextAlign::Right => "right",
+                    TextAlign::Justify => "justify",
+                }
+                .to_string(),
+            ));
+        }
+        if let Some(height) = self.line_height {
+            out.push(("line-height", format!("{height}px")));
+        }
+        out
+    }
+}
+
+/// Every declaration in which two computed styles differ.
+///
+/// **This is what replaces asking which declarations might have changed.** The
+/// old push re-applied a *guessed* set — the author declarations mentioning
+/// `var(`, plus every inherited property — and did it whether or not anything
+/// had actually moved. Both guesses exist only because there was no computed
+/// value to compare against; with one, the question "what changed" has a real
+/// answer and the guesses can go.
+///
+/// It is strictly more precise in both directions: a `--gap` rewritten to the
+/// value it already had pushes nothing, and a `padding: var(--gap)` that really
+/// did move is caught without `padding` having to be on any list.
+///
+/// The name/value pairs are what `apply_style_property` accepts, because that
+/// is still the only channel to a widget — a declaration. Serialising a
+/// computed value back into one is what `getComputedStyle` does.
+///
+/// A property that went from set to UNSET emits an EMPTY value rather than
+/// being skipped. Losing a declaration — deleting the `--brand` that a
+/// `color: var(--brand)` read, say — must take the element back to what it
+/// would have been without it, not leave the widget frozen on the last thing it
+/// was told. The box arms act on it because they read the resolved edge cache
+/// rather than this string; the arms that parse the value instead (`color`,
+/// `left`) return early on empty and do keep their last value, which is the
+/// pre-existing "an empty declaration does not reset the widget" hole and is
+/// not made worse here.
+pub fn changed_declarations(old: &CssProperties, new: &CssProperties) -> Vec<(&'static str, String)> {
+    let mut out: Vec<(&'static str, String)> = Vec::new();
+    /// A field whose CSS spelling is its `Display` impl.
+    macro_rules! changed {
+        ($($name:literal => $field:ident),+ $(,)?) => {$(
+            if old.$field != new.$field {
+                out.push(($name, match &new.$field {
+                    Some(v) => v.to_string(),
+                    None => String::new(),
+                }));
+            }
+        )+};
+    }
+    /// A field that needs a unit, a channel order, or a keyword table.
+    macro_rules! changed_as {
+        ($($name:literal => $field:ident, $how:expr);+ $(;)?) => {$(
+            if old.$field != new.$field {
+                out.push(($name, match &new.$field {
+                    Some(v) => ($how)(v),
+                    None => String::new(),
+                }));
+            }
+        )+};
+    }
+    // Paint and text. These reach a widget with no layout consequence, which is
+    // why they were the only ones the guessed push dared to re-apply.
+    changed!("opacity" => opacity, "font-family" => font_family, "font-weight" => font_weight);
+    changed_as!(
+        "color" => color, |v: &u32| serialize_color(*v);
+        "background-color" => background_color, |v: &u32| serialize_color(*v);
+        "font-size" => font_size, |v: &f32| format!("{v}px");
+        "font-style" => font_style, |v: &FontStyle| v.as_css().to_string();
+        "text-align" => text_align, |v: &TextAlign| v.as_css().to_string();
+        "line-height" => line_height, |v: &f32| format!("{v}px");
+    );
+    // Layout. Included deliberately, and safe for the reason the diff exists:
+    // a value that did not move is not pushed, so a font change no longer puts
+    // the container through a relayout — which is what the old blanket
+    // exclusion of geometry was protecting against, achieved by measuring
+    // instead of by guessing.
+    changed!(
+        "z-index" => z_index,
+        "width" => width,
+        "height" => height,
+        "min-width" => min_width,
+        "min-height" => min_height,
+        "max-width" => max_width,
+        "max-height" => max_height,
+        "gap" => gap,
+        "row-gap" => row_gap,
+        "column-gap" => column_gap,
+        "flex-grow" => flex_grow,
+        "order" => order,
+    );
+    changed_as!(
+        "display" => display, |v: &Display| v.as_css().to_string();
+        "position" => position, |v: &Position| v.as_css().to_string();
+        "overflow" => overflow, |v: &Overflow| v.as_css().to_string();
+        "flex-direction" => flex_direction, |v: &FlexDirection| v.as_css().to_string();
+        "flex-wrap" => flex_wrap, |v: &FlexWrap| v.as_css().to_string();
+        "justify-content" => justify_content, |v: &JustifyContent| v.as_css().to_string();
+        "align-items" => align_items, |v: &AlignItems| v.as_css().to_string();
+        "align-content" => align_content, |v: &JustifyContent| v.as_css().to_string();
+        "align-self" => align_self, |v: &AlignItems| v.as_css().to_string();
+        "grid-template-columns" => grid_template_columns, |v: &Vec<TrackSize>| track_list_css(v);
+        "grid-template-rows" => grid_template_rows, |v: &Vec<TrackSize>| track_list_css(v);
+        "grid-column-start" => grid_column_start, |v: &GridLine| v.as_css();
+        "grid-column-end" => grid_column_end, |v: &GridLine| v.as_css();
+        "grid-row-start" => grid_row_start, |v: &GridLine| v.as_css();
+        "grid-row-end" => grid_row_end, |v: &GridLine| v.as_css();
+    );
+    // The border, in its three axes. Not in the loop below because each axis
+    // is a different type — width is a number, style a keyword, colour a
+    // packed int — and each needs its own spelling on the way out.
+    //
+    // Missing entirely before: `box_edges` consumed border widths for LAYOUT,
+    // so a border moved the content box and then painted nothing. A `<div>`
+    // has no border by default and CAN have one, and this is the channel it
+    // was lacking.
+    for (name, before, after) in [
+        ("border-top-width", old.border_width.top, new.border_width.top),
+        ("border-right-width", old.border_width.right, new.border_width.right),
+        ("border-bottom-width", old.border_width.bottom, new.border_width.bottom),
+        ("border-left-width", old.border_width.left, new.border_width.left),
+    ] {
+        if before != after {
+            out.push((name, after.map(|v| format!("{v}px")).unwrap_or_default()));
+        }
+    }
+    for (name, before, after) in [
+        ("border-top-style", old.border_style.top, new.border_style.top),
+        ("border-right-style", old.border_style.right, new.border_style.right),
+        ("border-bottom-style", old.border_style.bottom, new.border_style.bottom),
+        ("border-left-style", old.border_style.left, new.border_style.left),
+    ] {
+        if before != after {
+            out.push((name, after.map(|v| v.as_css().to_string()).unwrap_or_default()));
+        }
+    }
+    for (name, before, after) in [
+        ("border-top-color", old.border_color.top, new.border_color.top),
+        ("border-right-color", old.border_color.right, new.border_color.right),
+        ("border-bottom-color", old.border_color.bottom, new.border_color.bottom),
+        ("border-left-color", old.border_color.left, new.border_color.left),
+    ] {
+        if before != after {
+            out.push((name, after.map(serialize_color).unwrap_or_default()));
+        }
+    }
+    // Per-side groups. Each side is its own declaration — `margin-left` rather
+    // than a `margin` shorthand — so a change on one side does not restate the
+    // other three, and the longhand arms already exist.
+    for (names, old_side, new_side) in [
+        (
+            ["top", "right", "bottom", "left"],
+            old.offsets,
+            new.offsets,
+        ),
+        (
+            ["margin-top", "margin-right", "margin-bottom", "margin-left"],
+            old.margin,
+            new.margin,
+        ),
+        (
+            [
+                "padding-top",
+                "padding-right",
+                "padding-bottom",
+                "padding-left",
+            ],
+            old.padding,
+            new.padding,
+        ),
+    ] {
+        for (name, (before, after)) in names.into_iter().zip([
+            (old_side.top, new_side.top),
+            (old_side.right, new_side.right),
+            (old_side.bottom, new_side.bottom),
+            (old_side.left, new_side.left),
+        ]) {
+            if before != after {
+                out.push((
+                    name,
+                    after.map(|v| v.to_string()).unwrap_or_default(),
+                ));
+            }
+        }
+    }
+    // Two booleans, which have no "unset" to skip and so are stated whenever
+    // they flip — including back to false, which IS the reset the `Option`
+    // fields above cannot express.
+    if old.display_none != new.display_none {
+        out.push((
+            "display",
+            if new.display_none {
+                "none".to_string()
+            } else {
+                new.display.map(|d| d.as_css()).unwrap_or("block").to_string()
+            },
+        ));
+    }
+    if old.visibility_hidden != new.visibility_hidden {
+        out.push((
+            "visibility",
+            if new.visibility_hidden {
+                "hidden"
+            } else {
+                "visible"
+            }
+            .to_string(),
+        ));
+    }
+    out
+}
+
+/// The property names [`CssProperties::inherited`] carries down.
+///
+/// Spelled as names as well as fields because the write side is a declaration
+/// (`set_style_property("color", …)`) and has to know, before parsing anything,
+/// whether the write reaches descendants.
+pub const INHERITED_PROPERTIES: &[&str] = &[
+    "color",
+    "font",
+    "font-family",
+    "font-size",
+    "font-weight",
+    "font-style",
+    "text-align",
+    "line-height",
+];
+
+/// A packed `0xAARRGGBB` written back as a CSS colour.
+///
+/// Opaque colours serialise as `#rrggbb` rather than `rgba(…, 1)` because that
+/// is what round-trips through [`parse_color`] without a float in the middle.
+pub fn serialize_color(argb: u32) -> String {
+    let (a, r, g, b) = (argb >> 24 & 0xFF, argb >> 16 & 0xFF, argb >> 8 & 0xFF, argb & 0xFF);
+    if a == 0xFF {
+        format!("#{r:02x}{g:02x}{b:02x}")
+    } else {
+        format!("rgba({r}, {g}, {b}, {})", a as f32 / 255.0)
+    }
+}
+
+// ── The box model ───────────────────────────────────────────────────────────
+
+/// Four resolved per-side values, in pixels.
+///
+/// [`Sides`] is the *declaration* — each side optional, because "not specified"
+/// has to survive merging. This is the *used value*: every side has a number,
+/// because layout cannot subtract a `None`.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Edges {
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+    pub left: f32,
+}
+
+impl Edges {
+    pub fn uniform(value: f32) -> Self {
+        Self {
+            top: value,
+            right: value,
+            bottom: value,
+            left: value,
+        }
+    }
+
+    /// Total across — what these edges cost a box's width.
+    pub fn horizontal(self) -> f32 {
+        self.left + self.right
+    }
+
+    /// Total down — what these edges cost a box's height.
+    pub fn vertical(self) -> f32 {
+        self.top + self.bottom
+    }
+
+    pub fn is_zero(self) -> bool {
+        self.top == 0.0 && self.right == 0.0 && self.bottom == 0.0 && self.left == 0.0
+    }
+}
+
+/// What separates a box's four rectangles.
+///
+/// CSS gives every element four nested rectangles — margin, border, padding and
+/// content — and which one a question is about is not a detail. The containing
+/// block for an absolutely positioned child is the **padding** box; a
+/// background paints the **border** box; a container arranges its children
+/// inside its **content** box. Modelling one rectangle per element makes those
+/// three answers the same answer, which is right only while every edge is zero.
+///
+/// The widget's own rect is always the **border box**. That is a fact about the
+/// rect, not about `box-sizing`: `box-sizing` decides what a *declared* `width`
+/// measures, and the rect it ends up in is the border box either way.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct BoxEdges {
+    pub margin: Edges,
+    pub border: Edges,
+    pub padding: Edges,
+}
+
+impl BoxEdges {
+    /// Resolve declared sides into used values against a containing-block width.
+    ///
+    /// `basis` is the containing block's **width** for both axes, which looks
+    /// like a bug and is the spec: a percentage margin or padding resolves
+    /// against the containing block's width even on the vertical sides (CSS 2.1
+    /// §8.3, §8.4). It is what makes `padding: 10%` square.
+    ///
+    /// An unspecified side is `0`, an `auto` margin is `0` here — centring is a
+    /// layout decision, and layout is the only place that knows the leftover
+    /// space to split.
+    pub fn resolve(props: &CssProperties, basis: f32) -> Self {
+        Self {
+            margin: resolve_sides(&props.margin, basis),
+            border: border_edges(&props.border_width),
+            padding: resolve_sides(&props.padding, basis),
+        }
+    }
+}
+
+fn resolve_sides(sides: &Sides<Length>, basis: f32) -> Edges {
+    let side = |v: Option<Length>| v.and_then(|l| l.resolve(basis)).unwrap_or(0.0);
+    Edges {
+        top: side(sides.top),
+        right: side(sides.right),
+        bottom: side(sides.bottom),
+        left: side(sides.left),
+    }
+}
+
+fn border_edges(sides: &Sides<f32>) -> Edges {
+    Edges {
+        top: sides.top.unwrap_or(0.0),
+        right: sides.right.unwrap_or(0.0),
+        bottom: sides.bottom.unwrap_or(0.0),
+        left: sides.left.unwrap_or(0.0),
+    }
 }
 
 // ── The store ───────────────────────────────────────────────────────────────
@@ -417,10 +1029,26 @@ impl Style {
         Self::default()
     }
 
+    /// The key a property name is stored under.
+    ///
+    /// Ordinary property names are ASCII case-insensitive and fold to
+    /// lowercase. **Custom property names do not** — `--Brand` and `--brand`
+    /// are two different properties (CSS Variables §2), because their names are
+    /// author-chosen identifiers rather than a fixed vocabulary. Folding them
+    /// made `var(--Brand)` silently read whatever `--brand` held.
+    fn key(name: &str) -> String {
+        let name = name.trim();
+        if is_custom_property(name) {
+            name.to_string()
+        } else {
+            name.to_ascii_lowercase()
+        }
+    }
+
     /// `style.setProperty(name, value)`. An empty value removes the
     /// declaration, as the CSSOM specifies.
     pub fn set(&mut self, name: &str, value: &str) {
-        let name = name.trim().to_ascii_lowercase();
+        let name = Self::key(name);
         let value = value.trim();
         if value.is_empty() {
             self.declarations.remove(&name);
@@ -432,13 +1060,13 @@ impl Style {
     /// `style.getPropertyValue(name)` — `""` when not set, per the CSSOM.
     pub fn get(&self, name: &str) -> &str {
         self.declarations
-            .get(&name.trim().to_ascii_lowercase())
+            .get(&Self::key(name))
             .map(String::as_str)
             .unwrap_or("")
     }
 
     pub fn remove(&mut self, name: &str) -> Option<String> {
-        self.declarations.remove(&name.trim().to_ascii_lowercase())
+        self.declarations.remove(&Self::key(name))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -453,9 +1081,43 @@ impl Style {
 
     /// Parse the whole declaration block into the typed view.
     pub fn properties(&self) -> CssProperties {
+        self.properties_in(FontContext::default())
+    }
+
+    /// The typed view in a known font context — what the cascade uses.
+    pub fn properties_in(&self, ctx: FontContext) -> CssProperties {
+        self.properties_resolved_in(&|value| Some(value.to_string()), ctx)
+    }
+
+    /// As [`Style::properties`], but every value passes through `resolve`
+    /// first — which is where `var()` substitution happens.
+    ///
+    /// The typed view is the second reader of the store, and the one the box
+    /// model uses: without this, `padding: var(--gap)` would reach the widget
+    /// resolved and reach `BoxEdges` as the unparseable literal `var(--gap)`,
+    /// so the element's own padding and its container's idea of it would
+    /// disagree.
+    ///
+    /// A value the resolver rejects is an invalid declaration — skipped, not
+    /// applied as written.
+    pub fn properties_resolved(&self, resolve: &dyn Fn(&str) -> Option<String>) -> CssProperties {
+        self.properties_resolved_in(resolve, FontContext::default())
+    }
+
+    /// The typed view, with `em`/`rem` resolved against a real font context.
+    pub fn properties_resolved_in(
+        &self,
+        resolve: &dyn Fn(&str) -> Option<String>,
+        ctx: FontContext,
+    ) -> CssProperties {
         let mut props = CssProperties::default();
         for (name, value) in self.iter() {
-            apply_declaration(&mut props, name, value);
+            // A custom property is a value, not a declaration about the box.
+            if is_custom_property(name) {
+                continue;
+            }
+            let Some(value) = resolve(value) else { continue };
+            apply_declaration(&mut props, name, &value, ctx);
         }
         props
     }
@@ -469,13 +1131,146 @@ impl Style {
     }
 }
 
+// ── Custom properties ───────────────────────────────────────────────────────
+
+/// Is this a custom property — an author-defined `--name`?
+///
+/// <https://drafts.csswg.org/css-variables/#defining-variables>
+pub fn is_custom_property(name: &str) -> bool {
+    name.trim().starts_with("--")
+}
+
+/// Does this value need [`substitute_vars`] before it can be read as a value?
+///
+/// Worth asking separately: substitution allocates, and the overwhelming
+/// majority of declarations contain no `var()` at all.
+pub fn references_var(value: &str) -> bool {
+    value.contains("var(")
+}
+
+/// How deep `var()` fallbacks may nest before the value is treated as invalid.
+///
+/// A guard rather than a limit anyone should reach: `var(--a, var(--b, …))` is
+/// a real pattern, and `--a: var(--a)` is a cycle the spec makes invalid at
+/// computed-value time. Without a bound, the cycle is a hang.
+const MAX_VAR_DEPTH: usize = 16;
+
+/// Replace every `var(--name[, fallback])` in `value` using `lookup`.
+///
+/// `lookup` answers what `--name` holds for the element being resolved,
+/// INCLUDING inherited values — custom properties inherit, so the answer often
+/// comes from an ancestor, and only the caller knows the tree.
+///
+/// A reference with no value and no fallback makes the declaration invalid at
+/// computed-value time (CSS Variables §3), which is `None` here. That is not
+/// the same as substituting an empty string: `width: var(--nope)` must leave
+/// the width alone, not set it to nothing.
+pub fn substitute_vars(value: &str, lookup: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+    substitute_vars_at(value, lookup, 0)
+}
+
+fn substitute_vars_at(
+    value: &str,
+    lookup: &dyn Fn(&str) -> Option<String>,
+    depth: usize,
+) -> Option<String> {
+    if depth > MAX_VAR_DEPTH {
+        return None;
+    }
+    let Some(start) = value.find("var(") else {
+        return Some(value.to_string());
+    };
+    // Find the matching close paren, counting nesting so a fallback that is
+    // itself a `var()` — or any other function — does not end the reference
+    // early.
+    let open = start + "var(".len();
+    let mut depth_parens = 1usize;
+    let mut end = None;
+    for (i, c) in value[open..].char_indices() {
+        match c {
+            '(' => depth_parens += 1,
+            ')' => {
+                depth_parens -= 1;
+                if depth_parens == 0 {
+                    end = Some(open + i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    // An unclosed `var(` is a parse error, and a parse error drops the whole
+    // declaration rather than half of it.
+    let end = end?;
+
+    let inside = &value[open..end];
+    let (name, fallback) = match inside.split_once(',') {
+        Some((name, fallback)) => (name.trim(), Some(fallback.trim())),
+        None => (inside.trim(), None),
+    };
+    if !is_custom_property(name) {
+        return None;
+    }
+
+    let replacement = match lookup(name) {
+        Some(found) => found,
+        // The fallback is itself a value, so it may contain further references.
+        None => substitute_vars_at(fallback?, lookup, depth + 1)?,
+    };
+
+    let substituted = format!("{}{}{}", &value[..start], replacement, &value[end + 1..]);
+    // The replacement can itself contain `var()` — `--a: var(--b)` is legal —
+    // so the result is resolved again rather than returned as written.
+    substitute_vars_at(&substituted, lookup, depth + 1)
+}
+
 // ── Parsing ─────────────────────────────────────────────────────────────────
+
+/// **What `em` and `rem` are relative to.**
+///
+/// A font-relative length has no meaning without this, and until inheritance
+/// existed there was nothing to fill it with — so both units resolved against a
+/// hardcoded 16px and `rem` was a synonym for `em`. With a computed style that
+/// actually carries `font-size` down the tree, that is a live bug: the UA sheet
+/// declares `h1 { font-size: 2em; margin: 0.67em 0 }`, and a heading inside a
+/// 10px container was 32px tall regardless.
+///
+/// The two are NOT the same basis, and neither is a constant:
+///
+/// - **`em`** is the element's OWN computed `font-size` — except on
+///   `font-size` itself, where the value being computed cannot be its own
+///   basis, so it is the PARENT's. That exception is the whole subtlety, and it
+///   is why the cascade resolves in two passes.
+/// - **`rem`** is the ROOT element's computed `font-size`, always, whatever
+///   this element or its ancestors declare. That is the entire point of the
+///   unit.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FontContext {
+    pub em: f32,
+    pub rem: f32,
+}
+
+impl Default for FontContext {
+    /// CSS's initial `font-size`, and the only honest answer with no element in
+    /// hand.
+    fn default() -> Self {
+        FontContext {
+            em: 16.0,
+            rem: 16.0,
+        }
+    }
+}
 
 /// Parse a length. `%` and `auto` are preserved rather than resolved.
 ///
-/// `em`/`rem` assume a 16px root, which is the CSS initial value and the only
-/// answer available without a font context.
+/// Font-relative units take the CSS initial 16px. Use [`parse_length_in`]
+/// wherever an element's own font context is known.
 pub fn parse_length(value: &str) -> Option<Length> {
+    parse_length_in(value, FontContext::default())
+}
+
+/// Parse a length, resolving `em`/`rem` against a real font context.
+pub fn parse_length_in(value: &str, ctx: FontContext) -> Option<Length> {
     let value = value.trim();
     if value.is_empty() {
         return None;
@@ -503,7 +1298,8 @@ pub fn parse_length(value: &str) -> Option<Length> {
         "%" => Some(Length::Percent(number)),
         "px" | "" => Some(Length::Px(number)),
         "pt" => Some(Length::Px(number * 96.0 / 72.0)),
-        "em" | "rem" => Some(Length::Px(number * 16.0)),
+        "em" => Some(Length::Px(number * ctx.em)),
+        "rem" => Some(Length::Px(number * ctx.rem)),
         // An unknown unit is not a length. Guessing px here is how a typo
         // becomes a plausible-looking layout.
         _ => None,
@@ -517,7 +1313,15 @@ pub fn parse_px(value: &str) -> Option<f32> {
 
 /// Expand a 1–4 value box shorthand into `[top, right, bottom, left]`.
 pub fn expand_box_shorthand(value: &str) -> Sides<Length> {
-    let parts: Vec<Option<Length>> = value.split_whitespace().map(parse_length).collect();
+    expand_box_shorthand_in(value, FontContext::default())
+}
+
+/// Expand a box shorthand in a known font context — `margin: 0.67em 0`.
+pub fn expand_box_shorthand_in(value: &str, ctx: FontContext) -> Sides<Length> {
+    let parts: Vec<Option<Length>> = value
+        .split_whitespace()
+        .map(|p| parse_length_in(p, ctx))
+        .collect();
     let (top, right, bottom, left) = match parts.len() {
         1 => (parts[0], parts[0], parts[0], parts[0]),
         2 => (parts[0], parts[1], parts[0], parts[1]),
@@ -689,8 +1493,24 @@ pub fn parse_color(value: &str) -> Option<u32> {
         return Some(a << 24 | r << 16 | g << 8 | b);
     }
 
+    // A packed integer, which CSS has no syntax for and every toolkit uses:
+    // Flutter's `Color.value`, WinForms' `Color.ToArgb`, VCL's `TColor`. The
+    // channel order is **ARGB**, not the `#RRGGBBAA` above — that is not an
+    // inconsistency to tidy away, it is what those APIs hand us, and reading
+    // one as the other silently swaps a colour's alpha with its red.
+    if let Some(hex) = lower.strip_prefix("0x") {
+        return u32::from_str_radix(hex, 16).ok().map(opaque_if_no_alpha);
+    }
+    if let Ok(packed) = lower.parse::<u32>() {
+        return Some(opaque_if_no_alpha(packed));
+    }
+
     let rgb = match lower.as_str() {
         "transparent" => return Some(0),
+        // Not CSS named colours, but spelled by the toolkits above and by
+        // enough author markup to be worth answering.
+        "lightgray" | "lightgrey" => 0xD3D3D3,
+        "darkgray" | "darkgrey" => 0xA9A9A9,
         "black" => 0x000000,
         "silver" => 0xC0C0C0,
         "gray" | "grey" => 0x808080,
@@ -713,6 +1533,131 @@ pub fn parse_color(value: &str) -> Option<u32> {
     Some(0xFF00_0000 | rgb)
 }
 
+/// A packed value whose alpha byte is zero means opaque, not invisible.
+///
+/// `0x2196F3` is a colour, not "fully transparent black" — no caller writing a
+/// six-digit constant means alpha 0.
+pub(crate) fn opaque_if_no_alpha(packed: u32) -> u32 {
+    if packed >> 24 == 0 {
+        0xFF00_0000 | packed
+    } else {
+        packed
+    }
+}
+
+/// Split a stylesheet into `(selector text, declaration block)` pairs.
+///
+/// The **syntax** half of a stylesheet, and deliberately only that: what a
+/// selector means is `selector.rs`'s business and what a declaration means is
+/// the rest of this file's, so this knows about braces, comments and at-rules
+/// and nothing else.
+///
+/// Per CSS Syntax Level 3, an at-rule is skipped as a unit — `@media` and
+/// `@supports` take a block, `@import` and `@charset` end at the semicolon.
+/// Skipping is the compliant answer for a rule we do not implement: applying
+/// the INSIDE of an unsupported `@media` would apply styles whose condition was
+/// never evaluated, which is worse than ignoring it.
+pub fn parse_rules(css: &str) -> Vec<(String, String)> {
+    let text = strip_comments(css);
+    let chars: Vec<char> = text.chars().collect();
+    let mut rules = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        while i < chars.len() && chars[i].is_whitespace() {
+            i += 1;
+        }
+        if i >= chars.len() {
+            break;
+        }
+        if chars[i] == '@' {
+            i = skip_at_rule(&chars, i);
+            continue;
+        }
+        let prelude_start = i;
+        while i < chars.len() && chars[i] != '{' && chars[i] != '}' {
+            i += 1;
+        }
+        if i >= chars.len() || chars[i] == '}' {
+            // A prelude with no block is not a rule. Dropping it is what the
+            // spec's error handling says to do.
+            i += 1;
+            continue;
+        }
+        let selector: String = chars[prelude_start..i].iter().collect();
+        i += 1; // past '{'
+        let block_start = i;
+        let mut depth = 1;
+        while i < chars.len() && depth > 0 {
+            match chars[i] {
+                '{' => depth += 1,
+                '}' => depth -= 1,
+                _ => {}
+            }
+            if depth > 0 {
+                i += 1;
+            }
+        }
+        let block: String = chars[block_start..i.min(chars.len())].iter().collect();
+        i += 1; // past '}'
+        let selector = selector.trim().to_string();
+        if !selector.is_empty() {
+            rules.push((selector, block));
+        }
+    }
+    rules
+}
+
+/// Skip a whole at-rule, block or semicolon terminated, and answer where it
+/// ended.
+fn skip_at_rule(chars: &[char], mut i: usize) -> usize {
+    while i < chars.len() {
+        match chars[i] {
+            ';' => return i + 1,
+            '{' => {
+                let mut depth = 0;
+                while i < chars.len() {
+                    match chars[i] {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                return i + 1;
+                            }
+                        }
+                        _ => {}
+                    }
+                    i += 1;
+                }
+                return i;
+            }
+            _ => i += 1,
+        }
+    }
+    i
+}
+
+/// Remove `/* … */`, which may appear anywhere a token may.
+fn strip_comments(css: &str) -> String {
+    let mut out = String::with_capacity(css.len());
+    let bytes: Vec<char> = css.chars().collect();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == '/' && i + 1 < bytes.len() && bytes[i + 1] == '*' {
+            i += 2;
+            while i + 1 < bytes.len() && !(bytes[i] == '*' && bytes[i + 1] == '/') {
+                i += 1;
+            }
+            i = (i + 2).min(bytes.len());
+            // A comment is whitespace, not nothing: `a/**/b` is two tokens.
+            out.push(' ');
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Parse a declaration block (`a: b; c: d`) into the typed view.
 pub fn parse_declarations(block: &str) -> CssProperties {
     let mut props = CssProperties::default();
@@ -725,13 +1670,24 @@ pub fn parse_declarations(block: &str) -> CssProperties {
         if value.is_empty() {
             continue;
         }
-        apply_declaration(&mut props, &name, value);
+        apply_declaration(&mut props, &name, value, FontContext::default());
     }
     props
 }
 
 /// Apply one declaration. `name` must already be lower-cased.
-fn apply_declaration(props: &mut CssProperties, name: &str, value: &str) {
+fn apply_declaration(props: &mut CssProperties, name: &str, value: &str, ctx: FontContext) {
+    // Shadowed on purpose. Every length in this function is font-relative-aware
+    // by virtue of being parsed here, rather than by thirty call sites each
+    // having to remember to pass a context — and a new declaration added below
+    // gets it for free instead of silently taking the 16px default.
+    let parse_length = |v: &str| parse_length_in(v, ctx);
+    let expand_box_shorthand = |v: &str| expand_box_shorthand_in(v, ctx);
+    // `parse_px` needs the same treatment and is easy to miss precisely because
+    // it looks like a unit conversion rather than a cascade question — it is
+    // what `font-size` itself goes through, so leaving it unshadowed made the
+    // one declaration that MUST see the parent's size the one that did not.
+    let parse_px = |v: &str| parse_length_in(v, ctx).and_then(Length::px);
     match name {
         // ── Layout mode ──
         "display" => {
@@ -763,8 +1719,33 @@ fn apply_declaration(props: &mut CssProperties, name: &str, value: &str) {
         }
         "justify-content" => props.justify_content = JustifyContent::parse(value),
         "align-items" => props.align_items = AlignItems::parse(value),
+        // Shares `JustifyContent`'s vocabulary because the two distribute the
+        // same way — one along the main axis, the other across the lines.
+        "align-content" => props.align_content = JustifyContent::parse(value),
         "align-self" => props.align_self = AlignItems::parse(value),
-        "gap" | "grid-gap" | "row-gap" | "column-gap" => props.gap = parse_length(value),
+        "gap" | "grid-gap" => {
+            props.gap = parse_length(value);
+            props.row_gap = props.gap;
+            props.column_gap = props.gap;
+        }
+        "row-gap" => props.row_gap = parse_length(value),
+        "column-gap" => props.column_gap = parse_length(value),
+        "grid-template-columns" => props.grid_template_columns = parse_track_list(value),
+        "grid-template-rows" => props.grid_template_rows = parse_track_list(value),
+        "grid-column" => {
+            let (start, end) = parse_grid_placement(value);
+            props.grid_column_start = start;
+            props.grid_column_end = end;
+        }
+        "grid-row" => {
+            let (start, end) = parse_grid_placement(value);
+            props.grid_row_start = start;
+            props.grid_row_end = end;
+        }
+        "grid-column-start" => props.grid_column_start = GridLine::parse(value),
+        "grid-column-end" => props.grid_column_end = GridLine::parse(value),
+        "grid-row-start" => props.grid_row_start = GridLine::parse(value),
+        "grid-row-end" => props.grid_row_end = GridLine::parse(value),
 
         // ── Flex item ──
         // `flex: <grow> [shrink] [basis]`, plus the keyword forms. `flex: 1` is
@@ -878,6 +1859,7 @@ fn apply_declaration(props: &mut CssProperties, name: &str, value: &str) {
             }
         }
         "border-radius" => props.border_radius = parse_px(value),
+        "box-sizing" => props.box_sizing = BoxSizing::parse(value),
 
         // ── Paint ──
         "color" => props.color = parse_color(value),

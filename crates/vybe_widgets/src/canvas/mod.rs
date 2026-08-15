@@ -60,7 +60,9 @@ mod types;
 
 pub use recording::{DrawCmd, RecordingCanvas};
 pub use tinyskia::TinySkiaCanvas;
-pub use types::{Color, Font, FontStyle, FontWeight, Image, LineCap, LineJoin};
+pub use types::{
+    Color, Font, FontStyle, FontWeight, Image, LineCap, LineJoin, TextAlign, TextBaseline,
+};
 
 /// Canvas draw-routing tracing: `0` unread, `1` off, `2` on.
 ///
@@ -180,6 +182,112 @@ pub trait Canvas {
     /// current path.
     fn ellipse(&mut self, x: f32, y: f32, rx: f32, ry: f32);
 
+    /// `textAlign` — which end of the text the `x` names. Default `start`.
+    fn set_text_align(&mut self, _align: TextAlign) {}
+
+    /// `textBaseline` — which line of the text the `y` names. Default
+    /// `alphabetic`, so `y` is the BASELINE and the glyphs sit above it.
+    fn set_text_baseline(&mut self, _baseline: TextBaseline) {}
+
+    /// `arcTo(x1, y1, x2, y2, radius)` — the arc that fillets the corner
+    /// between the current point, `(x1, y1)` and `(x2, y2)`.
+    ///
+    /// **Provided, not required**: the spec defines it in terms of a line and
+    /// an arc, so composing those is the definition rather than an
+    /// approximation of it, and every canvas gets it without an implementation.
+    ///
+    /// The degenerate cases are the spec's own and are not merely guards — a
+    /// zero radius, or three collinear points, is defined to add a straight
+    /// line to `(x1, y1)` and stop. Rounding a rectangle whose corner radius is
+    /// zero goes through here on every corner.
+    fn arc_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, radius: f32) {
+        let (x0, y0) = match self.current_point() {
+            Some(point) => point,
+            // With no subpath the spec says start one at (x1, y1).
+            None => {
+                self.move_to(x1, y1);
+                return;
+            }
+        };
+        let (a1, b1) = (x0 - x1, y0 - y1);
+        let (a2, b2) = (x2 - x1, y2 - y1);
+        let len1 = (a1 * a1 + b1 * b1).sqrt();
+        let len2 = (a2 * a2 + b2 * b2).sqrt();
+        // Collinear or coincident, or no radius: a straight line, per spec.
+        let cross = a1 * b2 - b1 * a2;
+        if radius <= 0.0 || len1 == 0.0 || len2 == 0.0 || cross.abs() < f32::EPSILON {
+            self.line_to(x1, y1);
+            return;
+        }
+        let (u1, v1) = (a1 / len1, b1 / len1);
+        let (u2, v2) = (a2 / len2, b2 / len2);
+        // Half the angle between the two legs decides how far back along each
+        // the tangent points sit.
+        let cos_half = ((1.0 + (u1 * u2 + v1 * v2)) / 2.0).max(0.0).sqrt();
+        let sin_half = ((1.0 - (u1 * u2 + v1 * v2)) / 2.0).max(0.0).sqrt();
+        if sin_half <= f32::EPSILON {
+            self.line_to(x1, y1);
+            return;
+        }
+        let tangent = radius * cos_half / sin_half;
+        let (t1x, t1y) = (x1 + u1 * tangent, y1 + v1 * tangent);
+        let (t2x, t2y) = (x1 + u2 * tangent, y1 + v2 * tangent);
+        // The centre sits on the bisector, one radius from each leg.
+        let (bx, by) = (u1 + u2, v1 + v2);
+        let blen = (bx * bx + by * by).sqrt();
+        if blen <= f32::EPSILON {
+            self.line_to(x1, y1);
+            return;
+        }
+        let centre_distance = radius / sin_half;
+        let (cx, cy) = (x1 + bx / blen * centre_distance, y1 + by / blen * centre_distance);
+        let start = (t1y - cy).atan2(t1x - cx);
+        let end = (t2y - cy).atan2(t2x - cx);
+        self.line_to(t1x, t1y);
+        // The sweep follows the turn direction of the two legs.
+        self.arc(cx, cy, radius, start, end, cross > 0.0);
+    }
+
+    /// `roundRect(x, y, w, h, radius)` — a rectangle with rounded corners.
+    ///
+    /// Provided for the same reason as [`Canvas::arc_to`]: the spec builds it
+    /// out of lines and arcs, so composing them IS the implementation.
+    ///
+    /// A radius larger than half the shorter side is scaled down rather than
+    /// allowed to overlap, which is what the spec requires and what stops a
+    /// large radius from turning the shape inside out.
+    fn round_rect(&mut self, x: f32, y: f32, w: f32, h: f32, radius: f32) {
+        if w == 0.0 || h == 0.0 {
+            return;
+        }
+        // Negative width or height is legal and means the rectangle extends the
+        // other way; normalising keeps the corner maths in one direction.
+        let (x, w) = if w < 0.0 { (x + w, -w) } else { (x, w) };
+        let (y, h) = if h < 0.0 { (y + h, -h) } else { (y, h) };
+        let r = radius.max(0.0).min(w / 2.0).min(h / 2.0);
+        self.move_to(x + r, y);
+        self.line_to(x + w - r, y);
+        self.arc_to(x + w, y, x + w, y + r, r);
+        self.line_to(x + w, y + h - r);
+        self.arc_to(x + w, y + h, x + w - r, y + h, r);
+        self.line_to(x + r, y + h);
+        self.arc_to(x, y + h, x, y + h - r, r);
+        self.line_to(x, y + r);
+        self.arc_to(x, y, x + r, y, r);
+        self.close_path();
+    }
+
+    /// The current point of the path being built, if there is one.
+    ///
+    /// `arcTo` needs it — the arc is defined relative to where the path
+    /// already is — and it is the one piece of path state a composed default
+    /// cannot derive for itself. A canvas that does not track it answers
+    /// `None`, and `arcTo` then starts a subpath, which is what the spec says
+    /// to do in that case anyway.
+    fn current_point(&self) -> Option<(f32, f32)> {
+        None
+    }
+
     // ─── Drawing ────────────────────────────────────────────────────────
 
     /// Fill the current path with the current fill colour.
@@ -208,6 +316,21 @@ pub trait Canvas {
 
     /// Draw an image scaled into the rectangle `(x, y, w, h)`.
     fn draw_image(&mut self, img: &Image, x: f32, y: f32, w: f32, h: f32);
+
+    /// `putImageData(imagedata, dx, dy)` — write pixels **directly** into the
+    /// bitmap at `(dx, dy)`, one for one.
+    ///
+    /// Not a variant of [`Self::draw_image`], and the difference is the whole
+    /// point of the operation: HTML §4.12.5 says `putImageData` is **not**
+    /// affected by the current transform, the clipping region, `globalAlpha`
+    /// or the compositing mode. It is a raw write, and that is why a software
+    /// renderer uses it — the frame it computed is the frame that appears.
+    ///
+    /// It also does not scale: there is no `dw`/`dh`. Scaling raw pixels is
+    /// done by putting them into a canvas and drawing THAT canvas, or by
+    /// giving the `<canvas>` a CSS box larger than its bitmap. Both are the
+    /// browser's answer; neither is a parameter here.
+    fn put_image_data(&mut self, img: &Image, dx: f32, dy: f32);
 
     // ─── Clipping ───────────────────────────────────────────────────────
 

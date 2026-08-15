@@ -106,9 +106,11 @@ impl Canvas {
         f(&mut self.recording);
     }
 
-    /// Direct mutable access to the underlying `RecordingCanvas`. Used
-    /// by the host bridge (`vybe:gui::canvas*` host fns) which needs to
-    /// hand the canvas trait to the host fn body.
+    /// Direct mutable access to the underlying `RecordingCanvas`.
+    ///
+    /// What `Document::canvas_mut` hands out, and therefore what the
+    /// `web:canvas` painter draws into — it needs the canvas trait itself, not
+    /// a closure over it.
     pub fn canvas_mut(&mut self) -> &mut RecordingCanvas {
         &mut self.recording
     }

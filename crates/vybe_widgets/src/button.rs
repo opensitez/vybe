@@ -19,6 +19,10 @@ pub struct Button {
     pub height: f32,
     pub id: WidgetId,
     pub name: String,
+    /// The button's text style. It was a `let font_size = 13.0` inside
+    /// `render` — not even a field — so a declared `font-size`, let alone
+    /// `font-weight`, could not reach a button at all.
+    pub font: crate::ide_text::FontSpec,
     rect: LayoutRect,
     pending_events: Vec<WidgetEvent>,
 }
@@ -40,6 +44,7 @@ impl Button {
             height: 28.0,
             id: WidgetId::next(),
             name: label.to_string(),
+            font: crate::ide_text::FontSpec::sans(13.0),
             rect: LayoutRect::zero(),
             pending_events: Vec::new(),
         }
@@ -132,19 +137,18 @@ impl PanelWidget for Button {
 
         // Render label text centered
         let (fr, fg, fb, _) = self.colors.foreground;
-        let font_size = 13.0;
         let text_w =
-            super::ide_text::measure_text(ctx.font_system, &self.label, font_size, ctx.scale);
+            super::ide_text::measure_text_spec(ctx.font_system, &self.label, &self.font, ctx.scale);
         let tx = r.x + (r.w - text_w) / 2.0;
-        let ty = r.y + (r.h - font_size) / 2.0 - 1.0;
-        super::ide_text::draw_text(
+        let ty = r.y + (r.h - self.font.size) / 2.0 - 1.0;
+        super::ide_text::draw_text_spec(
             ctx.pixmap,
             ctx.font_system,
             ctx.swash_cache,
             &self.label,
             tx,
             ty,
-            font_size,
+            &self.font,
             CosmicColor::rgba(fr, fg, fb, 255),
             ctx.scale,
         );
@@ -201,6 +205,9 @@ impl PanelWidget for Button {
             WidgetCommand::GetText => CommandValue::Text(self.label.clone()),
             WidgetCommand::SetEnabled(e) => {
                 self.disabled = !e;
+                CommandValue::None
+            }
+            WidgetCommand::Custom(key, val) if self.font.apply_command(key, val) => {
                 CommandValue::None
             }
             _ => CommandValue::None,

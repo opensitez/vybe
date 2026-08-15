@@ -22,7 +22,20 @@ use std::sync::{Arc, Mutex};
 
 use vybe_runtime::event_loop::monotonic_now_ms;
 use vybe_runtime::scheduler::DeferredSource;
-use vybe_runtime::{HostContext, VM, Value};
+use vybe_runtime::vm::HostFnDecl;
+use vybe_runtime::{FuncSig, HostContext, VM, ValType, Value};
+
+/// Declare a `web:animation` function. No resource: a frame CALLBACK is a
+/// runtime value and a frame id is a plain integer, so there is no handle here
+/// to own or borrow — unlike `web:window`, where the browsing context is the
+/// resource.
+fn anim_sig(name: &str, params: Vec<ValType>, results: Vec<ValType>) -> FuncSig {
+    FuncSig {
+        name: name.to_string(),
+        params,
+        results,
+    }
+}
 
 use crate::engine::{ScheduleOp, ScheduleValue, schedule};
 
@@ -120,35 +133,58 @@ pub fn register(vm: &mut VM) {
     // requestAnimationFrame(callback) → id
     {
         let f = frames.clone();
-        vm.register_host_fn(
-            "web:animation",
-            "requestAnimationFrame",
-            Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-                let cb = args.first().cloned().unwrap_or(Value::Undefined);
-                Value::F64(f.request(cb) as f64)
-            }),
+        vm.register_host(
+            HostFnDecl::new(
+                "web:animation",
+                "requestAnimationFrame",
+                Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+                    let cb = args.first().cloned().unwrap_or(Value::Undefined);
+                    Value::F64(f.request(cb) as f64)
+                }),
+            )
+            // The callback is `Any` — a guest callable, and which shape it has
+            // is the frontend's business, not this module's.
+            .with_sig(anim_sig(
+                "request-animation-frame",
+                vec![ValType::Any],
+                vec![ValType::F64],
+            )),
         );
     }
 
     // cancelAnimationFrame(id)
     {
         let f = frames.clone();
-        vm.register_host_fn(
-            "web:animation",
-            "cancelAnimationFrame",
-            Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-                let id = args.first().map(|v| v.as_f64() as u64).unwrap_or(0);
-                Value::Bool(f.cancel(id))
-            }),
+        vm.register_host(
+            HostFnDecl::new(
+                "web:animation",
+                "cancelAnimationFrame",
+                Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+                    let id = args.first().map(|v| v.as_f64() as u64).unwrap_or(0);
+                    Value::Bool(f.cancel(id))
+                }),
+            )
+            // Returns whether the callback was still queued — cancelling an
+            // already-fired frame is legal and answers `false`.
+            .with_sig(anim_sig(
+                "cancel-animation-frame",
+                vec![ValType::F64],
+                vec![ValType::Bool],
+            )),
         );
     }
 
     // `performance.now()` — the timestamp rAF callbacks are handed, exposed
     // on its own because guests time frames with it. Answered on the VM's
     // clock, which is what every other guest-visible time uses.
-    vm.register_host_fn(
-        "web:animation",
-        "now",
-        Box::new(move |_ctx: &mut HostContext, _args: &[Value]| Value::F64(monotonic_now_ms())),
+    vm.register_host(
+        HostFnDecl::new(
+            "web:animation",
+            "now",
+            Box::new(move |_ctx: &mut HostContext, _args: &[Value]| Value::F64(monotonic_now_ms())),
+        )
+        // A `DOMHighResTimeStamp` is a `double` — sub-millisecond by
+        // definition, so `f64` is the spec's own type and not a widening.
+        .with_sig(anim_sig("now", vec![], vec![ValType::F64])),
     );
 }

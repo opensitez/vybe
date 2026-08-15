@@ -34,6 +34,8 @@ pub enum DrawCmd {
     SetMiterLimit(f32),
     SetGlobalAlpha(f32),
     SetImageSmoothing(bool),
+    SetTextAlign(super::TextAlign),
+    SetTextBaseline(super::TextBaseline),
     SetFont(Font),
     SetLineDash(Vec<f32>),
     SetLineDashOffset(f32),
@@ -109,6 +111,17 @@ pub enum DrawCmd {
         x: f32,
         y: f32,
     },
+    /// `putImageData` — a RAW write. Recorded as its own command rather than
+    /// a `DrawImage` with `w`/`h` equal to the image's, because the two differ
+    /// in what they honour, not in their arguments: this one ignores the
+    /// transform, the clip, `globalAlpha` and the blend mode. Replayed as a
+    /// `DrawImage` it would pick all four up from whatever state the replay
+    /// had reached.
+    PutImageData {
+        image: Image,
+        dx: f32,
+        dy: f32,
+    },
     DrawImage {
         image: Image,
         x: f32,
@@ -173,6 +186,8 @@ impl RecordingCanvas {
                 DrawCmd::SetMiterLimit(l) => target.set_miter_limit(*l),
                 DrawCmd::SetGlobalAlpha(a) => target.set_global_alpha(*a),
                 DrawCmd::SetImageSmoothing(on) => target.set_image_smoothing(*on),
+                DrawCmd::SetTextAlign(a) => target.set_text_align(*a),
+                DrawCmd::SetTextBaseline(b) => target.set_text_baseline(*b),
                 DrawCmd::SetFont(f) => target.set_font(f),
                 DrawCmd::SetLineDash(intervals) => target.set_line_dash(intervals),
                 DrawCmd::SetLineDashOffset(o) => target.set_line_dash_offset(*o),
@@ -212,6 +227,9 @@ impl RecordingCanvas {
                 DrawCmd::ClearRect { x, y, w, h } => target.clear_rect(*x, *y, *w, *h),
                 DrawCmd::FillText { text, x, y } => target.fill_text(text, *x, *y),
                 DrawCmd::StrokeText { text, x, y } => target.stroke_text(text, *x, *y),
+                DrawCmd::PutImageData { image, dx, dy } => {
+                    target.put_image_data(image, *dx, *dy)
+                }
                 DrawCmd::DrawImage { image, x, y, w, h } => {
                     target.draw_image(image, *x, *y, *w, *h)
                 }
@@ -259,6 +277,62 @@ impl RecordingCanvas {
     pub fn is_empty(&self) -> bool {
         self.commands.is_empty()
     }
+
+    /// Where the path being built currently ends.
+    ///
+    /// **Derived from the commands, not tracked beside them.** A `last_point`
+    /// field would have to be updated by every path method and would be wrong
+    /// the moment one forgot — the same two-copies problem the rest of this
+    /// engine has been shedding. Scanning backwards cannot drift, and `arcTo`
+    /// is the only caller.
+    /// The font in effect — what `measureText` and `fillText` would use.
+    ///
+    /// Derived from the commands for the same reason [`Self::last_point`] is,
+    /// with one difference that matters: `save`/`restore` are part of the
+    /// answer. The font is paint STATE, so a `restore()` puts back whatever
+    /// was in effect at its `save()`, and a backwards scan for the last
+    /// `SetFont` would happily return one that has since been popped. So this
+    /// walks FORWARD over a stack, which is what a canvas does.
+    pub fn current_font(&self) -> Font {
+        let mut font = Font::default();
+        let mut saved: Vec<Font> = Vec::new();
+        for command in &self.commands {
+            match command {
+                DrawCmd::SetFont(f) => font = f.clone(),
+                DrawCmd::Save => saved.push(font.clone()),
+                // An unbalanced `restore()` is a no-op, per spec: it pops
+                // nothing rather than trapping.
+                DrawCmd::Restore => {
+                    if let Some(previous) = saved.pop() {
+                        font = previous;
+                    }
+                }
+                _ => {}
+            }
+        }
+        font
+    }
+
+    fn last_point(&self) -> Option<(f32, f32)> {
+        for command in self.commands.iter().rev() {
+            match command {
+                DrawCmd::MoveTo(x, y) | DrawCmd::LineTo(x, y) => return Some((*x, *y)),
+                DrawCmd::QuadraticCurveTo { x, y, .. }
+                | DrawCmd::BezierCurveTo { x, y, .. } => return Some((*x, *y)),
+                // An arc ends where its sweep does.
+                DrawCmd::Arc { x, y, r, end, .. } => {
+                    return Some((x + r * end.cos(), y + r * end.sin()));
+                }
+                // A rectangle is a closed subpath: it ends where it began.
+                DrawCmd::Rect { x, y, .. } => return Some((*x, *y)),
+                // `beginPath` discards everything before it, so the search
+                // stops rather than reaching into a path that no longer exists.
+                DrawCmd::BeginPath => return None,
+                _ => {}
+            }
+        }
+        None
+    }
 }
 
 impl Canvas for RecordingCanvas {
@@ -287,6 +361,12 @@ impl Canvas for RecordingCanvas {
 
     fn set_image_smoothing(&mut self, enabled: bool) {
         self.commands.push(DrawCmd::SetImageSmoothing(enabled));
+    }
+    fn set_text_align(&mut self, align: super::TextAlign) {
+        self.commands.push(DrawCmd::SetTextAlign(align));
+    }
+    fn set_text_baseline(&mut self, baseline: super::TextBaseline) {
+        self.commands.push(DrawCmd::SetTextBaseline(baseline));
     }
     fn set_font(&mut self, font: &Font) {
         self.commands.push(DrawCmd::SetFont(font.clone()));
@@ -381,6 +461,13 @@ impl Canvas for RecordingCanvas {
             h,
         });
     }
+    fn put_image_data(&mut self, img: &Image, dx: f32, dy: f32) {
+        self.commands.push(DrawCmd::PutImageData {
+            image: img.clone(),
+            dx,
+            dy,
+        });
+    }
     fn clip(&mut self) {
         self.commands.push(DrawCmd::Clip);
     }
@@ -419,11 +506,121 @@ impl Canvas for RecordingCanvas {
     fn reset_transform(&mut self) {
         self.commands.push(DrawCmd::ResetTransform);
     }
+
+    fn current_point(&self) -> Option<(f32, f32)> {
+        self.last_point()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Where the recorded path ends, for the arc tests below.
+    fn end_of(c: &RecordingCanvas) -> Option<(f32, f32)> {
+        c.last_point()
+    }
+
+    #[test]
+    fn the_current_point_is_derived_from_the_commands() {
+        // Derived rather than tracked in a field, so it cannot drift from what
+        // was actually recorded.
+        let mut c = RecordingCanvas::new();
+        assert_eq!(end_of(&c), None, "no subpath yet");
+        c.move_to(10.0, 20.0);
+        assert_eq!(end_of(&c), Some((10.0, 20.0)));
+        c.line_to(30.0, 40.0);
+        assert_eq!(end_of(&c), Some((30.0, 40.0)));
+        // `beginPath` discards the path, so the search must stop there rather
+        // than reach into one that no longer exists.
+        c.begin_path();
+        assert_eq!(end_of(&c), None);
+    }
+
+    #[test]
+    fn arc_to_falls_back_to_a_line_in_every_degenerate_case() {
+        // These are the SPEC's own rules, not guards: a zero radius or three
+        // collinear points is defined to add a straight line to (x1, y1).
+        // `roundRect` with a zero radius goes through here on every corner.
+        for (radius, label) in [(0.0, "zero radius"), (-5.0, "negative radius")] {
+            let mut c = RecordingCanvas::new();
+            c.move_to(0.0, 0.0);
+            c.arc_to(10.0, 0.0, 10.0, 10.0, radius);
+            assert_eq!(end_of(&c), Some((10.0, 0.0)), "{label} is a line to (x1,y1)");
+            assert!(
+                !c.commands.iter().any(|cmd| matches!(cmd, DrawCmd::Arc { .. })),
+                "{label} must not add an arc"
+            );
+        }
+        // Collinear: no corner to fillet.
+        let mut c = RecordingCanvas::new();
+        c.move_to(0.0, 0.0);
+        c.arc_to(10.0, 0.0, 20.0, 0.0, 5.0);
+        assert!(!c.commands.iter().any(|cmd| matches!(cmd, DrawCmd::Arc { .. })));
+        // With no subpath at all, the spec says start one at (x1, y1).
+        let mut c = RecordingCanvas::new();
+        c.arc_to(7.0, 8.0, 20.0, 20.0, 5.0);
+        assert_eq!(end_of(&c), Some((7.0, 8.0)));
+    }
+
+    #[test]
+    fn arc_to_fillets_a_right_angle_where_the_tangents_meet() {
+        // A 90° corner with radius r: the tangent points sit exactly r back
+        // along each leg, which is the one case the geometry can be checked by
+        // hand.
+        let mut c = RecordingCanvas::new();
+        c.move_to(0.0, 0.0);
+        c.arc_to(10.0, 0.0, 10.0, 10.0, 4.0);
+        // The line runs to the first tangent point, 4 back from the corner.
+        assert!(
+            c.commands
+                .iter()
+                .any(|cmd| matches!(cmd, DrawCmd::LineTo(x, y) if (*x - 6.0).abs() < 0.01 && y.abs() < 0.01)),
+            "line to the tangent point at (6, 0)"
+        );
+        let arc = c
+            .commands
+            .iter()
+            .find_map(|cmd| match cmd {
+                DrawCmd::Arc { x, y, r, .. } => Some((*x, *y, *r)),
+                _ => None,
+            })
+            .expect("an arc rounds the corner");
+        assert!((arc.0 - 6.0).abs() < 0.01 && (arc.1 - 4.0).abs() < 0.01, "centre at (6, 4), got {arc:?}");
+        assert!((arc.2 - 4.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn round_rect_clamps_a_radius_that_would_overlap() {
+        // A radius larger than half the shorter side is scaled down rather than
+        // allowed to turn the shape inside out — the spec requires it.
+        let mut c = RecordingCanvas::new();
+        c.round_rect(0.0, 0.0, 20.0, 10.0, 40.0);
+        let radii: Vec<f32> = c
+            .commands
+            .iter()
+            .filter_map(|cmd| match cmd {
+                DrawCmd::Arc { r, .. } => Some(*r),
+                _ => None,
+            })
+            .collect();
+        assert!(!radii.is_empty(), "the corners are arcs");
+        assert!(
+            radii.iter().all(|r| (*r - 5.0).abs() < 0.01),
+            "clamped to half the 10px side, got {radii:?}"
+        );
+    }
+
+    #[test]
+    fn round_rect_with_no_radius_is_a_rectangle_of_straight_lines() {
+        let mut c = RecordingCanvas::new();
+        c.round_rect(0.0, 0.0, 20.0, 10.0, 0.0);
+        assert!(
+            !c.commands.iter().any(|cmd| matches!(cmd, DrawCmd::Arc { .. })),
+            "no corner to round"
+        );
+        assert!(c.commands.iter().any(|cmd| matches!(cmd, DrawCmd::ClosePath)));
+    }
 
     #[test]
     fn captures_calls_in_order() {
@@ -471,5 +668,75 @@ mod tests {
         assert_eq!(c.len(), 1);
         c.clear();
         assert!(c.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod put_image_data_tests {
+    use super::*;
+    use crate::canvas::Color;
+
+    fn red_pixel() -> Image {
+        Image::from_rgba(1, 1, vec![255, 0, 0, 255])
+    }
+
+    /// `putImageData` is a RAW write, so it is its own command — not a
+    /// `drawImage` sized to the image.
+    ///
+    /// The two take the same arguments and honour different things: this one
+    /// ignores the transform, the clip, `globalAlpha` and the blend mode. Were
+    /// it recorded as a `DrawImage`, replay would pick all four up from
+    /// whatever state it had reached by then, and a software renderer's frame
+    /// would land somewhere else, tinted, or clipped away.
+    #[test]
+    fn put_image_data_records_as_itself_not_as_a_draw_image() {
+        let mut rec = RecordingCanvas::new();
+        rec.set_global_alpha(0.5);
+        rec.translate(100.0, 100.0);
+        rec.put_image_data(&red_pixel(), 7.0, 9.0);
+
+        let written = rec
+            .commands
+            .iter()
+            .filter(|c| matches!(c, DrawCmd::PutImageData { .. }))
+            .count();
+        assert_eq!(written, 1, "recorded once, as itself");
+        assert!(
+            !rec.commands
+                .iter()
+                .any(|c| matches!(c, DrawCmd::DrawImage { .. })),
+            "and never as a draw_image"
+        );
+        // The destination is what the caller said, unshifted by the
+        // translate that precedes it — the transform is not applied at
+        // record time either.
+        assert!(matches!(
+            rec.commands.last(),
+            Some(DrawCmd::PutImageData { dx, dy, .. }) if *dx == 7.0 && *dy == 9.0
+        ));
+    }
+
+    /// Replay dispatches it to `put_image_data`, not to `draw_image`.
+    #[test]
+    fn replay_keeps_the_two_apart() {
+        let mut rec = RecordingCanvas::new();
+        rec.put_image_data(&red_pixel(), 1.0, 2.0);
+        rec.draw_image(&red_pixel(), 3.0, 4.0, 5.0, 6.0);
+
+        let mut replayed = RecordingCanvas::new();
+        rec.replay(&mut replayed);
+        assert_eq!(replayed.commands, rec.commands, "one arm each, in order");
+    }
+
+    /// Paint state is recorded around it and belongs to the OTHER commands —
+    /// this is the guard against someone "simplifying" the arm later.
+    #[test]
+    fn surrounding_state_is_untouched_by_the_raw_write() {
+        let mut rec = RecordingCanvas::new();
+        rec.set_fill_color(Color { r: 1, g: 2, b: 3, a: 4 });
+        rec.put_image_data(&red_pixel(), 0.0, 0.0);
+        rec.fill_rect(0.0, 0.0, 10.0, 10.0);
+        assert!(matches!(rec.commands.first(), Some(DrawCmd::SetFillColor(_))));
+        assert!(matches!(rec.commands.last(), Some(DrawCmd::FillRect { .. })));
     }
 }

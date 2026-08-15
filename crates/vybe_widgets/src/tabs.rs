@@ -15,6 +15,8 @@ pub struct Tabs {
     pub colors: WidgetColors,
     pub id: WidgetId,
     pub name: String,
+    /// The tab labels' text style. It was a literal `12.0` at the draw call.
+    pub font: crate::ide_text::FontSpec,
     rect: LayoutRect,
     pending_events: Vec<WidgetEvent>,
 }
@@ -29,6 +31,7 @@ impl Tabs {
             colors: WidgetColors::default(),
             id: WidgetId::next(),
             name: String::new(),
+            font: crate::ide_text::FontSpec::sans(12.0),
             rect: LayoutRect::zero(),
             pending_events: Vec::new(),
         }
@@ -153,14 +156,14 @@ impl PanelWidget for Tabs {
             } else {
                 cosmic_text::Color::rgba(60, 60, 60, 255)
             };
-            super::ide_text::draw_text(
+            super::ide_text::draw_text_spec(
                 ctx.pixmap,
                 ctx.font_system,
                 ctx.swash_cache,
                 label,
                 tx,
                 r.y + 8.0,
-                12.0,
+                &self.font,
                 col,
                 ctx.scale,
             );
@@ -199,6 +202,9 @@ impl PanelWidget for Tabs {
                 CommandValue::None
             }
             WidgetCommand::GetValue => CommandValue::Index(self.selected),
+            WidgetCommand::Custom(key, val) if self.font.apply_command(key, val) => {
+                CommandValue::None
+            }
             WidgetCommand::AddItem(s) => {
                 self.tabs.push(s.clone());
                 CommandValue::None

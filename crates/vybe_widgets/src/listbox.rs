@@ -23,6 +23,8 @@ pub struct ListBox {
     pub colors: WidgetColors,
     pub id: WidgetId,
     pub name: String,
+    /// The items' text style. It was a literal `12.0` at the draw call.
+    pub font: crate::ide_text::FontSpec,
     rect: LayoutRect,
     pending_events: Vec<WidgetEvent>,
     /// Anchor index for Shift+click range selection.
@@ -45,6 +47,7 @@ impl ListBox {
             colors: WidgetColors::default(),
             id: WidgetId::next(),
             name: String::new(),
+            font: crate::ide_text::FontSpec::sans(12.0),
             rect: LayoutRect::zero(),
             pending_events: Vec::new(),
             range_anchor: None,
@@ -264,14 +267,14 @@ impl PanelWidget for ListBox {
             if iy + self.item_height < r.y || iy > r.y + r.h {
                 continue;
             }
-            super::ide_text::draw_text(
+            super::ide_text::draw_text_spec(
                 ctx.pixmap,
                 ctx.font_system,
                 ctx.swash_cache,
                 item,
                 r.x + 4.0,
                 iy + 1.0,
-                12.0,
+                &self.font,
                 col,
                 ctx.scale,
             );
@@ -388,6 +391,9 @@ impl PanelWidget for ListBox {
     }
     fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
         match cmd {
+            WidgetCommand::Custom(key, val) if self.font.apply_command(key, val) => {
+                CommandValue::None
+            }
             WidgetCommand::SetSelectedIndex(i) => {
                 if *i < self.items.len() && self.selected_index != Some(*i) {
                     self.select_single(*i);

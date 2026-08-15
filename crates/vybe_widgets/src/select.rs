@@ -19,6 +19,9 @@ pub struct Select {
     pub height: f32,
     pub id: WidgetId,
     pub name: String,
+    /// The selected option's text style. It was a literal `12.0` at the draw
+    /// call, so a declared `font-family` or `font-weight` reached nothing here.
+    pub font: crate::ide_text::FontSpec,
     rect: LayoutRect,
     pending_events: Vec<WidgetEvent>,
 }
@@ -37,6 +40,7 @@ impl Select {
             height: 24.0,
             id: WidgetId::next(),
             name: String::new(),
+            font: crate::ide_text::FontSpec::sans(12.0),
             rect: LayoutRect::zero(),
             pending_events: Vec::new(),
         }
@@ -151,14 +155,14 @@ impl PanelWidget for Select {
         let txt = self.selected_text();
         if !txt.is_empty() {
             let (fr, fg, fb, _) = self.colors.foreground;
-            super::ide_text::draw_text(
+            super::ide_text::draw_text_spec(
                 ctx.pixmap,
                 ctx.font_system,
                 ctx.swash_cache,
                 txt,
                 r.x + 6.0,
                 r.y + 4.0,
-                12.0,
+                &self.font,
                 cosmic_text::Color::rgba(fr, fg, fb, 255),
                 ctx.scale,
             );
@@ -226,6 +230,9 @@ impl PanelWidget for Select {
                 CommandValue::None
             }
             WidgetCommand::GetValue => CommandValue::Index(self.selected_index),
+            WidgetCommand::Custom(key, val) if self.font.apply_command(key, val) => {
+                CommandValue::None
+            }
             WidgetCommand::AddItem(s) => {
                 self.options.push(s.clone());
                 CommandValue::None

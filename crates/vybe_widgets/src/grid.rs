@@ -1,7 +1,10 @@
 //! Simple data grid widget — header + rows grid rendering.
 
 use super::WidgetColors;
-use super::layout::{KeyEvent, LayoutRect, MouseEvent, PanelWidget, RenderContext, WidgetId};
+use super::layout::{
+    CommandValue, KeyEvent, LayoutRect, MouseEvent, PanelWidget, RenderContext, WidgetCommand,
+    WidgetId,
+};
 use tiny_skia::*;
 
 pub struct DataGrid {
@@ -14,6 +17,12 @@ pub struct DataGrid {
     pub colors: WidgetColors,
     pub id: WidgetId,
     pub name: String,
+    /// The headers' and cells' text style — one spec, because the header is
+    /// not a separate element here. It was a literal `12.0` at both draw calls,
+    /// and `DataGrid` had no `handle_command` at all, so every declaration a
+    /// program made about a `<table>`'s text was answered by the trait default
+    /// and discarded.
+    pub font: crate::ide_text::FontSpec,
     rect: LayoutRect,
 }
 
@@ -29,6 +38,7 @@ impl DataGrid {
             colors: WidgetColors::default(),
             id: WidgetId::next(),
             name: String::new(),
+            font: crate::ide_text::FontSpec::sans(12.0),
             rect: LayoutRect::zero(),
         }
     }
@@ -127,14 +137,14 @@ impl PanelWidget for DataGrid {
             self.width / self.columns.len() as f32
         };
         for (i, header) in self.columns.iter().enumerate() {
-            super::ide_text::draw_text(
+            super::ide_text::draw_text_spec(
                 ctx.pixmap,
                 ctx.font_system,
                 ctx.swash_cache,
                 header,
                 r.x + i as f32 * cw + 4.0,
                 r.y + 4.0,
-                12.0,
+                &self.font,
                 col,
                 ctx.scale,
             );
@@ -145,18 +155,27 @@ impl PanelWidget for DataGrid {
                 break;
             }
             for (ci, cell) in row.iter().enumerate() {
-                super::ide_text::draw_text(
+                super::ide_text::draw_text_spec(
                     ctx.pixmap,
                     ctx.font_system,
                     ctx.swash_cache,
                     cell,
                     r.x + ci as f32 * cw + 4.0,
                     ry + 2.0,
-                    12.0,
+                    &self.font,
                     col,
                     ctx.scale,
                 );
             }
+        }
+    }
+
+    fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
+        match cmd {
+            WidgetCommand::Custom(key, val) if self.font.apply_command(key, val) => {
+                CommandValue::None
+            }
+            _ => CommandValue::None,
         }
     }
 
