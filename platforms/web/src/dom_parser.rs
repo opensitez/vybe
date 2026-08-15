@@ -60,6 +60,10 @@ use vybe_runtime::{VM, Value};
 use quick_xml::Reader;
 use quick_xml::events::Event;
 
+// The DOM operations the HTML sink builds through. Only the seam — this module
+// names no engine, which is what keeps the tree it builds swappable.
+use crate::engine::{DomOp, DomValue};
+
 // ── nodeType constants (WHATWG DOM Living Standard §4.4) ──────────
 const ELEMENT_NODE: i32 = 1;
 const TEXT_NODE: i32 = 3;
@@ -171,11 +175,20 @@ pub fn register(vm: &mut VM) {
             // `parse` shorthand and every existing caller already get.
             // Discarding this argument is why a bare `<br>` used to produce
             // a `<parsererror>` document.
-            let grammar = match &type_arg {
-                Value::String(t) if t.trim().eq_ignore_ascii_case("text/html") => Grammar::Html,
-                _ => Grammar::Xml,
-            };
-            match parse_markup(&xml, grammar) {
+            //
+            // It also decides which DOM answers. `text/html` builds a real
+            // document — the tree `window.document` is, which cascades, lays
+            // out and paints; every other type builds the property-bag tree
+            // that `DOMDocument`, XLinq and `xml2js` read. The spec returns two
+            // kinds of document here too (`HTMLDocument` and `XMLDocument`);
+            // what is still ours to close is that they come from two engines
+            // rather than one. See `TreeSink`.
+            let html = matches!(&type_arg, Value::String(t)
+                if t.trim().eq_ignore_ascii_case("text/html"));
+            if html {
+                return parse_html_document(&xml);
+            }
+            match parse_markup(&xml, Grammar::Xml) {
                 Ok(doc) => doc,
                 Err(_) => parse_error_document(&xml),
             }
@@ -1255,14 +1268,77 @@ fn parse_xml(xml: &str) -> Result<Value, String> {
     parse_markup(xml, Grammar::Xml)
 }
 
-fn parse_markup(xml: &str, grammar: Grammar) -> Result<Value, String> {
+// ── The parse SINK ────────────────────────────────────────────────────────
+//
+// **One grammar driver, two trees.**
+//
+// [`drive`] below is the whole of what this file knows about markup: void
+// elements, implied end tags, raw-text interiors, and the tolerant recovery a
+// browser performs on input that does not nest. Which TREE that knowledge
+// builds is a separate question, and it has two answers:
+//
+//   * [`ValueSink`] — the property-bag DOM this module has always returned.
+//     XML lives here, and so do its consumers: PHP's `DOMDocument`, .NET's
+//     XLinq and `xml2js` read `nodeType` / `childNodes` / `attributes` off the
+//     object itself, and namespaces, `Attr` nodes, CDATA sections and
+//     processing instructions are theirs alone.
+//
+//   * [`DocumentSink`] — a real document, built through the same `web:dom`
+//     operations any guest would use. An HTML page parsed this way IS the kind
+//     of thing `window.document` is: it cascades, it lays out, it paints, and
+//     every `web:dom` call answers about it. Before this, `parseFromString`
+//     returned a tree that could be read and could never be shown.
+//
+// Splitting the sink rather than the parser is what keeps the HTML algorithm
+// from existing twice — which is the shape the two-DOM problem took everywhere
+// else it appeared.
+
+/// Where a parse puts what it reads.
+trait TreeSink {
+    /// Attach an element built from its start tag.
+    ///
+    /// `open` makes it the parent of what follows; a void or self-closing
+    /// element is complete at its start tag and never opens.
+    fn start_element(
+        &mut self,
+        e: &quick_xml::events::BytesStart<'_>,
+        grammar: Grammar,
+        open: bool,
+    );
+
+    /// Close elements until exactly `depth` are open.
+    ///
+    /// A depth rather than a count of pops, because HTML's end tags close the
+    /// nearest MATCHING ancestor: the driver computes which one that is and
+    /// says where to stop.
+    fn close_to(&mut self, depth: usize);
+
+    fn text(&mut self, data: &str);
+    fn cdata(&mut self, data: &str);
+    fn comment(&mut self, data: &str);
+    fn processing_instruction(&mut self, target: &str, data: &str);
+
+    /// What the SINK could not represent, merged into the driver's own list.
+    /// A sink that can hold everything it is handed reports nothing.
+    fn notes(&mut self) -> Vec<String> {
+        Vec::new()
+    }
+}
+
+/// Read `source` in `grammar`, building into `sink`.
+///
+/// Answers what had to be REPAIRED. Once a parser is tolerant, malformed input
+/// stops announcing itself with a `<parsererror>` document and starts producing
+/// a plausible-but-different tree; this list is the only thing left that says
+/// so.
+fn drive(source: &str, grammar: Grammar, sink: &mut dyn TreeSink) -> Result<Vec<String>, String> {
     // Raw-text interiors are neutralised before the lexer runs — see
     // `escape_raw_text`. XML has no raw-text elements, so it is untouched.
     let owned;
     let xml = match grammar {
-        Grammar::Xml => xml,
+        Grammar::Xml => source,
         Grammar::Html => {
-            owned = escape_raw_text(xml);
+            owned = escape_raw_text(source);
             owned.as_str()
         }
     };
@@ -1282,34 +1358,16 @@ fn parse_markup(xml: &str, grammar: Grammar) -> Result<Value, String> {
         reader.config_mut().allow_unmatched_ends = true;
     }
 
-    // The open elements, by name, parallel to `node_stack`. Needed because
-    // an HTML end tag closes the nearest matching ancestor rather than
-    // whatever happens to be on top, and the node objects do not carry a
-    // cheap name to compare against.
+    // The open elements, by name. This is the driver's whole state: the sink
+    // keeps its own handles in step through `close_to`, and never has to agree
+    // with this one on anything but a depth.
     let mut open_names: Vec<String> = Vec::new();
-    // What the parser had to repair. Once the parser is tolerant, malformed
-    // input stops announcing itself with a `<parsererror>` document and
-    // starts producing a plausible-but-different tree; this is the only
-    // thing left that says so.
     let mut recoveries: Vec<String> = Vec::new();
-
-    // Build the Document node first; its childNodes will be populated
-    // as we read events.
-    let document_obj = make_node(DOCUMENT_NODE, "#document", None);
-
-    // Use a stack of parent contexts to handle nesting. Each entry is
-    // an Arc<Mutex<Object>> (the parent node) and the in-progress
-    // childNodes Vec (Element-style siblings).
-    let mut node_stack: Vec<Arc<Mutex<Object>>> = vec![match &document_obj {
-        Value::Object(o) => o.clone(),
-        _ => unreachable!(),
-    }];
 
     let mut buf = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
-                let elem = make_element_from_start(&e, grammar);
                 let name = element_name(&e, grammar);
                 // An omitted end tag: `<li>a<li>b` is two siblings, not two
                 // nested items. Close every open element the new one ends
@@ -1322,25 +1380,21 @@ fn parse_markup(xml: &str, grammar: Grammar) -> Result<Value, String> {
                         }
                         recoveries.push(format!("implied </{open}> before <{name}>"));
                         open_names.pop();
-                        node_stack.pop();
+                        sink.close_to(open_names.len());
                     }
                 }
-                push_child(&node_stack, elem.clone());
-                // A void element is complete at its start tag. Pushing it
+                // A void element is complete at its start tag. Opening it
                 // would swallow every following sibling as its child.
-                if grammar == Grammar::Html && VOID_ELEMENTS.contains(&name.as_str()) {
-                    continue;
-                }
-                if let Value::Object(o) = elem {
-                    node_stack.push(o);
+                let void = grammar == Grammar::Html && VOID_ELEMENTS.contains(&name.as_str());
+                sink.start_element(&e, grammar, !void);
+                if !void {
                     open_names.push(name);
                 }
             }
             Ok(Event::Empty(e)) => {
-                let elem = make_element_from_start(&e, grammar);
-                push_child(&node_stack, elem);
-                // Empty/self-closing — no push to stack; siblings
-                // continue at the current parent.
+                // Empty/self-closing — never opened, so siblings continue at
+                // the current parent.
+                sink.start_element(&e, grammar, false);
             }
             Ok(Event::End(e)) => {
                 if grammar == Grammar::Html {
@@ -1354,37 +1408,33 @@ fn parse_markup(xml: &str, grammar: Grammar) -> Result<Value, String> {
                         Some(index) => {
                             if index + 1 < open_names.len() {
                                 let unclosed = open_names[index + 1..].join(", ");
-                                recoveries
-                                    .push(format!("</{name}> closed still-open {unclosed}"));
+                                recoveries.push(format!("</{name}> closed still-open {unclosed}"));
                             }
                             open_names.truncate(index);
-                            node_stack.truncate(index + 1);
+                            sink.close_to(index);
                         }
                         // An end tag with nothing open to match it is
                         // ignored, which is what a browser does.
                         None => recoveries.push(format!("stray </{name}> ignored")),
                     }
-                } else if node_stack.len() > 1 {
-                    node_stack.pop();
+                } else if !open_names.is_empty() {
+                    open_names.pop();
+                    sink.close_to(open_names.len());
                 }
             }
             Ok(Event::Text(t)) => {
                 let text = decode_text(&t, grammar);
                 if !text.is_empty() {
-                    let node = make_node(TEXT_NODE, "#text", Some(&text));
-                    push_child(&node_stack, node);
+                    sink.text(&text);
                 }
             }
             Ok(Event::CData(c)) => {
                 let bytes = c.into_inner().into_owned();
-                let text = String::from_utf8_lossy(&bytes).into_owned();
-                let node = make_node(CDATA_SECTION_NODE, "#cdata-section", Some(&text));
-                push_child(&node_stack, node);
+                sink.cdata(&String::from_utf8_lossy(&bytes));
             }
             Ok(Event::Comment(c)) => {
                 let text = c.unescape().map(|c| c.into_owned()).unwrap_or_default();
-                let node = make_node(COMMENT_NODE, "#comment", Some(&text));
-                push_child(&node_stack, node);
+                sink.comment(&text);
             }
             Ok(Event::PI(pi)) => {
                 let raw = String::from_utf8_lossy(pi.as_ref()).into_owned();
@@ -1394,8 +1444,7 @@ fn parse_markup(xml: &str, grammar: Grammar) -> Result<Value, String> {
                 let mut parts = raw.splitn(2, char::is_whitespace);
                 let target = parts.next().unwrap_or("").to_string();
                 let data = parts.next().unwrap_or("").trim().to_string();
-                let node = make_pi_node(&target, &data);
-                push_child(&node_stack, node);
+                sink.processing_instruction(&target, &data);
             }
             Ok(Event::Decl(_)) | Ok(Event::DocType(_)) => {
                 // XML declaration / DOCTYPE — recorded as DocumentType
@@ -1407,6 +1456,304 @@ fn parse_markup(xml: &str, grammar: Grammar) -> Result<Value, String> {
         }
         buf.clear();
     }
+
+    recoveries.extend(sink.notes());
+    Ok(recoveries)
+}
+
+/// The property-bag tree — [`make_node`] and friends, driven by [`drive`].
+struct ValueSink {
+    document: Value,
+    /// The document, then every open element. `close_to(n)` truncates to
+    /// `n + 1`, because the document is not one of the open elements.
+    stack: Vec<Arc<Mutex<Object>>>,
+}
+
+impl ValueSink {
+    fn new() -> ValueSink {
+        let document = make_node(DOCUMENT_NODE, "#document", None);
+        let root = match &document {
+            Value::Object(o) => o.clone(),
+            _ => unreachable!("make_node always answers an object"),
+        };
+        ValueSink {
+            document,
+            stack: vec![root],
+        }
+    }
+}
+
+impl TreeSink for ValueSink {
+    fn start_element(
+        &mut self,
+        e: &quick_xml::events::BytesStart<'_>,
+        grammar: Grammar,
+        open: bool,
+    ) {
+        let elem = make_element_from_start(e, grammar);
+        push_child(&self.stack, elem.clone());
+        if open {
+            if let Value::Object(o) = elem {
+                self.stack.push(o);
+            }
+        }
+    }
+
+    fn close_to(&mut self, depth: usize) {
+        self.stack.truncate(depth + 1);
+    }
+
+    fn text(&mut self, data: &str) {
+        push_child(&self.stack, make_node(TEXT_NODE, "#text", Some(data)));
+    }
+
+    fn cdata(&mut self, data: &str) {
+        push_child(
+            &self.stack,
+            make_node(CDATA_SECTION_NODE, "#cdata-section", Some(data)),
+        );
+    }
+
+    fn comment(&mut self, data: &str) {
+        push_child(&self.stack, make_node(COMMENT_NODE, "#comment", Some(data)));
+    }
+
+    fn processing_instruction(&mut self, target: &str, data: &str) {
+        push_child(&self.stack, make_pi_node(target, data));
+    }
+}
+
+/// A real document, built through the same `web:dom` operations a guest uses.
+///
+/// Every line below is `createElement` / `createTextNode` / `createComment` /
+/// `setAttribute` / `appendChild` / `textContent` — six standard operations and
+/// no seventh. That is deliberate and it is the browser-swap test: the tree
+/// this builds is reachable by an engine that has never heard of this parser,
+/// because the parser only ever asked it to do things the DOM defines.
+struct DocumentSink {
+    document: crate::engine::DocumentId,
+    /// Every open element, innermost last. The document root is not one of
+    /// them, so `close_to(0)` returns to it.
+    open: Vec<crate::engine::NodeId>,
+    /// The open elements' tags, in step with `open`. The sink created them, so
+    /// it already knows — reading them back would be asking the tree for a
+    /// fact this side just supplied.
+    tags: Vec<String>,
+    notes: Vec<String>,
+}
+
+impl DocumentSink {
+    fn new(document: crate::engine::DocumentId) -> DocumentSink {
+        DocumentSink {
+            document,
+            open: Vec::new(),
+            tags: Vec::new(),
+            notes: Vec::new(),
+        }
+    }
+
+    /// The element what-comes-next belongs to.
+    fn parent(&self) -> crate::engine::NodeId {
+        *self.open.last().unwrap_or(&crate::engine::DOCUMENT)
+    }
+
+    fn create(&self, op: DomOp) -> Option<crate::engine::NodeId> {
+        match crate::engine::apply(self.document, op) {
+            DomValue::Node(node) => Some(node),
+            _ => None,
+        }
+    }
+
+    fn attach(&self, child: crate::engine::NodeId) -> bool {
+        matches!(
+            crate::engine::apply(
+                self.document,
+                DomOp::AppendChild {
+                    parent: self.parent(),
+                    child,
+                },
+            ),
+            DomValue::Bool(true)
+        )
+    }
+}
+
+impl TreeSink for DocumentSink {
+    fn start_element(
+        &mut self,
+        e: &quick_xml::events::BytesStart<'_>,
+        grammar: Grammar,
+        open: bool,
+    ) {
+        let name = element_name(e, grammar);
+        let attributes: Vec<(String, String)> = e
+            .attributes()
+            .with_checks(false)
+            .flatten()
+            .map(|attr| {
+                let key = String::from_utf8_lossy(attr.key.as_ref()).to_ascii_lowercase();
+                let value = attr
+                    .unescape_value_with(html_entity)
+                    .map(|c| c.into_owned())
+                    .unwrap_or_default();
+                (key, value)
+            })
+            .collect();
+        // The attribute that, WITH the tag, decides which control this is —
+        // `createElement`'s second argument. Which attribute it is depends on
+        // the element: `<input type=checkbox>` and `<select size=6>` are the
+        // same fact spelled two ways. The serialiser asks the same question
+        // the same way round.
+        let disambiguator = match name.as_str() {
+            "select" | "datalist" => "size",
+            _ => "type",
+        };
+        let input_type = attributes
+            .iter()
+            .find(|(key, _)| key == disambiguator)
+            .map(|(_, value)| value.clone())
+            .unwrap_or_default();
+
+        let Some(node) = self.create(DomOp::CreateElement {
+            tag: name.clone(),
+            input_type,
+        }) else {
+            return;
+        };
+        for (key, value) in &attributes {
+            // Already carried into the element as its kind. Setting it again
+            // would be the same fact in two places, which is the whole thing
+            // this exercise is removing.
+            if key == disambiguator {
+                continue;
+            }
+            crate::engine::apply(
+                self.document,
+                DomOp::SetAttribute(node, key.clone(), value.clone()),
+            );
+        }
+        if !self.attach(node) {
+            self.notes
+                .push(format!("<{name}> could not join its parent"));
+        }
+        if open {
+            self.open.push(node);
+            self.tags.push(name);
+        }
+    }
+
+    fn close_to(&mut self, depth: usize) {
+        self.open.truncate(depth);
+        self.tags.truncate(depth);
+    }
+
+    fn text(&mut self, data: &str) {
+        let parent = self.parent();
+        let tag = self.tags.last().cloned().unwrap_or_default();
+        // `<title>` names the DOCUMENT, not only the element (HTML §4.2.2).
+        if tag == "title" {
+            crate::engine::apply(self.document, DomOp::SetTitle(data.to_string()));
+        }
+        // Inside a raw-text element the run is not content, it is the
+        // element's DATA: a `<style>`'s text IS the author stylesheet and a
+        // `<script>`'s is its source. `textContent` is the write that says so,
+        // and on a `<style>` it is what makes the rules take effect — which is
+        // how a parsed page gets a cascade at all.
+        if RAW_TEXT_ELEMENTS.contains(&tag.as_str()) {
+            crate::engine::apply(
+                self.document,
+                DomOp::SetTextContent(parent, data.to_string()),
+            );
+            return;
+        }
+        if let Some(node) = self.create(DomOp::CreateTextNode(data.to_string())) {
+            if self.attach(node) {
+                return;
+            }
+        }
+        // Whitespace between two elements is not content and goes nowhere.
+        if data.trim().is_empty() {
+            return;
+        }
+        // Text at the root has no box to belong to: the document node is the
+        // body, and a body cannot hold a line of its own yet. Said out loud
+        // rather than dropped, because it IS a divergence from the markup.
+        if parent == crate::engine::DOCUMENT {
+            self.notes
+                .push(format!("{} characters of root text dropped", data.len()));
+            return;
+        }
+        // A box that refuses a text NODE is a leaf — `<option>`, `<td>`,
+        // `<label>`, `<span>`, `<title>` — and for a leaf its text and its
+        // `textContent` are the same fact, so this is the same content taking
+        // the only shape the element has for it.
+        crate::engine::apply(
+            self.document,
+            DomOp::SetTextContent(parent, data.to_string()),
+        );
+    }
+
+    fn comment(&mut self, data: &str) {
+        if let Some(node) = self.create(DomOp::CreateComment(data.to_string())) {
+            self.attach(node);
+        }
+    }
+
+    /// HTML has no CDATA section outside foreign content: `<![CDATA[x]]>` is a
+    /// **bogus comment** whose data is `[CDATA[x]]` (HTML §13.2.5.42). Reusing
+    /// the comment node is not an approximation, it is the rule.
+    fn cdata(&mut self, data: &str) {
+        self.comment(&format!("[CDATA[{data}]]"));
+    }
+
+    /// And `<?target data?>` is a bogus comment too, whose data is everything
+    /// after the `<?` — HTML has no processing instructions.
+    fn processing_instruction(&mut self, target: &str, data: &str) {
+        let text = if data.is_empty() {
+            format!("?{target}")
+        } else {
+            format!("?{target} {data}")
+        };
+        self.comment(&text);
+    }
+
+    fn notes(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.notes)
+    }
+}
+
+/// `DOMParser.parseFromString(source, "text/html")`.
+///
+/// Answers a handle to a **real** document — the same kind of thing
+/// `window.document` is, in the same engine, reachable by every `web:dom`
+/// operation. A browser returns an `HTMLDocument` here and so does this.
+///
+/// HTML has no parse errors, so there is no failure branch: what could not be
+/// represented comes back as `__parseRecoveries` on the handle.
+fn parse_html_document(source: &str) -> Value {
+    let document = crate::engine::new_document("");
+    let mut sink = DocumentSink::new(document);
+    let recoveries = drive(source, Grammar::Html, &mut sink).unwrap_or_default();
+    let handle = crate::html::document_handle(document);
+    // `__parseRecoveries` is OUR diagnostic, not a DOM member — no browser has
+    // one — so it lives on the handle rather than being written into the tree
+    // as an attribute no engine would recognise. It is parse-time-only and
+    // never changes again, which is why a property here is a record and not
+    // the second copy of a live fact.
+    if let Value::Object(o) = &handle {
+        let entries = recoveries.iter().map(|r| s(r)).collect::<Vec<_>>();
+        o.lock()
+            .unwrap()
+            .properties
+            .insert("__parseRecoveries".into(), make_array(entries));
+    }
+    handle
+}
+
+fn parse_markup(xml: &str, grammar: Grammar) -> Result<Value, String> {
+    let mut sink = ValueSink::new();
+    let recoveries = drive(xml, grammar, &mut sink)?;
+    let document_obj = sink.document;
 
     // Post-walk: set parentNode + ownerDocument back-refs, derive
     // textContent / firstChild / lastChild / nextSibling /
@@ -1421,8 +1768,7 @@ fn parse_markup(xml: &str, grammar: Grammar) -> Result<Value, String> {
 
     // What the parser repaired, on the document, always — an empty array
     // when nothing was repaired, so "no recoveries" is an answer rather
-    // than a missing property. A tolerant parser has no other way to say
-    // that the tree it returned is not the tree it was given.
+    // than a missing property.
     if grammar == Grammar::Html {
         let entries = recoveries.iter().map(|r| s(r)).collect::<Vec<_>>();
         doc_arc
@@ -3200,6 +3546,38 @@ mod html_grammar_tests {
         );
     }
 
+    /// The XML path's text extraction, asserted directly.
+    ///
+    /// The reader loop was lifted out into `drive` and a sink; every text run
+    /// now arrives as `TreeSink::text` instead of being pushed inline. This is
+    /// the one behaviour that refactor could have changed silently — a tree
+    /// with the right shape and no content reads as a downstream bug — so it
+    /// is checked at the parser rather than inferred from a suite.
+    #[test]
+    fn an_xml_text_run_becomes_a_text_node_with_its_data() {
+        let doc = parse_markup("<root><title>Post</title></root>", Grammar::Xml)
+            .expect("well-formed XML parses");
+        let Value::Object(o) = &doc else {
+            unreachable!("a parse answers a document object")
+        };
+        let root = o
+            .lock()
+            .unwrap()
+            .properties
+            .get("documentElement")
+            .cloned()
+            .expect("documentElement");
+        assert_eq!(prop(&root, "tagName"), "root");
+        assert_eq!(prop(&root, "textContent"), "Post");
+        let title = children(&root).remove(0);
+        assert_eq!(prop(&title, "tagName"), "title");
+        let text = list(&title, "childNodes");
+        assert_eq!(text.len(), 1, "one text node");
+        assert_eq!(prop(&text[0], "nodeType"), "3");
+        assert_eq!(prop(&text[0], "nodeValue"), "Post");
+        assert_eq!(prop(&text[0], "nodeName"), "#text");
+    }
+
     #[test]
     fn an_end_tag_closes_the_nearest_matching_ancestor() {
         // `<b><i>x</b>` — the bold ends and takes the italic with it. A
@@ -3213,5 +3591,170 @@ mod html_grammar_tests {
             repaired.iter().any(|r| r.contains("still-open i")),
             "the divergence is recorded, got {repaired:?}"
         );
+    }
+}
+
+/// `parseFromString(…, "text/html")` against the REAL document.
+///
+/// These assert through the toolkit rather than through the return value,
+/// because the return value is now a handle and the tree is the answer. What
+/// each one is really checking is that a parsed page is not a second kind of
+/// document: it cascades, it lays out, it serialises, and every `web:dom`
+/// operation is about it.
+#[cfg(all(test, feature = "gui"))]
+mod html_document_tests {
+    use super::*;
+    use vybe_widgets::dom;
+
+    /// Parse, and hand back the document the handle names.
+    fn parse(source: &str) -> dom::DocumentId {
+        crate::engine_widgets::install();
+        let handle = parse_html_document(source);
+        let Value::Object(o) = &handle else {
+            panic!("parseFromString answers a handle");
+        };
+        let id = o
+            .lock()
+            .unwrap()
+            .properties
+            .get("__document")
+            .map(|v| v.as_f64() as dom::DocumentId)
+            .expect("the handle names its document");
+        assert_ne!(id, 0, "a parsed document is a real, addressable document");
+        id
+    }
+
+    fn html_of(document: dom::DocumentId) -> String {
+        dom::with_document(document, |doc| doc.to_html()).unwrap_or_default()
+    }
+
+    #[test]
+    fn a_parsed_page_is_a_document_the_engine_can_answer_about() {
+        // The whole point in one assertion: the tree came from markup and
+        // `getElementById` — an ordinary `web:dom` call — finds it. Before
+        // this, a parsed tree and a live document were different objects and
+        // no document operation reached the parsed one.
+        let document = parse("<div id='wrap'><p>hello</p></div>");
+        let found = dom::with_document(document, |doc| doc.get_element_by_id("wrap")).flatten();
+        assert!(found.is_some(), "the parsed element is in the document");
+        let html = html_of(document);
+        assert!(html.contains("<div id=\"wrap\">"), "got {html}");
+        assert!(html.contains("<p>"), "got {html}");
+    }
+
+    #[test]
+    fn a_style_element_becomes_the_author_stylesheet() {
+        // A `<style>` is not decoration on the way past: its text IS the
+        // cascade's author origin. A parsed page whose rules did not apply
+        // would be a document in shape only.
+        let document = parse("<html><head><style>p { color: #ff0000 }</style></head><body><p>x</p></body></html>");
+        let colour = dom::with_document(document, |doc| {
+            let p = doc.query_selector("p").expect("the paragraph is in the tree");
+            doc.computed_style(p).color
+        })
+        .expect("the document is open");
+        assert_eq!(colour, Some(0xffff0000), "the parsed rule reached the cascade");
+    }
+
+    #[test]
+    fn an_inline_style_attribute_is_a_declaration_block() {
+        // `style=""` is the last origin in the cascade, and it arrived as an
+        // inert attribute for as long as the parser has existed.
+        let document = parse("<p style='color: #00ff00'>x</p>");
+        let colour = dom::with_document(document, |doc| {
+            let p = doc.query_selector("p").expect("the paragraph is in the tree");
+            doc.computed_style(p).color
+        })
+        .expect("the document is open");
+        assert_eq!(colour, Some(0xff00ff00));
+    }
+
+    #[test]
+    fn an_inline_style_beats_a_rule_that_selects_the_same_element() {
+        // Two origins, one element — which is the only way to show the
+        // stylesheet and the attribute are genuinely the same cascade rather
+        // than two writes racing.
+        let document = parse(
+            "<style>p { color: #ff0000 }</style><p style='color: #0000ff'>x</p>",
+        );
+        let colour = dom::with_document(document, |doc| {
+            let p = doc.query_selector("p").expect("the paragraph is in the tree");
+            doc.computed_style(p).color
+        })
+        .expect("the document is open");
+        assert_eq!(colour, Some(0xff0000ff), "inline wins");
+    }
+
+    #[test]
+    fn a_comment_survives_the_parse_and_serialises_back() {
+        // The alternative to a comment node is dropping one, which is a
+        // silent difference between the markup handed in and the tree handed
+        // back — and it would take `<![CDATA[…]]>` and `<?…?>` with it.
+        let document = parse("<div><!-- note --><p>x</p></div>");
+        let html = html_of(document);
+        assert!(html.contains("<!-- note -->"), "got {html}");
+    }
+
+    #[test]
+    fn a_comment_is_not_part_of_its_parents_text() {
+        let document = parse("<div><!-- hidden --><p>shown</p></div>");
+        let text = dom::with_document(document, |doc| {
+            let div = doc.query_selector("div").expect("the div is in the tree");
+            doc.text_content(div)
+        })
+        .expect("the document is open");
+        assert!(!text.contains("hidden"), "got {text:?}");
+        assert!(text.contains("shown"), "got {text:?}");
+    }
+
+    #[test]
+    fn a_title_names_the_document() {
+        let document = parse("<html><head><title>Report</title></head><body></body></html>");
+        let title = dom::with_document(document, |doc| doc.title()).unwrap_or_default();
+        assert_eq!(title, "Report");
+    }
+
+    #[test]
+    fn text_inside_a_leaf_element_is_kept_as_its_text() {
+        // `<span>`, `<option>`, `<td>` and `<label>` are leaves here: they
+        // refuse a text NODE, and for a leaf its text and its `textContent`
+        // are the same fact. Falling through without this dropped the content
+        // of every one of them.
+        let document = parse("<p>before <span>inside</span> after</p>");
+        let text = dom::with_document(document, |doc| {
+            let span = doc.query_selector("span").expect("the span is in the tree");
+            doc.text_content(span)
+        })
+        .expect("the document is open");
+        assert_eq!(text, "inside");
+    }
+
+    #[test]
+    fn the_page_structure_elements_hold_their_children() {
+        // `<html>`, `<head>` and `<body>` are the three elements nothing ever
+        // created until a parser did. As leaves they refused every child, so
+        // a whole page arrived empty.
+        let document = parse("<html><head><meta charset='utf-8'></head><body><p>x</p></body></html>");
+        let (has_meta, has_p) = dom::with_document(document, |doc| {
+            (
+                doc.query_selector("head meta").is_some(),
+                doc.query_selector("body p").is_some(),
+            )
+        })
+        .expect("the document is open");
+        assert!(has_meta, "the metadata is inside the head");
+        assert!(has_p, "the paragraph is inside the body");
+    }
+
+    #[test]
+    fn a_parsed_document_is_not_the_page() {
+        // `parseFromString` must not touch the browsing context's own
+        // document — that is what makes it usable for reading a fragment.
+        crate::engine_widgets::install();
+        let page = crate::html::active_document();
+        let parsed = parse("<p id='only-here'>x</p>");
+        assert_ne!(parsed, page);
+        let leaked = dom::with_document(page, |doc| doc.get_element_by_id("only-here")).flatten();
+        assert!(leaked.is_none(), "the parse stayed in its own document");
     }
 }

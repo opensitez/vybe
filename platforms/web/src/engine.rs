@@ -43,10 +43,73 @@ pub enum DomOp {
         tag: String,
         input_type: String,
     },
+    /// `document.createTextNode(data)` — a `Text` node, uninserted.
+    ///
+    /// The DOM's other factory, and the half the seam never had: an element
+    /// could be created and appended, but the CONTENT between two elements had
+    /// no operation at all. Anything building a tree from markup needs it on
+    /// the first text run it meets.
+    CreateTextNode(String),
+    /// `document.createComment(data)` — a `Comment` node, uninserted.
+    ///
+    /// HTML folds two more productions into this one node: `<![CDATA[…]]>` and
+    /// `<?…>` are both comments outside foreign content (HTML §13.2.5.42), so
+    /// this is the whole of what a parser needs beyond elements and text.
+    CreateComment(String),
+    /// `document.createCDATASection(data)` — XML's `<![CDATA[ … ]]>`.
+    ///
+    /// A `Text` node that spells itself differently (DOM §4.10), so its data
+    /// counts towards an ancestor's `textContent`. HTML has no such
+    /// production — it parses the same characters as a comment — so this is
+    /// reachable only from an XML document.
+    CreateCDataSection(String),
+    /// `document.createElementNS(namespace, qualifiedName)` — DOM §4.5.
+    ///
+    /// A namespaced element is an ordinary element that also knows which
+    /// vocabulary it came from; `prefix` and `localName` are two views of the
+    /// qualified name, not two more fields, so neither crosses here.
+    CreateElementNS {
+        namespace: String,
+        qualified_name: String,
+        input_type: String,
+    },
+    /// `Element.namespaceURI` / `prefix` / `localName`.
+    NamespaceUri(NodeId),
+    Prefix(NodeId),
+    LocalName(NodeId),
+    /// `document.createProcessingInstruction(target, data)` — `<?target data?>`.
+    /// XML-only, for the same reason, and NOT character data: excluded from an
+    /// ancestor's `textContent` the way a comment is.
+    CreateProcessingInstruction {
+        target: String,
+        data: String,
+    },
+    /// `canvas.width` / `canvas.height` — the BITMAP's size, in CSS pixels
+    /// (HTML §4.12.5), defaulting to 300x150 when the attributes are absent.
+    ///
+    /// The read side of the content attributes `setAttribute` already writes.
+    /// Without it a guest can size a surface and never ask how big it is, so
+    /// the one operation every painter needs — "cover the whole surface" —
+    /// cannot be spelled: `fillRect(0, 0, canvas.width, canvas.height)` is how
+    /// a page clears to a colour, and there is no other way in the API.
+    ///
+    /// Answers `(width, height)` together because they are one fact and asking
+    /// twice invites a caller to read a stale half.
+    CanvasSize(NodeId),
     /// `document.getElementById(elementId)` — matches the `id` ATTRIBUTE.
     GetElementById(String),
-    /// `document.querySelectorAll(tag)` — tag selectors.
+    /// `document.getElementsByTagName(name)` — a tag NAME, not a selector.
     ElementsByTag(String),
+    /// `document.querySelector(selectors)` — the first match in TREE order, or
+    /// [`DomValue::Null`] when nothing matches.
+    QuerySelector(String),
+    /// `document.querySelectorAll(selectors)`, in tree order.
+    ///
+    /// A real selector, not a tag: the engine below the seam owns the matching,
+    /// which is the point of the seam. An invalid selector yields an empty list
+    /// rather than every element — the spec throws `SyntaxError` and there is
+    /// no exception channel here, so it fails in the safe direction.
+    QuerySelectorAll(String),
     /// `document.title`
     Title,
     SetTitle(String),
@@ -61,6 +124,41 @@ pub enum DomOp {
         parent: NodeId,
         child: NodeId,
     },
+    /// `parent.insertBefore(child, reference)`. A `reference` that is not a
+    /// child answers [`DomValue::Bool`] `false` — the spec's `NotFoundError`,
+    /// which has nowhere else to go here and must not become an append.
+    InsertBefore {
+        parent: NodeId,
+        child: NodeId,
+        reference: NodeId,
+    },
+    /// `parent.replaceChild(new_child, old_child)` — the new node takes the
+    /// old one's POSITION, which is the whole difference from removing and
+    /// appending.
+    ReplaceChild {
+        parent: NodeId,
+        new_child: NodeId,
+        old_child: NodeId,
+    },
+    /// `node.cloneNode(deep)` — a copy that is NOT in the document, exactly as
+    /// `createElement`'s result is not.
+    CloneNode {
+        node: NodeId,
+        deep: bool,
+    },
+    /// `node.nodeType` / `nodeName` / `nodeValue` / `parentNode` /
+    /// `childNodes` — the read side of a node, DOM §4.4.
+    ///
+    /// **Operations, not properties on a handle.** A handle is minted once and
+    /// a tree changes: `childNodes` stamped at creation is right when it is
+    /// taken and wrong immediately after the next `appendChild`, which is the
+    /// duplicated state this seam exists to remove. Immutable facts may ride
+    /// on a handle; these may not.
+    NodeType(NodeId),
+    NodeName(NodeId),
+    NodeValue(NodeId),
+    ParentNode(NodeId),
+    ChildNodes(NodeId),
     /// `node.isConnected`
     IsConnected(NodeId),
     /// `node.textContent`
@@ -72,6 +170,24 @@ pub enum DomOp {
     /// Absent yields [`DomValue::Null`], per spec — not an empty string.
     GetAttribute(NodeId, String),
     RemoveAttribute(NodeId, String),
+    /// `element.setAttributeNS(namespace, qualifiedName, value)` and
+    /// `getAttributeNS(namespace, localName)` — DOM §4.9.
+    ///
+    /// Note the asymmetry, which is the spec's and not a slip: the write takes
+    /// a QUALIFIED name (that is what serialises) and the read takes a LOCAL
+    /// one (matched together with the namespace). `xlink:href` and `href`
+    /// share a local name and are two attributes.
+    SetAttributeNS {
+        node: NodeId,
+        namespace: String,
+        qualified_name: String,
+        value: String,
+    },
+    GetAttributeNS {
+        node: NodeId,
+        namespace: String,
+        local_name: String,
+    },
     /// `element.style.setProperty(property, value)` — CSS text with units.
     SetStyleProperty(NodeId, String, String),
     GetStyleProperty(NodeId, String),
@@ -151,6 +267,8 @@ pub enum DomValue {
     Number(f64),
     /// `(node, event type)` pairs from [`DomOp::DrainEvents`].
     Events(Vec<(NodeId, String)>),
+    /// Two numbers that are one fact — a size, today.
+    Pair(f64, f64),
 }
 
 // ── Windows: WHATWG HTML §7, browsing contexts ──────────────────────────
@@ -306,6 +424,13 @@ pub trait WebEngine: Send + Sync {
     /// Open a document directly, without a browsing context. A guest that
     /// never calls `window.open` still has one document to build into.
     fn new_document(&self, title: &str) -> DocumentId;
+
+    /// Open an XML document. The one thing that genuinely differs from an
+    /// HTML one down here is CASE: HTML folds tag and attribute names, XML
+    /// keeps them, and that is a property of the document rather than of any
+    /// call on it — which is the distinction a browser draws between
+    /// `Document` and `XMLDocument`.
+    fn new_xml_document(&self, title: &str) -> DocumentId;
     fn document(&self, document: DocumentId, op: DomOp) -> DomValue;
     fn window(&self, op: WindowOp) -> WindowValue;
     fn events(&self, op: EventOp) -> EventValue;
@@ -360,6 +485,14 @@ pub fn schedule(op: ScheduleOp) -> ScheduleValue {
 pub fn new_document(title: &str) -> DocumentId {
     match engine() {
         Some(e) => e.new_document(title),
+        None => 0,
+    }
+}
+
+/// Open an XML document — see [`WebEngine::new_xml_document`].
+pub fn new_xml_document(title: &str) -> DocumentId {
+    match engine() {
+        Some(e) => e.new_xml_document(title),
         None => 0,
     }
 }

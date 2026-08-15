@@ -107,8 +107,21 @@ pub fn register_types(fw: &mut Framework<'_>) {
         t.parent = Some(0);
         fw.register_type(t)
     };
-    let document_id = {
-        let mut t = TypeDef::new("Document");
+    // `XMLDocument`, not `Document` — the spec's own name for what
+    // `parseFromString` answers for the XML content types (DOM §4.5.1), and it
+    // has to be a distinct type now that `Document` is the LIVE document
+    // registered below. One `Document` TypeDef cannot serve both: pointed at
+    // `web:dom`, a property-bag document would still carry that type id,
+    // `doc.getElementById(…)` would dispatch into the rendering engine, find no
+    // `__document` on the bag, and answer about document 0 — the wrong answer,
+    // silently.
+    //
+    // The bag stays for the XML path on purpose: PHP's `DOMDocument`, .NET
+    // XLinq and `xml2js` all read `nodeType`/`childNodes`/`attributes` straight
+    // off the object, and namespaces, `Attr` nodes, CDATA and PIs exist only
+    // there. `parseFromString(s, "text/html")` already answers a live handle.
+    let xml_document_id = {
+        let mut t = TypeDef::new("XMLDocument");
         for (method, fname) in &[
             // Read API
             ("querySelector", "querySelector"),
@@ -148,10 +161,100 @@ pub fn register_types(fw: &mut Framework<'_>) {
     let _ = fw.register_type(TypeDef::new("XMLSerializer"));
     let nnm_id = fw.register_type(TypeDef::new("NamedNodeMap"));
 
+    // ── The LIVE document: HTMLDocument / HTMLElement ───────────────
+    //
+    // The types above belong to `web:dom-parser` — detached `Value::Object`
+    // trees, which is the right shape for `DOMParser().parseFromString(…)` and
+    // `XMLHttpRequest.responseXML`, and which render nothing. The document a
+    // page actually has is `vybe_widgets::dom`, reached through `web:dom` /
+    // `web:html` / `web:cssom`, and it needs its own vtables because the same
+    // method name has a different implementation over a different tree.
+    //
+    // Naming is the spec's, in both directions: the tree a page has is the
+    // `Document`, and its elements are `HTMLElement`s; the parsed XML tree
+    // above is an `XMLDocument` whose elements are plain `Element`s.
+    //
+    // `parent` is `Object` rather than `Element`, deliberately — inheriting
+    // there would make any method not listed below resolve into the OTHER tree
+    // and quietly answer about the wrong document, which is worse than not
+    // resolving at all.
+    //
+    // `insertBefore` / `replaceChild` / `cloneNode` are absent on purpose:
+    // `vybe_widgets::dom::Document` has `append_child` and `remove_child` and
+    // nothing else, so there is no engine operation to forward to. They are not
+    // stubbed — a missing method fails to resolve, which is visible.
+    let html_element_id = {
+        let mut t = TypeDef::new("HTMLElement");
+        // (method, module, host fn). The module differs per method because the
+        // SPEC splits them: `appendChild` is DOM, `focus`/`value` are the HTML
+        // element IDL, `style.setProperty` is CSSOM.
+        for (method, module, fname) in &[
+            // DOM core
+            ("appendChild", "web:dom", "appendChild"),
+            ("removeChild", "web:dom", "removeChild"),
+            ("setTextContent", "web:dom", "setTextContent"),
+            ("textContent", "web:dom", "textContent"),
+            ("isConnected", "web:dom", "isConnected"),
+            ("setAttribute", "web:dom", "setAttribute"),
+            ("getAttribute", "web:dom", "getAttribute"),
+            ("hasAttribute", "web:dom", "toggleAttribute"),
+            ("removeAttribute", "web:dom", "removeAttribute"),
+            ("addEventListener", "web:dom", "addEventListener"),
+            ("removeEventListener", "web:dom", "removeEventListener"),
+            ("querySelector", "web:dom", "querySelector"),
+            ("querySelectorAll", "web:dom", "querySelectorAll"),
+            ("getElementsByTagName", "web:dom", "getElementsByTagName"),
+            // HTML element IDL
+            ("focus", "web:html", "focus"),
+            ("showPicker", "web:html", "showPicker"),
+            ("show", "web:html", "show"),
+            ("showModal", "web:html", "showModal"),
+            ("close", "web:html", "close"),
+            // CSSOM
+            ("setStyleProperty", "web:cssom", "setStyleProperty"),
+            ("getStyleProperty", "web:cssom", "getStyleProperty"),
+        ] {
+            if let Some(idx) = fw.host_fn_index(module, fname) {
+                t.methods.insert(method.to_string(), Method::HostFn(idx));
+            }
+        }
+        t.parent = Some(0);
+        fw.register_type(t)
+    };
+    let html_document_id = {
+        let mut t = TypeDef::new("Document");
+        for (method, module, fname) in &[
+            ("createElement", "web:dom", "createElement"),
+            ("createTextNode", "web:dom", "createTextNode"),
+            ("createComment", "web:dom", "createComment"),
+            ("getElementById", "web:dom", "getElementById"),
+            ("querySelector", "web:dom", "querySelector"),
+            ("querySelectorAll", "web:dom", "querySelectorAll"),
+            ("getElementsByTagName", "web:dom", "getElementsByTagName"),
+            ("appendChild", "web:dom", "appendChild"),
+            ("removeChild", "web:dom", "removeChild"),
+            ("addEventListener", "web:dom", "addEventListener"),
+            ("removeEventListener", "web:dom", "removeEventListener"),
+            ("setTextContent", "web:dom", "setTextContent"),
+            ("title", "web:html", "title"),
+            ("setTitle", "web:html", "setTitle"),
+        ] {
+            if let Some(idx) = fw.host_fn_index(module, fname) {
+                t.methods.insert(method.to_string(), Method::HostFn(idx));
+            }
+        }
+        t.parent = Some(0);
+        fw.register_type(t)
+    };
+    crate::html::set_live_type_ids(crate::html::LiveTypeIds {
+        document: html_document_id,
+        element: html_element_id,
+    });
+
     // Hand the IDs to `dom_parser` so the parser stamps each constructed node's
     // `Object::type_id` for vtable dispatch.
     crate::dom_parser::set_dom_type_ids(crate::dom_parser::DomTypeIds {
-        document: document_id,
+        document: xml_document_id,
         element: element_id,
         text: text_id,
         cdata: cdata_id,

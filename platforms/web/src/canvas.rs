@@ -22,13 +22,27 @@ use vybe_runtime::{HostContext, VM, Value};
 
 use crate::canvas_backend::{Op2D, apply, backend};
 
-/// `getContext` returns a handle; every op reads the target name back out of
-/// it. Accepts the handle or a bare name, the way `getContext` itself accepts
-/// an element or an id.
+/// The surface a context handle draws on.
+///
+/// A context is bound to the ELEMENT it came from — `canvas.getContext('2d')`
+/// in every browser — so the handle carries `__node` and the target is derived
+/// from it. The backend's target is a string because a backend is below the
+/// seam and may key its surfaces however it likes; what must be spec-shaped is
+/// the guest-facing API, and that is an element.
+///
+/// The bare-name form is a **migration path, not the API**. .NET
+/// `CreateGraphics` and Flutter's canvas bridge pass a control name today
+/// because that is what `vybe:gui` took. A real browser engine has no control
+/// name to resolve, so anything that depends on this cannot survive an engine
+/// swap — see the `__control_name` note on `get_context`.
 fn target_of(arg: Option<&Value>) -> String {
     match arg {
         Some(Value::Object(obj)) => {
             let o = obj.lock().unwrap();
+            // An element-bound context: the node IS the identity.
+            if let Some(node) = o.properties.get("__node") {
+                return format!("n{}", node.as_f64() as u64);
+            }
             o.properties
                 .get("__control_name")
                 .map(|v| format!("{}", v).to_lowercase())
@@ -36,6 +50,17 @@ fn target_of(arg: Option<&Value>) -> String {
         }
         Some(Value::Null) | Some(Value::Undefined) | None => String::new(),
         Some(other) => format!("{}", other).to_lowercase(),
+    }
+}
+
+/// Read an element handle's node id, if the argument is one.
+fn node_of(arg: Option<&Value>) -> Option<u64> {
+    match arg {
+        Some(Value::Object(obj)) => {
+            let o = obj.lock().unwrap();
+            o.properties.get("__node").map(|v| v.as_f64() as u64)
+        }
+        _ => None,
     }
 }
 
@@ -166,33 +191,70 @@ fn bytes_arg(args: &[Value], idx: usize) -> Vec<u8> {
 }
 
 pub fn register(vm: &mut VM) {
-    // ── getContext(target) ───────────────────────────────────────────────
+    // ── getContext(element, contextType) ─────────────────────────────────
     //
-    // `element.getContext('2d')`. Returns a handle stamped with the target
-    // name; framework wrappers (.NET `CreateGraphics`, Flutter's canvas
-    // bridge) re-stamp `__type` with their own tag so guest code can
-    // downcast, which is why the name travels in the object.
+    // **`canvas.getContext('2d')`** — HTML §4.12.5. A context belongs to an
+    // ELEMENT and is asked for by context type; that is the whole signature,
+    // and it is the one a browser engine can implement.
+    //
+    // It used to take a lower-cased control NAME as argument 0 and ignore the
+    // context type entirely, while this comment claimed otherwise. A real
+    // engine has no control name to resolve, so `web:canvas` could not have
+    // survived the swap the seam exists for — the API worked and was not
+    // implementable, which is the failure mode that hides longest.
+    //
+    // The name form still resolves, because .NET `CreateGraphics` and
+    // Flutter's canvas bridge pass one today. It is a MIGRATION PATH: a caller
+    // that made the element itself already holds the handle and needs no
+    // lookup at all. Framework wrappers re-stamp `__type` with their own tag so
+    // guest code can downcast, which is why the identity travels in the object.
     vm.register_host_fn(
         "web:canvas",
         "getContext",
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let name = args
-                .first()
-                .map(|v| format!("{}", v))
-                .unwrap_or_default()
-                .to_lowercase();
+            let node = node_of(args.first());
+            // `getContext` answers null for a context type it does not
+            // support, per spec — not a handle that silently paints nowhere.
+            // Only checked on the element form: the legacy name form passed the
+            // name here and has no type argument to read.
+            if node.is_some() {
+                let context_type = args
+                    .get(1)
+                    .map(|v| format!("{}", v).to_lowercase())
+                    .unwrap_or_default();
+                if context_type != "2d" {
+                    return Value::Null;
+                }
+            }
+            let target = match node {
+                Some(id) => format!("n{id}"),
+                None => args
+                    .first()
+                    .map(|v| format!("{}", v))
+                    .unwrap_or_default()
+                    .to_lowercase(),
+            };
             if let Some(b) = backend() {
-                b.ensure(&name);
+                b.ensure(&target);
             }
             let mut o = Object::new();
             o.properties.insert(
                 "__type".into(),
                 Value::String(Arc::from("CanvasRenderingContext2D")),
             );
-            o.properties.insert(
-                "__control_name".into(),
-                Value::String(Arc::from(name.as_str())),
-            );
+            match node {
+                // Element-bound: the node is the identity, and `target_of`
+                // derives the surface from it.
+                Some(id) => {
+                    o.properties.insert("__node".into(), Value::F64(id as f64));
+                }
+                None => {
+                    o.properties.insert(
+                        "__control_name".into(),
+                        Value::String(Arc::from(target.as_str())),
+                    );
+                }
+            }
             Value::Object(vybe_runtime::heap::alloc(o))
         }),
     );
@@ -244,6 +306,63 @@ pub fn register(vm: &mut VM) {
     ));
     simple!("scale", |a| Op2D::Scale(f32_arg(a, 1), f32_arg(a, 2)));
     simple!("rotate", |a| Op2D::Rotate(f32_arg(a, 1)));
+    // The rest of the 2D context's state and path surface. Every one of these
+    // was already implemented by the engine and unreachable from a page,
+    // because `Op2D` — the wire format between the API and the painter — had no
+    // variant to carry it. Adding the variants was blocked until `platforms/vybe`
+    // stopped implementing `CanvasBackend`, which it now does not.
+    simple!("transform", |a| Op2D::Transform(
+        f32_arg(a, 1),
+        f32_arg(a, 2),
+        f32_arg(a, 3),
+        f32_arg(a, 4),
+        f32_arg(a, 5),
+        f32_arg(a, 6)
+    ));
+    simple!("resetTransform", |_a| Op2D::ResetTransform);
+    // `setTransform(a, b, c, d, e, f)` REPLACES the current matrix, where
+    // `transform` multiplies into it. Emitted as reset-then-transform rather
+    // than as a third op, so the painter has one notion of "apply a matrix" and
+    // the difference stays where it belongs — in what the API asked for.
+    vm.register_host_fn(
+        "web:canvas",
+        "setTransform",
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let target = target_of(args.first());
+            apply(&target, Op2D::ResetTransform);
+            apply(
+                &target,
+                Op2D::Transform(
+                    f32_arg(args, 1),
+                    f32_arg(args, 2),
+                    f32_arg(args, 3),
+                    f32_arg(args, 4),
+                    f32_arg(args, 5),
+                    f32_arg(args, 6),
+                ),
+            );
+            Value::Null
+        }),
+    );
+    simple!("setMiterLimit", |a| Op2D::SetMiterLimit(f32_arg(a, 1)));
+    simple!("setTextAlign", |a| Op2D::SetTextAlign(
+        a.get(1).map(|v| format!("{}", v)).unwrap_or_default()
+    ));
+    simple!("setTextBaseline", |a| Op2D::SetTextBaseline(
+        a.get(1).map(|v| format!("{}", v)).unwrap_or_default()
+    ));
+    simple!("setLineDashOffset", |a| Op2D::SetLineDashOffset(f32_arg(a, 1)));
+    // `ellipse(x, y, radiusX, radiusY, rotation, startAngle, endAngle, ccw)` —
+    // the trailing five are accepted and dropped: the engine draws an
+    // axis-aligned full ellipse. Taking them and ignoring them is honest about
+    // the call site's shape; refusing the extra arguments would make a
+    // spec-correct call fail.
+    simple!("ellipse", |a| Op2D::Ellipse(
+        f32_arg(a, 1),
+        f32_arg(a, 2),
+        f32_arg(a, 3),
+        f32_arg(a, 4)
+    ));
 
     // `setLineDash([...])` — the spec takes a sequence; the dash lengths
     // arrive as trailing numeric args, empty meaning solid.
@@ -364,6 +483,94 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
+    // ── ImageData ────────────────────────────────────────────────────────
+    //
+    // `createImageData(sw, sh)` and `putImageData(imagedata, dx, dy)` — the
+    // spec's route for handing raw pixels to a canvas, and the ONLY one.
+    //
+    // `drawImage` takes a `CanvasImageSource` — an `HTMLImageElement`, an
+    // `ImageBitmap`, another canvas — and never a byte array. So a software
+    // renderer that has computed a frame and holds no element has exactly this
+    // door, and the byte-array `drawImage` below is not it: no browser has
+    // that signature, which means nothing depending on it could survive an
+    // engine swap.
+    //
+    // `ImageData` is a plain object with `data`, `width`, `height`. `data` is
+    // a `Uint8ClampedArray` in a browser; here it is the array the guest
+    // already had, because the guest is what fills it.
+    vm.register_host_fn(
+        "web:canvas",
+        "createImageData",
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            // `createImageData(sw, sh)` on a context — arg 0 is the context,
+            // which this does not need: an `ImageData` is not bound to a
+            // canvas. It is taken so the call shape matches every other
+            // method here and the receiver form works.
+            let width = args.get(1).map(|v| v.as_i32().max(0)).unwrap_or(0);
+            let height = args.get(2).map(|v| v.as_i32().max(0)).unwrap_or(0);
+            // Transparent black, per spec — every byte zero, INCLUDING alpha.
+            let bytes = (width as usize).saturating_mul(height as usize) * 4;
+            let data = Object::new_array(vec![Value::I32(0); bytes]);
+            let mut image_data = Object::new();
+            image_data
+                .properties
+                .insert("__type".into(), Value::String("ImageData".into()));
+            image_data.properties.insert(
+                "data".into(),
+                Value::Object(vybe_runtime::heap::alloc(data)),
+            );
+            image_data
+                .properties
+                .insert("width".into(), Value::I32(width));
+            image_data
+                .properties
+                .insert("height".into(), Value::I32(height));
+            Value::Object(vybe_runtime::heap::alloc(image_data))
+        }),
+    );
+    vm.register_host_fn(
+        "web:canvas",
+        "putImageData",
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let target = target_of(args.first());
+            // The dimensions come from the `ImageData`, not from the caller —
+            // that is what makes it an ImageData rather than three loose
+            // arguments, and it is why `putImageData` cannot disagree with
+            // itself about the shape of the buffer.
+            let (pixels, width, height) = match args.get(1) {
+                Some(Value::Object(o)) => {
+                    let bag = o.lock().unwrap();
+                    let width = bag.properties.get("width").map(|v| v.as_f64() as u32);
+                    let height = bag.properties.get("height").map(|v| v.as_f64() as u32);
+                    let data = bag.properties.get("data").cloned();
+                    drop(bag);
+                    match (data, width, height) {
+                        (Some(data), Some(w), Some(h)) => (bytes_arg(&[data], 0), w, h),
+                        _ => (Vec::new(), 0, 0),
+                    }
+                }
+                _ => (Vec::new(), 0, 0),
+            };
+            // A buffer that does not match its own dimensions is not a
+            // partial write, it is a caller mistake — dropped rather than
+            // painted from whatever bytes happened to be there.
+            if pixels.len() != (width as usize) * (height as usize) * 4 {
+                return Value::Null;
+            }
+            apply(
+                &target,
+                Op2D::PutImageData {
+                    pixels,
+                    width,
+                    height,
+                    dx: f32_arg(args, 2),
+                    dy: f32_arg(args, 3),
+                },
+            );
+            Value::Null
+        }),
+    );
+
     // ── images ───────────────────────────────────────────────────────────
     //
     // `drawImage(image, dx, dy, dw, dh)` where the image is dense RGBA —
@@ -411,6 +618,46 @@ pub fn register(vm: &mut VM) {
                 },
             );
             Value::Null
+        }),
+    );
+
+    // `context.measureText(text)` — HTML §4.12.5.
+    //
+    // The only query in the whole 2D context, and the reason the seam grew a
+    // return path: every other call paints and answers nothing.
+    //
+    // Returns a `TextMetrics` carrying `width` and NOTHING else. The spec has
+    // five more members — `actualBoundingBoxAscent`/`Descent`,
+    // `fontBoundingBoxAscent`/`Descent`, `emHeightAscent` — and the engine
+    // measures a line box, not a glyph box, so it cannot answer them. They are
+    // ABSENT rather than filled with a plausible number derived from the
+    // height: a synthesised ascent reads as measured, and a caller laying text
+    // out against it would be wrong in a way nothing could see. `width` is
+    // also the one member every engine has always had.
+    //
+    // `null` when the target names no surface — distinguishable from a zero
+    // width, which is a legal answer for the empty string.
+    vm.register_host_fn(
+        "web:canvas",
+        "measureText",
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let target = target_of(args.first());
+            let text = match args.get(1) {
+                Some(Value::String(s)) => s.to_string(),
+                Some(other) => format!("{}", other),
+                None => String::new(),
+            };
+            let Some(width) = backend().and_then(|b| b.measure_text(&target, &text)) else {
+                return Value::Null;
+            };
+            let mut metrics = Object::new();
+            metrics
+                .properties
+                .insert("__type".into(), Value::String("TextMetrics".into()));
+            metrics
+                .properties
+                .insert("width".into(), Value::F64(width as f64));
+            Value::Object(vybe_runtime::heap::alloc(metrics))
         }),
     );
 

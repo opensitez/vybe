@@ -67,16 +67,55 @@ impl WebEngine for Widgets {
         dom::new_document(title)
     }
 
+    fn new_xml_document(&self, title: &str) -> DocumentId {
+        dom::new_xml_document(title)
+    }
+
     fn document(&self, document: DocumentId, op: DomOp) -> DomValue {
         dom::with_document(document, |doc| match op {
             DomOp::CreateElement { tag, input_type } => {
                 DomValue::Node(doc.create_element(&tag, &input_type))
+            }
+            // The bitmap and the box are the same rectangle here — the same
+            // simplification `setAttribute("width")` already makes when it
+            // writes one by setting the other. A canvas displayed at a
+            // different size than its buffer would need them apart.
+            DomOp::CanvasSize(node) => match doc.rect(node) {
+                Some(rect) => DomValue::Pair(rect.w as f64, rect.h as f64),
+                None => DomValue::None,
+            },
+            DomOp::CreateTextNode(data) => DomValue::Node(doc.create_text_node(&data)),
+            DomOp::CreateComment(data) => DomValue::Node(doc.create_comment(&data)),
+            DomOp::CreateCDataSection(data) => DomValue::Node(doc.create_cdata_section(&data)),
+            DomOp::CreateElementNS {
+                namespace,
+                qualified_name,
+                input_type,
+            } => DomValue::Node(doc.create_element_ns(&namespace, &qualified_name, &input_type)),
+            DomOp::NamespaceUri(n) => match doc.namespace_uri(n) {
+                Some(uri) => DomValue::Text(uri),
+                None => DomValue::Null,
+            },
+            DomOp::Prefix(n) => match doc.prefix(n) {
+                Some(prefix) => DomValue::Text(prefix),
+                None => DomValue::Null,
+            },
+            DomOp::LocalName(n) => DomValue::Text(doc.local_name(n)),
+            DomOp::CreateProcessingInstruction { target, data } => {
+                DomValue::Node(doc.create_processing_instruction(&target, &data))
             }
             DomOp::GetElementById(id) => match doc.get_element_by_id(&id) {
                 Some(n) => DomValue::Node(n),
                 None => DomValue::Null,
             },
             DomOp::ElementsByTag(tag) => DomValue::Nodes(doc.elements_by_tag(&tag)),
+            DomOp::QuerySelector(selectors) => match doc.query_selector(&selectors) {
+                Some(node) => DomValue::Node(node),
+                None => DomValue::Null,
+            },
+            DomOp::QuerySelectorAll(selectors) => {
+                DomValue::Nodes(doc.query_selector_all(&selectors))
+            }
             DomOp::Title => DomValue::Text(doc.title()),
             DomOp::SetTitle(t) => {
                 doc.set_title(&t);
@@ -85,6 +124,31 @@ impl WebEngine for Widgets {
 
             DomOp::AppendChild { parent, child } => DomValue::Bool(doc.append_child(parent, child)),
             DomOp::RemoveChild { parent, child } => DomValue::Bool(doc.remove_child(parent, child)),
+            DomOp::InsertBefore {
+                parent,
+                child,
+                reference,
+            } => DomValue::Bool(doc.insert_before(parent, child, Some(reference))),
+            DomOp::ReplaceChild {
+                parent,
+                new_child,
+                old_child,
+            } => DomValue::Bool(doc.replace_child(parent, new_child, old_child)),
+            DomOp::CloneNode { node, deep } => match doc.clone_node(node, deep) {
+                Some(clone) => DomValue::Node(clone),
+                None => DomValue::Null,
+            },
+            DomOp::NodeType(n) => DomValue::Number(f64::from(doc.node_type(n))),
+            DomOp::NodeName(n) => DomValue::Text(doc.node_name(n)),
+            DomOp::NodeValue(n) => match doc.node_value(n) {
+                Some(v) => DomValue::Text(v),
+                None => DomValue::Null,
+            },
+            DomOp::ParentNode(n) => match doc.parent_node(n) {
+                Some(p) => DomValue::Node(p),
+                None => DomValue::Null,
+            },
+            DomOp::ChildNodes(n) => DomValue::Nodes(doc.children_of(n)),
             DomOp::IsConnected(n) => DomValue::Bool(doc.connected(n)),
             DomOp::TextContent(n) => DomValue::Text(doc.text_content(n)),
             DomOp::SetTextContent(n, t) => {
@@ -97,6 +161,23 @@ impl WebEngine for Widgets {
                 DomValue::None
             }
             DomOp::GetAttribute(n, name) => match doc.get_attribute(n, &name) {
+                Some(v) => DomValue::Text(v),
+                None => DomValue::Null,
+            },
+            DomOp::SetAttributeNS {
+                node,
+                namespace,
+                qualified_name,
+                value,
+            } => {
+                doc.set_attribute_ns(node, &namespace, &qualified_name, &value);
+                DomValue::None
+            }
+            DomOp::GetAttributeNS {
+                node,
+                namespace,
+                local_name,
+            } => match doc.get_attribute_ns(node, &namespace, &local_name) {
                 Some(v) => DomValue::Text(v),
                 None => DomValue::Null,
             },

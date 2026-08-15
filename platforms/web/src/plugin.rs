@@ -14,6 +14,14 @@ impl vybe_runtime::Plugin for Plugin {
         if let Some(vm) = fw.vm.as_deref_mut() {
             crate::register(vm);
         }
+        // The `web:canvas` painter. There is exactly one, so this is an `init`
+        // like any other registration — no phase to be careful about. It used to
+        // be re-asserted in `finalize` because `platforms/vybe` installed a
+        // second painter that resolved through `GuiState` and won on link order;
+        // that one is gone (`canvas_backend_impl.rs` deleted), and this install
+        // moved back to where it belongs.
+        #[cfg(feature = "gui")]
+        crate::canvas_backend_widgets::install();
     }
 
     fn finalize(&self, fw: &mut vybe_runtime::Framework<'_>) {
@@ -22,6 +30,36 @@ impl vybe_runtime::Plugin for Plugin {
         // stamping — registered via the `register_type` primitive after every
         // plugin's host fns exist.
         crate::builtin_types::register_types(fw);
+
+        // `document` — a property of the global object, which is where a
+        // browser puts it (HTML §7.3: `window.document`). Guest code says
+        // `document.createElement("button")` and means the document it is
+        // running in; there is nothing to import and nothing to construct.
+        //
+        // It is created HERE, not in `init`, because the handle carries the
+        // `HTMLDocument` type id that `register_types` above has only just
+        // assigned. Stamping it a phase earlier would leave it type 0 and every
+        // method call on it unresolvable.
+        //
+        // Binding the handle now (rather than a lazy accessor) is what a
+        // browser does too: the document exists before the first script runs.
+        // It starts empty, and an empty document opens no window — `should_present`
+        // asks `control_count() > 0` — so a console program that never touches
+        // `document` is unaffected by its existence.
+        //
+        // ⛔ It is bound with document id `0` — "the ACTIVE document" — and NOT
+        // with `active_document()`. A captured id does not survive: `reset` (and
+        // `dom::reset` under it) clears the document map while `next_id` keeps
+        // climbing, so a handle taken here names a dead document by the time the
+        // program runs, and every call on it goes quiet rather than failing.
+        // `doc_arg` resolves 0 to the ambient document at CALL time, which is
+        // what `document` means in a browser and what makes one global outlive
+        // any number of resets.
+        #[cfg(feature = "gui")]
+        if let Some(vm) = fw.vm.as_deref_mut() {
+            vm.globals
+                .insert("document".into(), crate::html::document_handle(0));
+        }
     }
 
     // No `reset`. Everything this platform holds on a program's behalf — the

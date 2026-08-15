@@ -35,7 +35,7 @@
 //! no business knowing about.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use vybe_runtime::value::Object;
 use vybe_runtime::vm::{HostFnDecl, ResourceBinding, ResourceMemberKind};
@@ -124,6 +124,89 @@ pub fn add_event_listener(document: DocumentId, node: NodeId, kind: &str, callba
         .push(callback);
 }
 
+/// `EventTarget.removeEventListener` — DOM §2.7.
+///
+/// **Identity, not equality.** The spec removes the listener whose callback is
+/// *the same object*, and `Value`'s `==` cannot express that: two
+/// `ObjectKind::Function`s compare equal when their `chunk_index` matches, so
+/// every closure produced by one factory is "equal" to its siblings. A page
+/// doing `makeHandler(d)` in a loop — the calculator does exactly this — would
+/// have the wrong key unsubscribed, silently. `Arc::ptr_eq` is the identity the
+/// spec actually means.
+///
+/// A callback that is not an object cannot be identified, so it matches
+/// nothing and removes nothing. Refusing to guess is the safe half: removing
+/// the wrong listener is invisible, and removing none is at worst a listener
+/// that keeps firing.
+pub fn remove_event_listener(document: DocumentId, node: NodeId, kind: &str, callback: &Value) {
+    let mut all = listeners().lock().unwrap();
+    let key = (document, node, kind.to_ascii_lowercase());
+    let Some(list) = all.get_mut(&key) else {
+        return;
+    };
+    // Only the FIRST match goes, per spec: adding the same callback twice is a
+    // no-op the second time, so there is never more than one to find — and if
+    // an earlier path did double-register, removing one per call is still what
+    // a browser does.
+    // **Two tiers, because two languages mean two different things.**
+    //
+    // 1. OBJECT IDENTITY — what JS means. `removeEventListener` matches the
+    //    reference the program kept, and a `bind` result is a different object
+    //    (measured against node: `f.bind(null) !== f`, as ECMA requires). A
+    //    browser cannot remove a bound listener either without that reference.
+    // 2. DELEGATE EQUALITY — what `RemoveHandler`/`Align`-era frontends mean.
+    //    .NET removes a handler by target+method and VCL's method pointer is
+    //    the same `(Self, code)` pair; neither is object identity, and neither
+    //    frontend ever sees the wrapper `emit_gui_property_set` bound on the
+    //    way in. `Value::eq` compares two functions by `chunk_index`, which IS
+    //    that equality — and the bound wrapper inherits its target's kind, so
+    //    it matches the method the program named.
+    //
+    // Identity is tried across the WHOLE list first. Falling back per-element
+    // would let tier 2 claim a sibling closure while the exact object sat
+    // later in the list — the wrong listener removed, invisibly.
+    let found = list
+        .iter()
+        .position(|held| same_callback(held, callback))
+        .or_else(|| {
+            list.iter()
+                .position(|held| is_bound_wrapper(held) && held.eq(callback))
+        });
+    if let Some(i) = found {
+        list.remove(i);
+    }
+    if list.is_empty() {
+        all.remove(&key);
+    }
+}
+
+/// Was this listener produced by `Function.prototype.bind`?
+///
+/// The scope of tier 2, and the reason it is safe. A bound wrapper is the ONLY
+/// listener a frontend cannot name: `emit_gui_property_set` binds the receiver
+/// in on the way to `addEventListener`, so the program's `AddressOf OnClick`
+/// never was the stored object. Everything else the program CAN name, and for
+/// those, identity is the whole answer.
+///
+/// Without this scope, a page removing a listener it never added would evict a
+/// same-bodied sibling — measured, by the test that pins it.
+fn is_bound_wrapper(value: &Value) -> bool {
+    let Value::Object(obj) = value else {
+        return false;
+    };
+    obj.lock()
+        .map(|o| o.properties.contains_key("__bound_args"))
+        .unwrap_or(false)
+}
+
+/// Are these two values the SAME callback object?
+fn same_callback(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Object(x), Value::Object(y)) => std::sync::Arc::ptr_eq(x, y),
+        _ => false,
+    }
+}
+
 pub fn listeners_for(document: DocumentId, node: NodeId, kind: &str) -> Vec<Value> {
     listeners()
         .lock()
@@ -201,14 +284,91 @@ fn active_document_slot() -> &'static std::sync::Mutex<ActiveDocument> {
     vybe_runtime::resources::get::<ActiveDocument>()
 }
 
+/// Whether this agent has a BROWSING CONTEXT (HTML §7.1).
+///
+/// A browsing context is the window. A browser that opens one has a tab on
+/// screen before a single byte of content arrives, and `about:blank` is a
+/// window with nothing in it — so "is there a window" is answered by whether a
+/// context was opened, never by what it contains.
+///
+/// Deliberately does NOT create one, unlike [`active_document`]: asking the
+/// question must not answer it. That is why this reads the slot directly.
+pub fn has_browsing_context() -> bool {
+    active_document_slot()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .0
+        .is_some()
+}
+
 // ── argument decoding ───────────────────────────────────────────────────
 
 fn doc_arg_id(args: &[Value], idx: usize) -> Option<DocumentId> {
     args.get(idx).map(|v| v.as_f64() as DocumentId)
 }
 
+/// The document a call is about.
+///
+/// Two spellings, because a document is reached two ways. `activeDocument`
+/// answers a bare id and every ambient call passes that number straight back.
+/// A document that is NOT the ambient one — `window.open`'s, and now
+/// `DOMParser.parseFromString`'s — is held as a handle, and the id travels
+/// inside it as `__document`, exactly as a node's travels as `__node`.
+///
+/// Without the second spelling a parsed document is unreachable: it exists,
+/// it has a tree, and no operation can name it.
+///
+/// **Id `0` means THE ACTIVE DOCUMENT**, not "no document". Real ids start at 1
+/// (`new_document` increments before handing one out), so 0 was never a
+/// document and every call carrying it used to silently do nothing — the run
+/// succeeded, drew, and produced no window.
+///
+/// It is the ambient document because that is what a caller holding no
+/// particular one means. It is also what makes a `document` handle SURVIVE a
+/// reset: `dom::reset` clears the map while `next_id` keeps climbing, so a
+/// handle that captured id 1 names a document that no longer exists, and every
+/// call on it goes quiet. The global `document` is bound once, before the
+/// program runs, and must keep meaning the document the program is IN.
 fn doc_arg(args: &[Value], idx: usize) -> DocumentId {
-    args.get(idx).map(|v| v.as_f64() as DocumentId).unwrap_or(0)
+    let named = match args.get(idx) {
+        Some(Value::Object(o)) => o
+            .lock()
+            .unwrap()
+            .properties
+            .get("__document")
+            .map(|v| v.as_f64() as DocumentId)
+            .unwrap_or(0),
+        Some(v) => v.as_f64() as DocumentId,
+        None => 0,
+    };
+    if named == 0 { active_document() } else { named }
+}
+
+/// Wrap a document as the object guest code holds.
+///
+/// The `Document` counterpart to [`element`], and the same three facts:
+/// `__node` is the root, `__type` is what it is, `__document` is which tree.
+/// A document is its own `ownerDocument`, so the last two are about the same
+/// thing — which is what lets one decoder ([`doc_arg`]) read both handles.
+pub fn document_handle(document: DocumentId) -> Value {
+    let mut o = Object::new_typed(live_type_ids().document);
+    o.properties
+        .insert("__node".into(), Value::F64(DOCUMENT as f64));
+    o.properties
+        .insert("__type".into(), Value::String(Arc::from("Document")));
+    o.properties
+        .insert("__document".into(), Value::F64(document as f64));
+    // `document.body` is an IDL ATTRIBUTE (HTML §3.1.1), not a method, and the
+    // TypeRegistry vtable holds methods only — so it is a property on the
+    // object, which is exactly how `dom_parser` carries `tagName`/`childNodes`
+    // and how a plain `Op::STRUCT_GET` reaches it.
+    //
+    // Without this, `document.body.appendChild(node)` reads `undefined`, calls
+    // a method on it, and inserts NOTHING while raising nothing — the page just
+    // comes out empty. The `web:html:body` host fn stays: it is the same fact
+    // for a caller that imports rather than dispatches.
+    o.properties.insert("body".into(), element(document, DOCUMENT));
+    Value::Object(vybe_runtime::heap::alloc(o))
 }
 
 /// An element reference — the object `createElement` handed back, or a bare
@@ -231,11 +391,59 @@ fn node_arg(args: &[Value], idx: usize) -> NodeId {
     }
 }
 
+/// The `TypeDef` ids the LIVE document's handles are stamped with, so a
+/// spec-shaped `document.createElement(…)` / `elem.setAttribute(…)` resolves
+/// through the TypeRegistry vtable.
+///
+/// They are set once, from [`crate::builtin_types::register_types`], because
+/// the ids only exist after registration. Zero until then, which is `Object` —
+/// no methods, so a call fails to resolve rather than reaching the wrong tree.
+///
+/// **Why these are not the `Element`/`Document` ids.** Those belong to
+/// `web:dom-parser`'s trees, whose methods walk detached `Value::Object` nodes;
+/// the live document's methods go to `web:dom` and walk `vybe_widgets::dom`.
+/// One name cannot carry two implementations, so the live handles are the HTML
+/// Standard's own `HTMLDocument`/`HTMLElement`. That the two exist at all is
+/// the open item — see the two-DOMs note in the crate docs.
+#[derive(Default, Clone, Copy)]
+pub struct LiveTypeIds {
+    pub document: usize,
+    pub element: usize,
+}
+
+static LIVE_TYPE_IDS: Mutex<LiveTypeIds> = Mutex::new(LiveTypeIds {
+    document: 0,
+    element: 0,
+});
+
+pub fn set_live_type_ids(ids: LiveTypeIds) {
+    *LIVE_TYPE_IDS.lock().unwrap() = ids;
+}
+
+fn live_type_ids() -> LiveTypeIds {
+    *LIVE_TYPE_IDS.lock().unwrap()
+}
+
 /// Wrap a node as the element object guest code holds.
-fn element(node: NodeId) -> Value {
-    let mut o = Object::new();
+///
+/// Three things travel in the handle, and each one answers a question a bare
+/// node id cannot:
+///
+/// - `__node` — which node. The identity.
+/// - `__type` — WHAT it is, so `elem.setAttribute(…)` can dispatch through the
+///   `Element` vtable. Without it there is no type to resolve a method on, and
+///   spec-shaped calls have to be spelled as free functions instead.
+/// - `__document` — `Node.ownerDocument` (DOM §4.4). A method called ON an
+///   element receives only the element, so the document has to be reachable
+///   FROM it or a receiver-shaped call cannot be answered at all.
+fn element(document: DocumentId, node: NodeId) -> Value {
+    let mut o = Object::new_typed(live_type_ids().element);
     o.properties
         .insert("__node".into(), Value::F64(node as f64));
+    o.properties
+        .insert("__type".into(), Value::String(Arc::from("Element")));
+    o.properties
+        .insert("__document".into(), Value::F64(document as f64));
     Value::Object(vybe_runtime::heap::alloc(o))
 }
 
@@ -267,9 +475,9 @@ fn truthy(v: Option<&Value>) -> bool {
 
 // ── result encoding ─────────────────────────────────────────────────────
 
-fn as_node(v: DomValue) -> Value {
+fn as_node(document: DocumentId, v: DomValue) -> Value {
     match v {
-        DomValue::Node(n) => element(n),
+        DomValue::Node(n) => element(document, n),
         _ => Value::Null,
     }
 }
@@ -343,6 +551,70 @@ fn doc() -> ValType {
 ///
 /// `kebab` is the Component Model spelling (`append-child`); the registry key
 /// stays the camelCase name the emitters already import.
+/// What argument 0 is.
+enum Receiver {
+    /// An element handle — `(node, …)`, missing the document in front.
+    Element(DocumentId),
+    /// A document handle — already in position, just wrapped.
+    Document(DocumentId),
+}
+
+/// Which one it is comes from `__type`, NOT from whether `__node` is present.
+/// A `Document` handle carries `__node` too — the document's own root — because
+/// a document IS a node (DOM §4.5), so presence would classify every document
+/// as an element and splice a second document in front of it.
+fn receiver(arg: Option<&Value>) -> Option<Receiver> {
+    let Some(Value::Object(obj)) = arg else {
+        return None;
+    };
+    let o = obj.lock().unwrap();
+    let document = o.properties.get("__document")?.as_f64() as DocumentId;
+    Some(match o.properties.get("__type").map(|v| format!("{v}")) {
+        Some(t) if t == "Document" => Receiver::Document(document),
+        _ => Receiver::Element(document),
+    })
+}
+
+/// Accept the call in the shape the SPEC writes it, not only the shape the
+/// emitters import it.
+///
+/// WHATWG spells every one of these as a method on a node —
+/// `parent.appendChild(child)`, `elem.setAttribute(n, v)`,
+/// `document.createElement(tag)` — so dispatching through a type vtable hands
+/// the receiver in as argument 0. The closures below all read a DOCUMENT there,
+/// because `(doc, node, …)` is the form the emitters have imported from the
+/// start. Both forms are the same call; the difference is only where the
+/// document comes from.
+///
+/// So it is expanded once, here, rather than thirty closures each learning to
+/// recognise two shapes:
+///
+/// - an ELEMENT receiver carries `ownerDocument` (DOM §4.4) and is spliced in
+///   front, giving `(doc, node, …)`
+/// - a DOCUMENT receiver is already in position and only unwraps to its id
+/// - anything else is already positional and is passed through untouched
+///
+/// The alternative was a second, receiver-shaped registration per function —
+/// one fact stated twice, which is how the two spellings come to disagree.
+fn with_receiver(
+    call: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>,
+) -> Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync> {
+    Box::new(move |ctx: &mut HostContext, args: &[Value]| match receiver(args.first()) {
+        Some(Receiver::Element(document)) => {
+            let mut expanded = Vec::with_capacity(args.len() + 1);
+            expanded.push(Value::F64(document as f64));
+            expanded.extend_from_slice(args);
+            call(ctx, &expanded)
+        }
+        Some(Receiver::Document(document)) => {
+            let mut positional = args.to_vec();
+            positional[0] = Value::F64(document as f64);
+            call(ctx, &positional)
+        }
+        None => call(ctx, args),
+    })
+}
+
 fn dom_fn(
     vm: &mut VM,
     name: &str,
@@ -352,7 +624,7 @@ fn dom_fn(
     call: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>,
 ) {
     vm.register_host(
-        HostFnDecl::new("web:dom", name, call)
+        HostFnDecl::new("web:dom", name, with_receiver(call))
             .with_sig(node_method(kebab, params, results))
             .method_on(DOCUMENT_RES),
     );
@@ -373,7 +645,7 @@ fn html_fn(
     call: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>,
 ) {
     vm.register_host(
-        HostFnDecl::new("web:html", name, call)
+        HostFnDecl::new("web:html", name, with_receiver(call))
             .with_sig(node_method(kebab, params, results))
             .method_on(DOCUMENT_RES),
     );
@@ -393,7 +665,7 @@ fn css_fn(
     call: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>,
 ) {
     vm.register_host(
-        HostFnDecl::new("web:cssom", name, call)
+        HostFnDecl::new("web:cssom", name, with_receiver(call))
             .with_sig(node_method(kebab, params, results))
             .method_on(DOCUMENT_RES),
     );
@@ -409,15 +681,18 @@ pub fn register(vm: &mut VM) {
         HostFnDecl::new(
             "web:dom",
             "createElement",
-            Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-                as_node(apply(
+            with_receiver(Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+                as_node(
                     doc_arg(args, 0),
-                    DomOp::CreateElement {
-                        tag: str_arg(args, 1),
-                        input_type: str_arg(args, 2),
-                    },
-                ))
-            }),
+                    apply(
+                        doc_arg(args, 0),
+                        DomOp::CreateElement {
+                            tag: str_arg(args, 1),
+                            input_type: str_arg(args, 2),
+                        },
+                    ),
+                )
+            })),
         )
         .with_sig(node_method(
             "create-element",
@@ -430,16 +705,335 @@ pub fn register(vm: &mut VM) {
         ))
         .method_on(DOCUMENT_RES),
     );
+    // `nodeType` / `nodeName` / `nodeValue` / `parentNode` / `childNodes` —
+    // the read side of a node.
+    //
+    // **Operations, not properties stamped on a handle.** A handle is minted
+    // once and a tree changes: `childNodes` copied onto it is right when taken
+    // and wrong immediately after the next `appendChild`. Immutable facts —
+    // `ownerDocument`, and the node id itself — may ride on the handle; a live
+    // collection may not, and that distinction is the whole reason the
+    // property-bag tree could be folded in without a second storage appearing.
+    dom_fn(
+        vm,
+        "nodeType",
+        "node-type",
+        vec![doc(), node()],
+        vec![ValType::I32],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            match apply(doc_arg(args, 0), DomOp::NodeType(node_arg(args, 1))) {
+                DomValue::Number(n) => Value::I32(n as i32),
+                // `0` is not a nodeType, which is what makes it a usable
+                // answer for "no such node".
+                _ => Value::I32(0),
+            }
+        }),
+    );
+    dom_fn(
+        vm,
+        "nodeName",
+        "node-name",
+        vec![doc(), node()],
+        vec![ValType::String],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            as_text(apply(doc_arg(args, 0), DomOp::NodeName(node_arg(args, 1))))
+        }),
+    );
+    dom_fn(
+        vm,
+        "nodeValue",
+        "node-value",
+        vec![doc(), node()],
+        // `null` for an element, per spec — distinct from the `""` an empty
+        // comment answers.
+        vec![ValType::Option(Box::new(ValType::String))],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            match apply(doc_arg(args, 0), DomOp::NodeValue(node_arg(args, 1))) {
+                DomValue::Text(v) => Value::String(v.into()),
+                _ => Value::Null,
+            }
+        }),
+    );
+    dom_fn(
+        vm,
+        "parentNode",
+        "parent-node",
+        vec![doc(), node()],
+        vec![ValType::Option(Box::new(node()))],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let document = doc_arg(args, 0);
+            match apply(document, DomOp::ParentNode(node_arg(args, 1))) {
+                DomValue::Node(n) => element(document, n),
+                _ => Value::Null,
+            }
+        }),
+    );
+    dom_fn(
+        vm,
+        "childNodes",
+        "child-nodes",
+        vec![doc(), node()],
+        vec![ValType::List(Box::new(node()))],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let document = doc_arg(args, 0);
+            let items: Vec<Value> = match apply(document, DomOp::ChildNodes(node_arg(args, 1))) {
+                DomValue::Nodes(ns) => ns.into_iter().map(|n| element(document, n)).collect(),
+                _ => Vec::new(),
+            };
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(items)))
+        }),
+    );
+
+    // `insertBefore` / `replaceChild` / `cloneNode` — DOM §4.2.3 and §4.4.
+    //
+    // The three mutations the seam has never had. `appendChild` and
+    // `removeChild` can express "in this parent" and not "in this ORDER", so
+    // anything building a tree at a position — a diffing renderer, an XML
+    // document, `innerHTML` — had no operation to call.
+    //
+    // Each answers `false`/`null` rather than trapping. `insertBefore` with a
+    // reference that is not a child is the spec's `NotFoundError`, and there is
+    // no exception channel here: refusing is the safe direction, appending
+    // would be a wrong ORDER, which is invisible until someone reads the tree
+    // back.
+    dom_fn(
+        vm,
+        "insertBefore",
+        "insert-before",
+        vec![doc(), node(), node(), node()],
+        vec![ValType::Bool],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            as_bool(apply(
+                doc_arg(args, 0),
+                DomOp::InsertBefore {
+                    parent: node_arg(args, 1),
+                    child: node_arg(args, 2),
+                    reference: node_arg(args, 3),
+                },
+            ))
+        }),
+    );
+    dom_fn(
+        vm,
+        "replaceChild",
+        "replace-child",
+        vec![doc(), node(), node(), node()],
+        vec![ValType::Bool],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            as_bool(apply(
+                doc_arg(args, 0),
+                DomOp::ReplaceChild {
+                    parent: node_arg(args, 1),
+                    new_child: node_arg(args, 2),
+                    old_child: node_arg(args, 3),
+                },
+            ))
+        }),
+    );
+    dom_fn(
+        vm,
+        "cloneNode",
+        "clone-node",
+        vec![doc(), node(), ValType::Bool],
+        vec![ValType::Own(NODE.to_string())],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let document = doc_arg(args, 0);
+            as_node(
+                document,
+                apply(
+                    document,
+                    DomOp::CloneNode {
+                        node: node_arg(args, 1),
+                        // `cloneNode()` with no argument is a SHALLOW clone —
+                        // the spec's default is `false`, and `truthy` on an
+                        // absent argument is what says so.
+                        deep: truthy(args.get(2)),
+                    },
+                ),
+            )
+        }),
+    );
+
+    // `document.createTextNode(data)` / `document.createComment(data)` — the
+    // DOM's other two node factories.
+    //
+    // The surface had `createElement` and nothing else, so the CONTENT between
+    // two elements could not be created at all: a guest could build
+    // `<p></p><p></p>` and never `a <b>B</b> c`. Both answer an uninserted
+    // node, exactly as `createElement` does — it renders nothing until
+    // `appendChild` puts it somewhere.
+    dom_fn(
+        vm,
+        "createTextNode",
+        "create-text-node",
+        vec![doc(), ValType::String],
+        vec![ValType::Own(NODE.to_string())],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let document = doc_arg(args, 0);
+            as_node(
+                document,
+                apply(document, DomOp::CreateTextNode(str_arg(args, 1))),
+            )
+        }),
+    );
+    dom_fn(
+        vm,
+        "createComment",
+        "create-comment",
+        vec![doc(), ValType::String],
+        vec![ValType::Own(NODE.to_string())],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let document = doc_arg(args, 0);
+            as_node(
+                document,
+                apply(document, DomOp::CreateComment(str_arg(args, 1))),
+            )
+        }),
+    );
+    // `setAttributeNS` / `getAttributeNS`. The asymmetry is the spec's: the
+    // write names the attribute the way it serialises (QUALIFIED) and the read
+    // matches namespace + LOCAL name, because that pair is what identifies an
+    // attribute and a qualified name is only how it is written down.
+    dom_fn(
+        vm,
+        "setAttributeNS",
+        "set-attribute-ns",
+        vec![doc(), node(), ValType::String, ValType::String, ValType::String],
+        vec![],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            apply(
+                doc_arg(args, 0),
+                DomOp::SetAttributeNS {
+                    node: node_arg(args, 1),
+                    namespace: str_arg(args, 2),
+                    qualified_name: str_arg(args, 3),
+                    value: str_arg(args, 4),
+                },
+            );
+            Value::Null
+        }),
+    );
+    dom_fn(
+        vm,
+        "getAttributeNS",
+        "get-attribute-ns",
+        vec![doc(), node(), ValType::String, ValType::String],
+        vec![ValType::Option(Box::new(ValType::String))],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            match apply(
+                doc_arg(args, 0),
+                DomOp::GetAttributeNS {
+                    node: node_arg(args, 1),
+                    namespace: str_arg(args, 2),
+                    local_name: str_arg(args, 3),
+                },
+            ) {
+                DomValue::Text(v) => Value::String(v.into()),
+                _ => Value::Null,
+            }
+        }),
+    );
+
+    // `createElementNS` and the three reads that make a namespace visible.
+    // `prefix` and `localName` are views of the qualified name rather than
+    // stored fields, so the engine derives them and nothing here can disagree
+    // with `nodeName`.
+    dom_fn(
+        vm,
+        "createElementNS",
+        "create-element-ns",
+        vec![doc(), ValType::String, ValType::String, ValType::String],
+        vec![ValType::Own(NODE.to_string())],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let document = doc_arg(args, 0);
+            as_node(
+                document,
+                apply(
+                    document,
+                    DomOp::CreateElementNS {
+                        namespace: str_arg(args, 1),
+                        qualified_name: str_arg(args, 2),
+                        input_type: str_arg(args, 3),
+                    },
+                ),
+            )
+        }),
+    );
+    for (name, kebab) in [
+        ("namespaceURI", "namespace-uri"),
+        ("prefix", "prefix"),
+        ("localName", "local-name"),
+    ] {
+        dom_fn(
+            vm,
+            name,
+            kebab,
+            vec![doc(), node()],
+            // `namespaceURI` and `prefix` are nullable; `localName` never is.
+            vec![ValType::Option(Box::new(ValType::String))],
+            Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+                let node = node_arg(args, 1);
+                let op = match name {
+                    "namespaceURI" => DomOp::NamespaceUri(node),
+                    "prefix" => DomOp::Prefix(node),
+                    _ => DomOp::LocalName(node),
+                };
+                match apply(doc_arg(args, 0), op) {
+                    DomValue::Text(v) => Value::String(v.into()),
+                    _ => Value::Null,
+                }
+            }),
+        );
+    }
+
+    // The XML half of the factory set. Both exist here rather than only in
+    // `web:dom-parser` because the node they make is a node in the ONE
+    // document — the parser's separate tree is what folds into this.
+    dom_fn(
+        vm,
+        "createCDATASection",
+        "create-cdata-section",
+        vec![doc(), ValType::String],
+        vec![ValType::Own(NODE.to_string())],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let document = doc_arg(args, 0);
+            as_node(
+                document,
+                apply(document, DomOp::CreateCDataSection(str_arg(args, 1))),
+            )
+        }),
+    );
+    dom_fn(
+        vm,
+        "createProcessingInstruction",
+        "create-processing-instruction",
+        vec![doc(), ValType::String, ValType::String],
+        vec![ValType::Own(NODE.to_string())],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let document = doc_arg(args, 0);
+            as_node(
+                document,
+                apply(
+                    document,
+                    DomOp::CreateProcessingInstruction {
+                        target: str_arg(args, 1),
+                        data: str_arg(args, 2),
+                    },
+                ),
+            )
+        }),
+    );
+
     vm.register_host(
         HostFnDecl::new(
             "web:dom",
             "getElementById",
-            Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-                as_node(apply(
+            with_receiver(Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+                as_node(
                     doc_arg(args, 0),
-                    DomOp::GetElementById(str_arg(args, 1)),
-                ))
-            }),
+                    apply(doc_arg(args, 0), DomOp::GetElementById(str_arg(args, 1))),
+                )
+            })),
         )
         .with_sig(node_method(
             "get-element-by-id",
@@ -449,6 +1043,46 @@ pub fn register(vm: &mut VM) {
             )))],
         ))
         .method_on(DOCUMENT_RES),
+    );
+    // `querySelector` / `querySelectorAll` — Selectors API Level 1 over the
+    // LIVE document.
+    //
+    // These did not exist here at all: the only selector engine was
+    // `web:dom-parser`'s, wired to a parsed tree that renders nothing, so a
+    // page could not ask its own document a question richer than a tag name.
+    // The engine below the seam owns the matching now, which is what makes
+    // these two host functions pure forwarding like everything else in this
+    // file.
+    dom_fn(
+        vm,
+        "querySelector",
+        "query-selector",
+        vec![doc(), ValType::String],
+        vec![node()],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            match apply(doc_arg(args, 0), DomOp::QuerySelector(str_arg(args, 1))) {
+                DomValue::Node(n) => element(doc_arg(args, 0), n),
+                // No match is `null`, per spec — not an empty element.
+                _ => Value::Null,
+            }
+        }),
+    );
+    dom_fn(
+        vm,
+        "querySelectorAll",
+        "query-selector-all",
+        vec![doc(), ValType::String],
+        vec![ValType::List(Box::new(node()))],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            match apply(doc_arg(args, 0), DomOp::QuerySelectorAll(str_arg(args, 1))) {
+                DomValue::Nodes(ns) => {
+                    let d = doc_arg(args, 0);
+                    let items: Vec<Value> = ns.into_iter().map(|n| element(d, n)).collect();
+                    Value::Object(vybe_runtime::heap::alloc(Object::new_array(items)))
+                }
+                _ => Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new()))),
+            }
+        }),
     );
     // An `HTMLCollection` is a LIST of borrowed nodes: the collection does not
     // own what it names, and neither does the guest that reads it. Nothing in
@@ -464,7 +1098,8 @@ pub fn register(vm: &mut VM) {
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             match apply(doc_arg(args, 0), DomOp::ElementsByTag(str_arg(args, 1))) {
                 DomValue::Nodes(ns) => {
-                    let items: Vec<Value> = ns.into_iter().map(element).collect();
+                    let d = doc_arg(args, 0);
+                    let items: Vec<Value> = ns.into_iter().map(|n| element(d, n)).collect();
                     Value::Object(vybe_runtime::heap::alloc(Object::new_array(items)))
                 }
                 _ => Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new()))),
@@ -488,7 +1123,7 @@ pub fn register(vm: &mut VM) {
             "web:html",
             "activeDocument",
             Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
-                Value::F64(active_document() as f64)
+                document_handle(active_document())
             }),
         )
         .with_sig(node_method(
@@ -519,7 +1154,9 @@ pub fn register(vm: &mut VM) {
         "body",
         vec![doc()],
         vec![node()],
-        Box::new(move |_ctx: &mut HostContext, _args: &[Value]| element(DOCUMENT)),
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            element(doc_arg(args, 0), DOCUMENT)
+        }),
     );
     html_fn(
         vm,
@@ -792,6 +1429,45 @@ pub fn register(vm: &mut VM) {
             Value::Null
         }),
     );
+
+    // `canvas.width` / `canvas.height` — HTMLCanvasElement's own IDL
+    // attributes, the READ side of the content attributes `setAttribute`
+    // already writes (HTML §4.12.5).
+    //
+    // Without them the one operation every painter needs cannot be spelled.
+    // "Fill the surface with a colour" is `fillRect(0, 0, canvas.width,
+    // canvas.height)` — the canvas API has no clear-to-colour and does not
+    // need one — so a guest that could size a buffer and never ask its size
+    // had to give up the colour. `.NET`'s `Graphics.Clear(color)` was
+    // dropping its argument for exactly this reason.
+    //
+    // Spelled `canvasWidth`/`canvasHeight` rather than `width`/`height`
+    // because a bare `width` in this module would read as the BOX's, and the
+    // whole point of these two is that they are not it: a 640x480 buffer
+    // displayed in a 320x240 box is the ordinary way to draw at double
+    // density.
+    for (name, kebab, horizontal) in [
+        ("canvasWidth", "canvas-width", true),
+        ("canvasHeight", "canvas-height", false),
+    ] {
+        html_fn(
+            vm,
+            name,
+            kebab,
+            vec![doc(), node()],
+            vec![ValType::F64],
+            Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+                match apply(doc_arg(args, 0), DomOp::CanvasSize(node_arg(args, 1))) {
+                    DomValue::Pair(w, h) => Value::F64(if horizontal { w } else { h }),
+                    // The spec's missing-value defaults, which is what an
+                    // element with no bitmap answers rather than zero — a
+                    // zero would make `fillRect` over it silently draw
+                    // nothing.
+                    _ => Value::F64(if horizontal { 300.0 } else { 150.0 }),
+                }
+            }),
+        );
+    }
 
     // `select.selectedIndex` — `-1` when nothing is selected, which is the
     // IDL's own answer and what every caller tests against.
@@ -1070,6 +1746,19 @@ pub fn register(vm: &mut VM) {
     // `ecma:function.bind` result where the receiver had to be threaded. The
     // host calls it and does not care which; a narrower type would be a claim
     // this file cannot make.
+    dom_fn(
+        vm,
+        "removeEventListener",
+        "remove-event-listener",
+        vec![doc(), node(), ValType::String, ValType::Any],
+        vec![],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let cb = args.get(3).cloned().unwrap_or(Value::Undefined);
+            remove_event_listener(doc_arg(args, 0), node_arg(args, 1), &str_arg(args, 2), &cb);
+            Value::Null
+        }),
+    );
+
     dom_fn(
         vm,
         "addEventListener",

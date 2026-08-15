@@ -45,6 +45,8 @@ pub mod animation;
 pub mod builtin_types; // TypeRegistry vtables for the web surface; run in Plugin::finalize
 pub mod canvas;
 pub mod canvas_backend;
+#[cfg(feature = "gui")]
+pub mod canvas_backend_widgets;
 pub mod console;
 pub mod crypto;
 pub mod dom_parser;
@@ -67,6 +69,12 @@ pub fn register(vm: &mut VM) {
     // feature simply has none, the way a canvas with no painter draws nothing.
     #[cfg(feature = "gui")]
     engine_widgets::install();
+    // The painter for `web:canvas`, resolving through that same document.
+    // Installed HERE rather than by the vybe platform, which used to resolve
+    // through `GuiState` — a second widget tree that a `createElement` canvas
+    // is not in.
+    #[cfg(feature = "gui")]
+    canvas_backend_widgets::install();
 
     console::register(vm);
     crypto::register(vm);
