@@ -280,13 +280,24 @@ instr_name = @{
 }
 
 // ── Instruction arguments ─────────────────────────────────────────────────────
-// Priority: mem_arg > block_type > folded_instr > id > index > string > float > integer > bare_val_type
+// Priority: mem_arg > block_type > ref_type_arg > folded_instr > id > index >
+// string > float > integer > bare_val_type
 // bare_val_type is last and only matches when NOT followed by "." to avoid
 // consuming "i32" when "i32.add" is the next token.
+
+// A reftype IMMEDIATE — `(ref $t)` / `(ref null $t)` on `ref.test`, `ref.cast`,
+// `br_on_cast`. It has to be its own alternative, ahead of `folded_instr`,
+// because `ref` satisfies the generic `instr_name` rule and the whole thing
+// would otherwise match as a folded instruction. That matters for more than
+// tidiness: a plain instruction must be able to hand back a folded operand it
+// absorbed (the spec allows no folded operands on a plain instr), and doing
+// that blindly would hand back this immediate too.
+ref_type_arg = { "(" ~ "ref" ~ "null"? ~ heap_type ~ ")" }
 
 instr_arg = {
     mem_arg
   | block_type
+  | ref_type_arg
   | folded_instr
   | id
   | string
@@ -421,7 +432,16 @@ global_type = {
 // ── Tag (exceptions proposal) ─────────────────────────────────────────────────
 
 tag_field = { "(" ~ "tag" ~ id? ~ export_inline* ~ import_inline? ~ tag_type ~ ")" }
-tag_type  = { "(" ~ "func" ~ param* ~ ")" | param* }
+// A tagtype IS a typeuse: `(type $t)`, an inline `(param …)*`/`(result …)*`, or
+// both. `result*` is not optional decoration — a tag with results is what
+// `tag.wast` asserts INVALID ("non-empty tag result type"), and the file cannot
+// reach that assertion if the text does not parse. The `(func …)` form is the
+// legacy spelling some fixtures still use.
+tag_type  = {
+    "(" ~ "func" ~ param* ~ result* ~ ")"
+  | "(" ~ "type" ~ index ~ ")" ~ param* ~ result*
+  | param* ~ result*
+}
 
 // ── Element segment ───────────────────────────────────────────────────────────
 
@@ -520,6 +540,14 @@ assert_trap = { "(" ~ "assert_trap" ~ action ~ string ~ ")" }
 // (assert_trap (module …) "message")  — instantiation trap
 assert_instantiation_trap = { "(" ~ "assert_trap" ~ module ~ string ~ ")" }
 
+// (assert_exception action)  — the action must throw an EXCEPTION.
+//
+// Carries no message, unlike `assert_trap`: the spec asserts only that an
+// exception escaped, never which tag. This is the directive the exception
+// suite is built on — `throw.wast`, `throw_ref.wast` and `try_table.wast` are
+// unparseable without it, which is why none of them had ever run.
+assert_exception = { "(" ~ "assert_exception" ~ action ~ ")" }
+
 // (assert_invalid (module …) "message")  — validation error
 assert_invalid = { "(" ~ "assert_invalid" ~ module_or_binary ~ string ~ ")" }
 
@@ -551,7 +579,11 @@ result_val = {
   | "(" ~ "i64.const" ~ integer ~ ")"
   | "(" ~ "f32.const" ~ (float | integer) ~ ")"
   | "(" ~ "f64.const" ~ (float | integer) ~ ")"
-  | "(" ~ "v128.const" ~ val_lane_type ~ integer+ ~ ")"
+  // Lanes may be FLOATS, not only integers: an `f32x4`/`f64x2` expectation is
+  // written `(v128.const f32x4 1.5 nan:canonical …)`. `float` must come first
+  // — against `1.5` the `integer` rule would match the leading "1" and leave
+  // ".5" unconsumed.
+  | "(" ~ "v128.const" ~ val_lane_type ~ (float | integer)+ ~ ")"
   // The heap type is optional: a bare `(ref.null)` expects "null of ANY heap
   // type", the reftype-agnostic spelling used by ref_null / select.
   | "(" ~ "ref.null"   ~ heap_type? ~ ")"
@@ -575,7 +607,8 @@ expr = {
   | "(" ~ "i64.const" ~ integer ~ ")"
   | "(" ~ "f32.const" ~ (float | integer) ~ ")"
   | "(" ~ "f64.const" ~ (float | integer) ~ ")"
-  | "(" ~ "v128.const" ~ val_lane_type ~ integer+ ~ ")"
+  // Float lanes — see the note on `result_val`'s v128.const.
+  | "(" ~ "v128.const" ~ val_lane_type ~ (float | integer)+ ~ ")"
   | "(" ~ "ref.null"   ~ heap_type ~ ")"
   | "(" ~ "ref.extern" ~ integer ~ ")"
   | "(" ~ "ref.func"   ~ index ~ ")"
@@ -612,6 +645,7 @@ script_cmd = {
   | assert_unlinkable
   | assert_exhaustion
   | assert_suspension
+  | assert_exception
   | invoke_cmd
   | register_cmd
   | get_cmd

@@ -77,25 +77,14 @@ log_f64 = { emit = "host:wasi:logging/logging:log", min_args = 1, max_args = 255
 # route that to the real host import (already registered in vybe_host).
 string_compare = { emit = "host:wasm:js-string:compare", min_args = 2, max_args = 2 }
 
-# ── vybe:gui imports ──────────────────────────────────────────────────────────
-# WAT modules import these by local name; the profile resolves them to the
-# vybe:gui host functions. String arguments are passed as any Value — the
-# host functions format them via format!("{v}").
-
-newForm              = { emit = "host:vybe:gui:newForm",              min_args = 0, max_args = 1   }
-new_Button           = { emit = "host:vybe:gui:new_Button",           min_args = 0, max_args = 0   }
-new_Label            = { emit = "host:vybe:gui:new_Label",            min_args = 0, max_args = 0   }
-new_TextBox          = { emit = "host:vybe:gui:new_TextBox",          min_args = 0, max_args = 0   }
-new_CheckBox         = { emit = "host:vybe:gui:new_CheckBox",         min_args = 0, max_args = 0   }
-new_GroupBox         = { emit = "host:vybe:gui:new_GroupBox",         min_args = 0, max_args = 0   }
-new_Panel            = { emit = "host:vybe:gui:new_Panel",            min_args = 0, max_args = 0   }
-controlSetProperty   = { emit = "host:vybe:gui:controlSetProperty",   min_args = 3, max_args = 3   }
-controlGetProperty   = { emit = "host:vybe:gui:controlGetProperty",   min_args = 2, max_args = 2   }
-controlsAdd          = { emit = "host:vybe:gui:controlsAdd",          min_args = 2, max_args = 2   }
-onEvent              = { emit = "host:vybe:gui:onEvent",              min_args = 3, max_args = 3   }
-showForm             = { emit = "host:vybe:gui:showForm",             min_args = 1, max_args = 1   }
-runApplication       = { emit = "host:vybe:gui:runApplication",       min_args = 1, max_args = 1   }
-addHandler           = { emit = "host:vybe:gui:addHandler",           min_args = 2, max_args = 3   }
+activeDocument   = { emit = "host:web:html:activeDocument",  min_args = 0, max_args = 0 }
+body             = { emit = "host:web:html:body",             min_args = 1, max_args = 1 }
+setTitle         = { emit = "host:web:html:setTitle",         min_args = 2, max_args = 2 }
+createElement    = { emit = "host:web:dom:createElement",     min_args = 3, max_args = 3 }
+appendChild      = { emit = "host:web:dom:appendChild",       min_args = 3, max_args = 3 }
+setTextContent   = { emit = "host:web:dom:setTextContent",    min_args = 3, max_args = 3 }
+addEventListener = { emit = "host:web:dom:addEventListener",  min_args = 4, max_args = 4 }
+setStyleProperty = { emit = "host:web:cssom:setStyleProperty", min_args = 4, max_args = 4 }
 
 # ── WAST script commands ──────────────────────────────────────────────────────
 
