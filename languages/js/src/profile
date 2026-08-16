@@ -501,6 +501,49 @@ isPrototypeOf          = { emit = "common:reflection.is_prototype_of",        mi
 # NOT instance methods. Map.keys/values go through the type registry.
 # Removed from value_methods to avoid intercepting Map.keys().
 
+# ── WHATWG DOM / HTML / CSSOM ────────────────────────────────────────────────
+# JS is the web's own language, so a DOM member call maps ONE TO ONE onto the
+# `web:*` import and is emitted as that call directly. The receiver is argument
+# 0 because that is what the Web API takes — `document.createElement(tag)` IS
+# `web:dom:createElement(document, tag)`, and `parent.appendChild(child)` IS
+# `web:dom:appendChild(parent, child)` with the owning document supplied by the
+# host from the element itself.
+#
+# Not `invoke:` — that routes through `ecma:value.invokeMethod`'s prototype
+# walk, which binds the receiver as `this` and never PASSES it, so every one of
+# these reached the host with its arguments shifted by one, read argument 0 as
+# the document, found a string, and answered null. Nothing raised, so the page
+# came out empty. The whole reason a page can be built from JS at all is that
+# these are direct imports.
+#
+# `min_args`/`max_args` count the USER's arguments; the receiver is implicit.
+
+# DOM Standard — Node / Document / Element
+createElement        = { emit = "host:web:dom:createElement",     min_args = 1, max_args = 2 }
+createTextNode       = { emit = "host:web:dom:createTextNode",    min_args = 1, max_args = 1 }
+createComment        = { emit = "host:web:dom:createComment",     min_args = 1, max_args = 1 }
+appendChild          = { emit = "host:web:dom:appendChild",       min_args = 1, max_args = 1 }
+removeChild          = { emit = "host:web:dom:removeChild",       min_args = 1, max_args = 1 }
+setAttribute         = { emit = "host:web:dom:setAttribute",      min_args = 2, max_args = 2 }
+getAttribute         = { emit = "host:web:dom:getAttribute",      min_args = 1, max_args = 1 }
+removeAttribute      = { emit = "host:web:dom:removeAttribute",   min_args = 1, max_args = 1 }
+toggleAttribute      = { emit = "host:web:dom:toggleAttribute",   min_args = 1, max_args = 2 }
+addEventListener     = { emit = "host:web:dom:addEventListener",  min_args = 2, max_args = 3 }
+getElementById       = { emit = "host:web:dom:getElementById",    min_args = 1, max_args = 1 }
+getElementsByTagName = { emit = "host:web:dom:getElementsByTagName", min_args = 1, max_args = 1 }
+setTextContent       = { emit = "host:web:dom:setTextContent",    min_args = 1, max_args = 1 }
+isConnected          = { emit = "host:web:dom:isConnected",       min_args = 0, max_args = 0 }
+
+# HTML Standard — the element IDL
+setTitle             = { emit = "host:web:html:setTitle",         min_args = 1, max_args = 1 }
+focus                = { emit = "host:web:html:focus",            min_args = 0, max_args = 0 }
+showModal            = { emit = "host:web:html:showModal",        min_args = 0, max_args = 0 }
+showPicker           = { emit = "host:web:html:showPicker",       min_args = 0, max_args = 0 }
+
+# CSSOM — element.style
+setStyleProperty     = { emit = "host:web:cssom:setStyleProperty", min_args = 2, max_args = 2 }
+getStyleProperty     = { emit = "host:web:cssom:getStyleProperty", min_args = 1, max_args = 1 }
+
 # Array higher-order methods — routed to compiled JS builtins
 # (see [array_methods] section below)
 
@@ -560,6 +603,19 @@ module_root = "wasi:"
 kind = "package-root"
 prefix = "wasm"
 module_root = "wasm:"
+
+# The web platform — `web:dom`, `web:html`, `web:cssom`, `web:canvas`,
+# `web:window`, `web:url`, `web:encoding`, `web:fetch`. A Component Model
+# package like any other, so it is a package root exactly like `wasi` and
+# `vybe`, and its absence was simply an omission.
+#
+# It is not how JS is meant to reach the DOM — that is `document.createElement`,
+# lowering straight to the import — but a package root costs nothing and makes
+# every `web:*` module reachable by its real name from any frontend.
+[[esm_default]]
+kind = "package-root"
+prefix = "web"
+module_root = "web:"
 
 [[esm_default]]
 kind = "namespace"
@@ -809,10 +865,13 @@ kind = "namespace"
 alias = "xml2js"
 module = "web:dom-parser"
 
-[[esm_default]]
-kind = "namespace"
-alias = "gui"
-module = "vybe:gui"
+# There is no `gui` namespace. A JS program builds its UI the way a browser
+# takes it — `document.createElement("button")`, `appendChild`,
+# `addEventListener` — and `document` is a global the web platform binds, not
+# something to import. This alias used to point the whole of `vybe:gui` at the
+# name `gui`, which is how `examples/js/*.js` came to be written against a
+# toolkit API instead of the DOM; because it aliased a MODULE, every name under
+# it was reachable at once and no per-name search could see the dependency.
 
 [[esm_default]]
 kind = "namespace"

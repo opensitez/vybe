@@ -18,7 +18,10 @@ console.log(obj.greeting + "|isOwn=" + Object.hasOwn(obj, "greeting"));
 fn test_js_object_create_null_prototype_has_no_builtin_methods() {
     let src = r#"
 const nullProtoObj = Object.create(null);
-console.log(Object.getPrototypeOf(nullProtoObj) === null + "|hasToString=" + ("toString" in nullProtoObj));
+// The comparison needs its own parens: `+` binds tighter than `===`, so
+// without them this compares the prototype against the whole concatenated
+// string and always logs `false` (node agrees).
+console.log((Object.getPrototypeOf(nullProtoObj) === null) + "|hasToString=" + ("toString" in nullProtoObj));
 "#;
     assert_eq!(run_js(src), vec!["true|hasToString=false"]);
 }

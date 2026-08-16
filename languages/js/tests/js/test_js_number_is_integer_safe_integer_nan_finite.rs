@@ -154,7 +154,9 @@ fn test_js_number_parseint_radix_arguments() {
     let src = r#"
 console.log(`${Number.parseInt("1010", 2)}:${Number.parseInt("FF", 16)}:${Number.parseInt("077", 8)}`);
 "#;
-    assert_eq!(run_js(src), vec!["10:255:77"]);
+    // "077" read in radix 8 is 0*64 + 7*8 + 7 = 63 — §19.2.5 parses the
+    // digits IN the radix, it does not echo them back. Node agrees: 10:255:63.
+    assert_eq!(run_js(src), vec!["10:255:63"]);
 }
 
 #[test]
