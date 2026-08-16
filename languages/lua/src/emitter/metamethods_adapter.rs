@@ -1207,7 +1207,7 @@ pub fn emit_lua_coroutine_resume(chunks: &mut Vec<Chunk>, current: usize, argc: 
     emit_lua_global_set(&mut chunks[current], "__lua_running_coroutine", line);
 
     let done_block = chunks[current].emit_block(line);
-    let catch = vybe_compiler::primitives::errors::emit_try_start(&mut chunks[current], line);
+    vybe_compiler::primitives::errors::emit_try_start(&mut chunks[current], line);
 
     emit_object_get_const_key(&mut chunks[current], co_slot, "__lua_cont", line);
     save(&mut chunks[current], cont_slot, line);
@@ -1256,7 +1256,7 @@ pub fn emit_lua_coroutine_resume(chunks: &mut Vec<Chunk>, current: usize, argc: 
     save(&mut chunks[current], ok_slot, line);
     chunks[current].emit_br(0, line);
 
-    vybe_compiler::primitives::errors::patch_catch(&mut chunks[current], catch);
+    vybe_compiler::primitives::errors::emit_handler_block_end(&mut chunks[current], line);
     save(&mut chunks[current], value_slot, line);
     emit_lua_set_object_string(&mut chunks[current], co_slot, "__lua_state", "dead", line);
     emit_lua_restore_running(chunks, current, previous_slot, line);
@@ -1357,7 +1357,7 @@ pub fn emit_lua_coroutine_resume_row(chunks: &mut Vec<Chunk>, current: usize, ar
     emit_lua_global_set(&mut chunks[current], "__lua_running_coroutine", line);
 
     let done_block = chunks[current].emit_block(line);
-    let catch = vybe_compiler::primitives::errors::emit_try_start(&mut chunks[current], line);
+    vybe_compiler::primitives::errors::emit_try_start(&mut chunks[current], line);
 
     emit_object_get_const_key(&mut chunks[current], co_slot, "__lua_cont", line);
     save(&mut chunks[current], cont_slot, line);
@@ -1406,7 +1406,7 @@ pub fn emit_lua_coroutine_resume_row(chunks: &mut Vec<Chunk>, current: usize, ar
     save(&mut chunks[current], ok_slot, line);
     chunks[current].emit_br(0, line);
 
-    vybe_compiler::primitives::errors::patch_catch(&mut chunks[current], catch);
+    vybe_compiler::primitives::errors::emit_handler_block_end(&mut chunks[current], line);
     save(&mut chunks[current], value_slot, line);
     emit_lua_set_object_string(&mut chunks[current], co_slot, "__lua_state", "dead", line);
     emit_lua_restore_running(chunks, current, previous_slot, line);
@@ -3164,7 +3164,7 @@ pub fn emit_lua_pcall(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u
     chunks[current].emit_if(line);
 
     let done = chunks[current].emit_block(line);
-    let catch = vybe_compiler::primitives::errors::emit_try_start(&mut chunks[current], line);
+    vybe_compiler::primitives::errors::emit_try_start(&mut chunks[current], line);
 
     load(&mut chunks[current], base, line);
     for i in 1..argc {
@@ -3178,7 +3178,7 @@ pub fn emit_lua_pcall(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u
     save(&mut chunks[current], ok_slot, line);
     chunks[current].emit_br(0, line);
 
-    vybe_compiler::primitives::errors::patch_catch(&mut chunks[current], catch);
+    vybe_compiler::primitives::errors::emit_handler_block_end(&mut chunks[current], line);
     save(&mut chunks[current], value_slot, line);
     i32_const(&mut chunks[current], 0, line);
     vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
@@ -3291,7 +3291,7 @@ pub fn emit_lua_xpcall(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     chunks[current].emit_if(line);
 
     let done = chunks[current].emit_block(line);
-    let catch = vybe_compiler::primitives::errors::emit_try_start(&mut chunks[current], line);
+    vybe_compiler::primitives::errors::emit_try_start(&mut chunks[current], line);
     load(&mut chunks[current], base, line);
     for i in 2..argc {
         load(&mut chunks[current], base + i as u16, line);
@@ -3304,18 +3304,17 @@ pub fn emit_lua_xpcall(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     save(&mut chunks[current], ok_slot, line);
     chunks[current].emit_br(0, line);
 
-    vybe_compiler::primitives::errors::patch_catch(&mut chunks[current], catch);
+    vybe_compiler::primitives::errors::emit_handler_block_end(&mut chunks[current], line);
     save(&mut chunks[current], error_slot, line);
     let handler_done = chunks[current].emit_block(line);
-    let handler_catch =
-        vybe_compiler::primitives::errors::emit_try_start(&mut chunks[current], line);
+    vybe_compiler::primitives::errors::emit_try_start(&mut chunks[current], line);
     load(&mut chunks[current], base + 1, line);
     load(&mut chunks[current], error_slot, line);
     call_ref(chunks, current, 1, line);
     save(&mut chunks[current], value_slot, line);
     vybe_compiler::primitives::errors::emit_try_end(&mut chunks[current], line);
     chunks[current].emit_br(0, line);
-    vybe_compiler::primitives::errors::patch_catch(&mut chunks[current], handler_catch);
+    vybe_compiler::primitives::errors::emit_handler_block_end(&mut chunks[current], line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_string_const("error in error handling", line);
     save(&mut chunks[current], value_slot, line);

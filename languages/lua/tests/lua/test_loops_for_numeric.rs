@@ -67,9 +67,14 @@ numeric_for_continue_via_goto => {
     "local sum = 0\nfor i = 1, 6 do\n  if i % 2 ~= 0 then sum = sum + i end\nend\nprint(sum)\n",
     "9"
 },
+// `for i = 1, 5, 0` raises "'for' step is zero" (Lua 5.2+), so the `pcall`
+// that protects it returns FALSE. The expectation used to be "true", which
+// contradicts both the test's own name and the reference implementation —
+// verified against Lua 5.5. The sibling `..._on_error_in_body` case below
+// already spells an error as "false".
 numeric_for_zero_step_raises_error => {
     "local ok, err = pcall(function() for i = 1, 5, 0 do end end)\nprint(ok)\n",
-    "true"
+    "false"
 },
 numeric_for_int_bounds_coerced_from_floats => {
     "local s = ''\nfor i = 1.0, 3.0, 1.0 do s = s .. math.type(i) .. ',' end\nprint(s)\n",
