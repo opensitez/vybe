@@ -1,6 +1,6 @@
 ;; vybe-test: wast/wast_script_register_get/get_global_mut
 ;; origin: languages/wast/tests/wast/test_wast_script_register_get.rs
-;; vybe-test-mode: compile
+;; vybe-test-mode: run
 
 (module 
   (global (export "g") (mut i32) (i32.const 42))

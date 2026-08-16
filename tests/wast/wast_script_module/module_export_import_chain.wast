@@ -1,6 +1,6 @@
 ;; vybe-test: wast/wast_script_module/module_export_import_chain
 ;; origin: languages/wast/tests/wast/test_wast_script_module.rs
-;; vybe-test-mode: compile
+;; vybe-test-mode: run
 
 (module $m1 (func (export "f") (result i32) i32.const 42))
 (register "lib" $m1)

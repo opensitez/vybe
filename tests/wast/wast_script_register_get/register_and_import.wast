@@ -1,6 +1,6 @@
 ;; vybe-test: wast/wast_script_register_get/register_and_import
 ;; origin: languages/wast/tests/wast/test_wast_script_register_get.rs
-;; vybe-test-mode: compile
+;; vybe-test-mode: run
 
 (module (func (export "f") (result i32) i32.const 42))
 (register "lib")
