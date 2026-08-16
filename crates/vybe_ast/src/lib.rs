@@ -733,6 +733,12 @@ pub enum StmtKind {
     WasmTryTable {
         body: Vec<Statement>,
         catches: Vec<WasmCatch>,
+        /// Spec blocktype `bt` in `try_table bt vec(catch) instr* end` —
+        /// `try_table` IS a block and may take and produce values. Dropping it
+        /// made `(try_table (result i32) …)` unrepresentable: the VM pushed a
+        /// zero result arity and discarded the value.
+        params: u8,
+        results: u8,
     },
 
     /// `rethrow N` (legacy) — re-raise the exception caught by the `N`th
@@ -1048,6 +1054,28 @@ pub enum ZipMode {
     Longest,
 }
 
+/// Logical traversal order for ranked array transforms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArrayTraversalOrder {
+    RowMajor,
+    ColumnMajor,
+}
+
+/// Cross-language ranked-array transformations.
+///
+/// This is distinct from binary [`packing`](crate) semantics: Fortran
+/// `PACK`/`UNPACK` compact or scatter array elements under a mask, while Ruby,
+/// Python, PHP, and Lua packing encode scalar values into bytes. Languages with
+/// array/tensor intrinsics can normalize to this node and share one lowering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArrayTransformOp {
+    /// `PACK(array, mask[, vector])`: compact elements where `mask` is true.
+    PackMask,
+    /// `UNPACK(vector, mask, field)`: scatter vector elements into mask-true
+    /// positions and fill mask-false positions from `field`.
+    UnpackMask,
+}
+
 #[derive(Debug, Clone)]
 pub enum ExprKind {
     Lit(Literal),
@@ -1158,7 +1186,21 @@ pub enum ExprKind {
         mode: ZipMode,
         strict: bool,
     },
-
+    /// Cross-language array/map transform. Frontends use this instead of
+    /// spelling a host-specific `.map(...)` member call when the source
+    /// language means elemental collection mapping.
+    ArrayMap {
+        array: Box<Expression>,
+        params: Vec<Param>,
+        body: Box<Expression>,
+    },
+    /// Ranked array transform, normalized from language-specific intrinsics
+    /// such as Fortran `PACK`/`UNPACK`.
+    ArrayTransform {
+        op: ArrayTransformOp,
+        args: Vec<Expression>,
+        order: ArrayTraversalOrder,
+    },
     // ── String interpolation ─────────────────────────────────────────────
     Interpolation(Vec<InterpolPart>),
 
@@ -1886,7 +1928,7 @@ fn stmt_contains_yield_outside_nested_scopes(stmt: &Statement) -> bool {
                     .as_ref()
                     .is_some_and(|expr| expr_contains_yield_outside_nested_scopes(expr))
         }
-        StmtKind::WasmTryTable { body, catches } => {
+        StmtKind::WasmTryTable { body, catches, .. } => {
             statements_contain_yield_outside_nested_scopes(body)
                 || catches
                     .iter()
@@ -3567,6 +3609,38 @@ pub struct Directives {
     /// `None` means the receiver is an explicit parameter, which is what all but
     /// a handful of languages want.
     pub receiver_binding: Option<ReceiverBinding>,
+
+    /// Does this program present a user interface?
+    ///
+    /// A WHOLE-PROGRAM property in the same sense case sensitivity is: the
+    /// project kind states it — a Delphi `.dproj` whose `.dpr` calls
+    /// `Application.Run`, a WinForms `.vbproj`/`.csproj`, a Flutter `runApp` —
+    /// and no single statement can. It is declared rather than inferred because
+    /// the alternative tests are all wrong in one direction: an entry point that
+    /// merely LINKS GUI code is not a GUI program, and a document that happens
+    /// to be empty when `main` returns is not a console one.
+    ///
+    /// It answers a question the runtime asks after the program has run —
+    /// whether to present a window and wait, or exit — which used to be
+    /// `vybe:gui.runApplication` setting `GuiState.should_run` from inside the
+    /// guest. That made "is this a UI program" a side effect of calling a host
+    /// function, invisible to anything that did not.
+    ///
+    /// `None` states nothing, and the document answers instead: a document with
+    /// content is a running one. [`AppShell::Headless`] is the case nothing else
+    /// can express — a program that builds controls but must not open a window.
+    pub app_shell: Option<AppShell>,
+}
+
+/// Whether a program presents a user interface — see [`Directives::app_shell`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AppShell {
+    /// The program presents a UI and the runtime waits for it.
+    #[default]
+    Windowed,
+    /// The program must NOT present one, whatever it builds. A designer or a
+    /// test harness that constructs controls to inspect them wants this.
+    Headless,
 }
 
 /// How a method's receiver reaches its body — see
@@ -3600,6 +3674,9 @@ impl Directives {
         }
         if other.receiver_binding.is_some() {
             self.receiver_binding = other.receiver_binding;
+        }
+        if other.app_shell.is_some() {
+            self.app_shell = other.app_shell;
         }
     }
 }
