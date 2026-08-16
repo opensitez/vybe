@@ -196,6 +196,15 @@ pub fn build_type_context(
     // typeidx blocktype at emission.
     let mut block_result_counts: std::collections::BTreeSet<(u8, u8)> =
         std::collections::BTreeSet::new();
+    // A tag's type is `externref^arity -> ()`, the same shape a blocktype of
+    // (arity, 0) has — so declaring one here gives the tag section a typeidx to
+    // point at. Without this every tag had to borrow the single one-param
+    // exception type, which is why a 2-ary tag could not be expressed at all.
+    for chunk in chunks {
+        for tag in &chunk.tags {
+            block_result_counts.insert((tag.arity, 0));
+        }
+    }
     for chunk in chunks {
         let code = &chunk.code;
         let mut bip = 0;

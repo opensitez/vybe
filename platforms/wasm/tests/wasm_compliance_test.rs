@@ -2728,37 +2728,27 @@ fn compilation_hints_branch_and_inlining_sections_present_for_loopy_code() {
 /// exception-handling output (tag section + try_table + throw).
 fn emit_try_catch_wasm() -> Vec<u8> {
     let mut script = Chunk::new("<script>");
-    // try { throw 1 } catch (e) { /* swallow */ } via the real spec try_table.
-    // Immediate (one catch clause, as common::errors::emit_try_start emits):
-    //   [u8 clause_count=1, u8 kind=catch(0), u16 tag, u16 catch_offset].
-    script.emit_op(Op::TRY_TABLE, 0);
-    script.emit(1u8, 0); // clause_count = 1
-    script.emit(0u8, 0); // kind = catch
-    script.emit(0u8, 0); // tag hi
-    script.emit(0u8, 0); // tag lo
-    let catch_off_pos = script.current_offset();
-    script.emit(0u8, 0); // catch offset hi (placeholder)
-    script.emit(0u8, 0); // catch offset lo (placeholder)
+    // `try { throw e } catch (e) { swallow }` through the real spec shape, the
+    // one `common::errors::emit_try_start` emits: a HANDLER BLOCK whose `end`
+    // is the clause's branch target, then a one-clause `try_table` naming it as
+    // `labelidx 0`.
+    //
+    // This used to hand-spell the immediate — `[count, kind, tag, offset]` —
+    // and patch a byte distance into the clause. That is a test asserting what
+    // the encoder does rather than what it should do, so it went stale the
+    // moment the clause's third field became a spec `labelidx` and the layout
+    // grew its blocktype: the writer then skipped the wrong number of bytes and
+    // swallowed the `throw` it exists to check for.
+    let tag = script.import_exception_tag("vybe:exception", 1);
+    script.emit_block_typed(0, 1); // handler block: `catch` delivers 1 value
+    script.emit_try_table_clauses(0, 0, &[(0, tag, 0)], 0);
     script.emit_i32_const(1, 0);
-    // `throw <tagidx>` carries its tag index as a u16 immediate (spec form).
-    script.emit_op_u16(Op::THROW, 0, 0);
-    // Structural END closes the try_table block (the retired custom TRY_END).
-    script.emit_op(Op::END, 0);
-    // skip-catch BR placeholder
-    let skip = script.emit_jump(Op::BR, 0);
-    // patch catch_offset to land here (catch body start): the VM/codec compute
-    // catch_ip = (catch_off_pos + 2) + offset.
-    let here = script.current_offset() as i32;
-    let jump = here - (catch_off_pos as i32 + 2);
-    script.code[catch_off_pos] = (jump >> 8) as u8;
-    script.code[catch_off_pos + 1] = (jump & 0xff) as u8;
-    // catch body: just drop the caught exception
-    script.emit_op(Op::DROP, 0);
-    // patch skip BR to land here (after-catch)
-    let after = script.current_offset() as i32;
-    let skip_off = after - (skip as i32 + 2);
-    script.code[skip] = (skip_off >> 8) as u8;
-    script.code[skip + 1] = (skip_off & 0xff) as u8;
+    script.emit_op(Op::THROW, 0);
+    script.emit((tag >> 8) as u8, 0);
+    script.emit((tag & 0xff) as u8, 0);
+    script.emit_op(Op::END, 0); // close the try_table body
+    script.emit_op(Op::END, 0); // close the handler block — the catch lands here
+    script.emit_op(Op::DROP, 0); // catch body: swallow the caught exception
     script.emit_op(Op::RETURN, 0);
     vybe_platform_wasm::write_wasm(&vec![script])
 }

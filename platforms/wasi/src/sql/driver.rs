@@ -19,7 +19,10 @@ pub(super) trait SqlDriver: Send + Sync {
 
 /// Open a driver from a normalised URL (`sqlite:`, `postgres:`, `mysql:`).
 pub(super) fn open(url: &str) -> Result<Arc<dyn SqlDriver>, String> {
-    if url.starts_with("sqlite:") {
+    // `file:` is SQLite's own URI scheme (`file:app.db?mode=ro`), so it selects
+    // the sqlite driver just as `sqlite:` does — the driver passes it through
+    // whole and SQLite parses the options.
+    if url.starts_with("sqlite:") || url.starts_with("file:") {
         Ok(Arc::new(super::sqlite::SqliteDriver::open(url)?))
     } else if url.starts_with("postgres:") || url.starts_with("postgresql:") {
         Ok(Arc::new(super::postgres::PostgresDriver::open(url)?))

@@ -18,10 +18,78 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use vybe_runtime::value::Object;
-use vybe_runtime::{HostContext, VM, Value};
+use vybe_runtime::vm::{HostFnDecl, ResourceBinding, ResourceMemberKind};
+use vybe_runtime::{FuncSig, HostContext, VM, ValType, Value};
 
 use super::filesystem as fs;
 use crate::sockets as skt;
+
+/// The four resources `wasi:io` defines. These names are already in every
+/// registration — `"[method]input-stream.read"` is WIT's own resource-method
+/// spelling — but as part of a STRING. Naming them here lets the declaration
+/// carry the same fact structurally, so `own` vs `borrow` and "this is a
+/// destructor" become checkable rather than a convention in a name.
+const INPUT_STREAM: &str = "input-stream";
+const OUTPUT_STREAM: &str = "output-stream";
+const POLLABLE: &str = "pollable";
+const ERROR: &str = "error";
+
+fn borrowed(resource: &str) -> ValType {
+    ValType::Borrow(resource.to_string())
+}
+
+/// A WASI `result<T, stream-error>`. The error arm is `Any`: `stream-error` is
+/// a variant carrying an `error` RESOURCE in one arm, and `ValType` has no
+/// variant. Declaring `Result` at all is still worth it — it says the call can
+/// fail, which is the half every caller has to handle.
+fn wasi_result(ok: ValType) -> ValType {
+    ValType::Result(Box::new(ok), Box::new(ValType::Any))
+}
+
+/// Register a `wasi:*` function WITH its WIT signature.
+///
+/// The WIT name (`"[method]output-stream.splice"`) stays the registry key,
+/// because that is what emitters import. The Component Model name is the bare
+/// member (`"splice"`), which is what it is called ON the resource.
+///
+/// **The signature comes from the WIT, not from the closure.** Several closures
+/// here ignore their `self` handle — `flush`, `pollable.ready` and every
+/// `[resource-drop]` read no arguments at all, because this host has one
+/// instance and does not need the handle to find it. The call sites still pass
+/// it (`pollable.block` is emitted with argc 1, `blocking-read` with 2), so the
+/// contract is WIT's and the closure merely does not consult it. That gap is
+/// exactly what a declaration is for.
+fn wasi_fn(
+    vm: &mut VM,
+    module: &str,
+    name: &str,
+    resource: Option<(&str, ResourceMemberKind)>,
+    params: Vec<ValType>,
+    results: Vec<ValType>,
+    call: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>,
+) {
+    let member = name
+        .rsplit('.')
+        .next()
+        .unwrap_or(name)
+        .trim_start_matches("[resource-drop]")
+        .to_string();
+    let mut decl = HostFnDecl::new(module, name, call).with_sig(FuncSig {
+        name: member,
+        params,
+        results,
+    });
+    if let Some((res, kind)) = resource {
+        decl = decl.resource_member(ResourceBinding {
+            resource: res.to_string(),
+            kind,
+            // A destructor CONSUMES the handle — `own<T>`, not `borrow<T>`.
+            // Every other member borrows: reading a stream does not end it.
+            borrows_self: !matches!(kind, ResourceMemberKind::Destructor),
+        });
+    }
+    vm.register_host(decl);
+}
 
 pub fn register(vm: &mut VM) {
     register_input_stream(vm);
@@ -228,9 +296,15 @@ fn collect_ready_indices(pollables: &[Value]) -> Vec<usize> {
 
 fn register_input_stream(vm: &mut VM) {
     // [method]input-stream.read(self, len: u64) -> result<list<u8>, stream-error>
-    vm.register_host_fn(
+    wasi_fn(
+        vm,
         "wasi:io/streams",
         "[method]input-stream.read",
+        Some((INPUT_STREAM, ResourceMemberKind::Method)),
+        // `list<u8>` is `List(I32)`: `ValType` has no `u8`, and widening the
+        // ELEMENT is honest where inventing a narrower type would not be.
+        vec![borrowed(INPUT_STREAM), ValType::I64],
+        vec![wasi_result(ValType::List(Box::new(ValType::I32)))],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let stream = args.first().cloned().unwrap_or(Value::Null);
             let max = u64_arg(args, 1) as usize;
@@ -250,9 +324,13 @@ fn register_input_stream(vm: &mut VM) {
     );
 
     // [method]input-stream.blocking-read(self, len: u64) -> result<list<u8>, stream-error>
-    vm.register_host_fn(
+    wasi_fn(
+        vm,
         "wasi:io/streams",
         "[method]input-stream.blocking-read",
+        Some((INPUT_STREAM, ResourceMemberKind::Method)),
+        vec![borrowed(INPUT_STREAM), ValType::I64],
+        vec![wasi_result(ValType::List(Box::new(ValType::I32)))],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let stream = args.first().cloned().unwrap_or(Value::Null);
             let max = (u64_arg(args, 1) as usize).max(1);
@@ -277,9 +355,13 @@ fn register_input_stream(vm: &mut VM) {
     );
 
     // [method]input-stream.skip(self, num: u64) -> result<u64, stream-error>
-    vm.register_host_fn(
+    wasi_fn(
+        vm,
         "wasi:io/streams",
         "[method]input-stream.skip",
+        Some((INPUT_STREAM, ResourceMemberKind::Method)),
+        vec![borrowed(INPUT_STREAM), ValType::I64],
+        vec![wasi_result(ValType::I64)],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let stream = args.first().cloned().unwrap_or(Value::Null);
             let len = u64_arg(args, 1) as usize;
@@ -302,9 +384,13 @@ fn register_input_stream(vm: &mut VM) {
     );
 
     // [method]input-stream.blocking-skip(self, num: u64) -> result<u64, stream-error>
-    vm.register_host_fn(
+    wasi_fn(
+        vm,
         "wasi:io/streams",
         "[method]input-stream.blocking-skip",
+        Some((INPUT_STREAM, ResourceMemberKind::Method)),
+        vec![borrowed(INPUT_STREAM), ValType::I64],
+        vec![wasi_result(ValType::I64)],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let stream = args.first().cloned().unwrap_or(Value::Null);
             let len = u64_arg(args, 1) as usize;
@@ -327,9 +413,15 @@ fn register_input_stream(vm: &mut VM) {
     );
 
     // [method]input-stream.subscribe(self) -> pollable
-    vm.register_host_fn(
+    wasi_fn(
+        vm,
         "wasi:io/streams",
         "[method]input-stream.subscribe",
+        Some((INPUT_STREAM, ResourceMemberKind::Method)),
+        // Returns an OWNED pollable: the caller gets a new handle it must drop.
+        // The stream itself is only borrowed — subscribing does not consume it.
+        vec![borrowed(INPUT_STREAM)],
+        vec![ValType::Own(POLLABLE.to_string())],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let stream = args.first().cloned().unwrap_or(Value::Null);
             if fs::resource_id(&stream, fs::KIND_INPUT_STREAM).is_some() {
@@ -347,9 +439,15 @@ fn register_input_stream(vm: &mut VM) {
     // [resource-drop]input-stream(self) — release the registry entry for a
     // resource-backed stream. fd streams (stdin) carry no registry entry, so the
     // drop is a no-op; GC reclaims the handle object either way.
-    vm.register_host_fn(
+    wasi_fn(
+        vm,
         "wasi:io/streams",
         "[resource-drop]input-stream",
+        Some((INPUT_STREAM, ResourceMemberKind::Destructor)),
+        // `own`, not `borrow` — dropping CONSUMES the handle. This is the one
+        // distinction the `[resource-drop]` name prefix could never carry.
+        vec![ValType::Own(INPUT_STREAM.to_string())],
+        vec![],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let stream = args.first().cloned().unwrap_or(Value::Null);
             if let Some(id) = fs::resource_id(&stream, fs::KIND_INPUT_STREAM) {
@@ -364,9 +462,13 @@ fn register_input_stream(vm: &mut VM) {
 
 fn register_output_stream(vm: &mut VM) {
     // [method]output-stream.check-write(self) -> result<u64, stream-error>
-    vm.register_host_fn(
+    wasi_fn(
+        vm,
         "wasi:io/streams",
         "[method]output-stream.check-write",
+        Some((OUTPUT_STREAM, ResourceMemberKind::Method)),
+        vec![borrowed(OUTPUT_STREAM)],
+        vec![wasi_result(ValType::I64)],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let stream = args.first().cloned().unwrap_or(Value::Null);
             if fs::resource_id(&stream, fs::KIND_OUTPUT_STREAM).is_some() {
@@ -385,9 +487,16 @@ fn register_output_stream(vm: &mut VM) {
     );
 
     // [method]output-stream.write(self, contents: list<u8>) -> result<_, stream-error>
-    vm.register_host_fn(
+    wasi_fn(
+        vm,
         "wasi:io/streams",
         "[method]output-stream.write",
+        Some((OUTPUT_STREAM, ResourceMemberKind::Method)),
+        // WIT's ok arm here is `_` — empty. `ValType` has no unit, so `Any`
+        // stands in; what the declaration is really saying is "this can FAIL",
+        // which is the half every caller has to handle.
+        vec![borrowed(OUTPUT_STREAM), ValType::List(Box::new(ValType::I32))],
+        vec![wasi_result(ValType::Any)],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let stream = args.first().cloned().unwrap_or(Value::Null);
             let bytes = skt::bytes_from_value(args.get(1).unwrap_or(&Value::Null));
@@ -415,9 +524,13 @@ fn register_output_stream(vm: &mut VM) {
     );
 
     // [method]output-stream.blocking-write-and-flush(self, contents: list<u8>) -> result<_, stream-error>
-    vm.register_host_fn(
+    wasi_fn(
+        vm,
         "wasi:io/streams",
         "[method]output-stream.blocking-write-and-flush",
+        Some((OUTPUT_STREAM, ResourceMemberKind::Method)),
+        vec![borrowed(OUTPUT_STREAM), ValType::List(Box::new(ValType::I32))],
+        vec![wasi_result(ValType::Any)],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let stream = args.first().cloned().unwrap_or(Value::Null);
             let bytes = skt::bytes_from_value(args.get(1).unwrap_or(&Value::Null));
@@ -449,9 +562,13 @@ fn register_output_stream(vm: &mut VM) {
     );
 
     // [method]output-stream.flush(self) -> result<_, stream-error>
-    vm.register_host_fn(
+    wasi_fn(
+        vm,
         "wasi:io/streams",
         "[method]output-stream.flush",
+        Some((OUTPUT_STREAM, ResourceMemberKind::Method)),
+        vec![borrowed(OUTPUT_STREAM)],
+        vec![wasi_result(ValType::Any)],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let stream = args.first().cloned().unwrap_or(Value::Null);
             if let Some(id) = fs::resource_id(&stream, fs::KIND_OUTPUT_STREAM) {
@@ -480,9 +597,13 @@ fn register_output_stream(vm: &mut VM) {
     );
 
     // [method]output-stream.blocking-flush(self) -> result<_, stream-error>
-    vm.register_host_fn(
+    wasi_fn(
+        vm,
         "wasi:io/streams",
         "[method]output-stream.blocking-flush",
+        Some((OUTPUT_STREAM, ResourceMemberKind::Method)),
+        vec![borrowed(OUTPUT_STREAM)],
+        vec![wasi_result(ValType::Any)],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let stream = args.first().cloned().unwrap_or(Value::Null);
             if let Some(id) = fs::resource_id(&stream, fs::KIND_OUTPUT_STREAM) {
@@ -511,9 +632,13 @@ fn register_output_stream(vm: &mut VM) {
     );
 
     // [method]output-stream.subscribe(self) -> pollable
-    vm.register_host_fn(
+    wasi_fn(
+        vm,
         "wasi:io/streams",
         "[method]output-stream.subscribe",
+        Some((OUTPUT_STREAM, ResourceMemberKind::Method)),
+        vec![borrowed(OUTPUT_STREAM)],
+        vec![ValType::Own(POLLABLE.to_string())],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let stream = args.first().cloned().unwrap_or(Value::Null);
             if fs::resource_id(&stream, fs::KIND_OUTPUT_STREAM).is_some() {
@@ -530,9 +655,13 @@ fn register_output_stream(vm: &mut VM) {
     );
 
     // [method]output-stream.write-zeroes(self, len: u64) -> result<_, stream-error>
-    vm.register_host_fn(
+    wasi_fn(
+        vm,
         "wasi:io/streams",
         "[method]output-stream.write-zeroes",
+        Some((OUTPUT_STREAM, ResourceMemberKind::Method)),
+        vec![borrowed(OUTPUT_STREAM), ValType::I64],
+        vec![wasi_result(ValType::Any)],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let stream = args.first().cloned().unwrap_or(Value::Null);
             let len = u64_arg(args, 1) as usize;
@@ -561,9 +690,13 @@ fn register_output_stream(vm: &mut VM) {
     );
 
     // [method]output-stream.blocking-write-zeroes-and-flush(self, len: u64) -> result<_, stream-error>
-    vm.register_host_fn(
+    wasi_fn(
+        vm,
         "wasi:io/streams",
         "[method]output-stream.blocking-write-zeroes-and-flush",
+        Some((OUTPUT_STREAM, ResourceMemberKind::Method)),
+        vec![borrowed(OUTPUT_STREAM), ValType::I64],
+        vec![wasi_result(ValType::Any)],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let stream = args.first().cloned().unwrap_or(Value::Null);
             let len = u64_arg(args, 1) as usize;
@@ -596,9 +729,20 @@ fn register_output_stream(vm: &mut VM) {
     );
 
     // [method]output-stream.splice(self, src: borrow<input-stream>, len: u64) -> result<u64, stream-error>
-    vm.register_host_fn(
+    wasi_fn(
+        vm,
         "wasi:io/streams",
         "[method]output-stream.splice",
+        Some((OUTPUT_STREAM, ResourceMemberKind::Method)),
+        // TWO stream handles, both borrowed and of DIFFERENT resource types.
+        // Splicing consumes neither end — that is the fact a bare
+        // `(Value, Value)` pair could not state.
+        vec![
+            borrowed(OUTPUT_STREAM),
+            borrowed(INPUT_STREAM),
+            ValType::I64,
+        ],
+        vec![wasi_result(ValType::I64)],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let dst = args.first().cloned().unwrap_or(Value::Null);
             let src = args.get(1).cloned().unwrap_or(Value::Null);
@@ -625,9 +769,17 @@ fn register_output_stream(vm: &mut VM) {
     );
 
     // [method]output-stream.blocking-splice(self, src: borrow<input-stream>, len: u64) -> result<u64, stream-error>
-    vm.register_host_fn(
+    wasi_fn(
+        vm,
         "wasi:io/streams",
         "[method]output-stream.blocking-splice",
+        Some((OUTPUT_STREAM, ResourceMemberKind::Method)),
+        vec![
+            borrowed(OUTPUT_STREAM),
+            borrowed(INPUT_STREAM),
+            ValType::I64,
+        ],
+        vec![wasi_result(ValType::I64)],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let dst = args.first().cloned().unwrap_or(Value::Null);
             let src = args.get(1).cloned().unwrap_or(Value::Null);
@@ -654,9 +806,13 @@ fn register_output_stream(vm: &mut VM) {
 
     // [resource-drop]output-stream(self) — release the registry entry for a
     // resource-backed stream; fd streams (stdout/stderr) are a no-op.
-    vm.register_host_fn(
+    wasi_fn(
+        vm,
         "wasi:io/streams",
         "[resource-drop]output-stream",
+        Some((OUTPUT_STREAM, ResourceMemberKind::Destructor)),
+        vec![ValType::Own(OUTPUT_STREAM.to_string())],
+        vec![],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let stream = args.first().cloned().unwrap_or(Value::Null);
             if let Some(id) = fs::resource_id(&stream, fs::KIND_OUTPUT_STREAM) {
@@ -671,9 +827,13 @@ fn register_output_stream(vm: &mut VM) {
 
 fn register_pollable(vm: &mut VM) {
     // [method]pollable.ready(self) -> bool
-    vm.register_host_fn(
+    wasi_fn(
+        vm,
         "wasi:io/poll",
         "[method]pollable.ready",
+        Some((POLLABLE, ResourceMemberKind::Method)),
+        vec![borrowed(POLLABLE)],
+        vec![ValType::Bool],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let Some(obj) = args.first().and_then(as_obj) else {
                 return Value::Bool(false);
@@ -687,9 +847,15 @@ fn register_pollable(vm: &mut VM) {
     );
 
     // [method]pollable.block(self)
-    vm.register_host_fn(
+    wasi_fn(
+        vm,
         "wasi:io/poll",
         "[method]pollable.block",
+        Some((POLLABLE, ResourceMemberKind::Method)),
+        // Confirmed against a real call site: emitted with argc 1, so the
+        // handle IS passed even though this closure never reads it.
+        vec![borrowed(POLLABLE)],
+        vec![],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             if let Some(obj) = args.first().and_then(as_obj) {
                 skt::block_until_ready(&obj);
@@ -699,9 +865,15 @@ fn register_pollable(vm: &mut VM) {
     );
 
     // poll(list<borrow<pollable>>) -> list<u32>  — unified handler also registered here
-    vm.register_host_fn(
+    wasi_fn(
+        vm,
         "wasi:io/poll",
         "poll",
+        // No resource: `poll` is a FREE function over a list of pollables, not
+        // a member of one. It is the only function in this file that is not.
+        None,
+        vec![ValType::List(Box::new(borrowed(POLLABLE)))],
+        vec![ValType::List(Box::new(ValType::I32))],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let Some(list) = args.first() else {
                 return skt::value_array(vec![]);
@@ -723,9 +895,13 @@ fn register_pollable(vm: &mut VM) {
 
     // [resource-drop]pollable(self) — pollables are transient handle objects with
     // no registry backing, so the drop is a GC-safe no-op.
-    vm.register_host_fn(
+    wasi_fn(
+        vm,
         "wasi:io/poll",
         "[resource-drop]pollable",
+        Some((POLLABLE, ResourceMemberKind::Destructor)),
+        vec![ValType::Own(POLLABLE.to_string())],
+        vec![],
         Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::Null),
     );
 }
@@ -734,9 +910,13 @@ fn register_pollable(vm: &mut VM) {
 
 fn register_error(vm: &mut VM) {
     // [method]error.to-debug-string(self) -> string
-    vm.register_host_fn(
+    wasi_fn(
+        vm,
         "wasi:io/error",
         "[method]error.to-debug-string",
+        Some((ERROR, ResourceMemberKind::Method)),
+        vec![borrowed(ERROR)],
+        vec![ValType::String],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             if let Some(Value::Object(obj)) = args.first() {
                 let inner = obj.lock().unwrap();
@@ -759,9 +939,13 @@ fn register_error(vm: &mut VM) {
 
     // [resource-drop]error(self) — error records are plain handle objects with no
     // registry backing, so the drop is a GC-safe no-op.
-    vm.register_host_fn(
+    wasi_fn(
+        vm,
         "wasi:io/error",
         "[resource-drop]error",
+        Some((ERROR, ResourceMemberKind::Destructor)),
+        vec![ValType::Own(ERROR.to_string())],
+        vec![],
         Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::Null),
     );
 }

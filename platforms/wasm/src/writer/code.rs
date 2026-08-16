@@ -15,146 +15,18 @@ use vybe_runtime::opcode::{OperandFormat, read_leb_u32};
 use vybe_runtime::value::Value;
 use vybe_runtime::{Chunk, Op};
 
-/// A try/catch region extracted from the bytecode.
-///
-/// The compiler emits:
-/// ```text
-/// TRY_START catch_off fin_off  ; 6 bytes
-///   ...body...
-/// TRY_END                       ; 2 bytes
-/// [else body]
-/// BR skip_to_finally            ; 4 bytes; target = after_ip
-///   ...catch dispatch + body...
-/// after_ip:
-/// ```
-///
-/// We translate that to a structural WASM try_table:
-/// ```wasm
-/// block $after (void)
-///   block $catch (result externref)
-///     try_table (catch $vybe_exception $catch)
-///       ...body...
-///     end
-///     br $after            ;; skip catch on normal path
-///   end $catch             ;; exception externref on stack (from tag param)
-///   ...catch handler...
-/// end $after
-/// ```
-#[derive(Clone, Copy)]
-struct TryRegion {
-    /// Byte offset of the TRY_START opcode in the source chunk.
-    try_start_pos: usize,
-    /// Byte offset of the matching TRY_END opcode.
-    try_end_pos: usize,
-    /// Byte offset where catch-dispatch code begins (just after the
-    /// compiler-emitted BR that skips catch on success).
-    catch_ip: usize,
-    /// Byte offset where normal control flow resumes after the whole
-    /// try region (target of the skip-BR).
-    after_ip: usize,
-}
-
-/// Walk the bytecode collecting try regions keyed by TRY_START offset.
-///
-/// Each catch_ip must be preceded by a 4-byte BR instruction; we use
-/// that BR's target to locate `after_ip`. If the BR isn't where we
-/// expect, the region is skipped (emitter falls back to nop-ing the
-/// try markers, preserving pre-exception-handling behavior).
-fn collect_try_regions(chunk: &Chunk) -> std::collections::HashMap<usize, TryRegion> {
-    let mut regions = std::collections::HashMap::new();
-    let mut ip = 0;
-    while ip + 3 < chunk.code.len() {
-        let Some(op) = Op::decode(
-            ((chunk.code[ip] as u16) << 8) | chunk.code[ip + 1] as u16,
-            ((chunk.code[ip + 2] as u16) << 8) | chunk.code[ip + 3] as u16,
-        ) else {
-            ip += 4;
-            continue;
-        };
-        if op == Op::TRY_TABLE {
-            let op_pos = ip;
-            // Internal TRY_TABLE immediate layout: after the 4-byte opcode —
-            // u8 clause_count, then per clause [u8 kind, u16 tag, u16 offset].
-            // Only the single-clause shape common::errors::emit_try_start emits
-            // gets this structural block-wrapping transform; multi-clause
-            // try_tables (e.g. from wast) fall through to the generic path.
-            let clause_count = chunk.code[ip + 4];
-            if clause_count != 1 {
-                ip += opcode_size(op, &chunk.code, ip);
-                continue;
-            }
-            // Single clause: catch_offset lives at ip+8..ip+10, operands end ip+10.
-            let catch_off = ((chunk.code[ip + 8] as i16) << 8) | (chunk.code[ip + 9] as i16 & 0xFF);
-            let operands_end = ip + 10;
-            // catch_ip is relative to the byte *after* the immediate (the VM
-            // reads clause_count/kind/tag/offset before adding the offset).
-            let catch_ip = (operands_end as i64 + catch_off as i64) as usize;
-            ip = operands_end;
-
-            // Find the matching structural `end` that closes this try_table.
-            // `try_table` is a real block (spec), closed by a structural END
-            // (common::errors::emit_try_end — the retired custom TRY_END is
-            // gone). Count every block opener and decrement on END; the END at
-            // depth 0 is the close.
-            let mut depth = 1i32;
-            let mut try_end_pos: Option<usize> = None;
-            let mut scan = ip;
-            while scan + 3 < chunk.code.len() {
-                let Some(inner) = Op::decode(
-                    ((chunk.code[scan] as u16) << 8) | chunk.code[scan + 1] as u16,
-                    ((chunk.code[scan + 2] as u16) << 8) | chunk.code[scan + 3] as u16,
-                ) else {
-                    scan += 4;
-                    continue;
-                };
-                let size = opcode_size(inner, &chunk.code, scan);
-                if inner == Op::BLOCK
-                    || inner == Op::LOOP
-                    || inner == Op::IF
-                    || inner == Op::TRY_TABLE
-                {
-                    depth += 1;
-                } else if inner == Op::END {
-                    depth -= 1;
-                    if depth == 0 {
-                        try_end_pos = Some(scan);
-                        break;
-                    }
-                }
-                scan += size;
-            }
-
-            if let Some(te_pos) = try_end_pos {
-                // Verify the 4 bytes before catch_ip are a BR opcode.
-                if catch_ip >= 6 && catch_ip <= chunk.code.len() {
-                    let br_pos = catch_ip - 6;
-                    let br_group =
-                        ((chunk.code[br_pos] as u16) << 8) | chunk.code[br_pos + 1] as u16;
-                    let br_sub =
-                        ((chunk.code[br_pos + 2] as u16) << 8) | chunk.code[br_pos + 3] as u16;
-                    let is_br = br_group == Op::BR.group() && br_sub == Op::BR.sub();
-                    if is_br {
-                        let br_off = ((chunk.code[br_pos + 4] as i16) << 8)
-                            | (chunk.code[br_pos + 5] as i16 & 0xFF);
-                        let after_ip = (catch_ip as i64 + br_off as i64) as usize;
-                        regions.insert(
-                            op_pos,
-                            TryRegion {
-                                try_start_pos: op_pos,
-                                try_end_pos: te_pos,
-                                catch_ip,
-                                after_ip,
-                            },
-                        );
-                    }
-                }
-            }
-        } else {
-            ip += opcode_size(op, &chunk.code, ip);
-        }
-    }
-    regions
-}
+// The `TryRegion` machinery that used to live here is DELETED.
+//
+// It reconstructed `block $after; block $catch; … end` around a `try_table` by
+// reading the clause's third field as a signed BYTE OFFSET and doing pointer
+// arithmetic with it. That field is a spec `labelidx` — a block depth — so the
+// arithmetic produced a garbage `catch_ip`, and because the width is unchanged
+// nothing errored: the emitted `.wasm` was simply wrong.
+//
+// The reconstruction is also no longer needed. The compiler emits the handler
+// block for real (see `errors::emit_try_start`), so the structure the writer
+// used to invent is already present in the bytecode and the ordinary
+// BLOCK/END/BR paths translate it. Synthesizing it again would double-wrap.
 
 /// Byte size of the LEB128-encoded value (unsigned).
 fn leb128_u32_size(v: u32) -> u32 {
@@ -363,11 +235,34 @@ fn read_leb_u64(code: &[u8], ip: &mut usize) -> u64 {
     result
 }
 
+/// Write a blocktype immediate. The shorthands only spell "no results" and "one
+/// value"; a block that takes operands or yields several must use the s33
+/// typeidx form, which `build_type_context` pre-declared for every
+/// (params, results) shape the bytecode contains.
+fn write_blocktype(body: &mut Vec<u8>, params: u8, results: u8, type_ctx: &WasmTypeContext) {
+    if params == 0 && results == 0 {
+        body.push(TYPE_VOID);
+        return;
+    }
+    if params == 0 && results == 1 {
+        body.push(TYPE_EXTERNREF);
+        return;
+    }
+    match type_ctx.block_type_by_results.get(&(params, results)) {
+        // s33, the same signed-LEB form the BLOCK path writes.
+        Some(&tidx) => write_leb128_i32(body, tidx as i32),
+        // Unreachable for bytecode this writer scanned; degrade to the closest
+        // shorthand rather than emitting a dangling typeidx.
+        None => body.push(if results == 0 { TYPE_VOID } else { TYPE_EXTERNREF }),
+    }
+}
+
 pub fn encode_code_section(
     chunks: &[Chunk],
     rt_imports: &[(&str, &str)],
     type_ctx: &WasmTypeContext,
     global_map: &std::collections::HashMap<String, u32>,
+    tag_plan: &crate::writer::proposals::exception_handling::ModuleTagPlan,
 ) -> Vec<u8> {
     let host_import_count = chunks.first().map(|c| c.imports.len()).unwrap_or(0);
 
@@ -381,7 +276,7 @@ pub fn encode_code_section(
     let mut out = Vec::new();
     write_leb128_u32(&mut out, chunks.len() as u32);
 
-    for chunk in chunks {
+    for (ci, chunk) in chunks.iter().enumerate() {
         let mut body = Vec::new();
 
         // Check how many temp locals we need for stack manipulation
@@ -419,38 +314,9 @@ pub fn encode_code_section(
         //   skip_br   → rewrite the compiler's BR to `br 1` (to $after)
         //   catch_ip  → close $catch (exception externref on stack)
         //   after_ip  → close $after
-        let try_regions = collect_try_regions(chunk);
-        let mut try_start_events: std::collections::HashMap<usize, TryRegion> =
-            std::collections::HashMap::new();
-        let mut try_end_events: std::collections::HashSet<usize> = std::collections::HashSet::new();
-        let mut skip_br_events: std::collections::HashSet<usize> = std::collections::HashSet::new();
-        let mut catch_ip_events: std::collections::HashSet<usize> =
-            std::collections::HashSet::new();
-        let mut after_ip_events: std::collections::HashMap<usize, usize> =
-            std::collections::HashMap::new();
-        for (_pos, region) in &try_regions {
-            try_start_events.insert(region.try_start_pos, *region);
-            try_end_events.insert(region.try_end_pos);
-            skip_br_events.insert(region.catch_ip - 6);
-            catch_ip_events.insert(region.catch_ip);
-            *after_ip_events.entry(region.after_ip).or_insert(0) += 1;
-        }
-
         // Translate opcodes
         let mut ip = 0;
         while ip < chunk.code.len() {
-            // Emit the $catch end marker when we land on a catch_ip.
-            if catch_ip_events.contains(&ip) {
-                body.push(0x0B); // end $catch — exception externref on stack
-            }
-            // Emit any $after closes — at after_ip the whole try region
-            // is done. Nested regions may pile up here.
-            if let Some(n) = after_ip_events.get(&ip) {
-                for _ in 0..*n {
-                    body.push(0x0B);
-                }
-            }
-
             if ip + 3 >= chunk.code.len() {
                 break;
             }
@@ -465,40 +331,59 @@ pub fn encode_code_section(
                 }
             };
 
-            // TRY_TABLE → open structural blocks + a real spec try_table.
-            if op == Op::TRY_TABLE && try_start_events.contains_key(&ip) {
-                body.push(0x02);
-                body.push(TYPE_VOID); // block $after
-                body.push(0x02);
-                body.push(TYPE_EXTERNREF); // block $catch (result externref)
+            // TRY_TABLE → a real spec try_table, clause for clause.
+            //
+            // This used to SYNTHESIZE `block $after; block $catch; …` around
+            // the instruction, because the internal form had no handler block
+            // — the clause carried a patched byte offset and the structure had
+            // to be reconstructed from it. The compiler now emits that shape
+            // natively (the clause names a `labelidx`, and the block whose
+            // `end` is the handler is really there), so synthesizing it again
+            // would DOUBLE-WRAP the region. The surrounding BLOCK/END/BR
+            // opcodes translate through the ordinary paths below.
+            //
+            // Writing the clauses that are actually present also lifts the old
+            // single-clause restriction: a multi-clause `try_table` from wast
+            // used to fall through to the nop-skip and emit `0x01`.
+            if op == Op::TRY_TABLE {
+                // [params, results, u16 clause_count, N×(kind, tag, label)]
+                let params = chunk.code[ip + 4];
+                let results = chunk.code[ip + 5];
+                let clause_count =
+                    (((chunk.code[ip + 6] as usize) << 8) | chunk.code[ip + 7] as usize) as usize;
                 body.push(0x1F); // try_table
-                body.push(TYPE_VOID); // block type: void
-                write_leb128_u32(&mut body, 1); // 1 catch clause
-                body.push(0x00); // variant: catch (tag, label)
-                write_leb128_u32(
-                    &mut body,
-                    crate::writer::proposals::exception_handling::VYBE_EXCEPTION_TAG,
-                );
-                write_leb128_u32(&mut body, 0); // label 0 = $catch
-                ip += 10; // opcode(4) + [clause_count,kind,tag(2),offset(2)] = 6
+                // The real blocktype. The shorthands only cover void and a
+                // single value; anything that takes operands or yields several
+                // needs the s33 typeidx form, and writing `externref` for those
+                // silently changed the block's type.
+                write_blocktype(&mut body, params, results, type_ctx);
+                write_leb128_u32(&mut body, clause_count as u32);
+                for i in 0..clause_count {
+                    let base = ip + 8 + i * 5;
+                    let kind = chunk.code[base];
+                    let tag = ((chunk.code[base + 1] as u16) << 8) | chunk.code[base + 2] as u16;
+                    let label = ((chunk.code[base + 3] as u32) << 8) | chunk.code[base + 4] as u32;
+                    body.push(kind);
+                    // catch / catch_ref carry a tagidx; the catch_all kinds do
+                    // not. The clause's own tag, mapped into the module's tag
+                    // index space — writing the shared exception tag here fused
+                    // every tag into one and broke the matching rule.
+                    if kind == 0x00 || kind == 0x01 {
+                        write_leb128_u32(&mut body, tag_plan.module_tag(ci, tag));
+                    }
+                    write_leb128_u32(&mut body, label);
+                }
+                // opcode(4) + params(1) + results(1) + clause_count(2)
+                //   + N·[kind, tag(2), label(2)]
+                ip += 8 + clause_count * 5;
                 continue;
             }
-            // The structural END that closes the try_table block → spec `end`.
-            // An `else` body (Python/Ruby) runs inside $catch, unprotected,
-            // between this point and skip_br.
-            if op == Op::END && try_end_events.contains(&ip) {
-                body.push(0x0B); // end (closes try_table)
-                ip += 4;
-                continue;
-            }
-            // Skip-BR (compiler-emitted BR that jumps over catch on the
-            // success path) → replace with `br $after`.
-            if op == Op::BR && skip_br_events.contains(&ip) {
-                body.push(0x0C);
-                write_leb128_u32(&mut body, 1);
-                ip += 4;
-                continue;
-            }
+            // The `end` closing a try_table and the success-path `br` that
+            // skips the handler need no special case any more: both are
+            // ORDINARY structured instructions in the emitted bytecode now, so
+            // the generic paths below translate them. The old code rewrote the
+            // `br` to a hardcoded `br 1` because the writer had invented the
+            // blocks it was branching past; the compiler emits the real depth.
             let op_start = ip;
             ip += 4;
 
@@ -507,6 +392,7 @@ pub fn encode_code_section(
                     &mut body,
                     op,
                     chunk,
+                    ci,
                     &mut ip,
                     op_start,
                     &rt_idx,
@@ -515,6 +401,7 @@ pub fn encode_code_section(
                     type_ctx,
                     global_map,
                     host_import_count,
+                    tag_plan,
                 );
             } else if op.group() == 0xFB {
                 emit_gc_op(
@@ -598,10 +485,12 @@ pub fn encode_code_section(
 
 /// Emit a core WASM MVP opcode (prefix 0x00).
 /// `temp_idx` is the index of the temp externref local (valid when `has_temp` is true).
+#[allow(clippy::too_many_arguments)]
 fn emit_core_op(
     body: &mut Vec<u8>,
     op: Op,
     chunk: &Chunk,
+    ci: usize,
     ip: &mut usize,
     op_start: usize,
     rt_idx: &std::collections::HashMap<(&str, &str), usize>,
@@ -610,6 +499,7 @@ fn emit_core_op(
     type_ctx: &WasmTypeContext,
     global_map: &std::collections::HashMap<String, u32>,
     _host_import_count: usize,
+    tag_plan: &crate::writer::proposals::exception_handling::ModuleTagPlan,
 ) {
     match op {
         _ if op == Op::LOCAL_GET => {
@@ -885,23 +775,21 @@ fn emit_core_op(
         // our value type is externref (not exnref), we re-throw through
         // the same tag to stay within the single-tag design.
         _ if op == Op::THROW => {
-            // Internal fixed-width u16 tag immediate → LEB tagidx. The
-            // serialized tag section currently declares only the single
-            // `$vybe_exception` tag, which is what compilers emit; locally
-            // declared foreign tags would need tag-section entries here.
-            let _tag = read_u16(&chunk.code, ip);
+            // Internal fixed-width u16 tag immediate → LEB tagidx, mapped into
+            // the module's tag index space. Writing the shared exception tag
+            // for every throw discarded which tag was raised, so a catch on a
+            // different tag matched it.
+            let tag = read_u16(&chunk.code, ip);
             body.push(0x08); // throw
-            write_leb128_u32(
-                body,
-                crate::writer::proposals::exception_handling::VYBE_EXCEPTION_TAG,
-            );
+            write_leb128_u32(body, tag_plan.module_tag(ci, tag));
         }
+        // `throw_ref` re-raises the exception an exnref refers to: opcode 0x0A,
+        // and it takes NO tag immediate — the tag comes from the exception
+        // itself. This used to emit 0x08 (`throw`) plus a tagidx, which is a
+        // DIFFERENT instruction: it left the exnref on the stack and raised a
+        // fresh exception under the shared tag.
         _ if op == Op::THROW_REF => {
-            body.push(0x08);
-            write_leb128_u32(
-                body,
-                crate::writer::proposals::exception_handling::VYBE_EXCEPTION_TAG,
-            );
+            body.push(0x0A);
         }
         // Reference-types `table.get tbl` / `table.set tbl` (core prefix).
         // Bytecode carries a u16 BE table index; WASM binary uses a
@@ -1894,8 +1782,12 @@ fn emit_vm_internal_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize
                     *ip += 1 + uv * 2;
                 }
                 OperandFormat::TryTable => {
-                    let count = chunk.code.get(*ip).copied().unwrap_or(0) as usize;
-                    *ip += 1 + count * 3;
+                    // Route through the canonical size (`OperandFormat::size_in`,
+                    // `opcode/mod.rs`) rather than re-deriving it. This said
+                    // `1 + count * 3`, but a clause is FIVE bytes — kind(1) +
+                    // tag(2) + label(2) — so it under-skipped by 2 per clause
+                    // and resumed decoding mid-operand.
+                    *ip += fmt.size_in(&chunk.code, *ip);
                 }
                 _ => {
                     *ip += fmt.size_in(&chunk.code, *ip);

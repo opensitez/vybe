@@ -648,8 +648,15 @@ pub(crate) struct TagEntity {
 /// popped (as a group) by TRY_END or on catch.
 #[derive(Debug, Clone)]
 pub(crate) struct ExceptionHandler {
-    /// Instruction pointer to jump to on catch.
-    pub(crate) catch_ip: usize,
+    /// Spec `labelidx` — the RELATIVE BLOCK DEPTH this clause branches to,
+    /// resolved against the label stack as it stood when the handler was
+    /// installed (`label_depth` below), exactly as `br` resolves its operand.
+    ///
+    /// This was a byte offset (`catch_ip`), which is a different quantity: it
+    /// cannot survive import from a conforming `.wasm`, and it truncated past a
+    /// 64KB try body, resuming the handler mid-instruction. See
+    /// `Chunk::emit_try_table_clauses`.
+    pub(crate) catch_label: u16,
     /// Chunk index the handler was registered in.
     pub(crate) _chunk_index: usize,
     /// Stack depth when try_start was executed (for unwinding).
@@ -1138,6 +1145,14 @@ pub struct LabelEntry {
     /// True if this label closes a try_table. Normal END must also pop
     /// the active exception handler for the protected region.
     pub is_try: bool,
+    /// For a try label, the handler `group` its clauses were installed under.
+    /// A `try_table` pushes ONE label but one handler per CLAUSE, so the label
+    /// has to name the whole group: disposing of "one handler per exited try
+    /// label" left every clause but the first armed. Zero when `is_try` is
+    /// false. Identifying the region by group rather than by a handler-stack
+    /// index keeps it valid across a JSPI fiber capture, which re-indexes the
+    /// handler stack but never renumbers a group.
+    pub try_group: u64,
     /// Number of stack values the label carries when branched to.
     pub result_arity: u8,
     /// Value-stack height at label entry. Branches restore this height while
@@ -2059,12 +2074,24 @@ impl VM {
         } else {
             len - depth - 1
         };
-        let exited_try_count = self.label_stack[new_len..]
+        // A `try_table` pushes ONE structural label but one handler per CLAUSE,
+        // all sharing a `group`. Branching out of it leaves the region exactly
+        // as falling off its `end` does, so it must dispose of the whole group.
+        // Disposing of one handler per exited try label left every clause but
+        // the first armed, and a stale handler is still matched — a later throw
+        // that must escape gets caught by a region the program already left.
+        //
+        // Every try_table still open inside the exited range has its own label
+        // in this slice, so naming each exited label's group removes exactly
+        // the regions being left and nothing enclosing them.
+        let exited_groups: Vec<u64> = self.label_stack[new_len..]
             .iter()
             .filter(|label| label.is_try)
-            .count();
-        for _ in 0..exited_try_count {
-            self.exception_handlers.pop();
+            .map(|label| label.try_group)
+            .collect();
+        if !exited_groups.is_empty() {
+            self.exception_handlers
+                .retain(|h| !exited_groups.contains(&h.group));
         }
         self.label_stack.truncate(new_len);
     }

@@ -332,6 +332,18 @@ pub struct Chunk {
     /// "shape" — the `call_indirect` runtime type check compares it against
     /// the call site's expected `[params]→[results]`.
     pub param_count: u8,
+    /// The function's declared type as VALUE TYPES — `(params, results)`,
+    /// each comma-separated in declaration order.
+    ///
+    /// `param_count`/`result_arity` above are the shape as ARITIES, which is
+    /// all `call_indirect` compares. That is not enough for `ref.test`/
+    /// `ref.cast` against a concrete `(ref $t)`: a function type's identity is
+    /// STRUCTURAL (`Comptype_sub/func` matches on the parameter and result
+    /// types, with no name in the rule), so matching on arities alone would
+    /// make `(func (param i32))` and `(func (param f64))` indistinguishable.
+    /// `None` for chunks that are not wast functions — those never carry a
+    /// declared WASM function type.
+    pub func_sig: Option<(String, String)>,
     /// JSPI: this function is `async` in its source language. The
     /// compiler sets this flag when compiling an `async function` /
     /// `async def` / `Async Function`. The WASM emitter writes a
@@ -483,6 +495,7 @@ impl Chunk {
             result_arity: 1,
             is_method: false,
             param_count: 0,
+            func_sig: None,
             is_async: false,
             is_generator: false,
             capture_count: 0,
@@ -651,24 +664,65 @@ impl Chunk {
     /// here: the shared `errors::emit_try_table`, the wast `WasmTryTable`
     /// lowering, and the `.wasm` reader importing foreign modules; the VM
     /// (`TRY_TABLE` dispatch) and the codec writer decode this exact layout.
+    ///
     /// Layout: `[try_table, u8 clause_count, per clause: u8 kind, u16 tag(be),
-    /// u16 offset(be)]`; clauses match by TAG IDENTITY in order. Each `(kind,
-    /// tag)` uses the `CATCH_KIND_*` values (tag ignored for catch_all kinds).
-    /// Returns each clause's offset-placeholder byte position — patch it with
-    /// the forward distance to its handler once that handler is emitted.
-    pub fn emit_try_table_clauses(&mut self, clauses: &[(u8, u16)], line: u32) -> Vec<usize> {
+    /// u16 label(be)]`; clauses match by TAG IDENTITY in order. Each `(kind,
+    /// tag, label)` uses the `CATCH_KIND_*` values (tag ignored for catch_all
+    /// kinds).
+    ///
+    /// The third field is a spec **`labelidx`** — a relative BLOCK DEPTH,
+    /// resolved against the label stack exactly as `br` resolves its operand.
+    /// It is NOT a byte offset, and the difference is not cosmetic:
+    ///
+    ///   * a depth is what the spec encodes (`catch 0x00 tagidx labelidx`), and
+    ///     it is what a conforming `.wasm` carries, so import round-trips;
+    ///   * a byte offset had a 64KB ceiling. Past 65535 bytes of try body the
+    ///     patch truncated, the handler resumed MID-INSTRUCTION, and the VM
+    ///     reported a misaligned decode (`Invalid opcode: 0x0000 0x2000` — a
+    ///     `local.get` read one byte late) with nothing pointing at the try.
+    ///     Ordinary code reaches that: one measured php function body emitted
+    ///     22 404 instructions for a single `$a . $b`.
+    ///
+    /// Depth resolution is already the house mechanism — `patch_block` and
+    /// `patch_loop` are no-ops because `build_block_table` resolves
+    /// `block`/`loop`/`if`/`br` structurally. `try_table` was the lone holdout
+    /// still patching an offset; it no longer is, so there is nothing to patch
+    /// and this returns nothing.
+    ///
+    /// The label must name a block whose `end` is where the handler code
+    /// begins, and whose result arity matches the tag's payload — the values
+    /// the catch pushes travel as that block's results.
+    /// Layout: `[try_table, u8 param_count, u8 result_count, u16 clause_count,
+    /// per clause: u8 kind, u16 tag(be), u16 label(be)]`.
+    ///
+    /// The BLOCKTYPE (`param_count`/`result_count`) is spec `try_table bt …` —
+    /// `try_table` IS a block and may take and produce values. It used to be
+    /// absent entirely, and the VM pushed `result_arity: 0` unconditionally, so
+    /// a `try_table` with results discarded them on normal completion. Encoded
+    /// exactly as `BLOCK`'s, so the two agree.
+    ///
+    /// `clause_count` is u16, not u8: the spec's `vec(catch)` length is a u32,
+    /// and u8 silently capped a module at 255 clauses.
+    pub fn emit_try_table_clauses(
+        &mut self,
+        params: u8,
+        results: u8,
+        clauses: &[(u8, u16, u16)],
+        line: u32,
+    ) {
         self.emit_op(Op::TRY_TABLE, line);
-        self.emit(clauses.len() as u8, line);
-        let mut offset_positions = Vec::with_capacity(clauses.len());
-        for &(kind, tag) in clauses {
+        self.emit(params, line);
+        self.emit(results, line);
+        let n = clauses.len() as u16;
+        self.emit((n >> 8) as u8, line);
+        self.emit((n & 0xff) as u8, line);
+        for &(kind, tag, label) in clauses {
             self.emit(kind, line);
             self.emit((tag >> 8) as u8, line);
             self.emit((tag & 0xff) as u8, line);
-            offset_positions.push(self.current_offset());
-            self.emit(0, line); // catch offset hi (placeholder)
-            self.emit(0, line); // catch offset lo (placeholder)
+            self.emit((label >> 8) as u8, line);
+            self.emit((label & 0xff) as u8, line);
         }
-        offset_positions
     }
 
     pub fn emit_op_u16(&mut self, op: Op, operand: u16, line: u32) {

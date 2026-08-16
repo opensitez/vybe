@@ -2,12 +2,59 @@ use std::io::{BufRead, Write};
 use std::sync::Arc;
 use std::sync::Mutex;
 use vybe_runtime::value::Object;
-use vybe_runtime::{HostContext, VM, Value};
+use vybe_runtime::vm::HostFnDecl;
+use vybe_runtime::{FuncSig, HostContext, VM, ValType, Value};
 
+/// One path argument — the shape of most of this module.
+fn path() -> Vec<ValType> {
+    vec![ValType::String]
+}
+
+/// Register a `wasi:filesystem` function WITH its signature.
+///
+/// No resource binding, unlike `io.rs`: this surface is path-based, and a path
+/// is a string rather than a handle the host owns. `openFile`/`closeFile` are
+/// the exception — they pass a file HANDLE — but it travels as a plain value
+/// here, so there is no resource type to bind to and claiming one would be a
+/// model this module does not have.
+fn fs_fn(
+    vm: &mut VM,
+    name: &str,
+    kebab: &str,
+    params: Vec<ValType>,
+    results: Vec<ValType>,
+    call: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>,
+) {
+    vm.register_host(
+        HostFnDecl::new("wasi:filesystem", name, call).with_sig(FuncSig {
+            name: kebab.to_string(),
+            params,
+            results,
+        }),
+    );
+}
+
+/// `pathCombine`, `printFile`, `writeFile_handle`, `lineInput` and `inputFile`
+/// are deliberately left UNDECLARED.
+///
+/// The first three are variadic — `pathCombine` is `Path.Combine(a, b, c…)` and
+/// takes however many segments it is given. `lineInput` is emitted with argc 1,
+/// 2 AND 3 by the Pascal frontend (`ReadLn` with a varying number of targets),
+/// which is the same thing seen from the call side. `inputFile`'s closure reads
+/// no arguments and has no measured call site, so its arity is genuinely
+/// unknown — and UNKNOWN is what leaving it undeclared says.
 pub fn register(vm: &mut VM) {
-    vm.register_host_fn(
-        "wasi:filesystem",
+    fs_fn(
+        vm,
         "readFile",
+        "read-file",
+        path(),
+        // The closure answers `"Error: …"` as a STRING on failure rather than a
+        // `result`, so `String` is the honest declaration of what it returns.
+        // Declaring `result<string, _>` would describe a shape no caller can
+        // discriminate — that is a real gap, and naming it here is better than
+        // a signature that quietly claims otherwise.
+        vec![ValType::String],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let path = s(args, 0);
             match std::fs::read_to_string(&path) {
@@ -17,9 +64,16 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "wasi:filesystem",
+    fs_fn(
+        vm,
         "readFileBytes",
+        "read-file-bytes",
+        path(),
+        // `null` on failure, so the answer is genuinely optional here — unlike
+        // `readFile` next door, which folds the error into the string.
+        vec![ValType::Option(Box::new(ValType::List(Box::new(
+            ValType::I32,
+        ))))],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let path = s(args, 0);
             match std::fs::read(&path) {
@@ -32,9 +86,12 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "wasi:filesystem",
+    fs_fn(
+        vm,
         "writeFile",
+        "write-file",
+        vec![ValType::String, ValType::String],
+        vec![ValType::Bool],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let path = s(args, 0);
             let data = s(args, 1);
@@ -45,9 +102,12 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "wasi:filesystem",
+    fs_fn(
+        vm,
         "appendFile",
+        "append-file",
+        vec![ValType::String, ValType::String],
+        vec![ValType::Bool],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             use std::io::Write;
             let path = s(args, 0);
@@ -66,33 +126,45 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "wasi:filesystem",
+    fs_fn(
+        vm,
         "exists",
+        "exists",
+        path(),
+        vec![ValType::Bool],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             Value::Bool(std::path::Path::new(&s(args, 0)).exists())
         }),
     );
 
-    vm.register_host_fn(
-        "wasi:filesystem",
+    fs_fn(
+        vm,
         "isFile",
+        "is-file",
+        path(),
+        vec![ValType::Bool],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             Value::Bool(std::path::Path::new(&s(args, 0)).is_file())
         }),
     );
 
-    vm.register_host_fn(
-        "wasi:filesystem",
+    fs_fn(
+        vm,
         "isDir",
+        "is-dir",
+        path(),
+        vec![ValType::Bool],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             Value::Bool(std::path::Path::new(&s(args, 0)).is_dir())
         }),
     );
 
-    vm.register_host_fn(
-        "wasi:filesystem",
+    fs_fn(
+        vm,
         "remove",
+        "remove",
+        path(),
+        vec![ValType::Bool],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let path = s(args, 0);
             let p = std::path::Path::new(&path);
@@ -105,9 +177,12 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "wasi:filesystem",
+    fs_fn(
+        vm,
         "listDir",
+        "list-dir",
+        path(),
+        vec![ValType::List(Box::new(ValType::String))],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let path = s(args, 0);
             match std::fs::read_dir(&path) {
@@ -123,17 +198,23 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "wasi:filesystem",
+    fs_fn(
+        vm,
         "mkdir",
+        "mkdir",
+        path(),
+        vec![ValType::Bool],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             Value::Bool(std::fs::create_dir_all(&s(args, 0)).is_ok())
         }),
     );
 
-    vm.register_host_fn(
-        "wasi:filesystem",
+    fs_fn(
+        vm,
         "fileSize",
+        "file-size",
+        path(),
+        vec![ValType::F64],
         Box::new(
             |_ctx: &mut HostContext, args: &[Value]| match std::fs::metadata(&s(args, 0)) {
                 Ok(m) => Value::F64(m.len() as f64),
@@ -143,9 +224,12 @@ pub fn register(vm: &mut VM) {
     );
 
     // rename(oldPath, newPath)
-    vm.register_host_fn(
-        "wasi:filesystem",
+    fs_fn(
+        vm,
         "rename",
+        "rename",
+        vec![ValType::String, ValType::String],
+        vec![ValType::Bool],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let old = s(args, 0);
             let new = s(args, 1);
@@ -154,9 +238,12 @@ pub fn register(vm: &mut VM) {
     );
 
     // copy(src, dest)
-    vm.register_host_fn(
-        "wasi:filesystem",
+    fs_fn(
+        vm,
         "copy",
+        "copy",
+        vec![ValType::String, ValType::String],
+        vec![ValType::Bool],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let src = s(args, 0);
             let dest = s(args, 1);
@@ -165,9 +252,15 @@ pub fn register(vm: &mut VM) {
     );
 
     // stat(path) → object { size, isFile, isDir, modified }
-    vm.register_host_fn(
-        "wasi:filesystem",
+    fs_fn(
+        vm,
         "stat",
+        "stat",
+        path(),
+        // A record of fields, not a scalar — `Any` because `ValType::Record`
+        // would have to name and order every field, and this answers an object
+        // whose shape belongs to the caller's language, not to WIT.
+        vec![ValType::Any],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let path = s(args, 0);
             match std::fs::metadata(&path) {
@@ -195,9 +288,12 @@ pub fn register(vm: &mut VM) {
     );
 
     // readDir(path) → array of { name, isFile, isDir }
-    vm.register_host_fn(
-        "wasi:filesystem",
+    fs_fn(
+        vm,
         "readDirEntries",
+        "read-dir-entries",
+        path(),
+        vec![ValType::List(Box::new(ValType::Any))],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let path = s(args, 0);
             match std::fs::read_dir(&path) {
@@ -240,9 +336,12 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "wasi:filesystem",
+    fs_fn(
+        vm,
         "pathGetFileName",
+        "path-get-file-name",
+        path(),
+        vec![ValType::String],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let input = s(args, 0);
             let p = std::path::Path::new(&input);
@@ -252,9 +351,12 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "wasi:filesystem",
+    fs_fn(
+        vm,
         "pathGetExtension",
+        "path-get-extension",
+        path(),
+        vec![ValType::String],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let input = s(args, 0);
             let p = std::path::Path::new(&input);
@@ -264,9 +366,12 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "wasi:filesystem",
+    fs_fn(
+        vm,
         "pathGetDirectory",
+        "path-get-directory",
+        path(),
+        vec![ValType::String],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let input = s(args, 0);
             let p = std::path::Path::new(&input);
@@ -279,9 +384,12 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "wasi:filesystem",
+    fs_fn(
+        vm,
         "pathGetFileNameWithoutExt",
+        "path-get-file-name-without-ext",
+        path(),
+        vec![ValType::String],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let input = s(args, 0);
             let p = std::path::Path::new(&input);
@@ -291,9 +399,12 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "wasi:filesystem",
+    fs_fn(
+        vm,
         "pathChangeExtension",
+        "path-change-extension",
+        vec![ValType::String, ValType::String],
+        vec![ValType::String],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let mut p = std::path::PathBuf::from(s(args, 0));
             p.set_extension(s(args, 1).trim_start_matches('.'));
@@ -301,9 +412,12 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "wasi:filesystem",
+    fs_fn(
+        vm,
         "pathGetFullPath",
+        "path-get-full-path",
+        path(),
+        vec![ValType::String],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             match std::fs::canonicalize(s(args, 0)) {
                 Ok(p) => Value::String(Arc::from(p.to_string_lossy().as_ref())),
@@ -312,26 +426,36 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "wasi:filesystem",
+    fs_fn(
+        vm,
         "pathGetTempPath",
+        "path-get-temp-path",
+        // The only zero-parameter function here, and the call sites agree.
+        vec![],
+        vec![ValType::String],
         Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
             Value::String(Arc::from(std::env::temp_dir().to_string_lossy().as_ref()))
         }),
     );
 
-    vm.register_host_fn(
-        "wasi:filesystem",
+    fs_fn(
+        vm,
         "pathHasExtension",
+        "path-has-extension",
+        path(),
+        vec![ValType::Bool],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let p = s(args, 0);
             Value::Bool(std::path::Path::new(p.as_str()).extension().is_some())
         }),
     );
 
-    vm.register_host_fn(
-        "wasi:filesystem",
+    fs_fn(
+        vm,
         "pathIsRooted",
+        "path-is-rooted",
+        path(),
+        vec![ValType::Bool],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             Value::Bool(std::path::Path::new(s(args, 0).as_str()).is_absolute())
         }),
@@ -340,9 +464,17 @@ pub fn register(vm: &mut VM) {
     // -- VB6 file handle I/O --
 
     // openFile(path, mode, fileNumber) → null
-    vm.register_host_fn(
-        "wasi:filesystem",
+    fs_fn(
+        vm,
         "openFile",
+        "open-file",
+        // (path, mode, fileNumber) — three, which is what every LIVE call site
+        // passes (`builtins.rs`, `statements.rs`). One 2-arg site exists,
+        // `primitives::io::emit_open_file`, but that helper has zero callers —
+        // it and its four `emit_*_file` neighbours are definitions only — so no
+        // reachable route disagrees.
+        vec![ValType::String, ValType::String, ValType::String],
+        vec![ValType::F64],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let path = s(args, 0);
             let mode = s(args, 1);
@@ -385,9 +517,18 @@ pub fn register(vm: &mut VM) {
     );
 
     // closeFile(fileNumber) → null (-1 = close all)
-    vm.register_host_fn(
-        "wasi:filesystem",
+    fs_fn(
+        vm,
         "closeFile",
+        "close-file",
+        // ONE parameter, from the CALL SITES — not from the closure, which
+        // reads none. Same shape as `wasi:io`'s `flush` and `pollable.ready`:
+        // the host keeps one table and does not need the handle to find the
+        // entry, so the closure never consults what every caller passes. The
+        // closure is a lower bound on the contract; the callers are the
+        // contract.
+        vec![ValType::F64],
+        vec![ValType::Bool],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let fnum = args.first().map(|v| v.as_i32()).unwrap_or(-1);
             if let Ok(mut handles) = FILE_HANDLES.lock() {

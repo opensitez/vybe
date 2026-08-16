@@ -46,7 +46,8 @@
 
 use std::sync::Arc;
 use vybe_runtime::value::Object;
-use vybe_runtime::{HostContext, VM, Value};
+use vybe_runtime::vm::HostFnDecl;
+use vybe_runtime::{FuncSig, HostContext, VM, ValType, Value};
 
 /// OS entropy for the CSPRNG-grade interface. `None` when the platform has
 /// no entropy source — callers must surface that rather than silently
@@ -128,14 +129,52 @@ fn secure_bytes_value(n: usize) -> Value {
     }
 }
 
+/// Declare a `wasi:random/*` function.
+///
+/// None of these three interfaces owns a resource: randomness is produced, not
+/// held, so every function is free and returns plain data. The registered names
+/// are already the WIT spelling, so the signature name is the name.
+fn random_fn(
+    vm: &mut VM,
+    module: &str,
+    name: &str,
+    params: Vec<ValType>,
+    results: Vec<ValType>,
+    call: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>,
+) {
+    vm.register_host(HostFnDecl::new(module, name, call).with_sig(FuncSig {
+        name: name.to_string(),
+        params,
+        results,
+    }));
+}
+
+/// `list<u8>` — a byte list. `ValType` has no u8, and `I32` is the narrowest
+/// integer it carries, so that is what a byte declares as.
+fn byte_list() -> ValType {
+    ValType::List(Box::new(ValType::I32))
+}
+
+/// `tuple<u64, u64>` — the Component Model spells a tuple as a record with
+/// positional field names.
+fn u64_pair() -> ValType {
+    ValType::Record(vec![
+        ("0".to_string(), ValType::I64),
+        ("1".to_string(), ValType::I64),
+    ])
+}
+
 pub fn register(vm: &mut VM) {
     // ── wasi:random/random ─────────────────────────────────────────────
     // Spec: interface `random` at `wasi:random/random`.
     //   get-random-bytes: func(len: u64) -> list<u8>
     //   get-random-u64:   func() -> u64
-    vm.register_host_fn(
+    random_fn(
+        vm,
         "wasi:random/random",
         "get-random-bytes",
+        vec![ValType::I64],
+        vec![byte_list()],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let n = args
                 .first()
@@ -146,9 +185,12 @@ pub fn register(vm: &mut VM) {
             secure_bytes_value(n)
         }),
     );
-    vm.register_host_fn(
+    random_fn(
+        vm,
         "wasi:random/random",
         "get-random-u64",
+        vec![],
+        vec![ValType::I64],
         Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
             Value::F64(secure_u64().unwrap_or(0) as f64)
         }),
@@ -158,9 +200,12 @@ pub fn register(vm: &mut VM) {
     // Spec: interface `insecure` at `wasi:random/insecure`.
     //   get-insecure-random-bytes: func(len: u64) -> list<u8>
     //   get-insecure-random-u64:   func() -> u64
-    vm.register_host_fn(
+    random_fn(
+        vm,
         "wasi:random/insecure",
         "get-insecure-random-bytes",
+        vec![ValType::I64],
+        vec![byte_list()],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let n = args
                 .first()
@@ -171,9 +216,12 @@ pub fn register(vm: &mut VM) {
             insecure_bytes_value(n)
         }),
     );
-    vm.register_host_fn(
+    random_fn(
+        vm,
         "wasi:random/insecure",
         "get-insecure-random-u64",
+        vec![],
+        vec![ValType::I64],
         Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::F64(next_u64() as f64)),
     );
 
@@ -182,27 +230,43 @@ pub fn register(vm: &mut VM) {
     //   insecure-seed: func() -> tuple<u64, u64>
     // The two u64s form a 128-bit seed value. MVP returns the xorshift
     // state and a derivative.
-    vm.register_host_fn(
+    random_fn(
+        vm,
         "wasi:random/insecure-seed",
         "insecure-seed",
+        vec![],
+        vec![u64_pair()],
         Box::new(|_ctx: &mut HostContext, _args: &[Value]| insecure_seed_pair()),
     );
 
     // 0.3.0 renamed the function to `get-insecure-seed`
     // (`proposals/random/wit/insecure-seed.wit`); the 0.2 name stays bound so
     // components built against either revision resolve.
-    vm.register_host_fn(
+    random_fn(
+        vm,
         "wasi:random/insecure-seed",
         "get-insecure-seed",
+        vec![],
+        vec![u64_pair()],
         Box::new(|_ctx: &mut HostContext, _args: &[Value]| insecure_seed_pair()),
     );
 
     // ── Convenience extensions under wasi:random/random ───────────────
-    vm.register_host_fn(
+    random_fn(
+        vm,
         "wasi:random/random",
         "random",
+        vec![],
+        vec![ValType::F64],
         Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::F64(next_f64())),
     );
+    // `randomInt` stays UNDECLARED: its `max` is optional — the closure falls
+    // back to `min` when the second argument is absent, so `randomInt(n)` is a
+    // legal call. The Component Model has no optional parameter, so either
+    // arity declared here would be wrong for the other form. Undeclared means
+    // UNKNOWN, which is the truth. (Nothing lowers to it today — every language
+    // reaches randomness through `ecma:math.random` — so this costs no
+    // coverage that a caller would have exercised.)
     vm.register_host_fn(
         "wasi:random/random",
         "randomInt",
@@ -217,9 +281,12 @@ pub fn register(vm: &mut VM) {
             Value::F64(r as f64)
         }),
     );
-    vm.register_host_fn(
+    random_fn(
+        vm,
         "wasi:random/random",
         "uuid",
+        vec![],
+        vec![ValType::String],
         Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
             let a = next_u64();
             let b = next_u64();

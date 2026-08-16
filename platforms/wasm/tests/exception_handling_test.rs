@@ -127,23 +127,31 @@ fn emit_throw(c: &mut Chunk, tag: u16) {
     c.emit((tag & 0xff) as u8, 0);
 }
 
-/// Emit TRY_TABLE with one clause. Returns the offset_pos to patch.
-fn emit_try_table_start(c: &mut Chunk, kind: u8, tag: u16) -> usize {
-    c.emit_op(Op::TRY_TABLE, 0);
-    c.emit(1, 0); // clause_count = 1
-    c.emit(kind, 0);
-    c.emit((tag >> 8) as u8, 0);
-    c.emit((tag & 0xff) as u8, 0);
-    let offset_pos = c.current_offset();
-    c.emit(0, 0); // offset hi placeholder
-    c.emit(0, 0); // offset lo placeholder
-    offset_pos
+/// Marks an open try region. Opaque: a test should never spell the clause
+/// encoding out, which is exactly how the `labelidx`-as-byte-offset defect
+/// stayed invisible to this file.
+#[derive(Clone, Copy)]
+struct TryTok;
+
+/// Open a spec try region: the HANDLER BLOCK, then a one-clause `try_table`
+/// naming it as `labelidx 0`.
+///
+/// Routed through `Chunk::emit_try_table_clauses` — the single source of truth
+/// — rather than re-emitting the bytes here.
+fn emit_try_table_start(c: &mut Chunk, kind: u8, tag: u16) -> TryTok {
+    // The handler block's result arity is what the clause delivers: one payload
+    // value for `catch`, nothing for `catch_all` (spec: no values pushed).
+    let arity = if kind == KIND_CATCH { 1 } else { 0 };
+    c.emit_block_typed(0, arity);
+    c.emit_try_table_clauses(0, 0, &[(kind, tag, 0)], 0);
+    TryTok
 }
 
-fn patch_try_table(c: &mut Chunk, offset_pos: usize) {
-    let body_bytes = c.current_offset() - (offset_pos + 2);
-    c.code[offset_pos] = (body_bytes >> 8) as u8;
-    c.code[offset_pos + 1] = (body_bytes & 0xFF) as u8;
+/// Begin this region's handler. Nothing is patched — closing the handler block
+/// is what places the handler, because its `end` IS the clause's branch target.
+fn patch_try_table(c: &mut Chunk, _tok: TryTok) {
+    c.emit_op(Op::END, 0); // close the try_table body
+    c.emit_op(Op::END, 0); // close the handler block
 }
 
 fn emit_rethrow(c: &mut Chunk, depth: u32) {
@@ -424,4 +432,241 @@ fn nonmatching_typed_clause_falls_through_to_enclosing_catch_all() {
         // catch_all handler: no payload pushed — sentinel is TOS
     });
     assert_eq!(r.as_i32(), 77);
+}
+
+
+// ── WRITER: the STANDARD sections, not the `vybe` custom one ──────────────
+//
+// Everything above exercises the READER. Nothing exercised the writer's spec
+// output, and it could not: `write_wasm` embeds the original bytecode in a
+// `vybe` custom section and `read_wasm` returns that verbatim when it is
+// present, so a write→read round-trip hands back the bytes it started with.
+// The standard sections were never decoded by anything.
+//
+// Under that blind spot the writer was wrong in four ways:
+//
+//   * every `catch`/`catch_ref` clause was written with tagidx 0, and so was
+//     every `throw` — a module with several distinct tags serialized into one
+//     where they were all the same tag, which is the entire matching rule of
+//     `try_table`;
+//   * `throw_ref` was written as opcode 0x08 (`throw`) plus a tagidx: a
+//     DIFFERENT instruction, which ignores the exnref operand and raises a
+//     fresh exception under the shared tag;
+//   * a `try_table` blocktype was written as void-or-externref, so one that
+//     takes operands or yields several values changed type in transit.
+//
+// These decode the standard sections back and assert on the RESULT. They stop
+// short of running it: the emitted module declares the runtime's host imports,
+// which a bare `VM` has no bindings for.
+
+/// Drop the `vybe` custom section so `read_wasm` must decode the real thing.
+fn strip_vybe_section(bytes: &[u8]) -> Vec<u8> {
+    let mut out = bytes[..8].to_vec();
+    let mut i = 8;
+    while i < bytes.len() {
+        let start = i;
+        let id = bytes[i];
+        i += 1;
+        let mut size = 0usize;
+        let mut shift = 0;
+        loop {
+            let b = bytes[i];
+            i += 1;
+            size |= ((b & 0x7f) as usize) << shift;
+            if b & 0x80 == 0 {
+                break;
+            }
+            shift += 7;
+        }
+        let body = &bytes[i..i + size];
+        i += size;
+        let is_vybe = id == 0 && {
+            let mut j = 0usize;
+            let mut nlen = 0usize;
+            let mut sh = 0;
+            loop {
+                let b = body[j];
+                j += 1;
+                nlen |= ((b & 0x7f) as usize) << sh;
+                if b & 0x80 == 0 {
+                    break;
+                }
+                sh += 7;
+            }
+            body.get(j..j + nlen) == Some(b"vybe")
+        };
+        if !is_vybe {
+            out.extend_from_slice(&bytes[start..i]);
+        }
+    }
+    out
+}
+
+/// Write `chunk` out and decode its STANDARD sections back.
+fn writer_roundtrip(chunk: Chunk) -> Vec<Chunk> {
+    let bytes = strip_vybe_section(&wasm::write_wasm(&[chunk]));
+    wasm::read_wasm(&bytes).expect("standard-section decode failed")
+}
+
+/// The chunk the round-trip produced for our function — the last one, after
+/// whatever preamble chunks the module carries.
+fn user_chunk(chunks: &[Chunk]) -> &Chunk {
+    chunks.last().expect("at least one chunk")
+}
+
+/// Walk a decoded chunk and collect `(op, first u16 immediate)` for the EH ops:
+/// every `throw`'s tag, and every `catch`/`catch_ref` clause's tag.
+fn eh_tag_refs(chunk: &Chunk) -> (Vec<u16>, Vec<u16>, usize) {
+    let mut throws = Vec::new();
+    let mut clauses = Vec::new();
+    let mut throw_refs = 0usize;
+    let code = &chunk.code;
+    let mut ip = 0usize;
+    while ip + 3 < code.len() {
+        let g = ((code[ip] as u16) << 8) | code[ip + 1] as u16;
+        let sub = ((code[ip + 2] as u16) << 8) | code[ip + 3] as u16;
+        let Some(op) = Op::decode(g, sub) else {
+            ip += 4;
+            continue;
+        };
+        if op == Op::THROW {
+            throws.push(((code[ip + 4] as u16) << 8) | code[ip + 5] as u16);
+        } else if op == Op::THROW_REF {
+            throw_refs += 1;
+        } else if op == Op::TRY_TABLE {
+            let n = ((code[ip + 6] as usize) << 8) | code[ip + 7] as usize;
+            for k in 0..n {
+                let base = ip + 8 + k * 5;
+                let kind = code[base];
+                if kind == 0x00 || kind == 0x01 {
+                    clauses.push(((code[base + 1] as u16) << 8) | code[base + 2] as u16);
+                }
+            }
+        }
+        ip += wasm::writer::code::opcode_size(op, code, ip);
+    }
+    (throws, clauses, throw_refs)
+}
+
+/// `block join (result …) { block h (result …) { try_table … end unreachable }
+/// … }` — the spec-valid shape the compiler emits, so the reader's stack-shape
+/// validator accepts it. `handler_arity` is what the clause delivers.
+fn build_try_chunk(
+    tag_for_clause: u16,
+    tag_for_throw: u16,
+    join_arity: u8,
+    handler_arity: u8,
+    payload: &[i32],
+    declare: impl FnOnce(&mut Chunk) -> (u16, u16),
+) -> Chunk {
+    let mut c = Chunk::new("<script>");
+    let (clause_tag, throw_tag) = declare(&mut c);
+    let clause_tag = if tag_for_clause == u16::MAX {
+        clause_tag
+    } else {
+        tag_for_clause
+    };
+    let throw_tag = if tag_for_throw == u16::MAX {
+        throw_tag
+    } else {
+        tag_for_throw
+    };
+    c.emit_block_typed(0, join_arity); // join
+    c.emit_block_typed(0, handler_arity); // handler target
+    c.emit_try_table_clauses(0, 0, &[(KIND_CATCH, clause_tag, 0)], 0);
+    for v in payload {
+        c.emit_i32_const(*v, 0);
+    }
+    c.emit_op(Op::THROW, 0);
+    c.emit((throw_tag >> 8) as u8, 0);
+    c.emit((throw_tag & 0xff) as u8, 0);
+    c.emit_op(Op::END, 0); // close try_table
+    c.emit_op(Op::UNREACHABLE, 0); // the body always throws
+    c.emit_op(Op::END, 0); // close handler block
+    c
+}
+
+#[test]
+fn writer_keeps_distinct_tags_distinct() {
+    // A clause on TagA and a throw of TagB must reference DIFFERENT tags after
+    // the round-trip. Collapsing both onto the shared exception tag made the
+    // clause match a throw it must never catch.
+    let chunk = build_try_chunk(u16::MAX, u16::MAX, 1, 1, &[99], |c| {
+        let a = c.declare_exception_tag("TagA", 1);
+        let b = c.declare_exception_tag("TagB", 1);
+        (a, b)
+    });
+    let mut chunk = chunk;
+    chunk.emit_op(Op::END, 0);
+    chunk.emit_op(Op::RETURN, 0);
+    let decoded = writer_roundtrip(chunk);
+    let (throws, clauses, _) = eh_tag_refs(user_chunk(&decoded));
+    assert_eq!(throws.len(), 1, "expected one throw");
+    assert_eq!(clauses.len(), 1, "expected one typed clause");
+    assert_ne!(
+        throws[0], clauses[0],
+        "TagA and TagB survived as the SAME tag — the clause would catch a \
+         throw it must not match"
+    );
+}
+
+#[test]
+fn writer_keeps_one_tag_one_tag() {
+    // The other half: a clause and a throw naming the SAME tag must still
+    // agree afterwards. Guards "make them distinct" against over-correcting
+    // into "nothing matches".
+    let chunk = build_try_chunk(u16::MAX, u16::MAX, 1, 1, &[42], |c| {
+        let a = c.declare_exception_tag("TagA", 1);
+        let _b = c.declare_exception_tag("TagB", 1);
+        (a, a)
+    });
+    let mut chunk = chunk;
+    chunk.emit_op(Op::END, 0);
+    chunk.emit_op(Op::RETURN, 0);
+    let decoded = writer_roundtrip(chunk);
+    let (throws, clauses, _) = eh_tag_refs(user_chunk(&decoded));
+    assert_eq!(
+        throws[0], clauses[0],
+        "one tag came back as two — the clause would no longer match its throw"
+    );
+}
+
+#[test]
+fn writer_preserves_a_two_ary_tag() {
+    // A 2-ary tag needs a functype of its own in the tag section; borrowing
+    // the one-param exception type cannot express it, and the handler block
+    // that receives both values needs a real typeidx blocktype.
+    let chunk = build_try_chunk(u16::MAX, u16::MAX, 1, 2, &[3, 4], |c| {
+        let t = c.declare_exception_tag("Pair", 2);
+        (t, t)
+    });
+    let mut chunk = chunk;
+    chunk.emit_op(Op::I32_ADD, 0);
+    chunk.emit_op(Op::END, 0);
+    chunk.emit_op(Op::RETURN, 0);
+    let decoded = writer_roundtrip(chunk);
+    let c = user_chunk(&decoded);
+    let (throws, clauses, _) = eh_tag_refs(c);
+    assert_eq!(throws[0], clauses[0]);
+    assert_eq!(
+        c.tags[throws[0] as usize].arity, 2,
+        "the tag's payload arity did not survive"
+    );
+}
+
+#[test]
+fn writer_emits_throw_ref_not_throw() {
+    // `throw_ref` is opcode 0x0A and takes NO tag immediate. Written as 0x08
+    // it decodes back as `throw`, which never inspects the exnref operand.
+    let mut c = Chunk::new("<script>");
+    c.emit_i32_const(1, 0);
+    c.emit_op(Op::THROW_REF, 0);
+    c.emit_op(Op::RETURN, 0);
+    let decoded = writer_roundtrip(c);
+    let (throws, _, throw_refs) = eh_tag_refs(user_chunk(&decoded));
+    assert_eq!(throw_refs, 1, "throw_ref did not survive as throw_ref");
+    assert!(
+        throws.is_empty(),
+        "throw_ref came back as a plain `throw` — a different instruction"
+    );
 }

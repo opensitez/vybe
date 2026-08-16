@@ -221,25 +221,33 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) 
             )
         }
         OperandFormat::TryTable => {
-            // try_table: u8 count, then count × (u8 kind + u16 tag + u16 offset)
-            let count = chunk.code.get(operand_start).copied().unwrap_or(0) as usize;
-            let total = 1 + count * 5;
+            // try_table: u8 params, u8 results (the spec blocktype), u16 count,
+            // then count × (u8 kind + u16 tag + u16 label)
+            let count = ((chunk.code.get(operand_start + 2).copied().unwrap_or(0) as usize) << 8)
+                | chunk.code.get(operand_start + 3).copied().unwrap_or(0) as usize;
+            let total = 4 + count * 5;
             let mut clauses = Vec::with_capacity(count);
             for i in 0..count {
-                let base = operand_start + 1 + i * 5;
+                let base = operand_start + 4 + i * 5;
                 let kind = chunk.code.get(base).copied().unwrap_or(0);
                 let tag = chunk.read_u16(base + 1);
+                let label = chunk.read_u16(base + 3);
                 let name = match kind {
-                    0 => format!("catch tag={tag}"),
-                    1 => format!("catch_ref tag={tag}"),
-                    2 => "catch_all".to_string(),
-                    3 => "catch_all_ref".to_string(),
-                    k => format!("kind{k}?"),
+                    0 => format!("catch tag={tag} → label {label}"),
+                    1 => format!("catch_ref tag={tag} → label {label}"),
+                    2 => format!("catch_all → label {label}"),
+                    3 => format!("catch_all_ref → label {label}"),
+                    k => format!("kind{k}? → label {label}"),
                 };
                 clauses.push(name);
             }
+            let params = chunk.code.get(operand_start).copied().unwrap_or(0);
+            let results = chunk.code.get(operand_start + 1).copied().unwrap_or(0);
             (
-                format!("try_table [{}]", clauses.join(", ")),
+                format!(
+                    "try_table (p{params} r{results}) [{}]",
+                    clauses.join(", ")
+                ),
                 operand_start + total,
             )
         }

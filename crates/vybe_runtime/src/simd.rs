@@ -346,11 +346,60 @@ impl VM {
         }
     }
 
+    /// The declared signature of a module type index, when that type is a
+    /// `(func …)`. `None` for struct/array types, which are matched by rtt.
+    /// The signature lives in the entry's `fields` — the same general payload
+    /// an array type's element storage type uses.
+    fn declared_func_sig(&self, type_index: u32) -> Option<(String, String)> {
+        let idx = type_index as usize;
+        if idx == 0 {
+            return None;
+        }
+        let entry = self.chunks.first()?.types.get(idx - 1)?;
+        if entry.kind != crate::chunk::CompositeKind::Func {
+            return None;
+        }
+        Some((
+            entry.fields.first().cloned().unwrap_or_default(),
+            entry.fields.get(1).cloned().unwrap_or_default(),
+        ))
+    }
+
+    /// The chunk a callable value refers to, for values that are functions.
+    fn function_chunk_index(&self, val: &Value) -> Option<usize> {
+        match val {
+            Value::Object(o) => match &o.lock().unwrap().kind {
+                crate::value::ObjectKind::Function(f) => Some(f.chunk_index),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// `ref.test` against a CONCRETE type — a module type index, resolved the
     /// same way `struct.new`'s immediate is. An index walk over declared
     /// supertypes; no name, no fallback. A value with no rtt is simply not an
     /// instance of a declared type.
     pub(crate) fn test_concrete(&self, val: &Value, type_index: u32) -> bool {
+        // A FUNCTION reference is matched STRUCTURALLY, not by rtt: a function
+        // carries no allocation-time type stamp, and the spec's rule
+        // (`Comptype_sub/func`) compares the parameter and result TYPES with
+        // no name anywhere in it. Two identically-shaped types declared under
+        // different names therefore match, and `(func (param i32))` does not
+        // match `(func (param f64))` even though both are 1→0.
+        if let Some((want_params, want_results)) = self.declared_func_sig(type_index) {
+            return match self.function_chunk_index(val) {
+                Some(ci) => match &self.chunks[ci].func_sig {
+                    Some((params, results)) => {
+                        *params == want_params && *results == want_results
+                    }
+                    // A function with no recorded signature cannot be claimed
+                    // to match — answering true here would be a guess.
+                    None => false,
+                },
+                None => false,
+            };
+        }
         let target = self.resolve_gc_rtt(type_index as usize);
         if target == 0 {
             return false;
@@ -424,6 +473,17 @@ impl VM {
         }
         match ht {
             crate::opcode::heaptype::HeapType::Abstract(_) => false,
+            // A concrete FUNCTION type is decided structurally and that answer
+            // is FINAL — falling through to the name path would let a
+            // `__type`/prototype match override it, so a cast to a function
+            // type the reference does not have would succeed instead of
+            // trapping. The name path exists for language-level type tests,
+            // which have nothing to say about a WASM function signature.
+            crate::opcode::heaptype::HeapType::Concrete(index)
+                if self.declared_func_sig(index).is_some() =>
+            {
+                false
+            }
             crate::opcode::heaptype::HeapType::Concrete(index) => self
                 .declared_type_name(index)
                 .is_some_and(|name| self.test_type(val, &name)),

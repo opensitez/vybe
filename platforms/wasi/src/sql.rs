@@ -1,12 +1,29 @@
 //! `wasi:sql@0.2.0-draft` — SQL host implementation for Vybe.
 //!
-//! Implements the WIT surface from `proposals/wasi-sql/wit/`:
-//!   - `wasi:sql/types`     → [static]connection.open, [static]statement.prepare,
-//!                            [method]error.trace, [method]connection.close
-//!   - `wasi:sql/readwrite` → query, exec
+//! Three surfaces live here, and only the first is spec.
 //!
-//! Also registers a flat `wasi:sql` helper surface for older language adapters
-//! that have not moved to the typed `wasi:sql/types` resource model yet.
+//! **WIT** (`proposals/wasi-sql/wit/`) — five functions:
+//!   - `wasi:sql/types`     → [static]connection.open, [static]statement.prepare,
+//!                            [method]error.trace
+//!   - `wasi:sql/readwrite` → query, exec
+//! `resource connection` declares only `open` in `types.wit`; a resource's
+//! teardown is its implicit destructor, so `[method]connection.close` below is
+//! NOT the spec's — it belongs to the next surface.
+//!
+//! **The ADO.NET-shaped surface**, also under `wasi:sql/types`: connection /
+//! command / reader / params / transaction / adapter members that mirror
+//! `System.Data`. Vybe's own, in no proposal. Its arities come from the .NET
+//! component descriptor in
+//! `platforms/dotnet/src/emitter/core/component_classes_data_drawing.rs`,
+//! which is what routes those calls.
+//!
+//! **The flat `wasi:sql` surface** for language adapters that have not moved to
+//! the resource model: the PHP `mysqli`/`PDO` and Python DB-API emitters.
+//!
+//! Every function whose arity is single-valued carries a declared Component
+//! Model signature (`sql_fn`); the ones that genuinely vary — the `*.new`
+//! constructors and the optional-params `query`/`execute`/`scalar` — stay
+//! undeclared, each with a comment saying why.
 //!
 //! Architecture — one file per concern:
 //!   state.rs    — global resource registry (connections, statements)
@@ -30,9 +47,10 @@ pub fn reset() {
 use driver::{SqlDriver, open};
 use state::{ConnEntry, StmtEntry, next_id, state};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use vybe_runtime::value::{Object, ObjectKind};
-use vybe_runtime::{HostContext, VM, Value};
+use vybe_runtime::vm::HostFnDecl;
+use vybe_runtime::{FuncSig, HostContext, VM, ValType, Value};
 
 // ── Shared scalar parser (used by postgres.rs and mysql.rs) ──────────────────
 
@@ -71,8 +89,46 @@ fn do_exec(conn_id: u64, sql: &str, params: &[String]) -> Result<u64, String> {
     get_driver(conn_id)?.exec(sql, params)
 }
 
-fn do_query_columns(conn_id: u64, sql: &str, params: &[String]) -> Result<Vec<String>, String> {
-    get_driver(conn_id)?.query_columns(sql, params)
+// ── last error per connection (the WIT's `error.trace()`) ────────────────────
+//
+// `wasi:sql` models failure as `result<_, error>` where `error` is a resource
+// with `trace() -> string`. Every failing call used to `eprintln!` the trace
+// and hand back an empty row set or `-1`, so a guest could not tell a failed
+// write from a successful one that changed no rows — `INSERT` into a read-only
+// database "succeeded" in PDO, python's sqlite3 and ADO alike.
+//
+// The trace is recorded here instead, keyed by connection, which is the shape
+// every consumer surface already wants: `sqlite3_errmsg(db)`,
+// `mysql_error(conn)` and `PDO::errorInfo()` all ask a CONNECTION what went
+// wrong last.
+
+static LAST_ERROR: OnceLock<Mutex<HashMap<u64, String>>> = OnceLock::new();
+
+fn last_error_table() -> &'static Mutex<HashMap<u64, String>> {
+    LAST_ERROR.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Record a failure against `conn_id`, and return the message so the caller can
+/// still log it.
+fn record_error(conn_id: u64, message: &str) {
+    if let Ok(mut table) = last_error_table().lock() {
+        table.insert(conn_id, message.to_string());
+    }
+}
+
+/// Clear on success, so a stale trace never gets reported as a fresh failure.
+fn clear_error(conn_id: u64) {
+    if let Ok(mut table) = last_error_table().lock() {
+        table.remove(&conn_id);
+    }
+}
+
+fn take_error(conn_id: u64) -> String {
+    last_error_table()
+        .lock()
+        .ok()
+        .and_then(|table| table.get(&conn_id).cloned())
+        .unwrap_or_default()
 }
 
 fn driver_provider_name(url: &str) -> &'static str {
@@ -168,40 +224,6 @@ fn bool_prop(obj: &Arc<Mutex<Object>>, key: &str) -> bool {
     }
 }
 
-fn f64_prop(obj: &Arc<Mutex<Object>>, key: &str) -> f64 {
-    obj.lock()
-        .unwrap()
-        .properties
-        .get(key)
-        .map(Value::as_f64)
-        .unwrap_or(0.0)
-}
-
-fn string_prop(obj: &Arc<Mutex<Object>>, key: &str) -> String {
-    obj.lock()
-        .unwrap()
-        .properties
-        .get(key)
-        .map(|v| format!("{}", v))
-        .unwrap_or_default()
-}
-
-fn array_prop(obj: &Arc<Mutex<Object>>, key: &str) -> Vec<Value> {
-    let guard = obj.lock().unwrap();
-    let Some(Value::Object(values)) = guard.properties.get(key) else {
-        return vec![];
-    };
-    let values_guard = values.lock().unwrap();
-    let ObjectKind::Array(ref elems) = values_guard.kind else {
-        return vec![];
-    };
-    elems.clone()
-}
-
-fn set_prop(obj: &Arc<Mutex<Object>>, key: &str, value: Value) {
-    obj.lock().unwrap().properties.insert(key.into(), value);
-}
-
 fn col_names_from_rows(rows: &[Value]) -> Vec<String> {
     let Some(Value::Object(first)) = rows.first() else {
         return vec![];
@@ -221,37 +243,6 @@ fn col_names_from_rows(rows: &[Value]) -> Vec<String> {
         .collect()
 }
 
-fn row_value_by_index(row: &Value, index: usize) -> Value {
-    let Value::Object(obj) = row else {
-        return Value::Null;
-    };
-    let col_names = {
-        let guard = obj.lock().unwrap();
-        if let Some(Value::Object(names)) = guard.properties.get("__col_names") {
-            let names_guard = names.lock().unwrap();
-            if let ObjectKind::Array(ref elems) = names_guard.kind {
-                elems
-                    .iter()
-                    .map(|value| format!("{}", value))
-                    .collect::<Vec<_>>()
-            } else {
-                vec![]
-            }
-        } else {
-            guard
-                .properties
-                .keys()
-                .filter(|key| key.as_str() != "__col_names")
-                .cloned()
-                .collect::<Vec<_>>()
-        }
-    };
-    col_names
-        .get(index)
-        .map(|name| row_value_by_name(row, name))
-        .unwrap_or(Value::Null)
-}
-
 fn row_value_by_name(row: &Value, name: &str) -> Value {
     let Value::Object(obj) = row else {
         return Value::Null;
@@ -266,180 +257,6 @@ fn row_value_by_name(row: &Value, name: &str) -> Value {
         .find(|(key, _)| key.eq_ignore_ascii_case(name))
         .map(|(_, value)| value.clone())
         .unwrap_or(Value::Null)
-}
-
-fn data_table_from_rows(name: &str, rows: &[Value], col_names: &[String]) -> Value {
-    let mut table = Object::new();
-    table
-        .properties
-        .insert("__type".into(), string_value("DataTable"));
-    table
-        .properties
-        .insert("tablename".into(), string_value(name));
-    table.properties.insert(
-        "columns".into(),
-        rows_array(col_names.iter().map(|col| string_value(col)).collect()),
-    );
-    table
-        .properties
-        .insert("rows".into(), rows_array(rows.to_vec()));
-    Value::Object(vybe_runtime::heap::alloc(table))
-}
-
-fn make_params_obj() -> Value {
-    let mut obj = Object::new();
-    obj.properties
-        .insert("__type".into(), string_value("SqlParameterCollection"));
-    obj.properties.insert("__items".into(), rows_array(vec![]));
-    Value::Object(vybe_runtime::heap::alloc(obj))
-}
-
-fn make_command_obj(type_name: &str, conn_id: u64, conn_string: &str) -> Value {
-    let mut obj = Object::new();
-    obj.properties
-        .insert("__type".into(), string_value(type_name));
-    obj.properties
-        .insert("__conn_id".into(), Value::F64(conn_id as f64));
-    obj.properties
-        .insert("commandtext".into(), string_value(""));
-    obj.properties
-        .insert("commandtimeout".into(), Value::F64(30.0));
-    obj.properties.insert("commandtype".into(), Value::F64(1.0));
-    obj.properties
-        .insert("connectionstring".into(), string_value(conn_string));
-    obj.properties
-        .insert("parameters".into(), make_params_obj());
-    Value::Object(vybe_runtime::heap::alloc(obj))
-}
-
-fn make_transaction_obj(conn_id: u64) -> Value {
-    let mut obj = Object::new();
-    obj.properties
-        .insert("__type".into(), string_value("SqlTransaction"));
-    obj.properties
-        .insert("__conn_id".into(), Value::F64(conn_id as f64));
-    obj.properties.insert("isclosed".into(), Value::Bool(false));
-    Value::Object(vybe_runtime::heap::alloc(obj))
-}
-
-fn make_reader_obj_with_cols(rows: Vec<Value>, col_names: Vec<String>) -> Value {
-    let mut obj = Object::new();
-    obj.properties
-        .insert("__type".into(), string_value("SqlDataReader"));
-    obj.properties
-        .insert("__rows".into(), rows_array(rows.clone()));
-    obj.properties.insert(
-        "__col_names".into(),
-        rows_array(col_names.iter().map(|col| string_value(col)).collect()),
-    );
-    obj.properties.insert("__pos".into(), Value::F64(-1.0));
-    obj.properties
-        .insert("hasrows".into(), Value::Bool(!rows.is_empty()));
-    obj.properties
-        .insert("fieldcount".into(), Value::F64(col_names.len() as f64));
-    obj.properties.insert("isclosed".into(), Value::Bool(false));
-    Value::Object(vybe_runtime::heap::alloc(obj))
-}
-
-fn make_reader_obj(rows: Vec<Value>) -> Value {
-    let col_names = col_names_from_rows(&rows);
-    make_reader_obj_with_cols(rows, col_names)
-}
-
-fn make_data_adapter_obj(sql: &str, conn_id: u64, conn_string: &str) -> Value {
-    let mut obj = Object::new();
-    obj.properties
-        .insert("__type".into(), string_value("SqlDataAdapter"));
-    obj.properties
-        .insert("selectcommand".into(), string_value(sql));
-    obj.properties
-        .insert("__conn_id".into(), Value::F64(conn_id as f64));
-    obj.properties
-        .insert("connectionstring".into(), string_value(conn_string));
-    Value::Object(vybe_runtime::heap::alloc(obj))
-}
-
-fn current_reader_row(reader: &Arc<Mutex<Object>>) -> Option<Value> {
-    let pos = f64_prop(reader, "__pos") as isize;
-    let rows = array_prop(reader, "__rows");
-    if pos < 0 || pos as usize >= rows.len() {
-        None
-    } else {
-        Some(rows[pos as usize].clone())
-    }
-}
-
-fn command_sql_and_params(command: &Arc<Mutex<Object>>) -> (String, Vec<String>) {
-    let sql = string_prop(command, "commandtext");
-    let Some(Value::Object(params)) = command
-        .lock()
-        .unwrap()
-        .properties
-        .get("parameters")
-        .cloned()
-    else {
-        return (sql, vec![]);
-    };
-    let items = array_prop(&params, "__items");
-    if items.is_empty() {
-        return (sql, vec![]);
-    }
-    let mut values_by_name: HashMap<String, String> = HashMap::new();
-    let mut ordered_values = Vec::new();
-    for item in &items {
-        let Value::Object(param) = item else {
-            continue;
-        };
-        let name = string_prop(param, "name");
-        let value = string_prop(param, "value");
-        if !name.is_empty() {
-            values_by_name.insert(name, value.clone());
-        }
-        ordered_values.push(value);
-    }
-    let mut rewritten = String::with_capacity(sql.len());
-    let mut out_params = Vec::new();
-    let chars: Vec<char> = sql.chars().collect();
-    let mut index = 0usize;
-    let mut in_str = false;
-    while index < chars.len() {
-        let ch = chars[index];
-        if ch == '\'' {
-            in_str = !in_str;
-            rewritten.push(ch);
-            index += 1;
-            continue;
-        }
-        if !in_str && ch == '@' {
-            let mut end = index + 1;
-            while end < chars.len() && (chars[end].is_ascii_alphanumeric() || chars[end] == '_') {
-                end += 1;
-            }
-            let name: String = chars[index..end].iter().collect();
-            if let Some(value) = values_by_name.get(&name) {
-                rewritten.push('?');
-                out_params.push(value.clone());
-                index = end;
-                continue;
-            }
-        }
-        rewritten.push(ch);
-        index += 1;
-    }
-    if out_params.is_empty() {
-        (sql, ordered_values)
-    } else {
-        (rewritten, out_params)
-    }
-}
-
-fn create_command_from_connection(args: &[Value], type_name: &str) -> Value {
-    let conn_id = get_conn_id(args);
-    let conn_string = match args.first() {
-        Some(Value::Object(obj)) => string_prop(obj, "connectionstring"),
-        _ => String::new(),
-    };
-    make_command_obj(type_name, conn_id, &conn_string)
 }
 
 // ── Arg helpers ───────────────────────────────────────────────────────────────
@@ -492,44 +309,66 @@ fn get_sql(args: &[Value]) -> String {
     arg_str(args, 1)
 }
 
+// ── Declaration ───────────────────────────────────────────────────────────────
+
+/// Declare a `wasi:sql*` function's Component Model signature.
+///
+/// Only two of the three surfaces here are spec. `[static]connection.open`,
+/// `[static]statement.prepare`, `[method]error.trace` and both
+/// `wasi:sql/readwrite` functions come from `proposals/wasi-sql/wit/`, and
+/// their types are quoted from it. Everything else on `wasi:sql/types` is the
+/// ADO.NET-shaped surface Vybe invented for the .NET adapters, and the flat
+/// `wasi:sql` interface is the pre-resource shape the PHP and Python adapters
+/// still use — neither appears in any WIT, so no spec is cited for them.
+///
+/// For the invented names the authority for the arity is the .NET component
+/// descriptor, because that is what actually routes the call: the lookup in
+/// `platforms/dotnet/src/emitter/mod.rs` matches on `method.arity == arg_count`
+/// and the emit in `primitives/calls.rs` pushes the receiver first, so the host
+/// argc is the descriptor arity plus one.
+///
+/// Their parameter TYPES are mostly `Any`, and deliberately so: these calls
+/// carry plain property-bag `Object`s, not resource handles, and writing
+/// `Own`/`Borrow` here would claim resources that do not exist. `Any` is what
+/// an untyped bag honestly declares as; the positions that really are a string
+/// or an ordinal say so.
+fn sql_fn(
+    vm: &mut VM,
+    module: &str,
+    name: &str,
+    params: Vec<ValType>,
+    results: Vec<ValType>,
+    call: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>,
+) {
+    vm.register_host(HostFnDecl::new(module, name, call).with_sig(FuncSig {
+        name: name.to_string(),
+        params,
+        results,
+    }));
+}
+
+/// The receiver of an ADO-shaped `[method]` — a property-bag object, not a
+/// resource handle. Named so the parameter lists read as what they are.
+fn receiver() -> ValType {
+    ValType::Any
+}
+
 // ── register ──────────────────────────────────────────────────────────────────
 
 pub fn register(vm: &mut VM) {
     // wasi:sql/types ──────────────────────────────────────────────────────────
 
-    vm.register_host_fn(
-        "wasi:sql/types",
-        "connection.new",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let raw = arg_str(args, 0);
-            let normalized = if raw.is_empty() {
-                String::new()
-            } else {
-                normalize_conn_str_full(&raw)
-            };
-            let mut obj = Object::new();
-            obj.properties
-                .insert("__type".into(), string_value("SqlConnection"));
-            obj.properties.insert("__conn_id".into(), Value::F64(0.0));
-            obj.properties
-                .insert("connectionstring".into(), string_value(&raw));
-            obj.properties.insert(
-                "provider".into(),
-                string_value(driver_provider_name(&normalized)),
-            );
-            obj.properties
-                .insert("serverversion".into(), string_value(""));
-            obj.properties
-                .insert("connectiontimeout".into(), Value::F64(30.0));
-            obj.properties
-                .insert("state".into(), string_value("Closed"));
-            Value::Object(vybe_runtime::heap::alloc(obj))
-        }),
-    );
-
-    vm.register_host_fn(
+    // SPEC: `open: static func(name: string) -> result<connection, error>`
+    // (`proposals/wasi-sql/wit/types.wit`).
+    sql_fn(
+        vm,
         "wasi:sql/types",
         "[static]connection.open",
+        vec![ValType::String],
+        vec![ValType::Result(
+            Box::new(ValType::Own("connection".to_string())),
+            Box::new(ValType::Own("error".to_string())),
+        )],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let raw = arg_str(args, 0);
             if raw.is_empty() || raw == "null" {
@@ -553,48 +392,17 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "wasi:sql/types",
-        "[method]connection.open",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(Value::Object(obj)) = args.first() else {
-                return Value::Null;
-            };
-            if get_conn_id(args) != 0 {
-                return Value::Null;
-            }
-            let raw = string_prop(obj, "connectionstring");
-            if raw.is_empty() || raw == "null" {
-                return Value::Null;
-            }
-            let url = normalize_conn_str_full(&raw);
-            match open(&url) {
-                Ok(driver) => {
-                    let id = next_id();
-                    state()
-                        .lock()
-                        .unwrap()
-                        .conns
-                        .insert(id, ConnEntry { driver, url });
-                    set_prop(obj, "__conn_id", Value::F64(id as f64));
-                    set_prop(obj, "__wasi_id", Value::F64(id as f64));
-                    set_prop(obj, "provider", string_value(driver_provider_name(&raw)));
-                    set_prop(
-                        obj,
-                        "serverversion",
-                        string_value(driver_server_version(&raw)),
-                    );
-                    set_prop(obj, "state", string_value("Open"));
-                }
-                Err(e) => eprintln!("wasi:sql/types connection.open: {}", e),
-            }
-            Value::Null
-        }),
-    );
-
-    vm.register_host_fn(
+    // SPEC: `prepare: static func(query: string, params: list<string>) ->
+    // result<statement, error>` (`proposals/wasi-sql/wit/types.wit`).
+    sql_fn(
+        vm,
         "wasi:sql/types",
         "[static]statement.prepare",
+        vec![ValType::String, ValType::List(Box::new(ValType::String))],
+        vec![ValType::Result(
+            Box::new(ValType::Own("statement".to_string())),
+            Box::new(ValType::Own("error".to_string())),
+        )],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let query = arg_str(args, 0);
             let params = extract_params(args, 1);
@@ -611,9 +419,14 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
+    // SPEC: `trace: func() -> string` on `resource error` — a method, so the
+    // borrowed receiver is the one parameter.
+    sql_fn(
+        vm,
         "wasi:sql/types",
         "[method]error.trace",
+        vec![ValType::Borrow("error".to_string())],
+        vec![ValType::String],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             if let Some(Value::Object(obj)) = args.first() {
                 if let Some(v) = obj.lock().unwrap().properties.get("message") {
@@ -624,445 +437,22 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "wasi:sql/types",
-        "[method]connection.close",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let conn_id = get_conn_id(args);
-            if conn_id != 0 {
-                state().lock().unwrap().conns.remove(&conn_id);
-            }
-            if let Some(Value::Object(obj)) = args.first() {
-                set_prop(obj, "__conn_id", Value::F64(0.0));
-                set_prop(obj, "__wasi_id", Value::F64(0.0));
-                set_prop(obj, "state", string_value("Closed"));
-            }
-            Value::Null
-        }),
-    );
-
-    vm.register_host_fn(
-        "wasi:sql/types",
-        "[method]connection.create-command",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            create_command_from_connection(args, "SqlCommand")
-        }),
-    );
-
-    vm.register_host_fn(
-        "wasi:sql/types",
-        "[method]connection.begin-transaction",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let conn_id = get_conn_id(args);
-            if conn_id == 0 {
-                return Value::Null;
-            }
-            let _ = do_exec(conn_id, "BEGIN", &[]);
-            make_transaction_obj(conn_id)
-        }),
-    );
-
-    vm.register_host_fn(
-        "wasi:sql/types",
-        "[method]connection.get-schema",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let conn_id = get_conn_id(args);
-            let schema = arg_str(args, 1).to_lowercase();
-            let driver = match get_driver(conn_id) {
-                Ok(driver) => driver,
-                Err(_) => return data_table_from_rows("Schema", &[], &[]),
-            };
-            let (table_name, sql, fallback_columns) = match schema.as_str() {
-                "" | "tables" => (
-                    "Tables",
-                    driver.tables_sql().to_string(),
-                    vec!["name".to_string()],
-                ),
-                "columns" => {
-                    let table = arg_str(args, 2);
-                    (
-                        "Columns",
-                        driver.columns_sql(&table),
-                        vec!["column_name".to_string()],
-                    )
-                }
-                _ => return data_table_from_rows("Schema", &[], &[]),
-            };
-            match driver.query(&sql, &[]) {
-                Ok(rows) => {
-                    let col_names = if rows.is_empty() {
-                        fallback_columns
-                    } else {
-                        col_names_from_rows(&rows)
-                    };
-                    data_table_from_rows(table_name, &rows, &col_names)
-                }
-                Err(_) => data_table_from_rows(table_name, &[], &fallback_columns),
-            }
-        }),
-    );
-
-    vm.register_host_fn(
-        "wasi:sql/types",
-        "command.new",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let command_text = arg_str(args, 0);
-            let conn_id = args.get(1).map(wasi_id).unwrap_or(0);
-            let conn_string = match args.get(1) {
-                Some(Value::Object(obj)) => string_prop(obj, "connectionstring"),
-                _ => String::new(),
-            };
-            let command = make_command_obj("SqlCommand", conn_id, &conn_string);
-            if let Value::Object(obj) = &command {
-                set_prop(obj, "commandtext", string_value(&command_text));
-            }
-            command
-        }),
-    );
-
-    vm.register_host_fn(
-        "wasi:sql/types",
-        "data-adapter.new",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let sql = arg_str(args, 0);
-            let conn_id = args.get(1).map(wasi_id).unwrap_or(0);
-            let conn_string = match args.get(1) {
-                Some(Value::Object(obj)) => string_prop(obj, "connectionstring"),
-                _ => String::new(),
-            };
-            make_data_adapter_obj(&sql, conn_id, &conn_string)
-        }),
-    );
-
-    vm.register_host_fn(
-        "wasi:sql/types",
-        "[method]command.execute-non-query",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(Value::Object(command)) = args.first() else {
-                return Value::F64(-1.0);
-            };
-            let conn_id = get_conn_id(args);
-            let (sql, params) = command_sql_and_params(command);
-            match do_exec(conn_id, &sql, &params) {
-                Ok(count) => Value::F64(count as f64),
-                Err(e) => {
-                    eprintln!("wasi:sql/types command.execute-non-query: {}", e);
-                    Value::F64(-1.0)
-                }
-            }
-        }),
-    );
-
-    vm.register_host_fn(
-        "wasi:sql/types",
-        "[method]command.execute-scalar",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(Value::Object(command)) = args.first() else {
-                return Value::Null;
-            };
-            let conn_id = get_conn_id(args);
-            let (sql, params) = command_sql_and_params(command);
-            match do_query(conn_id, &sql, &params) {
-                Ok(mut rows) if !rows.is_empty() => {
-                    let row = rows.swap_remove(0);
-                    let col_names = col_names_from_rows(&[row.clone()]);
-                    col_names
-                        .first()
-                        .map(|name| row_value_by_name(&row, name))
-                        .unwrap_or(Value::Null)
-                }
-                Ok(_) => Value::Null,
-                Err(e) => {
-                    eprintln!("wasi:sql/types command.execute-scalar: {}", e);
-                    Value::Null
-                }
-            }
-        }),
-    );
-
-    vm.register_host_fn(
-        "wasi:sql/types",
-        "[method]command.execute-reader",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(Value::Object(command)) = args.first() else {
-                return make_reader_obj(vec![]);
-            };
-            let conn_id = get_conn_id(args);
-            let (sql, params) = command_sql_and_params(command);
-            match do_query(conn_id, &sql, &params) {
-                Ok(rows) => {
-                    let col_names = if rows.is_empty() {
-                        do_query_columns(conn_id, &sql, &params).unwrap_or_default()
-                    } else {
-                        col_names_from_rows(&rows)
-                    };
-                    make_reader_obj_with_cols(rows, col_names)
-                }
-                Err(e) => {
-                    eprintln!("wasi:sql/types command.execute-reader: {}", e);
-                    make_reader_obj(vec![])
-                }
-            }
-        }),
-    );
-
-    vm.register_host_fn(
-        "wasi:sql/types",
-        "[method]command.create-parameter",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let name = arg_str(args, 1);
-            let value = args.get(4).cloned().unwrap_or(Value::Null);
-            let mut obj = Object::new();
-            obj.properties
-                .insert("__type".into(), string_value("SqlParameter"));
-            obj.properties.insert("name".into(), string_value(&name));
-            obj.properties.insert("value".into(), value);
-            Value::Object(vybe_runtime::heap::alloc(obj))
-        }),
-    );
-
-    vm.register_host_fn(
-        "wasi:sql/types",
-        "[method]params.add-with-value",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(Value::Object(params)) = args.first() else {
-                return Value::Null;
-            };
-            let mut param = Object::new();
-            param
-                .properties
-                .insert("__type".into(), string_value("SqlParameter"));
-            param
-                .properties
-                .insert("name".into(), string_value(&arg_str(args, 1)));
-            param
-                .properties
-                .insert("value".into(), args.get(2).cloned().unwrap_or(Value::Null));
-            let Some(Value::Object(items)) =
-                params.lock().unwrap().properties.get("__items").cloned()
-            else {
-                return Value::Null;
-            };
-            let mut items_guard = items.lock().unwrap();
-            if let ObjectKind::Array(ref mut elems) = items_guard.kind {
-                elems.push(Value::Object(vybe_runtime::heap::alloc(param)));
-            }
-            Value::Null
-        }),
-    );
-
-    vm.register_host_fn(
-        "wasi:sql/types",
-        "[method]params.clear",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(Value::Object(params)) = args.first() else {
-                return Value::Null;
-            };
-            let Some(Value::Object(items)) =
-                params.lock().unwrap().properties.get("__items").cloned()
-            else {
-                return Value::Null;
-            };
-            let mut items_guard = items.lock().unwrap();
-            if let ObjectKind::Array(ref mut elems) = items_guard.kind {
-                elems.clear();
-            }
-            Value::Null
-        }),
-    );
-
-    vm.register_host_fn(
-        "wasi:sql/types",
-        "[method]params.count",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(Value::Object(params)) = args.first() else {
-                return Value::F64(0.0);
-            };
-            Value::F64(array_prop(params, "__items").len() as f64)
-        }),
-    );
-
-    vm.register_host_fn(
-        "wasi:sql/types",
-        "[method]transaction.commit",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let result = Value::Bool(do_exec(get_conn_id(args), "COMMIT", &[]).is_ok());
-            if let Some(Value::Object(obj)) = args.first() {
-                set_prop(obj, "isclosed", Value::Bool(true));
-            }
-            result
-        }),
-    );
-
-    vm.register_host_fn(
-        "wasi:sql/types",
-        "[method]transaction.rollback",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let result = Value::Bool(do_exec(get_conn_id(args), "ROLLBACK", &[]).is_ok());
-            if let Some(Value::Object(obj)) = args.first() {
-                set_prop(obj, "isclosed", Value::Bool(true));
-            }
-            result
-        }),
-    );
-
-    vm.register_host_fn(
-        "wasi:sql/types",
-        "[method]reader.read",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(Value::Object(reader)) = args.first() else {
-                return Value::Bool(false);
-            };
-            let next_pos = f64_prop(reader, "__pos") as isize + 1;
-            let rows = array_prop(reader, "__rows");
-            set_prop(reader, "__pos", Value::F64(next_pos as f64));
-            Value::Bool(next_pos >= 0 && (next_pos as usize) < rows.len())
-        }),
-    );
-
-    vm.register_host_fn(
-        "wasi:sql/types",
-        "[method]reader.get-value",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(Value::Object(reader)) = args.first() else {
-                return Value::Null;
-            };
-            let Some(row) = current_reader_row(reader) else {
-                return Value::Null;
-            };
-            row_value_by_index(&row, args.get(1).map(Value::as_f64).unwrap_or(0.0) as usize)
-        }),
-    );
-
-    vm.register_host_fn(
-        "wasi:sql/types",
-        "[method]reader.get-string",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(Value::Object(reader)) = args.first() else {
-                return string_value("");
-            };
-            let Some(row) = current_reader_row(reader) else {
-                return string_value("");
-            };
-            string_value(&format!(
-                "{}",
-                row_value_by_index(&row, args.get(1).map(Value::as_f64).unwrap_or(0.0) as usize)
-            ))
-        }),
-    );
-
-    vm.register_host_fn(
-        "wasi:sql/types",
-        "[method]reader.get-name",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(Value::Object(reader)) = args.first() else {
-                return string_value("");
-            };
-            let names = array_prop(reader, "__col_names");
-            names
-                .get(args.get(1).map(Value::as_f64).unwrap_or(0.0) as usize)
-                .cloned()
-                .unwrap_or_else(|| string_value(""))
-        }),
-    );
-
-    vm.register_host_fn(
-        "wasi:sql/types",
-        "[method]reader.is-dbnull",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(Value::Object(reader)) = args.first() else {
-                return Value::Bool(true);
-            };
-            let Some(row) = current_reader_row(reader) else {
-                return Value::Bool(true);
-            };
-            Value::Bool(matches!(
-                row_value_by_index(&row, args.get(1).map(Value::as_f64).unwrap_or(0.0) as usize),
-                Value::Null
-            ))
-        }),
-    );
-
-    vm.register_host_fn(
-        "wasi:sql/types",
-        "[method]reader.close",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            if let Some(Value::Object(reader)) = args.first() {
-                set_prop(reader, "isclosed", Value::Bool(true));
-            }
-            Value::Null
-        }),
-    );
-
-    vm.register_host_fn(
-        "wasi:sql/types",
-        "[method]reader.get-schema-table",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(Value::Object(reader)) = args.first() else {
-                return data_table_from_rows("SchemaTable", &[], &[]);
-            };
-            let names = array_prop(reader, "__col_names");
-            let mut rows = Vec::new();
-            for (index, value) in names.iter().enumerate() {
-                let mut row = Object::new();
-                row.properties.insert("ColumnName".into(), value.clone());
-                row.properties
-                    .insert("ColumnOrdinal".into(), Value::F64(index as f64));
-                rows.push(Value::Object(vybe_runtime::heap::alloc(row)));
-            }
-            let col_names = vec!["ColumnName".to_string(), "ColumnOrdinal".to_string()];
-            data_table_from_rows("SchemaTable", &rows, &col_names)
-        }),
-    );
-
-    vm.register_host_fn(
-        "wasi:sql/types",
-        "[method]adapter.fill",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(Value::Object(adapter)) = args.first() else {
-                return Value::F64(0.0);
-            };
-            let Some(Value::Object(target)) = args.get(1) else {
-                return Value::F64(0.0);
-            };
-            let conn_id = f64_prop(adapter, "__conn_id") as u64;
-            let sql = string_prop(adapter, "selectcommand");
-            let rows = match do_query(conn_id, &sql, &[]) {
-                Ok(rows) => rows,
-                Err(e) => {
-                    eprintln!("wasi:sql/types adapter.fill: {}", e);
-                    return Value::F64(0.0);
-                }
-            };
-            let col_names = if rows.is_empty() {
-                do_query_columns(conn_id, &sql, &[]).unwrap_or_default()
-            } else {
-                col_names_from_rows(&rows)
-            };
-            let target_type = string_prop(target, "__type");
-            if target_type.eq_ignore_ascii_case("dataset") {
-                let table_name = format!("Table{}", array_prop(target, "tables").len() + 1);
-                let table = data_table_from_rows(&table_name, &rows, &col_names);
-                let mut tables = array_prop(target, "tables");
-                tables.push(table);
-                set_prop(target, "tables", rows_array(tables));
-            } else {
-                set_prop(
-                    target,
-                    "columns",
-                    rows_array(col_names.iter().map(|name| string_value(name)).collect()),
-                );
-                set_prop(target, "rows", rows_array(rows.clone()));
-            }
-            Value::F64(rows.len() as f64)
-        }),
-    );
-
     // wasi:sql/readwrite ──────────────────────────────────────────────────────
 
-    vm.register_host_fn(
+    // SPEC: `query: func(c: borrow<connection>, q: borrow<statement>) ->
+    // result<list<row>, error>` (`proposals/wasi-sql/wit/readwrite.wit`).
+    sql_fn(
+        vm,
         "wasi:sql/readwrite",
         "query",
+        vec![
+            ValType::Borrow("connection".to_string()),
+            ValType::Borrow("statement".to_string()),
+        ],
+        vec![ValType::Result(
+            Box::new(ValType::List(Box::new(ValType::Any))),
+            Box::new(ValType::Own("error".to_string())),
+        )],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let conn_id = args.first().map(|v| wasi_id(v)).unwrap_or(0);
             let stmt_id = args.get(1).map(|v| wasi_id(v)).unwrap_or(0);
@@ -1084,9 +474,20 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
+    // SPEC: `exec: func(c: borrow<connection>, q: borrow<statement>) ->
+    // result<u32, error>` (`proposals/wasi-sql/wit/readwrite.wit`).
+    sql_fn(
+        vm,
         "wasi:sql/readwrite",
         "exec",
+        vec![
+            ValType::Borrow("connection".to_string()),
+            ValType::Borrow("statement".to_string()),
+        ],
+        vec![ValType::Result(
+            Box::new(ValType::I32),
+            Box::new(ValType::Own("error".to_string())),
+        )],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let conn_id = args.first().map(|v| wasi_id(v)).unwrap_or(0);
             let stmt_id = args.get(1).map(|v| wasi_id(v)).unwrap_or(0);
@@ -1114,9 +515,12 @@ pub fn register(vm: &mut VM) {
 // ── Flat `wasi:sql` helpers for legacy adapter shapes ────────────────────────
 
 fn register_flat_api(vm: &mut VM) {
-    vm.register_host_fn(
+    sql_fn(
+        vm,
         "wasi:sql",
         "connect",
+        vec![ValType::String],
+        vec![ValType::Any],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let raw = arg_str(args, 0);
             if raw.is_empty() || raw == "null" {
@@ -1149,9 +553,12 @@ fn register_flat_api(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
+    sql_fn(
+        vm,
         "wasi:sql",
         "open",
+        vec![receiver()],
+        vec![],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             if let Some(Value::Object(obj)) = args.first() {
                 let raw = obj
@@ -1188,18 +595,24 @@ fn register_flat_api(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
+    sql_fn(
+        vm,
         "wasi:sql",
         "close",
+        vec![receiver()],
+        vec![],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             state().lock().unwrap().conns.remove(&get_conn_id(args));
             Value::Null
         }),
     );
 
-    vm.register_host_fn(
+    sql_fn(
+        vm,
         "wasi:sql",
         "createCommand",
+        vec![receiver()],
+        vec![ValType::Any],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let conn_id = get_conn_id(args);
             let mut obj = Object::new();
@@ -1213,6 +626,14 @@ fn register_flat_api(vm: &mut VM) {
         }),
     );
 
+    // `query`, `execute` and `scalar` stay UNDECLARED as one family: all three
+    // read `extract_params(args, 2)`, so the params array is a genuinely
+    // OPTIONAL trailing argument. `sql_adapter.rs` and `pdo_adapter.rs` branch
+    // on `has_params` and emit 2 or 3 accordingly. The Component Model has no
+    // optional parameter, so either arity would be a lie about the other, and
+    // undeclared means UNKNOWN. (`scalar` happens to have only a 2-argument
+    // caller today, but its closure is the same shape — declaring it at 2
+    // would turn a legal 3-argument call into a false warning.)
     vm.register_host_fn(
         "wasi:sql",
         "query",
@@ -1221,9 +642,12 @@ fn register_flat_api(vm: &mut VM) {
             let sql = get_sql(args);
             let params = extract_params(args, 2);
             match do_query(id, &sql, &params) {
-                Ok(rows) => rows_array(rows),
+                Ok(rows) => {
+                    clear_error(id);
+                    rows_array(rows)
+                }
                 Err(e) => {
-                    eprintln!("db.query: {}", e);
+                    record_error(id, &e);
                     rows_array(vec![])
                 }
             }
@@ -1238,12 +662,34 @@ fn register_flat_api(vm: &mut VM) {
             let sql = get_sql(args);
             let params = extract_params(args, 2);
             match do_exec(id, &sql, &params) {
-                Ok(n) => Value::F64(n as f64),
+                Ok(n) => {
+                    clear_error(id);
+                    Value::F64(n as f64)
+                }
                 Err(e) => {
-                    eprintln!("db.execute: {}", e);
+                    record_error(id, &e);
+                    // `-1` stays the "it failed" signal every existing adapter
+                    // already reads; the TRACE is what was missing.
                     Value::F64(-1.0)
                 }
             }
+        }),
+    );
+
+    // The flat surface's answer to `[method]error.trace` — the resource model
+    // hands an `error` back from the failing call, but these adapters get a
+    // plain row set or a count, so the trace is asked of the CONNECTION
+    // afterwards. That is the shape `sqlite3_errmsg(db)`, `mysql_error(conn)`
+    // and `PDO::errorInfo()` all want anyway. Empty string means "no failure
+    // since the last successful call on this connection".
+    sql_fn(
+        vm,
+        "wasi:sql",
+        "lastError",
+        vec![receiver()],
+        vec![ValType::String],
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            Value::String(Arc::from(take_error(get_conn_id(args)).as_str()))
         }),
     );
 
@@ -1268,33 +714,49 @@ fn register_flat_api(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
+    // The three transaction verbs are reached through a variable NAME —
+    // `emit_conn_op(.., op, ..)` in `python/sql_adapter.rs` and
+    // `emit_transaction_verb(.., verb, ..)` in `php/pdo_adapter.rs` — but at a
+    // fixed argc of 1, which is what the closures read.
+    sql_fn(
+        vm,
         "wasi:sql",
         "beginTransaction",
+        vec![receiver()],
+        vec![ValType::Bool],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             Value::Bool(do_exec(get_conn_id(args), "BEGIN", &[]).is_ok())
         }),
     );
 
-    vm.register_host_fn(
+    sql_fn(
+        vm,
         "wasi:sql",
         "commit",
+        vec![receiver()],
+        vec![ValType::Bool],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             Value::Bool(do_exec(get_conn_id(args), "COMMIT", &[]).is_ok())
         }),
     );
 
-    vm.register_host_fn(
+    sql_fn(
+        vm,
         "wasi:sql",
         "rollback",
+        vec![receiver()],
+        vec![ValType::Bool],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             Value::Bool(do_exec(get_conn_id(args), "ROLLBACK", &[]).is_ok())
         }),
     );
 
-    vm.register_host_fn(
+    sql_fn(
+        vm,
         "wasi:sql",
         "tables",
+        vec![receiver()],
+        vec![ValType::List(Box::new(ValType::String))],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let id = get_conn_id(args);
             let driver = {
@@ -1324,9 +786,12 @@ fn register_flat_api(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
+    sql_fn(
+        vm,
         "wasi:sql",
         "columns",
+        vec![receiver(), ValType::String],
+        vec![ValType::List(Box::new(ValType::String))],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let id = get_conn_id(args);
             let table = arg_str(args, 1);
@@ -1372,6 +837,12 @@ pub fn normalize_conn_str_full(raw: &str) -> String {
         || raw.starts_with("postgresql:")
         || raw.starts_with("mysql:")
         || raw.starts_with("mysql2:")
+        // A `file:` URI is SQLite's OWN qualified form and already carries its
+        // options. Falling through to the bare-path arm below appended a
+        // second query string — `file:x.db?mode=ro` became
+        // `sqlite:file:x.db?mode=ro?mode=rwc`, and SQLite read the whole of
+        // `ro?mode=rwc` as the access mode.
+        || raw.starts_with("file:")
         || raw.contains("://")
     {
         return raw.to_string();

@@ -30,9 +30,101 @@ pub fn custom_sections(_chunks: &[Chunk]) -> Vec<(&'static str, Vec<u8>)> {
     Vec::new()
 }
 
-/// Tag index of the single `$vybe_exception` tag in the emitted module.
-/// Every `throw` in the emitted .wasm references this tag.
+/// Tag index of the shared `$vybe_exception` tag in the emitted module. It is
+/// deliberately index 0: the stack-switching tags follow it at 1.., and every
+/// language-level `throw` (which imports the chunk tag `vybe:exception`) maps
+/// onto it.
 pub const VYBE_EXCEPTION_TAG: u32 = 0;
+
+/// The chunk tag name every language front end imports for its own exceptions.
+/// Must match `vybe_compiler::primitives::errors::EXCEPTION_TAG_NAME`.
+const VYBE_EXCEPTION_TAG_NAME: &str = "vybe:exception";
+
+/// One tag in the emitted module's tag index space.
+pub struct ModuleTag {
+    pub debug_name: String,
+    pub arity: u8,
+}
+
+/// How a module's chunk-level tags land in the ONE tag index space a `.wasm`
+/// module has.
+///
+/// A tag's identity is the whole matching rule of `try_table`, and it was being
+/// thrown away: every `catch`/`catch_ref` clause and every `throw` was written
+/// with tagidx 0, so a module with several distinct tags serialized into one
+/// where they were all the same tag — clauses that must not match would match.
+///
+/// Chunks are the module's functions, so their tag lists are merged: an
+/// IMPORTED tag resolves by name to one shared entity (that is what makes a
+/// `throw $t` in one function reachable by a `catch $t` in another), while each
+/// LOCAL declaration is a fresh entity and gets its own slot.
+pub struct ModuleTagPlan {
+    /// Tags to declare, in module tag-index order, starting at `reserved`.
+    pub extra: Vec<ModuleTag>,
+    /// chunk index → chunk tag index → module tag index.
+    pub chunk_maps: Vec<Vec<u32>>,
+}
+
+impl ModuleTagPlan {
+    /// The module tag index for chunk `ci`'s tag `tag_idx`. Falls back to the
+    /// shared exception tag for a chunk that declared none — a hand-built chunk
+    /// whose `throw` predates the tag section.
+    pub fn module_tag(&self, ci: usize, tag_idx: u16) -> u32 {
+        self.chunk_maps
+            .get(ci)
+            .and_then(|m| m.get(tag_idx as usize))
+            .copied()
+            .unwrap_or(VYBE_EXCEPTION_TAG)
+    }
+}
+
+/// Build the plan. `reserved` is how many tag indices the fixed prefix already
+/// claims (the exception tag, then the stack-switching suspend/continuation
+/// tags), so newly declared tags start after them.
+pub fn plan_module_tags(chunks: &[Chunk], reserved: u32) -> ModuleTagPlan {
+    let mut plan = ModuleTagPlan {
+        extra: Vec::new(),
+        chunk_maps: Vec::with_capacity(chunks.len()),
+    };
+    let mut by_import_name: std::collections::HashMap<String, u32> =
+        std::collections::HashMap::new();
+    for chunk in chunks {
+        let mut map = Vec::with_capacity(chunk.tags.len());
+        for tag in &chunk.tags {
+            // The one tag every front end shares already has a slot.
+            if tag.debug_name == VYBE_EXCEPTION_TAG_NAME {
+                map.push(VYBE_EXCEPTION_TAG);
+                continue;
+            }
+            let idx = if tag.imported {
+                match by_import_name.get(&tag.debug_name) {
+                    Some(&i) => i,
+                    None => {
+                        let i = reserved + plan.extra.len() as u32;
+                        by_import_name.insert(tag.debug_name.clone(), i);
+                        plan.extra.push(ModuleTag {
+                            debug_name: tag.debug_name.clone(),
+                            arity: tag.arity,
+                        });
+                        i
+                    }
+                }
+            } else {
+                // A local declaration is a FRESH entity — never shared, not
+                // even with a same-named one in another function.
+                let i = reserved + plan.extra.len() as u32;
+                plan.extra.push(ModuleTag {
+                    debug_name: tag.debug_name.clone(),
+                    arity: tag.arity,
+                });
+                i
+            };
+            map.push(idx);
+        }
+        plan.chunk_maps.push(map);
+    }
+    plan
+}
 
 /// Encode the tag section (section id 13). Always declares the
 /// `$vybe_exception (param externref)` tag for the exception-handling
@@ -57,10 +149,28 @@ pub fn encode_tag_section_with_continuation_tags(
     suspend_tag_type_idx: Option<u32>,
     continuation_tag_type_indices: &[u32],
 ) -> Vec<u8> {
+    encode_tag_section_full(
+        exception_type_idx,
+        suspend_tag_type_idx,
+        continuation_tag_type_indices,
+        &[],
+    )
+}
+
+/// The whole tag section. `extra_type_indices` declares the module's OWN tags
+/// — the ones a `(tag $e (param …))` in the source produced — after the fixed
+/// prefix, one entry per [`ModuleTagPlan::extra`] entry and in the same order.
+pub fn encode_tag_section_full(
+    exception_type_idx: u32,
+    suspend_tag_type_idx: Option<u32>,
+    continuation_tag_type_indices: &[u32],
+    extra_type_indices: &[u32],
+) -> Vec<u8> {
     let mut out = Vec::new();
     let count = 1u32
         + u32::from(suspend_tag_type_idx.is_some())
-        + continuation_tag_type_indices.len() as u32;
+        + continuation_tag_type_indices.len() as u32
+        + extra_type_indices.len() as u32;
     write_leb128_u32(&mut out, count);
     out.push(0x00);
     write_leb128_u32(&mut out, exception_type_idx);
@@ -69,6 +179,10 @@ pub fn encode_tag_section_with_continuation_tags(
         write_leb128_u32(&mut out, idx);
     }
     for idx in continuation_tag_type_indices {
+        out.push(0x00);
+        write_leb128_u32(&mut out, *idx);
+    }
+    for idx in extra_type_indices {
         out.push(0x00);
         write_leb128_u32(&mut out, *idx);
     }

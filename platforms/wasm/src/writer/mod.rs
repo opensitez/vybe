@@ -93,19 +93,39 @@ pub fn write_wasm(chunks: &[Chunk]) -> Vec<u8> {
     // `$vybe_suspend (param externref) (result externref)` tag when
     // any `CONT_NEW` / `SUSPEND` / `RESUME` / `SWITCH` op appears.
     let emit_exception_tag = exception_handling::module_uses_exceptions(chunks);
+    let suspend_idx = if type_ctx.uses_stack_switching {
+        Some(type_ctx.suspend_tag_type_idx)
+    } else {
+        None
+    };
+    // The module's OWN tags follow the fixed prefix (exception tag, then the
+    // stack-switching ones), so `VYBE_EXCEPTION_TAG` and the continuation tag
+    // indices keep the values everything else already assumes.
+    let reserved = 1 + u32::from(suspend_idx.is_some())
+        + type_ctx.continuation_tag_type_indices.len() as u32;
+    let tag_plan = exception_handling::plan_module_tags(chunks, reserved);
     if emit_exception_tag || type_ctx.uses_stack_switching {
-        let suspend_idx = if type_ctx.uses_stack_switching {
-            Some(type_ctx.suspend_tag_type_idx)
-        } else {
-            None
-        };
+        // Each declared tag needs a functype of its own arity; `(arity, 0)` is
+        // exactly the blocktype shape `build_type_context` emitted for it.
+        let extra_types: Vec<u32> = tag_plan
+            .extra
+            .iter()
+            .map(|t| {
+                type_ctx
+                    .block_type_by_results
+                    .get(&(t.arity, 0))
+                    .copied()
+                    .unwrap_or(type_ctx.exception_type_idx)
+            })
+            .collect();
         write_section(
             &mut out,
             SECTION_TAG,
-            &exception_handling::encode_tag_section_with_continuation_tags(
+            &exception_handling::encode_tag_section_full(
                 type_ctx.exception_type_idx,
                 suspend_idx,
                 &type_ctx.continuation_tag_type_indices,
+                &extra_types,
             ),
         );
     }
@@ -148,7 +168,7 @@ pub fn write_wasm(chunks: &[Chunk]) -> Vec<u8> {
     write_section(
         &mut out,
         SECTION_CODE,
-        &code::encode_code_section(chunks, &rt_imports, &type_ctx, &global_map),
+        &code::encode_code_section(chunks, &rt_imports, &type_ctx, &global_map, &tag_plan),
     );
 
     // ── Trailing custom sections ─────────────────────────────────────

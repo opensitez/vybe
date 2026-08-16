@@ -299,9 +299,22 @@ impl VM {
                 }
                 _ => {}
             }
-            let f = self.frame_mut();
-            f.ip = handler.catch_ip;
-            Ok(())
+            // Spec: a matching clause BRANCHES to its `labelidx`, carrying the
+            // values just pushed as that label's results. Resolve the depth
+            // through the SAME helper `br`/`br_if` use, so the two can never
+            // drift — and so the handler target is block structure rather than
+            // a byte offset that truncates past a 64KB try body.
+            let depth = handler.catch_label as usize;
+            match self.label_stack.iter().rev().nth(depth).copied() {
+                Some(entry) => {
+                    self.branch_to_label(depth, entry);
+                    Ok(())
+                }
+                None => Err(VMError::new(format!(
+                    "try_table catch label {depth} out of range: {} label(s) in scope",
+                    self.label_stack.len()
+                ))),
+            }
         } else if let Some(ac) = self.active_continuations.pop() {
             // Stack-switching proposal: an exception not handled inside a
             // resumed continuation propagates to the PARENT at the `resume`

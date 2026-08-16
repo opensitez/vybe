@@ -121,6 +121,53 @@ pub enum NamespaceNode {
     /// source≠canonical reconciliation point (`python.json.dumps` →
     /// `Alias("ecma.json.stringify")`).
     Alias(Path),
+    /// A declaration made by the COMPILATION UNIT being compiled — a user
+    /// class, module or function that lives as a global in the emitted module.
+    ///
+    /// Every other variant names something the HOST provides: `Fn` is a host
+    /// import, `CommonEmit` a shared emit, `Const` a compile-time value, `Type`
+    /// a component-model type with a `CtorSpec`. None of them can say "a global
+    /// this program declares", which is why user declarations were name-mangled
+    /// into flat `HashSet<String>`s instead of living in the tree at all —
+    /// `Namespace MyApp.Models` + `Class Customer` became the STRING
+    /// `myapp.models.customer` and a namespace was a name prefix, not a node.
+    ///
+    /// `identity` is that canonical dotted name, unchanged: it is the key every
+    /// downstream table still uses (`defined_classes`, `normalized_classes`,
+    /// the declared-type hint), so the tree becomes the RESOLVER without
+    /// needing all of them migrated at once (namespaceplan.md Phase 6).
+    ///
+    /// These nodes live only in the per-unit root on `Compiler`, never in the
+    /// process-global registry — user declarations are a mount, not tree data.
+    /// Every walker in this file reads the global registry, so none of them can
+    /// observe one; the compiler's `resolve_segments`, which walks both
+    /// forests, matches exhaustively and handles it there.
+    UserGlobal {
+        identity: Path,
+        kind: UserGlobalKind,
+        /// Declarations nested UNDER this name. A user declaration is both a
+        /// leaf and a container, exactly as `Type` is both a constructable
+        /// type and a namespace over its `statics`: `namespace Demo.Sub {
+        /// class Demo }` alongside a bare `class Demo` makes `Demo` a type AND
+        /// the prefix of `Demo.Sub.Demo`, and both spellings must keep
+        /// resolving. Without this the second declaration displaces the first
+        /// and whichever arrived last wins.
+        children: Subtree,
+    },
+}
+
+/// What a [`NamespaceNode::UserGlobal`] declares.
+///
+/// A type and a function are both globals of the unit, but a type position
+/// must not accept a function: `Dim c As Repeat` is not a type reference just
+/// because `Repeat` is a declared name. Keeping the two apart is what lets one
+/// tree answer both questions without either one guessing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserGlobalKind {
+    /// A class, structure, enum, interface or module declaration.
+    Type,
+    /// A function/sub declaration.
+    Function,
 }
 
 /// Everything the compiler needs to construct a tree `Type` generically,
@@ -131,6 +178,19 @@ pub enum NamespaceNode {
 /// stamping `__type`/`__types` from `ancestry`, and storing each constructor
 /// argument into the matching `fields` slot. This is the reusable path that
 /// retires the dotnet-surface `lookup_constructor` (namespaceplan.md).
+/// The live element type `platforms/web` registers, and therefore the name a
+/// platform's [`CtorSpec::ancestry`] must END in for its controls to be
+/// allocated with a real rtt rather than the host's one-size element type.
+///
+/// It lives here, in the tree vocabulary, because it is something a PLATFORM
+/// declares — and because the platform crates cannot see `vybe_compiler`
+/// (the dependency runs the other way). Matched by name, which is also how a
+/// chunk's reserved type slots bind to host `TypeDef`s
+/// (`VM::bind_module_type_ids`): declaring this tail gives a control ONE chain
+/// answering both `x is Widget` and `x is HTMLElement`, instead of an rtt for
+/// one question and a `__types` string array for the other.
+pub const DOM_ELEMENT_TYPE: &str = "HTMLElement";
+
 #[derive(Debug, Clone, Default)]
 pub struct CtorSpec {
     /// Constructor parameter names, in positional order — drives named-arg
@@ -153,6 +213,23 @@ pub struct CtorSpec {
     /// How each constructor arg maps onto the control, aligned with `fields`.
     /// Only meaningful when `control_fn` is set.
     pub field_gui: Vec<FieldGui>,
+    /// Guest function that answers **"which node does this value contribute?"**
+    /// for a value being nested (`NestOrProp`/`Children`), or `None` when the
+    /// value nested IS already the node.
+    ///
+    /// A WinForms control or a GCL widget is its element the moment it is
+    /// constructed, so nothing needs asking. Flutter is the framework where
+    /// that is not true: `StatelessWidget`/`StatefulWidget` are *configuration*
+    /// — `CalculatorPage()` is a description, and the element only exists once
+    /// `build()` has run. Nesting the description appends nothing and reports
+    /// nothing, which is exactly the blank form.
+    ///
+    /// The shared path cannot know that, and must not learn it: inflation is
+    /// `createState`/`build` with per-widget State, which is Flutter's model and
+    /// no one else's. So the platform names the function and the shared path
+    /// calls it — one call before the "is this an element" test, identity for
+    /// anything already concrete.
+    pub nest_coerce: Option<String>,
     /// True for immutable value types whose `==` is by VALUE, not identity
     /// (Flutter `ValueKey`/`Color`/`Offset` override `operator ==`). The
     /// construction site stamps `__value_eq` so the language equality path

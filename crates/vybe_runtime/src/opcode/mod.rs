@@ -100,6 +100,36 @@ pub mod heaptype {
                 _ => return None,
             }))
         }
+
+        /// The spec's reftype ABBREVIATIONS (§2.3.4). Each is shorthand for a
+        /// nullable reference to an abstract heap type — `funcref ≡ (ref null
+        /// func)` — so resolving one yields both the heap type and the fact
+        /// that it is nullable. Kept separate from [`HeapType::from_spec_name`]
+        /// because that answers for HEAP types, where nullability is not part
+        /// of the spelling.
+        ///
+        /// Without this, `ref.test funcref` resolved "funcref" as a user type
+        /// NAME and reserved a module type slot for it, so the immediate came
+        /// out as a concrete index and the test could never be true.
+        /// Returns the heap type's own spelling plus `true` for nullable, so a
+        /// caller that works in names (the `ref.test` operand resolver) can
+        /// hand the result straight to [`HeapType::from_spec_name`].
+        pub fn from_spec_reftype_name(name: &str) -> Option<(&'static str, bool)> {
+            let heap = match name {
+                "anyref" => "any",
+                "eqref" => "eq",
+                "i31ref" => "i31",
+                "structref" => "struct",
+                "arrayref" => "array",
+                "funcref" => "func",
+                "externref" => "extern",
+                "nullref" => "none",
+                "nullfuncref" => "nofunc",
+                "nullexternref" => "noextern",
+                _ => return None,
+            };
+            Some((heap, true))
+        }
     }
 
     /// Is this heaptype in the GC heap? A `ref.null` of a GC type is a WASM GC
@@ -392,9 +422,13 @@ impl OperandFormat {
             Self::SlI64 => leb_i64_size(code, operand_start),
             Self::BrTable => br_table_size(code, operand_start),
             Self::TryTable => {
-                // u8 clause_count + per clause (u8 kind + u16 tag + u16 offset)
-                let count = code.get(operand_start).copied().unwrap_or(0) as usize;
-                1 + count * 5
+                // u8 param_count + u8 result_count (the spec blocktype, encoded
+                // as BLOCK's) + u16 clause_count + per clause
+                // (u8 kind + u16 tag + u16 label)
+                let hi = code.get(operand_start + 2).copied().unwrap_or(0) as usize;
+                let lo = code.get(operand_start + 3).copied().unwrap_or(0) as usize;
+                let count = (hi << 8) | lo;
+                4 + count * 5
             }
             fmt => fmt.fixed_size(),
         }

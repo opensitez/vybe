@@ -12,7 +12,21 @@ pub(super) struct SqliteDriver {
 impl SqliteDriver {
     pub(super) fn open(url: &str) -> Result<Self, String> {
         let raw = url.trim_start_matches("sqlite:").trim_start_matches("//");
-        let path = raw.split('?').next().unwrap_or(raw);
+        // A `file:` URI carries its own options — `?mode=ro`, `?cache=shared`,
+        // `?immutable=1` — and `SQLITE_OPEN_URI` below is what tells SQLite to
+        // parse them, so the name must reach it WHOLE. Splitting the query off
+        // for every name silently dropped every one of those: a caller asking
+        // for read-only got a writable database and its writes succeeded.
+        //
+        // `wasi:sql` only ever says `open(name: string)` and says nothing about
+        // the shape of that string (wasi-sql is Phase 1), so how completely we
+        // read it is an implementation choice, not a spec question — this adds
+        // no interface and no function.
+        let path = if raw.starts_with("file:") {
+            raw
+        } else {
+            raw.split('?').next().unwrap_or(raw)
+        };
         let conn = if path == ":memory:" {
             rusqlite::Connection::open_in_memory()
         } else {

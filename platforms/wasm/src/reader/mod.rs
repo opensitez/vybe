@@ -1727,11 +1727,13 @@ fn decode_standard_wasm(
     Ok(chunks)
 }
 
-/// A pending catch clause of a `try_table` being decoded: the byte position of
-/// its offset placeholder (patched with the handler position at the try's
-/// `end`) and the spec catch label `L` it branches to.
+/// A pending catch clause of a `try_table` being decoded: the spec catch label
+/// `L` it branches to.
+///
+/// There is no longer an offset placeholder to remember. The clause's handler
+/// target is a `labelidx` — clause `i` names block `i`, whose `end` is where
+/// its trampoline begins — so nothing is patched at the try's `end`.
 struct EhClause {
-    offset_pos: usize,
     label: u32,
 }
 
@@ -1842,6 +1844,9 @@ fn translate_wasm_to_chunk(
                 skip_leb128(wasm, &mut pos);
                 let mut pairs: Vec<(u8, u16)> = Vec::with_capacity(clause_count as usize);
                 let mut labels: Vec<u32> = Vec::with_capacity(clause_count as usize);
+                // The WASM-side tag index per clause, kept so each handler
+                // block can be given the tag's payload arity below.
+                let mut wasm_tags: Vec<usize> = Vec::with_capacity(clause_count as usize);
                 for _ in 0..clause_count {
                     // kind: 0=catch 1=catch_ref 2=catch_all 3=catch_all_ref
                     // (identical to the VM CATCH_KIND_* values).
@@ -1850,8 +1855,12 @@ fn translate_wasm_to_chunk(
                     let chunk_tag = if kind == 0x00 || kind == 0x01 {
                         let (wt, _) = read_leb128_u32(&wasm[pos..]);
                         skip_leb128(wasm, &mut pos);
+                        wasm_tags.push(wt as usize);
                         tag_map.get(wt as usize).copied().unwrap_or(wt as u16)
                     } else {
+                        // catch_all kinds carry no tagidx; the slot keeps the
+                        // vectors aligned by clause index.
+                        wasm_tags.push(usize::MAX);
                         0
                     };
                     let (label, _) = read_leb128_u32(&wasm[pos..]);
@@ -1860,14 +1869,53 @@ fn translate_wasm_to_chunk(
                     labels.push(label);
                 }
                 chunk.emit_block_typed(0, result_count); // $skip wrapper
-                let offsets = chunk.emit_try_table_clauses(&pairs, 0);
-                let clauses: Vec<EhClause> = offsets
+                // ONE BLOCK PER CLAUSE, innermost-first, so clause `i` reaches
+                // its trampoline by `labelidx i` — block `i`'s `end` is where
+                // trampoline `i` begins. The clause field is a spec labelidx
+                // (a depth) now, not a patched byte offset, so there is nothing
+                // to patch and no 64KB ceiling. Emitting in REVERSE makes the
+                // FIRST clause's block innermost, i.e. depth 0.
+                //
+                // Each block's RESULT ARITY is what its clause delivers: the
+                // branch keeps exactly `result_arity` values and discards the
+                // rest, so a void block here silently drops the payload.
+                //   catch          → the tag's params
+                //   catch_ref      → params + the exnref
+                //   catch_all      → nothing (spec: no values pushed)
+                //   catch_all_ref  → the exnref only
+                let arity_of = |kind: u8, wasm_tag: usize| -> u8 {
+                    let params = tag_arities.get(wasm_tag).copied().unwrap_or(0);
+                    match kind {
+                        0x00 => params,
+                        0x01 => params.saturating_add(1),
+                        0x03 => 1,
+                        _ => 0,
+                    }
+                };
+                // Emitted in REVERSE so clause 0's block is innermost, i.e.
+                // `labelidx 0`.
+                for (kind, wasm_tag) in pairs.iter().map(|p| p.0).zip(wasm_tags.iter()).rev() {
+                    chunk.emit_block_typed(0, arity_of(kind, *wasm_tag));
+                }
+                let triples: Vec<(u8, u16, u16)> = pairs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &(kind, tag))| (kind, tag, i as u16))
+                    .collect();
+                // The try_table's own blocktype, decoded above. `$skip` mirrors
+                // its results; the instruction itself must carry them too, so a
+                // `br` to the try_table's label keeps its values.
+                chunk.emit_try_table_clauses(0, result_count, &triples, 0);
+                let clauses: Vec<EhClause> = labels
                     .into_iter()
-                    .zip(labels)
-                    .map(|(offset_pos, label)| EhClause { offset_pos, label })
+                    .map(|label| EhClause { label })
                     .collect();
                 label_stack.push(LabelInfo {
-                    emitted_span: 2,
+                    // `$skip` + one block per clause + the `try_table` itself.
+                    // Every one of those is open while the body is decoded, so
+                    // a `br` out of the body must step past all of them — this
+                    // was 2 when the clause blocks did not exist.
+                    emitted_span: 2 + clause_count,
                     eh: Some(clauses),
                 });
             }
@@ -1919,22 +1967,30 @@ fn translate_wasm_to_chunk(
                         eh: Some(clauses), ..
                     }) => {
                         chunk.emit_end(0); // close try_table (body done)
-                        chunk.emit_br(0, 0); // normal path → $skip (now innermost)
-                        for clause in &clauses {
-                            // Patch this clause's forward offset to the handler.
-                            let here = chunk.current_offset();
-                            let jump = here as i32 - (clause.offset_pos as i32 + 2);
-                            chunk.code[clause.offset_pos] = (jump >> 8) as u8;
-                            chunk.code[clause.offset_pos + 1] = (jump & 0xff) as u8;
+                        // Normal path skips every clause block AND lands on
+                        // `$skip`'s end: that is `clauses.len()` blocks out.
+                        chunk.emit_br(clauses.len() as u32, 0);
+                        let n = clauses.len();
+                        for (i, clause) in clauses.iter().enumerate() {
+                            // Close clause block `i`: its `end` IS the target
+                            // named by `labelidx i`, so trampoline `i` starts
+                            // here. No offset patching — that is the whole point
+                            // of the labelidx change.
+                            chunk.emit_end(0);
                             // Trampoline: spec `catch … L` → `br L`. The `$skip`
-                            // wrapper (innermost here) makes L=0 exit the region;
-                            // deeper labels add the wrapper level + remap.
+                            // wrapper makes L=0 exit the region; deeper labels
+                            // add the wrapper level + remap.
                             let tramp = if clause.label == 0 {
                                 0
                             } else {
                                 1 + emitted_br_depth(&label_stack, clause.label - 1)
                             };
-                            chunk.emit_br(tramp, 0);
+                            // ...then shift by the clause blocks STILL OPEN at
+                            // this point (`T_{i+1}`…`T_{n-1}`). The trampoline
+                            // depths above were derived when `$skip` was the
+                            // only wrapper; each unclosed clause block sits
+                            // between here and it.
+                            chunk.emit_br(tramp + (n - 1 - i) as u32, 0);
                         }
                         chunk.emit_end(0); // close $skip
                     }

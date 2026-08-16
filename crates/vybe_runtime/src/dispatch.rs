@@ -363,6 +363,13 @@ fn ref_eq(a: &Value, b: &Value) -> bool {
         (Value::Object(a), Value::Object(b)) => Arc::ptr_eq(a, b),
         (Value::Symbol(a), Value::Symbol(b)) => Arc::ptr_eq(a, b),
         (Value::String(a), Value::String(b)) => Arc::ptr_eq(a, b),
+        // An `i31ref` is UNBOXED — `I31_NEW` masks to 31 bits and pushes a
+        // plain `I32`, with no allocation to take the address of. Its value
+        // therefore IS its identity: `ref.eq (ref.i31 7) (ref.i31 7)` is 1,
+        // where the pointer-identity arms above would answer 0 because there
+        // is no pointer. Validation restricts `ref.eq` to `eqref` operands, so
+        // a plain integer never reaches this arm.
+        (Value::I32(a), Value::I32(b)) => a == b,
         _ => false,
     }
 }
@@ -551,7 +558,9 @@ fn typed_array_write(ta: &TypedArrayState, idx: usize, value: &Value) -> bool {
             buf[abs..abs + 4].copy_from_slice(&u.to_le_bytes());
         }
         TypedElemKind::F32 => {
-            let bytes = (value.as_f64() as f32).to_le_bytes();
+            // Bit-preserving, like `f32.store` — no f64 round-trip, which would
+            // quiet a signalling NaN.
+            let bytes = value.as_f32().to_le_bytes();
             buf[abs..abs + 4].copy_from_slice(&bytes);
         }
         TypedElemKind::F64 => {
@@ -586,6 +595,25 @@ impl VM {
         if !self.block_tables.contains_key(&ci) {
             let table = build_block_table(&self.chunks[ci].code);
             self.block_tables.insert(ci, table);
+        }
+    }
+
+    /// Pop the current frame the way a tail call must: a `return_call` REPLACES
+    /// the frame, so that frame's structured state dies with it — its labels,
+    /// and, spec-visibly, its `try_table` handlers.
+    ///
+    /// `frames.pop()` alone left the caller's catch clauses ARMED for the
+    /// callee, so a tail call out of a protected body had its callee's throw
+    /// caught by a handler that no longer existed (`try_table.wast`
+    /// `return-call-in-try-catch`, which asserts the throw ESCAPES). This is the
+    /// same cleanup `Op::RETURN` does; only the tail-call arms were missing it.
+    fn pop_frame_for_tail_call(&mut self) {
+        let frame_label_base = self.frame().label_base;
+        self.label_stack.truncate(frame_label_base);
+        self.frames.pop();
+        if !self.frames.is_empty() {
+            let live = self.frames.len();
+            self.exception_handlers.retain(|h| h.frame_depth <= live);
         }
     }
 
@@ -3228,7 +3256,7 @@ impl VM {
                         .ok_or_else(|| VMError::new("array.new_data: missing data segment"))?;
                     let end = offset.saturating_add(size);
                     if end > data.len() {
-                        return Err(VMError::new("array.new_data: out of bounds"));
+                        return Err(VMError::new("trap: array.new_data: out of bounds"));
                     }
                     let elems = data[offset..end]
                         .iter()
@@ -3250,7 +3278,7 @@ impl VM {
                         .ok_or_else(|| VMError::new("array.new_elem: missing element segment"))?;
                     let end = offset.saturating_add(size);
                     if end > elems.len() {
-                        return Err(VMError::new("array.new_elem: out of bounds"));
+                        return Err(VMError::new("trap: array.new_elem: out of bounds"));
                     }
                     self.push(Value::Object(crate::heap::alloc(Object::new_array(
                         elems[offset..end].to_vec(),
@@ -3372,7 +3400,7 @@ impl VM {
                     let check_src = |elem_size: usize| -> Result<(), VMError> {
                         let end = src_offset.saturating_add(size.saturating_mul(elem_size));
                         if end > data.len() {
-                            return Err(VMError::new("array.init_data: source out of bounds"));
+                            return Err(VMError::new("trap: array.init_data: source out of bounds"));
                         }
                         Ok(())
                     };
@@ -3442,7 +3470,7 @@ impl VM {
                         .ok_or_else(|| VMError::new("array.init_elem: missing element segment"))?;
                     let src_end = src_offset.saturating_add(size);
                     if src_end > source.len() {
-                        return Err(VMError::new("array.init_elem: source out of bounds"));
+                        return Err(VMError::new("trap: array.init_elem: source out of bounds"));
                     }
                     if let Value::Object(obj) = array {
                         let mut o = obj.lock().unwrap();
@@ -3620,7 +3648,7 @@ impl VM {
                     let val = self.peek(0).clone();
                     if !val.is_null_ref() && !self.ref_test_or_declared_name(&val, ht) {
                         return Err(VMError::new(&format!(
-                            "ref.cast_null failed: value is not {}",
+                            "trap: ref.cast_null failed: value is not {}",
                             self.heaptype_label(ht)
                         )));
                     }
@@ -3718,8 +3746,14 @@ impl VM {
                     let ht = HeapType::from_sleb(self.read_leb_i32());
                     let val = self.peek(0).clone();
                     if !self.ref_test_or_declared_name(&val, ht) {
+                        // `trap: ` is not decoration — `VMError::is_trap`
+                        // classifies solely on that prefix, and only a message
+                        // carrying it is offered to a host-level handler at the
+                        // trap/host boundary. Without it a failed cast escaped
+                        // uncaught: the spec says `ref.cast` TRAPS, and a trap
+                        // has to be catchable like every other one.
                         return Err(VMError::new(&format!(
-                            "ref.cast failed: value is not {}",
+                            "trap: ref.cast failed: value is not {}",
                             self.heaptype_label(ht)
                         )));
                     }
@@ -4162,45 +4196,83 @@ impl VM {
                     let a = self.pop().as_i64() as u64;
                     self.push(Value::F32(a as f32))?;
                 }
+                // `i32.trunc_f64_s` (0xAA). The SIGNED domain is the open
+                // interval (-2^31 - 1, 2^31): the result of `trunc` has to
+                // land in [-2^31, 2^31), and -2147483648.9 truncates to
+                // -2147483648, which does. Guarding on `v < -2^31` rejected
+                // the whole of (-2^31 - 1, -2^31] — `conversions.wast:123`.
+                //
+                // The f32 forms below keep `< -2^31` deliberately: -2147483649
+                // is not representable in f32 (it rounds to -2^31, which would
+                // then trap a legal value), and the f32 spacing near 2^31 is
+                // 256, so no representable f32 falls in the gap anyway. Same
+                // reasoning for the i64 forms against f64.
                 _ if op == Op::I32_FROM_F64 => {
                     let v = self.pop().as_f64();
-                    if v.is_nan() || v >= 2147483648.0 || v < -2147483648.0 {
+                    if v.is_nan() {
+                        return Err(VMError::new("trap: invalid conversion to integer"));
+                    }
+                    if v >= 2147483648.0 || v <= -2147483649.0 {
                         return Err(VMError::new("trap: integer overflow"));
                     }
                     self.push(Value::I32(v as i32))?;
                 }
+                // The unsigned truncations' domain is the OPEN interval
+                // (-1, 2^N): `trunc` rounds toward zero, so every value
+                // strictly greater than -1 lands on 0 and is legal — tiny
+                // negatives, -0.0, -0.9. Only -1.0 and below are out of range.
+                // Rejecting `v < 0.0` trapped on the whole of (-1, 0), which
+                // is what `conversions.wast:90` catches.
+                //
+                // NaN is a DIFFERENT trap from being out of range (spec
+                // §4.3.3; `conversions.wast:101` vs `:104`), so the two carry
+                // different messages.
                 _ if op == Op::I32_TRUNC_F64_U => {
                     let v = self.pop().as_f64();
-                    if v.is_nan() || v < 0.0 || v >= 4294967296.0 {
+                    if v.is_nan() {
+                        return Err(VMError::new("trap: invalid conversion to integer"));
+                    }
+                    if v <= -1.0 || v >= 4294967296.0 {
                         return Err(VMError::new("trap: integer overflow"));
                     }
                     self.push(Value::I32(v as u32 as i32))?;
                 }
                 _ if op == Op::I32_TRUNC_F32_S => {
                     let v = self.pop().as_f64() as f32;
-                    if v.is_nan() || v >= 2147483648.0f32 || v < -2147483648.0f32 {
+                    if v.is_nan() {
+                        return Err(VMError::new("trap: invalid conversion to integer"));
+                    }
+                    if v >= 2147483648.0f32 || v < -2147483648.0f32 {
                         return Err(VMError::new("trap: integer overflow"));
                     }
                     self.push(Value::I32(v as i32))?;
                 }
                 _ if op == Op::I32_TRUNC_F32_U => {
                     let v = self.pop().as_f64() as f32;
-                    if v.is_nan() || v < 0.0f32 || v >= 4294967296.0f32 {
+                    if v.is_nan() {
+                        return Err(VMError::new("trap: invalid conversion to integer"));
+                    }
+                    if v <= -1.0f32 || v >= 4294967296.0f32 {
                         return Err(VMError::new("trap: integer overflow"));
                     }
                     self.push(Value::I32(v as u32 as i32))?;
                 }
                 _ if op == Op::I64_TRUNC_F32_S => {
                     let v = self.pop().as_f64() as f32;
-                    if v.is_nan() || v >= 9223372036854775808.0f32 || v < -9223372036854775808.0f32
-                    {
+                    if v.is_nan() {
+                        return Err(VMError::new("trap: invalid conversion to integer"));
+                    }
+                    if v >= 9223372036854775808.0f32 || v < -9223372036854775808.0f32 {
                         return Err(VMError::new("trap: integer overflow"));
                     }
                     self.push(Value::I64(v as i64))?;
                 }
                 _ if op == Op::I64_TRUNC_F32_U => {
                     let v = self.pop().as_f64() as f32;
-                    if v.is_nan() || v < 0.0f32 || v >= 18446744073709551616.0f32 {
+                    if v.is_nan() {
+                        return Err(VMError::new("trap: invalid conversion to integer"));
+                    }
+                    if v <= -1.0f32 || v >= 18446744073709551616.0f32 {
                         return Err(VMError::new("trap: integer overflow"));
                     }
                     self.push(Value::I64(v as u64 as i64))?;
@@ -4267,6 +4339,14 @@ impl VM {
                     // Spec `throw_ref`: rethrow the exception an exnref
                     // refers to — same tag identity, same payload.
                     let val = self.pop();
+                    // A NULL exnref is the spec's own trap case, with its own
+                    // wording (`throw_ref.wast` asserts "null exception
+                    // reference"). Reporting it as "not an exnref" both misses
+                    // that assertion and describes the wrong fault: a null
+                    // `exnref` IS an exnref.
+                    if val.is_null_ref() || matches!(val, Value::Undefined) {
+                        return Err(VMError::new("trap: null exception reference"));
+                    }
                     let (entity, payload) = Self::unpack_exnref(&val)
                         .ok_or_else(|| VMError::new("throw_ref: operand is not an exnref"))?;
                     self.raise_exception(entity, payload, 0)?;
@@ -4294,10 +4374,19 @@ impl VM {
                     //   [try_table, u8 clause_count, per clause:
                     //    u8 kind (0=catch 1=catch_ref 2=catch_all 3=catch_all_ref),
                     //    u16 tag_idx (ignored for catch_all kinds),
-                    //    u16 offset (forward from the end of this clause)]
+                    //    u16 labelidx (relative block depth, as `br`)]
                     // Matching is TAG IDENTITY only — clauses are tried in
                     // order (pushed reversed so the first clause is on top).
-                    let clause_count = self.read_byte() as usize;
+                    // Spec blocktype `bt` — `try_table` IS a block and may take
+                    // and produce values. Encoded as BLOCK's (params, results).
+                    let params = self.read_byte() as usize;
+                    let try_results = self.read_byte();
+                    // Base below the params, as for BLOCK. The label and the
+                    // handlers must agree on it: `stack_depth` is where a
+                    // caught exception unwinds to before the payload is
+                    // pushed, and that is the same base a `br` truncates to.
+                    let param_base = self.stack.len().saturating_sub(params);
+                    let clause_count = self.read_u16() as usize;
                     let chunk_index = self.frame().chunk_index;
                     self.try_group_counter += 1;
                     let group = self.try_group_counter;
@@ -4305,8 +4394,7 @@ impl VM {
                     for _ in 0..clause_count {
                         let kind = self.read_byte();
                         let tag_idx = self.read_u16();
-                        let offset = self.read_u16();
-                        let ip = self.frame().ip + offset as usize;
+                        let catch_label = self.read_u16();
                         let tag_entity = if kind == crate::vm::CATCH_KIND_CATCH
                             || kind == crate::vm::CATCH_KIND_CATCH_REF
                         {
@@ -4315,8 +4403,8 @@ impl VM {
                             0 // unused for catch_all kinds
                         };
                         handlers.push(ExceptionHandler {
-                            catch_ip: ip,
-                            stack_depth: self.stack.len(),
+                            catch_label,
+                            stack_depth: param_base,
                             frame_depth: self.frames.len(),
                             label_depth: self.label_stack.len(),
                             _chunk_index: chunk_index,
@@ -4346,8 +4434,14 @@ impl VM {
                         target: end_ip,
                         is_loop: false,
                         is_try: true,
-                        result_arity: 0,
-                        stack_height: self.stack.len(),
+                        // Names the clause group this label protects, so `end`
+                        // and a `br` out of the region dispose of the same set.
+                        try_group: group,
+                        // The try_table's OWN blocktype results. This was
+                        // hardcoded 0, so a `try_table (result i32)` dropped its
+                        // value on normal completion and on any `br` to it.
+                        result_arity: try_results,
+                        stack_height: param_base,
                     });
                 }
 
@@ -4369,7 +4463,7 @@ impl VM {
                         self.stack[old_base + i] = self.stack[callee_idx + i].clone();
                     }
                     self.stack.truncate(old_base + 1 + argc);
-                    self.frames.pop();
+                    self.pop_frame_for_tail_call();
                     self.call_value(argc)?;
                 }
                 _ if op == Op::RETURN_CALL_INDIRECT => {
@@ -4418,7 +4512,7 @@ impl VM {
                         self.stack[old_base + i] = self.stack[callee_idx + i].clone();
                     }
                     self.stack.truncate(old_base + 1 + argc);
-                    self.frames.pop();
+                    self.pop_frame_for_tail_call();
                     self.call_value(argc)?;
                 }
                 _ if op == Op::RETURN_CALL_REF => {
@@ -4430,7 +4524,7 @@ impl VM {
                         self.stack[old_base + i] = self.stack[callee_idx + i].clone();
                     }
                     self.stack.truncate(old_base + 1 + argc);
-                    self.frames.pop();
+                    self.pop_frame_for_tail_call();
                     self.call_value(argc)?;
                 }
 
@@ -4515,7 +4609,11 @@ impl VM {
                 }
                 _ if op == Op::F32_STORE => {
                     let (offset, memidx) = self.read_optional_memarg();
-                    let val = self.pop().as_f64() as f32;
+                    // Bit-preserving: memory stores the operand's ENCODING, so
+                    // this must not round-trip through f64 (that quiets a
+                    // signalling NaN). `float_memory.wast` exists to check
+                    // exactly this — "load and store do not canonicalize NaNs".
+                    let val = self.pop().as_f32();
                     let addr = self.effective_addr(memidx, offset);
                     self.write_memory_bytes(memidx, addr, &val.to_le_bytes())?;
                 }
@@ -4620,14 +4718,20 @@ impl VM {
                 }
                 _ if op == Op::I64_TRUNC_F64_S => {
                     let a = self.pop().as_f64();
-                    if a.is_nan() || a >= 9223372036854775808.0 || a < -9223372036854775808.0 {
+                    if a.is_nan() {
+                        return Err(VMError::new("trap: invalid conversion to integer"));
+                    }
+                    if a >= 9223372036854775808.0 || a < -9223372036854775808.0 {
                         return Err(VMError::new("trap: integer overflow"));
                     }
                     self.push(Value::I64(a as i64))?;
                 }
                 _ if op == Op::I64_TRUNC_F64_U => {
                     let a = self.pop().as_f64();
-                    if a.is_nan() || a < 0.0 || a >= 18446744073709551616.0 {
+                    if a.is_nan() {
+                        return Err(VMError::new("trap: invalid conversion to integer"));
+                    }
+                    if a <= -1.0 || a >= 18446744073709551616.0 {
                         return Err(VMError::new("trap: integer overflow"));
                     }
                     self.push(Value::I64(a as u64 as i64))?;
@@ -4641,7 +4745,13 @@ impl VM {
                     self.push(Value::F32(a as f32))?;
                 }
                 _ if op == Op::I32_REINTERPRET_F32 => {
-                    let a = self.pop().as_f64() as f32;
+                    // `as_f32()`, NOT `as_f64() as f32`. Reinterpret is a pure
+                    // bit copy, so it must not round-trip through f64: widening
+                    // a SIGNALLING NaN to f64 and narrowing back sets the quiet
+                    // bit (x86 `cvtss2sd` quiets an SNaN), so `0x7fa00000` came
+                    // back as `0x7fc00000` — a bit pattern the operand never
+                    // had. `as_f32` returns a `Value::F32` untouched.
+                    let a = self.pop().as_f32();
                     self.push(Value::I32(a.to_bits() as i32))?;
                 }
                 _ if op == Op::I64_REINTERPRET_F64 => {
@@ -4687,7 +4797,7 @@ impl VM {
                     // Blocktype = (param_count, result_count). Params are
                     // already on the stack (no runtime action); the label's
                     // branch arity for a BLOCK is its RESULT count (spec).
-                    let _param_arity = self.read_byte();
+                    let param_arity = self.read_byte() as usize;
                     let result_arity = self.read_byte();
                     let ci = self.frame().chunk_index;
                     self.ensure_block_table(ci);
@@ -4699,8 +4809,15 @@ impl VM {
                         target: end_ip,
                         is_loop: false,
                         is_try: false,
+                        try_group: 0,
                         result_arity,
-                        stack_height: self.stack.len(),
+                        // The label's base is BELOW the params (spec §2.4.7):
+                        // a `br` keeps the result and discards everything down
+                        // to it, params included. Recording `stack.len()` with
+                        // the params still on the stack put the base one slot
+                        // per param too high, so a `br` left them stranded
+                        // under the result.
+                        stack_height: self.stack.len().saturating_sub(param_arity),
                     });
                 }
                 _ if op == Op::LOOP => {
@@ -4710,6 +4827,7 @@ impl VM {
                     // result count.
                     let param_arity = self.read_byte();
                     let _result_arity = self.read_byte();
+                    let param_base = param_arity as usize;
                     // Loop target is the ip right after the blocktype bytes —
                     // that is where `br 0` restarts (the loop body start).
                     let loop_body_start = self.frame().ip;
@@ -4717,14 +4835,19 @@ impl VM {
                         target: loop_body_start,
                         is_loop: true,
                         is_try: false,
+                        try_group: 0,
                         result_arity: param_arity,
-                        stack_height: self.stack.len(),
+                        // Base below the params, as for BLOCK. A `br 0` here
+                        // keeps `param_arity` values and truncates to this
+                        // base — with the params counted in, each iteration
+                        // re-pushed them and the stack grew without bound.
+                        stack_height: self.stack.len().saturating_sub(param_base),
                     });
                 }
                 _ if op == Op::IF => {
                     // Blocktype = (param_count, result_count); label arity
                     // for an IF is its RESULT count, like BLOCK.
-                    let _param_arity = self.read_byte();
+                    let param_arity = self.read_byte() as usize;
                     let result_arity = self.read_byte();
                     let ci = self.frame().chunk_index;
                     self.ensure_block_table(ci);
@@ -4756,8 +4879,13 @@ impl VM {
                             target: targets.end_ip,
                             is_loop: false,
                             is_try: false,
+                            try_group: 0,
                             result_arity,
-                            stack_height: self.stack.len(),
+                            // Base below the params. The i32 condition was
+                            // already popped above, so `len()` here is the
+                            // post-condition height and the params are the
+                            // top `param_arity` slots of it.
+                            stack_height: self.stack.len().saturating_sub(param_arity),
                         });
                     } else if let Some(else_ip) = targets.else_ip {
                         // Condition false, ELSE exists — push label and jump into else-body.
@@ -4767,8 +4895,11 @@ impl VM {
                             target: targets.end_ip,
                             is_loop: false,
                             is_try: false,
+                            try_group: 0,
                             result_arity,
-                            stack_height: self.stack.len(),
+                            // Same base as the then-arm: both arms of an `if`
+                            // share one blocktype, so both see the params.
+                            stack_height: self.stack.len().saturating_sub(param_arity),
                         });
                         self.frame_mut().ip = else_ip + 4; // +4 skips the ELSE opcode bytes
                     } else {
@@ -4801,16 +4932,10 @@ impl VM {
                     // popped exactly once, on whichever path fires.
                     if let Some(label) = self.label_stack.pop() {
                         if label.is_try {
-                            if let Some(top) = self.exception_handlers.last() {
-                                let group = top.group;
-                                while self
-                                    .exception_handlers
-                                    .last()
-                                    .is_some_and(|h| h.group == group)
-                                {
-                                    self.exception_handlers.pop();
-                                }
-                            }
+                            // THIS label's group, not whatever group happens to
+                            // be on top of the handler stack.
+                            self.exception_handlers
+                                .retain(|h| h.group != label.try_group);
                         }
                     }
                 }
@@ -4852,12 +4977,25 @@ impl VM {
                             .ok_or_else(|| VMError::new("trap: call_indirect unknown table"))?;
                         if raw_idx < 0.0 || raw_idx.is_nan() || raw_idx >= table.len() as f64 {
                             return Err(VMError::new(format!(
-                                "trap: call_indirect: invalid table index {}",
+                                "trap: undefined element: table index {} out of bounds",
                                 raw_idx
                             )));
                         }
                         table[raw_idx as usize].clone()
                     };
+                    // Spec: `call_indirect` reads the table slot and calls the
+                    // reference in it; a NULL reference traps (`call_ref` step
+                    // 3a). Without this the null fell through to `call_value`
+                    // and surfaced as the language-level "null is not
+                    // callable" — a trap either way, but not this one, and the
+                    // fixture asserting "uninitialized element" passed only
+                    // because `assert_trap` used to ignore its message.
+                    if funcref.is_null_ref() || matches!(funcref, Value::Undefined) {
+                        return Err(VMError::new(format!(
+                            "trap: uninitialized element: table slot {} is null",
+                            raw_idx
+                        )));
+                    }
                     // Spec runtime type check: the funcref's declared type shape
                     // (params → results) must match the call's static `(type
                     // $sig)`. The VM is untyped, so equality is over the
@@ -4870,7 +5008,7 @@ impl VM {
                                 || ch.result_arity as usize != expected_results
                             {
                                 return Err(VMError::new(format!(
-                                    "trap: call_indirect: signature mismatch \
+                                    "trap: indirect call type mismatch \
                                      (callee {}→{}, expected {}→{})",
                                     ch.param_count, ch.result_arity, argc, expected_results
                                 )));
@@ -5230,7 +5368,7 @@ impl VM {
                 _ if op == Op::CONT_NEW => {
                     let func_val = self.pop();
                     if func_val.is_null_ref() {
-                        return Err(VMError::new("cont.new: null function reference"));
+                        return Err(VMError::new("trap: cont.new: null function reference"));
                     }
                     let state = crate::value::ContinuationState {
                         entry: func_val,
@@ -5560,7 +5698,7 @@ impl VM {
                             return Err(VMError::new("cont.bind: not a continuation"));
                         }
                     } else if cont_val.is_null_ref() {
-                        return Err(VMError::new("cont.bind: null continuation"));
+                        return Err(VMError::new("trap: cont.bind: null continuation"));
                     } else {
                         return Err(VMError::new("cont.bind: not a continuation"));
                     };
@@ -5668,7 +5806,7 @@ impl VM {
                         .unwrap_or_default();
                     let exn = self.pop();
                     if exn.is_null_ref() {
-                        return Err(VMError::new("resume_throw_ref: null exception reference"));
+                        return Err(VMError::new("trap: resume_throw_ref: null exception reference"));
                     }
                     let cont = self.pop();
                     if let Value::Object(ref obj) = cont {
@@ -5931,39 +6069,49 @@ impl VM {
                         self.push(Value::V128([0; 16]))?;
                     }
                 }
+                // `v128.storeN_lane memarg laneidx : [i32 v128] -> []` — the
+                // ADDRESS is the deeper operand and the vector is on top, the
+                // same order as `loadN_lane`. These arms popped the address
+                // first, so a spec-ordered module (anything read back from a
+                // conforming `.wasm`, and any correctly written `.wat`) stored
+                // from the address and addressed with the vector.
                 _ if op == Op::V128_STORE8_LANE => {
                     let (offset, memidx, memory64) = self.read_optional_simd_memarg();
                     let lane = self.read_byte() as usize & 15;
+                    let val = self.pop();
                     let base = self.pop();
                     let addr = self.simd_effective_addr(base, offset, memory64)?;
-                    if let Value::V128(v) = self.pop() {
+                    if let Value::V128(v) = val {
                         self.write_memory_bytes(memidx, addr, &[v[lane]])?;
                     }
                 }
                 _ if op == Op::V128_STORE16_LANE => {
                     let (offset, memidx, memory64) = self.read_optional_simd_memarg();
                     let lane = self.read_byte() as usize & 7;
+                    let val = self.pop();
                     let base = self.pop();
                     let addr = self.simd_effective_addr(base, offset, memory64)?;
-                    if let Value::V128(v) = self.pop() {
+                    if let Value::V128(v) = val {
                         self.write_memory_bytes(memidx, addr, &v[lane * 2..lane * 2 + 2])?;
                     }
                 }
                 _ if op == Op::V128_STORE32_LANE => {
                     let (offset, memidx, memory64) = self.read_optional_simd_memarg();
                     let lane = self.read_byte() as usize & 3;
+                    let val = self.pop();
                     let base = self.pop();
                     let addr = self.simd_effective_addr(base, offset, memory64)?;
-                    if let Value::V128(v) = self.pop() {
+                    if let Value::V128(v) = val {
                         self.write_memory_bytes(memidx, addr, &v[lane * 4..lane * 4 + 4])?;
                     }
                 }
                 _ if op == Op::V128_STORE64_LANE => {
                     let (offset, memidx, memory64) = self.read_optional_simd_memarg();
                     let lane = self.read_byte() as usize & 1;
+                    let val = self.pop();
                     let base = self.pop();
                     let addr = self.simd_effective_addr(base, offset, memory64)?;
-                    if let Value::V128(v) = self.pop() {
+                    if let Value::V128(v) = val {
                         self.write_memory_bytes(memidx, addr, &v[lane * 8..lane * 8 + 8])?;
                     }
                 }
@@ -6046,7 +6194,9 @@ impl VM {
                     self.push(Value::V128(out))?;
                 }
                 _ if op == Op::F32X4_SPLAT => {
-                    let v = self.pop().as_f64() as f32;
+                    // Lanes hold the operand's ENCODING — bit-preserving, so no
+                    // f64 round-trip (it would quiet a signalling NaN).
+                    let v = self.pop().as_f32();
                     let b = v.to_le_bytes();
                     let mut out = [0u8; 16];
                     for i in 0..4 {
@@ -6172,7 +6322,8 @@ impl VM {
                 }
                 _ if op == Op::F32X4_REPLACE_LANE => {
                     let l = self.read_byte() as usize & 3;
-                    let v = self.pop().as_f64() as f32;
+                    // Bit-preserving into a lane — see `F32X4_SPLAT`.
+                    let v = self.pop().as_f32();
                     if let Value::V128(mut a) = self.pop() {
                         a[l * 4..l * 4 + 4].copy_from_slice(&v.to_le_bytes());
                         self.push(Value::V128(a))?;

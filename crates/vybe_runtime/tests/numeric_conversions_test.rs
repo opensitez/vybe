@@ -220,12 +220,32 @@ fn i32_trunc_f64_u_overflow() {
 }
 #[test]
 fn i32_trunc_f64_u_neg_traps() {
+    // The trap boundary is -1, not 0: `trunc_u` is defined for `-1 < trunc(z)`,
+    // so -1.0 traps and everything above it truncates toward zero. This used to
+    // pass -0.5 and demand a trap, which contradicts the spec suite's own
+    // `(assert_return (invoke "i32.trunc_f64_u" (f64.const -0.9)) (i32.const 0))`
+    // (conversions.wast:148) and `(assert_trap … (f64.const -1.0))` at :151.
+    // Its f32 sibling above already used -1.0.
     assert!(
         run_err(|c| {
-            push_f64(c, -0.5);
+            push_f64(c, -1.0);
             c.emit_op(Op::I32_TRUNC_F64_U, 0);
         })
         .contains("trap")
+    );
+}
+
+#[test]
+fn i32_trunc_f64_u_negative_fraction_truncates_to_zero() {
+    // The other side of that boundary — pinned so "fix the trap case" can't
+    // quietly become "make everything negative trap".
+    assert_eq!(
+        run(|c| {
+            push_f64(c, -0.5);
+            c.emit_op(Op::I32_TRUNC_F64_U, 0);
+        })
+        .as_i32(),
+        0
     );
 }
 

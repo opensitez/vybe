@@ -1,16 +1,64 @@
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 use vybe_runtime::value::Object;
-use vybe_runtime::{HostContext, VM, Value};
+use vybe_runtime::vm::HostFnDecl;
+use vybe_runtime::{FuncSig, HostContext, VM, ValType, Value};
+
+/// Declare a `wasi:clocks/*` function.
+///
+/// No resource: a clock is not a handle. The one handle these interfaces deal
+/// in is the `pollable` that `subscribe-*` MINTS, and that is an `own<pollable>`
+/// in the results — the resource `wasi:io/poll` declares, bound by name.
+fn clock_fn(
+    vm: &mut VM,
+    module: &str,
+    name: &str,
+    params: Vec<ValType>,
+    results: Vec<ValType>,
+    call: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>,
+) {
+    vm.register_host(HostFnDecl::new(module, name, call).with_sig(FuncSig {
+        name: name.to_string(),
+        params,
+        results,
+    }));
+}
+
+/// `duration`/`instant` — both are `u64` NANOSECONDS in `clocks/wit/types.wit`.
+fn nanos() -> ValType {
+    ValType::I64
+}
+
+/// The `{ seconds: u64, nanoseconds: u32 }` record: 0.2 calls it `datetime`,
+/// 0.3 calls it `instant`. Same two fields, so one shape serves both.
+fn datetime_record() -> ValType {
+    ValType::Record(vec![
+        ("seconds".to_string(), ValType::I64),
+        ("nanoseconds".to_string(), ValType::I32),
+    ])
+}
+
+/// `future<result<_, error-code>>`. `ValType` has no `unit`, so the `ok` arm of
+/// a result that carries nothing declares as `Any` — the alternative would be
+/// inventing a type the enum does not have.
+fn future_result() -> ValType {
+    ValType::Future(Box::new(ValType::Result(
+        Box::new(ValType::Any),
+        Box::new(ValType::Any),
+    )))
+}
 
 pub fn register(vm: &mut VM) {
     // ── wasi:clocks/monotonic-clock — WASI 0.2 spec interface ───────────
     // Returns nanoseconds since an arbitrary reference point (process start).
     // Values are only meaningful relative to each other — use for scheduling.
     // Mirrors proposals/WASI/proposals/clocks/wit/monotonic-clock.wit.
-    vm.register_host_fn(
+    clock_fn(
+        vm,
         "wasi:clocks/monotonic-clock",
         "now",
+        vec![],
+        vec![nanos()],
         Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
             static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
             let start = START.get_or_init(std::time::Instant::now);
@@ -18,9 +66,12 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
+    clock_fn(
+        vm,
         "wasi:clocks/monotonic-clock",
         "resolution",
+        vec![],
+        vec![nanos()],
         Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
             Value::F64(1.0) // 1 nanosecond resolution
         }),
@@ -28,9 +79,12 @@ pub fn register(vm: &mut VM) {
 
     // subscribe-instant(when: instant) → pollable
     // Returns a TimerPollable that becomes ready when monotonic clock reaches `when` ns.
-    vm.register_host_fn(
+    clock_fn(
+        vm,
         "wasi:clocks/monotonic-clock",
         "subscribe-instant",
+        vec![nanos()],
+        vec![ValType::Own("pollable".to_string())],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let ready_at_ns = args.first().map(|v| v.as_f64()).unwrap_or(0.0);
             let mut obj = Object::new();
@@ -44,9 +98,12 @@ pub fn register(vm: &mut VM) {
 
     // subscribe-duration(how-long: duration) → pollable
     // Returns a TimerPollable ready after `how-long` ns from now.
-    vm.register_host_fn(
+    clock_fn(
+        vm,
         "wasi:clocks/monotonic-clock",
         "subscribe-duration",
+        vec![nanos()],
+        vec![ValType::Own("pollable".to_string())],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             static START: OnceLock<Instant> = OnceLock::new();
             let start = START.get_or_init(Instant::now);
@@ -63,17 +120,23 @@ pub fn register(vm: &mut VM) {
 
     // ── WASI 0.3 additions ───────────────────────────────────────────
     // get-resolution — 0.3 rename of `resolution`; keep both for compat.
-    vm.register_host_fn(
+    clock_fn(
+        vm,
         "wasi:clocks/monotonic-clock",
         "get-resolution",
+        vec![],
+        vec![nanos()],
         Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::F64(1.0)),
     );
 
     // wait-until(when: mark) → future<result<_, error-code>>
     // Blocks until the monotonic clock reaches `when` ns, then returns a resolved future.
-    vm.register_host_fn(
+    clock_fn(
+        vm,
         "wasi:clocks/monotonic-clock",
         "wait-until",
+        vec![nanos()],
+        vec![future_result()],
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             static START: OnceLock<Instant> = OnceLock::new();
             let start = START.get_or_init(Instant::now);
@@ -92,9 +155,12 @@ pub fn register(vm: &mut VM) {
 
     // wait-for(how-long: duration) → future<result<_, error-code>>
     // Blocks for `how-long` ns, then returns a resolved future.
-    vm.register_host_fn(
+    clock_fn(
+        vm,
         "wasi:clocks/monotonic-clock",
         "wait-for",
+        vec![nanos()],
+        vec![future_result()],
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let how_long_ns = args.first().map(|v| v.as_f64()).unwrap_or(0.0) as u64;
             if how_long_ns > 0 {
@@ -111,17 +177,23 @@ pub fn register(vm: &mut VM) {
     // `{ seconds: u64, nanoseconds: u32 }` per the .wit at
     // proposals/WASI/proposals/clocks/wit/wall-clock.wit. This is the
     // single source-of-truth timestamp; `ecma:date.now` reads through it.
-    vm.register_host_fn(
+    clock_fn(
+        vm,
         "wasi:clocks/wall-clock",
         "now",
+        vec![],
+        vec![datetime_record()],
         Box::new(|_ctx: &mut HostContext, _args: &[Value]| system_clock_now()),
     );
 
     // wasi:clocks/wall-clock.resolution — clock tick resolution per spec.
     // Most platforms report nanosecond resolution; we return 1ns.
-    vm.register_host_fn(
+    clock_fn(
+        vm,
         "wasi:clocks/wall-clock",
         "resolution",
+        vec![],
+        vec![datetime_record()],
         Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
             let mut rec = Object::new();
             rec.properties.insert("seconds".into(), Value::F64(0.0));
@@ -135,27 +207,40 @@ pub fn register(vm: &mut VM) {
     // `system-clock` and `resolution` to `get-resolution`; `now` still answers
     // a `{ seconds, nanoseconds }` record, now called `instant` rather than
     // `datetime`. Both spellings stay bound so either revision resolves.
-    vm.register_host_fn(
+    clock_fn(
+        vm,
         "wasi:clocks/system-clock",
         "now",
+        vec![],
+        vec![datetime_record()],
         Box::new(|_ctx: &mut HostContext, _args: &[Value]| system_clock_now()),
     );
 
     // `get-resolution: func() -> duration`, and `duration = u64` NANOSECONDS
     // (`clocks/wit/types.wit`) — a bare number, not the record 0.2's
     // `wall-clock.resolution` returned.
-    vm.register_host_fn(
+    clock_fn(
+        vm,
         "wasi:clocks/system-clock",
         "get-resolution",
+        vec![],
+        vec![nanos()],
         Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::F64(1.0)),
     );
 
     // ── wasi:clocks/timezone ────────────────────────────────────────────
     // display(when: datetime) → timezone-display { utc-offset: s32, name: string, in-daylight-saving-time: bool }
     // 0.2 only; 0.3 replaced it with `iana-id` + `to-debug-string`.
-    vm.register_host_fn(
+    clock_fn(
+        vm,
         "wasi:clocks/timezone",
         "display",
+        vec![datetime_record()],
+        vec![ValType::Record(vec![
+            ("utc-offset".to_string(), ValType::I32),
+            ("name".to_string(), ValType::String),
+            ("in-daylight-saving-time".to_string(), ValType::Bool),
+        ])],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let seconds = instant_seconds(args.first());
             let offset = local_offset_seconds(seconds).unwrap_or(0);
@@ -181,9 +266,12 @@ pub fn register(vm: &mut VM) {
     // `iana-id: func() -> option<string>` — the IANA Time Zone Database
     // identifier of the configured zone, or nothing when the host does not
     // expose one (`proposals/clocks/wit/timezone.wit`).
-    vm.register_host_fn(
+    clock_fn(
+        vm,
         "wasi:clocks/timezone",
         "iana-id",
+        vec![],
+        vec![ValType::Option(Box::new(ValType::String))],
         Box::new(
             |_ctx: &mut HostContext, _args: &[Value]| match configured_zone_id() {
                 Some(id) => Value::String(Arc::from(id.as_str())),
@@ -199,9 +287,12 @@ pub fn register(vm: &mut VM) {
     // interface requires nothing back when the zone cannot be determined.
     // Returning a flat `0` would claim UTC for every host, so an unknown zone
     // answers null rather than a plausible lie.
-    vm.register_host_fn(
+    clock_fn(
+        vm,
         "wasi:clocks/timezone",
         "utc-offset",
+        vec![datetime_record()],
+        vec![ValType::Option(Box::new(ValType::I64))],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let seconds = instant_seconds(args.first());
             match local_offset_seconds(seconds) {
@@ -214,9 +305,12 @@ pub fn register(vm: &mut VM) {
     // `to-debug-string: func() -> string` — for humans only; the spec warns
     // this must not be parsed. The IANA id when there is one, else the current
     // offset formatted as `+HH:MM`.
-    vm.register_host_fn(
+    clock_fn(
+        vm,
         "wasi:clocks/timezone",
         "to-debug-string",
+        vec![],
+        vec![ValType::String],
         Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
             if let Some(id) = configured_zone_id() {
                 return Value::String(Arc::from(id.as_str()));

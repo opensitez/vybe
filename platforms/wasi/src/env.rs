@@ -1,7 +1,8 @@
 use std::cell::RefCell;
 use std::sync::Arc;
 use vybe_runtime::value::Object;
-use vybe_runtime::{HostContext, VM, Value};
+use vybe_runtime::vm::HostFnDecl;
+use vybe_runtime::{FuncSig, HostContext, VM, ValType, Value};
 
 // `register_dotnet_net` retired — `Dns.GetHostName()` lowers to
 // `node:os.hostname()` via `emitter::dotnet::core::sockets_adapter`.
@@ -56,6 +57,29 @@ fn environment_pairs() -> Vec<(String, String)> {
     pairs
 }
 
+/// Declare a `wasi:cli/environment` function.
+///
+/// No resource: this interface owns no handles — every function here is a
+/// free function returning owned data, so there is nothing to `borrow`.
+fn env_fn(
+    vm: &mut VM,
+    name: &str,
+    results: Vec<ValType>,
+    call: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>,
+) {
+    vm.register_host(
+        HostFnDecl::new("wasi:cli/environment", name, call).with_sig(FuncSig {
+            name: name.to_string(),
+            // Every function on this interface is nullary — see the WIT note
+            // above `register`. The empty vector is the whole point of
+            // declaring them: it is what makes a call that passes an argument
+            // report itself.
+            params: vec![],
+            results,
+        }),
+    );
+}
+
 pub fn register(vm: &mut VM) {
     // ── wasi:cli/environment — WASI CLI proposal interface ───────────
     // 0.2.x exports `initial-cwd`; 0.3.x renamed it to
@@ -68,9 +92,16 @@ pub fn register(vm: &mut VM) {
     // `wasi-cli/wit-0.3.0-draft/environment.wit`. A single-key lookup is not
     // part of the interface; a caller that wants one scans the list, which is
     // what the language adapters do.
-    vm.register_host_fn(
-        "wasi:cli/environment",
+    env_fn(
+        vm,
         "get-environment",
+        // `list<tuple<string, string>>`. The Component Model defines a tuple as
+        // a record with positional field names, which is exactly what the
+        // closure builds: a list of two-element arrays.
+        vec![ValType::List(Box::new(ValType::Record(vec![
+            ("0".to_string(), ValType::String),
+            ("1".to_string(), ValType::String),
+        ])))],
         Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
             let pairs: Vec<Value> = environment_pairs()
                 .into_iter()
@@ -85,9 +116,11 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "wasi:cli/environment",
+    env_fn(
+        vm,
         "get-arguments",
+        // list<string>
+        vec![ValType::List(Box::new(ValType::String))],
         Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
             let args: Vec<Value> = std::env::args()
                 .map(|arg| Value::String(Arc::from(arg.as_str())))
@@ -96,9 +129,13 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "wasi:cli/environment",
+    // Both spellings of the same 0.2/0.3 function return `option<string>`:
+    // the closure answers `Null` when the cwd cannot be read, which is the
+    // `none` case, not an error.
+    env_fn(
+        vm,
         "initial-cwd",
+        vec![ValType::Option(Box::new(ValType::String))],
         Box::new(
             |_ctx: &mut HostContext, _args: &[Value]| match std::env::current_dir() {
                 Ok(path) => Value::String(Arc::from(path.to_string_lossy().as_ref())),
@@ -107,9 +144,10 @@ pub fn register(vm: &mut VM) {
         ),
     );
 
-    vm.register_host_fn(
-        "wasi:cli/environment",
+    env_fn(
+        vm,
         "get-initial-cwd",
+        vec![ValType::Option(Box::new(ValType::String))],
         Box::new(
             |_ctx: &mut HostContext, _args: &[Value]| match std::env::current_dir() {
                 Ok(path) => Value::String(Arc::from(path.to_string_lossy().as_ref())),

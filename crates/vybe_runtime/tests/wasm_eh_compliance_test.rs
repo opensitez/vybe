@@ -52,27 +52,65 @@ const KIND_CATCH_REF: u8 = 1;
 const KIND_CATCH_ALL: u8 = 2;
 const KIND_CATCH_ALL_REF: u8 = 3;
 
-/// Emit a spec-shaped try_table. Returns one patch position per clause.
-fn emit_try_table(c: &mut Chunk, clauses: &[(u8, u16)]) -> Vec<usize> {
-    c.emit_op(Op::TRY_TABLE, 0);
-    c.emit(clauses.len() as u8, 0);
-    let mut patches = Vec::new();
-    for (kind, tag) in clauses {
-        c.emit(*kind, 0);
-        c.emit((tag >> 8) as u8, 0);
-        c.emit((tag & 0xff) as u8, 0);
-        patches.push(c.current_offset());
-        c.emit(0, 0); // offset hi (patched)
-        c.emit(0, 0); // offset lo (patched)
-    }
-    patches
+/// Marks where one clause's handler begins. Returned by [`emit_try_table`],
+/// consumed by [`patch_clause`]; opaque on purpose, so a test never spells the
+/// encoding out.
+#[derive(Clone, Copy)]
+struct ClauseTok {
+    /// The first clause's handler also closes the `try_table` body.
+    closes_try: bool,
 }
 
-/// Point a clause's handler at the current end of code.
-fn patch_clause(c: &mut Chunk, offset_pos: usize) {
-    let jump = c.current_offset() as i32 - (offset_pos as i32 + 2);
-    c.code[offset_pos] = (jump >> 8) as u8;
-    c.code[offset_pos + 1] = (jump & 0xff) as u8;
+/// How many values a clause of this kind delivers, for tags of arity 1 (which
+/// is every tag these tests declare). The handler block must carry this as its
+/// result arity: the branch keeps exactly that many values.
+fn clause_arity(kind: u8) -> u8 {
+    match kind {
+        KIND_CATCH => 1,          // payload
+        KIND_CATCH_REF => 2,      // payload + exnref
+        KIND_CATCH_ALL => 0,      // spec: no values
+        KIND_CATCH_ALL_REF => 1,  // exnref only
+        _ => 0,
+    }
+}
+
+/// Open a spec try region: one HANDLER BLOCK per clause, then the `try_table`.
+///
+/// Routed through `Chunk::emit_try_table_clauses` — the documented single
+/// source of truth — rather than re-spelling the byte layout here. A test that
+/// hand-encodes the layout asserts what the encoder does, so it cannot detect a
+/// wrong encoder; that is precisely how the `labelidx`-as-byte-offset defect
+/// survived in this file.
+///
+/// Blocks are emitted in REVERSE so clause 0's block is innermost and is
+/// therefore `labelidx 0`. Block `i`'s `end` is where handler `i` begins.
+fn emit_try_table(c: &mut Chunk, clauses: &[(u8, u16)]) -> Vec<ClauseTok> {
+    for (kind, _) in clauses.iter().rev() {
+        c.emit_block_typed(0, clause_arity(*kind));
+    }
+    let triples: Vec<(u8, u16, u16)> = clauses
+        .iter()
+        .enumerate()
+        .map(|(i, &(kind, tag))| (kind, tag, i as u16))
+        .collect();
+    // Blocktype: these tests' try bodies produce no values.
+    c.emit_try_table_clauses(0, 0, &triples, 0);
+    (0..clauses.len())
+        .map(|i| ClauseTok { closes_try: i == 0 })
+        .collect()
+}
+
+/// Begin a clause's handler here.
+///
+/// Nothing is patched: the clause names a `labelidx`, so the handler's position
+/// is decided by BLOCK STRUCTURE. Closing the clause's block is what places the
+/// handler — its `end` is the branch target. Call these in clause order; clause
+/// 0's block is innermost, so it closes first.
+fn patch_clause(c: &mut Chunk, tok: ClauseTok) {
+    if tok.closes_try {
+        c.emit_op(Op::END, 0); // close the try_table body
+    }
+    c.emit_op(Op::END, 0); // close this clause's handler block
 }
 
 /// Spec `throw <tagidx>` — payload must already be on the stack.

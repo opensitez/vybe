@@ -132,8 +132,35 @@ pub fn declared_host_signature(
 /// that prints has no return value to assert on, and "no warning appeared" is
 /// equally consistent with "the check passed" and "the check never ran".
 pub fn host_arity_mismatch(module: &str, name: &str, argc: u8) -> Option<u8> {
-    let declared = declared_host_arity(module, name)?;
-    (declared != argc).then_some(declared)
+    let (sig, resource) = declared_host_signature(module, name)?;
+    let declared = u8::try_from(sig.params.len()).ok()?;
+    if declared == argc {
+        return None;
+    }
+
+    // A METHOD on a resource may be called without its handle, because the
+    // RECEIVER is the handle.
+    //
+    // `web:dom.appendChild` declares `(borrow<document>, node, node)` and the
+    // emitters that construct controls pass all three. But the spec spelling is
+    // `parent.appendChild(child)` — two arguments — and the document is not part
+    // of the Web API at all: it is derived from the element, which is what
+    // `ownerDocument` means (DOM §4.4). Both calls reach the same function and
+    // both are correct, so one fixed number cannot describe the call site.
+    //
+    // Only `declared - 1`, and only for a method that borrows self: any other
+    // count is still a real mismatch, and the case this check exists to catch —
+    // the last argument forgotten and a null arriving in its place — is
+    // untouched, because that call is short by one on a function with NO
+    // receiver to make up the difference.
+    let borrows_self = resource
+        .as_ref()
+        .is_some_and(|binding| binding.borrows_self);
+    if borrows_self && argc + 1 == declared {
+        return None;
+    }
+
+    Some(declared)
 }
 
 #[cfg(test)]
@@ -167,6 +194,39 @@ mod host_signature_tests {
         // The bug this exists to catch: the child forgotten, a null passed in
         // its place, and the failure surfacing somewhere else entirely.
         assert_eq!(host_arity_mismatch("test:iface", "appendChild", 2), Some(3));
+    }
+
+    #[test]
+    fn a_resource_method_may_be_called_without_its_handle() {
+        // `parent.appendChild(child)` is the spec spelling and passes TWO
+        // arguments; the document is derived from the element. The positional
+        // emitters pass all three. Both are correct, so the declared count
+        // cannot be the only accepted one.
+        declare_host_signature(
+            "test:method",
+            "appendChild",
+            FuncSig {
+                name: "append-child".into(),
+                params: vec![
+                    ValType::Borrow("document".into()),
+                    ValType::Borrow("node".into()),
+                    ValType::Borrow("node".into()),
+                ],
+                results: vec![],
+            },
+            Some(crate::vm::ResourceBinding {
+                resource: "document".into(),
+                kind: crate::vm::ResourceMemberKind::Method,
+                borrows_self: true,
+            }),
+        );
+        assert_eq!(host_arity_mismatch("test:method", "appendChild", 3), None);
+        assert_eq!(host_arity_mismatch("test:method", "appendChild", 2), None);
+        // Short by TWO is still short: the receiver can only supply one handle,
+        // so this is the forgotten-argument bug the check exists for.
+        assert_eq!(host_arity_mismatch("test:method", "appendChild", 1), Some(3));
+        // And too many is always wrong.
+        assert_eq!(host_arity_mismatch("test:method", "appendChild", 4), Some(3));
     }
 
     #[test]

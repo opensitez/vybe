@@ -89,26 +89,34 @@ fn make_promise(id: u64, state: &str, value: Value) -> Value {
     Value::Object(Arc::new(Mutex::new(obj)))
 }
 
-fn emit_try_table_catch_all_start(c: &mut Chunk) -> usize {
-    // Spec encoding: one `catch $vybe:exception` clause (kind 0) — the
-    // handler receives the exception object payload, matching the DROP in
-    // the handlers below. [op, count=1, kind u8, tag u16, offset u16]
+/// Open a try region with one `catch $vybe:exception` clause, which delivers
+/// the exception object (matching the `DROP` in the handlers below).
+///
+/// Routed through `Chunk::emit_try_table_clauses` — the single source of truth
+/// for the layout. This used to hand-spell `[op, count, kind, tag, offset]`,
+/// which is a test asserting what the encoder does rather than what it should
+/// do: it went stale the moment the clause's third field became a spec
+/// `labelidx` (a block depth) instead of a patched byte offset, and the region
+/// decoded mid-instruction ("Invalid opcode: 0x000D 0x0000").
+fn emit_try_table_catch_all_start(c: &mut Chunk) -> TryTok {
     let tag = c.import_exception_tag("vybe:exception", 1);
-    c.emit_op(Op::TRY_TABLE, 0);
-    c.emit(1, 0);
-    c.emit(0, 0); // kind 0 = catch
-    c.emit((tag >> 8) as u8, 0);
-    c.emit((tag & 0xff) as u8, 0);
-    let offset_pos = c.current_offset();
-    c.emit(0, 0);
-    c.emit(0, 0);
-    offset_pos
+    // The handler block's `end` IS the clause's branch target, and its result
+    // arity is what the clause delivers: one payload value for `catch`.
+    c.emit_block_typed(0, 1);
+    c.emit_try_table_clauses(0, 0, &[(0, tag, 0)], 0);
+    TryTok
 }
 
-fn patch_try_table(c: &mut Chunk, offset_pos: usize) {
-    let body_bytes = c.current_offset() - (offset_pos + 2);
-    c.code[offset_pos] = (body_bytes >> 8) as u8;
-    c.code[offset_pos + 1] = (body_bytes & 0xFF) as u8;
+/// Marks an open try region. Opaque on purpose — a test should never spell the
+/// clause encoding out.
+#[derive(Clone, Copy)]
+struct TryTok;
+
+/// Close the region. Nothing is patched: closing the handler block is what
+/// places the handler.
+fn patch_try_table(c: &mut Chunk, _tok: TryTok) {
+    c.emit_op(Op::END, 0); // close the try_table body
+    c.emit_op(Op::END, 0); // close the handler block
 }
 
 fn standard_stack_switching_module(body_ops: &[u8]) -> Vec<u8> {
@@ -933,6 +941,7 @@ fn fiber_roundtrip_preserves_label_stack_and_continuations() {
         target: 123,
         is_loop: false,
         is_try: false,
+        try_group: 0,
         result_arity: 0,
         stack_height: 0,
     });
@@ -940,6 +949,7 @@ fn fiber_roundtrip_preserves_label_stack_and_continuations() {
         target: 456,
         is_loop: true,
         is_try: false,
+        try_group: 0,
         result_arity: 0,
         stack_height: 0,
     });
@@ -961,6 +971,7 @@ fn fiber_roundtrip_preserves_label_stack_and_continuations() {
         target: 42,
         is_loop: true,
         is_try: false,
+        try_group: 0,
         result_arity: 0,
         stack_height: 0,
     });
