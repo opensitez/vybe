@@ -133,6 +133,15 @@ pub fn run(caps: Capabilities) -> ! {
                 vm.pending_exit_code
             ),
             Ok(()) => println!("{RESULT}\tok"),
+            // An `Err` IS an exit code — cold `vybex <file>` exits 1 for it,
+            // measured for both a trap and a compile error, so a test asking
+            // for status 1 is asking for exactly this. Without the arm the
+            // warm pool applied a stricter rule than `vybex <file>` and
+            // `--cold` in the other direction from the `pending_exit_code`
+            // divergence above: `vybe-test-exit: 1` could never express "traps
+            // cleanly", which is the one assertion `run-fail` cannot make
+            // (it accepts ANY non-zero, so an OOM abort passes it too).
+            Err(_) if want_exit == 1 => println!("{RESULT}\tok"),
             Err(e) => println!("{RESULT}\terr\t{}", one_line(&e)),
         }
         let _ = std::io::stdout().flush();

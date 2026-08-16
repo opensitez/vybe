@@ -122,6 +122,10 @@ enum Outcome {
         chunks: Vec<Chunk>,
         host_imports: HostImportMetadata,
         entry_path: Option<PathBuf>,
+        /// Cached with the rest: a declaration is part of the compilation, and
+        /// a replay that dropped it would answer differently from the compile
+        /// it stands in for.
+        app_shell: Option<vybe_compiler::ast::AppShell>,
     },
     Failed(String),
 }
@@ -169,10 +173,12 @@ impl CompileCache {
                 chunks,
                 host_imports,
                 entry_path,
+                app_shell,
             } => Ok(DynamicCompilation {
                 chunks: chunks.clone(),
                 host_imports: host_imports.clone(),
                 entry_path: entry_path.clone(),
+                app_shell: *app_shell,
             }),
             Outcome::Failed(message) => Err(message.clone()),
         })
@@ -199,6 +205,7 @@ impl CompileCache {
                 chunks: compiled.chunks.clone(),
                 host_imports: compiled.host_imports.clone(),
                 entry_path: compiled.entry_path.clone(),
+                app_shell: compiled.app_shell,
             },
             Err(message) => Outcome::Failed(message.to_string()),
         };
@@ -229,6 +236,7 @@ fn replay(outcome: &Outcome) -> Result<DynamicCompilation, String> {
             chunks,
             host_imports,
             entry_path,
+            app_shell,
         } => Ok(DynamicCompilation {
             // Cloned, never handed out by reference: installing a compilation
             // RELOCATES its chunk indices against the VM it is going into, so a
@@ -236,6 +244,7 @@ fn replay(outcome: &Outcome) -> Result<DynamicCompilation, String> {
             chunks: chunks.clone(),
             host_imports: host_imports.clone(),
             entry_path: entry_path.clone(),
+            app_shell: *app_shell,
         }),
         Outcome::Failed(message) => Err(message.clone()),
     }
@@ -247,6 +256,7 @@ fn outcome_of(result: Result<&DynamicCompilation, &str>) -> Outcome {
             chunks: compiled.chunks.clone(),
             host_imports: compiled.host_imports.clone(),
             entry_path: compiled.entry_path.clone(),
+            app_shell: compiled.app_shell,
         },
         Err(message) => Outcome::Failed(message.to_string()),
     }
@@ -339,6 +349,7 @@ mod tests {
             chunks: vec![Chunk::new("t".to_string())],
             host_imports: HostImportMetadata::default(),
             entry_path: None,
+            app_shell: None,
         }
     }
 

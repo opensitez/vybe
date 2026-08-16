@@ -633,6 +633,12 @@ pub fn run() {
         }
     };
 
+    // What the program DECLARED about presenting a UI
+    // (`vybe_ast::Directives::app_shell`). Read here because `run_compiled`
+    // consumes the compilation, and needed after it — the launch decision is
+    // made once the program has run.
+    let declared_shell = compiled.app_shell;
+
     // ── --dump: disassemble and exit ────────────────────────────────────────
     if dump {
         print_chunk_summary(&compiled.chunks, chunk_filter.as_deref());
@@ -765,13 +771,16 @@ pub fn run() {
     match runtime_compiler.run_compiled(compiled) {
         Ok(v) => {
             // A GUI program hasn't really finished when `run_compiled` returns —
-            // `runApplication` set `should_run` and the window/event loop is
-            // launched below. Under the debugger we must let that happen (so
-            // breakpoints in click handlers fire, via `vm.invoke` re-entering the
-            // instrumented dispatch loop); only report "exited" for a program with
-            // no GUI. Without this, `--debug` on a GUI app exited before the window
-            // ever showed.
-            let gui_should_run = gui.lock().unwrap().should_run;
+            // the window/event loop is launched below. Under the debugger we
+            // must let that happen (so breakpoints in click handlers fire, via
+            // `vm.invoke` re-entering the instrumented dispatch loop); only
+            // report "exited" for a program with no GUI. Without this, `--debug`
+            // on a GUI app exited before the window ever showed.
+            //
+            // The SAME question the launch gate asks, so the debugger cannot
+            // decide a run is over while the gate goes on to open a window.
+            let gui_should_run =
+                should_present(gui.lock().unwrap().should_run, declared_shell);
             if debug && !gui_should_run {
                 eprintln!("\n● program exited → {v}");
                 std::process::exit(0);
@@ -815,11 +824,54 @@ pub fn run() {
         std::process::exit(vm.pending_exit_code);
     }
 
-    if gui.lock().unwrap().should_run {
+    if should_present(gui.lock().unwrap().should_run, declared_shell) {
         match capture {
             Some(path) => run_capture(vm, gui, &path, capture_control.as_deref()),
             None => crate::gui_launch::launch_gui(vm, gui),
         }
+    }
+}
+
+/// Does this run end in a window?
+///
+/// Three answers, because three different things know, and only asking one of
+/// them was the bug:
+///
+/// - **The program declared it.** `AppShell::Windowed` covers a UI built LATER —
+///   from a timer or an event handler — which no test taken at this instant can
+///   see. `Headless` is the only way to say "builds controls, must not present",
+///   and it wins outright.
+/// - **The document has content.** A page is not told to run; it runs because it
+///   HAS a document. This is what every converted frontend relies on, and it is
+///   the same test `gui_document::with_live` and `render_into` paint by.
+/// - **`GuiState::should_run`.** The legacy answer, set by
+///   `vybe:gui.runApplication`. Kept while frontends still call it, so nothing
+///   regresses as they convert one at a time.
+///
+/// Asking only the third meant a converted program drew every frame and exited
+/// without ever showing a window.
+fn should_present(
+    gui_should_run: bool,
+    declared: Option<vybe_compiler::ast::AppShell>,
+) -> bool {
+    match declared {
+        Some(vybe_compiler::ast::AppShell::Headless) => false,
+        Some(vybe_compiler::ast::AppShell::Windowed) => true,
+        // A BROWSING CONTEXT is the window (HTML §7.1). A browser that opens
+        // one shows a tab before any content arrives — `about:blank` is a
+        // window with nothing in it — so the question is whether a context was
+        // opened, never what it ended up containing.
+        //
+        // This used to ask `has_content()` (`control_count() > 0`), which is a
+        // different and wrong question: it closed the window on any page that
+        // builds its UI later — from `load`, a timer, a promise — and on any
+        // page that legitimately has none yet. It also made a program's
+        // UI-ness depend on how far it happened to get.
+        //
+        // Opening the context is deliberate: `active_document` creates on first
+        // use, so a program that never touches the DOM never has one and stays
+        // a console program.
+        None => gui_should_run || vybe_platform_web::html::has_browsing_context(),
     }
 }
 
@@ -913,7 +965,9 @@ fn run_wasm(
         std::process::exit(vm.pending_exit_code);
     }
 
-    if gui.lock().unwrap().should_run {
+    // A prebuilt `.wasm` carries no directives — the declaration lives in the
+    // AST, and this path starts from bytecode — so the document answers alone.
+    if should_present(gui.lock().unwrap().should_run, None) {
         match capture {
             Some(path) => run_capture(vm, gui, path, capture_control),
             None => crate::gui_launch::launch_gui(vm, gui),

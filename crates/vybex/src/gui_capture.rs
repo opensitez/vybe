@@ -55,11 +55,15 @@ pub fn render_into(
     if !document_painted {
         g.form.render(&mut ctx);
     }
-    if !g.overlay_canvases.is_empty() {
-        let overlays = std::mem::take(&mut g.overlay_canvases);
-        g.form.render_overlays(&mut ctx, &overlays);
-        g.overlay_canvases = overlays;
-    }
+    // The overlay compositing that used to run here is GONE, and it is the
+    // reason this function could not be trusted: it painted
+    // `GuiState.overlay_canvases` on top, which no window ever did. A canvas
+    // drawing showed up in a capture and not on screen, so the screenshot said
+    // the opposite of the truth.
+    //
+    // A `<canvas>` is an element in the document now and paints as part of it,
+    // the same as any other control — so a capture and a window show the same
+    // thing by construction rather than by agreement.
 }
 
 /// Crop `src` to a control's rect. Returns `None` if the rect falls entirely
@@ -162,19 +166,14 @@ pub fn capture_to_png(
                             _ => None,
                         }
                     })
-                    // An overlay canvas (an SDL surface, say) is painted onto
-                    // the form rather than being a child control, so it has no
-                    // rect of its own — it covers the whole form. Same fallback
-                    // `Form::render_overlays` uses.
-                    .or_else(|| {
-                        let known = g.overlay_canvases.contains_key(&resolved)
-                            || g.overlay_canvases.contains_key(name);
-                        known.then(|| g.form.rect())
-                    })
+                    // The overlay fallback that used to be here — "a surface
+                    // has no rect of its own, so it covers the whole form" —
+                    // is gone with the overlay map. An SDL surface IS a
+                    // `<canvas>` element now, so it has a rect like anything
+                    // else and the branch above finds it.
                     .ok_or_else(|| {
                         let mut names: Vec<&str> =
                             g.control_names.iter().map(|s| s.as_str()).collect();
-                        names.extend(g.overlay_canvases.keys().map(|s| s.as_str()));
                         names.sort_unstable();
                         names.dedup();
                         format!("no control named `{name}` (have: {})", names.join(", "))

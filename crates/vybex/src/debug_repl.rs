@@ -165,7 +165,9 @@ fn format_draw_cmd(cmd: &vybe_widgets::canvas::DrawCmd) -> String {
 /// This is what tells "nothing was drawn" apart from "drawn in the wrong place"
 /// and "drawn, then painted over" — three failures that look identical on screen.
 fn print_draws(gui: &Arc<Mutex<GuiState>>, args: &[&str]) {
-    let mut g = match gui.lock() {
+    // Read-only now: the canvases are read from the document, and `GuiState` is
+    // consulted only for `resolve_control_name`.
+    let g = match gui.lock() {
         Ok(g) => g,
         Err(poisoned) => poisoned.into_inner(),
     };
@@ -179,25 +181,27 @@ fn print_draws(gui: &Arc<Mutex<GuiState>>, args: &[&str]) {
         .find(|a| a.parse::<usize>().is_err())
         .map(|w| g.resolve_control_name(w));
 
-    // A drawing surface is EITHER a real `CanvasWidget` child (the normal case)
-    // OR an entry in `overlay_canvases` (the fallback for a name that matches no
-    // control). Listing only the second is how this first came up empty on a
-    // program that had plainly drawn — so collect both.
+    // **A drawing surface is a `<canvas>` ELEMENT in the document.**
+    //
+    // This used to look in two places, neither of which is where canvases live
+    // now: `GuiState.form.controls` (a second, empty form once a document
+    // exists) and `overlay_canvases` (deleted — it was only ever painted by
+    // `--capture`, never by a window). A program that had plainly drawn
+    // therefore listed nothing.
     let mut found: Vec<(String, Vec<vybe_widgets::canvas::DrawCmd>)> = Vec::new();
-    for w in g.form.controls_mut().iter_mut() {
-        let name = w.name().to_string();
-        if let Some(any) = w.as_any_mut() {
-            if let Some(c) = any.downcast_mut::<vybe_widgets::Canvas>() {
-                found.push((name, c.canvas_mut().commands_for_debug().to_vec()));
+    crate::gui_document::with_live(|document| {
+        for node in document.elements_by_tag("canvas") {
+            // Report the name a caller would recognise — the `id`/`name` they
+            // gave it — falling back to the internal node name.
+            let label = document
+                .get_attribute(node, "id")
+                .or_else(|| document.get_attribute(node, "name"))
+                .unwrap_or_else(|| format!("n{node}"));
+            if let Some(canvas) = document.canvas_mut(node) {
+                found.push((label, canvas.canvas_mut().commands_for_debug().to_vec()));
             }
         }
-    }
-    for (name, canvas) in g.overlay_canvases.iter() {
-        found.push((
-            format!("{name} (overlay)"),
-            canvas.commands_for_debug().to_vec(),
-        ));
-    }
+    });
 
     if found.is_empty() {
         eprintln!("  (no canvases exist)");

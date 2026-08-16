@@ -271,6 +271,21 @@ impl Application for FormApp {
         Self::lay_out(&self.gui, width, height);
     }
 
+    /// **The window's title is the document's title.**
+    ///
+    /// `document.title = "Calculator"` reached `Document::set_title` and stopped
+    /// there: `FormApp` never implemented this, so it returned the trait's empty
+    /// default, `app_window` skips an empty title, and the window kept the name
+    /// the launcher gave it at startup — `Form1`, whatever the page said.
+    ///
+    /// Read live rather than cached at launch, which is what makes a title set
+    /// LATER — or changed while running — reach the chrome. `app_window` polls
+    /// this after each render and only touches the window when the string
+    /// actually changes, so re-reading per frame costs a comparison.
+    fn title(&self) -> String {
+        crate::gui_document::with_live(|doc| doc.title()).unwrap_or_default()
+    }
+
     fn render(&mut self, pixmap: &mut Pixmap, scale: f32) {
         // One renderer, shared with `--capture` and the debugger's `capture`,
         // so a captured frame is byte-for-byte what the window shows.

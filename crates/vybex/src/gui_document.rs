@@ -69,6 +69,20 @@ pub fn with_live<T>(f: impl FnOnce(&mut Document) -> T) -> Option<T> {
     .flatten()
 }
 
+/// Did the guest build a UI in its document?
+///
+/// The same test [`with_live`] gates on, asked without borrowing: a document
+/// with content is a running one. This is what tells the runner to present a
+/// window for a program that never called `vybe:gui.runApplication` — which is
+/// every converted frontend, since a page is not told to run.
+///
+/// A program that declares [`vybe_ast::AppShell::Windowed`] is presented even
+/// when this is false: the declaration covers a UI built later, from a timer or
+/// a handler, which no test at this instant can see.
+pub fn has_content() -> bool {
+    with_live(|_| ()).is_some()
+}
+
 /// Read and write one element, live — the inspector half of the debugger.
 ///
 /// Every one of these goes through the SAME `Document` entry point the guest
