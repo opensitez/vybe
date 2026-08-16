@@ -651,8 +651,9 @@ fn emit_seq_relational(chunk: &mut Chunk, a_slot: u16, b_slot: u16, dunder: &str
     chunk.emit_op(Op::I32_EQ, line);
     chunk.emit_op(Op::I32_AND, line);
     // Break out of the block when the condition is false (depth 0 = loop,
-    // 1 = block) — the i32 tail of `loops::emit_loop_cond`, without its
-    // dyn conversion since this condition is already an i32.
+    // 1 = block). This is `loops::emit_loop_cond_from_i32` — the same
+    // non-coercing tail, inlined only because that helper takes the chunk
+    // VECTOR and this adapter holds a single `&mut Chunk`.
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_br_if(1, line);
 

@@ -996,15 +996,17 @@ pub fn emit_gen_close(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     ));
 
     let done_block = chunks[current].emit_block(line);
-    let catch_patch = vybe_compiler::primitives::errors::emit_try_start(&mut chunks[current], line);
+    vybe_compiler::primitives::errors::emit_try_start(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     emit_generator_exception(chunks, current, "GeneratorExit", line);
     emit_generator_control_packet(chunks, current, "throw", line);
     vybe_compiler::primitives::generators::emit_resume(&mut chunks[current], line);
     chunks[current].emit_op(Op::DROP, line);
     vybe_compiler::primitives::errors::emit_try_end(&mut chunks[current], line);
-    chunks[current].emit_br(0, line);
-    vybe_compiler::primitives::errors::patch_catch(&mut chunks[current], catch_patch);
+    // `br 1` — the handler block `emit_try_start` opens sits between here and
+    // `done_block`, so the normal path is one level further out.
+    chunks[current].emit_br(1, line);
+    vybe_compiler::primitives::errors::emit_handler_block_end(&mut chunks[current], line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_end(line);
     chunks[current].patch_block(done_block);
