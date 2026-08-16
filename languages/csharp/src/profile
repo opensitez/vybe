@@ -353,4 +353,16 @@ char = "common:strings.from_char_code"
 to_string = "host:ecma:string:String"
 
 [builtin_slots.bool]
-to_string = "host:ecma:string:String"
+# `.NET` renders a bool `True`/`False`; ECMA `String()` renders `true`/`false`.
+# Both are right for their own language, so this is a property of the TYPE in
+# THIS language, not a general rule — the same reason `[builtin_slots.double]`
+# exists. Pointing it at ECMA meant `b.ToString()` answered `true`, while
+# `(6 % 2 == 0).ToString()` answered `True` because that route reaches the
+# `CStr` intrinsic instead: one value, two renderings, decided by which path
+# the expression happened to take.
+#
+# `dotnet.tostring_runtime` is the .NET renderer already used for the general
+# `ToString` builtin above, and powershell already declares it as its own bool
+# row — so this adds no mechanism, it points an existing slot at the renderer
+# that was always correct for .NET.
+to_string = "common:dotnet.tostring_runtime"

@@ -11,22 +11,41 @@ use vybe_platform_dotnet::emitter::core::exceptions as dotnet_exceptions;
 use vybe_platform_dotnet::emitter::core::lowering as dotnet_lowering;
 
 pub fn parse(source: &str) -> Result<Module, String> {
+    // Every registry this walk keeps, created here and dropped when `parse`
+    // returns — including on the `?` paths below.
+    let mut __w_owned = CsWalker::default();
+    let __w = &mut __w_owned;
     let pairs =
         CSharpParser::parse(Rule::program, source).map_err(|e| format!("Parse error: {}", e))?;
     let mut body = Vec::new();
     let mut imports = Vec::new();
     let mut pending_attributes: Vec<Expression> = Vec::new();
     // Fresh capture per parse (thread-local persists across calls).
-    INTERFACE_DEFAULTS.with(|d| d.borrow_mut().clear());
-    CUSTOM_EVENTS.with(|s| s.borrow_mut().clear());
-    NAMED_TUPLE_VARS.with(|m| m.borrow_mut().clear());
+    __w.interface_defaults.clear();
+    __w.custom_events.clear();
+    __w.named_tuple_vars.clear();
+    // `DECLARED_ENUMS` was the one registry missing from this reset. It records
+    // every `enum` name the program declares and is read back to decide whether
+    // a name is an enum type; `parse()` runs once per PROGRAM, the thread-local
+    // lives for the life of the PROCESS. In the warm worker pool that left
+    // program N's enum names visible to program N+1, so an unrelated program
+    // with a same-named identifier was silently treated as an enum.
+    //
+    // Not hypothetical: the php walker had this exact defect across 16
+    // registries and it produced warm-only test failures that looked for weeks
+    // like harness noise — deterministic bytecode per program, clean under
+    // `--cold`, clean when run directly, and flapping on every binary, because
+    // each program still compiles deterministically GIVEN THE SAME PREDECESSOR.
+    // Fixing their reset took `tests/php/namespaces` from flapping to 104/0
+    // warm and the whole php suite from 1042 to 1014 failures.
+    __w.declared_enums.clear();
 
     for top in pairs {
         let inner = match top.as_rule() {
             Rule::program => top.into_inner(),
             Rule::EOI => continue,
             _ => {
-                body.push(walk_statement(top)?);
+                body.push(walk_statement(__w, top)?);
                 continue;
             }
         };
@@ -34,7 +53,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
             match pair.as_rule() {
                 Rule::EOI => continue,
                 Rule::attribute_list => {
-                    pending_attributes.extend(parse_attribute_specs(pair.as_str()))
+                    pending_attributes.extend(parse_attribute_specs(__w, pair.as_str()))
                 }
                 Rule::using_directive => imports.push(walk_using(pair)?),
                 Rule::namespace_declaration => {
@@ -48,11 +67,11 @@ pub fn parse(source: &str) -> Result<Module, String> {
                                 ns_name = strip_global_namespace_qualifier(p.as_str()).to_string()
                             }
                             Rule::attribute_list => namespace_pending_attributes
-                                .extend(parse_attribute_specs(p.as_str())),
+                                .extend(parse_attribute_specs(__w, p.as_str())),
                             Rule::using_directive => imports.push(walk_using(p)?),
                             _ => {
                                 if let Ok(stmt) =
-                                    walk_top_level_with_attributes(p, &namespace_pending_attributes)
+                                    walk_top_level_with_attributes(__w, p, &namespace_pending_attributes)
                                 {
                                     ns_body.push(stmt);
                                 }
@@ -66,7 +85,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
                     }));
                 }
                 _ => {
-                    if let Ok(stmt) = walk_top_level_with_attributes(pair, &pending_attributes) {
+                    if let Ok(stmt) = walk_top_level_with_attributes(__w, pair, &pending_attributes) {
                         body.push(stmt);
                     }
                     pending_attributes.clear();
@@ -92,12 +111,12 @@ pub fn parse(source: &str) -> Result<Module, String> {
     };
     rewrite_using_imports(&mut module);
     normalize_task_surface(&mut module);
-    inject_interface_defaults(&mut module.body);
+    inject_interface_defaults(__w, &mut module.body);
     lower_csharp_using_declarations(&mut module.body);
     rewrite_set_algebra_bool_calls(&mut module.body);
     rewrite_explicit_interface_accesses(&mut module);
     rewrite_record_uses(&mut module);
-    rewrite_tuple_uses(&mut module);
+    rewrite_tuple_uses(__w, &mut module);
     rewrite_extension_calls(&mut module);
     rewrite_set_algebra_bool_calls(&mut module.body);
     rewrite_linked_list_node_uses(&mut module.body);
@@ -980,13 +999,13 @@ fn normalize_attribute_type_name(name: &str) -> String {
     }
 }
 
-fn parse_csharp_inline_expression(text: &str) -> Option<Expression> {
+fn parse_csharp_inline_expression(__w: &mut CsWalker, text: &str) -> Option<Expression> {
     let mut parsed = CSharpParser::parse(Rule::expression, text).ok()?;
     let pair = parsed.next()?;
-    walk_expression(pair).ok()
+    walk_expression(__w, pair).ok()
 }
 
-fn parse_attribute_argument(text: &str) -> Option<Argument> {
+fn parse_attribute_argument(__w: &mut CsWalker, text: &str) -> Option<Argument> {
     let trimmed = text.trim();
     if let Some((lhs, rhs)) = trimmed.split_once('=') {
         let lhs_trimmed = lhs.trim();
@@ -995,7 +1014,7 @@ fn parse_attribute_argument(text: &str) -> Option<Argument> {
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '.')
         {
             return Some(Argument {
-                value: parse_csharp_inline_expression(rhs.trim())?,
+                value: parse_csharp_inline_expression(__w, rhs.trim())?,
                 name: Some(lhs_trimmed.rsplit('.').next()?.to_string()),
                 by_ref: false,
                 spread: false,
@@ -1004,14 +1023,14 @@ fn parse_attribute_argument(text: &str) -> Option<Argument> {
     }
 
     Some(Argument {
-        value: parse_csharp_inline_expression(trimmed)?,
+        value: parse_csharp_inline_expression(__w, trimmed)?,
         name: None,
         by_ref: false,
         spread: false,
     })
 }
 
-fn parse_attribute_specs(raw: &str) -> Vec<Expression> {
+fn parse_attribute_specs(__w: &mut CsWalker, raw: &str) -> Vec<Expression> {
     let inner = raw.trim().trim_start_matches('[').trim_end_matches(']');
     split_csharp_top_level(inner, ',')
         .into_iter()
@@ -1029,7 +1048,7 @@ fn parse_attribute_specs(raw: &str) -> Vec<Expression> {
                 let args_src = &trimmed[open_idx + 1..close_idx];
                 let args = split_csharp_top_level(args_src, ',')
                     .into_iter()
-                    .filter_map(|arg| parse_attribute_argument(&arg))
+                    .filter_map(|arg| parse_attribute_argument(__w, &arg))
                     .collect::<Vec<_>>();
                 (name, args)
             } else {
@@ -1535,10 +1554,17 @@ fn rewrite_explicit_interface_accesses_in_expr(
         | ExprKind::Sequence(items)
         | ExprKind::Zip {
             iterables: items, ..
+        }
+        | ExprKind::ArrayTransform {
+            args: items, ..
         } => {
             for item in items {
                 rewrite_explicit_interface_accesses_in_expr(item, conflicted);
             }
+        }
+        ExprKind::ArrayMap { array, body, .. } => {
+            rewrite_explicit_interface_accesses_in_expr(array, conflicted);
+            rewrite_explicit_interface_accesses_in_expr(body, conflicted);
         }
         ExprKind::NamedTuple { fields, .. } => {
             for (_, value) in fields {
@@ -2368,43 +2394,43 @@ fn infer_record_type(
     }
 }
 
-fn rewrite_tuple_uses(module: &mut Module) {
+fn rewrite_tuple_uses(__w: &mut CsWalker, module: &mut Module) {
     let mut scopes = vec![HashMap::new()];
-    rewrite_tuple_uses_in_statements(&mut module.body, &mut scopes);
+    rewrite_tuple_uses_in_statements(__w, &mut module.body, &mut scopes);
 }
 
-fn rewrite_tuple_uses_in_statements(
+fn rewrite_tuple_uses_in_statements(__w: &mut CsWalker, 
     body: &mut [Statement],
     scopes: &mut Vec<HashMap<String, usize>>,
 ) {
     for stmt in body {
-        rewrite_tuple_uses_in_statement(stmt, scopes);
+        rewrite_tuple_uses_in_statement(__w, stmt, scopes);
     }
 }
 
-fn rewrite_tuple_uses_in_statement(stmt: &mut Statement, scopes: &mut Vec<HashMap<String, usize>>) {
+fn rewrite_tuple_uses_in_statement(__w: &mut CsWalker, stmt: &mut Statement, scopes: &mut Vec<HashMap<String, usize>>) {
     match &mut stmt.kind {
         StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
-            rewrite_tuple_uses_in_expr(expr, scopes);
+            rewrite_tuple_uses_in_expr(__w, expr, scopes);
         }
         StmtKind::Throw { expr, cause } => {
             if let Some(expr) = expr {
-                rewrite_tuple_uses_in_expr(expr, scopes);
+                rewrite_tuple_uses_in_expr(__w, expr, scopes);
             }
             if let Some(cause) = cause {
-                rewrite_tuple_uses_in_expr(cause, scopes);
+                rewrite_tuple_uses_in_expr(__w, cause, scopes);
             }
         }
         StmtKind::VarDecl { declarations, .. } => {
             for decl in declarations {
                 if let Some(init) = &mut decl.init {
-                    rewrite_tuple_uses_in_expr(init, scopes);
+                    rewrite_tuple_uses_in_expr(__w, init, scopes);
                 }
                 let BindingPattern::Ident(name) = &decl.pattern else {
                     continue;
                 };
                 if let Some(named) = decl.init.as_ref().and_then(named_tuple_arity) {
-                    NAMED_TUPLE_VARS.with(|m| m.borrow_mut().insert(name.clone(), named));
+                    __w.named_tuple_vars.insert(name.clone(), named);
                 }
                 if let Some(arity) = decl
                     .init
@@ -2418,9 +2444,9 @@ fn rewrite_tuple_uses_in_statement(stmt: &mut Statement, scopes: &mut Vec<HashMa
             }
         }
         StmtKind::Assign { targets, value, .. } => {
-            rewrite_tuple_uses_in_expr(value, scopes);
+            rewrite_tuple_uses_in_expr(__w, value, scopes);
             for target in targets {
-                rewrite_tuple_uses_in_expr(target, scopes);
+                rewrite_tuple_uses_in_expr(__w, target, scopes);
                 let ExprKind::Ident(name) = &target.kind else {
                     continue;
                 };
@@ -2432,30 +2458,30 @@ fn rewrite_tuple_uses_in_statement(stmt: &mut Statement, scopes: &mut Vec<HashMa
             }
         }
         StmtKind::CompoundAssign { target, value, .. } => {
-            rewrite_tuple_uses_in_expr(target, scopes);
-            rewrite_tuple_uses_in_expr(value, scopes);
+            rewrite_tuple_uses_in_expr(__w, target, scopes);
+            rewrite_tuple_uses_in_expr(__w, value, scopes);
         }
         StmtKind::Block(body) => {
             // `var (x, y) = t;` where `t` holds a tuple lowers (in the walker) to a
             // `t.Deconstruct(out x, out y)` block. Tuples are runtime arrays with no
             // Deconstruct, so rewrite to a plain array-destructure binding when the
             // receiver is a known tuple.
-            if let Some(rewritten) = rewrite_tuple_deconstruction_block(body, scopes) {
+            if let Some(rewritten) = rewrite_tuple_deconstruction_block(__w, body, scopes) {
                 stmt.kind = rewritten;
             } else {
                 scopes.push(HashMap::new());
-                rewrite_tuple_uses_in_statements(body, scopes);
+                rewrite_tuple_uses_in_statements(__w, body, scopes);
                 scopes.pop();
             }
         }
         StmtKind::NamespaceDecl { body, .. } => {
             scopes.push(HashMap::new());
-            rewrite_tuple_uses_in_statements(body, scopes);
+            rewrite_tuple_uses_in_statements(__w, body, scopes);
             scopes.pop();
         }
         StmtKind::FunctionDecl { body, .. } => {
             scopes.push(HashMap::new());
-            rewrite_tuple_uses_in_statements(body, scopes);
+            rewrite_tuple_uses_in_statements(__w, body, scopes);
             scopes.pop();
         }
         StmtKind::ClassDecl { members, .. }
@@ -2464,22 +2490,22 @@ fn rewrite_tuple_uses_in_statement(stmt: &mut Statement, scopes: &mut Vec<HashMa
             for member in members {
                 match member {
                     ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
-                        rewrite_tuple_uses_in_statement(stmt, scopes);
+                        rewrite_tuple_uses_in_statement(__w, stmt, scopes);
                     }
                     ClassMember::Constructor { body, .. } => {
                         scopes.push(HashMap::new());
-                        rewrite_tuple_uses_in_statements(body, scopes);
+                        rewrite_tuple_uses_in_statements(__w, body, scopes);
                         scopes.pop();
                     }
                     ClassMember::Property { getter, setter, .. } => {
                         if let Some(getter) = getter {
                             scopes.push(HashMap::new());
-                            rewrite_tuple_uses_in_statements(getter, scopes);
+                            rewrite_tuple_uses_in_statements(__w, getter, scopes);
                             scopes.pop();
                         }
                         if let Some(setter) = setter {
                             scopes.push(HashMap::new());
-                            rewrite_tuple_uses_in_statements(&mut setter.body, scopes);
+                            rewrite_tuple_uses_in_statements(__w, &mut setter.body, scopes);
                             scopes.pop();
                         }
                     }
@@ -2493,19 +2519,19 @@ fn rewrite_tuple_uses_in_statement(stmt: &mut Statement, scopes: &mut Vec<HashMa
             elifs,
             else_body,
         } => {
-            rewrite_tuple_uses_in_expr(cond, scopes);
+            rewrite_tuple_uses_in_expr(__w, cond, scopes);
             scopes.push(HashMap::new());
-            rewrite_tuple_uses_in_statements(then_body, scopes);
+            rewrite_tuple_uses_in_statements(__w, then_body, scopes);
             scopes.pop();
             for (elif_cond, elif_body) in elifs {
-                rewrite_tuple_uses_in_expr(elif_cond, scopes);
+                rewrite_tuple_uses_in_expr(__w, elif_cond, scopes);
                 scopes.push(HashMap::new());
-                rewrite_tuple_uses_in_statements(elif_body, scopes);
+                rewrite_tuple_uses_in_statements(__w, elif_body, scopes);
                 scopes.pop();
             }
             if let Some(else_body) = else_body {
                 scopes.push(HashMap::new());
-                rewrite_tuple_uses_in_statements(else_body, scopes);
+                rewrite_tuple_uses_in_statements(__w, else_body, scopes);
                 scopes.pop();
             }
         }
@@ -2517,15 +2543,15 @@ fn rewrite_tuple_uses_in_statement(stmt: &mut Statement, scopes: &mut Vec<HashMa
         } => {
             scopes.push(HashMap::new());
             if let Some(init) = init {
-                rewrite_tuple_uses_in_statement(init, scopes);
+                rewrite_tuple_uses_in_statement(__w, init, scopes);
             }
             if let Some(cond) = cond {
-                rewrite_tuple_uses_in_expr(cond, scopes);
+                rewrite_tuple_uses_in_expr(__w, cond, scopes);
             }
             if let Some(update) = update {
-                rewrite_tuple_uses_in_expr(update, scopes);
+                rewrite_tuple_uses_in_expr(__w, update, scopes);
             }
-            rewrite_tuple_uses_in_statements(body, scopes);
+            rewrite_tuple_uses_in_statements(__w, body, scopes);
             scopes.pop();
         }
         StmtKind::ForIn {
@@ -2534,11 +2560,11 @@ fn rewrite_tuple_uses_in_statement(stmt: &mut Statement, scopes: &mut Vec<HashMa
             else_body,
             ..
         } => {
-            rewrite_tuple_uses_in_expr(iter, scopes);
+            rewrite_tuple_uses_in_expr(__w, iter, scopes);
             scopes.push(HashMap::new());
-            rewrite_tuple_uses_in_statements(body, scopes);
+            rewrite_tuple_uses_in_statements(__w, body, scopes);
             if let Some(else_body) = else_body {
-                rewrite_tuple_uses_in_statements(else_body, scopes);
+                rewrite_tuple_uses_in_statements(__w, else_body, scopes);
             }
             scopes.pop();
         }
@@ -2547,46 +2573,46 @@ fn rewrite_tuple_uses_in_statement(stmt: &mut Statement, scopes: &mut Vec<HashMa
             body,
             else_body,
         } => {
-            rewrite_tuple_uses_in_expr(cond, scopes);
+            rewrite_tuple_uses_in_expr(__w, cond, scopes);
             scopes.push(HashMap::new());
-            rewrite_tuple_uses_in_statements(body, scopes);
+            rewrite_tuple_uses_in_statements(__w, body, scopes);
             if let Some(else_body) = else_body {
-                rewrite_tuple_uses_in_statements(else_body, scopes);
+                rewrite_tuple_uses_in_statements(__w, else_body, scopes);
             }
             scopes.pop();
         }
         StmtKind::DoWhile { body, cond, .. } => {
             scopes.push(HashMap::new());
-            rewrite_tuple_uses_in_statements(body, scopes);
+            rewrite_tuple_uses_in_statements(__w, body, scopes);
             scopes.pop();
-            rewrite_tuple_uses_in_expr(cond, scopes);
+            rewrite_tuple_uses_in_expr(__w, cond, scopes);
         }
         StmtKind::Switch {
             expr,
             cases,
             default,
         } => {
-            rewrite_tuple_uses_in_expr(expr, scopes);
+            rewrite_tuple_uses_in_expr(__w, expr, scopes);
             for case in cases {
                 for condition in &mut case.conditions {
                     match condition {
-                        CaseCondition::Value(expr) => rewrite_tuple_uses_in_expr(expr, scopes),
+                        CaseCondition::Value(expr) => rewrite_tuple_uses_in_expr(__w, expr, scopes),
                         CaseCondition::Range { from, to } => {
-                            rewrite_tuple_uses_in_expr(from, scopes);
-                            rewrite_tuple_uses_in_expr(to, scopes);
+                            rewrite_tuple_uses_in_expr(__w, from, scopes);
+                            rewrite_tuple_uses_in_expr(__w, to, scopes);
                         }
                         CaseCondition::Comparison { expr, .. } => {
-                            rewrite_tuple_uses_in_expr(expr, scopes);
+                            rewrite_tuple_uses_in_expr(__w, expr, scopes);
                         }
                     }
                 }
                 scopes.push(HashMap::new());
-                rewrite_tuple_uses_in_statements(&mut case.body, scopes);
+                rewrite_tuple_uses_in_statements(__w, &mut case.body, scopes);
                 scopes.pop();
             }
             if let Some(default) = default {
                 scopes.push(HashMap::new());
-                rewrite_tuple_uses_in_statements(default, scopes);
+                rewrite_tuple_uses_in_statements(__w, default, scopes);
                 scopes.pop();
             }
         }
@@ -2594,11 +2620,11 @@ fn rewrite_tuple_uses_in_statement(stmt: &mut Statement, scopes: &mut Vec<HashMa
     }
 }
 
-fn rewrite_tuple_uses_in_expr(expr: &mut Expression, scopes: &mut Vec<HashMap<String, usize>>) {
+fn rewrite_tuple_uses_in_expr(__w: &mut CsWalker, expr: &mut Expression, scopes: &mut Vec<HashMap<String, usize>>) {
     match &mut expr.kind {
         ExprKind::Binary { op, left, right } => {
-            rewrite_tuple_uses_in_expr(left, scopes);
-            rewrite_tuple_uses_in_expr(right, scopes);
+            rewrite_tuple_uses_in_expr(__w, left, scopes);
+            rewrite_tuple_uses_in_expr(__w, right, scopes);
             if matches!(op, BinOp::Eq | BinOp::NotEq) {
                 let left_arity = infer_tuple_arity(left, scopes);
                 let right_arity = infer_tuple_arity(right, scopes);
@@ -2630,8 +2656,8 @@ fn rewrite_tuple_uses_in_expr(expr: &mut Expression, scopes: &mut Vec<HashMap<St
             target: left,
             value: right,
         } => {
-            rewrite_tuple_uses_in_expr(left, scopes);
-            rewrite_tuple_uses_in_expr(right, scopes);
+            rewrite_tuple_uses_in_expr(__w, left, scopes);
+            rewrite_tuple_uses_in_expr(__w, right, scopes);
         }
         ExprKind::Unary { expr, .. }
         | ExprKind::Await(expr)
@@ -2642,48 +2668,48 @@ fn rewrite_tuple_uses_in_expr(expr: &mut Expression, scopes: &mut Vec<HashMap<St
         | ExprKind::IsType { expr, .. }
         | ExprKind::Cast { expr, .. }
         | ExprKind::Spread(expr)
-        | ExprKind::Yield(Some(expr)) => rewrite_tuple_uses_in_expr(expr, scopes),
+        | ExprKind::Yield(Some(expr)) => rewrite_tuple_uses_in_expr(__w, expr, scopes),
         ExprKind::Ternary { cond, then, else_ } => {
-            rewrite_tuple_uses_in_expr(cond, scopes);
-            rewrite_tuple_uses_in_expr(then, scopes);
-            rewrite_tuple_uses_in_expr(else_, scopes);
+            rewrite_tuple_uses_in_expr(__w, cond, scopes);
+            rewrite_tuple_uses_in_expr(__w, then, scopes);
+            rewrite_tuple_uses_in_expr(__w, else_, scopes);
         }
-        ExprKind::Member { object, .. } => rewrite_tuple_uses_in_expr(object, scopes),
+        ExprKind::Member { object, .. } => rewrite_tuple_uses_in_expr(__w, object, scopes),
         ExprKind::Index { object, index, .. } => {
-            rewrite_tuple_uses_in_expr(object, scopes);
-            rewrite_tuple_uses_in_expr(index, scopes);
+            rewrite_tuple_uses_in_expr(__w, object, scopes);
+            rewrite_tuple_uses_in_expr(__w, index, scopes);
         }
         ExprKind::Call { callee, args, .. } => {
-            rewrite_tuple_uses_in_expr(callee, scopes);
+            rewrite_tuple_uses_in_expr(__w, callee, scopes);
             for arg in args {
-                rewrite_tuple_uses_in_expr(&mut arg.value, scopes);
+                rewrite_tuple_uses_in_expr(__w, &mut arg.value, scopes);
             }
         }
         ExprKind::New { class, args } => {
-            rewrite_tuple_uses_in_expr(class, scopes);
+            rewrite_tuple_uses_in_expr(__w, class, scopes);
             for arg in args {
-                rewrite_tuple_uses_in_expr(&mut arg.value, scopes);
+                rewrite_tuple_uses_in_expr(__w, &mut arg.value, scopes);
             }
         }
         ExprKind::Lambda { body, .. } => match body {
-            LambdaBody::Expr(expr) => rewrite_tuple_uses_in_expr(expr, scopes),
+            LambdaBody::Expr(expr) => rewrite_tuple_uses_in_expr(__w, expr, scopes),
             LambdaBody::Block(body) => {
                 scopes.push(HashMap::new());
-                rewrite_tuple_uses_in_statements(body, scopes);
+                rewrite_tuple_uses_in_statements(__w, body, scopes);
                 scopes.pop();
             }
         },
         ExprKind::Array(items) => {
             for item in items {
-                rewrite_tuple_uses_in_expr(&mut item.value, scopes);
+                rewrite_tuple_uses_in_expr(__w, &mut item.value, scopes);
                 if let Some(key) = &mut item.key {
-                    rewrite_tuple_uses_in_expr(key, scopes);
+                    rewrite_tuple_uses_in_expr(__w, key, scopes);
                 }
             }
         }
         ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
             for item in items {
-                rewrite_tuple_uses_in_expr(item, scopes);
+                rewrite_tuple_uses_in_expr(__w, item, scopes);
             }
         }
         ExprKind::Object(props) => {
@@ -2691,13 +2717,13 @@ fn rewrite_tuple_uses_in_expr(expr: &mut Expression, scopes: &mut Vec<HashMap<St
                 match prop {
                     ObjectProperty::KeyValue { key, value }
                     | ObjectProperty::Computed { key, value } => {
-                        rewrite_tuple_uses_in_expr(key, scopes);
-                        rewrite_tuple_uses_in_expr(value, scopes);
+                        rewrite_tuple_uses_in_expr(__w, key, scopes);
+                        rewrite_tuple_uses_in_expr(__w, value, scopes);
                     }
-                    ObjectProperty::Spread(expr) => rewrite_tuple_uses_in_expr(expr, scopes),
+                    ObjectProperty::Spread(expr) => rewrite_tuple_uses_in_expr(__w, expr, scopes),
                     ObjectProperty::Method { value, .. }
                     | ObjectProperty::Accessor { value, .. } => {
-                        rewrite_tuple_uses_in_statement(value, scopes);
+                        rewrite_tuple_uses_in_statement(__w, value, scopes);
                     }
                     ObjectProperty::Shorthand(_) => {}
                 }
@@ -2707,7 +2733,7 @@ fn rewrite_tuple_uses_in_expr(expr: &mut Expression, scopes: &mut Vec<HashMap<St
             for part in parts {
                 match part {
                     InterpolPart::Expr(expr) | InterpolPart::Formatted(expr, _) => {
-                        rewrite_tuple_uses_in_expr(expr, scopes);
+                        rewrite_tuple_uses_in_expr(__w, expr, scopes);
                     }
                     InterpolPart::Text(_) => {}
                 }
@@ -2718,42 +2744,42 @@ fn rewrite_tuple_uses_in_expr(expr: &mut Expression, scopes: &mut Vec<HashMap<St
             generators,
             ..
         } => {
-            rewrite_tuple_uses_in_expr(element, scopes);
+            rewrite_tuple_uses_in_expr(__w, element, scopes);
             for generator in generators {
-                rewrite_tuple_uses_in_expr(&mut generator.target, scopes);
-                rewrite_tuple_uses_in_expr(&mut generator.iter, scopes);
+                rewrite_tuple_uses_in_expr(__w, &mut generator.target, scopes);
+                rewrite_tuple_uses_in_expr(__w, &mut generator.iter, scopes);
                 for condition in &mut generator.conditions {
-                    rewrite_tuple_uses_in_expr(condition, scopes);
+                    rewrite_tuple_uses_in_expr(__w, condition, scopes);
                 }
             }
         }
         ExprKind::Slice { lower, upper, step } => {
             if let Some(lower) = lower {
-                rewrite_tuple_uses_in_expr(lower, scopes);
+                rewrite_tuple_uses_in_expr(__w, lower, scopes);
             }
             if let Some(upper) = upper {
-                rewrite_tuple_uses_in_expr(upper, scopes);
+                rewrite_tuple_uses_in_expr(__w, upper, scopes);
             }
             if let Some(step) = step {
-                rewrite_tuple_uses_in_expr(step, scopes);
+                rewrite_tuple_uses_in_expr(__w, step, scopes);
             }
         }
         ExprKind::ClassExpr {
             parent, members, ..
         } => {
             if let Some(parent) = parent {
-                rewrite_tuple_uses_in_expr(parent, scopes);
+                rewrite_tuple_uses_in_expr(__w, parent, scopes);
             }
             for member in members {
                 match member {
                     ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
-                        rewrite_tuple_uses_in_statement(stmt, scopes);
+                        rewrite_tuple_uses_in_statement(__w, stmt, scopes);
                     }
                     _ => {}
                 }
             }
         }
-        ExprKind::FunctionExpr(stmt) => rewrite_tuple_uses_in_statement(stmt, scopes),
+        ExprKind::FunctionExpr(stmt) => rewrite_tuple_uses_in_statement(__w, stmt, scopes),
         _ => {}
     }
 }
@@ -2780,7 +2806,7 @@ use vybe_compiler::primitives::tuples::{
 /// the receiver is already a runtime array (`var [a, b] = t;`); for a named
 /// tuple (a keyed object) read `Item1..ItemN` positionally so it rejoins the
 /// same shared array-destructure primitive.
-fn rewrite_tuple_deconstruction_block(
+fn rewrite_tuple_deconstruction_block(__w: &mut CsWalker, 
     body: &[Statement],
     scopes: &[HashMap<String, usize>],
 ) -> Option<StmtKind> {
@@ -2798,7 +2824,7 @@ fn rewrite_tuple_deconstruction_block(
     }
 
     let named_arity = named_tuple_arity(object).or_else(|| match &object.kind {
-        ExprKind::Ident(name) => NAMED_TUPLE_VARS.with(|m| m.borrow().get(name).copied()),
+        ExprKind::Ident(name) => __w.named_tuple_vars.get(name).copied(),
         _ => None,
     });
     let (arity, is_named) = match named_arity {
@@ -3397,9 +3423,144 @@ fn normalize_task_expr(expr: &mut Expression) {
     }
 }
 
+/// The `using static` imports in force, plus the callable names the
+/// compilation unit declares for itself.
+///
+/// ECMA-334 §13.5.4: a `using static` directive adds the type's accessible
+/// static members to the unit, but they are only consulted for names the unit
+/// does not already declare — a `void __P(...)` in the file wins over
+/// `System.Math.__P`. Carrying `declared` alongside the paths is what lets the
+/// bare-call rewrite ask that question at all. With only the paths it
+/// qualified EVERY bare call, so a single `using static System.Math` silently
+/// rewrote the file's own helpers to `System.Math.__P` and they resolved to
+/// nothing at runtime.
+struct UsingStaticScope {
+    paths: Vec<String>,
+    declared: HashSet<String>,
+}
+
+impl UsingStaticScope {
+    /// The qualification a bare callee should receive, or `None` when the unit
+    /// declares that name itself.
+    ///
+    /// Only the FIRST static path is offered. Choosing among several
+    /// `using static` directives needs to know which host type actually owns
+    /// the member, which the walker cannot answer — that pre-existing limit is
+    /// left exactly as it was rather than guessed at here.
+    fn qualification_for(&self, name: &str) -> Option<String> {
+        if self.declared.contains(name) {
+            return None;
+        }
+        self.paths.first().map(|path| format!("{path}.{name}"))
+    }
+}
+
+/// Every name in the unit that a bare `f(...)` could be naming: top-level and
+/// local functions, and the methods of every class, struct and module.
+///
+/// Collected across the whole unit rather than per enclosing type. A bare call
+/// naming a method of an unrelated class is not legal C# to begin with, so the
+/// extra names cost nothing, while walking scope-by-scope here would duplicate
+/// resolution the compiler already owns.
+fn collect_declared_callables(body: &[Statement], out: &mut HashSet<String>) {
+    for stmt in body {
+        collect_declared_callables_in_stmt(&stmt.kind, out);
+    }
+}
+
+fn collect_declared_callables_in_stmt(kind: &StmtKind, out: &mut HashSet<String>) {
+    match kind {
+        StmtKind::FunctionDecl { name, body, .. } => {
+            out.insert(name.clone());
+            collect_declared_callables(body, out);
+        }
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            collect_declared_callables(body, out)
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                match member {
+                    ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+                        collect_declared_callables_in_stmt(&stmt.kind, out);
+                    }
+                    ClassMember::Constructor { body, .. } => collect_declared_callables(body, out),
+                    ClassMember::Property { getter, setter, .. } => {
+                        if let Some(getter) = getter {
+                            collect_declared_callables(getter, out);
+                        }
+                        if let Some(setter) = setter {
+                            collect_declared_callables(&setter.body, out);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
+            collect_declared_callables(then_body, out);
+            for (_, elif_body) in elifs {
+                collect_declared_callables(elif_body, out);
+            }
+            if let Some(else_body) = else_body {
+                collect_declared_callables(else_body, out);
+            }
+        }
+        StmtKind::For { init, body, .. } => {
+            if let Some(init) = init {
+                collect_declared_callables_in_stmt(&init.kind, out);
+            }
+            collect_declared_callables(body, out);
+        }
+        StmtKind::ForIn {
+            body, else_body, ..
+        }
+        | StmtKind::While {
+            body, else_body, ..
+        } => {
+            collect_declared_callables(body, out);
+            if let Some(else_body) = else_body {
+                collect_declared_callables(else_body, out);
+            }
+        }
+        StmtKind::DoWhile { body, .. }
+        | StmtKind::Using { body, .. }
+        | StmtKind::Lock { body, .. } => collect_declared_callables(body, out),
+        StmtKind::Try {
+            body,
+            catches,
+            finally,
+            ..
+        } => {
+            collect_declared_callables(body, out);
+            for catch in catches {
+                collect_declared_callables(&catch.body, out);
+            }
+            if let Some(finally) = finally {
+                collect_declared_callables(finally, out);
+            }
+        }
+        StmtKind::Switch { cases, default, .. } => {
+            for case in cases {
+                collect_declared_callables(&case.body, out);
+            }
+            if let Some(default) = default {
+                collect_declared_callables(default, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn rewrite_using_imports(module: &mut Module) {
     let mut aliases: HashMap<String, String> = HashMap::new();
-    let mut static_paths: Vec<String> = Vec::new();
+    let mut paths: Vec<String> = Vec::new();
     for import in &module.imports {
         match &import.kind {
             ImportKind::Simple {
@@ -3409,15 +3570,18 @@ fn rewrite_using_imports(module: &mut Module) {
                 aliases.insert(alias.clone(), normalize_import_path(path));
             }
             ImportKind::Wildcard { path, alias: None } => {
-                static_paths.push(normalize_import_path(path));
+                paths.push(normalize_import_path(path));
             }
             _ => {}
         }
     }
-    if aliases.is_empty() && static_paths.is_empty() {
+    if aliases.is_empty() && paths.is_empty() {
         return;
     }
-    rewrite_using_imports_in_statements(&mut module.body, &aliases, &static_paths);
+    let mut declared = HashSet::new();
+    collect_declared_callables(&module.body, &mut declared);
+    let statics = UsingStaticScope { paths, declared };
+    rewrite_using_imports_in_statements(&mut module.body, &aliases, &statics);
 }
 
 // ── `using var` lowering — ECMA-334 §13.14 ─────────────────────────────────
@@ -4597,7 +4761,7 @@ fn normalize_import_path(path: &str) -> String {
 fn rewrite_using_imports_in_statements(
     body: &mut [Statement],
     aliases: &HashMap<String, String>,
-    static_paths: &[String],
+    static_paths: &UsingStaticScope,
 ) {
     for stmt in body {
         rewrite_using_imports_in_statement(stmt, aliases, static_paths);
@@ -4607,7 +4771,7 @@ fn rewrite_using_imports_in_statements(
 fn rewrite_using_imports_in_statement(
     stmt: &mut Statement,
     aliases: &HashMap<String, String>,
-    static_paths: &[String],
+    static_paths: &UsingStaticScope,
 ) {
     match &mut stmt.kind {
         StmtKind::Expr(expr)
@@ -4810,7 +4974,7 @@ fn rewrite_using_imports_in_statement(
 fn rewrite_using_imports_in_member(
     member: &mut ClassMember,
     aliases: &HashMap<String, String>,
-    static_paths: &[String],
+    static_paths: &UsingStaticScope,
 ) {
     match member {
         ClassMember::Field { modifiers, .. } | ClassMember::Property { modifiers, .. } => {
@@ -4872,7 +5036,7 @@ fn rewrite_using_imports_in_member(
 fn rewrite_using_imports_in_expr(
     expr: &mut Expression,
     aliases: &HashMap<String, String>,
-    static_paths: &[String],
+    static_paths: &UsingStaticScope,
 ) {
     match &mut expr.kind {
         ExprKind::Async(op) => {
@@ -4929,8 +5093,7 @@ fn rewrite_using_imports_in_expr(
                 rewrite_using_imports_in_expr(&mut arg.value, aliases, static_paths);
             }
             if let ExprKind::Ident(name) = &callee.kind {
-                if let Some(path) = static_paths.first() {
-                    let qualified = format!("{path}.{name}");
+                if let Some(qualified) = static_paths.qualification_for(name) {
                     *callee = Box::new(build_dotted_expr(&qualified));
                 }
             }
@@ -4982,10 +5145,17 @@ fn rewrite_using_imports_in_expr(
         | ExprKind::Sequence(items)
         | ExprKind::Zip {
             iterables: items, ..
+        }
+        | ExprKind::ArrayTransform {
+            args: items, ..
         } => {
             for item in items {
                 rewrite_using_imports_in_expr(item, aliases, static_paths);
             }
+        }
+        ExprKind::ArrayMap { array, body, .. } => {
+            rewrite_using_imports_in_expr(array, aliases, static_paths);
+            rewrite_using_imports_in_expr(body, aliases, static_paths);
         }
         ExprKind::NamedTuple { fields, .. } => {
             for (_, value) in fields {
@@ -5700,10 +5870,17 @@ fn rewrite_extension_calls_in_expr(
         | ExprKind::Sequence(items)
         | ExprKind::Zip {
             iterables: items, ..
+        }
+        | ExprKind::ArrayTransform {
+            args: items, ..
         } => {
             for item in items {
                 rewrite_extension_calls_in_expr(item, extension_methods, extension_containers);
             }
+        }
+        ExprKind::ArrayMap { array, body, .. } => {
+            rewrite_extension_calls_in_expr(array, extension_methods, extension_containers);
+            rewrite_extension_calls_in_expr(body, extension_methods, extension_containers);
         }
         ExprKind::NamedTuple { fields, .. } => {
             for (_, value) in fields {
@@ -5940,34 +6117,34 @@ fn synthesize_checked_byte_cast_helper() -> Statement {
 
 // ── Top-level items ─────────────────────────────────────────────────────────
 
-fn walk_top_level_with_attributes(
+fn walk_top_level_with_attributes(__w: &mut CsWalker, 
     pair: Pair<Rule>,
     attributes: &[Expression],
 ) -> Result<Statement, String> {
     let span = to_span(&pair);
     let kind = match pair.as_rule() {
-        Rule::record_struct_declaration => walk_record_decl(pair, attributes)?,
-        Rule::class_declaration => walk_class_decl(pair, attributes)?,
-        Rule::struct_declaration => walk_struct_decl(pair, attributes)?,
-        Rule::interface_declaration => walk_interface_decl(pair, attributes)?,
-        Rule::enum_declaration => walk_enum_decl(pair, attributes)?,
-        Rule::record_declaration => walk_record_decl(pair, attributes)?,
-        Rule::delegate_declaration => walk_delegate_decl(pair)?,
-        _ => walk_statement(pair)?.kind,
+        Rule::record_struct_declaration => walk_record_decl(__w, pair, attributes)?,
+        Rule::class_declaration => walk_class_decl(__w, pair, attributes)?,
+        Rule::struct_declaration => walk_struct_decl(__w, pair, attributes)?,
+        Rule::interface_declaration => walk_interface_decl(__w, pair, attributes)?,
+        Rule::enum_declaration => walk_enum_decl(__w, pair, attributes)?,
+        Rule::record_declaration => walk_record_decl(__w, pair, attributes)?,
+        Rule::delegate_declaration => walk_delegate_decl(__w, pair)?,
+        _ => walk_statement(__w, pair)?.kind,
     };
     Ok(Statement::with_span(kind, span))
 }
 
 // ── Statements ──────────────────────────────────────────────────────────────
 
-fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
+fn walk_statement(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<Statement, String> {
     let span = to_span(&pair);
     let kind = match pair.as_rule() {
         Rule::empty_statement => StmtKind::Empty,
         Rule::block_statement => {
             let stmts = pair
                 .into_inner()
-                .map(walk_statement)
+                .map(|__x| walk_statement(__w, __x))
                 .collect::<Result<Vec<_>, _>>()?;
             StmtKind::Block(stmts)
         }
@@ -5977,7 +6154,7 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
                 .into_inner()
                 .find(|p| p.as_rule() == Rule::block_statement)
                 .ok_or("Empty checked statement")?;
-            let mut stmt = walk_statement(block)?;
+            let mut stmt = walk_statement(__w, block)?;
             if let StmtKind::Block(body) = &mut stmt.kind {
                 let mut scopes = vec![HashMap::new()];
                 rewrite_checked_numeric_statements(body, &mut scopes, is_checked);
@@ -5989,42 +6166,42 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
                 .into_inner()
                 .find(|p| p.as_rule() == Rule::block_statement)
                 .ok_or("Empty unsafe statement")?;
-            return walk_statement(block);
+            return walk_statement(__w, block);
         }
-        Rule::fixed_statement => walk_fixed_statement(pair)?,
-        Rule::local_var_declaration => walk_local_var(pair)?,
-        Rule::local_function_decl => walk_local_function(pair)?,
-        Rule::using_declaration => walk_using_declaration(pair)?,
-        Rule::tuple_deconstruction_decl => walk_tuple_deconstruction(pair)?,
-        Rule::if_statement => walk_if(pair)?,
-        Rule::for_statement => walk_for(pair)?,
-        Rule::foreach_statement => walk_foreach(pair)?,
-        Rule::while_statement => walk_while(pair)?,
-        Rule::do_while_statement => walk_do_while(pair)?,
-        Rule::switch_statement => walk_switch(pair)?,
+        Rule::fixed_statement => walk_fixed_statement(__w, pair)?,
+        Rule::local_var_declaration => walk_local_var(__w, pair)?,
+        Rule::local_function_decl => walk_local_function(__w, pair)?,
+        Rule::using_declaration => walk_using_declaration(__w, pair)?,
+        Rule::tuple_deconstruction_decl => walk_tuple_deconstruction(__w, pair)?,
+        Rule::if_statement => walk_if(__w, pair)?,
+        Rule::for_statement => walk_for(__w, pair)?,
+        Rule::foreach_statement => walk_foreach(__w, pair)?,
+        Rule::while_statement => walk_while(__w, pair)?,
+        Rule::do_while_statement => walk_do_while(__w, pair)?,
+        Rule::switch_statement => walk_switch(__w, pair)?,
         Rule::goto_statement => walk_goto(pair)?,
         Rule::labeled_statement => walk_labeled(pair)?,
-        Rule::return_statement => walk_return(pair)?,
-        Rule::yield_statement => walk_yield_stmt(pair)?,
+        Rule::return_statement => walk_return(__w, pair)?,
+        Rule::yield_statement => walk_yield_stmt(__w, pair)?,
         Rule::break_statement => StmtKind::Break(BreakTarget::Implicit),
         Rule::continue_statement => StmtKind::Continue(ContinueTarget::Implicit),
-        Rule::throw_statement => walk_throw(pair)?,
-        Rule::try_statement => walk_try(pair)?,
-        Rule::using_statement => walk_using_stmt(pair)?,
-        Rule::lock_statement => walk_lock(pair)?,
+        Rule::throw_statement => walk_throw(__w, pair)?,
+        Rule::try_statement => walk_try(__w, pair)?,
+        Rule::using_statement => walk_using_stmt(__w, pair)?,
+        Rule::lock_statement => walk_lock(__w, pair)?,
         Rule::expression_statement => {
-            let expr = walk_expression(pair.into_inner().next().ok_or("Empty expr stmt")?)?;
+            let expr = walk_expression(__w, pair.into_inner().next().ok_or("Empty expr stmt")?)?;
             // Check if this is a compound assignment or event subscription
-            classify_expr_stmt(expr)
+            classify_expr_stmt(__w, expr)
         }
         // Type declarations can appear inside methods
-        Rule::record_struct_declaration => walk_record_decl(pair, &[])?,
-        Rule::class_declaration => walk_class_decl(pair, &[])?,
-        Rule::struct_declaration => walk_struct_decl(pair, &[])?,
-        Rule::interface_declaration => walk_interface_decl(pair, &[])?,
-        Rule::enum_declaration => walk_enum_decl(pair, &[])?,
-        Rule::record_declaration => walk_record_decl(pair, &[])?,
-        Rule::delegate_declaration => walk_delegate_decl(pair)?,
+        Rule::record_struct_declaration => walk_record_decl(__w, pair, &[])?,
+        Rule::class_declaration => walk_class_decl(__w, pair, &[])?,
+        Rule::struct_declaration => walk_struct_decl(__w, pair, &[])?,
+        Rule::interface_declaration => walk_interface_decl(__w, pair, &[])?,
+        Rule::enum_declaration => walk_enum_decl(__w, pair, &[])?,
+        Rule::record_declaration => walk_record_decl(__w, pair, &[])?,
+        Rule::delegate_declaration => walk_delegate_decl(__w, pair)?,
         other => return Err(format!("Unexpected statement rule: {:?}", other)),
     };
     Ok(Statement::with_span(kind, span))
@@ -6034,7 +6211,7 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
 /// assignment shapes. C# event/delegate `+=` and `-=` stay as ordinary
 /// compound assignment here; the compiler decides how to lower them from
 /// member/value semantics instead of guessing from naming conventions.
-fn classify_expr_stmt(expr: Expression) -> StmtKind {
+fn classify_expr_stmt(__w: &mut CsWalker, expr: Expression) -> StmtKind {
     if let Some(kind) = lower_array_resize_expr_stmt(&expr) {
         return kind;
     }
@@ -6081,7 +6258,7 @@ fn classify_expr_stmt(expr: Expression) -> StmtKind {
                             if let ExprKind::Member { object, field, .. } = &target.kind {
                                 // Custom event: `obj.E += h` → `obj.add_E(h)`,
                                 // `-= h` → `obj.remove_E(h)`.
-                                if CUSTOM_EVENTS.with(|s| s.borrow().contains(field)) {
+                                if __w.custom_events.contains(field) {
                                     let accessor = if matches!(compound_op, CompoundOp::Add) {
                                         format!("add_{}", field)
                                     } else {
@@ -6266,7 +6443,7 @@ fn walk_using(pair: Pair<Rule>) -> Result<Import, String> {
 /// The compiler's multi-value receive path auto-defines any unresolved
 /// idents as new locals inside a function, so a single `Assign` statement
 /// is enough — no separate `VarDecl` is needed.
-fn walk_tuple_deconstruction(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_tuple_deconstruction(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut pattern: Option<Vec<ArrayPatternElem>> = None;
     let mut value: Option<Expression> = None;
     for p in pair.into_inner() {
@@ -6274,7 +6451,7 @@ fn walk_tuple_deconstruction(pair: Pair<Rule>) -> Result<StmtKind, String> {
             Rule::var_kw => {}
             Rule::tuple_binding_list => pattern = Some(walk_tuple_binding_list(p)?),
             Rule::expression => {
-                value = Some(walk_expression(p)?);
+                value = Some(walk_expression(__w, p)?);
             }
             _ => {}
         }
@@ -7756,7 +7933,7 @@ fn csharp_normalize_delegate_initializer(type_hint: &str, init: Expression) -> E
     }
 }
 
-fn walk_local_var(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_local_var(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner = pair.into_inner();
     let first = inner.next().ok_or("Empty local var")?;
 
@@ -7777,11 +7954,11 @@ fn walk_local_var(pair: Pair<Rule>) -> Result<StmtKind, String> {
             Rule::var_declarator_list => {
                 for vd in p.into_inner() {
                     if vd.as_rule() == Rule::var_declarator {
-                        declarations.push(walk_var_declarator(vd)?);
+                        declarations.push(walk_var_declarator(__w, vd)?);
                     }
                 }
             }
-            Rule::var_declarator => declarations.push(walk_var_declarator(p)?),
+            Rule::var_declarator => declarations.push(walk_var_declarator(__w, p)?),
             _ => {}
         }
     }
@@ -7834,7 +8011,7 @@ fn walk_local_var(pair: Pair<Rule>) -> Result<StmtKind, String> {
     })
 }
 
-fn walk_var_declarator(pair: Pair<Rule>) -> Result<VarDeclarator, String> {
+fn walk_var_declarator(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<VarDeclarator, String> {
     let mut inner = pair.into_inner();
     let name = inner
         .next()
@@ -7852,7 +8029,7 @@ fn walk_var_declarator(pair: Pair<Rule>) -> Result<VarDeclarator, String> {
             let elems = p
                 .into_inner()
                 .map(|e| {
-                    walk_collection_element(e).map(|expr| ArrayElement {
+                    walk_collection_element(__w, e).map(|expr| ArrayElement {
                         key: None,
                         value: expr,
                         spread: false,
@@ -7862,7 +8039,7 @@ fn walk_var_declarator(pair: Pair<Rule>) -> Result<VarDeclarator, String> {
                 .collect::<Result<Vec<_>, _>>()?;
             Some(Expression::with_span(ExprKind::Array(elems), span))
         }
-        Some(p) => Some(walk_expression(p)?),
+        Some(p) => Some(walk_expression(__w, p)?),
         None => None,
     };
     Ok(VarDeclarator {
@@ -7906,7 +8083,7 @@ fn looks_like_csharp_interface_type(type_name: &str) -> bool {
             .is_some_and(|ch| ch.is_ascii_uppercase())
 }
 
-fn walk_class_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKind, String> {
+fn walk_class_decl(__w: &mut CsWalker, pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKind, String> {
     let mut name = String::new();
     let mut generic_params = Vec::new();
     let mut parents = Vec::new();
@@ -7953,7 +8130,7 @@ fn walk_class_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKi
                         // `: Base(arg, …)` — a primary-constructor base call
                         // forwarding args to the base ctor.
                         primary_ctor_base_args =
-                            Some(walk_arguments(bp)?.into_iter().map(|a| a.value).collect());
+                            Some(walk_arguments(__w, bp)?.into_iter().map(|a| a.value).collect());
                         continue;
                     }
                     if bp.as_rule() == Rule::type_name {
@@ -7987,12 +8164,12 @@ fn walk_class_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKi
                 // methods and property getters reference it as a bare field.
                 // The synthesized constructor assigns the fields; the whole
                 // class then flows through the shared class-emit path.
-                primary_ctor_params = walk_params(p)?;
+                primary_ctor_params = walk_params(__w, p)?;
             }
             Rule::class_body => {
                 for m in p.into_inner() {
                     if m.as_rule() == Rule::class_member {
-                        if let Ok(member) = walk_class_member(m) {
+                        if let Ok(member) = walk_class_member(__w, m) {
                             members.extend(member);
                         }
                     }
@@ -9304,14 +9481,14 @@ fn rewrite_generic_bindings_in_expr(expr: &mut Expression, generic_params: &[Str
     }
 }
 
-fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
+fn walk_class_member(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
     let mut mods = Modifiers::default();
     let mut member_pair = None;
     let mut attributes: Vec<Expression> = Vec::new();
 
     for p in pair.into_inner() {
         match p.as_rule() {
-            Rule::attribute_list => attributes.extend(parse_attribute_specs(p.as_str())),
+            Rule::attribute_list => attributes.extend(parse_attribute_specs(__w, p.as_str())),
             Rule::class_modifiers => {
                 for m in p.into_inner() {
                     match m.as_str() {
@@ -9348,19 +9525,19 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
 
     let mp = member_pair.ok_or("Empty class member")?;
     match mp.as_rule() {
-        Rule::constructor_declaration => walk_constructor(mp, mods).map(|m| vec![m]),
-        Rule::destructor_declaration => walk_destructor(mp, mods).map(|m| vec![m]),
+        Rule::constructor_declaration => walk_constructor(__w, mp, mods).map(|m| vec![m]),
+        Rule::destructor_declaration => walk_destructor(__w, mp, mods).map(|m| vec![m]),
         Rule::explicit_interface_property_declaration | Rule::property_declaration => {
-            walk_property(mp, mods)
+            walk_property(__w, mp, mods)
         }
-        Rule::event_declaration => walk_event(mp),
+        Rule::event_declaration => walk_event(__w, mp),
         Rule::explicit_interface_method_declaration | Rule::method_declaration => {
-            walk_method(mp, mods).map(|m| vec![m])
+            walk_method(__w, mp, mods).map(|m| vec![m])
         }
-        Rule::field_declaration => walk_field(mp, mods),
-        Rule::operator_declaration => walk_operator(mp, mods).map(|m| vec![m]),
+        Rule::field_declaration => walk_field(__w, mp, mods),
+        Rule::operator_declaration => walk_operator(__w, mp, mods).map(|m| vec![m]),
         Rule::explicit_interface_indexer_declaration | Rule::indexer_declaration => {
-            walk_indexer(mp, mods)
+            walk_indexer(__w, mp, mods)
         }
         // Nested type — wrap as `ClassMember::NestedType(stmt)` so the
         // class-emit pipeline registers the inner type as a sibling
@@ -9373,10 +9550,10 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
         | Rule::enum_declaration => {
             let span = to_span(&mp);
             let kind = match mp.as_rule() {
-                Rule::class_declaration => walk_class_decl(mp, &attributes)?,
-                Rule::struct_declaration => walk_struct_decl(mp, &attributes)?,
-                Rule::interface_declaration => walk_interface_decl(mp, &attributes)?,
-                Rule::enum_declaration => walk_enum_decl(mp, &attributes)?,
+                Rule::class_declaration => walk_class_decl(__w, mp, &attributes)?,
+                Rule::struct_declaration => walk_struct_decl(__w, mp, &attributes)?,
+                Rule::interface_declaration => walk_interface_decl(__w, mp, &attributes)?,
+                Rule::enum_declaration => walk_enum_decl(__w, mp, &attributes)?,
                 _ => unreachable!(),
             };
             Ok(vec![ClassMember::NestedType(Box::new(
@@ -9394,19 +9571,19 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
 /// `SpecialMethodKind::Destructor`; `is_destructor` carries the same fact on
 /// the AST so nothing downstream has to re-read the name. Takes no parameters
 /// and returns nothing, so there is no signature to walk.
-fn walk_destructor(pair: Pair<Rule>, mut mods: Modifiers) -> Result<ClassMember, String> {
+fn walk_destructor(__w: &mut CsWalker, pair: Pair<Rule>, mut mods: Modifiers) -> Result<ClassMember, String> {
     let mut name = String::new();
     let mut body = Vec::new();
 
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::ident_name if name.is_empty() => name = format!("~{}", p.as_str()),
-            Rule::block_statement => body = walk_body(p)?,
+            Rule::block_statement => body = walk_body(__w, p)?,
             Rule::expression_body => {
                 // `~Foo() => Cleanup();` — a finalizer returns nothing, so the
                 // expression is a stand-alone statement, not a `Return`.
                 if let Some(inner) = p.into_inner().next() {
-                    body = vec![walk_expression_body_stmt(inner, false)?];
+                    body = vec![walk_expression_body_stmt(__w, inner, false)?];
                 }
             }
             _ => {}
@@ -9429,7 +9606,7 @@ fn walk_destructor(pair: Pair<Rule>, mut mods: Modifiers) -> Result<ClassMember,
     ))))
 }
 
-fn walk_constructor(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, String> {
+fn walk_constructor(__w: &mut CsWalker, pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, String> {
     let mut params = Vec::new();
     let mut body = Vec::new();
     let mut base_args = None;
@@ -9438,7 +9615,7 @@ fn walk_constructor(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, St
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::ident_name => {} // constructor name (same as class)
-            Rule::param_list => params = walk_params(p)?,
+            Rule::param_list => params = walk_params(__w, p)?,
             Rule::constructor_initializer => {
                 let mut args = Vec::new();
                 for cp in p.into_inner() {
@@ -9446,19 +9623,19 @@ fn walk_constructor(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, St
                         initializer_target = vybe_ast::ConstructorInitializerTarget::This;
                     }
                     if cp.as_rule() == Rule::argument_list {
-                        args = walk_arguments(cp)?;
+                        args = walk_arguments(__w, cp)?;
                     }
                 }
                 base_args = Some(args.into_iter().map(|a| a.value).collect());
             }
-            Rule::block_statement => body = walk_body(p)?,
+            Rule::block_statement => body = walk_body(__w, p)?,
             Rule::expression_body => {
                 // `ClassName(p) => stmt;` desugars to a body whose
                 // single statement is the expression as a stand-alone
                 // ExprStmt. Constructors don't return a value, so we
                 // don't wrap in Return.
                 if let Some(inner) = p.into_inner().next() {
-                    body = vec![walk_expression_body_stmt(inner, false)?];
+                    body = vec![walk_expression_body_stmt(__w, inner, false)?];
                 }
             }
             _ => {}
@@ -9491,7 +9668,7 @@ fn walk_constructor(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, St
     })
 }
 
-fn walk_property(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, String> {
+fn walk_property(__w: &mut CsWalker, pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, String> {
     let mut name = String::new();
     let mut explicit_interface = None;
     let mut getter = None;
@@ -9521,7 +9698,7 @@ fn walk_property(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, 
                 // `Type Name => expr;` — read-only expression-bodied
                 // property. Lower to a getter that returns the expr.
                 if let Some(inner) = p.into_inner().next() {
-                    getter = Some(vec![walk_expression_body_stmt(inner, true)?]);
+                    getter = Some(vec![walk_expression_body_stmt(__w, inner, true)?]);
                     is_auto = false;
                 }
             }
@@ -9557,13 +9734,13 @@ fn walk_property(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, 
                         for ap in acc.into_inner() {
                             match ap.as_rule() {
                                 Rule::block_statement => {
-                                    acc_body = Some(walk_body(ap)?);
+                                    acc_body = Some(walk_body(__w, ap)?);
                                     is_auto = false;
                                 }
                                 Rule::expression_body => {
                                     is_auto = false;
                                     if let Some(expr_pair) = ap.into_inner().next() {
-                                        acc_body = Some(vec![walk_expression_body_stmt(
+                                        acc_body = Some(vec![walk_expression_body_stmt(__w, 
                                             expr_pair, is_get,
                                         )?]);
                                     }
@@ -9598,7 +9775,7 @@ fn walk_property(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, 
             // the RHS expression and emit a sibling Field below so the
             // backing slot is initialised in the constructor.
             other if other != Rule::class_modifiers => {
-                default_init = Some(walk_expression(p)?);
+                default_init = Some(walk_expression(__w, p)?);
             }
             _ => {}
         }
@@ -9641,46 +9818,33 @@ fn walk_property(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, 
     Ok(out)
 }
 
-thread_local! {
-    // Names of events declared with custom `add`/`remove` accessors, so
-    // `obj.E += h` / `-= h` route to `obj.add_E(h)` / `obj.remove_E(h)`.
-    static CUSTOM_EVENTS: std::cell::RefCell<std::collections::HashSet<String>> =
-        std::cell::RefCell::new(std::collections::HashSet::new());
+/// Every registry the csharp walk keeps, owned by one `parse` call.
+///
+/// Were process-global statics: one program`s declared enums, custom events,
+/// named-tuple vars and interface defaults stayed visible to the next.
+#[derive(Default)]
+pub(crate) struct CsWalker {
+    custom_events: std::collections::HashSet<String>,
+    declared_enums: std::collections::HashSet<String>,
+    named_tuple_vars: std::collections::HashMap<String, usize>,
+    interface_defaults: std::collections::HashMap<String, Vec<ClassMember>>,
 }
 
-thread_local! {
-    // Declared enum type names. A pattern's dotted name is ambiguous —
-    // `is Color.Green` is a CONSTANT but `is System.String` is a TYPE, and the
-    // grammar matches both as `pattern_type`. Knowing which roots are enums is
-    // the only way to tell them apart, so enum declarations record their name
-    // here as they are walked.
-    static DECLARED_ENUMS: std::cell::RefCell<std::collections::HashSet<String>> =
-        std::cell::RefCell::new(std::collections::HashSet::new());
-}
+
 
 /// Splits `<KnownEnum>.<Member>` — a constant pattern rather than a type test.
 /// `None` for anything else, including `System.String` (root is not an enum)
 /// and multi-segment paths.
-fn enum_member_path_parts(name: &str) -> Option<(String, String)> {
+fn enum_member_path_parts(__w: &mut CsWalker, name: &str) -> Option<(String, String)> {
     let (root, member) = name.split_once('.')?;
     if member.contains('.') {
         return None;
     }
     let (root, member) = (root.trim(), member.trim());
-    DECLARED_ENUMS
-        .with(|enums| enums.borrow().contains(root))
+    __w.declared_enums.contains(root)
         .then(|| (root.to_string(), member.to_string()))
 }
 
-thread_local! {
-    // Vars initialized from a *named* tuple literal (`var t = (X: 2, Y: 3);`),
-    // mapped to their positional arity. Named tuples lower to a keyed object
-    // (so `.X` by-name access works through LINQ lambdas without type
-    // inference), so positional deconstruction reads `Item1..ItemN` back onto
-    // the shared array-destructure primitive.
-    static NAMED_TUPLE_VARS: std::cell::RefCell<std::collections::HashMap<String, usize>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
-}
 
 fn make_event_accessor(method_name: &str, body: Vec<Statement>) -> ClassMember {
     ClassMember::Method(Box::new(Statement::with_span(
@@ -9772,7 +9936,7 @@ fn rewrite_event_accessor_delegate_ops(stmts: &mut [Statement]) {
     }
 }
 
-fn walk_event(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
+fn walk_event(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
     let mut name = String::new();
     let mut type_hint = None;
     let mut add_body: Option<Vec<Statement>> = None;
@@ -9786,7 +9950,7 @@ fn walk_event(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
                 let body = p
                     .into_inner()
                     .find(|x| x.as_rule() == Rule::block_statement)
-                    .map(walk_body)
+                    .map(|__x| walk_body(__w, __x))
                     .transpose()?
                     .unwrap_or_default();
                 if is_add {
@@ -9806,7 +9970,7 @@ fn walk_event(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
     }];
     if add_body.is_some() || remove_body.is_some() {
         // Custom accessors: `value` in each body is the handler param.
-        CUSTOM_EVENTS.with(|s| s.borrow_mut().insert(name.clone()));
+        __w.custom_events.insert(name.clone());
         if let Some(mut b) = add_body {
             rewrite_event_accessor_delegate_ops(&mut b);
             members.push(make_event_accessor(&format!("add_{}", name), b));
@@ -10101,7 +10265,7 @@ fn is_this_rooted_member_target(expr: &Expression) -> bool {
 /// class method but lives at statement scope. Lowers to
 /// `StmtKind::FunctionDecl` so the compiler treats it like any other
 /// free function.
-fn walk_local_function(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_local_function(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut name = String::new();
     let mut generic_params = Vec::new();
     let mut return_type = None;
@@ -10131,11 +10295,11 @@ fn walk_local_function(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     generic_params.extend(csharp_single_generic_param_names(p.as_str()));
                 }
             }
-            Rule::param_list => params = walk_params(p)?,
-            Rule::block_statement => body = walk_body(p)?,
+            Rule::param_list => params = walk_params(__w, p)?,
+            Rule::block_statement => body = walk_body(__w, p)?,
             Rule::expression_body => {
                 if let Some(expr_pair) = p.into_inner().next() {
-                    body = vec![walk_expression_body_stmt(expr_pair, true)?];
+                    body = vec![walk_expression_body_stmt(__w, expr_pair, true)?];
                 }
             }
             _ => {}
@@ -10357,7 +10521,7 @@ fn materialize_csharp_bool_expr(expr: Expression) -> Expression {
 /// Walk an `operator_declaration`. Lowers to a static method named
 /// per `operator_method_name` so the call-site dispatch can find it
 /// via the canonical naming scheme.
-fn walk_operator(pair: Pair<Rule>, mut mods: Modifiers) -> Result<ClassMember, String> {
+fn walk_operator(__w: &mut CsWalker, pair: Pair<Rule>, mut mods: Modifiers) -> Result<ClassMember, String> {
     mods.is_static = true;
     let mut return_type = None;
     let mut conversion_kind = None;
@@ -10369,11 +10533,11 @@ fn walk_operator(pair: Pair<Rule>, mut mods: Modifiers) -> Result<ClassMember, S
             Rule::type_name => return_type = Some(p.as_str().to_string()),
             Rule::conversion_operator_kind => conversion_kind = Some(p.as_str().to_string()),
             Rule::operator_symbol => symbol = p.as_str().trim().to_string(),
-            Rule::param_list => params = walk_params(p)?,
-            Rule::block_statement => body = walk_body(p)?,
+            Rule::param_list => params = walk_params(__w, p)?,
+            Rule::block_statement => body = walk_body(__w, p)?,
             Rule::expression_body => {
                 if let Some(expr_pair) = p.into_inner().next() {
-                    body = vec![walk_expression_body_stmt(expr_pair, true)?];
+                    body = vec![walk_expression_body_stmt(__w, expr_pair, true)?];
                 }
             }
             _ => {}
@@ -10414,7 +10578,7 @@ fn walk_operator(pair: Pair<Rule>, mut mods: Modifiers) -> Result<ClassMember, S
 /// Walk an `indexer_declaration`. Lowers to a Property named `__index__`
 /// with the indexer's parameter list captured separately so the runtime
 /// can route `obj[i]` through the getter / setter.
-fn walk_indexer(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, String> {
+fn walk_indexer(__w: &mut CsWalker, pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, String> {
     let mut getter_name = "__get___index__".to_string();
     let mut setter_name = "__set___index__".to_string();
     let mut explicit_interface = None;
@@ -10434,12 +10598,12 @@ fn walk_indexer(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, S
                     }
                 }
             }
-            Rule::param_list => params = walk_params(p)?,
+            Rule::param_list => params = walk_params(__w, p)?,
             // Expression-bodied indexer: `public int this[int i] => expr;` is a
             // get-only indexer whose body is `return expr;`.
             Rule::expression_body => {
                 if let Some(expr_pair) = p.into_inner().next() {
-                    getter = Some(vec![walk_expression_body_stmt(expr_pair, true)?]);
+                    getter = Some(vec![walk_expression_body_stmt(__w, expr_pair, true)?]);
                 }
             }
             Rule::property_body => {
@@ -10456,11 +10620,11 @@ fn walk_indexer(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, S
                         for ap in acc.into_inner() {
                             match ap.as_rule() {
                                 Rule::block_statement => {
-                                    acc_body = Some(walk_body(ap)?);
+                                    acc_body = Some(walk_body(__w, ap)?);
                                 }
                                 Rule::expression_body => {
                                     if let Some(expr_pair) = ap.into_inner().next() {
-                                        acc_body = Some(vec![walk_expression_body_stmt(
+                                        acc_body = Some(vec![walk_expression_body_stmt(__w, 
                                             expr_pair, is_get,
                                         )?]);
                                     }
@@ -10582,7 +10746,7 @@ fn walk_indexer(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, S
     Ok(members)
 }
 
-fn walk_method(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, String> {
+fn walk_method(__w: &mut CsWalker, pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, String> {
     let mut mods = mods;
     let mut name = String::new();
     let mut generic_params = Vec::new();
@@ -10614,17 +10778,17 @@ fn walk_method(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, String>
                 generic_params.extend(csharp_single_generic_param_names(p.as_str()));
             }
             Rule::param_list => {
-                let (parsed_params, param_decorators) = walk_params_with_decorators(p)?;
+                let (parsed_params, param_decorators) = walk_params_with_decorators(__w, p)?;
                 params = parsed_params;
                 mods.decorators.extend(param_decorators);
             }
-            Rule::block_statement => body = walk_body(p)?,
+            Rule::block_statement => body = walk_body(__w, p)?,
             Rule::expression_body => {
                 // C# expression-bodied member: `=> expr;` lowers to
                 // `{ return expr; }`. The inner `expression` pair is
                 // the only child of `expression_body`.
                 if let Some(expr_pair) = p.into_inner().next() {
-                    body = vec![walk_expression_body_stmt(expr_pair, true)?];
+                    body = vec![walk_expression_body_stmt(__w, expr_pair, true)?];
                 }
             }
             Rule::method_name => {
@@ -10672,7 +10836,7 @@ fn walk_method(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, String>
     ))))
 }
 
-fn walk_field(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, String> {
+fn walk_field(__w: &mut CsWalker, pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, String> {
     let mut type_hint = None;
     let mut declarators: Vec<VarDeclarator> = Vec::new();
 
@@ -10684,7 +10848,7 @@ fn walk_field(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, Str
             Rule::var_declarator_list => {
                 for vd in p.into_inner() {
                     if vd.as_rule() == Rule::var_declarator {
-                        declarators.push(walk_var_declarator(vd)?);
+                        declarators.push(walk_var_declarator(__w, vd)?);
                     }
                 }
             }
@@ -10713,7 +10877,7 @@ fn walk_field(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, Str
 
 // ── Struct ──────────────────────────────────────────────────────────────────
 
-fn walk_struct_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKind, String> {
+fn walk_struct_decl(__w: &mut CsWalker, pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKind, String> {
     let mut name = String::new();
     let mut interfaces = Vec::new();
     let mut members = Vec::new();
@@ -10730,7 +10894,7 @@ fn walk_struct_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
                 }
             }
             Rule::primary_constructor_params => {
-                let ctor_params = walk_params(p)?;
+                let ctor_params = walk_params(__w, p)?;
                 let mut field_inits = Vec::new();
                 for param in &ctor_params {
                     field_inits.push(Statement::new(StmtKind::Assign {
@@ -10760,7 +10924,7 @@ fn walk_struct_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
             Rule::class_body => {
                 for m in p.into_inner() {
                     if m.as_rule() == Rule::class_member {
-                        if let Ok(member) = walk_class_member(m) {
+                        if let Ok(member) = walk_class_member(__w, m) {
                             members.extend(member);
                         }
                     }
@@ -10877,18 +11041,10 @@ fn walk_struct_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
 
 // ── Interface ───────────────────────────────────────────────────────────────
 
-thread_local! {
-    // Default interface method bodies captured during the walk, keyed by
-    // interface name. Consumed by `inject_interface_defaults` after the module
-    // is assembled — the defaults become ordinary injected class methods, so
-    // `InterfaceMember` stays signatures-only and no shared AST changes.
-    static INTERFACE_DEFAULTS: std::cell::RefCell<std::collections::HashMap<String, Vec<ClassMember>>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
-}
 
 /// If an `interface_member` carries a default body (`T M() => e;` / `{ ... }`),
 /// build it as an ordinary `ClassMember::Method` for injection into implementers.
-fn extract_interface_default_method(member: Pair<Rule>) -> Result<Option<ClassMember>, String> {
+fn extract_interface_default_method(__w: &mut CsWalker, member: Pair<Rule>) -> Result<Option<ClassMember>, String> {
     let mut ret_type = None;
     let mut mname = String::new();
     let mut params = Vec::new();
@@ -10897,13 +11053,13 @@ fn extract_interface_default_method(member: Pair<Rule>) -> Result<Option<ClassMe
         match p.as_rule() {
             Rule::type_name => ret_type = Some(p.as_str().to_string()),
             Rule::ident_name => mname = p.as_str().to_string(),
-            Rule::param_list => params = walk_params(p)?,
+            Rule::param_list => params = walk_params(__w, p)?,
             Rule::expression_body => {
                 if let Some(e) = p.into_inner().next() {
-                    body = Some(vec![walk_expression_body_stmt(e, true)?]);
+                    body = Some(vec![walk_expression_body_stmt(__w, e, true)?]);
                 }
             }
-            Rule::block_statement => body = Some(walk_body(p)?),
+            Rule::block_statement => body = Some(walk_body(__w, p)?),
             _ => {}
         }
     }
@@ -10939,8 +11095,8 @@ fn class_member_method_name(m: &ClassMember) -> Option<String> {
 /// Copy each interface's default methods into implementing classes that don't
 /// already declare them (override wins) — C# 8 default interface methods as
 /// pure walker normalization onto the existing class-method machinery.
-fn inject_interface_defaults(statements: &mut [Statement]) {
-    let defaults = INTERFACE_DEFAULTS.with(|d| d.borrow().clone());
+fn inject_interface_defaults(__w: &mut CsWalker, statements: &mut [Statement]) {
+    let defaults = __w.interface_defaults.clone();
     if defaults.is_empty() {
         return;
     }
@@ -10971,7 +11127,7 @@ fn inject_interface_defaults(statements: &mut [Statement]) {
     }
 }
 
-fn walk_interface_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKind, String> {
+fn walk_interface_decl(__w: &mut CsWalker, pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKind, String> {
     let mut name = String::new();
     let mut parents = Vec::new();
     let mut members = Vec::new();
@@ -10991,16 +11147,16 @@ fn walk_interface_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<St
                 let mut defaults: Vec<ClassMember> = Vec::new();
                 for m in p.into_inner() {
                     if m.as_rule() == Rule::interface_member {
-                        if let Ok(Some(dm)) = extract_interface_default_method(m.clone()) {
+                        if let Ok(Some(dm)) = extract_interface_default_method(__w, m.clone()) {
                             defaults.push(dm);
                         }
-                        if let Ok(member) = walk_interface_member(m) {
+                        if let Ok(member) = walk_interface_member(__w, m) {
                             members.push(member);
                         }
                     }
                 }
                 if !defaults.is_empty() {
-                    INTERFACE_DEFAULTS.with(|d| d.borrow_mut().insert(name.clone(), defaults));
+                    __w.interface_defaults.insert(name.clone(), defaults);
                 }
             }
             _ => {}
@@ -11015,7 +11171,7 @@ fn walk_interface_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<St
     })
 }
 
-fn walk_interface_member(pair: Pair<Rule>) -> Result<InterfaceMember, String> {
+fn walk_interface_member(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<InterfaceMember, String> {
     let mut type_hint = None;
     let mut name = String::new();
     let mut has_params = false;
@@ -11029,13 +11185,13 @@ fn walk_interface_member(pair: Pair<Rule>) -> Result<InterfaceMember, String> {
         match p.as_rule() {
             Rule::class_modifiers => {}
             Rule::interface_operator_declaration => {
-                return walk_interface_operator_member(p);
+                return walk_interface_operator_member(__w, p);
             }
             Rule::type_name => type_hint = Some(p.as_str().to_string()),
             Rule::ident_name => name = p.as_str().to_string(),
             Rule::param_list => {
                 has_params = true;
-                params = walk_params(p)?;
+                params = walk_params(__w, p)?;
             }
             _ => {
                 let s = p.as_str();
@@ -11072,7 +11228,7 @@ fn walk_interface_member(pair: Pair<Rule>) -> Result<InterfaceMember, String> {
     }
 }
 
-fn walk_interface_operator_member(pair: Pair<Rule>) -> Result<InterfaceMember, String> {
+fn walk_interface_operator_member(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<InterfaceMember, String> {
     let mut return_type = None;
     let mut conversion_kind = None;
     let mut symbol = String::new();
@@ -11083,7 +11239,7 @@ fn walk_interface_operator_member(pair: Pair<Rule>) -> Result<InterfaceMember, S
             Rule::type_name => return_type = Some(p.as_str().to_string()),
             Rule::conversion_operator_kind => conversion_kind = Some(p.as_str().to_string()),
             Rule::operator_symbol => symbol = p.as_str().trim().to_string(),
-            Rule::param_list => params = walk_params(p)?,
+            Rule::param_list => params = walk_params(__w, p)?,
             _ => {}
         }
     }
@@ -11104,7 +11260,7 @@ fn walk_interface_operator_member(pair: Pair<Rule>) -> Result<InterfaceMember, S
 
 // ── Enum ────────────────────────────────────────────────────────────────────
 
-fn walk_enum_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKind, String> {
+fn walk_enum_decl(__w: &mut CsWalker, pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKind, String> {
     let mut name = String::new();
     let mut members = Vec::new();
     let is_flags = decorators.iter().any(|attr| {
@@ -11125,7 +11281,7 @@ fn walk_enum_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKin
                         for ep in em.into_inner() {
                             match ep.as_rule() {
                                 Rule::ident_name => en = ep.as_str().to_string(),
-                                _ => val = Some(walk_expression(ep)?),
+                                _ => val = Some(walk_expression(__w, ep)?),
                             }
                         }
                         members.push(EnumMember {
@@ -11142,7 +11298,7 @@ fn walk_enum_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKin
 
     // Record the name so a later `is Color.Green` reads as a constant pattern
     // rather than a type test — see `is_enum_member_path`.
-    DECLARED_ENUMS.with(|enums| enums.borrow_mut().insert(name.clone()));
+    __w.declared_enums.insert(name.clone());
 
     Ok(StmtKind::EnumDecl {
         name,
@@ -11158,7 +11314,7 @@ fn walk_enum_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKin
 
 // ── Record ──────────────────────────────────────────────────────────────────
 
-fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKind, String> {
+fn walk_record_decl(__w: &mut CsWalker, pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKind, String> {
     let mut name = String::new();
     let mut params = Vec::new();
     let mut parents = Vec::new();
@@ -11184,14 +11340,14 @@ fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
                 }
             }
             Rule::ident_name => name = p.as_str().to_string(),
-            Rule::param_list => params = walk_params(p)?,
+            Rule::param_list => params = walk_params(__w, p)?,
             Rule::record_base_clause => {
                 for bp in p.into_inner() {
                     match bp.as_rule() {
                         Rule::type_name => parents.push(bp.as_str().to_string()),
                         Rule::argument_list => {
                             base_args =
-                                Some(walk_arguments(bp)?.into_iter().map(|a| a.value).collect());
+                                Some(walk_arguments(__w, bp)?.into_iter().map(|a| a.value).collect());
                         }
                         _ => {}
                     }
@@ -11200,7 +11356,7 @@ fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
             Rule::class_body => {
                 for m in p.into_inner() {
                     if m.as_rule() == Rule::class_member {
-                        if let Ok(member) = walk_class_member(m) {
+                        if let Ok(member) = walk_class_member(__w, m) {
                             members.extend(member);
                         }
                     }
@@ -11520,7 +11676,7 @@ fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
 
 // ── Delegate ────────────────────────────────────────────────────────────────
 
-fn walk_delegate_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_delegate_decl(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut name = String::new();
     let mut return_type = None;
     let mut params = Vec::new();
@@ -11530,7 +11686,7 @@ fn walk_delegate_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
             Rule::class_modifiers => {}
             Rule::type_name => return_type = Some(p.as_str().to_string()),
             Rule::ident_name => name = p.as_str().to_string(),
-            Rule::param_list => params = walk_params(p)?,
+            Rule::param_list => params = walk_params(__w, p)?,
             _ => {}
         }
     }
@@ -11546,16 +11702,16 @@ fn walk_delegate_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
 // ── Control flow ────────────────────────────────────────────────────────────
 
-fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_if(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner = pair.into_inner();
     let cond_pair = inner.next().ok_or("if: no cond")?;
-    let pattern_binding = extract_if_is_pattern_binding(cond_pair.clone())?;
-    let cond = if let Some(scoped_cond) = lower_if_pattern_condition(cond_pair.clone())? {
+    let pattern_binding = extract_if_is_pattern_binding(__w, cond_pair.clone())?;
+    let cond = if let Some(scoped_cond) = lower_if_pattern_condition(__w, cond_pair.clone())? {
         scoped_cond
     } else {
-        walk_expression(cond_pair)?
+        walk_expression(__w, cond_pair)?
     };
-    let mut then_body = vec![walk_statement(inner.next().ok_or("if: no body")?)?];
+    let mut then_body = vec![walk_statement(__w, inner.next().ok_or("if: no body")?)?];
     if let Some(binding_stmt) = pattern_binding {
         then_body.insert(0, binding_stmt);
     }
@@ -11567,13 +11723,13 @@ fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
             Rule::else_if_clause => {
                 let mut eip = p.into_inner();
                 let cond_pair = eip.next().ok_or("elif: no cond")?;
-                let pattern_binding = extract_if_is_pattern_binding(cond_pair.clone())?;
-                let ec = if let Some(scoped_cond) = lower_if_pattern_condition(cond_pair.clone())? {
+                let pattern_binding = extract_if_is_pattern_binding(__w, cond_pair.clone())?;
+                let ec = if let Some(scoped_cond) = lower_if_pattern_condition(__w, cond_pair.clone())? {
                     scoped_cond
                 } else {
-                    walk_expression(cond_pair)?
+                    walk_expression(__w, cond_pair)?
                 };
-                let mut eb = vec![walk_statement(eip.next().ok_or("elif: no body")?)?];
+                let mut eb = vec![walk_statement(__w, eip.next().ok_or("elif: no body")?)?];
                 if let Some(binding_stmt) = pattern_binding {
                     eb.insert(0, binding_stmt);
                 }
@@ -11581,7 +11737,7 @@ fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
             }
             Rule::else_clause => {
                 let body = p.into_inner().next().ok_or("else: no body")?;
-                else_body = Some(vec![walk_statement(body)?]);
+                else_body = Some(vec![walk_statement(__w, body)?]);
             }
             _ => {}
         }
@@ -11595,7 +11751,7 @@ fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
     })
 }
 
-fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_for(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut init = None;
     let mut cond = None;
     let mut update = None;
@@ -11607,22 +11763,22 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 let inner = p.into_inner().next().ok_or("Empty for init")?;
                 match inner.as_rule() {
                     Rule::local_var_declaration_no_semi => {
-                        init = Some(Box::new(Statement::new(walk_local_var(inner)?)));
+                        init = Some(Box::new(Statement::new(walk_local_var(__w, inner)?)));
                     }
                     Rule::expression_list => {
                         let first_expr = inner.into_inner().next().ok_or("Empty expr list")?;
-                        let expr = walk_expression(first_expr)?;
+                        let expr = walk_expression(__w, first_expr)?;
                         init = Some(Box::new(Statement::new(StmtKind::Expr(expr))));
                     }
                     _ => {
-                        let expr = walk_expression(inner)?;
+                        let expr = walk_expression(__w, inner)?;
                         init = Some(Box::new(Statement::new(StmtKind::Expr(expr))));
                     }
                 }
             }
             Rule::expression => {
                 if cond.is_none() {
-                    cond = Some(walk_expression(p)?);
+                    cond = Some(walk_expression(__w, p)?);
                 }
             }
             Rule::for_update => {
@@ -11631,21 +11787,21 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 if inner.as_rule() == Rule::expression_list {
                     let mut exprs: Vec<Pair<Rule>> = inner.into_inner().collect();
                     if exprs.len() == 1 {
-                        update = Some(walk_expression(exprs.remove(0))?);
+                        update = Some(walk_expression(__w, exprs.remove(0))?);
                     } else {
                         // Multiple update expressions → sequence
                         let seq: Vec<Expression> = exprs
                             .into_iter()
-                            .map(walk_expression)
+                            .map(|__x| walk_expression(__w, __x))
                             .collect::<Result<Vec<_>, _>>()?;
                         update = Some(Expression::new(ExprKind::Sequence(seq)));
                     }
                 } else {
-                    update = Some(walk_expression(inner)?);
+                    update = Some(walk_expression(__w, inner)?);
                 }
             }
             _ => {
-                if let Ok(stmt) = walk_statement(p) {
+                if let Ok(stmt) = walk_statement(__w, p) {
                     body = vec![stmt];
                 }
             }
@@ -11660,7 +11816,7 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
     })
 }
 
-fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_foreach(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let foreach_src = pair.as_str().to_string();
     let hidden_suffix = pair.as_span().start();
     let mut var = String::new();
@@ -11695,12 +11851,12 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
             Rule::in_kw => {} // skip keyword
             _ => {
                 if body.is_empty() {
-                    if let Ok(expr) = walk_expression(p.clone()) {
+                    if let Ok(expr) = walk_expression(__w, p.clone()) {
                         iter = expr;
-                    } else if let Ok(stmt) = walk_statement(p) {
+                    } else if let Ok(stmt) = walk_statement(__w, p) {
                         body = vec![stmt];
                     }
-                } else if let Ok(stmt) = walk_statement(p) {
+                } else if let Ok(stmt) = walk_statement(__w, p) {
                     body = vec![stmt];
                 }
             }
@@ -11824,10 +11980,10 @@ fn walk_labeled(pair: Pair<Rule>) -> Result<StmtKind, String> {
     Ok(StmtKind::Label(label))
 }
 
-fn walk_while(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_while(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner = pair.into_inner();
-    let cond = walk_expression(inner.next().ok_or("while: no cond")?)?;
-    let body = vec![walk_statement(inner.next().ok_or("while: no body")?)?];
+    let cond = walk_expression(__w, inner.next().ok_or("while: no cond")?)?;
+    let body = vec![walk_statement(__w, inner.next().ok_or("while: no body")?)?];
     Ok(StmtKind::While {
         cond,
         body,
@@ -11835,10 +11991,10 @@ fn walk_while(pair: Pair<Rule>) -> Result<StmtKind, String> {
     })
 }
 
-fn walk_do_while(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_do_while(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner = pair.into_inner();
-    let body = vec![walk_statement(inner.next().ok_or("do: no body")?)?];
-    let cond = walk_expression(inner.next().ok_or("do: no cond")?)?;
+    let body = vec![walk_statement(__w, inner.next().ok_or("do: no body")?)?];
+    let cond = walk_expression(__w, inner.next().ok_or("do: no cond")?)?;
     Ok(StmtKind::DoWhile {
         body,
         cond,
@@ -11846,7 +12002,7 @@ fn walk_do_while(pair: Pair<Rule>) -> Result<StmtKind, String> {
     })
 }
 
-fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_switch(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     #[derive(Clone)]
     enum SwitchLabelInfo<'i> {
         Default,
@@ -11858,7 +12014,7 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
     }
 
     let mut inner = pair.into_inner();
-    let expr = walk_expression(inner.next().ok_or("switch: no expr")?)?;
+    let expr = walk_expression(__w, inner.next().ok_or("switch: no expr")?)?;
     let mut sections: Vec<(Vec<SwitchLabelInfo<'_>>, Vec<Statement>)> = Vec::new();
     let mut has_pattern_labels = false;
 
@@ -11881,14 +12037,14 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
                                         .next()
                                         .ok_or("switch case missing value")?;
                                     labels
-                                        .push(SwitchLabelInfo::Value(walk_expression(expr_pair)?));
+                                        .push(SwitchLabelInfo::Value(walk_expression(__w, expr_pair)?));
                                 }
                                 Rule::case_pattern_label => {
                                     let mut label_parts = label_inner.into_inner();
                                     let pattern =
                                         label_parts.next().ok_or("switch case missing pattern")?;
                                     let guard =
-                                        label_parts.next().map(walk_expression).transpose()?;
+                                        label_parts.next().map(|__x| walk_expression(__w, __x)).transpose()?;
                                     labels.push(SwitchLabelInfo::Pattern { pattern, guard });
                                     has_pattern_labels = true;
                                 }
@@ -11897,7 +12053,7 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
                         }
                     }
                     _ => {
-                        if let Ok(stmt) = walk_statement(sp) {
+                        if let Ok(stmt) = walk_statement(__w, sp) {
                             stmts.push(stmt);
                         }
                     }
@@ -11941,7 +12097,7 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     }
                     SwitchLabelInfo::Pattern { pattern, guard } => {
                         let mut cond =
-                            build_general_pattern_cond(subject_expr.clone(), pattern.clone())?;
+                            build_general_pattern_cond(__w, subject_expr.clone(), pattern.clone())?;
                         let binding = build_general_pattern_binding(subject_expr.clone(), pattern)?;
                         let mut body = stripped_body.clone();
                         let mark_matched_stmt =
@@ -12068,18 +12224,18 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
     })
 }
 
-fn walk_return(pair: Pair<Rule>) -> Result<StmtKind, String> {
-    let expr = pair.into_inner().next().map(walk_expression).transpose()?;
+fn walk_return(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
+    let expr = pair.into_inner().next().map(|__x| walk_expression(__w, __x)).transpose()?;
     Ok(StmtKind::Return(expr))
 }
 
 /// C# `yield return expr;` → `StmtKind::Expr(Yield(expr))`
 /// `yield break;`          → `StmtKind::Return(None)` (ends the coroutine)
-fn walk_yield_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_yield_stmt(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let s = pair.as_str();
     let inner = pair.into_inner().next();
     if s.trim_start().starts_with("yield") && s.contains("return") {
-        let expr = inner.map(walk_expression).transpose()?;
+        let expr = inner.map(|__x| walk_expression(__w, __x)).transpose()?;
         let yield_expr = Expression::new(ExprKind::Yield(expr.map(Box::new)));
         Ok(StmtKind::Expr(yield_expr))
     } else {
@@ -12156,19 +12312,19 @@ fn body_has_yield(body: &[Statement]) -> bool {
     false
 }
 
-fn walk_throw(pair: Pair<Rule>) -> Result<StmtKind, String> {
-    let expr = pair.into_inner().next().map(walk_expression).transpose()?;
+fn walk_throw(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
+    let expr = pair.into_inner().next().map(|__x| walk_expression(__w, __x)).transpose()?;
     Ok(StmtKind::Throw { expr, cause: None })
 }
 
-fn walk_try(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_try(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut body = Vec::new();
     let mut catches = Vec::new();
     let mut finally = None;
 
     for p in pair.into_inner() {
         match p.as_rule() {
-            Rule::block_statement => body = walk_body(p)?,
+            Rule::block_statement => body = walk_body(__w, p)?,
             Rule::catch_clause => {
                 let mut types = Vec::new();
                 let mut var_name = None;
@@ -12192,10 +12348,10 @@ fn walk_try(pair: Pair<Rule>) -> Result<StmtKind, String> {
                         Rule::catch_when_filter => {
                             // Inner is just an `expression`.
                             if let Some(inner) = cp.into_inner().next() {
-                                when_filter = Some(walk_expression(inner)?);
+                                when_filter = Some(walk_expression(__w, inner)?);
                             }
                         }
-                        Rule::block_statement => catch_body = walk_body(cp)?,
+                        Rule::block_statement => catch_body = walk_body(__w, cp)?,
                         _ => {}
                     }
                 }
@@ -12230,7 +12386,7 @@ fn walk_try(pair: Pair<Rule>) -> Result<StmtKind, String> {
             Rule::finally_clause => {
                 for fp in p.into_inner() {
                     if fp.as_rule() == Rule::block_statement {
-                        finally = Some(walk_body(fp)?);
+                        finally = Some(walk_body(__w, fp)?);
                     }
                 }
             }
@@ -12246,7 +12402,7 @@ fn walk_try(pair: Pair<Rule>) -> Result<StmtKind, String> {
     })
 }
 
-fn walk_using_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_using_stmt(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut var = String::new();
     let mut resource = Expression::null();
     let mut body = Vec::new();
@@ -12257,12 +12413,12 @@ fn walk_using_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
             Rule::ident_name => var = p.as_str().to_string(),
             _ => {
                 if body.is_empty() {
-                    if let Ok(expr) = walk_expression(p.clone()) {
+                    if let Ok(expr) = walk_expression(__w, p.clone()) {
                         resource = expr;
-                    } else if let Ok(stmt) = walk_statement(p) {
+                    } else if let Ok(stmt) = walk_statement(__w, p) {
                         body = vec![stmt];
                     }
-                } else if let Ok(stmt) = walk_statement(p) {
+                } else if let Ok(stmt) = walk_statement(__w, p) {
                     body = vec![stmt];
                 }
             }
@@ -12276,7 +12432,7 @@ fn walk_using_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
     })
 }
 
-fn walk_using_declaration(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_using_declaration(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut var = String::new();
     let mut resource = Expression::null();
 
@@ -12284,7 +12440,7 @@ fn walk_using_declaration(pair: Pair<Rule>) -> Result<StmtKind, String> {
         match p.as_rule() {
             Rule::var_kw | Rule::type_name => {}
             Rule::ident_name => var = p.as_str().to_string(),
-            Rule::expression => resource = walk_expression(p)?,
+            Rule::expression => resource = walk_expression(__w, p)?,
             _ => {}
         }
     }
@@ -12296,24 +12452,24 @@ fn walk_using_declaration(pair: Pair<Rule>) -> Result<StmtKind, String> {
     })
 }
 
-fn walk_lock(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_lock(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner = pair.into_inner();
-    let expr = walk_expression(inner.next().ok_or("lock: no expr")?)?;
-    let body = vec![walk_statement(inner.next().ok_or("lock: no body")?)?];
+    let expr = walk_expression(__w, inner.next().ok_or("lock: no expr")?)?;
+    let body = vec![walk_statement(__w, inner.next().ok_or("lock: no body")?)?];
     Ok(StmtKind::Lock { expr, body })
 }
 
-fn walk_fixed_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_fixed_statement(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut decl_stmt = None;
     let mut body_stmt = None;
 
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::local_var_declaration_no_semi => {
-                decl_stmt = Some(Statement::new(walk_local_var(p)?));
+                decl_stmt = Some(Statement::new(walk_local_var(__w, p)?));
             }
             _ => {
-                body_stmt = Some(walk_statement(p)?);
+                body_stmt = Some(walk_statement(__w, p)?);
             }
         }
     }
@@ -12330,11 +12486,11 @@ fn walk_fixed_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
 // ── Parameters ──────────────────────────────────────────────────────────────
 
-fn walk_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
-    Ok(walk_params_with_decorators(pair)?.0)
+fn walk_params(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<Vec<Param>, String> {
+    Ok(walk_params_with_decorators(__w, pair)?.0)
 }
 
-fn walk_params_with_decorators(pair: Pair<Rule>) -> Result<(Vec<Param>, Vec<Expression>), String> {
+fn walk_params_with_decorators(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<(Vec<Param>, Vec<Expression>), String> {
     let mut params = Vec::new();
     let mut decorators = Vec::new();
 
@@ -12343,7 +12499,7 @@ fn walk_params_with_decorators(pair: Pair<Rule>) -> Result<(Vec<Param>, Vec<Expr
         .filter(|p| p.as_rule() == Rule::param)
         .enumerate()
     {
-        let (param, param_decorators) = walk_param_with_decorators(param_pair)?;
+        let (param, param_decorators) = walk_param_with_decorators(__w, param_pair)?;
         decorators.extend(
             param_decorators
                 .into_iter()
@@ -12365,7 +12521,7 @@ fn param_attribute_carrier(index: usize, decorator: Expression) -> Expression {
     })
 }
 
-fn walk_param_with_decorators(pair: Pair<Rule>) -> Result<(Param, Vec<Expression>), String> {
+fn walk_param_with_decorators(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<(Param, Vec<Expression>), String> {
     let mut name = String::new();
     let mut type_hint = None;
     let mut default = None;
@@ -12375,7 +12531,7 @@ fn walk_param_with_decorators(pair: Pair<Rule>) -> Result<(Param, Vec<Expression
 
     for p in pair.into_inner() {
         match p.as_rule() {
-            Rule::attribute_list => decorators.extend(parse_attribute_specs(p.as_str())),
+            Rule::attribute_list => decorators.extend(parse_attribute_specs(__w, p.as_str())),
             Rule::param_modifier => {
                 match p.as_str() {
                     // `ref` is true aliasing: the callee writes the caller's
@@ -12403,7 +12559,7 @@ fn walk_param_with_decorators(pair: Pair<Rule>) -> Result<(Param, Vec<Expression
             }
             Rule::type_name => type_hint = Some(p.as_str().trim().to_string()),
             Rule::ident_name => name = p.as_str().to_string(),
-            _ => default = Some(walk_expression(p)?),
+            _ => default = Some(walk_expression(__w, p)?),
         }
     }
     let is_nullable = type_hint
@@ -12434,7 +12590,7 @@ fn walk_param_with_decorators(pair: Pair<Rule>) -> Result<(Param, Vec<Expression
 /// here — the quirk stays in the language layer. `as_return` picks the
 /// value-position lowering (`return expr;`) vs the void one (`expr;`); a throw
 /// is a throw either way.
-fn walk_expression_body_stmt(inner: Pair<Rule>, as_return: bool) -> Result<Statement, String> {
+fn walk_expression_body_stmt(__w: &mut CsWalker, inner: Pair<Rule>, as_return: bool) -> Result<Statement, String> {
     let span = to_span(&inner);
     if inner.as_rule() == Rule::throw_expression {
         let value = inner
@@ -12443,13 +12599,13 @@ fn walk_expression_body_stmt(inner: Pair<Rule>, as_return: bool) -> Result<State
             .ok_or("throw expression without an operand")?;
         return Ok(Statement::with_span(
             StmtKind::Throw {
-                expr: Some(walk_expression(value)?),
+                expr: Some(walk_expression(__w, value)?),
                 cause: None,
             },
             span,
         ));
     }
-    let expr = walk_expression(inner)?;
+    let expr = walk_expression(__w, inner)?;
     Ok(Statement::with_span(
         if as_return {
             StmtKind::Return(Some(expr))
@@ -12460,9 +12616,9 @@ fn walk_expression_body_stmt(inner: Pair<Rule>, as_return: bool) -> Result<State
     ))
 }
 
-fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
+fn walk_expression(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<Expression, String> {
     let span = to_span(&pair);
-    let kind = walk_expr_kind(pair)?;
+    let kind = walk_expr_kind(__w, pair)?;
     Ok(Expression::with_span(kind, span))
 }
 
@@ -12554,13 +12710,13 @@ fn query_object_from_bindings(
     Expression::new(ExprKind::Object(props))
 }
 
-fn parse_csharp_from_clause(pair: Pair<Rule>) -> Result<(String, Expression), String> {
+fn parse_csharp_from_clause(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<(String, Expression), String> {
     let mut range_var = None;
     let mut source_expr = None;
     for child in pair.into_inner() {
         match child.as_rule() {
             Rule::ident_name if range_var.is_none() => range_var = Some(child.as_str().to_string()),
-            Rule::expression => source_expr = Some(walk_expression(child)?),
+            Rule::expression => source_expr = Some(walk_expression(__w, child)?),
             _ => {}
         }
     }
@@ -12570,7 +12726,7 @@ fn parse_csharp_from_clause(pair: Pair<Rule>) -> Result<(String, Expression), St
     ))
 }
 
-fn parse_csharp_join_clause(
+fn parse_csharp_join_clause(__w: &mut CsWalker, 
     pair: Pair<Rule>,
 ) -> Result<(String, Expression, Expression, Expression), String> {
     let mut join_var = None;
@@ -12578,7 +12734,7 @@ fn parse_csharp_join_clause(
     for child in pair.into_inner() {
         match child.as_rule() {
             Rule::ident_name if join_var.is_none() => join_var = Some(child.as_str().to_string()),
-            Rule::expression => exprs.push(walk_expression(child)?),
+            Rule::expression => exprs.push(walk_expression(__w, child)?),
             _ => {}
         }
     }
@@ -12593,13 +12749,13 @@ fn parse_csharp_join_clause(
     ))
 }
 
-fn parse_csharp_let_clause(pair: Pair<Rule>) -> Result<(String, Expression), String> {
+fn parse_csharp_let_clause(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<(String, Expression), String> {
     let mut name = None;
     let mut value = None;
     for child in pair.into_inner() {
         match child.as_rule() {
             Rule::ident_name if name.is_none() => name = Some(child.as_str().to_string()),
-            Rule::expression => value = Some(walk_expression(child)?),
+            Rule::expression => value = Some(walk_expression(__w, child)?),
             _ => {}
         }
     }
@@ -12609,12 +12765,12 @@ fn parse_csharp_let_clause(pair: Pair<Rule>) -> Result<(String, Expression), Str
     ))
 }
 
-fn parse_csharp_ordering(pair: Pair<Rule>) -> Result<(Expression, bool), String> {
+fn parse_csharp_ordering(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<(Expression, bool), String> {
     let mut key_expr = None;
     let mut descending = false;
     for child in pair.into_inner() {
         match child.as_rule() {
-            Rule::expression => key_expr = Some(walk_expression(child)?),
+            Rule::expression => key_expr = Some(walk_expression(__w, child)?),
             Rule::q_order_direction => {
                 descending = child.as_str().eq_ignore_ascii_case("descending")
             }
@@ -12631,7 +12787,7 @@ fn is_query_item_expr(expr: &Expression, item_param: &str) -> bool {
     matches!(&expr.kind, ExprKind::Ident(name) if name == item_param)
 }
 
-fn lower_csharp_query_body(pair: Pair<Rule>, state: QueryState) -> Result<Expression, String> {
+fn lower_csharp_query_body(__w: &mut CsWalker, pair: Pair<Rule>, state: QueryState) -> Result<Expression, String> {
     let mut state = state;
     let mut terminal: Option<Pair<Rule>> = None;
     let mut continuation: Option<Pair<Rule>> = None;
@@ -12646,7 +12802,7 @@ fn lower_csharp_query_body(pair: Pair<Rule>, state: QueryState) -> Result<Expres
                             .into_inner()
                             .next()
                             .ok_or("where clause missing predicate")?;
-                        let raw = walk_expression(predicate)?;
+                        let raw = walk_expression(__w, predicate)?;
                         let rewritten = rewrite_query_expr(&raw, &state.bindings);
                         state.result_expr = query_call(
                             state.result_expr,
@@ -12657,7 +12813,7 @@ fn lower_csharp_query_body(pair: Pair<Rule>, state: QueryState) -> Result<Expres
                     Rule::q_orderby_clause => {
                         let orderings: Vec<Pair<Rule>> = clause.into_inner().collect();
                         for (index, ordering) in orderings.into_iter().enumerate() {
-                            let (raw_key, descending) = parse_csharp_ordering(ordering)?;
+                            let (raw_key, descending) = parse_csharp_ordering(__w, ordering)?;
                             let rewritten = rewrite_query_expr(&raw_key, &state.bindings);
                             let method = if index == 0 {
                                 if descending {
@@ -12678,7 +12834,7 @@ fn lower_csharp_query_body(pair: Pair<Rule>, state: QueryState) -> Result<Expres
                         }
                     }
                     Rule::q_let_clause => {
-                        let (let_name, raw_value) = parse_csharp_let_clause(clause)?;
+                        let (let_name, raw_value) = parse_csharp_let_clause(__w, clause)?;
                         let rewritten_value = rewrite_query_expr(&raw_value, &state.bindings);
                         let projection = query_object_from_bindings(
                             &state.bindings,
@@ -12695,7 +12851,7 @@ fn lower_csharp_query_body(pair: Pair<Rule>, state: QueryState) -> Result<Expres
                         state.bindings = query_bindings_for_item(&state.item_param, &names);
                     }
                     Rule::q_from_clause => {
-                        let (range_var, source_expr) = parse_csharp_from_clause(clause)?;
+                        let (range_var, source_expr) = parse_csharp_from_clause(__w, clause)?;
                         let outer_item_param = state.item_param.clone();
                         let visible_bindings = state.bindings.clone();
                         let rewritten_source = rewrite_query_expr(&source_expr, &visible_bindings);
@@ -12720,7 +12876,7 @@ fn lower_csharp_query_body(pair: Pair<Rule>, state: QueryState) -> Result<Expres
                     }
                     Rule::q_join_clause => {
                         let (join_var, join_source, left_key, right_key) =
-                            parse_csharp_join_clause(clause)?;
+                            parse_csharp_join_clause(__w, clause)?;
                         let outer_item_param = state.item_param.clone();
                         let visible_bindings = state.bindings.clone();
                         let rewritten_source = rewrite_query_expr(&join_source, &visible_bindings);
@@ -12781,7 +12937,7 @@ fn lower_csharp_query_body(pair: Pair<Rule>, state: QueryState) -> Result<Expres
                 .into_inner()
                 .next()
                 .ok_or("select clause missing projection")?;
-            let raw = walk_expression(selection)?;
+            let raw = walk_expression(__w, selection)?;
             let rewritten = rewrite_query_expr(&raw, &state.bindings);
             query_call(
                 state.result_expr,
@@ -12791,8 +12947,8 @@ fn lower_csharp_query_body(pair: Pair<Rule>, state: QueryState) -> Result<Expres
         }
         Rule::q_group_clause => {
             let mut exprs = terminal_expr.into_inner();
-            let group_expr = walk_expression(exprs.next().ok_or("group clause missing element")?)?;
-            let key_expr = walk_expression(exprs.next().ok_or("group clause missing key")?)?;
+            let group_expr = walk_expression(__w, exprs.next().ok_or("group clause missing element")?)?;
+            let key_expr = walk_expression(__w, exprs.next().ok_or("group clause missing key")?)?;
             let rewritten_group = rewrite_query_expr(&group_expr, &state.bindings);
             let rewritten_key = rewrite_query_expr(&key_expr, &state.bindings);
             let groups_current_item = is_query_item_expr(&rewritten_group, &state.item_param);
@@ -12834,7 +12990,7 @@ fn lower_csharp_query_body(pair: Pair<Rule>, state: QueryState) -> Result<Expres
         let body = inner
             .next()
             .ok_or("query continuation missing query body")?;
-        return lower_csharp_query_body(
+        return lower_csharp_query_body(__w, 
             body,
             QueryState {
                 result_expr: result_after_terminal,
@@ -12847,13 +13003,13 @@ fn lower_csharp_query_body(pair: Pair<Rule>, state: QueryState) -> Result<Expres
     Ok(result_after_terminal)
 }
 
-fn parse_csharp_query_expression(pair: Pair<Rule>) -> Result<Expression, String> {
+fn parse_csharp_query_expression(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<Expression, String> {
     let span = to_span(&pair);
     let mut inner = pair.into_inner();
     let from_clause = inner.next().ok_or("query expression missing from clause")?;
     let query_body = inner.next().ok_or("query expression missing query body")?;
-    let (range_var, source_expr) = parse_csharp_from_clause(from_clause)?;
-    let lowered = lower_csharp_query_body(
+    let (range_var, source_expr) = parse_csharp_from_clause(__w, from_clause)?;
+    let lowered = lower_csharp_query_body(__w, 
         query_body,
         QueryState {
             result_expr: source_expr,
@@ -12864,7 +13020,7 @@ fn parse_csharp_query_expression(pair: Pair<Rule>) -> Result<Expression, String>
     Ok(Expression::with_span(lowered.kind, span))
 }
 
-fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
+fn walk_expr_kind(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, String> {
     match pair.as_rule() {
         // Literals
         Rule::numeric_literal => {
@@ -12945,7 +13101,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         )?))),
         Rule::raw_interpolated_string => {
             let inner = unquote_raw_interpolated_string(pair.as_str())?;
-            let parts = parse_interpolated_parts(&inner)?;
+            let parts = parse_interpolated_parts(__w, &inner)?;
             Ok(ExprKind::Interpolation(parts))
         }
         Rule::verbatim_string => {
@@ -13010,20 +13166,20 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         // Expression wrapper
         Rule::expression => {
             let inner = pair.into_inner().next().ok_or("Empty expression")?;
-            walk_expr_kind(inner)
+            walk_expr_kind(__w, inner)
         }
 
-        Rule::query_expression => Ok(parse_csharp_query_expression(pair)?.kind),
+        Rule::query_expression => Ok(parse_csharp_query_expression(__w, pair)?.kind),
 
         // Assignment
         Rule::assignment_expression => {
             let mut inner: Vec<Pair<Rule>> = pair.into_inner().collect();
             if inner.len() == 1 {
-                walk_expr_kind(inner.remove(0))
+                walk_expr_kind(__w, inner.remove(0))
             } else if inner.len() == 3 {
-                let left = walk_expression(inner.remove(0))?;
+                let left = walk_expression(__w, inner.remove(0))?;
                 let op_str = inner.remove(0).as_str();
-                let right = walk_expression(inner.remove(0))?;
+                let right = walk_expression(__w, inner.remove(0))?;
                 if op_str == "=" {
                     Ok(ExprKind::Assign {
                         target: Box::new(strip_object_get_lvalue(left)),
@@ -13054,7 +13210,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     })
                 }
             } else {
-                walk_expr_kind(inner.remove(0))
+                walk_expr_kind(__w, inner.remove(0))
             }
         }
 
@@ -13079,12 +13235,12 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             is_nullable: false,
                         }]
                     }
-                    Rule::param_list => params = walk_params(p)?,
+                    Rule::param_list => params = walk_params(__w, p)?,
                     Rule::lambda_body => {
                         let inner = p.into_inner().next().ok_or("Empty lambda body")?;
                         body = match inner.as_rule() {
-                            Rule::block_statement => LambdaBody::Block(walk_body(inner)?),
-                            _ => LambdaBody::Expr(Box::new(walk_expression(inner)?)),
+                            Rule::block_statement => LambdaBody::Block(walk_body(__w, inner)?),
+                            _ => LambdaBody::Expr(Box::new(walk_expression(__w, inner)?)),
                         };
                     }
                     _ => {}
@@ -13103,13 +13259,13 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         Rule::conditional_expression => {
             let mut inner: Vec<Pair<Rule>> = pair.into_inner().collect();
             if inner.len() == 1 {
-                walk_expr_kind(inner.remove(0))
+                walk_expr_kind(__w, inner.remove(0))
             } else if inner.len() == 3 {
                 let cond_pair = inner.remove(0);
-                let cond = walk_expression(cond_pair.clone())?;
-                let mut then = walk_expression(inner.remove(0))?;
-                let else_ = walk_expression(inner.remove(0))?;
-                if let Some(binding_stmt) = extract_if_is_pattern_binding(cond_pair)? {
+                let cond = walk_expression(__w, cond_pair.clone())?;
+                let mut then = walk_expression(__w, inner.remove(0))?;
+                let else_ = walk_expression(__w, inner.remove(0))?;
+                if let Some(binding_stmt) = extract_if_is_pattern_binding(__w, cond_pair)? {
                     then = build_scoped_then_expr(binding_stmt, then);
                 }
                 Ok(ExprKind::Ternary {
@@ -13118,30 +13274,30 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     else_: Box::new(else_),
                 })
             } else {
-                walk_expr_kind(inner.remove(0))
+                walk_expr_kind(__w, inner.remove(0))
             }
         }
 
         // Binary chains
-        Rule::null_coalesce_expr => walk_binary_chain(pair),
-        Rule::logical_or | Rule::logical_and => walk_binary_chain(pair),
-        Rule::bitwise_or | Rule::bitwise_xor | Rule::bitwise_and => walk_binary_chain(pair),
-        Rule::equality => walk_binary_chain(pair),
-        Rule::relational => walk_relational(pair),
-        Rule::additive | Rule::multiplicative => walk_binary_chain(pair),
+        Rule::null_coalesce_expr => walk_binary_chain(__w, pair),
+        Rule::logical_or | Rule::logical_and => walk_binary_chain(__w, pair),
+        Rule::bitwise_or | Rule::bitwise_xor | Rule::bitwise_and => walk_binary_chain(__w, pair),
+        Rule::equality => walk_binary_chain(__w, pair),
+        Rule::relational => walk_relational(__w, pair),
+        Rule::additive | Rule::multiplicative => walk_binary_chain(__w, pair),
 
         // Unary
         Rule::unary => {
             let mut inner = pair.into_inner();
             let first = inner.next().ok_or("Empty unary")?;
             if first.as_rule() == Rule::postfix {
-                return walk_expr_kind(first);
+                return walk_expr_kind(__w, first);
             }
             if first.as_rule() == Rule::cast_expression {
-                return walk_expr_kind(first);
+                return walk_expr_kind(__w, first);
             }
             let op_str = first.as_str().trim();
-            let operand = walk_expression(inner.next().ok_or("Missing unary operand")?)?;
+            let operand = walk_expression(__w, inner.next().ok_or("Missing unary operand")?)?;
             if op_str.starts_with("await") {
                 return Ok(ExprKind::Await(Box::new(operand)));
             }
@@ -13173,7 +13329,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             let cast_type_pair = inner.remove(0);
             let is_array_cast = cast_type_pair.as_str().contains('[');
             let type_name = normalize_runtime_type_name(cast_type_pair.as_str());
-            let operand = walk_expression(inner.remove(0))?;
+            let operand = walk_expression(__w, inner.remove(0))?;
             // `(T[])expr.Clone()` — `Array.Clone` is a shallow copy. A
             // class-typed cast around `.Clone()` is a user ICloneable call and
             // is left untouched; only an array-typed cast selects the array
@@ -13192,7 +13348,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         // Postfix
         Rule::postfix => {
             let mut inner: Vec<Pair<Rule>> = pair.into_inner().collect();
-            let base = walk_expression(inner.remove(0))?;
+            let base = walk_expression(__w, inner.remove(0))?;
             let has_postfix = inner.iter().any(|p| p.as_rule() == Rule::postfix_op);
             if !has_postfix {
                 return Ok(base.kind);
@@ -13213,16 +13369,16 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         }
 
         // Call / member / index chain
-        Rule::call_expression => walk_call_chain(pair),
+        Rule::call_expression => walk_call_chain(__w, pair),
 
         // New expression
-        Rule::new_expression => walk_new_expr(pair),
-        Rule::stackalloc_expression => walk_stackalloc_expr(pair),
+        Rule::new_expression => walk_new_expr(__w, pair),
+        Rule::stackalloc_expression => walk_stackalloc_expr(__w, pair),
 
         // Primary
         Rule::primary => {
             let inner = pair.into_inner().next().ok_or("Empty primary")?;
-            walk_expr_kind(inner)
+            walk_expr_kind(__w, inner)
         }
 
         Rule::collection_expression => {
@@ -13230,7 +13386,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             let elements = pair
                 .into_inner()
                 .filter(|p| p.as_rule() == Rule::collection_expression_element)
-                .map(walk_collection_expression_element)
+                .map(|__x| walk_collection_expression_element(__w, __x))
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(Expression::with_span(ExprKind::Array(elements), span).kind)
         }
@@ -13282,7 +13438,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 .into_inner()
                 .find(|p| matches!(p.as_rule(), Rule::expression))
                 .ok_or("Empty checked expression")?;
-            walk_expr_kind(inner)
+            walk_expr_kind(__w, inner)
         }
 
         // Interpolated string — parsed atomically, split manually
@@ -13295,7 +13451,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 2
             };
             let inner = &s[prefix_len..s.len() - 1];
-            let parts = parse_interpolated_parts(inner)?;
+            let parts = parse_interpolated_parts(__w, inner)?;
             Ok(ExprKind::Interpolation(parts))
         }
 
@@ -13311,7 +13467,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         // Passthrough wrappers
         Rule::call_chain => {
             let inner = pair.into_inner().next().ok_or("Empty wrapper")?;
-            walk_expr_kind(inner)
+            walk_expr_kind(__w, inner)
         }
 
         // C# tuple literal: (1, "x", true) or named (Name: "Alice", Age: 30).
@@ -13330,10 +13486,10 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     has_names = true;
                     parsed.push((
                         Some(inner[0].as_str().to_string()),
-                        walk_expression(inner[1].clone())?,
+                        walk_expression(__w, inner[1].clone())?,
                     ));
                 } else if let Some(p) = inner.into_iter().next() {
-                    parsed.push((None, walk_expression(p)?));
+                    parsed.push((None, walk_expression(__w, p)?));
                 }
             }
             if has_names {
@@ -13354,13 +13510,13 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
 // ── Binary chain walker ─────────────────────────────────────────────────────
 
 /// Walk relational expression: additive ~ (type_test | binary_relational)*
-fn walk_relational(pair: Pair<Rule>) -> Result<ExprKind, String> {
+fn walk_relational(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, String> {
     let mut inner: Vec<Pair<Rule>> = pair.into_inner().collect();
     if inner.len() == 1 {
-        return walk_expr_kind(inner.remove(0));
+        return walk_expr_kind(__w, inner.remove(0));
     }
 
-    let mut left = walk_expression(inner.remove(0))?;
+    let mut left = walk_expression(__w, inner.remove(0))?;
 
     for p in inner {
         match p.as_rule() {
@@ -13371,7 +13527,7 @@ fn walk_relational(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 if kw.as_rule() == Rule::is_kw {
                     // `is` accepts a pattern_clause: not-prefix +
                     // pattern_atom of (null | literal | type_name [ident])
-                    left = walk_is_pattern(left, next)?;
+                    left = walk_is_pattern(__w, left, next)?;
                 } else {
                     // `obj as T` — returns obj if it's a T, else null.
                     // Lower to `<is-test> ? obj : null` so the runtime
@@ -13405,7 +13561,7 @@ fn walk_relational(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 let mut br_inner: Vec<Pair<Rule>> = p.into_inner().collect();
                 if br_inner.len() >= 2 {
                     let op_str = br_inner[0].as_str().trim();
-                    let right = walk_expression(br_inner.remove(1))?;
+                    let right = walk_expression(__w, br_inner.remove(1))?;
                     let bin_op = match op_str {
                         "<=" => BinOp::LtEq,
                         ">=" => BinOp::GtEq,
@@ -13423,14 +13579,14 @@ fn walk_relational(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 }
             }
             Rule::switch_expr_postfix => {
-                left = walk_switch_expr(left, p)?;
+                left = walk_switch_expr(__w, left, p)?;
             }
             Rule::with_expr_postfix => {
-                left = walk_with_expr(left, p)?;
+                left = walk_with_expr(__w, left, p)?;
             }
             _ => {
                 // Direct operand — shouldn't happen but try as additive
-                let right = walk_expression(p)?;
+                let right = walk_expression(__w, p)?;
                 left = Expression::new(ExprKind::Binary {
                     op: BinOp::Lt,
                     left: Box::new(left),
@@ -13443,14 +13599,14 @@ fn walk_relational(pair: Pair<Rule>) -> Result<ExprKind, String> {
     Ok(left.kind)
 }
 
-fn walk_binary_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
+fn walk_binary_chain(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, String> {
     let mut inner: Vec<Pair<Rule>> = pair.into_inner().collect();
 
     if inner.len() == 1 {
-        return walk_expr_kind(inner.remove(0));
+        return walk_expr_kind(__w, inner.remove(0));
     }
 
-    let mut left = walk_expression(inner.remove(0))?;
+    let mut left = walk_expression(__w, inner.remove(0))?;
     let mut i = 0;
 
     while i + 1 < inner.len() {
@@ -13480,7 +13636,7 @@ fn walk_binary_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
             continue;
         }
 
-        let right = walk_expression(inner[i + 1].clone())?;
+        let right = walk_expression(__w, inner[i + 1].clone())?;
 
         let bin_op = match op_str {
             "??" => BinOp::NullCoalesce,
@@ -13599,10 +13755,10 @@ fn is_int_zero_literal(e: &Expression) -> bool {
 
 // ── Call chain walker ───────────────────────────────────────────────────────
 
-fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
+fn walk_call_chain(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, String> {
     let mut inner = pair.into_inner();
     let first = inner.next().ok_or("Empty call expression")?;
-    let mut expr = walk_expression(first)?;
+    let mut expr = walk_expression(__w, first)?;
 
     // Collect the chain segments so we can peek at the next one when
     // deciding whether to canonicalize a `.Length` / `.Count` accessor
@@ -13642,7 +13798,7 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 .into_iter()
                 .find(|p| p.as_rule() == Rule::argument_list)
             {
-                walk_arguments(arg_pair)?
+                walk_arguments(__w, arg_pair)?
             } else {
                 Vec::new()
             };
@@ -13778,13 +13934,13 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     let first_after_dotdot = halves.first().map_or(true, |s| s.trim().is_empty());
                     if !first_after_dotdot {
                         if let Some(p) = iter.next() {
-                            start = Some(walk_index_part(p, expr.clone())?);
+                            start = Some(walk_index_part(__w, p, expr.clone())?);
                         }
                     }
                     let second_empty = halves.get(1).map_or(true, |s| s.trim().is_empty());
                     if !second_empty {
                         if let Some(p) = iter.next() {
-                            end = Some(walk_index_part(p, expr.clone())?);
+                            end = Some(walk_index_part(__w, p, expr.clone())?);
                         }
                     }
                     let start = start.unwrap_or_else(Expression::null);
@@ -13804,7 +13960,7 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     // `m[i][j]`. Single-arg index is the common case.
                     let mut iter = parts.into_iter();
                     if let Some(first) = iter.next() {
-                        let index = walk_index_part(first, expr.clone())?;
+                        let index = walk_index_part(__w, first, expr.clone())?;
                         expr = if matches!(&expr.kind, ExprKind::Ident(name) if name == "text") {
                             Expression::new(ExprKind::Call {
                                 callee: Box::new(Expression::ident("__csharp_str_char_code_at")),
@@ -13819,7 +13975,7 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             })
                         };
                         for p in iter {
-                            let index = walk_index_part(p, expr.clone())?;
+                            let index = walk_index_part(__w, p, expr.clone())?;
                             expr = Expression::new(ExprKind::Index {
                                 object: Box::new(expr),
                                 index: Box::new(index),
@@ -13843,7 +13999,7 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
 /// the array here — so this lowers exactly like `new T[n]` / `new T[n] { … }`,
 /// reusing their two paths: an initializer becomes an array literal, a size
 /// becomes a zero-filled sized array.
-fn walk_stackalloc_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
+fn walk_stackalloc_expr(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, String> {
     let mut element_type = String::new();
     let mut size: Option<Expression> = None;
     let mut elements: Vec<Expression> = Vec::new();
@@ -13856,14 +14012,14 @@ fn walk_stackalloc_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
             }
             Rule::array_initializer => {
                 for ap in p.into_inner() {
-                    if let Ok(expr) = walk_collection_element(ap) {
+                    if let Ok(expr) = walk_collection_element(__w, ap) {
                         elements.push(expr);
                     }
                 }
             }
             // The bracketed length.
             _ => {
-                if let Ok(expr) = walk_expression(p) {
+                if let Ok(expr) = walk_expression(__w, p) {
                     size = Some(expr);
                 }
             }
@@ -13888,7 +14044,7 @@ fn walk_stackalloc_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
     }
 }
 
-fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
+fn walk_new_expr(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, String> {
     let mut type_name = String::new();
     let mut raw_type_name = String::new();
     let mut args = Vec::new();
@@ -13904,7 +14060,7 @@ fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 raw_type_name = raw.trim().to_string();
                 type_name = strip_csharp_type_path_generic_args(raw);
             }
-            Rule::argument_list => args = walk_arguments(p)?,
+            Rule::argument_list => args = walk_arguments(__w, p)?,
             Rule::array_initializer => {
                 is_array = true;
                 for ap in p.into_inner() {
@@ -13912,7 +14068,7 @@ fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     // an expression or a nested `{ ... }` (dict pair /
                     // sub-array). Walk through `walk_collection_element`
                     // so the Dictionary/multi-dim shape lowers correctly.
-                    if let Ok(expr) = walk_collection_element(ap) {
+                    if let Ok(expr) = walk_collection_element(__w, ap) {
                         array_init.push(expr);
                     }
                 }
@@ -13925,7 +14081,7 @@ fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         for mp in ip.into_inner() {
                             match mp.as_rule() {
                                 Rule::ident_name => name = mp.as_str().to_string(),
-                                _ => val = walk_expression(mp).unwrap_or(Expression::null()),
+                                _ => val = walk_expression(__w, mp).unwrap_or(Expression::null()),
                             }
                         }
                         obj_init.push((name, val));
@@ -13943,7 +14099,7 @@ fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     for mp in am.into_inner() {
                         match mp.as_rule() {
                             Rule::ident_name => name = Some(mp.as_str().to_string()),
-                            _ => val = walk_expression(mp).unwrap_or(Expression::null()),
+                            _ => val = walk_expression(__w, mp).unwrap_or(Expression::null()),
                         }
                     }
                     // Bare members (`x.Age`, `id`) infer their property name.
@@ -13953,7 +14109,7 @@ fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
             }
             _ => {
                 // Expression inside brackets for array size
-                if let Ok(expr) = walk_expression(p) {
+                if let Ok(expr) = walk_expression(__w, p) {
                     if !is_array {
                         is_array = true;
                     }
@@ -14551,7 +14707,7 @@ fn csharp_method_generic_binding_args(type_args: &[String]) -> Vec<Argument> {
 /// and returns the new instance. Records compile as plain classes in
 /// our compiler, so this is the same shape as a `new T { ... }`
 /// initializer that copies fields from the source.
-fn walk_with_expr(receiver: Expression, postfix: Pair<Rule>) -> Result<Expression, String> {
+fn walk_with_expr(__w: &mut CsWalker, receiver: Expression, postfix: Pair<Rule>) -> Result<Expression, String> {
     // Collect the with-clause property assignments.
     let mut props: Vec<(String, Expression)> = Vec::new();
     for child in postfix.into_inner() {
@@ -14563,7 +14719,7 @@ fn walk_with_expr(receiver: Expression, postfix: Pair<Rule>) -> Result<Expressio
                     for mp in ip.into_inner() {
                         match mp.as_rule() {
                             Rule::ident_name => name = mp.as_str().to_string(),
-                            _ => val = walk_expression(mp).unwrap_or(Expression::null()),
+                            _ => val = walk_expression(__w, mp).unwrap_or(Expression::null()),
                         }
                     }
                     props.push((name, val));
@@ -14651,7 +14807,7 @@ fn walk_with_expr(receiver: Expression, postfix: Pair<Rule>) -> Result<Expressio
 /// chain falls through to `null`, matching .NET's
 /// `SwitchExpressionException` shape (we don't throw — return null
 /// rather than complicate codegen).
-fn walk_switch_expr(subject: Expression, postfix: Pair<Rule>) -> Result<Expression, String> {
+fn walk_switch_expr(__w: &mut CsWalker, subject: Expression, postfix: Pair<Rule>) -> Result<Expression, String> {
     let arms: Vec<Pair<Rule>> = postfix
         .into_inner()
         .filter(|p| p.as_rule() == Rule::switch_arm)
@@ -14679,10 +14835,10 @@ fn walk_switch_expr(subject: Expression, postfix: Pair<Rule>) -> Result<Expressi
         }
         // Last expr = result; if there's a second expr it's the guard.
         if let Some(last) = exprs.pop() {
-            result = Some(walk_expression(last)?);
+            result = Some(walk_expression(__w, last)?);
         }
         if let Some(guard) = exprs.pop() {
-            when_guard = Some(walk_expression(guard)?);
+            when_guard = Some(walk_expression(__w, guard)?);
         }
         let result = result.ok_or("switch arm missing result")?;
         let pattern = pattern.ok_or("switch arm missing pattern")?;
@@ -14694,7 +14850,7 @@ fn walk_switch_expr(subject: Expression, postfix: Pair<Rule>) -> Result<Expressi
             else_set = true;
             continue;
         }
-        let cond = build_switch_pattern_cond(subject.clone(), pattern.clone())?;
+        let cond = build_switch_pattern_cond(__w, subject.clone(), pattern.clone())?;
         let binding = build_switch_pattern_binding(subject.clone(), pattern)?;
         if !else_set {
             else_branch = result.clone();
@@ -14771,7 +14927,7 @@ fn walk_switch_expr(subject: Expression, postfix: Pair<Rule>) -> Result<Expressi
 ///   `<TypeName> <id>` → typeof subject === "<jsname>" (binding dropped)
 ///   `>= <expr>`       → subject >= <expr>  (relational pattern)
 ///   `<expr>`          → subject === <expr>  (constant fallback)
-fn build_switch_pattern_cond(
+fn build_switch_pattern_cond(__w: &mut CsWalker, 
     subject: Expression,
     pattern: Pair<Rule>,
 ) -> Result<Expression, String> {
@@ -14788,7 +14944,7 @@ fn build_switch_pattern_cond(
             .into_inner()
             .filter(|p| p.as_rule() == Rule::switch_pat_primary)
         {
-            let c = build_switch_primary_cond(subject.clone(), prim)?;
+            let c = build_switch_primary_cond(__w, subject.clone(), prim)?;
             and_cond = Some(match and_cond {
                 None => c,
                 Some(prev) => Expression::with_span(
@@ -14819,7 +14975,7 @@ fn build_switch_pattern_cond(
     Ok(or_cond.unwrap_or_else(|| Expression::with_span(ExprKind::Lit(Literal::Bool(false)), span)))
 }
 
-fn build_switch_primary_cond(
+fn build_switch_primary_cond(__w: &mut CsWalker, 
     subject: Expression,
     pattern: Pair<Rule>,
 ) -> Result<Expression, String> {
@@ -14833,7 +14989,7 @@ fn build_switch_primary_cond(
         .into_inner()
         .find(|p| p.as_rule() == Rule::property_pattern)
     {
-        return build_general_pattern_cond(subject, property);
+        return build_general_pattern_cond(__w, subject, property);
     }
     // List pattern in a switch arm (`a switch { [1, 2] => … }`) reuses the same
     // desugaring as under `is`.
@@ -14842,7 +14998,7 @@ fn build_switch_primary_cond(
         .into_inner()
         .find(|p| p.as_rule() == Rule::list_pattern)
     {
-        return build_general_pattern_cond(subject, list);
+        return build_general_pattern_cond(__w, subject, list);
     }
     // Relational pattern: `>= 90`, `<= 50`, `< 0`, `> 0`.
     let rel_op = if pat_src.starts_with(">=") {
@@ -14863,7 +15019,7 @@ fn build_switch_primary_cond(
             .into_inner()
             .find(|p| p.as_rule() == Rule::expression)
             .ok_or("relational pattern missing expression")?;
-        let rhs = walk_expression(inner)?;
+        let rhs = walk_expression(__w, inner)?;
         cond = Expression::with_span(
             ExprKind::Binary {
                 op,
@@ -14873,7 +15029,7 @@ fn build_switch_primary_cond(
             span.clone(),
         );
     } else {
-        if let Some(elements) = extract_switch_tuple_pattern_elements(pattern.clone())? {
+        if let Some(elements) = extract_switch_tuple_pattern_elements(__w, pattern.clone())? {
             return Ok(build_switch_tuple_pattern_cond(subject, elements));
         }
         // Type pattern: `int i`, `string s` (with binding) or constant.
@@ -14912,7 +15068,7 @@ fn build_switch_primary_cond(
             cond = test;
         } else if let Some(p) = inner_pairs.pop() {
             // Constant pattern (numeric / string literal / general expr).
-            let rhs = walk_expression(p)?;
+            let rhs = walk_expression(__w, p)?;
             cond = Expression::with_span(
                 ExprKind::Binary {
                     op: BinOp::StrictEq,
@@ -15003,7 +15159,7 @@ fn build_switch_pattern_binding(
     Ok(None)
 }
 
-fn extract_switch_tuple_pattern_elements(
+fn extract_switch_tuple_pattern_elements(__w: &mut CsWalker, 
     pair: Pair<Rule>,
 ) -> Result<Option<Vec<Option<Expression>>>, String> {
     if pair.as_rule() == Rule::tuple_literal {
@@ -15020,13 +15176,13 @@ fn extract_switch_tuple_pattern_elements(
             if expr_pair.as_str().trim() == "_" {
                 elements.push(None);
             } else {
-                elements.push(Some(walk_expression(expr_pair)?));
+                elements.push(Some(walk_expression(__w, expr_pair)?));
             }
         }
         return Ok(Some(elements));
     }
     for child in pair.into_inner() {
-        if let Some(elements) = extract_switch_tuple_pattern_elements(child)? {
+        if let Some(elements) = extract_switch_tuple_pattern_elements(__w, child)? {
             return Ok(Some(elements));
         }
     }
@@ -15143,7 +15299,7 @@ fn suffix_index_expr(subject: &Expression, suffix_len: usize, j: usize) -> Expre
     )
 }
 
-fn build_general_pattern_cond(
+fn build_general_pattern_cond(__w: &mut CsWalker, 
     subject: Expression,
     pattern: Pair<Rule>,
 ) -> Result<Expression, String> {
@@ -15154,7 +15310,7 @@ fn build_general_pattern_cond(
                 .into_inner()
                 .next()
                 .ok_or("switch case pattern missing clause")?;
-            build_general_pattern_cond(subject, inner)
+            build_general_pattern_cond(__w, subject, inner)
         }
         Rule::pattern_clause => {
             let src = pattern.as_str().trim_start();
@@ -15166,7 +15322,7 @@ fn build_general_pattern_cond(
                 .collect();
             let mut cond = Expression::bool(true);
             for atom in atoms {
-                let next = build_general_pattern_cond(subject.clone(), atom)?;
+                let next = build_general_pattern_cond(__w, subject.clone(), atom)?;
                 cond = Expression::with_span(
                     ExprKind::Binary {
                         op: BinOp::And,
@@ -15194,8 +15350,8 @@ fn build_general_pattern_cond(
                 .first()
                 .ok_or("Empty pattern atom inner".to_string())?;
             match first.as_rule() {
-                Rule::pattern_type => build_general_pattern_cond(subject, first.clone()),
-                _ => build_general_pattern_cond(subject, first.clone()),
+                Rule::pattern_type => build_general_pattern_cond(__w, subject, first.clone()),
+                _ => build_general_pattern_cond(__w, subject, first.clone()),
             }
         }
         Rule::null_kw => Ok(Expression::with_span(
@@ -15214,7 +15370,7 @@ fn build_general_pattern_cond(
         | Rule::numeric_literal
         | Rule::string_literal
         | Rule::char_literal => {
-            let lit = walk_expression(pattern)?;
+            let lit = walk_expression(__w, pattern)?;
             Ok(Expression::with_span(
                 ExprKind::Binary {
                     op: BinOp::StrictEq,
@@ -15239,7 +15395,7 @@ fn build_general_pattern_cond(
                 .into_inner()
                 .find(|p| p.as_rule() == Rule::expression)
                 .ok_or("relational pattern missing expression")?;
-            let rhs = walk_expression(rhs_pair)?;
+            let rhs = walk_expression(__w, rhs_pair)?;
             Ok(Expression::with_span(
                 ExprKind::Binary {
                     op,
@@ -15262,7 +15418,7 @@ fn build_general_pattern_cond(
                         .into_inner()
                         .next()
                         .ok_or("tuple pattern element missing expression")?;
-                    elements.push(Some(walk_expression(expr_pair)?));
+                    elements.push(Some(walk_expression(__w, expr_pair)?));
                 }
             }
             Ok(build_switch_tuple_pattern_cond(subject, elements))
@@ -15293,7 +15449,7 @@ fn build_general_pattern_cond(
                     continue;
                 }
                 let item = index_expr(&subject, Expression::int(i as i64));
-                let sub = build_general_pattern_cond(item, inner.clone())?;
+                let sub = build_general_pattern_cond(__w, item, inner.clone())?;
                 cond = Expression::with_span(
                     ExprKind::Binary {
                         op: BinOp::And,
@@ -15309,7 +15465,7 @@ fn build_general_pattern_cond(
                     continue;
                 }
                 let item = index_expr(&subject, suffix_index_expr(&subject, suf_len, j));
-                let sub = build_general_pattern_cond(item, inner.clone())?;
+                let sub = build_general_pattern_cond(__w, item, inner.clone())?;
                 cond = Expression::with_span(
                     ExprKind::Binary {
                         op: BinOp::And,
@@ -15328,7 +15484,7 @@ fn build_general_pattern_cond(
                 .into_inner()
                 .filter(|p| p.as_rule() == Rule::pattern_clause)
             {
-                let next = build_general_pattern_cond(subject.clone(), clause)?;
+                let next = build_general_pattern_cond(__w, subject.clone(), clause)?;
                 cond = Some(match cond {
                     Some(prev) => Expression::with_span(
                         ExprKind::Binary {
@@ -15348,7 +15504,7 @@ fn build_general_pattern_cond(
                 .into_inner()
                 .find(|p| p.as_rule() == Rule::numeric_literal)
                 .ok_or("negative numeric pattern missing literal")?;
-            let magnitude = walk_expression(lit)?;
+            let magnitude = walk_expression(__w, lit)?;
             let negated = Expression::with_span(
                 ExprKind::Unary {
                     op: UnaryOp::Neg,
@@ -15389,7 +15545,7 @@ fn build_general_pattern_cond(
             for part in pattern.into_inner() {
                 match part.as_rule() {
                     Rule::pattern_type => {
-                        let test = build_general_pattern_cond(subject.clone(), part)?;
+                        let test = build_general_pattern_cond(__w, subject.clone(), part)?;
                         push(&mut cond, test);
                     }
                     Rule::property_subpattern => {
@@ -15404,7 +15560,7 @@ fn build_general_pattern_cond(
                             },
                             span.clone(),
                         );
-                        let test = build_general_pattern_cond(member_expr, clause)?;
+                        let test = build_general_pattern_cond(__w, member_expr, clause)?;
                         push(&mut cond, test);
                     }
                     // Trailing designation (`is Point { X: 1 } p`) binds in
@@ -15421,7 +15577,7 @@ fn build_general_pattern_cond(
             // is a CONSTANT pattern, not a type test. The grammar cannot tell
             // it from `is System.String`, so the enum registry decides.
             let raw = pattern.as_str().trim();
-            if let Some((enum_name, member)) = enum_member_path_parts(raw) {
+            if let Some((enum_name, member)) = enum_member_path_parts(__w, raw) {
                 // Built directly rather than via `walk_expression`, which does
                 // not accept a `pattern_type` pair.
                 let constant = Expression::with_span(
@@ -15470,7 +15626,7 @@ fn build_general_pattern_cond(
             }
         }
         _ => {
-            let rhs = walk_expression(pattern)?;
+            let rhs = walk_expression(__w, pattern)?;
             Ok(Expression::with_span(
                 ExprKind::Binary {
                     op: BinOp::StrictEq,
@@ -15778,12 +15934,12 @@ fn rewrite_ident_expr(expr: &Expression, name: &str, replacement: &Expression) -
     Expression::with_span(kind, expr.span.clone())
 }
 
-fn build_scoped_pattern_test(
+fn build_scoped_pattern_test(__w: &mut CsWalker, 
     subject: Expression,
     pattern: Pair<Rule>,
     guard: Option<Expression>,
 ) -> Result<(Expression, Option<Statement>), String> {
-    let cond = build_general_pattern_cond(subject.clone(), pattern.clone())?;
+    let cond = build_general_pattern_cond(__w, subject.clone(), pattern.clone())?;
     let binding = build_general_pattern_binding(subject, pattern)?;
     if let Some(binding_stmt) = binding.clone() {
         if let Some(guard) = guard {
@@ -15803,9 +15959,10 @@ fn build_scoped_pattern_test(
     Ok((cond, binding))
 }
 
-fn split_leading_is_pattern_guard(
-    pair: Pair<Rule>,
-) -> Result<Option<((Expression, Pair<Rule>), Pair<Rule>)>, String> {
+fn split_leading_is_pattern_guard<'p>(
+    __w: &mut CsWalker,
+    pair: Pair<'p, Rule>,
+) -> Result<Option<((Expression, Pair<'p, Rule>), Pair<'p, Rule>)>, String> {
     match pair.as_rule() {
         Rule::expression
         | Rule::assignment_expression
@@ -15824,7 +15981,7 @@ fn split_leading_is_pattern_guard(
         | Rule::call_chain => {
             let inner: Vec<Pair<Rule>> = pair.clone().into_inner().collect();
             if inner.len() == 1 {
-                return split_leading_is_pattern_guard(inner[0].clone());
+                return split_leading_is_pattern_guard(__w, inner[0].clone());
             }
             Ok(None)
         }
@@ -15834,7 +15991,7 @@ fn split_leading_is_pattern_guard(
                 .filter(|p| p.as_rule() != Rule::and_op)
                 .collect();
             if parts.len() == 2 {
-                if let Some(subject_clause) = extract_is_pattern_subject_clause(parts[0].clone())? {
+                if let Some(subject_clause) = extract_is_pattern_subject_clause(__w, parts[0].clone())? {
                     return Ok(Some((subject_clause, parts[1].clone())));
                 }
             }
@@ -15844,9 +16001,10 @@ fn split_leading_is_pattern_guard(
     }
 }
 
-fn extract_is_pattern_subject_clause(
-    pair: Pair<Rule>,
-) -> Result<Option<(Expression, Pair<Rule>)>, String> {
+fn extract_is_pattern_subject_clause<'p>(
+    __w: &mut CsWalker,
+    pair: Pair<'p, Rule>,
+) -> Result<Option<(Expression, Pair<'p, Rule>)>, String> {
     match pair.as_rule() {
         Rule::expression
         | Rule::assignment_expression
@@ -15866,14 +16024,14 @@ fn extract_is_pattern_subject_clause(
         | Rule::call_chain => {
             let inner: Vec<Pair<Rule>> = pair.clone().into_inner().collect();
             if inner.len() == 1 {
-                return extract_is_pattern_subject_clause(inner[0].clone());
+                return extract_is_pattern_subject_clause(__w, inner[0].clone());
             }
             Ok(None)
         }
         Rule::relational => {
             let inner: Vec<Pair<Rule>> = pair.into_inner().collect();
             if inner.len() == 2 && inner[1].as_rule() == Rule::type_test {
-                let subject = walk_expression(inner[0].clone())?;
+                let subject = walk_expression(__w, inner[0].clone())?;
                 let mut test_inner = inner[1].clone().into_inner();
                 let Some(keyword) = test_inner.next() else {
                     return Ok(None);
@@ -15892,13 +16050,13 @@ fn extract_is_pattern_subject_clause(
     }
 }
 
-fn lower_if_pattern_condition(cond_pair: Pair<Rule>) -> Result<Option<Expression>, String> {
-    let Some(((subject, pattern_clause), guard_pair)) = split_leading_is_pattern_guard(cond_pair)?
+fn lower_if_pattern_condition(__w: &mut CsWalker, cond_pair: Pair<Rule>) -> Result<Option<Expression>, String> {
+    let Some(((subject, pattern_clause), guard_pair)) = split_leading_is_pattern_guard(__w, cond_pair)?
     else {
         return Ok(None);
     };
-    let guard = walk_expression(guard_pair)?;
-    let (cond, _) = build_scoped_pattern_test(subject, pattern_clause, Some(guard))?;
+    let guard = walk_expression(__w, guard_pair)?;
+    let (cond, _) = build_scoped_pattern_test(__w, subject, pattern_clause, Some(guard))?;
     Ok(Some(cond))
 }
 
@@ -16110,7 +16268,7 @@ fn emit_list_iife(type_name: String, args: Vec<Argument>, elements: Vec<Expressi
 /// expressions; nested-brace children become Array literals so the
 /// caller can recognise them as dict pairs (Dictionary) or sub-arrays
 /// (multi-dim).
-fn walk_collection_element(pair: Pair<Rule>) -> Result<Expression, String> {
+fn walk_collection_element(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<Expression, String> {
     if pair.as_rule() == Rule::collection_element {
         let src = pair.as_str().trim_start();
         if let Some(inner) = pair.clone().into_inner().next() {
@@ -16119,11 +16277,11 @@ fn walk_collection_element(pair: Pair<Rule>) -> Result<Expression, String> {
                 let key = parts
                     .next()
                     .ok_or_else(|| "indexer initializer missing key".to_string())
-                    .and_then(walk_expression)?;
+                    .and_then(|__x| walk_expression(__w, __x))?;
                 let value = parts
                     .next()
                     .ok_or_else(|| "indexer initializer missing value".to_string())
-                    .and_then(walk_expression)?;
+                    .and_then(|__x| walk_expression(__w, __x))?;
                 return Ok(Expression::new(ExprKind::Array(vec![
                     ArrayElement {
                         key: None,
@@ -16144,7 +16302,7 @@ fn walk_collection_element(pair: Pair<Rule>) -> Result<Expression, String> {
         if src.starts_with('{') {
             let mut elements = Vec::new();
             for inner in pair.into_inner() {
-                if let Ok(expr) = walk_expression(inner) {
+                if let Ok(expr) = walk_expression(__w, inner) {
                     elements.push(ArrayElement {
                         key: None,
                         value: expr,
@@ -16157,14 +16315,14 @@ fn walk_collection_element(pair: Pair<Rule>) -> Result<Expression, String> {
         }
         // Flat form: walk the single child expression.
         if let Some(inner) = pair.into_inner().next() {
-            return walk_expression(inner);
+            return walk_expression(__w, inner);
         }
         return Ok(Expression::null());
     }
-    walk_expression(pair)
+    walk_expression(__w, pair)
 }
 
-fn walk_collection_expression_element(pair: Pair<Rule>) -> Result<ArrayElement, String> {
+fn walk_collection_expression_element(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ArrayElement, String> {
     let spread = pair.as_str().trim_start().starts_with("..");
     let expr_pair = pair
         .into_inner()
@@ -16172,7 +16330,7 @@ fn walk_collection_expression_element(pair: Pair<Rule>) -> Result<ArrayElement, 
         .ok_or_else(|| "collection expression element missing expression".to_string())?;
     Ok(ArrayElement {
         key: None,
-        value: walk_expression(expr_pair)?,
+        value: walk_expression(__w, expr_pair)?,
         spread,
         by_ref: false,
     })
@@ -16194,7 +16352,7 @@ fn primitive_to_typeof(type_name: &str) -> Option<&'static str> {
 
 /// Walk a single index part (the inside of `arr[...]`).
 /// Handles `from_end_index` (^N → arr.length - N) and plain expressions.
-fn walk_index_part(pair: Pair<Rule>, receiver: Expression) -> Result<Expression, String> {
+fn walk_index_part(__w: &mut CsWalker, pair: Pair<Rule>, receiver: Expression) -> Result<Expression, String> {
     match pair.as_rule() {
         Rule::from_end_index => {
             // `^N` → receiver.length - N (or for ranges, the same expression)
@@ -16202,7 +16360,7 @@ fn walk_index_part(pair: Pair<Rule>, receiver: Expression) -> Result<Expression,
                 .into_inner()
                 .next()
                 .ok_or_else(|| "from_end_index missing inner expression".to_string())?;
-            let n_expr = walk_expression(inner)?;
+            let n_expr = walk_expression(__w, inner)?;
             // `__len__(receiver) - n_expr`
             let length = Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__len__")),
@@ -16215,7 +16373,7 @@ fn walk_index_part(pair: Pair<Rule>, receiver: Expression) -> Result<Expression,
                 right: Box::new(n_expr),
             }))
         }
-        _ => walk_expression(pair),
+        _ => walk_expression(__w, pair),
     }
 }
 
@@ -16229,11 +16387,11 @@ fn walk_index_part(pair: Pair<Rule>, receiver: Expression) -> Result<Expression,
 ///     (the ident binding is exposed as a synthetic Block returning
 ///     the boolean — handled via SequenceExpr if available, else
 ///     just IsType for now and the binding is dropped).
-fn walk_is_pattern(receiver: Expression, pattern_clause: Pair<Rule>) -> Result<Expression, String> {
-    build_general_pattern_cond(receiver, pattern_clause)
+fn walk_is_pattern(__w: &mut CsWalker, receiver: Expression, pattern_clause: Pair<Rule>) -> Result<Expression, String> {
+    build_general_pattern_cond(__w, receiver, pattern_clause)
 }
 
-fn walk_arguments(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
+fn walk_arguments(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
     pair.into_inner()
         .filter(|p| p.as_rule() == Rule::argument)
         .map(|p| {
@@ -16273,7 +16431,7 @@ fn walk_arguments(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
                 if let Some(value_pair) =
                     inner_pairs.iter().find(|p| p.as_rule() != Rule::ident_name)
                 {
-                    let value = walk_expression(value_pair.clone())?;
+                    let value = walk_expression(__w, value_pair.clone())?;
                     return Ok(Argument {
                         value,
                         name: Some(name_str),
@@ -16287,7 +16445,7 @@ fn walk_arguments(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
                 .into_iter()
                 .next()
                 .ok_or("Empty argument".to_string())?;
-            let value = walk_expression(inner)?;
+            let value = walk_expression(__w, inner)?;
             Ok(Argument {
                 value,
                 name: None,
@@ -16300,10 +16458,10 @@ fn walk_arguments(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-fn walk_body(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
+fn walk_body(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
     let body: Vec<Statement> = pair
         .into_inner()
-        .map(walk_statement)
+        .map(|__x| walk_statement(__w, __x))
         .collect::<Result<_, _>>()?;
     // Lower `goto`/labels to structured control flow via the shared relooper
     // (C `goto` uses the identical pass). No-op when the body has no labels.
@@ -18020,8 +18178,8 @@ fn normalize_runtime_type_name(t: &str) -> String {
         .to_string()
 }
 
-fn extract_if_is_pattern_binding(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
-    if let Some((subject, type_name, binding_name)) = find_if_is_pattern_binding(pair.clone())? {
+fn extract_if_is_pattern_binding(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<Option<Statement>, String> {
+    if let Some((subject, type_name, binding_name)) = find_if_is_pattern_binding(__w, pair.clone())? {
         return Ok(Some(build_type_pattern_binding_stmt(
             subject,
             type_name,
@@ -18030,7 +18188,7 @@ fn extract_if_is_pattern_binding(pair: Pair<Rule>) -> Result<Option<Statement>, 
     }
     // `is Box { Value: var v }` binds names the `is Type x` shape above cannot
     // describe — an arbitrary number of them, each rooted at a member.
-    find_if_is_property_pattern_binding(pair)
+    find_if_is_property_pattern_binding(__w, pair)
 }
 
 /// The `is <pattern>` binding path for patterns that bind via
@@ -18038,7 +18196,7 @@ fn extract_if_is_pattern_binding(pair: Pair<Rule>) -> Result<Option<Statement>, 
 /// `subject`/`type`/`name` triple. Mirrors `find_if_is_pattern_binding`'s
 /// descent; yields `None` when the pattern binds nothing, so the simple shape
 /// keeps its existing type-hinted binding.
-fn find_if_is_property_pattern_binding(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
+fn find_if_is_property_pattern_binding(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<Option<Statement>, String> {
     match pair.as_rule() {
         Rule::expression
         | Rule::assignment_expression
@@ -18052,10 +18210,10 @@ fn find_if_is_property_pattern_binding(pair: Pair<Rule>) -> Result<Option<Statem
         | Rule::equality => {
             let inner: Vec<Pair<Rule>> = pair.into_inner().collect();
             if inner.len() == 1 {
-                return find_if_is_property_pattern_binding(inner[0].clone());
+                return find_if_is_property_pattern_binding(__w, inner[0].clone());
             }
             for child in inner {
-                if let Some(binding) = find_if_is_property_pattern_binding(child)? {
+                if let Some(binding) = find_if_is_property_pattern_binding(__w, child)? {
                     return Ok(Some(binding));
                 }
             }
@@ -18066,7 +18224,7 @@ fn find_if_is_property_pattern_binding(pair: Pair<Rule>) -> Result<Option<Statem
             if inner.len() != 2 || inner[1].as_rule() != Rule::type_test {
                 return Ok(None);
             }
-            let subject = walk_expression(inner[0].clone())?;
+            let subject = walk_expression(__w, inner[0].clone())?;
             let mut tt_inner = inner[1].clone().into_inner();
             let Some(keyword) = tt_inner.next() else {
                 return Ok(None);
@@ -18113,7 +18271,7 @@ fn build_type_pattern_binding_stmt(
     })
 }
 
-fn find_if_is_pattern_binding(
+fn find_if_is_pattern_binding(__w: &mut CsWalker, 
     pair: Pair<Rule>,
 ) -> Result<Option<(Expression, String, String)>, String> {
     match pair.as_rule() {
@@ -18129,10 +18287,10 @@ fn find_if_is_pattern_binding(
         | Rule::equality => {
             let inner: Vec<Pair<Rule>> = pair.into_inner().collect();
             if inner.len() == 1 {
-                return find_if_is_pattern_binding(inner[0].clone());
+                return find_if_is_pattern_binding(__w, inner[0].clone());
             }
             for child in inner {
-                if let Some(binding) = find_if_is_pattern_binding(child)? {
+                if let Some(binding) = find_if_is_pattern_binding(__w, child)? {
                     return Ok(Some(binding));
                 }
             }
@@ -18143,7 +18301,7 @@ fn find_if_is_pattern_binding(
             if inner.len() != 2 || inner[1].as_rule() != Rule::type_test {
                 return Ok(None);
             }
-            let subject = walk_expression(inner[0].clone())?;
+            let subject = walk_expression(__w, inner[0].clone())?;
             let mut tt_inner = inner[1].clone().into_inner();
             let Some(keyword) = tt_inner.next() else {
                 return Ok(None);
@@ -18185,7 +18343,7 @@ fn find_if_is_pattern_binding(
 // caller.
 
 /// Parse interpolated string parts from the raw content between $" and "
-fn parse_interpolated_parts(s: &str) -> Result<Vec<InterpolPart>, String> {
+fn parse_interpolated_parts(__w: &mut CsWalker, s: &str) -> Result<Vec<InterpolPart>, String> {
     let mut parts = Vec::new();
     let mut text = String::new();
     let chars: Vec<char> = s.chars().collect();
@@ -18219,7 +18377,7 @@ fn parse_interpolated_parts(s: &str) -> Result<Vec<InterpolPart>, String> {
                 }
             }
             let expr_str: String = chars[start..i].iter().collect();
-            let expr = parse_interpolated_hole_text(&expr_str)?;
+            let expr = parse_interpolated_hole_text(__w, &expr_str)?;
             parts.push(InterpolPart::Expr(expr));
             i += 1; // skip }
         } else if chars[i] == '}' && i + 1 < chars.len() && chars[i + 1] == '}' {
@@ -18238,9 +18396,9 @@ fn parse_interpolated_parts(s: &str) -> Result<Vec<InterpolPart>, String> {
     Ok(parts)
 }
 
-fn parse_interpolated_hole_text(text: &str) -> Result<Expression, String> {
+fn parse_interpolated_hole_text(__w: &mut CsWalker, text: &str) -> Result<Expression, String> {
     if let Some((expr_src, alignment, format_spec)) = split_interpolated_format_hole(text) {
-        let value = parse_interpolated_expr_text(expr_src)?;
+        let value = parse_interpolated_expr_text(__w, expr_src)?;
         let mut composite = "{0".to_string();
         if let Some(alignment) = alignment {
             composite.push(',');
@@ -18262,7 +18420,7 @@ fn parse_interpolated_hole_text(text: &str) -> Result<Expression, String> {
         }));
     }
 
-    let value = parse_interpolated_expr_text(text)?;
+    let value = parse_interpolated_expr_text(__w, text)?;
     Ok(Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident("String.Format")),
         args: vec![
@@ -18273,20 +18431,20 @@ fn parse_interpolated_hole_text(text: &str) -> Result<Expression, String> {
     }))
 }
 
-fn parse_interpolated_expr_text(text: &str) -> Result<Expression, String> {
+fn parse_interpolated_expr_text(__w: &mut CsWalker, text: &str) -> Result<Expression, String> {
     let trimmed = strip_wrapping_parens(text.trim());
     if let Some((cond_src, then_src, else_src)) = split_top_level_ternary(trimmed) {
         return Ok(Expression::new(ExprKind::Ternary {
-            cond: Box::new(parse_interpolated_expr_text(cond_src)?),
-            then: Box::new(parse_interpolated_expr_text(then_src)?),
-            else_: Box::new(parse_interpolated_expr_text(else_src)?),
+            cond: Box::new(parse_interpolated_expr_text(__w, cond_src)?),
+            then: Box::new(parse_interpolated_expr_text(__w, then_src)?),
+            else_: Box::new(parse_interpolated_expr_text(__w, else_src)?),
         }));
     }
 
     let mut parsed = CSharpParser::parse(Rule::expression, trimmed)
         .map_err(|e| format!("Interpolation parse error: {}", e))?;
     let pair = parsed.next().ok_or("Empty interpolation expression")?;
-    walk_expression(pair)
+    walk_expression(__w, pair)
 }
 
 fn split_interpolated_format_hole(text: &str) -> Option<(&str, Option<&str>, Option<&str>)> {

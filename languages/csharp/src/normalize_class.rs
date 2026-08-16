@@ -23,11 +23,11 @@
 //!   - Populates `auto_init_methods` for `InitializeComponent` (the
 //!     WinForms convention — C# ctors implicitly call it).
 
-use vybe_ast::class_normalize::{NormalMembers, build_normal_method, from_method_stmt, types::*};
-use vybe_ast::{
-    ClassMember, ClassModifiers, ConstructorInitializerTarget, Modifiers, PropertySetter, Span,
-    StmtKind,
+use vybe_ast::class_normalize::{
+    NormalMembers, build_normal_method, declared_protocol_slots, from_constructor_member,
+    from_method_stmt, resolve_special_kind, types::*,
 };
+use vybe_ast::{ClassMember, ClassModifiers, PropertySetter, Span, StmtKind};
 
 pub fn normalize_class(
     span: Span,
@@ -39,26 +39,12 @@ pub fn normalize_class(
 ) -> NormalClass {
     let mut out = NormalMembers::default();
 
-    // Slots this class DECLARES, collected before the member loop so a
-    // declaration anywhere in the body outranks a guess anywhere else.
-    //
     // C# spells one slot two ways and means two different things by them:
     // `operator ==` defines `a == b`, while `Equals` is the virtual
     // object-equality method — `Equals` is mapped to `Eq` by name so that a
-    // type with no `operator ==` still compares sensibly. When BOTH are
-    // present they collide on one slot key and the loser is silently
-    // overwritten, which made `a == b` run `Equals`. A declaration is
-    // evidence; a name is a guess, so the guess yields.
-    let declared_slots: Vec<ProtocolSlot> = members
-        .iter()
-        .filter_map(|member| match member {
-            ClassMember::Method(stmt) => match &stmt.kind {
-                StmtKind::FunctionDecl { modifiers, .. } => modifiers.protocol_slot,
-                _ => None,
-            },
-            _ => None,
-        })
-        .collect();
+    // type with no `operator ==` still compares sensibly. `resolve_special_kind`
+    // settles the collision for every language that has both spellings.
+    let declared_slots = declared_protocol_slots(members);
 
     for member in members {
         match member {
@@ -107,11 +93,7 @@ pub fn normalize_class(
                 // spelling: `operator ==` knows it fills `Eq` from the
                 // declaration form, while the name it carries (`op_Equality`)
                 // is the CLR ABI spelling and means nothing to the name table.
-                let special_kind = m.protocol_slot.or_else(|| {
-                    name_kind.filter(|guessed| {
-                        !declared_slots.iter().any(|declared| declared == guessed)
-                    })
-                });
+                let special_kind = resolve_special_kind(m.protocol_slot, name_kind, &declared_slots);
                 let access = Access::from(m.visibility);
                 let Some(method) = from_method_stmt(span.clone(), stmt, &canonical, access) else {
                     continue;
@@ -133,44 +115,14 @@ pub fn normalize_class(
                 }
                 out.push_method(m.is_static, method);
             }
-            ClassMember::Constructor {
-                params,
-                body,
-                base_args,
-                initializer_target,
-                ..
-            } => {
-                let normalized = NormalConstructor {
-                    span: span.clone(),
-                    params: params.clone(),
-                    body: body.clone(),
-                    base_call: match base_args {
-                        Some(args) => match initializer_target {
-                            ConstructorInitializerTarget::Base => BaseCall::Explicit(
-                                args.iter()
-                                    .map(|e| vybe_ast::Argument::positional(e.clone()))
-                                    .collect(),
-                            ),
-                            ConstructorInitializerTarget::This => BaseCall::This(
-                                args.iter()
-                                    .map(|e| vybe_ast::Argument::positional(e.clone()))
-                                    .collect(),
-                            ),
-                        },
-                        // C#: if no `: base(...)` clause and there IS a
-                        // parent class, C# auto-invokes the parameterless
-                        // parent ctor. Mirror with Auto.
-                        None => {
-                            if parents.is_empty() {
-                                BaseCall::None
-                            } else {
-                                BaseCall::Auto
-                            }
-                        }
-                    },
-                    named_name: None,
-                };
-                out.push_constructor(normalized);
+            // `: base(...)` / `: this(...)` / nothing-with-a-parent all map the
+            // same mechanical way in every language that has them.
+            ClassMember::Constructor { .. } => {
+                if let Some(normalized) =
+                    from_constructor_member(span.clone(), member, !parents.is_empty())
+                {
+                    out.push_constructor(normalized);
+                }
             }
             ClassMember::Property {
                 name: pname,
@@ -201,7 +153,11 @@ pub fn normalize_class(
                         false,
                         false,
                         false,
-                        Modifiers::default(),
+                        // The property's own modifiers, not a blank set:
+                        // `build_normal_method` reads `is_virtual` /
+                        // `is_override` off them, and `public override int Foo
+                        // { get { … } }` is ordinary C#.
+                        m.clone(),
                     )
                 });
                 let setter_method = setter.as_ref().map(|s: &PropertySetter| {
@@ -216,7 +172,11 @@ pub fn normalize_class(
                         false,
                         false,
                         false,
-                        Modifiers::default(),
+                        // The property's own modifiers, not a blank set:
+                        // `build_normal_method` reads `is_virtual` /
+                        // `is_override` off them, and `public override int Foo
+                        // { get { … } }` is ordinary C#.
+                        m.clone(),
                     )
                 });
                 out.properties.push(NormalProperty {
@@ -252,6 +212,7 @@ pub fn normalize_class(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vybe_ast::Modifiers;
 
     fn dummy_span() -> Span {
         Span::default()
