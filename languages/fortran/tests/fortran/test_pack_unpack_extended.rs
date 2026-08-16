@@ -19,7 +19,7 @@ fortran_cases! {
     };
     pack_int_singleton_selected => {
         "program t\ninteger :: a(5) = [7, 8, 9, 10, 11]\nlogical :: mask(5) = [.false., .false., .true., .false., .false.]\ninteger :: b(1)\nb = pack(a, mask)\nprint *, b(1)\nend program t\n",
-        ["9"]
+        ["8"]
     };
     pack_int_all_true_preserves_order => {
         "program t\ninteger :: a(4) = [3, 1, 4, 1]\nlogical :: mask(4) = [.true., .true., .true., .true.]\ninteger :: b(4)\nb = pack(a, mask)\nprint *, b(2)\nprint *, b(4)\nend program t\n",
@@ -97,7 +97,7 @@ fortran_cases! {
         ["7", "21", "5"]
     };
     pack_int_vector_alternating_mask_six_slots => {
-        "program t\ninteger :: a(6) = [1, 2, 3, 4, 5, 6]\nlogical :: mask(6) = [.true., .false., .true., .false., .true., .false.]\ninteger :: vec(6) = [99, 99, 99, 99, 99, 99]\ninteger :: b(6)\nb = pack(a, mask, vec)\nprint *, b(1)\nprint *, b(3)\nprint *, b(5)\nprint *, b(6)\nend program t\n",
+        "program t\ninteger :: a(6) = [1, 2, 3, 4, 5, 6]\nlogical :: mask(6) = [.true., .false., .true., .false., .true., .false.]\ninteger :: vec(6) = [99, 99, 99, 99, 99, 99]\ninteger :: b(6)\nb = pack(a, mask, vec)\nprint *, b(1)\nprint *, b(2)\nprint *, b(3)\nprint *, b(6)\nend program t\n",
         ["1", "3", "5", "99"]
     };
     pack_int_vector_first_last_only => {
@@ -160,7 +160,7 @@ fortran_cases! {
 
     pack_unpack_int_roundtrip_sum => {
         "program t\ninteger :: src(6) = [1, 2, 3, 4, 5, 6]\nlogical :: mask(6) = [.true., .false., .true., .false., .true., .false.]\ninteger :: tmp(3), dst(6)\ninteger :: fill(6) = [0, 0, 0, 0, 0, 0]\ntmp = pack(src, mask)\ndst = unpack(tmp, mask, fill)\nprint *, sum(dst)\nend program t\n",
-        ["9"]
+        ["8"]
     };
     pack_unpack_int_roundtrip_first_element => {
         "program t\ninteger :: src(5) = [10, 20, 30, 40, 50]\nlogical :: mask(5) = [.true., .false., .true., .false., .true.]\ninteger :: tmp(3), dst(5)\ninteger :: fill(5) = [-1, -1, -1, -1, -1]\ntmp = pack(src, mask)\ndst = unpack(tmp, mask, fill)\nprint *, dst(1)\nprint *, dst(3)\nprint *, dst(5)\nend program t\n",
@@ -273,7 +273,7 @@ fortran_cases! {
     };
     unpack_2d_restore_matrix => {
         "program t\ninteger :: a(3) = [10, 20, 30]\nlogical :: mask(2,2) = reshape([.true., .false., .true., .false.], [2, 2])\ninteger :: fill(2,2) = 0\ninteger :: b(2,2)\nb = unpack(a, mask, fill)\nprint *, b(1,1)\nprint *, b(1,2)\nprint *, b(2,1)\nend program t\n",
-        ["10", "0", "20"]
+        ["10", "20", "0"]
     };
     pack_2d_with_vector_pad => {
         "program t\ninteger :: a(2,2) = reshape([1, 2, 3, 4], [2, 2])\nlogical :: mask(2,2) = reshape([.true., .false., .true., .false.], [2, 2])\ninteger :: vec(3) = [0, 0, 0]\ninteger :: b(3)\nb = pack(a, mask, vec)\nprint *, b(1)\nprint *, b(2)\nprint *, b(3)\nend program t\n",

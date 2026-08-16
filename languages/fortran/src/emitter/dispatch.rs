@@ -21,6 +21,20 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::string_adapter::emit_fortran_adjustl(chunks, current, line)
         }
 
+        // ── F2008 bit counting — one core WASM opcode each ──────────────────
+        "fortran.popcnt" => {
+            crate::emitter::bit_adapter::emit_fortran_popcnt(chunks, current, argc, line)
+        }
+        "fortran.leadz" => {
+            crate::emitter::bit_adapter::emit_fortran_leadz(chunks, current, argc, line)
+        }
+        "fortran.trailz" => {
+            crate::emitter::bit_adapter::emit_fortran_trailz(chunks, current, argc, line)
+        }
+        "fortran.parity" => {
+            crate::emitter::bit_adapter::emit_fortran_parity(chunks, current, argc, line)
+        }
+
         // ── Dart string surfaces (isEmpty / isNotEmpty / replaceFirst etc.) ──
         _ => return false,
     }

@@ -181,8 +181,8 @@ select_type_statement = {
     ~ kw_end_select ~ identifier?
 }
 select_type_clause = {
-    kw_type ~ kw_is ~ "(" ~ identifier ~ ")" ~ (NEWLINE | ";") ~ line*
-  | kw_class ~ kw_is ~ "(" ~ identifier ~ ")" ~ (NEWLINE | ";") ~ line*
+    kw_type ~ kw_is ~ "(" ~ (type_spec | identifier) ~ ")" ~ (NEWLINE | ";") ~ line*
+  | kw_class ~ kw_is ~ "(" ~ (type_spec | identifier) ~ ")" ~ (NEWLINE | ";") ~ line*
   | kw_class ~ kw_default ~ (NEWLINE | ";") ~ line*
 }
 
@@ -193,9 +193,23 @@ select_rank_statement = {
     ~ kw_end_select ~ identifier?
 }
 select_rank_clause = {
-    kw_rank ~ "(" ~ (expression | "*") ~ ")" ~ (NEWLINE | ";") ~ line*
-  | kw_rank ~ kw_default ~ (NEWLINE | ";") ~ line*
+    kw_rank ~ "(" ~ (expression | "*") ~ ")" ~ (NEWLINE | ";") ~ select_rank_clause_body
+  | kw_rank ~ kw_default ~ (NEWLINE | ";") ~ select_rank_clause_body
 }
+// A clause body stops at the NEXT clause header. Without the lookahead `line*`
+// is greedy and `rank(1)` standing alone is a perfectly good `line` — a call
+// statement — so the first clause swallowed every clause after it and the
+// construct lowered to a single `If` with `elifs: []`: only the first rank
+// could ever match, and `rank(1)` after `rank(0)` was dead code parsed as an
+// expression statement.
+//
+// `end select` needs no guard here: it is not a `line`, which is why the
+// statement parsed at all rather than running off the end.
+//
+// Silent, so the body's `statement_line`s stay DIRECT children of the clause —
+// `walk_fortran_clause_body` filters `into_inner()` for exactly that rule.
+select_rank_clause_body = _{ (!select_rank_clause_head ~ line)* }
+select_rank_clause_head = _{ kw_rank ~ ("(" | kw_default) }
 
 // ── Variable declaration ───────────────────────────────────────────────────
 
@@ -388,7 +402,7 @@ interface_designator = {
   | identifier
 }
 
-operator = { "+" | "-" | "*" | "/" | "**" | "==" | "/=" | "<" | ">" | "<=" | ">=" | ".and." | ".or." | ".not." }
+operator = { "//" | "+" | "-" | "*" | "/" | "**" | "==" | "/=" | "<" | ">" | "<=" | ">=" | ".and." | ".or." | ".not." }
 
 // ── If statement ───────────────────────────────────────────────────────────
 
@@ -727,9 +741,11 @@ write_spec = { "*" | identifier ~ "=" ~ (expression | "*") | expression }
 
 // ── Memory ─────────────────────────────────────────────────────────────────
 
-allocate_statement = { kw_allocate ~ "(" ~ alloc_item ~ ("," ~ alloc_item)* ~ ")" }
+allocate_statement = { kw_allocate ~ "(" ~ allocate_spec ~ ("," ~ allocate_spec)* ~ ")" }
 deallocate_statement = { kw_deallocate ~ "(" ~ identifier ~ ("," ~ identifier)* ~ ")" }
-alloc_item = { identifier ~ ("(" ~ dimension_spec_list ~ ")")? }
+allocate_spec = { alloc_option | alloc_item }
+alloc_option = { identifier ~ "=" ~ expression }
+alloc_item = { (type_spec ~ "::")? ~ identifier ~ ("(" ~ dimension_spec_list ~ ")")? }
 
 // ── Call / Return / Cycle / Exit / Stop ────────────────────────────────────
 
@@ -768,7 +784,10 @@ expression_statement = { expression }
 
 // ── Expressions ────────────────────────────────────────────────────────────
 
-expression = { logical_or }
+expression = { logical_equiv }
+
+logical_equiv = { logical_or ~ (equiv_op ~ logical_or)* }
+equiv_op = { ".eqv." | ".neqv." }
 
 logical_or = { logical_and ~ (or_op ~ logical_and)* }
 or_op = { ".or." | kw_or_dot }
@@ -786,7 +805,6 @@ comparison = { addition ~ (comparison_op ~ addition)* }
 comparison_op = {
     "==" | "/=" | "<=" | ">=" | "<" ~ !"<" | ">" ~ !">"
   | ".eq." | ".ne." | ".lt." | ".gt." | ".le." | ".ge."
-  | ".eqv." | ".neqv."
 }
 
 addition = { multiplication ~ (add_op ~ multiplication)* }

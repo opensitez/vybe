@@ -104,10 +104,58 @@ modulo        = { emit = "common:expressions.f64_mod",     min_args = 2, max_arg
 sign          = { emit = "host:ecma:math:sign",            min_args = 2, max_args = 2 }
 random_number = { emit = "host:ecma:math:random",          min_args = 0, max_args = 0 }
 
+# ── F2008 math — existing primitives, no new machinery ───────────────────────
+#
+# `erf`/`erfc`/`tgamma`/`lgamma` are already registered by `platforms/libc`
+# (`emitter/tree_register.rs`) and dispatched there, so Fortran only has to
+# name them. Fortran spells two of them differently: `gamma` IS C's `tgamma`
+# and `log_gamma` IS `lgamma`.
+erf           = { emit = "common:libc.math.erf",           min_args = 1, max_args = 1 }
+erfc          = { emit = "common:libc.math.erfc",          min_args = 1, max_args = 1 }
+gamma         = { emit = "common:libc.math.tgamma",        min_args = 1, max_args = 1 }
+log_gamma     = { emit = "common:libc.math.lgamma",        min_args = 1, max_args = 1 }
+
+# The inverse hyperbolics and `hypot` are ECMA math, same as `sinh`/`cosh`
+# above — F2008 added them to Fortran, they were never missing from the host.
+asinh         = { emit = "host:ecma:math:asinh",           min_args = 1, max_args = 1 }
+acosh         = { emit = "host:ecma:math:acosh",           min_args = 1, max_args = 1 }
+atanh         = { emit = "host:ecma:math:atanh",           min_args = 1, max_args = 1 }
+hypot         = { emit = "host:ecma:math:hypot",           min_args = 2, max_args = 2 }
+
+# Bessel — implemented in `platforms/libc/src/emitter/bessel.rs` and registered
+# as `libc.math.*`, so C reaches the same code through <math.h>.
+bessel_j0     = { emit = "common:libc.math.j0",             min_args = 1, max_args = 1 }
+bessel_j1     = { emit = "common:libc.math.j1",             min_args = 1, max_args = 1 }
+bessel_jn     = { emit = "common:libc.math.jn",             min_args = 2, max_args = 2 }
+bessel_y0     = { emit = "common:libc.math.y0",             min_args = 1, max_args = 1 }
+bessel_y1     = { emit = "common:libc.math.y1",             min_args = 1, max_args = 1 }
+bessel_yn     = { emit = "common:libc.math.yn",             min_args = 2, max_args = 2 }
+# `erfc_scaled` is NOT `exp(x*x)*erfc(x)` computed literally — both factors
+# overflow/underflow well before the product does. It gets its own kernel.
+erfc_scaled   = { emit = "common:libc.math.erfcx",          min_args = 1, max_args = 1 }
+
+# ── F2008 bit counting ───────────────────────────────────────────────────────
+#
+# The only bit intrinsics that are NOT here: every other one folds to an
+# operator in the walker (`iand` is `BitAnd`, `btest` is a shift and a compare).
+# Counting bits has no operator, and is one core WASM opcode —
+# `i32.popcnt` / `i32.clz` / `i32.ctz` — emitted in `emitter/bit_adapter.rs`.
+popcnt        = { emit = "common:fortran.popcnt",          min_args = 1, max_args = 1 }
+leadz         = { emit = "common:fortran.leadz",           min_args = 1, max_args = 1 }
+trailz        = { emit = "common:fortran.trailz",          min_args = 1, max_args = 1 }
+
+# `parity(mask)` — an odd number of true elements. Not a bit intrinsic; F2008
+# introduced it alongside them. It is a BUILTIN and not a walker fold precisely
+# because a builtin can be shadowed: the suite contains a program with its own
+# `recursive integer function parity(n, even_only)`, and a fold — which fires on
+# the name, before any declaration is known — would hijack it.
+parity        = { emit = "common:fortran.parity",          min_args = 1, max_args = 1 }
+
 # ── String functions ─────────────────────────────────────────────────────────
 
 len           = { emit = "common:strings.length",          min_args = 1, max_args = 1 }
 size          = { emit = "common:array_length",            min_args = 1, max_args = 1 }
+rank          = { emit = "common:collections.rank",        min_args = 1, max_args = 1 }
 len_trim      = { emit = "common:fortran.len_trim",        min_args = 1, max_args = 1 }
 trim          = { emit = "common:str_trim_end",            min_args = 1, max_args = 1 }
 adjustl       = { emit = "common:str_trim_start",          min_args = 1, max_args = 1 }

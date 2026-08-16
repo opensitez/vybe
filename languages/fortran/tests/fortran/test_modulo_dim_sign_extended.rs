@@ -55,12 +55,12 @@ fortran_cases! {
 
     real_mod_vs_modulo_neg_dividend => {
         "program t\nprint *, nint(mod(-11.5, 4.0)*10)\nprint *, nint(modulo(-11.5, 4.0)*10)\nend program t\n",
-        ["-15", "5"]
+        ["-35", "5"]
     };
 
     real_mod_vs_modulo_neg_divisor => {
         "program t\nprint *, nint(mod(11.5, -4.0)*10)\nprint *, nint(modulo(11.5, -4.0)*10)\nend program t\n",
-        ["15", "-5"]
+        ["35", "-5"]
     };
 
     do_real_modulo_wraps_angle_degrees => {
@@ -150,7 +150,7 @@ fortran_cases! {
 
     sign_int_neg_zero_sign => {
         "program t\nprint *, sign(-7, 0)\nend program t\n",
-        ["-7"]
+        ["7"]
     };
 
     sign_real_scaled_neg314 => {
@@ -190,7 +190,7 @@ fortran_cases! {
 
     sign_real_with_negative_zero_sign => {
         "program t\nprint *, nint(sign(9.0, -0.0)*10)\nend program t\n",
-        ["-90"]
+        ["90"]
     };
 
     atan2_east_axis_degrees_zero => {

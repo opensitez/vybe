@@ -19,7 +19,7 @@ fortran_cases! {
 
     alloc_logical_scalar_value => {
         "program t\nlogical, allocatable :: flag\nallocate(flag)\nflag = .true.\nprint *, flag\ndeallocate(flag)\nend program t\n",
-        ["1"]
+        ["true"]
     };
 
     alloc_char_two_element_trim => {
@@ -96,7 +96,7 @@ fortran_cases! {
 
     alloc_2d_assign_literal_matrix => {
         "program t\ninteger, allocatable :: grid(:,:)\ngrid = reshape([1, 2, 3, 4], [2, 2])\nprint *, grid(2, 1)\nprint *, sum(grid)\nend program t\n",
-        ["3", "10"]
+        ["2", "10"]
     };
 
     alloc_derived_field_via_assignment => {
@@ -199,7 +199,7 @@ fortran_cases! {
 
     pointer_2d_matrix_center => {
         "program t\ninteger, target :: mat(2, 2)\ninteger, pointer :: view(:,:)\nmat = reshape([1, 2, 3, 4], [2, 2])\nview => mat\nprint *, view(2, 1)\nend program t\n",
-        ["3"]
+        ["2"]
     };
 
     pointer_target_section_first_element => {

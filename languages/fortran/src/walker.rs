@@ -295,6 +295,8 @@ fn walk_stmt_inner(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
         Rule::do_concurrent_statement => walk_do_concurrent(pair).map(Some),
         Rule::do_while_statement => walk_do_while(pair).map(Some),
         Rule::select_case_statement => walk_select(pair).map(Some),
+        Rule::select_type_statement => walk_select_type(pair).map(Some),
+        Rule::select_rank_statement => walk_select_rank(pair).map(Some),
         Rule::enum_statement => walk_enum_statement(pair).map(Some),
         Rule::print_statement => walk_print(pair).map(Some),
         Rule::write_statement => walk_write(pair).map(Some),
@@ -326,10 +328,16 @@ fn walk_stmt_inner(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
                 ExprKind::Yield(value.map(Box::new)),
             )))))
         }
+        // `cycle` / `exit` take an optional CONSTRUCT NAME, and the name is the
+        // whole point of naming a loop — `cycle outer` from an inner loop must
+        // reach the outer one. The name was being dropped, so both always
+        // lowered to `Implicit` and hit the innermost loop.
         Rule::cycle_statement => Ok(Some(Statement::new(StmtKind::Continue(
-            ContinueTarget::Implicit,
+            fortran_loop_target_name(&pair).map_or(ContinueTarget::Implicit, ContinueTarget::Label),
         )))),
-        Rule::exit_statement => Ok(Some(Statement::new(StmtKind::Break(BreakTarget::Implicit)))),
+        Rule::exit_statement => Ok(Some(Statement::new(StmtKind::Break(
+            fortran_loop_target_name(&pair).map_or(BreakTarget::Implicit, BreakTarget::Label),
+        )))),
         // `STOP <code>` sets the process status; a bare `STOP` is ordinary
         // termination. The code was being dropped here — every `stop 1` exited
         // 0, so a Fortran program could not report failure at all (gfortran
@@ -988,6 +996,7 @@ fn walk_if(pair: Pair<Rule>) -> Result<Statement, String> {
     for p in inner {
         match p.as_rule() {
             Rule::expression
+            | Rule::logical_equiv
             | Rule::logical_or
             | Rule::logical_and
             | Rule::logical_not
@@ -1073,9 +1082,27 @@ fn walk_do(pair: Pair<Rule>) -> Result<Statement, String> {
     let mut exprs = Vec::new();
     let mut body_parts = Vec::new();
     let mut body = Vec::new();
+    let mut label = None;
+    let mut closed = false;
     for p in parts {
         match p.as_rule() {
-            Rule::identifier if var.is_empty() => {
+            // `outer: do i = 1, n`. Its own grammar rule, so it can never be
+            // mistaken for the loop variable or a bound.
+            Rule::loop_label => {
+                label = Some(p.as_str().to_string());
+            }
+            // Everything past `end do` is the CLOSING NAME, never part of the
+            // header. `identifier` is an expr rule, so the `is_expr_rule` arm
+            // below used to swallow it into `exprs`, where it landed in the
+            // third slot and became the loop STEP: `end do outer` compiled to
+            // `i = i + outer`, an undefined name, so every named loop ran
+            // exactly one iteration. The dead `Rule::identifier => {}` arm that
+            // used to sit after `is_expr_rule` was meant to catch this and
+            // could never be reached.
+            Rule::kw_end_do => {
+                closed = true;
+            }
+            Rule::identifier if var.is_empty() && !closed => {
                 var = p.as_str().to_string();
             }
             Rule::statement_line => {
@@ -1084,20 +1111,22 @@ fn walk_do(pair: Pair<Rule>) -> Result<Statement, String> {
             Rule::inline_statement_list => {
                 body.extend(walk_inline_statement_list(p)?);
             }
-            _ if is_expr_rule(p.as_rule()) => {
+            _ if is_expr_rule(p.as_rule()) && !closed => {
                 exprs.push(p);
             }
-            Rule::identifier => {} // end do name
-            _ => {}                // skip kw_do, kw_end etc.
+            _ => {} // skip kw_do, the closing name, etc.
         }
     }
     body.extend(walk_body(body_parts.into_iter())?);
     if var.is_empty() {
-        return Ok(Statement::new(StmtKind::While {
-            cond: Expression::new(ExprKind::Lit(Literal::Bool(true))),
-            body,
-            else_body: None,
-        }));
+        return Ok(label_fortran_loop(
+            label,
+            Statement::new(StmtKind::While {
+                cond: Expression::new(ExprKind::Lit(Literal::Bool(true))),
+                body,
+                else_body: None,
+            }),
+        ));
     }
 
     let start = if !exprs.is_empty() {
@@ -1120,12 +1149,36 @@ fn walk_do(pair: Pair<Rule>) -> Result<Statement, String> {
         value: start,
         by_ref: false,
     })));
-    let cond = Some(Expression::new(ExprKind::Binary {
-        left: Box::new(Expression::new(ExprKind::Ident(var.clone()))),
-        op: BinOp::LtEq,
-        right: Box::new(end_e),
-    }));
     let sv = step_expr.unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Int(1))));
+    // A NEGATIVE step counts DOWN: `do i = 10, 1, -1` runs ten times, not zero.
+    // The condition was hard-wired to `i <= end`, so every countdown loop was
+    // skipped entirely.
+    let cond = Some(match fortran_step_is_negative(&sv) {
+        // The sign is settled at compile time — which covers every literal
+        // step, the overwhelmingly common spelling — so the test stays a
+        // single comparison.
+        Some(negative) => Expression::new(ExprKind::Binary {
+            left: Box::new(Expression::new(ExprKind::Ident(var.clone()))),
+            op: if negative { BinOp::GtEq } else { BinOp::LtEq },
+            right: Box::new(end_e),
+        }),
+        // `do i = a, b, s` — the direction is only known at RUNTIME.
+        // `(end - i) * step >= 0` is the same test for both: a positive step
+        // reduces to `i <= end`, a negative one to `i >= end`.
+        None => Expression::new(ExprKind::Binary {
+            left: Box::new(Expression::new(ExprKind::Binary {
+                left: Box::new(Expression::new(ExprKind::Binary {
+                    left: Box::new(end_e),
+                    op: BinOp::Sub,
+                    right: Box::new(Expression::new(ExprKind::Ident(var.clone()))),
+                })),
+                op: BinOp::Mul,
+                right: Box::new(sv.clone()),
+            })),
+            op: BinOp::GtEq,
+            right: Box::new(Expression::new(ExprKind::Lit(Literal::Int(0)))),
+        }),
+    });
     // i = i + step as an Assign expression
     let update = Some(Expression::new(ExprKind::Assign {
         target: Box::new(Expression::new(ExprKind::Ident(var.clone()))),
@@ -1135,12 +1188,63 @@ fn walk_do(pair: Pair<Rule>) -> Result<Statement, String> {
             right: Box::new(sv),
         })),
     }));
-    Ok(Statement::new(StmtKind::For {
-        init,
-        cond,
-        update,
-        body,
-    }))
+    Ok(label_fortran_loop(
+        label,
+        Statement::new(StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        }),
+    ))
+}
+
+/// Whether a DO step counts DOWN, when that is decidable at compile time.
+///
+/// `None` means the sign is a runtime question — a variable step — and the
+/// caller has to emit a direction-agnostic condition rather than guess.
+fn fortran_step_is_negative(step: &Expression) -> Option<bool> {
+    match &step.kind {
+        ExprKind::Lit(Literal::Int(value)) => Some(*value < 0),
+        ExprKind::Lit(Literal::Float(value)) => Some(*value < 0.0),
+        // `-1` reaches here as a negation of the literal `1`, which is how
+        // the grammar spells it — checking only `Lit` would miss every
+        // countdown loop in the corpus.
+        ExprKind::Unary {
+            op: UnaryOp::Neg,
+            expr,
+        } => fortran_step_is_negative(expr).map(|negative| !negative),
+        ExprKind::Unary {
+            op: UnaryOp::Pos,
+            expr,
+        } => fortran_step_is_negative(expr),
+        _ => None,
+    }
+}
+
+/// The construct name on a `cycle` / `exit`, if the source gave one.
+fn fortran_loop_target_name(pair: &Pair<Rule>) -> Option<String> {
+    pair.clone()
+        .into_inner()
+        .find(|inner| inner.as_rule() == Rule::identifier)
+        .map(|inner| inner.as_str().to_string())
+}
+
+/// Wrap a loop in `StmtKind::Labeled` when the source named it.
+///
+/// The construct name is what `cycle <name>` / `exit <name>` target, and the
+/// compiler already resolves `ContinueTarget::Label` / `BreakTarget::Label`
+/// against this wrapper — the walker simply never produced one, so a named
+/// loop was indistinguishable from an unnamed one and every multi-level
+/// `cycle`/`exit` hit the innermost loop instead.
+fn label_fortran_loop(label: Option<String>, loop_stmt: Statement) -> Statement {
+    match label {
+        Some(label) => Statement::new(StmtKind::Labeled {
+            label,
+            body: Box::new(loop_stmt),
+        }),
+        None => loop_stmt,
+    }
 }
 
 fn walk_do_concurrent(pair: Pair<Rule>) -> Result<Statement, String> {
@@ -1241,8 +1345,13 @@ fn walk_do_while(pair: Pair<Rule>) -> Result<Statement, String> {
     let mut cond = None;
     let mut body_parts = Vec::new();
     let mut body = Vec::new();
+    let mut label = None;
     for p in parts {
-        if is_expr_rule(p.as_rule()) && cond.is_none() {
+        if p.as_rule() == Rule::loop_label {
+            // `watch: do while (…)` names the construct just like a counted
+            // DO does, and `exit watch` has to be able to reach it.
+            label = Some(p.as_str().to_string());
+        } else if is_expr_rule(p.as_rule()) && cond.is_none() {
             cond = Some(walk_expr(p)?);
         } else if p.as_rule() == Rule::statement_line {
             body_parts.push(p);
@@ -1254,11 +1363,14 @@ fn walk_do_while(pair: Pair<Rule>) -> Result<Statement, String> {
     // If condition not found, emit "false" so the loop immediately exits (never infinite)
     let cond = cond.unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Bool(false))));
     body.extend(walk_body(body_parts.into_iter())?);
-    Ok(Statement::new(StmtKind::While {
-        cond,
-        body,
-        else_body: None,
-    }))
+    Ok(label_fortran_loop(
+        label,
+        Statement::new(StmtKind::While {
+            cond,
+            body,
+            else_body: None,
+        }),
+    ))
 }
 
 fn walk_select(pair: Pair<Rule>) -> Result<Statement, String> {
@@ -1337,6 +1449,174 @@ fn walk_select(pair: Pair<Rule>) -> Result<Statement, String> {
         cases,
         default: default_body,
     }))
+}
+
+fn walk_select_type(pair: Pair<Rule>) -> Result<Statement, String> {
+    let mut selector: Option<Expression> = None;
+    let mut clauses = Vec::new();
+    for p in pair.into_inner().filter(|p| meaningful(p)) {
+        if selector.is_none() && (is_expr_rule(p.as_rule()) || p.as_rule() == Rule::expression) {
+            selector = Some(walk_expr(p)?);
+        } else if p.as_rule() == Rule::select_type_clause {
+            clauses.push(p);
+        }
+    }
+    let selector = selector.unwrap_or_else(|| Expression::null());
+    let mut branches: Vec<(Expression, Vec<Statement>)> = Vec::new();
+    let mut default_body: Option<Vec<Statement>> = None;
+    for clause in clauses {
+        let header = fortran_clause_header(&clause);
+        let body = walk_fortran_clause_body(clause)?;
+        if header.contains("class default") {
+            default_body = Some(body);
+            continue;
+        }
+        let type_name = fortran_clause_paren_text(&header)
+            .map(fortran_canonical_select_type_name)
+            .unwrap_or_else(|| "object".to_string());
+        branches.push((build_fortran_select_type_condition(selector.clone(), &type_name), body));
+    }
+    Ok(fortran_if_from_branches(branches, default_body))
+}
+
+fn walk_select_rank(pair: Pair<Rule>) -> Result<Statement, String> {
+    let mut selector: Option<Expression> = None;
+    let mut clauses = Vec::new();
+    for p in pair.into_inner().filter(|p| meaningful(p)) {
+        if selector.is_none() && (is_expr_rule(p.as_rule()) || p.as_rule() == Rule::expression) {
+            selector = Some(walk_expr(p)?);
+        } else if p.as_rule() == Rule::select_rank_clause {
+            clauses.push(p);
+        }
+    }
+    let selector = selector.unwrap_or_else(|| Expression::null());
+    let rank_expr = build_fortran_rank_expr(selector);
+    let mut branches: Vec<(Expression, Vec<Statement>)> = Vec::new();
+    let mut default_body: Option<Vec<Statement>> = None;
+    for clause in clauses {
+        let header = fortran_clause_header(&clause);
+        let body = walk_fortran_clause_body(clause)?;
+        if header.contains("rank default") {
+            default_body = Some(body);
+            continue;
+        }
+        let Some(rank_text) = fortran_clause_paren_text(&header) else {
+            continue;
+        };
+        if rank_text.trim() == "*" {
+            default_body = Some(body);
+            continue;
+        }
+        let rank_value = parse_fortran_expression_text(rank_text.trim())
+            .unwrap_or_else(|_| Expression::int(0));
+        branches.push((
+            Expression::new(ExprKind::Binary {
+                op: BinOp::StrictEq,
+                left: Box::new(rank_expr.clone()),
+                right: Box::new(rank_value),
+            }),
+            body,
+        ));
+    }
+    Ok(fortran_if_from_branches(branches, default_body))
+}
+
+fn fortran_clause_header(pair: &Pair<Rule>) -> String {
+    pair.as_str()
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase()
+}
+
+fn fortran_clause_paren_text(header: &str) -> Option<&str> {
+    let start = header.find('(')?;
+    let end = header.rfind(')')?;
+    (end > start).then_some(header[start + 1..end].trim())
+}
+
+fn walk_fortran_clause_body(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
+    let mut body = Vec::new();
+    for child in pair.into_inner().filter(|p| meaningful(p)) {
+        if child.as_rule() != Rule::statement_line {
+            continue;
+        }
+        for stmt_pair in child.into_inner().filter(|p| meaningful(p)) {
+            if let Some(stmt) = walk_stmt(stmt_pair)? {
+                body.push(stmt);
+            }
+        }
+    }
+    let mut type_env = HashMap::new();
+    lower_fortran_body_intrinsics_with_env(&mut body, &mut type_env);
+    Ok(body)
+}
+
+fn fortran_canonical_select_type_name(type_name: &str) -> String {
+    let lower = type_name.trim().to_ascii_lowercase();
+    if lower.starts_with("integer") {
+        "integer".to_string()
+    } else if lower.starts_with("real")
+        || lower.starts_with("double precision")
+        || lower.starts_with("double")
+    {
+        "number".to_string()
+    } else if lower.starts_with("logical") {
+        "boolean".to_string()
+    } else if lower.starts_with("character") {
+        "string".to_string()
+    } else if lower.starts_with("complex") {
+        "object".to_string()
+    } else if let Some(inner) = lower.strip_prefix("type(").and_then(|s| s.strip_suffix(')')) {
+        inner.to_string()
+    } else if let Some(inner) = lower.strip_prefix("class(").and_then(|s| s.strip_suffix(')')) {
+        inner.to_string()
+    } else {
+        type_name.trim().to_string()
+    }
+}
+
+fn build_fortran_select_type_condition(selector: Expression, type_name: &str) -> Expression {
+    Expression::new(ExprKind::IsType {
+        expr: Box::new(selector),
+        type_name: type_name.to_string(),
+    })
+}
+
+/// `RANK(x)` — and the selector of a `SELECT RANK`, which is the same question.
+///
+/// An ordinary call to the `rank` intrinsic, which the profile already binds:
+/// `rank = { emit = "common:collections.rank" }`. Rank is a runtime property
+/// here, not a static one — every `SELECT RANK` in the corpus dispatches on an
+/// assumed-rank dummy (`integer, intent(in) :: x(..)`), so the same subroutine
+/// is reached with a scalar and with an array and the walker cannot know which.
+///
+/// No AST node of its own: a rank is a fact about a collection VALUE, so it
+/// belongs with the other collection primitives, where a language that has no
+/// such surface never has to carry a variant it cannot produce.
+fn build_fortran_rank_expr(selector: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("rank")),
+        args: vec![Argument::positional(selector)],
+        optional: false,
+    })
+}
+
+fn fortran_if_from_branches(
+    branches: Vec<(Expression, Vec<Statement>)>,
+    default_body: Option<Vec<Statement>>,
+) -> Statement {
+    let mut iter = branches.into_iter();
+    let Some((cond, then_body)) = iter.next() else {
+        return Statement::new(StmtKind::Block(default_body.unwrap_or_default()));
+    };
+    Statement::new(StmtKind::If {
+        cond,
+        then_body,
+        elifs: iter.collect(),
+        else_body: default_body,
+    })
 }
 
 fn walk_print(pair: Pair<Rule>) -> Result<Statement, String> {
@@ -1922,8 +2202,8 @@ fn stringify_fortran_io_expr(expr: Expression) -> Expression {
     if is_fortran_logical_expr(&expr) {
         return Expression::new(ExprKind::Ternary {
             cond: Box::new(expr),
-            then: Box::new(Expression::string("true")),
-            else_: Box::new(Expression::string("false")),
+            then: Box::new(Expression::string("True")),
+            else_: Box::new(Expression::string("False")),
         });
     }
     Expression::new(ExprKind::Call {
@@ -1950,6 +2230,7 @@ fn is_fortran_logical_expr(expr: &Expression) -> bool {
                 | BinOp::Or
                 | BinOp::Eqv
         ),
+        ExprKind::Unary { op, .. } => matches!(op, UnaryOp::Not),
         _ => false,
     }
 }
@@ -2382,11 +2663,188 @@ fn walk_slice_arg(pair: Pair<Rule>) -> Result<Expression, String> {
 }
 
 fn walk_allocate_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
-    walk_allocator_stmt(pair, "allocate")
+    walk_allocate_stmt_from_text(pair.as_str())
 }
 
 fn walk_deallocate_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
     walk_allocator_stmt(pair, "deallocate")
+}
+
+fn split_fortran_top_level_commas(text: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut quote: Option<char> = None;
+    let mut chars = text.char_indices().peekable();
+    while let Some((idx, ch)) = chars.next() {
+        if let Some(q) = quote {
+            if ch == q {
+                if chars.peek().is_some_and(|(_, next)| *next == q) {
+                    chars.next();
+                } else {
+                    quote = None;
+                }
+            }
+            continue;
+        }
+        match ch {
+            '\'' | '"' => quote = Some(ch),
+            '(' => paren += 1,
+            ')' => paren -= 1,
+            '[' => bracket += 1,
+            ']' => bracket -= 1,
+            ',' if paren == 0 && bracket == 0 => {
+                parts.push(text[start..idx].trim());
+                start = idx + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    parts.push(text[start..].trim());
+    parts.into_iter().filter(|part| !part.is_empty()).collect()
+}
+
+fn split_fortran_top_level_equals(text: &str) -> Option<(&str, &str)> {
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut quote: Option<char> = None;
+    let mut chars = text.char_indices().peekable();
+    while let Some((idx, ch)) = chars.next() {
+        if let Some(q) = quote {
+            if ch == q {
+                if chars.peek().is_some_and(|(_, next)| *next == q) {
+                    chars.next();
+                } else {
+                    quote = None;
+                }
+            }
+            continue;
+        }
+        match ch {
+            '\'' | '"' => quote = Some(ch),
+            '(' => paren += 1,
+            ')' => paren -= 1,
+            '[' => bracket += 1,
+            ']' => bracket -= 1,
+            '=' if paren == 0 && bracket == 0 => {
+                return Some((text[..idx].trim(), text[idx + ch.len_utf8()..].trim()));
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn parse_fortran_expression_text(text: &str) -> Result<Expression, String> {
+    let mut pairs = FortranParser::parse(Rule::expression, text)
+        .map_err(|err| format!("invalid Fortran expression `{text}`: {err}"))?;
+    let pair = pairs
+        .next()
+        .ok_or_else(|| format!("missing Fortran expression `{text}`"))?;
+    walk_expr(pair)
+}
+
+fn parse_fortran_alloc_target_text(text: &str) -> Result<Expression, String> {
+    let target_text = text
+        .rsplit_once("::")
+        .map(|(_, target)| target.trim())
+        .unwrap_or_else(|| text.trim());
+    let mut pairs = FortranParser::parse(Rule::alloc_item, target_text)
+        .map_err(|err| format!("invalid allocate target `{target_text}`: {err}"))?;
+    let pair = pairs
+        .next()
+        .ok_or_else(|| format!("missing allocate target `{target_text}`"))?;
+    walk_alloc_item_expr(pair)
+}
+
+fn fortran_allocation_target_place(target: &Expression) -> Expression {
+    match &target.kind {
+        ExprKind::Call { callee, .. } => callee.as_ref().clone(),
+        _ => target.clone(),
+    }
+}
+
+fn walk_allocate_stmt_from_text(text: &str) -> Result<Statement, String> {
+    let Some(open) = text.find('(') else {
+        return walk_allocator_stmt_text_fallback(text, "allocate");
+    };
+    let close = text
+        .rfind(')')
+        .ok_or_else(|| format!("missing allocate close paren in `{text}`"))?;
+    let inner = &text[open + 1..close];
+    let mut targets = Vec::new();
+    let mut source = None;
+    let mut mold = None;
+    let mut stat = None;
+    for part in split_fortran_top_level_commas(inner) {
+        if let Some((name, value_text)) = split_fortran_top_level_equals(part) {
+            if name.eq_ignore_ascii_case("source") {
+                source = Some(parse_fortran_expression_text(value_text)?);
+                continue;
+            }
+            if name.eq_ignore_ascii_case("mold") {
+                mold = Some(parse_fortran_expression_text(value_text)?);
+                continue;
+            }
+            if name.eq_ignore_ascii_case("stat") {
+                stat = Some(parse_fortran_expression_text(value_text)?);
+                continue;
+            }
+        }
+        targets.push(parse_fortran_alloc_target_text(part)?);
+    }
+
+    let allocate_call = Statement::new(StmtKind::Expr(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("allocate")),
+        args: targets
+            .iter()
+            .cloned()
+            .map(Argument::positional)
+        .collect::<Vec<_>>(),
+        optional: false,
+    })));
+
+    if source.is_none() && mold.is_none() && stat.is_none() {
+        return Ok(allocate_call);
+    }
+
+    let mut statements = vec![allocate_call];
+    if let Some(source) = source {
+        for target in &targets {
+            statements.push(Statement::new(StmtKind::Assign {
+                targets: vec![fortran_allocation_target_place(target)],
+                value: source.clone(),
+                by_ref: false,
+            }));
+        }
+    } else if let Some(mold) = mold {
+        for target in &targets {
+            statements.push(Statement::new(StmtKind::Assign {
+                targets: vec![fortran_allocation_target_place(target)],
+                value: mold.clone(),
+                by_ref: false,
+            }));
+        }
+    }
+    if let Some(stat) = stat {
+        statements.push(Statement::new(StmtKind::Assign {
+            targets: vec![stat],
+            value: Expression::int(0),
+            by_ref: false,
+        }));
+    }
+
+    Ok(Statement::new(StmtKind::Block(statements)))
+}
+
+fn walk_allocator_stmt_text_fallback(text: &str, intrinsic_name: &str) -> Result<Statement, String> {
+    let _ = text;
+    Ok(Statement::new(StmtKind::Expr(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident(intrinsic_name)),
+        args: Vec::new(),
+        optional: false,
+    }))))
 }
 
 fn walk_allocator_stmt(pair: Pair<Rule>, intrinsic_name: &str) -> Result<Statement, String> {
@@ -3212,6 +3670,7 @@ fn function_decl_targets_type_parts(
 fn walk_expr(pair: Pair<Rule>) -> Result<Expression, String> {
     match pair.as_rule() {
         Rule::expression
+        | Rule::logical_equiv
         | Rule::logical_or
         | Rule::logical_and
         | Rule::logical_not
@@ -3382,14 +3841,36 @@ fn walk_expr(pair: Pair<Rule>) -> Result<Expression, String> {
             let mut inner = pair.into_inner().filter(|p| meaningful(p));
             let nm = inner.next().ok_or("missing fn")?.as_str().to_string();
             let mut args = Vec::new();
+            // The literal's SPELLING, kept only long enough to answer `kind`.
+            // `1.0d0` and `1.0` both walk to `Literal::Float`, so by the time
+            // the AST exists the `d` exponent and any `_8` suffix are gone and
+            // nothing downstream can tell a double literal from a default one.
+            let mut arg_texts = Vec::new();
             for p in inner {
                 if p.as_rule() == Rule::argument_list {
                     for a in p.into_inner() {
                         if a.as_rule() == Rule::argument {
-                            let (_, value) = walk_argument_expr(a)?;
-                            args.push(Argument::positional(value));
+                            arg_texts.push(a.as_str().trim().to_string());
+                            // KEEP the keyword name. `open(unit=7,
+                            // status='scratch')` has no dedicated grammar rule
+                            // and arrives here, and dropping the names left
+                            // every `open` specifier identified by POSITION
+                            // alone — which is why `status='scratch'` was being
+                            // used as the FILENAME.
+                            let (name, value) = walk_argument_expr(a)?;
+                            args.push(Argument {
+                                value,
+                                name,
+                                by_ref: false,
+                                spread: false,
+                            });
                         }
                     }
+                }
+            }
+            if nm.eq_ignore_ascii_case("kind") && arg_texts.len() == 1 {
+                if let Some(kind) = fortran_literal_kind_from_text(&arg_texts[0]) {
+                    return Ok(Expression::int(kind));
                 }
             }
             let callee = Expression::new(ExprKind::Ident(nm));
@@ -3431,6 +3912,23 @@ fn lower_intrinsic_statement(expr: &Expression) -> Option<Statement> {
             })
             .collect::<Vec<_>>();
         return Some(Statement::new(StmtKind::Block(assigns)));
+    }
+
+    if name.eq_ignore_ascii_case("move_alloc") && args.len() >= 2 {
+        let from = args[0].value.clone();
+        let to = args[1].value.clone();
+        return Some(Statement::new(StmtKind::Block(vec![
+            Statement::new(StmtKind::Assign {
+                targets: vec![to],
+                value: from.clone(),
+                by_ref: false,
+            }),
+            Statement::new(StmtKind::Expr(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("deallocate")),
+                args: vec![Argument::positional(from)],
+                optional: false,
+            }))),
+        ])));
     }
 
     if name.eq_ignore_ascii_case("open") {
@@ -3935,6 +4433,12 @@ fn lower_open_intrinsic_statement(expr: &Expression, args: &[Argument]) -> Optio
         .and_then(|index| args.get(index))
         .or_else(|| args.first());
     let file_number = file_number_arg?.value.clone();
+    // `open(61)` spells the unit POSITIONALLY, so there is no `unit=` to find
+    // and `file_number_index` is None — which made the path search below,
+    // which only skipped `file_number_index`, accept argument 0 and use the
+    // UNIT NUMBER as the filename. That is where the stray files named `61`,
+    // `57`, `32` … in the working directory came from.
+    let unit_index = file_number_index.or(Some(0));
 
     let path = args
         .iter()
@@ -3947,15 +4451,32 @@ fn lower_open_intrinsic_statement(expr: &Expression, args: &[Argument]) -> Optio
         .or_else(|| {
             args.iter()
                 .enumerate()
-                .find(|(index, arg)| Some(*index) != file_number_index && arg.name.is_none())
+                .find(|(index, arg)| Some(*index) != unit_index && arg.name.is_none())
                 .map(|(_, arg)| arg.value.clone())
         })
         .unwrap_or_else(|| {
-            Expression::string(&format!(
-                "__fortran_scratch_{}_{}.tmp",
-                expr.span.start_line.max(1),
-                expr.span.start_col.max(1),
-            ))
+            if fortran_open_is_scratch(args) {
+                // A SCRATCH file has no name by definition, and is deleted on
+                // close — a per-site temp name is the right answer here.
+                Expression::string(&format!(
+                    "__fortran_scratch_{}_{}.tmp",
+                    expr.span.start_line.max(1),
+                    expr.span.start_col.max(1),
+                ))
+            } else {
+                // An unnamed unit connects to `fort.<unit>` — gfortran, ifort
+                // and every other compiler agree, and tests that write to a
+                // bare unit and read it back depend on the two spellings
+                // naming the same file. Built as a concatenation so a unit
+                // held in a variable works too.
+                // CONCAT, not Add: `Add` on a string and a number is numeric
+                // addition, which named the file `NaN`.
+                Expression::new(ExprKind::Binary {
+                    op: BinOp::Concat,
+                    left: Box::new(Expression::string("fort.")),
+                    right: Box::new(file_number.clone()),
+                })
+            }
         });
 
     let mode = infer_fortran_open_mode(args);
@@ -3983,6 +4504,18 @@ fn lower_open_intrinsic_statement(expr: &Expression, args: &[Argument]) -> Optio
     }
 
     Some(open_stmt)
+}
+
+/// Whether this `open` asked for a SCRATCH file — one with no name, deleted
+/// when it is closed.
+fn fortran_open_is_scratch(args: &[Argument]) -> bool {
+    args.iter().any(|arg| {
+        arg.name
+            .as_deref()
+            .is_some_and(|name| name.eq_ignore_ascii_case("status"))
+            && matches!(&arg.value.kind,
+                ExprKind::Lit(Literal::Str(value)) if value.eq_ignore_ascii_case("scratch"))
+    })
 }
 
 fn infer_fortran_open_mode(args: &[Argument]) -> FileMode {
@@ -4921,6 +5454,21 @@ fn rewrite_remaining_fortran_array_calls_in_statement(
                 );
             }
         }
+        StmtKind::If { cond, elifs, .. } => {
+            rewrite_remaining_fortran_array_calls_in_expr(cond, arrays, callables, array_fields);
+            // The elif CONDITIONS, which the `_with_env` arm above discards
+            // (`for (_, elif_body)`) because it only recurses into bodies.
+            // Nothing else repairs them, so `else if (x /= w(i))` kept its
+            // `Call` even when the plain `if` was fixed.
+            for (elif_cond, _) in elifs.iter_mut() {
+                rewrite_remaining_fortran_array_calls_in_expr(
+                    elif_cond,
+                    arrays,
+                    callables,
+                    array_fields,
+                );
+            }
+        }
         StmtKind::While { cond, .. }
         | StmtKind::DoWhile { cond, .. }
         | StmtKind::Switch { expr: cond, .. } => {
@@ -5083,6 +5631,16 @@ fn rewrite_remaining_fortran_array_calls_in_expr(
                 }
                 rewrite_remaining_fortran_array_calls_in_expr(
                     &mut item.value,
+                    arrays,
+                    callables,
+                    array_fields,
+                );
+            }
+        }
+        ExprKind::ArrayTransform { args, .. } => {
+            for arg in args {
+                rewrite_remaining_fortran_array_calls_in_expr(
+                    arg,
                     arrays,
                     callables,
                     array_fields,
@@ -6281,11 +6839,13 @@ fn lower_fortran_array_materialization_value(
                 null_safe: false,
             })
         }
-        ExprKind::Array(_) | ExprKind::Slice { .. } => Expression::new(ExprKind::Index {
-            object: Box::new(expr.clone()),
-            index: Box::new(loop_index.clone()),
-            null_safe: false,
-        }),
+        ExprKind::Array(_) | ExprKind::Slice { .. } | ExprKind::ArrayTransform { .. } => {
+            Expression::new(ExprKind::Index {
+                object: Box::new(expr.clone()),
+                index: Box::new(loop_index.clone()),
+                null_safe: false,
+            })
+        }
         ExprKind::Call { callee, .. }
             if matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("Array") || array_functions.contains(&name.to_ascii_lowercase()))
                 || matches!(&callee.kind, ExprKind::Member { field, .. } if matches!(field.to_ascii_lowercase().as_str(), "map" | "filter" | "flatmap")) =>
@@ -6949,8 +7509,9 @@ fn lower_fortran_array_assignment_value(
         | ExprKind::Member { .. }
         | ExprKind::Slice { .. }
         | ExprKind::Array(_)
+        | ExprKind::ArrayTransform { .. }
         | ExprKind::Call { .. } => {
-            if matches!(expr.kind, ExprKind::Array(_))
+            if matches!(expr.kind, ExprKind::Array(_) | ExprKind::ArrayTransform { .. })
                 || matches!(&expr.kind, ExprKind::Member { field, .. } if array_fields.contains(&field.to_ascii_lowercase()))
                 || matches!(&expr.kind, ExprKind::Ident(name) if arrays.contains(&name.to_ascii_lowercase()))
                 || expr_is_known_fortran_array(
@@ -7907,7 +8468,7 @@ fn lower_fortran_scalar_array_assignments_in_members(
 fn rewrite_fortran_scalar_array_assignment(
     statement: &mut Statement,
     array_sizes: &HashMap<String, Expression>,
-    array_ranks: &HashMap<String, usize>,
+    array_ranks: &mut HashMap<String, usize>,
     _array_fields: &HashSet<String>,
     array_field_sizes: &HashMap<String, Expression>,
     array_field_ranks: &HashMap<String, usize>,
@@ -7915,6 +8476,13 @@ fn rewrite_fortran_scalar_array_assignment(
 ) {
     match &mut statement.kind {
         StmtKind::Assign { targets, value, .. } => {
+            if let Some(rank) = resolve_fortran_array_expr_rank(value, array_ranks, array_field_ranks) {
+                for target in targets.iter() {
+                    if let Some(key) = fortran_array_target_key(target) {
+                        array_ranks.insert(key, rank);
+                    }
+                }
+            }
             if expr_is_known_fortran_array(value, array_sizes, array_field_sizes, array_functions)
                 || resolve_fortran_array_expr_rank(value, array_ranks, array_field_ranks).is_some()
             {
@@ -9383,7 +9951,10 @@ fn lower_fortran_array_intrinsic_expr(
             }])))
         }
         _ if args.len() != 1 || args[0].name.is_some() => None,
-        "size" => Some(if rank > 1 {
+        "size" => Some(if args.len() == 1 {
+            resolve_fortran_array_expr_size(array_expr, array_sizes, array_field_sizes)
+                .unwrap_or_else(|| build_fortran_nested_array_size_expr(array_expr.clone(), rank, 0))
+        } else if rank > 1 {
             build_fortran_nested_array_size_expr(array_expr.clone(), rank, 0)
         } else {
             resolve_fortran_array_expr_size(array_expr, array_sizes, array_field_sizes)
@@ -9988,19 +10559,10 @@ fn build_fortran_typed_array_map(
             is_nullable: false,
         });
     }
-    Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::new(ExprKind::Member {
-            object: Box::new(array_expr),
-            field: "map".to_string(),
-            null_safe: false,
-        })),
-        args: vec![Argument::positional(Expression::new(ExprKind::Lambda {
-            params,
-            body: LambdaBody::Expr(Box::new(body)),
-            is_async: false,
-            captures: Vec::new(),
-        }))],
-        optional: false,
+    Expression::new(ExprKind::ArrayMap {
+        array: Box::new(array_expr),
+        params,
+        body: Box::new(body),
     })
 }
 
@@ -10013,7 +10575,7 @@ fn is_known_fortran_array_expr(
     match &expr.kind {
         ExprKind::Ident(name) => arrays.contains(&name.to_ascii_lowercase()),
         ExprKind::Member { field, .. } => array_fields.contains(&field.to_ascii_lowercase()),
-        ExprKind::Array(_) | ExprKind::Slice { .. } => true,
+        ExprKind::Array(_) | ExprKind::Slice { .. } | ExprKind::ArrayTransform { .. } => true,
         ExprKind::Call { callee, .. } => match &callee.kind {
             ExprKind::Ident(name) => {
                 matches!(name.to_ascii_lowercase().as_str(), "array")
@@ -10423,6 +10985,11 @@ fn rewrite_array_subscripts_in_expr(
                 );
             }
         }
+        ExprKind::ArrayTransform { args, .. } => {
+            for arg in args {
+                rewrite_array_subscripts_in_expr(arg, arrays, char_vars, callables, array_fields);
+            }
+        }
         ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
             for item in items {
                 rewrite_array_subscripts_in_expr(item, arrays, char_vars, callables, array_fields);
@@ -10602,7 +11169,7 @@ fn is_fortran_string_type_hint(type_hint: &str) -> bool {
 
 fn is_array_initializer_expr(expr: &Expression) -> bool {
     match &expr.kind {
-        ExprKind::Array(_) => true,
+        ExprKind::Array(_) | ExprKind::ArrayTransform { .. } => true,
         ExprKind::Call { callee, .. } => {
             matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("Array"))
         }
@@ -10699,6 +11266,10 @@ fn lower_fortran_body_intrinsics_with_env(
         if let Some(lowered) = lower_body_intrinsic_statement(statement, type_env) {
             *statement = lowered;
         }
+        if let Some(lowered) = lower_fortran_transfer_assignment_statement(statement, type_env) {
+            *statement = lowered;
+        }
+        lower_fortran_transfer_markers_in_statement(statement, type_env);
 
         match &mut statement.kind {
             StmtKind::VarDecl { .. } => {}
@@ -10827,6 +11398,235 @@ fn lower_fortran_body_intrinsics_with_env(
             _ => {}
         }
     }
+}
+
+fn lower_fortran_transfer_assignment_statement(
+    statement: &Statement,
+    type_env: &HashMap<String, String>,
+) -> Option<Statement> {
+    let StmtKind::Assign {
+        targets,
+        value,
+        by_ref,
+    } = &statement.kind
+    else {
+        return None;
+    };
+    if targets.len() != 1 {
+        return None;
+    }
+    let ExprKind::Call { callee, args, .. } = &value.kind else {
+        return None;
+    };
+    let ExprKind::Ident(name) = &callee.kind else {
+        return None;
+    };
+    if !is_fortran_transfer_marker_name(name) {
+        return None;
+    }
+    let positional = args
+        .iter()
+        .filter(|arg| arg.name.is_none())
+        .map(|arg| arg.value.clone())
+        .collect::<Vec<_>>();
+    if positional.len() < 2 {
+        return None;
+    }
+    let target = targets[0].clone();
+    let target_hint = fortran_type_hint_for_expr(&target, type_env);
+    Some(Statement::new(StmtKind::Assign {
+        targets: vec![target],
+        value: build_fortran_transfer_expr_with_hint(
+            positional[0].clone(),
+            positional[1].clone(),
+            positional.get(2).cloned(),
+            target_hint.as_deref(),
+            fortran_type_hint_for_expr(&positional[0], type_env).as_deref(),
+        ),
+        by_ref: *by_ref,
+    }))
+}
+
+fn is_fortran_transfer_marker_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case("transfer") || name.eq_ignore_ascii_case("__fortran_transfer")
+}
+
+fn lower_fortran_transfer_markers_in_statement(
+    statement: &mut Statement,
+    type_env: &HashMap<String, String>,
+) {
+    match &mut statement.kind {
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            lower_fortran_transfer_markers_in_expr(expr, type_env)
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for declaration in declarations {
+                if let Some(init) = &mut declaration.init {
+                    lower_fortran_transfer_markers_in_expr(init, type_env);
+                }
+            }
+        }
+        StmtKind::Assign { targets, value, .. } => {
+            for target in targets {
+                lower_fortran_transfer_markers_in_expr(target, type_env);
+            }
+            lower_fortran_transfer_markers_in_expr(value, type_env);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            lower_fortran_transfer_markers_in_expr(target, type_env);
+            lower_fortran_transfer_markers_in_expr(value, type_env);
+        }
+        StmtKind::If {
+            cond,
+            elifs,
+            else_body: _,
+            ..
+        } => {
+            lower_fortran_transfer_markers_in_expr(cond, type_env);
+            for (elif_cond, _) in elifs {
+                lower_fortran_transfer_markers_in_expr(elif_cond, type_env);
+            }
+        }
+        StmtKind::While { cond, .. } | StmtKind::DoWhile { cond, .. } => {
+            lower_fortran_transfer_markers_in_expr(cond, type_env)
+        }
+        StmtKind::For { init, cond, update, .. } => {
+            if let Some(init) = init {
+                lower_fortran_transfer_markers_in_statement(init, type_env);
+            }
+            if let Some(cond) = cond {
+                lower_fortran_transfer_markers_in_expr(cond, type_env);
+            }
+            if let Some(update) = update {
+                lower_fortran_transfer_markers_in_expr(update, type_env);
+            }
+        }
+        StmtKind::ForIn { iter, .. } => lower_fortran_transfer_markers_in_expr(iter, type_env),
+        StmtKind::Switch { expr, cases, .. } => {
+            lower_fortran_transfer_markers_in_expr(expr, type_env);
+            for case in cases {
+                for condition in &mut case.conditions {
+                    match condition {
+                        CaseCondition::Value(value) => {
+                            lower_fortran_transfer_markers_in_expr(value, type_env)
+                        }
+                        CaseCondition::Range { from, to } => {
+                            lower_fortran_transfer_markers_in_expr(from, type_env);
+                            lower_fortran_transfer_markers_in_expr(to, type_env);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        StmtKind::Throw { expr, cause } => {
+            if let Some(expr) = expr {
+                lower_fortran_transfer_markers_in_expr(expr, type_env);
+            }
+            if let Some(cause) = cause {
+                lower_fortran_transfer_markers_in_expr(cause, type_env);
+            }
+        }
+        StmtKind::Assert { test, msg } => {
+            lower_fortran_transfer_markers_in_expr(test, type_env);
+            if let Some(msg) = msg {
+                lower_fortran_transfer_markers_in_expr(msg, type_env);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn lower_fortran_transfer_markers_in_expr(
+    expr: &mut Expression,
+    type_env: &HashMap<String, String>,
+) {
+    match &mut expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            lower_fortran_transfer_markers_in_expr(callee, type_env);
+            for arg in args.iter_mut() {
+                lower_fortran_transfer_markers_in_expr(&mut arg.value, type_env);
+            }
+            let ExprKind::Ident(name) = &callee.kind else {
+                return;
+            };
+            if !is_fortran_transfer_marker_name(name) {
+                return;
+            }
+            let positional = args
+                .iter()
+                .filter(|arg| arg.name.is_none())
+                .map(|arg| arg.value.clone())
+                .collect::<Vec<_>>();
+            if positional.len() < 2 {
+                return;
+            }
+            *expr = build_fortran_transfer_expr_with_hint(
+                positional[0].clone(),
+                positional[1].clone(),
+                positional.get(2).cloned(),
+                None,
+                fortran_type_hint_for_expr(&positional[0], type_env).as_deref(),
+            );
+        }
+        ExprKind::Binary { left, right, .. } => {
+            lower_fortran_transfer_markers_in_expr(left, type_env);
+            lower_fortran_transfer_markers_in_expr(right, type_env);
+        }
+        ExprKind::Unary { expr: inner, .. } => {
+            lower_fortran_transfer_markers_in_expr(inner, type_env);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            lower_fortran_transfer_markers_in_expr(cond, type_env);
+            lower_fortran_transfer_markers_in_expr(then, type_env);
+            lower_fortran_transfer_markers_in_expr(else_, type_env);
+        }
+        ExprKind::Member { object, .. } => lower_fortran_transfer_markers_in_expr(object, type_env),
+        ExprKind::Index { object, index, .. } => {
+            lower_fortran_transfer_markers_in_expr(object, type_env);
+            lower_fortran_transfer_markers_in_expr(index, type_env);
+        }
+        ExprKind::Array(items) => {
+            for item in items {
+                lower_fortran_transfer_markers_in_expr(&mut item.value, type_env);
+            }
+        }
+        ExprKind::Object(properties) => {
+            for property in properties {
+                match property {
+                    ObjectProperty::KeyValue { key, value } => {
+                        lower_fortran_transfer_markers_in_expr(key, type_env);
+                        lower_fortran_transfer_markers_in_expr(value, type_env);
+                    }
+                    ObjectProperty::Spread(value) => {
+                        lower_fortran_transfer_markers_in_expr(value, type_env)
+                    }
+                    ObjectProperty::Computed { key, value } => {
+                        lower_fortran_transfer_markers_in_expr(key, type_env);
+                        lower_fortran_transfer_markers_in_expr(value, type_env);
+                    }
+                    ObjectProperty::Method { .. } | ObjectProperty::Accessor { .. } => {}
+                    ObjectProperty::Shorthand(_) => {}
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn fortran_type_hint_for_expr(
+    expr: &Expression,
+    type_env: &HashMap<String, String>,
+) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Ident(name) => type_env.get(&name.to_ascii_lowercase()).cloned(),
+        ExprKind::Member { field, .. } => type_env.get(&field.to_ascii_lowercase()).cloned(),
+        _ => None,
+    }
+}
+
+fn fortran_type_hint_is_array(type_hint: Option<&str>) -> bool {
+    type_hint.is_some_and(|hint| hint.contains("()"))
 }
 
 fn is_fortran_complex_type_hint(type_hint: &str) -> bool {
@@ -11946,11 +12746,16 @@ fn lower_intrinsic_expr_call(callee: &Expression, args: &[Argument]) -> Option<E
         "transpose" if args.len() == 1 && args[0].name.is_none() => {
             Some(build_fortran_transpose_expr(args[0].value.clone()))
         }
-        "int" | "real" | "dble" if args.len() > 1 && !positional_args.is_empty() => {
-            Some(Expression::new(ExprKind::Call {
-                callee: Box::new(Expression::ident(&lowered)),
-                args: vec![Argument::positional(positional_args[0].clone())],
-                optional: false,
+        "int" if !positional_args.is_empty() => {
+            Some(Expression::new(ExprKind::Cast {
+                expr: Box::new(positional_args[0].clone()),
+                type_name: "integer".to_string(),
+            }))
+        }
+        "real" | "dble" if !positional_args.is_empty() => {
+            Some(Expression::new(ExprKind::Cast {
+                expr: Box::new(positional_args[0].clone()),
+                type_name: "number".to_string(),
             }))
         }
         "aint" if args.len() == 1 => Some(Expression::new(ExprKind::Call {
@@ -11973,6 +12778,27 @@ fn lower_intrinsic_expr_call(callee: &Expression, args: &[Argument]) -> Option<E
             args: args.to_vec(),
             optional: false,
         })),
+        "associated" if args.len() == 2 => {
+            let not_null = Expression::new(ExprKind::Binary {
+                op: BinOp::NotEq,
+                left: Box::new(args[0].value.clone()),
+                right: Box::new(Expression::null()),
+            });
+            let same_target = Expression::new(ExprKind::Binary {
+                op: BinOp::Eq,
+                left: Box::new(args[0].value.clone()),
+                right: Box::new(args[1].value.clone()),
+            });
+            Some(Expression::new(ExprKind::Ternary {
+                cond: Box::new(Expression::new(ExprKind::Binary {
+                    op: BinOp::And,
+                    left: Box::new(not_null),
+                    right: Box::new(same_target),
+                })),
+                then: Box::new(Expression::bool(true)),
+                else_: Box::new(Expression::bool(false)),
+            }))
+        }
         "associated" | "allocated" if args.len() == 1 => {
             // Produce a JS boolean (true/false) not an i32 (1/0) so print * formats correctly.
             let not_null = Expression::new(ExprKind::Binary {
@@ -11990,6 +12816,15 @@ fn lower_intrinsic_expr_call(callee: &Expression, args: &[Argument]) -> Option<E
             object: Box::new(args[0].value.clone()),
             field: "length".to_string(),
             null_safe: false,
+        })),
+        // `rank` is NOT rewritten here: the profile binds the spelling straight
+        // to `common:collections.rank`, the way `matmul` and `size` are bound.
+        // Rewriting it to a call to itself would either loop this pass or
+        // re-enter it for no gain.
+        "transfer" if positional_args.len() >= 2 => Some(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__fortran_transfer")),
+            args: args.to_vec(),
+            optional: false,
         })),
         "dim" if args.len() == 2 => Some(Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("max")),
@@ -12062,6 +12897,34 @@ fn lower_intrinsic_expr_call(callee: &Expression, args: &[Argument]) -> Option<E
                 boundary,
             ))
         }
+        "pack" if positional_args.len() >= 2 => {
+            let mut transform_args = vec![positional_args[0].clone(), positional_args[1].clone()];
+            if let Some(vector) = positional_args.get(2).cloned().or_else(|| {
+                args.iter()
+                    .find(|arg| {
+                        arg.name
+                            .as_deref()
+                            .is_some_and(|name| name.eq_ignore_ascii_case("vector"))
+                    })
+                    .map(|arg| arg.value.clone())
+            }) {
+                transform_args.push(vector);
+            }
+            Some(Expression::new(ExprKind::ArrayTransform {
+                op: ArrayTransformOp::PackMask,
+                args: transform_args,
+                order: ArrayTraversalOrder::ColumnMajor,
+            }))
+        }
+        "unpack" if positional_args.len() >= 3 => Some(Expression::new(ExprKind::ArrayTransform {
+            op: ArrayTransformOp::UnpackMask,
+            args: vec![
+                positional_args[0].clone(),
+                positional_args[1].clone(),
+                positional_args[2].clone(),
+            ],
+            order: ArrayTraversalOrder::ColumnMajor,
+        })),
         "spread" if positional_args.len() == 3 => {
             let dim = fortran_literal_int(&positional_args[1])?;
             let source = positional_args[0].clone();
@@ -12089,6 +12952,30 @@ fn lower_intrinsic_expr_call(callee: &Expression, args: &[Argument]) -> Option<E
             args[0].value.clone(),
             args[1].value.clone(),
         )),
+        "hypot" if args.len() == 2 => Some(build_fortran_hypot_expr(
+            args[0].value.clone(),
+            args[1].value.clone(),
+        )),
+        // `bessel_jn(n1, n2, x)` / `bessel_yn(n1, n2, x)` — the TRANSFORMATIONAL
+        // form, which returns the whole run of orders n1..n2 as an array rather
+        // than one value. It is the same shape as an implied-do array
+        // constructor, so it lowers to exactly that: `[(bessel_jn(i, x),
+        // i = n1, n2)]`. No new machinery, and the scalar form stays untouched.
+        "bessel_jn" | "bessel_yn" if args.len() == 3 => {
+            Some(build_fortran_bessel_series_expr(
+                &lowered,
+                args[0].value.clone(),
+                args[1].value.clone(),
+                args[2].value.clone(),
+            ))
+        }
+        // F2008 `norm2(a)` is the Euclidean norm — `sqrt(sum(a*a))`. Both
+        // halves already exist, so this is a spelling, not a new primitive.
+        // `norm2(a, dim)` folds along one dimension and passes `dim` straight
+        // through to the same `sum`.
+        "norm2" if !args.is_empty() && args.len() <= 2 => {
+            Some(build_fortran_norm2_expr(&args))
+        }
         "mod" if args.len() == 2 => Some(Expression::new(ExprKind::Binary {
             op: BinOp::Mod,
             left: Box::new(args[0].value.clone()),
@@ -12134,7 +13021,78 @@ fn lower_intrinsic_expr_call(callee: &Expression, args: &[Argument]) -> Option<E
                 expr: Box::new(build_fortran_bit_mask(args[1].value.clone())),
             })),
         })),
-        "selected_int_kind" | "selected_real_kind" => Some(Expression::int(8)),
+        "btest" if positional_args.len() == 2 => Some(build_fortran_btest_expr(
+            positional_args[0].clone(),
+            positional_args[1].clone(),
+        )),
+        // `ishftc(i, shift)` with no size rotates the whole integer.
+        "ishftc" if positional_args.len() >= 2 => Some(build_fortran_ishftc_expr(
+            positional_args[0].clone(),
+            positional_args[1].clone(),
+            positional_args
+                .get(2)
+                .cloned()
+                .unwrap_or_else(|| Expression::int(FORTRAN_BIT_SIZE)),
+        )),
+        "maskl" if !positional_args.is_empty() => {
+            Some(build_fortran_maskl_expr(positional_args[0].clone()))
+        }
+        "maskr" if !positional_args.is_empty() => {
+            Some(build_fortran_maskr_expr(positional_args[0].clone()))
+        }
+        "merge_bits" if positional_args.len() == 3 => Some(build_fortran_merge_bits_expr(
+            positional_args[0].clone(),
+            positional_args[1].clone(),
+            positional_args[2].clone(),
+        )),
+        "dshiftl" if positional_args.len() == 3 => Some(build_fortran_dshiftl_expr(
+            positional_args[0].clone(),
+            positional_args[1].clone(),
+            positional_args[2].clone(),
+        )),
+        "dshiftr" if positional_args.len() == 3 => Some(build_fortran_dshiftr_expr(
+            positional_args[0].clone(),
+            positional_args[1].clone(),
+            positional_args[2].clone(),
+        )),
+        "bge" | "bgt" | "ble" | "blt" if positional_args.len() == 2 => {
+            let op = match lowered.as_str() {
+                "bge" => BinOp::GtEq,
+                "bgt" => BinOp::Gt,
+                "ble" => BinOp::LtEq,
+                _ => BinOp::Lt,
+            };
+            Some(build_fortran_bit_compare_expr(
+                op,
+                positional_args[0].clone(),
+                positional_args[1].clone(),
+            ))
+        }
+        // `parity` is deliberately NOT folded here — see the profile. A fold
+        // fires on the NAME, before anything knows whether the program defines
+        // a function of its own by that name, and the suite has a contained
+        // `recursive integer function parity(n, even_only)` that a fold would
+        // silently hijack. Profile builtins lose to a user definition, which is
+        // what Fortran requires of an intrinsic.
+        // Both used to answer a flat `8`, so `selected_int_kind(123)` claimed a
+        // kind that holds 123 decimal digits existed.
+        "selected_int_kind" if !positional_args.is_empty() => {
+            fortran_const_int(&positional_args[0])
+                .map(|range| Expression::int(fortran_selected_int_kind(range)))
+        }
+        "selected_real_kind" if !positional_args.is_empty() => {
+            let precision = fortran_const_int(&positional_args[0])?;
+            // The range argument is optional: `selected_real_kind(6)` asks for
+            // precision alone.
+            let range = match positional_args.get(1) {
+                Some(arg) => fortran_const_int(arg)?,
+                None => 0,
+            };
+            Some(Expression::int(fortran_selected_real_kind(precision, range)))
+        }
+        "kind" if args.len() == 1 => {
+            fold_fortran_type_inquiry("kind", &positional_args[0], &HashMap::new(), None)
+        }
         "bit_size" if args.len() == 1 => {
             fold_fortran_type_inquiry("bit_size", &positional_args[0], &HashMap::new(), None)
         }
@@ -12233,6 +13191,656 @@ fn build_fortran_bit_mask(shift: Expression) -> Expression {
     })
 }
 
+/// Default INTEGER is kind 4 — 32 bits. `bit_size(0)` already answers 32
+/// (`fold_fortran_type_inquiry`), and the bit model here has to agree with it.
+const FORTRAN_BIT_SIZE: i64 = 32;
+
+fn fortran_bin(op: BinOp, left: Expression, right: Expression) -> Expression {
+    Expression::new(ExprKind::Binary {
+        op,
+        left: Box::new(left),
+        right: Box::new(right),
+    })
+}
+
+fn fortran_bit_not(expr: Expression) -> Expression {
+    Expression::new(ExprKind::Unary {
+        op: UnaryOp::BitNot,
+        expr: Box::new(expr),
+    })
+}
+
+fn fortran_ternary(cond: Expression, then: Expression, else_: Expression) -> Expression {
+    Expression::new(ExprKind::Ternary {
+        cond: Box::new(cond),
+        then: Box::new(then),
+        else_: Box::new(else_),
+    })
+}
+
+/// `btest(i, pos)` — is bit `pos` of `i` set?
+///
+/// The shift is LOGICAL: `btest(-1, 31)` asks about the sign bit, and an
+/// arithmetic shift would smear the sign across it and answer for bit 31 of a
+/// value that no longer has one.
+fn build_fortran_btest_expr(value: Expression, pos: Expression) -> Expression {
+    fortran_bin(
+        BinOp::NotEq,
+        fortran_bin(
+            BinOp::BitAnd,
+            fortran_bin(BinOp::UShr, value, pos),
+            Expression::int(1),
+        ),
+        Expression::int(0),
+    )
+}
+
+/// `maskr(n)` — the `n` rightmost bits set.
+///
+/// `1 << 32` is `1`, not `0`: WASM and ECMA both take the shift count mod 32.
+/// The full-width case therefore cannot go through the shift at all — hence the
+/// ternary rather than a plain `(1 << n) - 1`. `maskr(0)` needs no such guard,
+/// `1 << 0 - 1` being 0 already.
+fn build_fortran_maskr_expr(bits: Expression) -> Expression {
+    fortran_ternary(
+        fortran_bin(
+            BinOp::GtEq,
+            bits.clone(),
+            Expression::int(FORTRAN_BIT_SIZE),
+        ),
+        Expression::int(-1),
+        fortran_bin(
+            BinOp::Sub,
+            fortran_bin(BinOp::Shl, Expression::int(1), bits),
+            Expression::int(1),
+        ),
+    )
+}
+
+/// `maskl(n)` — the `n` leftmost bits set.
+///
+/// The mirror of `maskr`'s problem lands on zero instead of full width:
+/// `-1 << (32 - 0)` is `-1`, where the answer is 0.
+fn build_fortran_maskl_expr(bits: Expression) -> Expression {
+    fortran_ternary(
+        fortran_bin(BinOp::LtEq, bits.clone(), Expression::int(0)),
+        Expression::int(0),
+        fortran_bin(
+            BinOp::Shl,
+            Expression::int(-1),
+            fortran_bin(BinOp::Sub, Expression::int(FORTRAN_BIT_SIZE), bits),
+        ),
+    )
+}
+
+/// `ishftc(i, shift [, size])` — rotate the rightmost `size` bits, leaving the
+/// rest of `i` alone. `shift` may be negative, which rotates right.
+///
+/// The rotation amount is `modulo`, NOT `mod`: Fortran's `mod` keeps the
+/// dividend's sign, so `mod(-2, 4)` is `-2` and a right rotate would come out
+/// as a negative shift count. `modulo(-2, 4)` is 2 — the equivalent left
+/// rotate, which is what a rotation by a negative amount means.
+fn build_fortran_ishftc_expr(
+    value: Expression,
+    shift: Expression,
+    size: Expression,
+) -> Expression {
+    let mask = build_fortran_maskr_expr(size.clone());
+    let amount = build_fortran_modulo_expr(shift, size.clone());
+    let field = fortran_bin(BinOp::BitAnd, value.clone(), mask.clone());
+    let rotated = fortran_bin(
+        BinOp::BitAnd,
+        fortran_bin(
+            BinOp::BitOr,
+            fortran_bin(BinOp::Shl, field.clone(), amount.clone()),
+            fortran_bin(BinOp::UShr, field, fortran_bin(BinOp::Sub, size, amount)),
+        ),
+        mask.clone(),
+    );
+    // A zero rotation of a full-width field is the one case where the two
+    // halves overlap — `field >>> 32` is `field` — and it is also the case
+    // where OR-ing them is harmless, so no extra guard is needed.
+    fortran_bin(
+        BinOp::BitOr,
+        fortran_bin(BinOp::BitAnd, value, fortran_bit_not(mask)),
+        rotated,
+    )
+}
+
+/// `dshiftl(i, j, shift)` — the leftmost `shift` bits of `j` become the
+/// rightmost bits of the result; the rest is `i` shifted left to make room.
+///
+/// Both endpoints have to sidestep the shift: at 0 the `j` half would be
+/// `j >>> 32` and at full width the `i` half would be `i << 32`, and a shift
+/// count of 32 is a shift of 0.
+fn build_fortran_dshiftl_expr(i: Expression, j: Expression, shift: Expression) -> Expression {
+    let combined = fortran_bin(
+        BinOp::BitOr,
+        fortran_bin(BinOp::Shl, i.clone(), shift.clone()),
+        fortran_bin(
+            BinOp::UShr,
+            j.clone(),
+            fortran_bin(
+                BinOp::Sub,
+                Expression::int(FORTRAN_BIT_SIZE),
+                shift.clone(),
+            ),
+        ),
+    );
+    fortran_ternary(
+        fortran_bin(BinOp::Eq, shift.clone(), Expression::int(0)),
+        i,
+        fortran_ternary(
+            fortran_bin(BinOp::GtEq, shift, Expression::int(FORTRAN_BIT_SIZE)),
+            j,
+            combined,
+        ),
+    )
+}
+
+/// `dshiftr(i, j, shift)` — the mirror: the rightmost `shift` bits of `i`
+/// become the leftmost bits of the result.
+fn build_fortran_dshiftr_expr(i: Expression, j: Expression, shift: Expression) -> Expression {
+    let combined = fortran_bin(
+        BinOp::BitOr,
+        fortran_bin(
+            BinOp::Shl,
+            i.clone(),
+            fortran_bin(
+                BinOp::Sub,
+                Expression::int(FORTRAN_BIT_SIZE),
+                shift.clone(),
+            ),
+        ),
+        fortran_bin(BinOp::UShr, j.clone(), shift.clone()),
+    );
+    fortran_ternary(
+        fortran_bin(BinOp::Eq, shift.clone(), Expression::int(0)),
+        j,
+        fortran_ternary(
+            fortran_bin(BinOp::GtEq, shift, Expression::int(FORTRAN_BIT_SIZE)),
+            i,
+            combined,
+        ),
+    )
+}
+
+/// `merge_bits(i, j, mask)` — bits of `i` where the mask is set, bits of `j`
+/// where it is clear.
+fn build_fortran_merge_bits_expr(
+    i: Expression,
+    j: Expression,
+    mask: Expression,
+) -> Expression {
+    fortran_bin(
+        BinOp::BitOr,
+        fortran_bin(BinOp::BitAnd, i, mask.clone()),
+        fortran_bin(BinOp::BitAnd, j, fortran_bit_not(mask)),
+    )
+}
+
+/// `bge`/`bgt`/`ble`/`blt` — compare two integers as BIT SEQUENCES, i.e.
+/// unsigned. `bgt(-1, 1)` is true because `-1` is all ones.
+///
+/// Flipping the sign bit of both operands maps unsigned order onto signed
+/// order: everything with the top bit set sorts above everything without it,
+/// and the remaining 31 bits already compare correctly. The obvious spelling —
+/// ToUint32 both sides with `>>> 0` and compare — produces 4294967295, which
+/// does not survive Fortran's integer comparison (it comes back as −1 and
+/// answers false), so the comparison has to stay inside the signed range.
+fn build_fortran_bit_compare_expr(op: BinOp, i: Expression, j: Expression) -> Expression {
+    let sign_bit = || Expression::int(i32::MIN as i64);
+    fortran_bin(
+        op,
+        fortran_bin(BinOp::BitXor, i, sign_bit()),
+        fortran_bin(BinOp::BitXor, j, sign_bit()),
+    )
+}
+
+
+/// `norm2(a[, dim])` → `sqrt(sum(a * a[, dim]))`.
+fn build_fortran_norm2_expr(args: &[Argument]) -> Expression {
+    let array = args[0].value.clone();
+    let squared = Expression::new(ExprKind::Binary {
+        op: BinOp::Mul,
+        left: Box::new(array.clone()),
+        right: Box::new(array),
+    });
+    let mut sum_args = vec![Argument::positional(squared)];
+    if let Some(dim) = args.get(1) {
+        sum_args.push(dim.clone());
+    }
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("sqrt")),
+        args: vec![Argument::positional(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("sum")),
+            args: sum_args,
+            optional: false,
+        }))],
+        optional: false,
+    })
+}
+
+/// `bessel_jn(n1, n2, x)` → the array `[(bessel_jn(i, x), i = n1, n2)]`.
+///
+/// Built through the same trip-count/map pair an implied-do constructor uses,
+/// so the element expression is evaluated once per order with the loop index
+/// substituted in.
+fn build_fortran_bessel_series_expr(
+    name: &str,
+    first: Expression,
+    last: Expression,
+    x: Expression,
+) -> Expression {
+    let index_name = "__fortran_array_index";
+    let step = Expression::int(1);
+    let size = build_fortran_implied_do_trip_count(first.clone(), last, step.clone());
+    let order = build_fortran_implied_do_value(first, step, index_name);
+    let element = Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident(name)),
+        args: vec![Argument::positional(order), Argument::positional(x)],
+        optional: false,
+    });
+    let array_expr = Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("Array")),
+        args: vec![
+            Argument::positional(size),
+            Argument::positional(Expression::int(0)),
+        ],
+        optional: false,
+    });
+    build_fortran_array_map(
+        array_expr,
+        element,
+        true,
+        "__fortran_array_item",
+        index_name,
+    )
+}
+
+fn build_fortran_hypot_expr(left: Expression, right: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("sqrt")),
+        args: vec![Argument::positional(Expression::new(ExprKind::Binary {
+            op: BinOp::Add,
+            left: Box::new(Expression::new(ExprKind::Binary {
+                op: BinOp::Mul,
+                left: Box::new(left.clone()),
+                right: Box::new(left),
+            })),
+            right: Box::new(Expression::new(ExprKind::Binary {
+                op: BinOp::Mul,
+                left: Box::new(right.clone()),
+                right: Box::new(right),
+            })),
+        }))],
+        optional: false,
+    })
+}
+
+fn build_fortran_transfer_expr_with_hint(
+    source: Expression,
+    mold: Expression,
+    size: Option<Expression>,
+    target_hint: Option<&str>,
+    source_hint: Option<&str>,
+) -> Expression {
+    if fortran_type_hint_is_array(target_hint) {
+        return build_fortran_transfer_array_expr(source, size, source_hint, target_hint);
+    }
+    if source_hint.is_some_and(is_fortran_complex_type_hint) && !fortran_type_hint_is_array(target_hint)
+    {
+        return build_fortran_complex_expr_from_array(source);
+    }
+    if source_hint.is_some_and(is_fortran_string_type_hint) {
+        return build_fortran_char_code_expr(source);
+    }
+    if source_hint.is_some_and(fortran_type_hint_is_array_str) {
+        if source_hint.is_some_and(fortran_type_hint_is_kind1_integer_array) {
+            return build_fortran_byte_array_to_int_expr(source);
+        }
+        return build_fortran_first_array_item_expr(source);
+    }
+    if let Some(len) = fortran_string_literal_len(&mold) {
+        return build_fortran_transfer_to_string_expr(source, len, size);
+    }
+    if let Some(value) = fortran_string_literal_to_int(&source) {
+        return Expression::int(value);
+    }
+    match &source.kind {
+        ExprKind::Lit(Literal::Bool(_)) => Expression::new(ExprKind::Ternary {
+            cond: Box::new(source),
+            then: Box::new(Expression::int(1)),
+            else_: Box::new(Expression::int(0)),
+        }),
+        ExprKind::Array(_) => build_fortran_transfer_array_to_scalar_expr(source),
+        _ => source,
+    }
+}
+
+fn build_fortran_transfer_array_expr(
+    source: Expression,
+    size: Option<Expression>,
+    source_hint: Option<&str>,
+    target_hint: Option<&str>,
+) -> Expression {
+    if target_hint.is_some_and(fortran_type_hint_is_kind1_integer_array)
+        && !source_hint.is_some_and(|hint| hint.contains("kind=1") || hint.contains("_1"))
+    {
+        return build_fortran_scalar_to_byte_array_expr(source, size);
+    }
+    if let Some(size_value) = size.as_ref().and_then(fortran_literal_int) {
+        return build_fortran_transfer_sized_array_literal(source, size_value);
+    }
+    let array_source = match &source.kind {
+        ExprKind::Array(_) => source,
+        _ if source_hint.is_some_and(is_fortran_complex_type_hint)
+            || expr_is_fortran_complex_literalish(&source) =>
+        {
+            fortran_array_expr(vec![
+            fortran_complex_real_part(&source),
+            fortran_complex_imag_part(&source),
+        ])
+        }
+        _ if source_hint.is_some_and(fortran_type_hint_is_rank_gt_one) => {
+            Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Member {
+                    object: Box::new(source),
+                    field: "flat".to_string(),
+                    null_safe: false,
+                })),
+                args: Vec::new(),
+                optional: false,
+            })
+        }
+        ExprKind::Object(_) | ExprKind::New { .. } => Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(Expression::ident("Object")),
+                field: "values".to_string(),
+                null_safe: false,
+            })),
+            args: vec![Argument::positional(source)],
+            optional: false,
+        }),
+        _ => fortran_array_expr(vec![source]),
+    };
+    let Some(size) = size else {
+        return array_source;
+    };
+    let padded = Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(array_source.clone()),
+            field: "concat".to_string(),
+            null_safe: false,
+        })),
+        args: vec![Argument::positional(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("Array")),
+                    args: vec![Argument::positional(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("max")),
+                        args: vec![
+                            Argument::positional(Expression::int(0)),
+                            Argument::positional(Expression::new(ExprKind::Binary {
+                                op: BinOp::Sub,
+                                left: Box::new(size.clone()),
+                                right: Box::new(Expression::new(ExprKind::Member {
+                                    object: Box::new(array_source),
+                                    field: "length".to_string(),
+                                    null_safe: false,
+                                })),
+                            })),
+                        ],
+                        optional: false,
+                    }))],
+                    optional: false,
+                })),
+                field: "fill".to_string(),
+                null_safe: false,
+            })),
+            args: vec![Argument::positional(Expression::int(0))],
+            optional: false,
+        }))],
+        optional: false,
+    });
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(padded),
+            field: "slice".to_string(),
+            null_safe: false,
+        })),
+        args: vec![
+            Argument::positional(Expression::int(0)),
+            Argument::positional(size),
+        ],
+        optional: false,
+    })
+}
+
+fn build_fortran_transfer_sized_array_literal(source: Expression, size: i64) -> Expression {
+    if size <= 0 {
+        return fortran_array_expr(Vec::new());
+    }
+    let mut values = Vec::with_capacity(size as usize);
+    match source.kind {
+        ExprKind::Array(items) => {
+            for item in items.into_iter().take(size as usize) {
+                values.push(item.value);
+            }
+        }
+        _ => values.push(source),
+    }
+    while values.len() < size as usize {
+        values.push(Expression::int(0));
+    }
+    fortran_array_expr(values)
+}
+
+fn build_fortran_scalar_to_byte_array_expr(
+    source: Expression,
+    size: Option<Expression>,
+) -> Expression {
+    let n = fortran_literal_int(&size.unwrap_or_else(|| Expression::int(8))).unwrap_or(8);
+    let values = (0..n.max(0) as usize)
+        .map(|idx| {
+            let shifted = if idx == 0 {
+                source.clone()
+            } else {
+                Expression::new(ExprKind::Binary {
+                    op: BinOp::Shr,
+                    left: Box::new(source.clone()),
+                    right: Box::new(Expression::int((idx * 8) as i64)),
+                })
+            };
+            Expression::new(ExprKind::Binary {
+                op: BinOp::BitAnd,
+                left: Box::new(shifted),
+                right: Box::new(Expression::int(255)),
+            })
+        })
+        .collect();
+    fortran_array_expr(values)
+}
+
+fn build_fortran_transfer_to_string_expr(
+    source: Expression,
+    len: usize,
+    size: Option<Expression>,
+) -> Expression {
+    let n = fortran_literal_int(&size.unwrap_or_else(|| Expression::int(len as i64)))
+        .unwrap_or(len as i64)
+        .max(1) as usize;
+    if n == 1 {
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("char")),
+            args: vec![Argument::positional(Expression::new(ExprKind::Binary {
+                op: BinOp::BitAnd,
+                left: Box::new(source),
+                right: Box::new(Expression::int(255)),
+            }))],
+            optional: false,
+        });
+    }
+    let chars = (0..n)
+        .map(|idx| {
+            let shifted = if idx == 0 {
+                source.clone()
+            } else {
+                Expression::new(ExprKind::Binary {
+                    op: BinOp::Shr,
+                    left: Box::new(source.clone()),
+                    right: Box::new(Expression::int((idx * 8) as i64)),
+                })
+            };
+            Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("char")),
+                args: vec![Argument::positional(Expression::new(ExprKind::Binary {
+                    op: BinOp::BitAnd,
+                    left: Box::new(shifted),
+                    right: Box::new(Expression::int(255)),
+                }))],
+                optional: false,
+            })
+        })
+        .collect::<Vec<_>>();
+    concat_fortran_io_parts(chars)
+}
+
+fn build_fortran_transfer_array_to_scalar_expr(source: Expression) -> Expression {
+    let ExprKind::Array(items) = &source.kind else {
+        return source;
+    };
+    if items.is_empty() {
+        return Expression::int(0);
+    }
+    if items
+        .iter()
+        .all(|item| matches!(item.value.kind, ExprKind::Lit(Literal::Bool(_))))
+    {
+        return Expression::new(ExprKind::Ternary {
+            cond: Box::new(items[0].value.clone()),
+            then: Box::new(Expression::int(1)),
+            else_: Box::new(Expression::int(0)),
+        });
+    }
+    items[0].value.clone()
+}
+
+fn build_fortran_byte_array_to_int_expr(source: Expression) -> Expression {
+    let mut result = Expression::int(0);
+    for idx in 0..8 {
+        let item = Expression::new(ExprKind::Index {
+            object: Box::new(source.clone()),
+            index: Box::new(Expression::int(idx)),
+            null_safe: false,
+        });
+        let byte = Expression::new(ExprKind::Binary {
+            op: BinOp::BitAnd,
+            left: Box::new(item),
+            right: Box::new(Expression::int(255)),
+        });
+        let shifted = if idx == 0 {
+            byte
+        } else {
+            Expression::new(ExprKind::Binary {
+                op: BinOp::Shl,
+                left: Box::new(byte),
+                right: Box::new(Expression::int((idx * 8) as i64)),
+            })
+        };
+        result = Expression::new(ExprKind::Binary {
+            op: BinOp::BitOr,
+            left: Box::new(result),
+            right: Box::new(shifted),
+        });
+    }
+    result
+}
+
+fn build_fortran_first_array_item_expr(source: Expression) -> Expression {
+    Expression::new(ExprKind::Index {
+        object: Box::new(source),
+        index: Box::new(Expression::int(0)),
+        null_safe: false,
+    })
+}
+
+fn build_fortran_complex_expr_from_array(source: Expression) -> Expression {
+    build_fortran_complex_expr(
+        Expression::new(ExprKind::Index {
+            object: Box::new(source.clone()),
+            index: Box::new(Expression::int(0)),
+            null_safe: false,
+        }),
+        Expression::new(ExprKind::Index {
+            object: Box::new(source),
+            index: Box::new(Expression::int(1)),
+            null_safe: false,
+        }),
+    )
+}
+
+fn build_fortran_char_code_expr(source: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(source),
+            field: "charCodeAt".to_string(),
+            null_safe: false,
+        })),
+        args: vec![Argument::positional(Expression::int(0))],
+        optional: false,
+    })
+}
+
+fn fortran_array_expr(values: Vec<Expression>) -> Expression {
+    Expression::new(ExprKind::Array(
+        values
+            .into_iter()
+            .map(|value| vybe_ast::ArrayElement {
+                key: None,
+                value,
+                spread: false,
+                by_ref: false,
+            })
+            .collect(),
+    ))
+}
+
+fn fortran_string_literal_len(expr: &Expression) -> Option<usize> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Str(value)) => Some(value.len()),
+        _ => None,
+    }
+}
+
+fn fortran_string_literal_to_int(expr: &Expression) -> Option<i64> {
+    let ExprKind::Lit(Literal::Str(value)) = &expr.kind else {
+        return None;
+    };
+    let mut result = 0_i64;
+    for (idx, byte) in value.bytes().take(8).enumerate() {
+        result |= (byte as i64) << (idx * 8);
+    }
+    Some(result)
+}
+
+fn expr_is_fortran_complex_literalish(expr: &Expression) -> bool {
+    matches!(expr.kind, ExprKind::Object(_))
+}
+
+fn fortran_type_hint_is_array_str(type_hint: &str) -> bool {
+    type_hint.contains("()")
+}
+
+fn fortran_type_hint_is_rank_gt_one(type_hint: &str) -> bool {
+    type_hint.matches("()").count() > 1
+}
+
+fn fortran_type_hint_is_kind1_integer_array(type_hint: &str) -> bool {
+    let lower = type_hint.to_ascii_lowercase();
+    lower.starts_with("integer") && lower.contains("kind=1") && lower.contains("()")
+}
+
 fn build_fortran_logical_array_reducer(array_expr: Expression, method: &str) -> Expression {
     let item_name = "__fortran_logical_item";
     Expression::new(ExprKind::Call {
@@ -12262,35 +13870,97 @@ fn build_fortran_logical_array_reducer(array_expr: Expression, method: &str) -> 
 
 fn build_fortran_count_expr(array_expr: Expression) -> Expression {
     let item_name = "__fortran_count_item";
-    Expression::new(ExprKind::Member {
-        object: Box::new(Expression::new(ExprKind::Call {
-            callee: Box::new(Expression::new(ExprKind::Member {
-                object: Box::new(array_expr),
-                field: "filter".to_string(),
-                null_safe: false,
-            })),
-            args: vec![Argument::positional(Expression::new(ExprKind::Lambda {
-                params: vec![Param {
-                    name: item_name.to_string(),
-                    type_hint: None,
-                    default: None,
-                    pass_by: PassBy::Value,
-                    is_rest: false,
-                    is_kwargs: false,
-                    is_optional: false,
-                    is_nullable: false,
-                }],
-                body: LambdaBody::Expr(Box::new(fortran_expr_is_true(Expression::ident(
-                    item_name,
-                )))),
-                is_async: false,
-                captures: Vec::new(),
-            }))],
-            optional: false,
-        })),
-        field: "length".to_string(),
-        null_safe: false,
-    })
+    let source = build_fortran_count_source_expr(array_expr);
+    let counted = build_fortran_array_map(
+        source,
+        Expression::new(ExprKind::Ternary {
+            cond: Box::new(fortran_expr_is_true(Expression::ident(item_name))),
+            then: Box::new(Expression::int(1)),
+            else_: Box::new(Expression::int(0)),
+        }),
+        false,
+        item_name,
+        "__fortran_count_index",
+    );
+    build_fortran_array_reduction("sum", counted, 0)
+}
+
+fn build_fortran_count_source_expr(expr: Expression) -> Expression {
+    let ExprKind::Binary { op, left, right } = &expr.kind else {
+        return expr;
+    };
+    let left = (**left).clone();
+    let right = (**right).clone();
+    let item_name = "__fortran_count_pred_item";
+    let index_name = "__fortran_count_pred_index";
+
+    if fortran_count_arrayish_expr(&left) && fortran_count_arrayish_expr(&right) {
+        return build_fortran_array_map(
+            left,
+            Expression::new(ExprKind::Binary {
+                op: *op,
+                left: Box::new(Expression::ident(item_name)),
+                right: Box::new(Expression::new(ExprKind::Index {
+                    object: Box::new(right),
+                    index: Box::new(Expression::ident(index_name)),
+                    null_safe: false,
+                })),
+            }),
+            true,
+            item_name,
+            index_name,
+        );
+    }
+
+    if fortran_count_arrayish_expr(&left) {
+        return build_fortran_array_map(
+            left,
+            Expression::new(ExprKind::Binary {
+                op: *op,
+                left: Box::new(Expression::ident(item_name)),
+                right: Box::new(right),
+            }),
+            false,
+            item_name,
+            index_name,
+        );
+    }
+
+    if fortran_count_arrayish_expr(&right) {
+        return build_fortran_array_map(
+            right,
+            Expression::new(ExprKind::Binary {
+                op: *op,
+                left: Box::new(left),
+                right: Box::new(Expression::ident(item_name)),
+            }),
+            false,
+            item_name,
+            index_name,
+        );
+    }
+
+    expr
+}
+
+fn fortran_count_arrayish_expr(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(_)
+        | ExprKind::Member { .. }
+        | ExprKind::Array(_)
+        | ExprKind::Slice { .. }
+        | ExprKind::ArrayMap { .. }
+        | ExprKind::ArrayTransform { .. } => true,
+        ExprKind::Call { callee, .. } => match &callee.kind {
+            ExprKind::Ident(name) => name.eq_ignore_ascii_case("Array"),
+            ExprKind::Member { field, .. } => matches!(
+                field.to_ascii_lowercase().as_str(),
+                "map" | "filter" | "flatmap"
+            ),
+            _ => false,
+        },
+        _ => false,
+    }
 }
 
 fn build_fortran_lexical_compare_expr(
@@ -12382,9 +14052,14 @@ fn build_fortran_array_length_expr(array: Expression) -> Expression {
 fn build_fortran_iota_1based_expr(size: Expression) -> Expression {
     let item_name = "__fortran_iota_item";
     let index_name = "__fortran_iota_index";
+    let one_based_index = Expression::new(ExprKind::Binary {
+        op: BinOp::Add,
+        left: Box::new(Expression::ident(index_name)),
+        right: Box::new(Expression::int(1)),
+    });
     build_fortran_array_map(
         build_fortran_array_fill(size, Expression::int(0)),
-        Expression::ident(index_name),
+        one_based_index,
         true,
         item_name,
         index_name,
@@ -12507,7 +14182,11 @@ fn build_fortran_reshape_source_index(
     if column_major {
         Expression::new(ExprKind::Binary {
             op: BinOp::Add,
-            left: Box::new(row_index),
+            left: Box::new(Expression::new(ExprKind::Binary {
+                op: BinOp::Sub,
+                left: Box::new(row_index),
+                right: Box::new(Expression::int(1)),
+            })),
             right: Box::new(Expression::new(ExprKind::Binary {
                 op: BinOp::Mul,
                 left: Box::new(Expression::new(ExprKind::Binary {
@@ -12530,7 +14209,11 @@ fn build_fortran_reshape_source_index(
                 })),
                 right: Box::new(dim2),
             })),
-            right: Box::new(column_index),
+            right: Box::new(Expression::new(ExprKind::Binary {
+                op: BinOp::Sub,
+                left: Box::new(column_index),
+                right: Box::new(Expression::int(1)),
+            })),
         })
     }
 }
@@ -12546,12 +14229,12 @@ fn build_fortran_reshape_2d_expr(
     let col_item = "__fortran_reshape_col_item";
     let col_index = "__fortran_reshape_col_index";
     let row = build_fortran_array_map(
-        build_fortran_iota_1based_expr(dim1.clone()),
+        build_fortran_iota_1based_expr(dim2.clone()),
         Expression::new(ExprKind::Index {
             object: Box::new(source),
             index: Box::new(build_fortran_reshape_source_index(
-                Expression::ident(row_index),
-                Expression::ident(col_index),
+                Expression::ident(row_item),
+                Expression::ident(col_item),
                 dim1.clone(),
                 dim2.clone(),
                 column_major,
@@ -12559,15 +14242,15 @@ fn build_fortran_reshape_2d_expr(
             null_safe: false,
         }),
         true,
-        row_item,
-        row_index,
-    );
-    build_fortran_array_map(
-        build_fortran_iota_1based_expr(dim2),
-        row,
-        true,
         col_item,
         col_index,
+    );
+    build_fortran_array_map(
+        build_fortran_iota_1based_expr(dim1),
+        row,
+        true,
+        row_item,
+        row_index,
     )
 }
 
@@ -12642,6 +14325,11 @@ fn build_fortran_transpose_expr(matrix: Expression) -> Expression {
     )
 }
 
+/// `ishft(i, shift)` — shift left, or right when `shift` is negative.
+///
+/// The right shift is LOGICAL. `ishft` moves a BIT PATTERN; it has no notion of
+/// a sign to preserve, so `ishft(-2, -1)` is 2147483647 and not −1. An
+/// arithmetic `Shr` here was answering with the sign smeared back in.
 fn build_fortran_ishft_expr(value: Expression, shift: Expression) -> Expression {
     let negated_shift = Expression::new(ExprKind::Unary {
         op: UnaryOp::Neg,
@@ -12659,7 +14347,7 @@ fn build_fortran_ishft_expr(value: Expression, shift: Expression) -> Expression 
             right: Box::new(shift),
         })),
         else_: Box::new(Expression::new(ExprKind::Binary {
-            op: BinOp::Shr,
+            op: BinOp::UShr,
             left: Box::new(value),
             right: Box::new(negated_shift),
         })),
@@ -12675,50 +14363,198 @@ fn build_fortran_huge_expr(arg: &Expression) -> Expression {
 
 #[derive(Clone, Copy)]
 struct FortranInquiryModel {
+    /// The KIND number — 4 for a default `integer`/`real`/`logical`, 1 for a
+    /// `character`. Not derivable from `bits`: a default real is kind 4 and 32
+    /// bits, but a kind-1 character is 8, and `kind` was previously answered by
+    /// a hard-coded `8` in the shared compiler for every type alike.
+    kind: i64,
     bits: i64,
     precision: Option<i64>,
     range: i64,
     digits: i64,
 }
 
+/// The gfortran model for an integer of `kind`, as `(bits, range, digits)`.
+///
+/// Measured, not derived — `digits` happens to be `bits - 1` across the board
+/// but `range` does not follow any formula worth writing down.
+fn fortran_integer_kind_model(kind: i64) -> (i64, i64, i64) {
+    match kind {
+        1 => (8, 2, 7),
+        2 => (16, 4, 15),
+        8 => (64, 18, 63),
+        16 => (128, 38, 127),
+        _ => (32, 9, 31),
+    }
+}
+
+/// The gfortran model for a real of `kind`, as `(bits, precision, range, digits)`.
+fn fortran_real_kind_model(kind: i64) -> (i64, i64, i64, i64) {
+    match kind {
+        8 => (64, 15, 307, 53),
+        16 => (128, 33, 4931, 113),
+        _ => (32, 6, 37, 24),
+    }
+}
+
+/// The KIND a numeric LITERAL spells, read from its source text.
+///
+/// Only answerable here: `1.0d0`, `1.0_8` and `1.0` all become
+/// `Literal::Float`, so the AST cannot distinguish them. Returns `None` for
+/// anything that is not a literal, leaving the ordinary type-inquiry fold to
+/// answer from the declared type.
+fn fortran_literal_kind_from_text(text: &str) -> Option<i64> {
+    let text = text.trim();
+    // A complex literal `(1.0, 2.0)` — kind comes from its components, and a
+    // complex of kind k is two reals of kind k.
+    if let Some(inner) = text.strip_prefix('(').and_then(|t| t.strip_suffix(')')) {
+        if let Some((real, imaginary)) = inner.split_once(',') {
+            let real_kind = fortran_literal_kind_from_text(real)?;
+            let imaginary_kind = fortran_literal_kind_from_text(imaginary)?;
+            return Some(real_kind.max(imaginary_kind));
+        }
+    }
+    let lowered = text.to_ascii_lowercase();
+    if !lowered.starts_with(|c: char| c.is_ascii_digit() || c == '.' || c == '-' || c == '+') {
+        return None;
+    }
+    // `1.0_8` / `1_2` — an explicit kind suffix outranks everything.
+    if let Some((_, suffix)) = lowered.rsplit_once('_') {
+        if let Ok(kind) = suffix.parse::<i64>() {
+            return matches!(kind, 1 | 2 | 4 | 8 | 16).then_some(kind);
+        }
+        // `1.0_dp` names a kind PARAMETER whose value is not known here.
+        return None;
+    }
+    if !lowered.chars().all(|c| {
+        c.is_ascii_digit() || matches!(c, '.' | '+' | '-' | 'e' | 'd')
+    }) {
+        return None;
+    }
+    // `1.0d0` is DOUBLE precision — that `d` is the whole difference.
+    if lowered.contains('d') {
+        return Some(8);
+    }
+    if lowered.contains('.') || lowered.contains('e') {
+        return Some(4);
+    }
+    Some(4)
+}
+
+/// The value of a compile-time integer argument, if it is one.
+///
+/// `selected_int_kind` / `selected_real_kind` take a *constant* expression in
+/// every real program — the result names a TYPE — so folding is the whole
+/// implementation, and a non-constant argument correctly folds to nothing
+/// rather than to a wrong guess.
+fn fortran_const_int(expr: &Expression) -> Option<i64> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Int(value)) => Some(*value),
+        ExprKind::Lit(Literal::Float(value)) => Some(*value as i64),
+        ExprKind::Unary {
+            op: UnaryOp::Neg,
+            expr,
+        } => fortran_const_int(expr).map(|value| -value),
+        ExprKind::Unary {
+            op: UnaryOp::Pos,
+            expr,
+        } => fortran_const_int(expr),
+        _ => None,
+    }
+}
+
+fn fortran_integer_model(kind: i64) -> FortranInquiryModel {
+    let (bits, range, digits) = fortran_integer_kind_model(kind);
+    FortranInquiryModel {
+        kind,
+        bits,
+        precision: None,
+        range,
+        digits,
+    }
+}
+
+fn fortran_real_model(kind: i64) -> FortranInquiryModel {
+    let (bits, precision, range, digits) = fortran_real_kind_model(kind);
+    FortranInquiryModel {
+        kind,
+        bits,
+        precision: Some(precision),
+        range,
+        digits,
+    }
+}
+
+fn fortran_logical_model() -> FortranInquiryModel {
+    FortranInquiryModel {
+        kind: 4,
+        bits: 32,
+        precision: None,
+        range: 1,
+        digits: 1,
+    }
+}
+
+/// `selected_int_kind(r)` — the smallest integer kind whose decimal exponent
+/// range reaches `r`, or −1 when none does.
+fn fortran_selected_int_kind(requested_range: i64) -> i64 {
+    [1i64, 2, 4, 8, 16]
+        .into_iter()
+        .find(|kind| fortran_integer_kind_model(*kind).1 >= requested_range)
+        .unwrap_or(-1)
+}
+
+/// `selected_real_kind(p, r)` — the smallest real kind meeting BOTH the
+/// requested decimal precision and range, or −1 when none does.
+fn fortran_selected_real_kind(precision: i64, range: i64) -> i64 {
+    [4i64, 8, 16]
+        .into_iter()
+        .find(|kind| {
+            let (_, kind_precision, kind_range, _) = fortran_real_kind_model(*kind);
+            kind_precision >= precision && kind_range >= range
+        })
+        .unwrap_or(-1)
+}
+
 fn fortran_inquiry_model_from_hint(type_hint: &str) -> Option<FortranInquiryModel> {
     let t = type_hint.to_ascii_lowercase();
+    let spelled_kind = fortran_spelled_kind(&t);
     if t.contains("integer") {
-        let bits = if t.contains("kind=1") || t.contains("*1") {
-            8
-        } else if t.contains("kind=2") || t.contains("*2") {
-            16
-        } else if t.contains("kind=8") || t.contains("*8") || t.contains("(8)") {
-            64
-        } else {
-            32
-        };
-        let range = match bits {
-            8 => 2,
-            16 => 4,
-            64 => 18,
-            _ => 9,
-        };
+        // DEFAULT integer is kind 4, not 8. `digits` and `range` were also
+        // being set to the same number, which is only ever right by accident.
+        let kind = spelled_kind.unwrap_or(4);
+        let (bits, range, digits) = fortran_integer_kind_model(kind);
         return Some(FortranInquiryModel {
+            kind,
             bits,
             precision: None,
             range,
-            digits: range,
+            digits,
         });
     }
     if t.contains("real") || t.contains("double precision") {
-        let bits = if t.contains("kind=4") || t.contains("*4") || t.contains("(4)") {
-            32
-        } else {
-            64
-        };
-        let (precision, range, digits) = if bits == 32 {
-            (24, 37, 6)
-        } else {
-            (53, 307, 15)
-        };
+        // `double precision` IS kind 8; a bare `real` is kind 4. The old code
+        // had it backwards — anything not spelled `kind=4` was treated as
+        // double — and it had `precision` and `digits` SWAPPED: for a default
+        // real gfortran gives precision 6 and digits 24, not 24 and 6.
+        let kind = spelled_kind.unwrap_or(if t.contains("double precision") { 8 } else { 4 });
+        let (bits, precision, range, digits) = fortran_real_kind_model(kind);
         return Some(FortranInquiryModel {
+            kind,
             bits,
+            precision: Some(precision),
+            range,
+            digits,
+        });
+    }
+    if t.contains("complex") {
+        // A complex is two reals of its kind, so `kind`/`precision`/`range`
+        // are the real model's and only the storage doubles.
+        let kind = spelled_kind.unwrap_or(if t.contains("double complex") { 8 } else { 4 });
+        let (bits, precision, range, digits) = fortran_real_kind_model(kind);
+        return Some(FortranInquiryModel {
+            kind,
+            bits: bits * 2,
             precision: Some(precision),
             range,
             digits,
@@ -12726,7 +14562,8 @@ fn fortran_inquiry_model_from_hint(type_hint: &str) -> Option<FortranInquiryMode
     }
     if t.contains("logical") {
         return Some(FortranInquiryModel {
-            bits: 32,
+            kind: spelled_kind.unwrap_or(4),
+            bits: spelled_kind.unwrap_or(4) * 8,
             precision: None,
             range: 1,
             digits: 1,
@@ -12734,6 +14571,7 @@ fn fortran_inquiry_model_from_hint(type_hint: &str) -> Option<FortranInquiryMode
     }
     if t.contains("character") {
         return Some(FortranInquiryModel {
+            kind: 1,
             bits: 8,
             precision: None,
             range: 0,
@@ -12743,36 +14581,51 @@ fn fortran_inquiry_model_from_hint(type_hint: &str) -> Option<FortranInquiryMode
     None
 }
 
+/// The KIND a declaration spells out, if it spells one — `integer(kind=8)`,
+/// `real*8`, `integer(2)`.
+///
+/// Reads the NUMBER rather than testing for one spelling at a time: the
+/// previous code asked `contains("kind=1") || contains("*1")` per kind and had
+/// no arm for `(4)` on an integer or `kind=16` on anything.
+fn fortran_spelled_kind(lowered_hint: &str) -> Option<i64> {
+    for marker in ["kind=", "*", "("] {
+        let Some(at) = lowered_hint.find(marker) else {
+            continue;
+        };
+        let rest = &lowered_hint[at + marker.len()..];
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        if let Ok(kind) = digits.parse::<i64>() {
+            // `character(len=8)` is a LENGTH, not a kind — and a character is
+            // kind 1 regardless, so the caller ignores this anyway.
+            if matches!(kind, 1 | 2 | 4 | 8 | 16) {
+                return Some(kind);
+            }
+        }
+    }
+    None
+}
+
 fn fortran_inquiry_model_from_expr(
     expr: &Expression,
     type_env: &HashMap<String, String>,
 ) -> Option<FortranInquiryModel> {
     match &expr.kind {
-        ExprKind::Lit(Literal::Float(_)) => Some(FortranInquiryModel {
-            bits: 64,
-            precision: Some(53),
-            range: 307,
-            digits: 15,
-        }),
-        ExprKind::Lit(Literal::Int(_)) => Some(FortranInquiryModel {
-            bits: 32,
-            precision: None,
-            range: 9,
-            digits: 9,
-        }),
-        ExprKind::Lit(Literal::Bool(_)) => Some(FortranInquiryModel {
-            bits: 32,
-            precision: None,
-            range: 1,
-            digits: 1,
-        }),
+        // `kind(1.0)` is 4 — an unsuffixed real literal is DEFAULT real, not
+        // double. It was modelled as kind 8 here, which is what made every
+        // `precision`/`range`/`digits` answer double-precision numbers.
+        ExprKind::Lit(Literal::Float(_)) => Some(fortran_real_model(4)),
+        ExprKind::Lit(Literal::Int(_)) => Some(fortran_integer_model(4)),
+        ExprKind::Lit(Literal::Bool(_)) => Some(fortran_logical_model()),
         ExprKind::Lit(Literal::Str(value)) => Some(FortranInquiryModel {
+            kind: 1,
+            // `storage_size` of a character string is its LENGTH in bits.
             bits: (value.chars().count().max(1) as i64) * 8,
             precision: None,
             range: 0,
             digits: 0,
         }),
         ExprKind::Lit(Literal::Char(_)) => Some(FortranInquiryModel {
+            kind: 1,
             bits: 8,
             precision: None,
             range: 0,
@@ -12781,12 +14634,7 @@ fn fortran_inquiry_model_from_expr(
         ExprKind::Ident(name)
             if name.eq_ignore_ascii_case(".true.") || name.eq_ignore_ascii_case(".false.") =>
         {
-            Some(FortranInquiryModel {
-                bits: 32,
-                precision: None,
-                range: 1,
-                digits: 1,
-            })
+            Some(fortran_logical_model())
         }
         ExprKind::Ident(name) => type_env
             .get(&name.to_ascii_lowercase())
@@ -12803,6 +14651,11 @@ fn fold_fortran_type_inquiry(
 ) -> Option<Expression> {
     let model = fortran_inquiry_model_from_expr(arg, type_env)?;
     let value = match name {
+        // `kind` was answered by a hard-coded `I32(8)` in the SHARED compiler
+        // (`primitives/builtins.rs`), for every type and every language that
+        // spells a function `kind`. Folding it here means the constant never
+        // reaches that arm.
+        "kind" => model.kind,
         "bit_size" | "storage_size" => model.bits,
         "precision" => model.precision?,
         "range" => model.range,
@@ -12822,9 +14675,13 @@ fn lower_fortran_type_inquiry_in_expr(expr: &mut Expression, type_env: &HashMap<
                 return;
             };
             let lowered = name.to_ascii_lowercase();
+            // `kind` belongs here too — this is the ONLY path with a
+            // `type_env`, so it is the only one that can answer for a
+            // VARIABLE. Without it `kind(x)` fell through to the shared
+            // compiler's hard-coded 8.
             if matches!(
                 lowered.as_str(),
-                "bit_size" | "storage_size" | "precision" | "range" | "digits"
+                "kind" | "bit_size" | "storage_size" | "precision" | "range" | "digits"
             ) {
                 let positional_args = args
                     .iter()
@@ -12865,6 +14722,19 @@ fn lower_fortran_type_inquiry_in_expr(expr: &mut Expression, type_env: &HashMap<
         ExprKind::Array(elements) => {
             for element in elements {
                 lower_fortran_type_inquiry_in_expr(&mut element.value, type_env);
+            }
+        }
+        // A `print *, a, b` with MORE THAN ONE item lowers to an
+        // interpolation, so every type inquiry inside a multi-item print was
+        // left unfolded and reached the runtime as a call to a function that
+        // does not exist. A single-item print takes a different path, which is
+        // why `print *, storage_size(s)` worked and adding a second item broke
+        // both of them.
+        ExprKind::Interpolation(parts) => {
+            for part in parts {
+                if let InterpolPart::Expr(inner) | InterpolPart::Formatted(inner, _) = part {
+                    lower_fortran_type_inquiry_in_expr(inner, type_env);
+                }
             }
         }
         _ => {}
@@ -13032,6 +14902,7 @@ fn walk_binop(pair: Pair<Rule>) -> Result<Expression, String> {
         let mut result = walk_expr(inner.remove(0))?;
         let mut i = 0;
         while i + 1 < inner.len() {
+            let op_text = inner[i].as_str().to_lowercase();
             let op = to_binop(&inner[i]);
             let right = walk_expr(inner[i + 1].clone())?;
             result = Expression::new(ExprKind::Binary {
@@ -13039,6 +14910,12 @@ fn walk_binop(pair: Pair<Rule>) -> Result<Expression, String> {
                 op,
                 right: Box::new(right),
             });
+            if op_text.trim_start().starts_with(".neqv.") {
+                result = Expression::new(ExprKind::Unary {
+                    op: UnaryOp::Not,
+                    expr: Box::new(result),
+                });
+            }
             i += 2;
         }
         return Ok(result);
@@ -13071,8 +14948,8 @@ fn to_binop(pair: &Pair<Rule>) -> BinOp {
         ">=" | ".ge." => BinOp::GtEq,
         ".and." => BinOp::And,
         ".or." => BinOp::Or,
-        ".eqv." => BinOp::Eq,
-        ".neqv." => BinOp::NotEq,
+        ".eqv." => BinOp::Eqv,
+        ".neqv." => BinOp::Eqv,
         _ => BinOp::Add,
     }
 }
