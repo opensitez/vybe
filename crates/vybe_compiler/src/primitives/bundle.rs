@@ -9,7 +9,6 @@
 //! On any other runtime, the globals hold the bundled helper function refs.
 //! One binary, works everywhere, no unresolvable imports.
 
-use crate::primitives::runtime_helpers::build_runtime_helpers;
 use std::collections::BTreeSet;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
@@ -43,7 +42,6 @@ const MAPPINGS: &[(&str, &str)] = &[
     ),
     // C qsort/bsearch moved to platforms/libc/stdlib_runtime.rs (libc surface);
     // no longer part of the cross-language helper bundle.
-    ("__stdlib_sort_by_key", "__vybe_sort_by_key"),
     ("__stdlib_enumerate", "__vybe_enumerate"),
     ("__stdlib_sum", "__vybe_sum"),
     ("__stdlib_min", "__vybe_min"),
@@ -51,14 +49,11 @@ const MAPPINGS: &[(&str, &str)] = &[
     ("__stdlib_pyany", "__vybe_pyany"),
     ("__stdlib_pyall", "__vybe_pyall"),
     ("__stdlib_compact", "__vybe_compact"),
-    ("__stdlib_uniq", "__vybe_uniq"),
-    ("__stdlib_minmax", "__vybe_minmax"),
     ("__stdlib_isempty", "__vybe_isempty"),
     ("__stdlib_pymap", "__vybe_pymap"),
     ("__stdlib_pyfilter", "__vybe_pyfilter"),
     ("__stdlib_pyiter", "__vybe_pyiter"),
     ("__stdlib_pynext", "__vybe_pynext"),
-    ("__stdlib_rotate", "__vybe_rotate"),
     ("__stdlib_array_copy", "__vybe_array_copy"),
     // Math transcendentals removed — provided natively by `ecma:math:*`.
     // `__stdlib_tostring` removed — str()/toString route to `ecma:string.String`.
@@ -85,25 +80,19 @@ const MAPPINGS: &[(&str, &str)] = &[
         "__vybe_pascal_set_difference",
     ),
     ("__stdlib_pascal_set_contains", "__vybe_pascal_set_contains"),
-    ("__stdlib_pascal_write", "__vybe_pascal_write"),
-    ("__stdlib_pascal_writeln", "__vybe_pascal_writeln"),
     ("__stdlib_pascal_str_insert", "__vybe_pascal_str_insert"),
     (
         "__stdlib_pascal_str_remove_range",
         "__vybe_pascal_str_remove_range",
     ),
-    ("__stdlib_count", "__vybe_count"),
     ("__stdlib_isnumeric", "__vybe_isnumeric"),
     ("__stdlib_val", "__vybe_val"),
-    ("__stdlib_cchar", "__vybe_cchar"),
     ("__stdlib_iif", "__vybe_iif"),
     ("__stdlib_rgb", "__vybe_rgb"),
     ("__stdlib_qbcolor", "__vybe_qbcolor"),
-    ("__stdlib_isobject", "__vybe_isobject"),
     ("__stdlib_isdate", "__vybe_isdate"),
     ("__stdlib_vartype", "__vybe_vartype"),
     ("__stdlib_newline", "__vybe_newline"),
-    ("__stdlib_encoding", "__vybe_encoding"),
     (
         "__stdlib_dict_values_from_entries",
         "__vybe_dict_values_from_entries",
@@ -123,15 +112,10 @@ const MAPPINGS: &[(&str, &str)] = &[
     ("__stdlib_pybin", "__vybe_pybin"),
     ("__stdlib_isinf", "__vybe_isinf"),
     // `__stdlib_splice` removed — no emit site references `__vybe_splice`.
-    ("__stdlib_hasproperty", "__vybe_hasproperty"),
     ("__stdlib_js_get_method", "__vybe_js_get_method"),
-    ("__stdlib_js_instanceof", "__vybe_js_instanceof"),
     ("__stdlib_redim", "__vybe_redim"),
     ("__stdlib_slicestep", "__vybe_slicestep"),
     ("__stdlib_dynmul", "__vybe_dynmul"),
-    ("__stdlib_concat", "__vybe_concat"),
-    ("__stdlib_string_raw", "__vybe_string_raw"),
-    ("__stdlib_drain_generator", "__vybe_drain_generator"),
     ("__stdlib_fmod", "__vybe_fmod"),
     ("__stdlib_array_insert", "__vybe_array_insert"),
     ("__stdlib_array_remove_at", "__vybe_array_remove_at"),
@@ -140,7 +124,6 @@ const MAPPINGS: &[(&str, &str)] = &[
     ("__stdlib_array_set_range", "__vybe_array_set_range"),
     ("__stdlib_array_binary_search", "__vybe_array_binary_search"),
     ("__stdlib_array_reverse_range", "__vybe_array_reverse_range"),
-    ("__stdlib_sprintf", "__vybe_sprintf"),
     ("__stdlib_generator_next", "__vybe_generator_next"),
     (
         "__stdlib_async_generator_next",
@@ -200,15 +183,6 @@ pub fn emit_runtime_helper_preamble(script: &mut Chunk, stdlib_base: usize) {
     }
 }
 
-/// Append every runtime helper chunk to program chunks. Call AFTER compilation is done.
-pub fn append_runtime_helper_chunks(program_chunks: &mut Vec<Chunk>) {
-    let helpers = {
-        let (first, _rest) = program_chunks.split_at_mut(1);
-        build_runtime_helpers(&mut first[0])
-    };
-    program_chunks.extend(helpers.chunks);
-}
-
 /// Emit a call to a runtime-helper/vybe function.
 /// IMPORTANT: push the function ref FIRST (via global_get), then push args, then call_ref.
 /// The call convention is: [func_ref, arg0, arg1, ...] on stack.
@@ -258,7 +232,7 @@ pub fn finalize_with_runtime_helpers_excluding(chunks: &mut Vec<Chunk>, excluded
     let helpers = {
         let (first, _rest) = chunks.split_at_mut(1);
         let exports = ordered_helper_exports(&requested);
-        crate::primitives::runtime_helpers::build_runtime_helpers_for_exports(
+        crate::primitives::polyfills::build_runtime_helpers_for_exports(
             &mut first[0],
             &exports,
         )
@@ -334,9 +308,7 @@ fn add_helper_dependencies(exports: &mut BTreeSet<&'static str>) {
 
 fn helper_export_dependencies(export: &str) -> &'static [&'static str] {
     match export {
-        "__stdlib_minmax" => &["__stdlib_min", "__stdlib_max"],
         "__stdlib_pynext" => &["__stdlib_iter_drain"],
-        "__stdlib_rotate" => &["__stdlib_fmod"],
         _ => &[],
     }
 }

@@ -683,8 +683,7 @@ impl Compiler {
                 else_body,
             } => {
                 let line = self.line;
-                self.compile_expr(cond)?;
-                self.emit_condition_truthiness_from_stack();
+                self.compile_condition_to_i32(cond)?;
                 self.chunk().emit_if(line);
                 self.label_depth += 1;
 
@@ -741,10 +740,9 @@ impl Compiler {
                     is_continuable: true,
                     finally_depth: self.active_finally_blocks.len(),
                 });
-                self.compile_expr(cond)?;
-                self.emit_condition_truthiness_from_stack();
+                self.compile_condition_to_i32(cond)?;
                 let line = self.line;
-                common::loops::emit_loop_cond(&mut self.chunks, self.current, line);
+                common::loops::emit_loop_cond_from_i32(&mut self.chunks, self.current, line);
                 for s in body {
                     self.compile_stmt(s)?;
                 }
@@ -792,13 +790,15 @@ impl Compiler {
                 self.label_depth += 1; // loop
                 let break_depth = self.label_depth - 1; // the block
                 if let Some(c) = cond {
-                    self.compile_expr(c)?;
-                    self.emit_condition_truthiness_from_stack();
+                    self.compile_condition_to_i32(c)?;
                 } else {
-                    inst!(self, core_wasm::bool_const, true);
+                    // `for (;;)` — an i32, not a `Bool`, so the branch below
+                    // gets the i32 its precondition names rather than relying
+                    // on `Value::as_i32` to coerce one.
+                    inst!(self, core_wasm::i32_const, 1);
                 }
                 let line = self.line;
-                common::loops::emit_loop_cond(&mut self.chunks, self.current, line);
+                common::loops::emit_loop_cond_from_i32(&mut self.chunks, self.current, line);
                 // Body block for continue-to-update
                 let body_block = if update.is_some() {
                     let bp = self.chunk().emit_block(line);
@@ -1245,12 +1245,17 @@ impl Compiler {
                     self.chunks[self.current].patch_block(patch);
                 }
                 self.label_depth -= 1;
-                self.compile_expr(cond)?;
-                self.emit_condition_truthiness_from_stack();
+                self.compile_condition_to_i32(cond)?;
                 self.loops.pop();
                 let lp = self.loop_states.pop().unwrap();
                 let line = self.line;
-                common::loops::emit_do_loop_end(&mut self.chunks, self.current, lp, *until, line);
+                common::loops::emit_do_loop_end_from_i32(
+                    &mut self.chunks,
+                    self.current,
+                    lp,
+                    *until,
+                    line,
+                );
                 self.label_depth -= 2;
             }
 
@@ -1538,14 +1543,14 @@ impl Compiler {
                         ret_slot,
                     });
                 }
-                let catch_jump =
-                    common::errors::emit_try_start(&mut self.chunks[self.current], line);
-                // `try_table` is now a structural block (spec): it pushes its
-                // own label at runtime, so the body sits one level deeper.
-                // Scope this +1 to the body only — catch arms / else / finally
-                // are emitted AFTER the `end` below and must see the original
-                // depth.
-                self.label_depth += 1;
+                common::errors::emit_try_start(&mut self.chunks[self.current], line);
+                // `emit_try_start` opens TWO labels: the handler block (whose
+                // `end` is where the catch arms begin — the target every clause
+                // names by `labelidx`) and the `try_table` itself, which is a
+                // structural block in the spec. The body therefore sits two
+                // levels deeper. The handler block's level is dropped after the
+                // normal-path `br` below, so the catch arms see it closed.
+                self.label_depth += 2;
                 if let Some(fin) = finally.clone() {
                     self.active_finally_blocks
                         .push(FinallyAction::Statements(fin));
@@ -1573,8 +1578,13 @@ impl Compiler {
                         self.compile_stmt(s)?;
                     }
                 }
-                self.chunk().emit_br(0, line);
-                common::errors::patch_catch(&mut self.chunks[self.current], catch_jump);
+                // `br 1`, not `br 0`: the handler block now sits between here
+                // and `after_try_block`, so the normal path is one level
+                // further out. `br 0` would land on the handler block's `end`
+                // — that is, run the catch arms on SUCCESS.
+                self.chunk().emit_br(1, line);
+                common::errors::emit_handler_block_end(&mut self.chunks[self.current], line);
+                self.label_depth -= 1;
                 // Entering this try's catch-arms section: ITS runtime handler
                 // has fired, so ITS finally (sequenced after the arms) is the
                 // one a `throw` inside an arm must inline — enclosing trys'
@@ -1993,7 +2003,7 @@ impl Compiler {
             } => {
                 let cname = self.canon(name);
                 self.defined_globals.insert(cname.clone());
-                self.defined_classes.insert(cname.clone());
+                self.declare_class_identity(&cname);
                 let inferred_parents;
                 let effective_parents: &[String] = if self.should_infer_winforms_form(name, parents)
                 {
@@ -2109,7 +2119,7 @@ impl Compiler {
             } => {
                 let cn = self.canon(name);
                 self.defined_globals.insert(cn.clone());
-                self.defined_classes.insert(cn.clone());
+                self.declare_class_identity(&cn);
                 let span = stmt.span.clone();
                 crate::primitives::class_normalize::emit::emit_class_from_ast(
                     self,
@@ -2137,7 +2147,7 @@ impl Compiler {
             // - A namespace struct is built so qualified `Module.Member` works too
             StmtKind::ModuleDecl { name, members, .. } => {
                 let module_name = self.canon(name);
-                self.defined_classes.insert(module_name.clone());
+                self.declare_class_identity(&module_name);
                 self.register_module_static_container(&module_name, members);
                 let mut member_names: Vec<(String, String)> = Vec::new();
 
@@ -2145,13 +2155,50 @@ impl Compiler {
                 for m in members {
                     match m {
                         ClassMember::Method(stmt) => {
-                            if let StmtKind::FunctionDecl { name: mname, .. } = &stmt.kind {
+                            if let StmtKind::FunctionDecl {
+                                name: mname,
+                                modifiers,
+                                ..
+                            } = &stmt.kind
+                            {
                                 let mn = self.canon(mname);
-                                let global_name = if module_name.contains('.') {
-                                    format!("{module_name}.{mn}")
-                                } else {
-                                    mn.clone()
-                                };
+                                // A module member is published under its BARE
+                                // name only when the declaration makes it
+                                // reachable from OUTSIDE the module. A bare
+                                // global is reachable from everywhere, so
+                                // publishing one for a module-private member
+                                // discards the visibility the AST already
+                                // carries on `modifiers`.
+                                //
+                                // Measured against VB.NET (dotnet SDK):
+                                //   Private member, called from another module
+                                //     -> BC30390 "not accessible in this
+                                //        context because it is 'Private'"
+                                //   Friend member, same call -> allowed
+                                // so `Friend`/`Internal` contributes and only
+                                // `Private` is withheld. `Visibility` defaults
+                                // to `Public`, so a walker that declares
+                                // nothing is unaffected.
+                                //
+                                // Qualifying instead of skipping keeps the
+                                // member fully functional: the second pass
+                                // below reads `global_name` and stamps it onto
+                                // the module object under `mn`, and calls from
+                                // inside the module resolve through that
+                                // container (`current_class` is set while
+                                // members compile) rather than through the
+                                // bare global. Only outside reachability
+                                // changes.
+                                let contributes_unqualified = matches!(
+                                    modifiers.visibility,
+                                    Visibility::Public | Visibility::Internal
+                                );
+                                let global_name =
+                                    if module_name.contains('.') || !contributes_unqualified {
+                                        format!("{module_name}.{mn}")
+                                    } else {
+                                        mn.clone()
+                                    };
                                 let mut module_stmt = stmt.clone();
                                 if let StmtKind::FunctionDecl { name, .. } = &mut module_stmt.kind {
                                     *name = global_name.clone();
@@ -2279,6 +2326,20 @@ impl Compiler {
                     self.emit_struct_field_op(Op::STRUCT_SET, 0, key);
                     // Register bare member → module name for qualified resolution
                     self.enum_members.insert(mn.clone(), module_name.clone());
+                    // A member is CONTRIBUTED to the enclosing scope exactly
+                    // when it was published under its bare name — which is the
+                    // same condition the visibility rule above already
+                    // decided, so it is read back here rather than derived a
+                    // second time and left to drift.
+                    if global_name == mn {
+                        let contributors = self
+                            .module_member_contributors
+                            .entry(mn.clone())
+                            .or_default();
+                        if !contributors.iter().any(|m| m == &module_name) {
+                            contributors.push(module_name.clone());
+                        }
+                    }
                 }
                 self.emit_global_write(&module_name);
                 self.defined_globals.insert(module_name);
@@ -2339,9 +2400,9 @@ impl Compiler {
                 for (_, qualified_name, is_type_like) in &member_names {
                     self.defined_globals.insert(qualified_name.clone());
                     if *is_type_like {
-                        self.defined_classes.insert(qualified_name.clone());
+                        self.declare_class_identity(qualified_name);
                     } else {
-                        self.defined_functions.insert(qualified_name.clone());
+                        self.declare_function_identity(qualified_name);
                     }
                 }
                 let prev_namespace = self.current_namespace.clone();
@@ -2354,9 +2415,9 @@ impl Compiler {
                 for (member_name, qualified_name, is_type_like) in &member_names {
                     self.defined_globals.insert(qualified_name.clone());
                     if *is_type_like {
-                        self.defined_classes.insert(qualified_name.clone());
+                        self.declare_class_identity(qualified_name);
                     } else {
-                        self.defined_functions.insert(qualified_name.clone());
+                        self.declare_function_identity(qualified_name);
                     }
                     let suffix = format!(".{member_name}");
                     let has_qualified_collision = if *is_type_like {
@@ -2378,8 +2439,34 @@ impl Compiler {
                     }
                 }
 
-                // Build namespace struct
-                self.emit_struct_new(0, 0);
+                // Build the namespace object — EXTENDING one that already
+                // exists rather than replacing it.
+                //
+                // A namespace is OPEN: `namespace App { … }` may be written any
+                // number of times, and every namespaced language merges the
+                // blocks. A fresh `struct.new` here made the last block win, so
+                //
+                //     namespace App.Deep { class Helper { … } }   // App = { Deep }
+                //     namespace App      { class Runner { … } }   // App = { Runner }
+                //
+                // dropped `Deep` off the object, and a fully-qualified
+                // `App.Deep.Helper.Tag()` — which compiles to member access on
+                // the `App` object — read `undefined`. Verified against the .NET
+                // SDK: real C# prints `App.Deep.Helper` for exactly this program.
+                // The sibling block is what triggers it, so the single-namespace
+                // case always worked and hid this.
+                //
+                // Same rule the parent-linking loop below already applies to the
+                // ENCLOSING object, now applied to the namespace's own: read
+                // what is there, else start one. `ns_name` reaches
+                // `defined_globals` only right after a global write (here and in
+                // that loop), so a read can never find a declared-but-unwritten
+                // global.
+                if self.defined_globals.contains(&ns_name) {
+                    self.emit_global_read(&ns_name);
+                } else {
+                    self.emit_struct_new(0, 0);
+                }
                 for (member_name, qualified_name, _) in &member_names {
                     inst!(self, core_wasm::dup);
                     self.emit_global_read(qualified_name);
@@ -2479,11 +2566,10 @@ impl Compiler {
 
                 let line = self.line;
                 let after_using_try = self.chunk().emit_block(line);
-                let catch_jump =
-                    common::errors::emit_try_start(&mut self.chunks[self.current], line);
-                // `try_table` is a structural block — count it while compiling
-                // the protected body (see the main `try` site above).
-                self.label_depth += 1;
+                common::errors::emit_try_start(&mut self.chunks[self.current], line);
+                // Handler block + `try_table` — two levels while compiling the
+                // protected body (see the main `try` site above).
+                self.label_depth += 2;
                 self.active_finally_blocks
                     .push(FinallyAction::ResourceDispose {
                         slot,
@@ -2496,10 +2582,13 @@ impl Compiler {
                 self.active_finally_blocks.pop();
                 common::errors::emit_try_end(&mut self.chunks[self.current], line);
                 self.label_depth -= 1;
-                self.chunk().emit_br(0, line);
-                common::errors::patch_catch(&mut self.chunks[self.current], catch_jump);
-                // Catch arm: dispose, then rethrow the exception
-                // (which is on TOS after `patch_catch`).
+                // `br 1` — the handler block sits between here and
+                // `after_using_try` (see the main `try` site above).
+                self.chunk().emit_br(1, line);
+                common::errors::emit_handler_block_end(&mut self.chunks[self.current], line);
+                self.label_depth -= 1;
+                // Catch arm: dispose, then rethrow the exception, which the
+                // clause's branch left on TOS as the handler block's result.
                 let exc_slot = self.define_local("__using_exc");
                 self.emit_u16(Op::LOCAL_SET, exc_slot);
                 self.label_depth += 1;
@@ -3737,7 +3826,12 @@ impl Compiler {
                 self.emit_var_get(exnref_local);
                 self.emit(Op::THROW_REF);
             }
-            StmtKind::WasmTryTable { body, catches } => {
+            StmtKind::WasmTryTable {
+                body,
+                catches,
+                params: try_params,
+                results: try_results,
+            } => {
                 let line = self.line;
                 // Resolve each clause's kind + tag index up front.
                 let mut clause_kinds: Vec<u8> = Vec::with_capacity(catches.len());
@@ -3769,16 +3863,36 @@ impl Compiler {
                 let after = self.chunk().emit_block(line);
                 self.label_depth += 1;
 
-                // try_table with one clause per catch (offsets patched later),
-                // via the shared single-source-of-truth primitive.
+                // ONE HANDLER BLOCK PER CLAUSE, nested innermost-first, so
+                // clause `i` names `labelidx i` and handler `i`'s code follows
+                // block `i`'s `end`. This is what lets the clause carry a spec
+                // `labelidx` — a depth resolved by block structure — instead of
+                // a patched byte offset that truncated past a 64KB body.
+                //
+                // Emitting in REVERSE puts the LAST clause's block outermost,
+                // so the FIRST clause's block is innermost and is depth 0.
+                // Each block carries its clause's payload arity: the values the
+                // catch delivers travel as that block's results.
+                for c in catches.iter().rev() {
+                    let arity = c.payload_binds.len() + usize::from(c.capture_ref);
+                    self.chunk().emit_block_typed(line, arity as u8);
+                    self.label_depth += 1;
+                }
+
                 let clauses: Vec<common::errors::TryTableClause> = (0..catches.len())
                     .map(|i| common::errors::TryTableClause {
                         kind: clause_kinds[i],
                         tag: clause_tags[i],
+                        label: i as u16,
                     })
                     .collect();
-                let offset_positions =
-                    common::errors::emit_try_table(&mut self.chunks[self.current], &clauses, line);
+                common::errors::emit_try_table(
+                    &mut self.chunks[self.current],
+                    *try_params,
+                    *try_results,
+                    &clauses,
+                    line,
+                );
 
                 // Body sits one label level deeper (try_table is a block).
                 self.label_depth += 1;
@@ -3788,17 +3902,16 @@ impl Compiler {
                 common::errors::emit_try_end(&mut self.chunks[self.current], line);
                 self.label_depth -= 1;
 
-                // Normal completion: skip every handler → join block's `end`.
-                self.chunk().emit_br(0, line);
+                // Normal completion skips EVERY handler block: the join sits
+                // `catches.len()` levels out from here.
+                self.chunk().emit_br(catches.len() as u32, line);
 
-                // Handlers in clause order. Each patches its clause offset to
-                // its start, binds the delivered exnref/payload, runs, then
-                // branches to the join (the last falls through to the `end`).
+                // Handler `i` begins at block `i`'s `end`. Close that block,
+                // bind the delivered exnref/payload, run the arm, then branch
+                // to the join — which is one level nearer after each close.
                 for (i, c) in catches.iter().enumerate() {
-                    common::errors::patch_catch(
-                        &mut self.chunks[self.current],
-                        offset_positions[i],
-                    );
+                    self.chunk().emit_end(line);
+                    self.label_depth -= 1;
                     if c.capture_ref {
                         if let Some(exnref) = &c.exnref_bind {
                             let slot = self.define_local(exnref);
@@ -3812,8 +3925,9 @@ impl Compiler {
                     for s in &c.body {
                         self.compile_stmt(s)?;
                     }
+                    // The last handler falls through to the join's own `end`.
                     if i + 1 < catches.len() {
-                        self.chunk().emit_br(0, line);
+                        self.chunk().emit_br((catches.len() - 1 - i) as u32, line);
                     }
                 }
 
@@ -3840,7 +3954,7 @@ impl Compiler {
         let parents: Vec<String> = parent.into_iter().map(|value| value.to_string()).collect();
         let cname = self.canon(name);
         self.defined_globals.insert(cname.clone());
-        self.defined_classes.insert(cname.clone());
+        self.declare_class_identity(&cname);
         crate::primitives::class_normalize::emit::emit_class_from_ast(
             self,
             span,
@@ -4414,23 +4528,24 @@ impl Compiler {
                 // carried as a plain String. Re-attach the DECLARATION's binding
                 // here: a hint that came from the source keeps what the walker
                 // said about it, and one this pass inferred takes the default.
-                let declared_binding = decl
-                    .type_hint
-                    .as_ref()
-                    .map(|declared| declared.binding)
-                    .unwrap_or_default();
+                let declared_binding = match decl.type_hint.as_ref() {
+                    Some(declared) => declared.binding,
+                    // No DECLARATION at all — the spelling came from the
+                    // INITIALIZER via `infer_expr_type_hint` a few lines up.
+                    // That is exactly `TypeBinding::Descriptive`'s second case:
+                    // "a type hint a dynamic language INFERRED for dispatch".
+                    // It records what the value happens to be at this
+                    // statement and guarantees nothing about the next one —
+                    // `let i = 0; i = "x"` is legal in every language that
+                    // reaches here without a declared type. The default was
+                    // `Converting`, which claims the opposite.
+                    None => vybe_ast::TypeBinding::Descriptive,
+                };
                 let inferred_type_hint = inferred_type_hint.map(|spelling| {
                     let mut declared = vybe_ast::TypeHint::from(spelling);
                     declared.binding = declared_binding;
                     declared
                 });
-                // The last step of reducing a spelling to a type: a qualified
-                // user type (`MyApp.Models.Customer`) becomes the one identity
-                // its `NamespaceDecl` produced. Alias resolution above answers
-                // source-level type ALIASES; this answers namespace
-                // QUALIFICATION, and both have to happen before the hint is
-                // stored, because every consumer downstream compares it by name.
-                let inferred_type_hint = self.canonicalize_declared_type_hint(inferred_type_hint);
                 let is_pascal_type_alias_decl = self.profile.const_without_init_is_type_alias
                     && *kind == VarDeclKind::Const
                     && decl.init.is_none()
@@ -4610,9 +4725,14 @@ impl Compiler {
                         self.emit_global_read(&cn);
                         self.emit_struct_field_op(Op::STRUCT_SET, 0, field_key);
                     }
-                    if let Some(type_hint) = inferred_type_hint.as_deref() {
-                        self.global_type_hints
-                            .insert(cn.clone(), Self::normalize_type_hint(type_hint));
+                    if let Some(declared) = inferred_type_hint.as_ref() {
+                        // `set_spelling` normalizes and KEEPS the binding —
+                        // that is exactly what it exists for. Rebuilding the
+                        // hint from the normalized string would silently
+                        // reset it to the `Converting` default.
+                        let mut normalized = declared.clone();
+                        normalized.set_spelling(Self::normalize_type_hint(declared.spelling()));
+                        self.global_type_hints.insert(cn.clone(), normalized);
                     }
                     if *kind == VarDeclKind::Const && self.profile.ecma_lexical_declarations {
                         self.const_globals.insert(cn.clone());
@@ -5170,12 +5290,26 @@ impl Compiler {
                 {
                     if let Some(type_hint) = self.infer_expr_type_hint(object) {
                         let class_name = Self::normalize_type_hint(&type_hint);
-                        if let Some(target) =
-                            vybe_runtime::namespaces::lookup_type_property_setter_target(
-                                &self.profile.namespaces.type_scopes,
-                                &class_name,
-                                field,
-                            )
+                        // A user declaration owns its own members — the same
+                        // shadow the GETTER site applies, which this one was
+                        // missing. With only the getter guarded, `Class Point`
+                        // read its field correctly but `Me.X = x` still wrote
+                        // through the host setter for `System.Drawing.Point.X`,
+                        // so the field never held the value at all.
+                        //
+                        // Gating the LOOKUP rather than returning early: a
+                        // shadowed name simply has no platform target, so this
+                        // falls out to the ordinary member-assign path below,
+                        // which is what a plain field write already uses.
+                        if let Some(target) = (!self.shadows_builtin_type(&class_name))
+                            .then(|| {
+                                vybe_runtime::namespaces::lookup_type_property_setter_target(
+                                    &self.profile.namespaces.type_scopes,
+                                    &class_name,
+                                    field,
+                                )
+                            })
+                            .flatten()
                         {
                             match target {
                                 vybe_runtime::component_model::InstancePropertyTarget::Host {

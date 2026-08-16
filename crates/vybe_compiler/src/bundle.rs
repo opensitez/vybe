@@ -138,6 +138,10 @@ pub struct Bundle {
 pub struct CompiledBundle {
     pub chunks: Vec<vybe_runtime::Chunk>,
     pub host_imports: crate::primitives::HostImportMetadata,
+    /// What the entry module DECLARED about presenting a UI — see
+    /// [`vybe_ast::Directives::app_shell`]. Carried so the embedder can decide
+    /// whether to present a window without re-walking the tree.
+    pub app_shell: Option<vybe_ast::AppShell>,
 }
 
 impl Bundle {
@@ -392,6 +396,7 @@ impl Bundle {
             .compile_with_imports(module)?;
         let mut chunks = compile_result.chunks;
         let host_imports = compile_result.host_imports;
+        let app_shell = compile_result.app_shell;
 
         // Load and append WASM binary chunks
         for wf in &self.wasm_files {
@@ -421,6 +426,7 @@ impl Bundle {
         Ok(CompiledBundle {
             chunks,
             host_imports,
+            app_shell,
         })
     }
 }

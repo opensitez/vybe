@@ -72,6 +72,9 @@ fn rich_compare_locals_emits_dispatch() {
         "__lt__",
         expressions::RichFallback::Op(ops::emit_dyn_lt),
         0,
+        // This test asserts the DISPATCH chain is emitted, so the operand must
+        // not be a known number — that is the case the chain is skipped for.
+        false,
     );
     let chunk = chunks.remove(0);
     // Should have: struct_get, dup, ref_is_null, br_if_true, call_ref, br, drop, drop, dyn_lt

@@ -1012,7 +1012,7 @@ impl Compiler {
         let binds_in_enclosing_scope = self.scopes.len() > 1 && self.variable_namespace.is_none();
         if !binds_in_enclosing_scope {
             self.defined_globals.insert(cname.clone());
-            self.defined_functions.insert(cname.clone());
+            self.declare_function_identity(&cname);
         }
         // Register top-level generator functions so `is_direct_generator_call`
         // detects them (`[...gen()]` spread, `foreach (gen() as ...)`). Scoped
@@ -1052,6 +1052,17 @@ impl Compiler {
         // through to a global that has not been written yet. The value is
         // stored into the slot once the closure exists, below.
         let enclosing_fn_slot = binds_in_enclosing_scope.then(|| self.define_local(&cname));
+        // Record on the BINDING that this local is a callable, and how many
+        // parameters it takes. Nested declarations stay out of
+        // `defined_functions` (above) so sibling frames cannot race for one
+        // name — but that left a bare reference to a parameterless nested
+        // function with no way to know it should INVOKE. In pascal
+        // `Inner` with no parens IS the call, so `__p(__vs(Inner))` passed the
+        // function object itself and blew up inside the callee.
+        if let Some(slot) = enclosing_fn_slot {
+            let declared_arity = u8::try_from(params.len()).unwrap_or(u8::MAX);
+            self.scope_mut().mark_declared_arity(slot, declared_arity);
+        }
         let name = &cname;
 
         let uses_js_arguments = self.profile.has_arguments_object
@@ -1386,10 +1397,7 @@ impl Compiler {
         // JSPI; this wrap just covers terminal throw / return.
         let async_try = if is_async && !is_generator && self.profile.async_wraps_body_in_try {
             let line = self.line;
-            Some(common::functions::emit_async_body_start(
-                &mut self.chunks[self.current],
-                line,
-            ))
+            { common::functions::emit_async_body_start(&mut self.chunks[self.current], line); Some(()) }
         } else {
             None
         };
@@ -1495,20 +1503,20 @@ impl Compiler {
             self.active_async_try_depth = self.active_async_try_depth.saturating_sub(1);
         }
 
-        if let Some(catch_jump) = async_try {
+        if async_try.is_some() {
             let line = self.line;
             // Normal exit: wrap return in Promise.resolve(value).
             // The body's compile_stmt may have already emitted RETURNs
             // (early returns); we still need the fall-through path
             // to leave a fulfilled Promise on the stack.
             let chunk = &mut self.chunks[self.current];
-            common::functions::emit_async_body_fallthrough(chunk, catch_jump, line);
+            common::functions::emit_async_body_fallthrough(chunk, line);
             let resolve_idx = self.import("ecma:promise", "resolve");
             self.emit_host_call(resolve_idx, 1);
             self.emit_return();
             // Catch handler — exception value on TOS.
             let chunk = &mut self.chunks[self.current];
-            common::functions::patch_async_body_catch(chunk, catch_jump);
+            common::functions::end_async_body_handler(chunk, line);
             let reject_idx = self.import("ecma:promise", "reject");
             self.emit_host_call(reject_idx, 1);
             self.emit_return();
@@ -1848,9 +1856,9 @@ impl Compiler {
                     }
                 }
                 self.defined_globals.insert(nested_canon.clone());
-                self.defined_classes.insert(nested_canon.clone());
+                self.declare_class_identity(&nested_canon);
                 self.defined_globals.insert(nested_leaf_canon.clone());
-                self.defined_classes.insert(nested_leaf_canon.clone());
+                self.declare_class_identity(&nested_leaf_canon);
                 self.note_pending_class(&nested_canon, nested_parent);
                 if let Some(pc) = self.pending_classes.get_mut(&nested_canon) {
                     pc.enclosing_class = Some(enclosing.to_string());
@@ -2695,10 +2703,7 @@ impl Compiler {
 
             let async_try = if m.is_async && !m.is_generator && cc.profile.async_wraps_body_in_try {
                 let line = cc.line;
-                Some(common::functions::emit_async_body_start(
-                    &mut cc.chunks[ci],
-                    line,
-                ))
+                { common::functions::emit_async_body_start(&mut cc.chunks[ci], line); Some(()) }
             } else {
                 None
             };
@@ -2760,15 +2765,15 @@ impl Compiler {
             if async_try.is_some() {
                 cc.active_async_try_depth = cc.active_async_try_depth.saturating_sub(1);
             }
-            if let Some(catch_jump) = async_try {
+            if async_try.is_some() {
                 let line = cc.line;
                 let chunk = &mut cc.chunks[ci];
-                common::functions::emit_async_body_fallthrough(chunk, catch_jump, line);
+                common::functions::emit_async_body_fallthrough(chunk, line);
                 let resolve_idx = cc.import("ecma:promise", "resolve");
                 cc.emit_host_call(resolve_idx, 1);
                 cc.emit(Op::RETURN);
                 let chunk = &mut cc.chunks[ci];
-                common::functions::patch_async_body_catch(chunk, catch_jump);
+                common::functions::end_async_body_handler(chunk, line);
                 let reject_idx = cc.import("ecma:promise", "reject");
                 cc.emit_host_call(reject_idx, 1);
                 cc.emit(Op::RETURN);
@@ -6279,7 +6284,8 @@ pub fn emit_auto_init_component(chunk: &mut Chunk, this_slot: u16, line: u32) {
 }
 
 /// Emit a call to `this.<method_name>()` — generalized auto-init for any
-/// method listed in the profile's `auto_init_methods`.  The method name is
+/// method listed in the class's `auto_init_methods`, which the language's
+/// `normalize_class` populates on the `NormalClass`.  The method name is
 /// lowercased for the struct_get lookup (all method keys are stored lowercase).
 pub fn emit_auto_init_call(chunk: &mut Chunk, this_slot: u16, method_name: &str, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line); // [this]

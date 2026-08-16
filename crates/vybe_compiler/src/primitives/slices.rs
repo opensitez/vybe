@@ -627,3 +627,290 @@ pub fn emit_strided_del(chunks: &mut [Chunk], current: usize, line: u32, opts: O
     set(chunks, current, i, line);
     loops::emit_loop_end(chunks, current, st, line);
 }
+
+
+// ── Linkable chunk builders ──────────────────────────────────────────────────
+//
+// Linkable chunk builders — the standalone-chunk packaging of what the
+// `emit_*` forms above splice inline. Same concept, same module.
+
+// ── slice(arr, start, end) → array — wraps array_slice opcode
+pub fn build_slice(imports: &mut Chunk) -> Chunk {
+    // Polymorphic slice: handles BOTH strings and arrays. The walker doesn't
+    // know whether `obj[1..3]` operates on a string or an array, so the
+    // canonical slice helper does a runtime type check via `ref_is_string`
+    // and dispatches to `str_substring` or `array_slice` accordingly.
+    //
+    // Used by every language whose surface syntax for slicing is `[start..end]`:
+    // C# `arr[1..3]` / `s[0..5]`, Python `arr[1:3]` / `s[0:5]`, etc.
+    let mut c = Chunk::new("__stdlib_slice");
+    c.arity = 3;
+    c.local_count = 3; // obj + start + end
+    let obj = 0u16;
+    let start = 1u16;
+    let end = 2u16;
+
+    // if ref_is_string(obj) → str_substring; else → array_slice
+    let str_block_p = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, obj, 0);
+    crate::primitives::reflection::emit_is_string(&mut c, 0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0); // skip string branch if NOT string
+
+    // String branch: [obj, start, end] → str_substring
+    c.emit_op_u16(Op::LOCAL_GET, obj, 0);
+    c.emit_op_u16(Op::LOCAL_GET, start, 0);
+    c.emit_op_u16(Op::LOCAL_GET, end, 0);
+    crate::primitives::strings::emit_str_substring(&mut c, 0);
+    c.emit_op(Op::RETURN, 0);
+
+    // Array branch
+    c.emit_end(0);
+    c.patch_block(str_block_p);
+    c.emit_op_u16(Op::LOCAL_GET, obj, 0);
+    c.emit_op_u16(Op::LOCAL_GET, start, 0);
+    c.emit_op_u16(Op::LOCAL_GET, end, 0);
+    crate::primitives::collections::emit_slice_into(imports, &mut c, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── sliceStep(arr, start, end, step) → array ─────────────────
+pub fn build_slice_step(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_slicestep");
+    c.arity = 4;
+    c.local_count = 11; // arr(0) start(1) end(2) step(3) result(4) i(5) cond(6) step(7) start(8) end(9) len(10)
+    let zero = c.add_constant(vybe_runtime::Value::I32(0));
+    let neg_one = c.add_constant(vybe_runtime::Value::I32(-1));
+
+    // result = new array
+    crate::primitives::collections::emit_array_new_into(imports, &mut c, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 4, 0);
+
+    // len = arr.length
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    crate::primitives::collections::emit_len_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 10, 0);
+
+    // step = step ?? 1
+    c.emit_op_u16(Op::LOCAL_GET, 3, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    c.emit_if(0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
+    c.emit_op_u16(Op::LOCAL_SET, 7, 0);
+    c.emit_else(0);
+    c.emit_op_u16(Op::LOCAL_GET, 3, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 7, 0);
+    c.emit_end(0);
+
+    // start = start ?? (step > 0 ? 0 : len - 1)
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    c.emit_if(0);
+    c.emit_op_u16(Op::LOCAL_GET, 7, 0);
+    crate::primitives::expressions::emit_const_index(&mut c, zero, 0);
+    crate::primitives::ops::emit_dyn_gt_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_dyn_to_bool_into(imports, &mut c, 0);
+    c.emit_if(0);
+    crate::primitives::expressions::emit_const_index(&mut c, zero, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 8, 0);
+    c.emit_else(0);
+    c.emit_op_u16(Op::LOCAL_GET, 10, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
+    c.emit_op(Op::I32_SUB, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 8, 0);
+    c.emit_end(0);
+    c.emit_else(0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 8, 0);
+    c.emit_end(0);
+
+    // end = end ?? (step > 0 ? len : -1)
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    c.emit_if(0);
+    c.emit_op_u16(Op::LOCAL_GET, 7, 0);
+    crate::primitives::expressions::emit_const_index(&mut c, zero, 0);
+    crate::primitives::ops::emit_dyn_gt_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_dyn_to_bool_into(imports, &mut c, 0);
+    c.emit_if(0);
+    c.emit_op_u16(Op::LOCAL_GET, 10, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 9, 0);
+    c.emit_else(0);
+    crate::primitives::expressions::emit_const_index(&mut c, neg_one, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 9, 0);
+    c.emit_end(0);
+    c.emit_else(0);
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 9, 0);
+    c.emit_end(0);
+
+    // step=0 would otherwise spin forever; return empty slice.
+    c.emit_op_u16(Op::LOCAL_GET, 7, 0);
+    crate::primitives::expressions::emit_const_index(&mut c, zero, 0);
+    crate::primitives::ops::emit_dyn_eq_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_dyn_to_bool_into(imports, &mut c, 0);
+    c.emit_if(0);
+    c.emit_op_u16(Op::LOCAL_GET, 4, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0);
+
+    // i = normalized start
+    c.emit_op_u16(Op::LOCAL_GET, 8, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 5, 0);
+
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
+
+    // Compute condition: if step > 0 then i < end else i > end
+    // Store in local 6 (cond) to avoid value-on-stack across branches.
+    c.emit_op_u16(Op::LOCAL_GET, 7, 0);
+    crate::primitives::expressions::emit_const_index(&mut c, zero, 0);
+    crate::primitives::ops::emit_dyn_gt_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_dyn_to_bool_into(imports, &mut c, 0);
+    c.emit_if(0);
+
+    // positive step: cond = i < end
+    c.emit_op_u16(Op::LOCAL_GET, 5, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 9, 0);
+    crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 6, 0);
+
+    // negative step: cond = i > end
+    c.emit_else(0);
+    c.emit_op_u16(Op::LOCAL_GET, 5, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 9, 0);
+    crate::primitives::ops::emit_dyn_gt_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 6, 0);
+    c.emit_end(0);
+
+    // Check condition — exit if false
+    c.emit_op_u16(Op::LOCAL_GET, 6, 0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_dyn_to_bool_into(imports, &mut c, 0);
+    c.emit_br_if(1, 0); // exit loop (depth 1 = outer block)
+
+    // bounds check: skip push if i < 0 or i >= arr.length
+    // Block must wrap the condition values consumed by br_if inside it
+    let skip_block_p = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, 5, 0);
+    crate::primitives::expressions::emit_const_index(&mut c, zero, 0);
+    crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_dyn_to_bool_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0); // skip push if i < 0
+    c.emit_op_u16(Op::LOCAL_GET, 5, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 10, 0);
+    crate::primitives::ops::emit_dyn_ge_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_dyn_to_bool_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0); // skip push if i >= length
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    crate::primitives::reflection::emit_is_string(&mut c, 0);
+    crate::primitives::ops::emit_dyn_to_bool_into(imports, &mut c, 0);
+    c.emit_if(0);
+    c.emit_op_u16(Op::LOCAL_GET, 4, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 5, 0);
+    {
+        let idx = c.add_import("ecma:string", "charAt");
+        c.emit_call(idx, 2, 0);
+    }
+    crate::primitives::collections::emit_push_into(imports, &mut c, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_else(0);
+    c.emit_op_u16(Op::LOCAL_GET, 4, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 5, 0);
+    crate::primitives::collections::emit_get_into(imports, &mut c, 0);
+    crate::primitives::collections::emit_push_into(imports, &mut c, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_end(0);
+    c.emit_end(0);
+    c.patch_block(skip_block_p);
+
+    // i = i + step
+    c.emit_op_u16(Op::LOCAL_GET, 5, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 7, 0);
+    crate::primitives::ops::emit_dyn_add_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 5, 0);
+    c.emit_br(0, 0); // continue loop
+    c.emit_end(0);
+    c.patch_loop(loop_p);
+    c.emit_end(0);
+    c.patch_block(block_p);
+
+    let string_branch = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    crate::primitives::reflection::emit_is_string(&mut c, 0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 4, 0);
+    let empty = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("")));
+    crate::primitives::expressions::emit_const_index(&mut c, empty, 0);
+    crate::primitives::collections::emit_join_into(imports, &mut c, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0);
+    c.patch_block(string_branch);
+
+    c.emit_op_u16(Op::LOCAL_GET, 4, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── splice(arr, index, deleteCount) → removed_elements ──────
+// Returns array of removed elements. Mutates arr by removing elements.
+// Pure bytecode: build new array from arr[0:index] + arr[index+deleteCount:end]
+pub fn build_splice(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_splice");
+    c.arity = 3;
+    c.local_count = 6; // arr(0) + index(1) + delete_count(2) + result(3) + i(4) + end(5)
+    let arr = 0u16;
+    let index = 1;
+    let delete_count = 2;
+    let result_local = 3;
+    let i = 4;
+    let end = 5;
+
+    // result = [] (removed elements)
+    crate::primitives::collections::emit_array_new_into(imports, &mut c, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result_local, 0);
+
+    // Collect removed elements: arr[index..index+deleteCount]
+    c.emit_op_u16(Op::LOCAL_GET, index, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, index, 0);
+    c.emit_op_u16(Op::LOCAL_GET, delete_count, 0);
+    crate::primitives::ops::emit_dyn_add_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, end, 0);
+
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, end, 0);
+    crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(1, 0); // exit loop
+
+    c.emit_op_u16(Op::LOCAL_GET, result_local, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    crate::primitives::collections::emit_get_into(imports, &mut c, 0);
+    crate::primitives::collections::emit_push_into(imports, &mut c, 0);
+    c.emit_op(Op::DROP, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+
+    c.emit_br(0, 0); // continue loop
+    c.emit_end(0);
+    c.patch_loop(loop_p);
+    c.emit_end(0);
+    c.patch_block(block_p);
+
+    // Return removed elements (actual array mutation would need more complex bytecode)
+    c.emit_op_u16(Op::LOCAL_GET, result_local, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}

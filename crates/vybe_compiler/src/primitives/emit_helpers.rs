@@ -143,7 +143,7 @@ impl Compiler {
     }
     #[allow(dead_code)]
     pub(crate) fn note_defined_class(&mut self, name: &str) {
-        self.defined_classes.insert(name.to_string());
+        self.declare_class_identity(name);
     }
     /// Mount a namespace-tree root as ambient (unqualified names resolve under
     /// it) — used when a module imports a platform surface (`flutter.*`).
@@ -241,7 +241,34 @@ impl Compiler {
     /// the `is_exception_type` intrinsic shortcut — otherwise the intrinsic
     /// shape (canonicalized `__type`, no `__types` chain) shadows the real
     /// class and subclass identity is lost.
+    /// THE question "does a user declaration own this name", asked once.
+    ///
+    /// It was asked at least three different ways over the flat `defined_classes`
+    /// set — a raw `contains`, a `contains(canon(..))`, and a case-insensitive
+    /// linear scan — plus separate hand-rolled probes in the GUI paths. Three
+    /// spellings of one question answer differently, which is how a user
+    /// `Class Point` could win in the construction path and lose in the
+    /// property-read path at the same time: the paths were not asking the same
+    /// thing.
+    ///
+    /// The tree answers first, because it can express things a set cannot. It
+    /// is canonical by construction, so the case juggling above becomes
+    /// unnecessary; it is typed (`UserGlobalKind::Type`), so a same-named
+    /// function cannot answer for a type; and it applies the real three tiers,
+    /// so a user type reachable only through its enclosing `Namespace` or an
+    /// `Imports` shadows correctly — which no `contains()` can say.
+    ///
+    /// `defined_classes` remains as a fallback, deliberately. Both are filled
+    /// from the ONE call in `declare_class_identity`, so they agree on
+    /// membership — but `declare_user_namespace_member` bails when a path
+    /// segment is already occupied by a host leaf, which leaves a declaration
+    /// in the set and not in the tree. Dropping the fallback would silently
+    /// stop shadowing exactly those names. It goes when that registration gap
+    /// closes (namespaceplan Phase 6), not before.
     pub(crate) fn shadows_builtin_type(&self, name: &str) -> bool {
+        if self.resolve_user_namespace_type(name).is_some() {
+            return true;
+        }
         self.defined_classes.contains(name)
             || self.defined_classes.contains(&self.canon(name))
             || (!self.case_sensitive

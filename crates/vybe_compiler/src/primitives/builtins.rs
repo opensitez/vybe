@@ -52,7 +52,7 @@ fn wasm_heap_type_ref(expr: Option<&Expression>) -> (String, bool) {
     let Some(e) = expr else {
         return (String::new(), false);
     };
-    match &e.kind {
+    let (name, nullable) = match &e.kind {
         ExprKind::Ident(n) => (n.clone(), false),
         ExprKind::Lit(Literal::Str(s)) => (s.to_string(), false),
         // A folded ref type lowers to a call like `ref(null, $T)` / an object
@@ -64,6 +64,18 @@ fn wasm_heap_type_ref(expr: Option<&Expression>) -> (String, bool) {
             collect_heap_type_ref(e, &mut name, &mut nullable);
             (name, nullable)
         }
+    };
+    // `funcref`, `anyref`, … are the spec's reftype abbreviations, each one a
+    // NULLABLE reference to an abstract heap type (§2.3.4). Resolve them to
+    // that heap type; otherwise the name falls through to the concrete branch
+    // of `heaptype_for_name`, which reserves a MODULE TYPE SLOT for it — so
+    // `ref.test funcref` came out as a test against an unrelated type index
+    // and could never be true.
+    match vybe_runtime::opcode::heaptype::HeapType::from_spec_reftype_name(&name) {
+        Some((heap, abbreviation_is_nullable)) => {
+            (heap.to_string(), nullable || abbreviation_is_nullable)
+        }
+        None => (name, nullable),
     }
 }
 
@@ -1101,6 +1113,42 @@ impl Compiler {
                 // can recover the element byte width from an instance's rtt.
                 // Emitted before any `array.*` so `resolve_gc_array_type_id`
                 // finds this (element-typed) entry rather than a bare one.
+                // Compile-time directives from the wast walker recording the
+                // STRUCTURAL identity of function types, which is what
+                // `ref.test`/`ref.cast` against a concrete `(ref $t)` matches
+                // on (`Comptype_sub/func`: parameter and result types, no name
+                // in the rule). The declared type's signature goes in its type
+                // table entry — `fields` is already the general payload the
+                // array-element directive below uses — and each function's own
+                // signature goes on its chunk.
+                "__wast_register_func_type" => {
+                    let name = expr_str_lit(args.first().copied());
+                    let params = expr_str_lit(args.get(1).copied());
+                    let results = expr_str_lit(args.get(2).copied());
+                    if !name.is_empty() {
+                        let idx = crate::primitives::classes::reserve_type_slot(
+                            &mut self.chunks,
+                            &name,
+                        ) as usize;
+                        if idx > 0 {
+                            let entry = &mut self.chunks[0].types[idx - 1];
+                            entry.kind = vybe_runtime::chunk::CompositeKind::Func;
+                            entry.fields = vec![params, results];
+                        }
+                    }
+                    return Ok(true);
+                }
+                "__wast_register_func_sig" => {
+                    let fname = expr_str_lit(args.first().copied());
+                    let params = expr_str_lit(args.get(1).copied());
+                    let results = expr_str_lit(args.get(2).copied());
+                    if let Some(ci) =
+                        self.resolve_unique_static_method_chunk_for_class("__wasm_module", &fname)
+                    {
+                        self.chunks[ci].func_sig = Some((params, results));
+                    }
+                    return Ok(true);
+                }
                 "__wast_register_array_type" => {
                     let name = expr_str_lit(args.first().copied());
                     let elem = expr_str_lit(args.get(1).copied());
@@ -2394,15 +2442,19 @@ impl Compiler {
                     // emit align=0 (the VM reads that as "no offset/memidx") then
                     // the lane byte. Stack operands (addr, vector) follow.
                     OperandFormat::MemLane => {
-                        // SIMD lane mem op. The VM pops the top operand first:
-                        // `load*_lane` wants the vector on top (`[addr vector]`),
-                        // `store*_lane` wants the address on top (`[vector addr]`).
-                        // The fold hands operands in source (deepest-first) order,
-                        // so push them reversed to land the right one on top.
+                        // SIMD lane mem op. BOTH families take `[i32 v128]` —
+                        // address deeper, vector on top (spec: `v128.loadN_lane`
+                        // and `v128.storeN_lane` share the operand order). The
+                        // fold hands operands in source (deepest-first) order,
+                        // which is already that order, so they are pushed as
+                        // given. Reversing them here inverted every `load*_lane`
+                        // (the address arrived where the vector belonged, so the
+                        // op returned an all-zero vector) and papered over the
+                        // matching inversion in the VM's `store*_lane` arms.
                         // Only a lane byte is emitted — the VM's optional-memarg
                         // peek never consumes a byte because lane indices are
                         // < 0x80 (so the byte reads back as the lane).
-                        for a in args.get(1..).unwrap_or(&[]).iter().rev() {
+                        for a in args.get(1..).unwrap_or(&[]) {
                             self.compile_expr(a)?;
                         }
                         let lane = expr_const_u8(args.first().copied());

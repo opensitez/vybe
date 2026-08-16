@@ -5,6 +5,7 @@
 
 use super::*;
 use vybe_ast::class_normalize::{PlatformBaseSpec, PlatformFieldGui};
+use vybe_runtime::namespaces::UserGlobalKind;
 
 fn mounted_ambient_tree_root(tree_mounts: &HashMap<String, String>, path: &str) -> Option<String> {
     let trimmed = path.trim();
@@ -63,6 +64,7 @@ impl Compiler {
             }
             crate::primitives::namespaces::ResolutionTarget::CommonEmit(_)
             | crate::primitives::namespaces::ResolutionTarget::Ctor { .. }
+            | crate::primitives::namespaces::ResolutionTarget::UserGlobal { .. }
             | crate::primitives::namespaces::ResolutionTarget::NamespaceObject(_) => {
                 self.namespace_import_bindings.insert(key, target);
             }
@@ -237,67 +239,128 @@ impl Compiler {
         }
     }
 
-    /// Build the `user.<unit>.*` root from the declarations predeclaration has
-    /// already found.
+    /// Record one declaration of this unit in the `user.<unit>.*` root.
     ///
-    /// Derived from `defined_classes`/`defined_functions` rather than threaded
-    /// through every arm of `predeclare_type_names`: those sets ALREADY hold
-    /// the one canonical identity a `NamespaceDecl` produces
-    /// (`myapp.models.customer`), so re-walking the AST to compute it a second
-    /// time would be a second answer to a question already answered — which is
-    /// how the flat name maps this replaces came to exist.
+    /// Called AT THE POINT OF DECLARATION, so the tree is the storage rather
+    /// than a projection over `defined_classes`. The derived version this
+    /// replaced had to guess when it was stale, and used the declared-class
+    /// COUNT as its generation — which stops meaning anything the moment the
+    /// tree holds functions too, and could never have noticed a rebuild that
+    /// changed contents without changing size. Registering directly removes
+    /// the question: there is nothing to invalidate.
     ///
-    /// Must run AFTER predeclaration completes: a type may be used before it is
-    /// declared, which is the whole reason the predeclare pass exists.
-    pub(super) fn build_user_namespace_tree(&mut self) {
+    /// `identity` is the canonical dotted name the `NamespaceDecl` lowering
+    /// produces (`myapp.models.customer`) — the same key `defined_classes`,
+    /// `normalized_classes` and the declared-type hint all use. The tree
+    /// becomes the RESOLVER without those tables having to migrate first.
+    /// Declare a user TYPE: the flat set and the `user.*` root, together.
+    ///
+    /// Both, through one call, because they answer the same question and a
+    /// declaration recorded in only one of them is invisible to whichever
+    /// consumer asks the other. `defined_classes` still exists because 40-odd
+    /// tables key on the identity string it holds (namespaceplan.md Phase 6);
+    /// what changes here is that the TREE is no longer derived from it after
+    /// the fact, so neither can silently fall behind.
+    pub(crate) fn declare_class_identity(&mut self, identity: &str) {
+        self.defined_classes.insert(identity.to_string());
+        self.declare_user_namespace_member(identity, UserGlobalKind::Type);
+    }
+
+    /// Declare a user FUNCTION. See [`Compiler::declare_class_identity`].
+    pub(crate) fn declare_function_identity(&mut self, identity: &str) {
+        self.defined_functions.insert(identity.to_string());
+        self.declare_user_namespace_member(identity, UserGlobalKind::Function);
+    }
+
+    /// Mount an existing declaration under a SECOND path in the user root.
+    ///
+    /// The alias-leaf mechanism of namespaceplan.md, applied to user
+    /// declarations: `at` names the same thing `target` does, and
+    /// `resolve_segments` dereferences it transitively like any other
+    /// `NamespaceNode::Alias`. Used for a module's members, which belong to the
+    /// enclosing namespace as well as to the module.
+    ///
+    /// Never clobbers: a real declaration at `at` outranks an alias to
+    /// elsewhere, so an explicitly declared name always wins over an exposed
+    /// one.
+    fn declare_user_namespace_alias(&mut self, at: &str, target: &str) {
         use crate::primitives::namespaces::{NamespaceNode, Subtree};
 
-        fn user_type_node() -> NamespaceNode {
-            // `ctor: None` — construction of a user class is NOT a tree
-            // concern; it goes through the compiler's own class emission. The
-            // node exists so a qualified NAME resolves to the one identity,
-            // and `ResolutionTarget::Ctor { path }` carries exactly that.
-            NamespaceNode::Type {
-                ctor: None,
-                ctor_call: None,
-                statics: Subtree::new(),
-                methods: Subtree::new(),
-                member_returns: Default::default(),
-            }
-        }
-
-        fn insert(tree: &mut Subtree, path: &str, leaf: NamespaceNode) {
-            let segments: Vec<&str> = path.split('.').filter(|s| !s.is_empty()).collect();
-            let Some((last, prefix)) = segments.split_last() else {
-                return;
+        let segments: Vec<&str> = at.split('.').filter(|s| !s.is_empty()).collect();
+        let Some((last, prefix)) = segments.split_last() else {
+            return;
+        };
+        let mut tree = self.user_namespace_tree.borrow_mut();
+        let mut current: &mut Subtree = &mut tree;
+        for segment in prefix {
+            let entry = current
+                .entry((*segment).to_string())
+                .or_insert_with(|| NamespaceNode::Namespace(Subtree::new()));
+            current = match entry {
+                NamespaceNode::Namespace(children) => children,
+                NamespaceNode::Type { statics, .. } => statics,
+                NamespaceNode::UserGlobal { children, .. } => children,
+                _ => return,
             };
-            let mut current = tree;
-            for segment in prefix {
-                // A name can be BOTH a namespace and a type (a nested type's
-                // outer class). Descending into a Type's `statics` is what the
-                // shared walk already does, so mirror it here rather than
-                // clobbering the type with a namespace.
-                let entry = current
-                    .entry((*segment).to_string())
-                    .or_insert_with(|| NamespaceNode::Namespace(Subtree::new()));
-                current = match entry {
-                    NamespaceNode::Namespace(children) => children,
-                    NamespaceNode::Type { statics, .. } => statics,
-                    // A leaf already occupies this segment: the remaining path
-                    // is not reachable. Leave the leaf alone — silently
-                    // replacing it would be exactly the last-registration-wins
-                    // collision the tree exists to prevent.
-                    _ => return,
-                };
-            }
-            current.entry((*last).to_string()).or_insert(leaf);
         }
+        current
+            .entry((*last).to_string())
+            .or_insert_with(|| NamespaceNode::Alias(target.to_string()));
+    }
 
-        let mut tree = Subtree::new();
-        for class in &self.defined_classes {
-            insert(&mut tree, class, user_type_node());
+    fn declare_user_namespace_member(&mut self, identity: &str, kind: UserGlobalKind) {
+        use crate::primitives::namespaces::{NamespaceNode, Subtree};
+
+        let segments: Vec<&str> = identity.split('.').filter(|s| !s.is_empty()).collect();
+        let Some((last, prefix)) = segments.split_last() else {
+            return;
+        };
+        let leaf = NamespaceNode::UserGlobal {
+            identity: identity.to_string(),
+            kind,
+            children: Subtree::new(),
+        };
+        let mut tree = self.user_namespace_tree.borrow_mut();
+        let mut current: &mut Subtree = &mut tree;
+        for segment in prefix {
+            // A name can be BOTH a namespace and a declaration — `namespace
+            // Demo.Sub { class Demo }` beside a bare `class Demo`, or a nested
+            // type's outer class. Descending into whichever container the
+            // existing node carries is what keeps both spellings alive; the
+            // ORDER declarations arrive in stops mattering, which it did when
+            // this was rebuilt from an unordered set.
+            let entry = current
+                .entry((*segment).to_string())
+                .or_insert_with(|| NamespaceNode::Namespace(Subtree::new()));
+            current = match entry {
+                NamespaceNode::Namespace(children) => children,
+                NamespaceNode::Type { statics, .. } => statics,
+                NamespaceNode::UserGlobal { children, .. } => children,
+                // A host leaf occupies this segment: the remaining path is not
+                // reachable. Leave it alone — silently replacing it would be
+                // the last-registration-wins collision the tree exists to
+                // prevent.
+                _ => return,
+            };
         }
-        self.user_namespace_tree = tree;
+        // A declaration may already be here as a PREFIX — `Demo.Sub.Demo`
+        // registered before a bare `Demo` left `Demo` a namespace node. Fill in
+        // the declaration without discarding what is nested under it.
+        match current.entry((*last).to_string()) {
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert(leaf);
+            }
+            std::collections::btree_map::Entry::Occupied(mut slot) => {
+                if let NamespaceNode::Namespace(children) = slot.get_mut() {
+                    let children = std::mem::take(children);
+                    slot.insert(NamespaceNode::UserGlobal {
+                        identity: identity.to_string(),
+                        kind,
+                        children,
+                    });
+                }
+            }
+        }
     }
 
     pub(super) fn predeclare_type_names(&mut self, body: &[Statement], namespace: Option<&str>) {
@@ -336,7 +399,7 @@ impl Compiler {
                 StmtKind::ClassDecl { name, .. } | StmtKind::StructDecl { name, .. } => {
                     let member = namespace_member_name(self, name, namespace);
                     self.defined_globals.insert(member.clone());
-                    self.defined_classes.insert(member.clone());
+                    self.declare_class_identity(&member);
                     if let StmtKind::StructDecl {
                         members, semantics, ..
                     } = &stmt.kind
@@ -495,18 +558,38 @@ impl Compiler {
                     if let Some(prefix) = namespace {
                         let qualified = format!("{prefix}.{member}");
                         self.defined_globals.insert(qualified.clone());
-                        self.defined_classes.insert(qualified);
+                        self.declare_class_identity(&qualified);
                     }
                 }
                 StmtKind::ModuleDecl { name, members, .. } => {
                     let member = self.canon(name);
-                    self.defined_globals.insert(member.clone());
-                    self.defined_classes.insert(member.clone());
-                    self.register_module_static_container(&member, members);
+                    // A module's ONE identity is its qualified path. Registering
+                    // the bare spelling as a SECOND identity is the same
+                    // flat-map disease the member loop below refuses by name,
+                    // and it had teeth: `Module M` inside `Namespace Nested`
+                    // produced `pending_classes` entries for both `m` and
+                    // `nested.m`, each claiming the module's static methods.
+                    // Only `nested.m` ever gets a global emitted, so `m` was a
+                    // phantom — and the entry-point search is
+                    // `pending_classes.iter().find(...)` over a HashMap, so
+                    // which one it found was hash order. Measured: the same
+                    // source compiled to two different programs across runs,
+                    // differing in one instruction, `global.get (nested.m)`
+                    // vs `global.get (m)`; landing on the phantom ended the run
+                    // with "undefined is not callable" before `Main` was
+                    // entered. The bare spelling is still reachable from inside
+                    // the namespace — that is the tree's enclosing-namespace
+                    // tier, which needs no second registration to answer.
+                    let identity = match namespace {
+                        Some(prefix) if !prefix.is_empty() => {
+                            self.canon(&format!("{prefix}.{member}"))
+                        }
+                        _ => member.clone(),
+                    };
+                    self.defined_globals.insert(identity.clone());
+                    self.declare_class_identity(&identity);
+                    self.register_module_static_container(&identity, members);
                     if let Some(prefix) = namespace {
-                        let qualified = format!("{prefix}.{member}");
-                        self.defined_globals.insert(qualified.clone());
-                        self.defined_classes.insert(qualified);
                         for module_member in members {
                             let ClassMember::Method(stmt) = module_member else {
                                 continue;
@@ -521,9 +604,31 @@ impl Compiler {
                             else {
                                 continue;
                             };
-                            let function_name = self.canon(&format!("{prefix}.{member}.{name}"));
+                            let function_name = self.canon(&format!("{identity}.{name}"));
                             self.defined_globals.insert(function_name.clone());
-                            self.defined_functions.insert(function_name.clone());
+                            self.declare_function_identity(&function_name);
+                            // A MODULE's members are reachable unqualified
+                            // through its enclosing namespace: `Imports N1`
+                            // makes `Mod1.DoubleIt` callable as `DoubleIt`.
+                            // That is what a module IS — a named container
+                            // whose contents are the namespace's, unlike a
+                            // class, whose members need an instance.
+                            //
+                            // Driven by the AST node kind (`ModuleDecl`), not
+                            // by a language name, so any frontend that
+                            // normalizes to a module gets it.
+                            //
+                            // An ALIAS, not a second declaration: both
+                            // spellings must reach the ONE identity, and
+                            // `resolve_segments` already dereferences aliases
+                            // transitively. Registering the identity twice
+                            // would give the same function two names and let
+                            // downstream tables disagree about which is real —
+                            // exactly the flat-map disease.
+                            self.declare_user_namespace_alias(
+                                &self.canon(&format!("{prefix}.{name}")),
+                                &function_name,
+                            );
                             if *is_generator && self.profile.buffered_iterator_methods {
                                 self.generator_functions.insert(function_name.clone());
                             }
@@ -582,7 +687,7 @@ impl Compiler {
 
             let cname = self.canon(name);
             self.defined_globals.insert(cname.clone());
-            self.defined_functions.insert(cname.clone());
+            self.declare_function_identity(&cname);
             if *is_generator && self.profile.buffered_iterator_methods {
                 self.generator_functions.insert(cname.clone());
             }
@@ -731,7 +836,7 @@ impl Compiler {
                 // this the using class emits no super() call at all, so the
                 // real base's field initializers never run and every inherited
                 // field reads `undefined`.
-                self.defined_classes.insert(key.clone());
+                self.declare_class_identity(&key);
                 available.insert(key.clone(), link.clone());
                 self.normalized_classes.insert(key, link);
             }
@@ -1495,31 +1600,19 @@ impl Compiler {
     /// the same `resolve_segments` every platform root uses — this function no
     /// longer carries a private copy of that policy.
     ///
-    /// What remains here is the last-segment fallback, which is NOT part of
-    /// the plan's resolution order: it answers a bare `Customer` with
-    /// `myapp.models.customer` when nothing imported that namespace, which
-    /// real .NET rejects (BC30002). It is kept because programs in the suite
-    /// depend on it; retiring it is a behaviour change that needs its own
-    /// decision, not a side effect of this one.
+    /// The unique-suffix fallback that used to sit here is GONE. It answered a
+    /// bare `Customer` with `myapp.models.customer` when nothing imported that
+    /// namespace — a guess, not a resolution rule, and one real .NET rejects
+    /// (BC30002). Measured before removal: disabled across 292 tests spanning
+    /// every caller of this function (VB + C# namespaces, inheritance,
+    /// reflection, attributes), the failures were identical by name in both
+    /// directions. It was answering nothing the tree does not.
     pub(crate) fn resolve_source_namespace_type(&self, name: &str) -> Option<String> {
         let name = self.canon(&Self::strip_global_namespace_prefix(name).replace('\\', "."));
         if name.is_empty() {
             return None;
         }
-        if let Some(resolved) = self.resolve_user_namespace_type(&name) {
-            return Some(resolved);
-        }
-        let suffix = format!(".{name}");
-        let mut matches = self
-            .defined_classes
-            .iter()
-            .filter(|class_name| class_name.ends_with(&suffix));
-        if let Some(qualified) = matches.next().cloned() {
-            if matches.next().is_none() {
-                return Some(qualified);
-            }
-        }
-        None
+        self.resolve_user_namespace_type(&name)
     }
 
     pub(crate) fn resolve_source_namespace_value(&self, name: &str) -> Option<String> {

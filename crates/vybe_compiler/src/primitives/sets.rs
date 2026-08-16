@@ -543,3 +543,85 @@ pub fn emit_disjoint_mode(
 pub fn emit_values_array(chunks: &mut [Chunk], current: usize, line: u32) {
     crate::primitives::collections::emit_iter_for_of(chunks, current, line);
 }
+
+
+// ── Linkable chunk builders ──────────────────────────────────────────────────
+//
+// The `emit_*_mode` functions above already carry every convention a language
+// needs — which value comes back from a mutation, whether a missing delete
+// raises, whether a predicate yields a bool OBJECT — driven by
+// `vybe_ast::SetSemantics`. These builders only wrap them as standalone chunks
+// so compiled code can reach one through a `__vybe_*` global.
+//
+// The `pascal_` prefix records which language first needed a linkable chunk,
+// not anything Pascal-specific: set union is set union. A second language
+// wanting the same should reuse these rather than clone the pattern under its
+// own prefix.
+
+pub fn build_pascal_set_include(_imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_pascal_set_include");
+    c.arity = 2;
+    c.local_count = 2;
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    emit_add_chunk(&mut c, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+pub fn build_pascal_set_exclude(_imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_pascal_set_exclude");
+    c.arity = 2;
+    c.local_count = 2;
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    emit_delete_chunk(&mut c, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+pub fn build_pascal_set_union(_imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_pascal_set_union");
+    c.arity = 2;
+    c.local_count = 2;
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    emit_union_chunk(&mut c, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+pub fn build_pascal_set_intersection(_imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_pascal_set_intersection");
+    c.arity = 2;
+    c.local_count = 2;
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    emit_intersection_chunk(&mut c, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+pub fn build_pascal_set_difference(_imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_pascal_set_difference");
+    c.arity = 2;
+    c.local_count = 2;
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    emit_difference_chunk(&mut c, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+pub fn build_pascal_set_contains(_imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_pascal_set_contains");
+    c.arity = 2;
+    c.local_count = 2;
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    emit_has_chunk(&mut c, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}

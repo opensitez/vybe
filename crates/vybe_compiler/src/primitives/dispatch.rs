@@ -458,6 +458,7 @@ pub fn emit_common(
         "collections.push" => collections::emit_push(chunks, current, line),
         "collections.pop" => collections::emit_pop(chunks, current, line),
         "collections.length" => collections::emit_len(chunks, current, line),
+        "collections.rank" => collections::emit_rank(chunks, current, line),
         "collections.get" => collections::emit_get(chunks, current, line),
         "collections.set" => collections::emit_set(chunks, current, line),
         "collections.contains" => collections::emit_contains(chunks, current, line),

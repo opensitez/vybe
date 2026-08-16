@@ -434,3 +434,74 @@ pub fn set_string_field(chunk: &mut Chunk, field: &str, value: &str, line: u32) 
     let key = chunk.add_constant(Value::String(Arc::from(field)));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
 }
+
+
+// ── Linkable chunk builders ──────────────────────────────────────────────────
+//
+// Linkable chunk builders — the standalone-chunk packaging of what the
+// `emit_*` forms above splice inline. Same concept, same module.
+
+// ── assign(target, source) → target with source props merged ─
+#[allow(dead_code)]
+pub fn build_assign(_imports: &mut Chunk) -> Chunk {
+    // Can't iterate source properties in pure bytecode.
+    // Fallback: return target unchanged.
+    let mut c = Chunk::new("__stdlib_assign");
+    c.arity = 2;
+    c.local_count = 2;
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0); // return target
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── jsGetMethod(obj, key) → callable | undefined ──────────────────
+pub fn build_js_get_method(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_js_get_method");
+    c.arity = 2;
+    c.local_count = 4; // obj(0), key(1), cur(2), method(3)
+    let proto_key = c.add_constant(Value::String(std::sync::Arc::from("__proto__")));
+
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 2, 0);
+
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
+
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    c.emit_br_if(1, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    crate::primitives::reflection::emit_is_undefined(&mut c, 0);
+    c.emit_br_if(1, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    crate::primitives::collections::emit_get_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 3, 0);
+
+    let missing_p = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, 3, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 3, 0);
+    crate::primitives::reflection::emit_is_undefined(&mut c, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 3, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0);
+    c.patch_block(missing_p);
+
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    crate::primitives::expressions::emit_const_index(&mut c, proto_key, 0);
+    crate::primitives::collections::emit_get_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 2, 0);
+    c.emit_br(0, 0);
+    c.emit_end(0);
+    c.patch_loop(loop_p);
+    c.emit_end(0);
+    c.patch_block(block_p);
+
+    crate::primitives::expressions::emit_undefined(&mut c, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}

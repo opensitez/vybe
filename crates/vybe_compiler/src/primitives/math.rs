@@ -306,3 +306,123 @@ pub fn emit_f32_from_bits(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::F32_REINTERPRET_I32, line);
     chunk.emit_op(Op::F64_PROMOTE_F32, line);
 }
+
+// ── Bessel functions ─────────────────────────────────────────────────────────
+//
+// Shared here rather than in a platform crate because they are ordinary
+// mathematics: Fortran spells them `bessel_j0`, C's `<math.h>` spells them
+// `j0`, and both want the same code. Only the SPELLING is per-language, which
+// is what a profile row is for.
+//
+// Kernels are Abramowitz & Stegun 9.4. Each order has its OWN amplitude and
+// phase coefficients for the large-argument form — reusing J0's for J1, as a
+// first attempt here did, puts `j1(5)` out by 5.7% and makes `y1` come back
+// with the wrong SIGN. J1 is not a phase-shifted J0.
+//
+// Accuracy is ~1e-7 absolute (A&S's stated bound for these polynomials), which
+// is single-precision-clean and NOT correctly-rounded double. A `real(kind=8)`
+// comparison against libm will differ around the 8th digit.
+
+/// A&S 9.4.1 — J0 for |x| <= 3, in t = (x/3)^2, highest power first.
+pub const J0_SMALL: &[f64] = &[
+    0.000_210_0, -0.003_944_4, 0.044_447_9, -0.316_386_6, 1.265_620_8, -2.249_999_7, 1.0,
+];
+/// A&S 9.4.4 — J1(x)/x for |x| <= 3, in t = (x/3)^2.
+pub const J1_SMALL: &[f64] = &[
+    0.000_011_09, -0.000_317_61, 0.004_433_19, -0.039_542_89, 0.210_935_73, -0.562_499_85, 0.5,
+];
+/// A&S 9.4.2 — the additive part of Y0 for |x| <= 3, in t = (x/3)^2.
+pub const Y0_SMALL: &[f64] = &[
+    -0.000_248_46, 0.004_279_16, -0.042_612_14, 0.253_001_17, -0.743_503_84, 0.605_593_66,
+    0.367_466_91,
+];
+/// A&S 9.4.5 — the additive part of x*Y1(x) for |x| <= 3, in t = (x/3)^2.
+pub const Y1_SMALL: &[f64] = &[
+    0.002_787_3, -0.040_097_6, 0.312_395_1, -1.316_482_7, 2.168_270_9, 0.221_209_1, -0.636_619_8,
+];
+/// A&S 9.4.3 — J0/Y0 amplitude f0 for x > 3, in t = 3/x.
+pub const F0: &[f64] = &[
+    0.000_144_76, -0.000_728_05, 0.001_372_37, -0.000_095_12, -0.005_527_40, -0.000_000_77,
+    0.797_884_56,
+];
+/// A&S 9.4.3 — J0/Y0 phase offset theta0 for x > 3, in t = 3/x.
+pub const T0: &[f64] = &[
+    0.000_135_58, -0.000_293_33, -0.000_541_25, 0.002_625_73, -0.000_039_54, -0.041_663_97,
+    -0.785_398_16,
+];
+/// A&S 9.4.6 — J1/Y1 amplitude f1 for x > 3, in t = 3/x. NOT f0.
+pub const F1: &[f64] = &[
+    -0.000_200_33, 0.001_136_53, -0.002_495_11, 0.000_171_05, 0.016_596_67, 0.000_001_56,
+    0.797_884_56,
+];
+/// A&S 9.4.6 — J1/Y1 phase offset theta1 for x > 3, in t = 3/x. NOT t0.
+pub const T1: &[f64] = &[
+    -0.000_291_66, 0.000_798_24, 0.000_743_48, -0.006_378_79, 0.000_056_50, 0.124_996_12,
+    -2.356_194_49,
+];
+
+
+// ── Linkable chunk builders ──────────────────────────────────────────────────
+//
+// The `emit_*` functions above splice instructions into the CALLER. These build
+// standalone chunks that compiled code reaches through a `__vybe_*` global —
+// same mathematics, different packaging, and they belong beside the inline
+// versions rather than in a general helper bag. `channels::build_chan_*` is the
+// same arrangement.
+
+// ── floor(n) → int — wraps f64_floor opcode ────────────────
+#[allow(dead_code)]
+pub fn build_floor(_imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_floor");
+    c.arity = 1;
+    c.local_count = 1;
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op(Op::F64_FLOOR, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── fmod(a, b) → a % b (floating-point remainder) ──────────
+// WASM has no f64.rem. Pure bytecode: a - trunc(a/b) * b.
+// Host can override __vybe_fmod with native fmod for performance.
+pub fn build_fmod(_imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_fmod");
+    c.arity = 2; // a, b
+    c.local_count = 2; // a(0) + b(1)
+    let a = 0u16;
+    let b = 1u16;
+
+    // result = a - trunc(a / b) * b
+    c.emit_op_u16(Op::LOCAL_GET, a, 0); // a
+    c.emit_op_u16(Op::LOCAL_GET, a, 0); // a
+    c.emit_op_u16(Op::LOCAL_GET, b, 0); // b
+    c.emit_op(Op::F64_DIV, 0); // a / b
+    c.emit_op(Op::F64_TRUNC, 0); // trunc(a / b)
+    c.emit_op_u16(Op::LOCAL_GET, b, 0); // b
+    c.emit_op(Op::F64_MUL, 0); // trunc(a / b) * b
+    c.emit_op(Op::F64_SUB, 0); // a - trunc(a / b) * b
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── isinf(n) → bool — Python `math.isinf`: ±Infinity check ──────────
+//
+// Composition: `!isFinite(n) && !isNaN(n)` ≡ "infinite, not NaN".
+pub fn build_isinf(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_isinf");
+    c.arity = 1;
+    c.local_count = 1;
+    let isfin = c.add_import("ecma:number", "isFinite");
+    let isnan = c.add_import("ecma:number", "isNaN");
+
+    // !isFinite(n) && !isNaN(n)
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_call(isfin, 1, 0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_call(isnan, 1, 0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_AND, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}

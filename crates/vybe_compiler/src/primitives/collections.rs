@@ -186,6 +186,57 @@ pub fn emit_len(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_end(line);
 }
 
+/// Runtime array rank. Stack: [value] -> [rank_i32].
+///
+/// This is a common collection primitive, not an AST variant: languages that
+/// have a rank intrinsic bind their spelling to `common:collections.rank`,
+/// while languages that do not have that surface never see or handle it.
+/// Scalars are rank 0; arrays whose first element is scalar are rank 1; nested
+/// arrays are probed to rank 3, which covers the current shaped-array surfaces.
+pub fn emit_rank(chunks: &mut [Chunk], current: usize, line: u32) {
+    fn emit_is_array(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+        emit_import_call(chunks, current, "ecma:array", "isArray", 1, line);
+        crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    }
+
+    fn emit_array_get_zero(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+        chunks[current].emit_i32_const(0, line);
+        emit_import_call(chunks, current, "ecma:array", "get", 2, line);
+    }
+
+    let value_slot = alloc_local(&mut chunks[current]);
+    let first_slot = alloc_local(&mut chunks[current]);
+    let second_slot = alloc_local(&mut chunks[current]);
+
+    lset(&mut chunks[current], value_slot, line);
+    emit_is_array(chunks, current, value_slot, line);
+    chunks[current].emit_if_value(line);
+
+    emit_array_get_zero(chunks, current, value_slot, line);
+    lset(&mut chunks[current], first_slot, line);
+    emit_is_array(chunks, current, first_slot, line);
+    chunks[current].emit_if_value(line);
+
+    emit_array_get_zero(chunks, current, first_slot, line);
+    lset(&mut chunks[current], second_slot, line);
+    emit_is_array(chunks, current, second_slot, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_i32_const(3, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_i32_const(2, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_else(line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_else(line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_end(line);
+}
+
 /// Direct WASM `array.length` — the GC bytecode `0xFB 0x0F` opcode.
 /// Stack: [array] → [i32]. Use whenever the operand is statically
 /// known to be an array (for-in loops, reduce, polyfills) — this
@@ -2524,3 +2575,922 @@ pub fn emit_pymin(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_pymax(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_runtime_helper_call(chunks, current, "__vybe_max", 1, line);
 }
+
+
+// ── Linkable chunk builders ──────────────────────────────────────────────────
+//
+// Linkable chunk builders for collection REDUCTIONS and reshapes.
+//
+// `min`/`max` here take ONE array and fold it. `math::emit_min` takes two
+// numbers and is a different function that happens to share the name —
+// which is why neither belongs in the other's module.
+
+// ── sum(array) → number ─────────────────────────────────────
+pub fn build_sum(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_sum");
+    c.arity = 1;
+    c.local_count = 4; // arr(0) + total(1) + i(2) + len(3)
+    let arr = 0u16;
+    let total = 1;
+    let i = 2;
+    let len = 3;
+
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, total, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    crate::primitives::collections::emit_len_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, len, 0);
+
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(1, 0); // exit loop
+
+    c.emit_op_u16(Op::LOCAL_GET, total, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    crate::primitives::collections::emit_get_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_dyn_add_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, total, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+
+    c.emit_br(0, 0); // continue loop
+    c.emit_end(0);
+    c.patch_loop(loop_p);
+    c.emit_end(0);
+    c.patch_block(block_p);
+
+    c.emit_op_u16(Op::LOCAL_GET, total, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── min(array) → value ──────────────────────────────────────
+pub fn build_min(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_min");
+    c.arity = 1;
+    c.local_count = 4; // arr(0) + best(1) + i(2) + len(3)
+    let arr = 0u16;
+    let best = 1;
+    let i = 2;
+    let len = 3;
+
+    // best = arr[0]
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
+    crate::primitives::collections::emit_get_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, best, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    crate::primitives::collections::emit_len_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, len, 0);
+
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(1, 0); // exit loop
+
+    // if arr[i] < best: best = arr[i]
+    // block must wrap ALL condition operands + comparison + body
+    let skip_block_p = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    crate::primitives::collections::emit_get_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_GET, best, 0);
+    crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0); // skip if NOT less than
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    crate::primitives::collections::emit_get_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, best, 0);
+    c.emit_end(0);
+    c.patch_block(skip_block_p);
+
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+
+    c.emit_br(0, 0); // continue loop
+    c.emit_end(0);
+    c.patch_loop(loop_p);
+    c.emit_end(0);
+    c.patch_block(block_p);
+
+    c.emit_op_u16(Op::LOCAL_GET, best, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── max(array) → value ──────────────────────────────────────
+pub fn build_max(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_max");
+    c.arity = 1;
+    c.local_count = 4;
+    let arr = 0u16;
+    let best = 1;
+    let i = 2;
+    let len = 3;
+
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
+    crate::primitives::collections::emit_get_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, best, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    crate::primitives::collections::emit_len_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, len, 0);
+
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(1, 0); // exit loop
+
+    let skip_block_p = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    crate::primitives::collections::emit_get_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_GET, best, 0);
+    crate::primitives::ops::emit_dyn_gt_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0); // skip if NOT greater than
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    crate::primitives::collections::emit_get_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, best, 0);
+    c.emit_end(0);
+    c.patch_block(skip_block_p);
+
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+
+    c.emit_br(0, 0); // continue loop
+    c.emit_end(0);
+    c.patch_loop(loop_p);
+    c.emit_end(0);
+    c.patch_block(block_p);
+
+    c.emit_op_u16(Op::LOCAL_GET, best, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── sorted(array) → array (insertion sort — O(n²) but works) ──
+pub fn build_sorted(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_sorted");
+    c.arity = 1;
+    c.local_count = 6; // arr(0) + result(1) + i(2) + j(3) + len(4) + key(5)
+    let arr = 0u16;
+    let result = 1;
+    let i = 2;
+    let j = 3;
+    let len = 4;
+    let key = 5;
+
+    // Copy input array → result (so we don't mutate the original)
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
+    c.emit_i32_const(i32::MAX, 0);
+    crate::primitives::collections::emit_slice_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+
+    // len = result.length
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    crate::primitives::collections::emit_len_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, len, 0);
+
+    // Insertion sort: for i = 1 to len-1
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+
+    let outer_block_p = c.emit_block(0);
+    let (outer_loop_p, _) = c.emit_loop_s(0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(1, 0); // exit outer loop
+
+    // key = result[i]
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    crate::primitives::collections::emit_get_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, key, 0);
+
+    // j = i - 1
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
+    c.emit_op(Op::I32_SUB, 0);
+    c.emit_op_u16(Op::LOCAL_SET, j, 0);
+
+    // while j >= 0 && result[j] > key
+    let inner_block_p = c.emit_block(0);
+    let (inner_loop_p, _) = c.emit_loop_s(0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
+    crate::primitives::ops::emit_dyn_ge_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(1, 0); // exit inner loop
+
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    crate::primitives::collections::emit_get_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_GET, key, 0);
+    crate::primitives::ops::emit_dyn_gt_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(1, 0); // exit inner loop (second condition)
+
+    // result[j+1] = result[j]
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
+    c.emit_op(Op::I32_ADD, 0);
+    // Now stack: [result, j+1] — need value = result[j]
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    crate::primitives::collections::emit_get_into(imports, &mut c, 0);
+    crate::primitives::collections::emit_set_into(imports, &mut c, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // j -= 1
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
+    c.emit_op(Op::I32_SUB, 0);
+    c.emit_op_u16(Op::LOCAL_SET, j, 0);
+
+    c.emit_br(0, 0); // continue inner loop
+    c.emit_end(0);
+    c.patch_loop(inner_loop_p);
+    c.emit_end(0);
+    c.patch_block(inner_block_p);
+
+    // result[j+1] = key
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_GET, key, 0);
+    crate::primitives::collections::emit_set_into(imports, &mut c, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // i += 1
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+
+    c.emit_br(0, 0); // continue outer loop
+    c.emit_end(0);
+    c.patch_loop(outer_loop_p);
+    c.emit_end(0);
+    c.patch_block(outer_block_p);
+
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// `build_reversed` removed — `__stdlib_reversed` was already out of
+// MAPPINGS, so nothing could request it. `reversed()` inlines its
+// polymorphic loop in `emit_reversed`.
+
+// ── enumerate(array) → [[0,a],[1,b],...] ────────────────────
+pub fn build_enumerate(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_enumerate");
+    c.arity = 1;
+    c.local_count = 4; // arr(0) + result(1) + i(2) + len(3)
+    let arr = 0u16;
+    let result = 1;
+    let i = 2;
+    let len = 3;
+
+    crate::primitives::collections::emit_array_new_into(imports, &mut c, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    crate::primitives::collections::emit_len_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, len, 0);
+
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(1, 0); // exit loop
+
+    // Build pair [i, arr[i]], then push onto result.
+    // array_push takes [array, value] — so emit result first, then pair.
+    c.emit_op_u16(Op::LOCAL_GET, result, 0); // result on stack
+    c.emit_op_u16(Op::LOCAL_GET, i, 0); // i
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    crate::primitives::collections::emit_get_into(imports, &mut c, 0); // arr[i]
+    crate::primitives::collections::emit_array_pair_into(imports, &mut c, 0); // pair = [i, arr[i]]
+    crate::primitives::collections::emit_push_into(imports, &mut c, 0); // result.push(pair)
+    c.emit_op(Op::DROP, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+
+    c.emit_br(0, 0); // continue loop
+    c.emit_end(0);
+    c.patch_loop(loop_p);
+    c.emit_end(0);
+    c.patch_block(block_p);
+
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── compact(arr) → arr without nulls (Ruby Array#compact) ──
+pub fn build_compact(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_compact");
+    c.arity = 1;
+    c.local_count = 5; // arr(0) + result(1) + i(2) + len(3) + elem(4)
+    let arr = 0u16;
+    let result = 1;
+    let i = 2;
+    let len = 3;
+    let elem = 4;
+
+    crate::primitives::collections::emit_array_new_into(imports, &mut c, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    crate::primitives::collections::emit_len_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, len, 0);
+
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(1, 0);
+
+    // elem = arr[i]; stash into local
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    crate::primitives::collections::emit_get_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, elem, 0);
+
+    // if !is_null(elem) → result.push(elem)
+    c.emit_op_u16(Op::LOCAL_GET, elem, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    c.emit_op(Op::I32_EQZ, 0);
+    c.emit_if(0);
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op_u16(Op::LOCAL_GET, elem, 0);
+    crate::primitives::collections::emit_push_into(imports, &mut c, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_end(0);
+
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+
+    c.emit_br(0, 0);
+    c.emit_end(0);
+    c.patch_loop(loop_p);
+    c.emit_end(0);
+    c.patch_block(block_p);
+
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── isEmpty(arr) → bool (Ruby Array#empty?) ──
+pub fn build_isempty(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_isempty");
+    c.arity = 1;
+    c.local_count = 1;
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    crate::primitives::collections::emit_len_into(imports, &mut c, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
+    crate::primitives::ops::emit_dyn_eq_into(imports, &mut c, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+
+// ── Linkable chunk builders ──────────────────────────────────────────────────
+//
+// Linkable chunk builders — the standalone-chunk packaging of what the
+// `emit_*` forms splice inline. A language prefix in a name records which
+// frontend first needed a linkable chunk, not a language-specific meaning.
+
+// ── pymap(fn, iter) — Python `map(fn, iter)` shape adapter ──
+// Wraps ECMA `Array.prototype.map(fn)` (§23.1.3.21) with swapped
+// args: Python passes (fn, iter), ECMA expects (iter, fn).
+pub fn build_pymap(_imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_pymap");
+    c.arity = 2; // fn(0), iter(1)
+    c.local_count = 2;
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0); // iter
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0); // fn
+    let idx = c.add_import("ecma:array", "map");
+    c.emit_call(idx, 2, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── pyfilter(fn, iter) — Python `filter(fn, iter)` shape adapter ──
+pub fn build_pyfilter(_imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_pyfilter");
+    c.arity = 2;
+    c.local_count = 2;
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    let idx = c.add_import("ecma:array", "filter");
+    c.emit_call(idx, 2, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── any(iter) / all(iter) → bool ─────────────────────────────
+// Python `any(iter)` / `all(iter)` — bare-iterable shape (no callback).
+// Spec-shape equivalent of `arr.some(Boolean)` / `arr.every(Boolean)`
+// without requiring callers to materialize the Boolean fn ref. Mirrors
+// the polymorphic ARRAY_GET semantics so it works on Array, Map, and
+// String operands transparently.
+pub fn build_pyany(imports: &mut Chunk) -> Chunk {
+    build_any_all(imports, "__stdlib_pyany", true)
+}
+
+pub fn build_pyall(imports: &mut Chunk) -> Chunk {
+    build_any_all(imports, "__stdlib_pyall", false)
+}
+
+pub fn build_any_all(imports: &mut Chunk, name: &str, is_any: bool) -> Chunk {
+    let mut c = Chunk::new(name);
+    c.arity = 1;
+    c.local_count = 3; // arr(0) + i(1) + len(2)
+    let arr = 0u16;
+    let i = 1;
+    let len = 2;
+
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    crate::primitives::collections::emit_len_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, len, 0);
+
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(1, 0); // exit loop → fell through
+
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    crate::primitives::collections::emit_get_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_dyn_to_bool_into(imports, &mut c, 0);
+    if is_any {
+        // any: if truthy → return true
+        c.emit_if(0);
+        c.emit_bool_const(true, 0);
+        c.emit_op(Op::RETURN, 0);
+        c.emit_end(0);
+    } else {
+        // all: if falsy → return false
+        c.emit_op(Op::I32_EQZ, 0);
+        c.emit_if(0);
+        c.emit_bool_const(false, 0);
+        c.emit_op(Op::RETURN, 0);
+        c.emit_end(0);
+    }
+
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+
+    c.emit_br(0, 0);
+    c.emit_end(0);
+    c.patch_loop(loop_p);
+    c.emit_end(0);
+    c.patch_block(block_p);
+
+    // Loop fell through: any → false, all → true
+    if is_any {
+        c.emit_bool_const(false, 0);
+    } else {
+        c.emit_bool_const(true, 0);
+    }
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── pynext(iter, default?) — Python `next(iter, default)` ──
+// Returns and removes the first element. Default returned when empty.
+pub fn build_pyiter(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_pyiter");
+    c.arity = 1;
+    c.local_count = 5; // v(0), len(1), out(2), i(3), drained(4)
+    let v = 0u16;
+    let len = 1u16;
+    let out = 2u16;
+    let i = 3u16;
+    let drained = 4u16;
+
+    let array_path = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    {
+        let idx = c.add_import("ecma:array", "isArray");
+        c.emit_call(idx, 1, 0);
+    }
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    crate::primitives::collections::emit_len_into(imports, &mut c, 0);
+    crate::primitives::collections::emit_slice_into(imports, &mut c, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0);
+    c.patch_block(array_path);
+
+    let string_path = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    {
+        let idx = c.add_import("wasm:js-string", "test");
+        c.emit_call(idx, 1, 0);
+    }
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    crate::primitives::collections::emit_len_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, len, 0);
+    crate::primitives::collections::emit_array_new_into(imports, &mut c, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, out, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(1, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, out, 0);
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::F64_FROM_I32, 0);
+    {
+        let idx = c.add_import("ecma:string", "charAt");
+        c.emit_call(idx, 2, 0);
+    }
+    crate::primitives::collections::emit_push_into(imports, &mut c, 0);
+    c.emit_op(Op::DROP, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+
+    c.emit_br(0, 0);
+    c.emit_end(0);
+    c.patch_loop(loop_p);
+    c.emit_end(0);
+    c.patch_block(block_p);
+    c.emit_op_u16(Op::LOCAL_GET, out, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0);
+    c.patch_block(string_path);
+
+    crate::primitives::globals::emit_read(&mut c, "__vybe_iter_drain", 0);
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut c, 1, 0);
+    c.emit_op_u16(Op::LOCAL_SET, drained, 0);
+
+    let drained_array = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, drained, 0);
+    {
+        let idx = c.add_import("ecma:array", "isArray");
+        c.emit_call(idx, 1, 0);
+    }
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, drained, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, drained, 0);
+    crate::primitives::collections::emit_len_into(imports, &mut c, 0);
+    crate::primitives::collections::emit_slice_into(imports, &mut c, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0);
+    c.patch_block(drained_array);
+
+    c.emit_op_u16(Op::LOCAL_GET, drained, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+pub fn build_pynext(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_pynext");
+    c.arity = 2;
+    c.local_count = 2;
+    // if iter.length == 0 → return default (or null when default omitted)
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    crate::primitives::collections::emit_len_into(imports, &mut c, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
+    crate::primitives::ops::emit_dyn_eq_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_dyn_to_bool_into(imports, &mut c, 0);
+    c.emit_if(0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0); // default
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0);
+    // shift first element off iter
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    let sh_idx = c.add_import("ecma:array", "shift");
+    c.emit_call(sh_idx, 1, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── sort_in_place(array) → same array, mutated ──────────────
+// In-place insertion sort. Used by every language whose surface syntax for
+// sorting is in-place: C# `list.Sort()`, VB `list.Sort()`, JS `arr.sort()`,
+// Python `list.sort()`, Pascal `Sort(arr)`. The walker normalizes each form
+// into a canonical builtin call which routes here through compiler_common.
+//
+// Insertion sort is O(n²) but small and works on arbitrary value comparisons
+// via dyn_gt. Higher-perf algorithms can be added behind the same name later.
+pub fn build_sort_in_place(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_sort_in_place");
+    c.arity = 1;
+    c.local_count = 6; // arr(0) + i(1) + j(2) + len(3) + key(4) + lhs(5)
+    let arr = 0u16;
+    let i = 1;
+    let j = 2;
+    let len = 3;
+    let key = 4;
+    let lhs = 5;
+
+    // len = arr.length
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    crate::primitives::collections::emit_len_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, len, 0);
+
+    // i = 1
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+
+    let outer_block_p = c.emit_block(0);
+    let (outer_loop_p, _) = c.emit_loop_s(0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(1, 0); // exit outer loop
+
+    // key = arr[i]
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    crate::primitives::collections::emit_get_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, key, 0);
+
+    // j = i - 1
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
+    c.emit_op(Op::I32_SUB, 0);
+    c.emit_op_u16(Op::LOCAL_SET, j, 0);
+
+    // while j >= 0 && arr[j] > key
+    let inner_block_p = c.emit_block(0);
+    let (inner_loop_p, _) = c.emit_loop_s(0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
+    crate::primitives::ops::emit_dyn_ge_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(1, 0); // exit inner loop
+
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    crate::primitives::collections::emit_get_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, lhs, 0);
+
+    // Use _into variant so imports go to the shared `imports` chunk (chunk[0]),
+    // not directly to `c`. Mixing emit_dyn_gt (adds to c.imports) with
+    // emit_import_call_into (emits CALL_IMPORT with chunk[0] indices) causes
+    // CALL_IMPORT to resolve the wrong host fn at runtime — same collision
+    // documented in emit_len_into's comment above.
+    c.emit_op_u16(Op::LOCAL_GET, lhs, 0);
+    c.emit_op_u16(Op::LOCAL_GET, key, 0);
+    crate::primitives::ops::emit_dyn_gt_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(1, 0); // exit inner loop (second condition)
+
+    // arr[j+1] = arr[j]
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    crate::primitives::collections::emit_get_into(imports, &mut c, 0);
+    crate::primitives::collections::emit_set_into(imports, &mut c, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // j -= 1
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
+    c.emit_op(Op::I32_SUB, 0);
+    c.emit_op_u16(Op::LOCAL_SET, j, 0);
+
+    c.emit_br(0, 0); // continue inner loop
+    c.emit_end(0);
+    c.patch_loop(inner_loop_p);
+    c.emit_end(0);
+    c.patch_block(inner_block_p);
+
+    // arr[j+1] = key
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_GET, key, 0);
+    crate::primitives::collections::emit_set_into(imports, &mut c, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // i += 1
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+
+    c.emit_br(0, 0); // continue outer loop
+    c.emit_end(0);
+    c.patch_loop(outer_loop_p);
+    c.emit_end(0);
+    c.patch_block(outer_block_p);
+
+    // return arr (same reference, now sorted in place)
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── sort_with_comparator(array, fn) → same array, sorted using fn ──
+// Same insertion sort as sort_in_place, but uses `fn(a, b)` for
+// comparison instead of `dyn_gt`. The comparator returns:
+//   negative → a before b (no swap)
+//   zero     → equal (no swap)
+//   positive → b before a (swap)
+// This is the standard JS `Array.sort(compareFn)` contract.
+pub fn build_sort_with_comparator(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_sort_with_comparator");
+    c.arity = 2;
+    c.local_count = 6; // arr(0) + cmp(1) + i(2) + j(3) + len(4) + key(5)
+    let arr = 0u16;
+    let cmp = 1;
+    let i = 2;
+    let j = 3;
+    let len = 4;
+    let key = 5;
+
+    // len = arr.length
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    crate::primitives::collections::emit_len_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, len, 0);
+
+    // i = 1
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+
+    let outer_block_p = c.emit_block(0);
+    let (outer_loop_p, _) = c.emit_loop_s(0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(1, 0); // exit outer loop
+
+    // key = arr[i]
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    crate::primitives::collections::emit_get_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, key, 0);
+
+    // j = i - 1
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
+    c.emit_op(Op::I32_SUB, 0);
+    c.emit_op_u16(Op::LOCAL_SET, j, 0);
+
+    // while j >= 0 && cmp(arr[j], key) > 0
+    let inner_block_p = c.emit_block(0);
+    let (inner_loop_p, _) = c.emit_loop_s(0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
+    crate::primitives::ops::emit_dyn_ge_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(1, 0); // exit inner loop
+
+    // call cmp(arr[j], key) → result
+    c.emit_op_u16(Op::LOCAL_GET, cmp, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    crate::primitives::collections::emit_get_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_GET, key, 0);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut c, 2, 0);
+    // result > 0 → swap needed
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
+    crate::primitives::ops::emit_dyn_gt_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(1, 0); // exit inner loop (second condition)
+
+    // arr[j+1] = arr[j]
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    crate::primitives::collections::emit_get_into(imports, &mut c, 0);
+    crate::primitives::collections::emit_set_into(imports, &mut c, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // j -= 1
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
+    c.emit_op(Op::I32_SUB, 0);
+    c.emit_op_u16(Op::LOCAL_SET, j, 0);
+
+    c.emit_br(0, 0); // continue inner loop
+    c.emit_end(0);
+    c.patch_loop(inner_loop_p);
+    c.emit_end(0);
+    c.patch_block(inner_block_p);
+
+    // arr[j+1] = key
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_GET, key, 0);
+    crate::primitives::collections::emit_set_into(imports, &mut c, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // i += 1
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+
+    c.emit_br(0, 0); // continue outer loop
+    c.emit_end(0);
+    c.patch_loop(outer_loop_p);
+    c.emit_end(0);
+    c.patch_block(outer_block_p);
+
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// `build_sort_by_key` removed — nothing referenced `__vybe_sort_by_key`.
+// LINQ `OrderBy(keySelector)` reaches `__stdlib_sort_with_comparator`.

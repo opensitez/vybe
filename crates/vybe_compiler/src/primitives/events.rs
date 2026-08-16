@@ -268,6 +268,17 @@ impl Compiler {
         event: &str,
         handler: &Expression,
     ) -> Result<(), String> {
+        // The mirror of `compile_add_handler_stmt`: an element unsubscribes
+        // through the DOM, like it subscribes. Without this branch the two
+        // halves used different registries and removal was a no-op.
+        if self.control_receiver_is_element(control) {
+            let line = self.line;
+            self.compile_expr(control)?;
+            self.compile_expr(handler)?;
+            self.emit_remove_event_listener(event, line);
+            self.emit(Op::DROP);
+            return Ok(());
+        }
         if self.should_use_gui_event_host(control, event) {
             let line = self.line;
             let unbind_idx = self.import("vybe:gui", common::gui::HOST_FN_UNBIND_EVENT);

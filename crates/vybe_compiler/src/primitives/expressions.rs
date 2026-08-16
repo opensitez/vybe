@@ -66,9 +66,68 @@ impl Compiler {
         let this_slot = self.define_local("__tree_ctor_this");
         let control_type = spec.ancestry.first().cloned().unwrap_or_default();
         let is_control = spec.control_fn.is_some();
+        // A control that DECLARES the DOM tail gets its own rtt.
+        //
+        // `createElement` hands back an object stamped with the host's single
+        // `HTMLElement` type id, so at the rtt level a `Scaffold`, a `Text` and
+        // an `ElevatedButton` were the SAME type and each widget's identity
+        // survived only as the `__type`/`__types` STRINGS stamped below. That is
+        // why identity questions had to be asked by name — `matches!(class.name,
+        // "ElevatedButton" | …)` for a field's role, a `__controlfn` property
+        // probe for "is this still a composite" — and a name match is a guess
+        // that fails silently when a new widget is added.
+        //
+        // We have declared subtyping: `reserve_platform_type` reserves a slot
+        // per ancestry link and wires `parent_index` between them, so `ref.test`
+        // answers for every ancestor natively. Allocating here is the only point
+        // it can be done — WASM GC assigns a type at allocation and nothing can
+        // re-stamp one afterwards.
+        //
+        // The object stays a valid element: every `web:*` function decodes its
+        // argument through `__node`/`__document` PROPERTIES (`html.rs::node_arg`),
+        // never through the type id, and method dispatch walks the parent chain
+        // (`typedef.rs`) — so terminating the chain at the registered
+        // `HTMLElement` keeps `setAttribute` and friends resolving through the
+        // DOM vtable. A widget IS an element, and now says so in one chain
+        // instead of two mechanisms.
+        //
+        // ⚠ Gated on the ancestry ACTUALLY ending in the registered DOM type,
+        // which only flutter declares today. dotnet and plib reach this same
+        // shared path; their tails stop at `Control` and their own roots, so the
+        // condition is false and their behaviour is bit-for-bit unchanged. A
+        // frontend opts in by declaring the tail — it is not done to them.
+        let carries_dom_rtt = is_control
+            && spec
+                .ancestry
+                .last()
+                .is_some_and(|tail| tail == crate::primitives::gui::DOM_ELEMENT_TYPE);
         if is_control {
             let line = self.line;
             self.emit_control_element(&control_type, 0, line);
+            if carries_dom_rtt {
+                // The element carries the three facts that make it a node
+                // (`__node`, `__document`) and the control it is
+                // (`__control_type`); everything else about it is the document's,
+                // not the object's. Carry them onto the typed allocation.
+                let element_slot = self.define_local("__tree_ctor_element");
+                self.emit_u16(Op::LOCAL_SET, element_slot);
+                let typeidx = crate::primitives::classes::reserve_platform_type(
+                    &mut self.chunks,
+                    &spec.ancestry,
+                );
+                self.emit_struct_new(typeidx, 0);
+                let typed_slot = self.define_local("__tree_ctor_typed");
+                self.emit_u16(Op::LOCAL_SET, typed_slot);
+                for key in ["__node", "__document", crate::primitives::gui::CONTROL_TYPE_FIELD] {
+                    self.emit_u16(Op::LOCAL_GET, typed_slot);
+                    self.emit_u16(Op::LOCAL_GET, element_slot);
+                    let read = self.str_const(key);
+                    self.emit_struct_field_op(Op::STRUCT_GET, 0, read);
+                    let write = self.str_const(key);
+                    self.emit_struct_field_op(Op::STRUCT_SET, 0, write);
+                }
+                self.emit_u16(Op::LOCAL_GET, typed_slot);
+            }
         } else {
             // Allocate with the type, the way every user class does. `typeidx`
             // 0 meant an UNTYPED allocation — `obj.type_id` stayed 0 and the
@@ -177,7 +236,7 @@ impl Compiler {
                 let line = self.line;
                 self.emit_u16(Op::LOCAL_GET, this_slot);
                 self.emit_u16(Op::LOCAL_GET, arg_slots[i]);
-                self.emit_gui_field(field_gui, line);
+                self.emit_gui_field(field_gui, spec.nest_coerce.as_deref(), line)?;
             }
         }
 
@@ -695,7 +754,51 @@ impl Compiler {
         self.chunk().emit_end(line);
     }
 
+    /// The diagnostic for a bare name that more than one module contributes,
+    /// or `None` when the reference is unambiguous.
+    ///
+    /// Ordered the way the languages order it, and every tier below was
+    /// measured against real VB.NET rather than read off the spec:
+    ///
+    /// 1. a LOCAL binding shadows every module contribution outright;
+    /// 2. the CONTAINING module wins over its siblings — inside `Module A`,
+    ///    `Same()` is `A.Same` even while `B.Same` exists (`insideA=A`);
+    /// 3. otherwise two or more contributors is the error.
+    ///
+    /// Qualified access never reaches here: `A.Same` and `B.Same` are member
+    /// expressions naming different members, and both stay legal.
+    ///
+    /// Driven entirely by what the AST declared — `ModuleDecl` containment and
+    /// each member's `Modifiers.visibility` — so it holds for any frontend
+    /// that normalizes to a module, with no language name anywhere in it.
+    pub(super) fn ambiguous_module_member_error(&self, name: &str) -> Option<String> {
+        let canon = self.canon(name);
+        let contributors = self.module_member_contributors.get(&canon)?;
+        if contributors.len() < 2 {
+            return None;
+        }
+        if self.has_accessible_local_binding(name) {
+            return None;
+        }
+        if let Some(current) = self.current_class.as_deref() {
+            if contributors.iter().any(|m| m == current) {
+                return None;
+            }
+        }
+        Some(format!(
+            "'{name}' is ambiguous between declarations in Modules '{}'",
+            contributors.join(", ")
+        ))
+    }
+
     pub(crate) fn compile_expr(&mut self, expr: &Expression) -> Result<(), String> {
+        // TAKE the condition's "I'd rather have an i32" request. Every arm
+        // below therefore compiles its sub-expressions with the request clear,
+        // which is what keeps `a < b && c < d` correct: the `&&` needs real
+        // values from its operands, so those comparisons must still box. Only
+        // the generic binary tail — the outermost operator, the one whose
+        // result IS the condition — hands it back.
+        let want_i32_condition = std::mem::take(&mut self.want_i32_condition);
         match &expr.kind {
             // ── Literals ────────────────────────────────────────────────
             ExprKind::Lit(lit) => match lit {
@@ -757,6 +860,13 @@ impl Compiler {
                         return Ok(());
                     }
                     _ => {}
+                }
+                // Two modules contributing the same bare name make an
+                // UNQUALIFIED reference an error, not a silent pick. Raised
+                // here because this is the innermost point that still returns
+                // `Result` — `emit_name_get` below cannot report anything.
+                if let Some(err) = self.ambiguous_module_member_error(name) {
+                    return Err(err);
                 }
                 // `__debug__` / `__name__` moved to the profile's
                 // `[namespace_constants]` — a bool and a string constant, which
@@ -849,13 +959,29 @@ impl Compiler {
                 // parameters. `map_or(true, …)` keeps languages that do not
                 // populate `function_min_arity` behaving as before.
                 let canon_name = self.canon(name);
-                if self.profile.bare_name_invokes_parameterless_function
-                    && !is_local
-                    && self.defined_functions.contains(&canon_name)
+                // A NESTED declaration is a local binding, so `!is_local`
+                // excluded it and `defined_functions` never held it — pascal's
+                // `function Inner: Integer` inside a procedure returned the
+                // FUNCTION rather than calling it. The binding itself records
+                // that it is a callable and its parameter count
+                // (`Local::declared_arity`), which is the only record that can
+                // tell a nested function from a local variable that merely
+                // shares a name with one.
+                let local_parameterless_fn = is_local
                     && self
-                        .function_min_arity
-                        .get(&canon_name)
-                        .is_none_or(|arity| *arity == 0)
+                        .scopes
+                        .iter()
+                        .rev()
+                        .find_map(|scope| scope.resolve_declared_arity(&canon_name))
+                        == Some(0);
+                if self.profile.bare_name_invokes_parameterless_function
+                    && (local_parameterless_fn
+                        || !is_local
+                            && self.defined_functions.contains(&canon_name)
+                            && self
+                                .function_min_arity
+                                .get(&canon_name)
+                                .is_none_or(|arity| *arity == 0))
                 {
                     self.emit_var_get(name);
                     self.emit_direct_callable_invoke(0);
@@ -1456,8 +1582,20 @@ impl Compiler {
 
                 self.compile_expr(left)?;
                 self.compile_expr(right)?;
-                self.compile_binop(op);
-                if self.profile.materialize_bool_results
+                // The operands are in scope here and nowhere below, so this is
+                // where a fact about what the emitter itself just pushed can
+                // still reach the operator.
+                // Hand the condition's request to THIS operator only — the
+                // operands above compiled with it clear.
+                self.want_i32_condition = want_i32_condition;
+                self.gave_i32_condition = false;
+                self.compile_binop_operands(op, Some((left, right)));
+                self.want_i32_condition = false;
+                // `materialize_bool_results` would box the i32 straight back
+                // up, so a honoured request has to suppress it — otherwise the
+                // report would be true while the stack held a `Bool`.
+                if !self.gave_i32_condition
+                    && self.profile.materialize_bool_results
                     && matches!(
                         op,
                         BinOp::Eq
@@ -3109,6 +3247,32 @@ impl Compiler {
                     && !*null_safe
                     && let Some(target) = receiver_type_hint.as_deref().and_then(|type_hint| {
                         let class_name = Self::normalize_type_hint(type_hint);
+                        // A USER-DECLARED class owns its own members. Without
+                        // this, a platform type sharing the name answered for
+                        // them: `Class Point` with a field `X` had every `p.X`
+                        // compiled to the host getter for
+                        // `System.Drawing.Point.X`, so two distinct Points read
+                        // one shared value and it presented as object aliasing
+                        // — the objects were fine, the READS were redirected.
+                        //
+                        // `shadows_builtin_type` rather than a bare
+                        // `defined_classes` probe because `normalize_type_hint`
+                        // lowercases unconditionally while `canon` keeps case
+                        // for a case-sensitive language; that helper asks the
+                        // question both ways, and is the same one the parent-
+                        // constructor path already uses.
+                        //
+                        // Construction was ALREADY guarded
+                        // (`constructed_control_type_name` refuses a
+                        // user-declared name); this is the missing half for
+                        // property access. Inheritance is unaffected: a lookup
+                        // here is on the receiver's own declared type, and
+                        // `Class MyForm Inherits Form` never matched at this
+                        // site anyway — it reaches Form's roles through
+                        // `declared_property_role`'s parent walk.
+                        if self.shadows_builtin_type(&class_name) {
+                            return None;
+                        }
                         vybe_runtime::namespaces::lookup_type_property_target(
                             &self.profile.namespaces.type_scopes,
                             &class_name,
@@ -4976,7 +5140,21 @@ impl Compiler {
                             self.compile_expr(target)?;
                         }
                     }
-                    _ => self.compile_expr(target)?,
+                    _ => {
+                        // `CallableRef` says the expression DENOTES callable
+                        // code, which is exactly the question
+                        // `emit_callable_value_resolution` answers — so a
+                        // reference and a call resolve a value the same way,
+                        // and `is_callable($x)` cannot disagree with `$x()`.
+                        // Inert for frontends whose profile declares no
+                        // dynamic-callable spellings: both steps return
+                        // immediately and this is one extra local.
+                        self.compile_expr(target)?;
+                        let slot = self.define_local("__callable_ref_value");
+                        self.emit_u16(Op::LOCAL_SET, slot);
+                        self.emit_callable_value_resolution(slot);
+                        self.emit_u16(Op::LOCAL_GET, slot);
+                    }
                 }
             }
 
@@ -5191,6 +5369,64 @@ impl Compiler {
                     mode,
                     line,
                 );
+            }
+
+            // ── Cross-language array map primitive ─────────────────────
+            ExprKind::ArrayMap {
+                array,
+                params,
+                body,
+            } => {
+                let lowered = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Member {
+                        object: array.clone(),
+                        field: "map".to_string(),
+                        null_safe: false,
+                    })),
+                    args: vec![Argument::positional(Expression::new(ExprKind::Lambda {
+                        params: params.clone(),
+                        body: LambdaBody::Expr(body.clone()),
+                        is_async: false,
+                        captures: Vec::new(),
+                    }))],
+                    optional: false,
+                });
+                self.compile_expr(&lowered)?;
+            }
+            // ── Ranked array transforms ────────────────────────────────
+            ExprKind::ArrayTransform { op, args, order } => {
+                let line = self.line;
+                match op {
+                    crate::ast::ArrayTransformOp::PackMask => {
+                        if !(args.len() == 2 || args.len() == 3) {
+                            return Err("PackMask expects array, mask, and optional vector".into());
+                        }
+                        for arg in args {
+                            self.compile_expr(arg)?;
+                        }
+                        common::array_transforms::emit_pack_mask(
+                            &mut self.chunks,
+                            self.current,
+                            args.len() == 3,
+                            *order,
+                            line,
+                        );
+                    }
+                    crate::ast::ArrayTransformOp::UnpackMask => {
+                        if args.len() != 3 {
+                            return Err("UnpackMask expects vector, mask, and field".into());
+                        }
+                        for arg in args {
+                            self.compile_expr(arg)?;
+                        }
+                        common::array_transforms::emit_unpack_mask(
+                            &mut self.chunks,
+                            self.current,
+                            *order,
+                            line,
+                        );
+                    }
+                }
             }
 
             // ── Tuple (Python) ──────────────────────────────────────────
@@ -7279,7 +7515,7 @@ impl Compiler {
                 // otherwise emit_var_get's in-function global guard emits NULL
                 // (PHP globals aren't visible in function scope) and the `new`
                 // constructs null. Class names are language-agnostic here.
-                self.defined_classes.insert(class_name.clone());
+                self.declare_class_identity(&class_name);
                 let parents: Vec<String> = parent_name.into_iter().collect();
                 let saved_expr_js_this = if self.ambient_this() {
                     Some(self.save_js_this(&format!("__js_prev_this_class_expr_{}", class_name)))
@@ -8361,6 +8597,23 @@ impl RichFallback<'_> {
     }
 }
 
+/// `left_is_number` — the operand the six probes below interrogate is
+/// provably a NUMBER, so every one of them provably misses and the whole
+/// chain is dead code (~42 instructions per comparison).
+///
+/// ⚠ "Not an object" is NOT enough, and that is the trap here: a miss on a
+/// primitive does not stop at the value. `VM::resolve_property` sends a
+/// primitive to `type_registry.resolve_method(0, …)` — the UNIVERSAL type —
+/// and sends a `Value::String` to the `string` type first. So a string can
+/// and does resolve registered methods this way.
+///
+/// A number reaches only type 0, and type 0 registers exactly `tostring`,
+/// `gethashcode`, `equals`, `hasownproperty`, `isprototypeof`,
+/// `propertyisenumerable`, `valueof`, `tolocalestring`
+/// (`platforms/ecma/src/builtin_types.rs`) — **none** of the six names probed
+/// here. `compare` exists only on `Collator`, and the string type has
+/// `localecompare`, not `compare`. That enumeration is what makes the skip
+/// sound; widening this flag past "number" would break it.
 pub fn emit_rich_compare_locals(
     chunks: &mut Vec<Chunk>,
     current: usize,
@@ -8369,7 +8622,14 @@ pub fn emit_rich_compare_locals(
     dunder: &str,
     fallback: RichFallback<'_>,
     line: u32,
+    left_is_number: bool,
 ) {
+    if left_is_number {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
+        fallback.emit(chunks, current, line);
+        return;
+    }
     // Re-ASSIGNED (not shadowed) around each `fallback.emit`, which needs the
     // whole vector: shadowing would leave the outer borrow live across the
     // loop's next iteration.
@@ -8484,4 +8744,31 @@ pub fn emit_smart_length(chunk: &mut Chunk, obj_slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunk.emit_op(Op::ARRAY_LENGTH, line);
     chunk.emit_end(line);
+}
+
+/// Materialize a constant-pool entry as an inline immediate.
+///
+/// Constants reach a chunk two ways: by pool index (`CONST` + index) or
+/// spliced in directly as a typed immediate. Helper builders take the
+/// second route — they hand-assemble bodies where the pool index is
+/// known at build time, so the indirection buys nothing. Panics on
+/// non-primitive constants: an `Object`/`WeakRef`/`V128` has no
+/// immediate encoding and must stay pool-resident.
+pub(crate) fn emit_const_index(chunk: &mut Chunk, idx: u16, line: u32) {
+    match chunk.constants[idx as usize].clone() {
+        Value::Null | Value::TypedNull(_) => {
+            chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line)
+        }
+        Value::Undefined => emit_undefined(chunk, line),
+        Value::Bool(value) => chunk.emit_bool_const(value, line),
+        Value::I32(value) => chunk.emit_i32_const(value, line),
+        Value::I64(value) => chunk.emit_i64_const(value, line),
+        Value::BigInt(value) => chunk.emit_i64_const(value.to_i64_wrapping(), line),
+        Value::F64(value) => chunk.emit_f64_const(value, line),
+        Value::F32(value) => chunk.emit_f32_const(value, line),
+        Value::String(value) | Value::Symbol(value) => chunk.emit_string_const(&value, line),
+        Value::Object(_) | Value::WeakRef(_) | Value::V128(_) => {
+            panic!("cannot inline a non-primitive constant as an immediate")
+        }
+    }
 }

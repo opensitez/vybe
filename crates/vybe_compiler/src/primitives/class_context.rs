@@ -249,6 +249,55 @@ impl Compiler {
         self.uses_rich_comparison()
     }
 
+    /// Box an i32 comparison result as a `Bool` — unless a CONDITION asked for
+    /// the i32, in which case the boxing is skipped and that is reported.
+    ///
+    /// Skipping and reporting are deliberately the SAME statement. Two
+    /// separate booleans would drift, and the two drift directions are not
+    /// equally bad: skip-without-report only costs the ladder, but
+    /// report-without-skip hands `BR_IF` a boxed `Bool` — which it accepts —
+    /// and the loop branches on the wrong thing in total silence.
+    pub(super) fn emit_i32_to_bool_or_report(&mut self) {
+        if std::mem::take(&mut self.want_i32_condition) {
+            self.gave_i32_condition = true;
+            return;
+        }
+        let line = self.line;
+        crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
+    }
+
+    /// Compile `cond` and leave an **i32** 0/1 on the stack.
+    ///
+    /// The general path is `compile_expr` + `emit_condition_truthiness_from_stack`.
+    /// But a relational operator has already produced an i32 — `emit_js_lt` and
+    /// friends end in `f64.lt` — and the `emit_i32_to_bool` after them exists
+    /// only for VALUE position. In condition position the truthiness ladder
+    /// undid it immediately, via its own `js-boolean:test` + `js-boolean:cast`:
+    /// three host calls and two branches to turn an i32 into an i32.
+    ///
+    /// Soundness rests on two things, neither of them a promise made here:
+    /// `compile_expr` TAKES the request at entry, so `a < b && c < d` compiles
+    /// its comparisons with the request clear and still boxes them; and only
+    /// emitters whose result provably came from a WASM compare opcode honour
+    /// it. `emit_rich_compare_locals` never does — its dunder arm returns the
+    /// user's `__lt__` value, which can be any object — so Python and Pascal
+    /// keep the full ladder.
+    pub(super) fn compile_condition_to_i32(
+        &mut self,
+        cond: &vybe_ast::Expression,
+    ) -> Result<(), String> {
+        self.want_i32_condition = true;
+        self.gave_i32_condition = false;
+        let result = self.compile_expr(cond);
+        self.want_i32_condition = false;
+        let gave = std::mem::take(&mut self.gave_i32_condition);
+        result?;
+        if !gave {
+            self.emit_condition_truthiness_from_stack();
+        }
+        Ok(())
+    }
+
     pub(super) fn emit_condition_truthiness_from_stack(&mut self) {
         // Only Python needs a custom rule here — empty str/list/dict/set are
         // falsy, which no primitive coercion expresses.

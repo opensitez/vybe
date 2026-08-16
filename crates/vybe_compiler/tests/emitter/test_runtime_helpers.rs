@@ -1,5 +1,6 @@
-use vybe_compiler::primitives::runtime_helpers::build_runtime_helpers;
-/// Tests for the runtime helpers — pure bytecode implementations that run on any runtime.
+use vybe_compiler::primitives::polyfills::build_runtime_helpers;
+/// Tests for the polyfill registry — linkable chunks that a compiled module
+/// carries with it, exercised here against the VM directly.
 use vybe_runtime::{Chunk, Op, VM, Value};
 
 /// Link a pre-built helper into a VM and run the script chunk.

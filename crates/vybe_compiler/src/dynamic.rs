@@ -27,6 +27,10 @@ pub struct DynamicCompilation {
     pub chunks: Vec<Chunk>,
     pub host_imports: HostImportMetadata,
     pub entry_path: Option<PathBuf>,
+    /// What the entry module DECLARED about presenting a UI — see
+    /// [`vybe_ast::Directives::app_shell`]. `None` states nothing, and the
+    /// document answers instead.
+    pub app_shell: Option<vybe_ast::AppShell>,
 }
 
 pub struct RuntimeCompilerService<'vm> {
@@ -206,6 +210,7 @@ impl<'vm> RuntimeCompilerService<'vm> {
             chunks: compiled.chunks,
             host_imports: compiled.host_imports,
             entry_path: bundle.sources.first().map(|source| source.path.clone()),
+            app_shell: compiled.app_shell,
         })
     }
 
@@ -785,6 +790,7 @@ pub fn into_dynamic_compilation(compiled: CompiledBundle) -> DynamicCompilation 
         chunks: compiled.chunks,
         host_imports: compiled.host_imports,
         entry_path: None,
+        app_shell: compiled.app_shell,
     }
 }
 
@@ -997,6 +1003,7 @@ impl PhpIncludeRuntime {
             chunks: compiled.chunks,
             host_imports: compiled.host_imports,
             entry_path: bundle.sources.first().map(|source| source.path.clone()),
+            app_shell: compiled.app_shell,
         })
     }
 }

@@ -383,7 +383,10 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
             })
             .or_else(|| {
                 let cn = compiler.canon(local_name);
-                compiler.global_type_hints.get(&cn).cloned()
+                compiler
+                    .global_type_hints
+                    .get(&cn)
+                    .map(|declared| declared.spelling().to_string())
             })
             .or_else(|| compiler.is_class_static_field_type_hint(local_name))
             .map(|name| compiler.resolve_source_type_alias(&name)),
@@ -2039,7 +2042,43 @@ impl Compiler {
         self.chunk().emit_if_value(line);
         self.emit_js_invoke_method_call(obj_slot, method_name, arg_slots);
         self.chunk().emit_else(line);
-        self.emit_call_ref_with_bound_js_this_arg_slots(lookup_slot, obj_slot, arg_slots);
+        // A method resolved from a TYPE's vtable is a host function whose first
+        // parameter IS the receiver — `web:dom.createElement(document, tag)`,
+        // `web:dom.appendChild(document, parent, child)`. `method_to_value`
+        // stamps `__vybe_method_receiver` on exactly those, and
+        // `emit_call_ref_with_arg_slots` already honours it; this path did not.
+        //
+        // So the receiver was bound as JS `this` and never PASSED, and
+        // `document.createElement("div")` reached the host as `("div")`: it read
+        // argument 0 as the document, found a string, and answered null. Nothing
+        // raised, so the page just came out empty.
+        //
+        // Marker-gated rather than unconditional because most callees reached
+        // here are ordinary JS functions, which take `this` and not a leading
+        // argument — passing one would shift every parameter they have.
+        let result_slot = self.define_local("__js_member_call_result");
+        let has_receiver_marker =
+            self.emit_js_has_own_receiver_marker(lookup_slot, "__js_member_receiver_marker");
+        self.emit_u16(Op::LOCAL_GET, has_receiver_marker);
+        let marker_line = self.line;
+        self.chunk().emit_if(marker_line);
+        self.emit_normal_call_from_arg_slots(
+            lookup_slot,
+            Some(obj_slot),
+            Some(obj_slot),
+            arg_slots,
+        );
+        self.emit_u16(Op::LOCAL_SET, result_slot);
+        self.chunk().emit_else(marker_line);
+        self.emit_dispatch_and_store_from_arg_slots(
+            lookup_slot,
+            None,
+            Some(obj_slot),
+            arg_slots,
+            result_slot,
+        );
+        self.chunk().emit_end(marker_line);
+        self.emit_u16(Op::LOCAL_GET, result_slot);
         self.chunk().emit_end(line);
         self.chunk().emit_end(line);
         Ok(())
@@ -2382,10 +2421,10 @@ impl Compiler {
             self.define_local(param);
         }
 
-        let async_try = {
+        {
             let line = self.line;
-            common::functions::emit_async_body_start(&mut self.chunks[self.current], line)
-        };
+            common::functions::emit_async_body_start(&mut self.chunks[self.current], line);
+        }
         self.active_async_try_depth += 1;
         let body = js_promise_chain_body(kind);
         for statement in &body {
@@ -2394,13 +2433,9 @@ impl Compiler {
         self.active_async_try_depth = self.active_async_try_depth.saturating_sub(1);
 
         let line = self.line;
-        common::functions::emit_async_body_fallthrough(
-            &mut self.chunks[self.current],
-            async_try,
-            line,
-        );
+        common::functions::emit_async_body_fallthrough(&mut self.chunks[self.current], line);
         self.emit_return();
-        common::functions::patch_async_body_catch(&mut self.chunks[self.current], async_try);
+        common::functions::end_async_body_handler(&mut self.chunks[self.current], line);
         self.emit_return();
 
         let ns = self.scope().next_slot;
@@ -10074,7 +10109,7 @@ impl Compiler {
                 }
                 let callee_slot = self.define_local("__ident_spread_callee");
                 self.emit_u16(Op::LOCAL_SET, callee_slot);
-                self.emit_source_function_callable_name_resolution(callee_slot);
+                self.emit_callable_value_resolution(callee_slot);
                 let receiver_key = self.str_const("__vybe_method_receiver");
                 self.emit_u16(Op::LOCAL_GET, callee_slot);
                 self.emit_struct_field_op(Op::STRUCT_GET, 0, receiver_key);
@@ -10099,6 +10134,42 @@ impl Compiler {
                 let callee_slot = self.define_local("__py_call_target");
                 self.emit_var_get(name);
                 self.emit_u16(Op::LOCAL_SET, callee_slot);
+                // A callee held in a variable may be a NAME rather than a
+                // callable — the same fact the two other call paths establish
+                // before dispatching. Without it this branch saw a string,
+                // failed the `typeof === "function"` test, looked for a Call
+                // slot on a primitive and fell out the bottom as `undefined`:
+                // `$f = 'greet'; $f();` did nothing at all, silently. Inert
+                // unless the profile declares `source_function_callable_aliases`.
+                self.emit_callable_value_resolution(callee_slot);
+
+                // The receiver and the arguments are established ONCE, above
+                // the branch. Each arm used to re-compile `arg_exprs`, so an
+                // argument with a side effect ran again per arm; and a
+                // callable value may carry the receiver it was read off —
+                // `__vybe_method_receiver`, the property the three other call
+                // paths already honour — which has to be passed as the
+                // LEADING argument. Without it a method resolved from a
+                // `[receiver, "method"]` pair had its first real argument land
+                // in the receiver's slot: `hi(4)` printed an empty `$n`.
+                // `emit_call_ref_with_arg_slots` skips the prepend when the
+                // receiver is null or undefined — every plain function — and
+                // packs rest parameters from the callee's
+                // `__vybe_rest_fixed_arity` stamp, which the hand-written
+                // invokes below did not: a variadic `__invoke(string $t,
+                // ...$args)` received its arguments unpacked.
+                let receiver_key = self.str_const("__vybe_method_receiver");
+                self.emit_u16(Op::LOCAL_GET, callee_slot);
+                self.emit_struct_field_op(Op::STRUCT_GET, 0, receiver_key);
+                let receiver_slot = self.define_local("__py_call_receiver");
+                self.emit_u16(Op::LOCAL_SET, receiver_slot);
+                let mut arg_slots = Vec::with_capacity(arg_exprs.len());
+                for (index, a) in arg_exprs.iter().enumerate() {
+                    self.compile_expr(a)?;
+                    let arg_slot = self.define_local(&format!("__py_call_arg_{}", index));
+                    self.emit_u16(Op::LOCAL_SET, arg_slot);
+                    arg_slots.push(arg_slot);
+                }
 
                 self.emit_u16(Op::LOCAL_GET, callee_slot);
                 let typeof_idx = self.import("ecma:value", "typeof");
@@ -10112,11 +10183,17 @@ impl Compiler {
                 crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
                 self.chunk().emit_if_value(line);
 
-                self.emit_u16(Op::LOCAL_GET, callee_slot);
-                for a in &arg_exprs {
-                    self.compile_expr(a)?;
-                }
-                self.emit_direct_callable_invoke(arg_exprs.len() as u8);
+                // A callable value may carry the receiver it was read off —
+                // `__vybe_method_receiver`, the property the three other call
+                // paths already honour — and it has to be passed as the
+                // LEADING argument. This branch used to invoke the value
+                // directly, so a method resolved from a `[receiver, "method"]`
+                // pair or a `"Class::method"` string had its first real
+                // argument land in the receiver's slot: `hi(4)` printed an
+                // empty `$n`. `emit_call_ref_with_arg_slots` skips the
+                // prepend when the receiver is null or undefined, which is
+                // every plain function.
+                self.emit_call_ref_with_arg_slots(callee_slot, Some(receiver_slot), &arg_slots);
 
                 self.chunk().emit_else(line);
                 self.emit_u16(Op::LOCAL_GET, callee_slot);
@@ -10142,23 +10219,18 @@ impl Compiler {
                 self.emit(Op::REF_IS_NULL);
                 let line = self.line;
                 self.chunk().emit_if_value(line);
-                inst!(self, core_wasm::undefined);
+                // Neither a function, nor a `call` member, nor the Call slot:
+                // the value is not callable. CALL it anyway, so the VM raises
+                // the one diagnostic every other call path raises — *"string is
+                // not callable"*. This used to yield `undefined` and the
+                // statement evaporated: no output, no error, exit 0.
+                self.emit_call_ref_with_arg_slots(callee_slot, None, &arg_slots);
                 self.chunk().emit_else(line);
-                self.emit_u16(Op::LOCAL_GET, dunder_slot);
-                self.emit_u16(Op::LOCAL_GET, callee_slot);
-                for a in &arg_exprs {
-                    self.compile_expr(a)?;
-                }
-                self.emit_direct_callable_invoke((arg_exprs.len() + 1) as u8);
+                self.emit_call_ref_with_arg_slots(dunder_slot, Some(callee_slot), &arg_slots);
                 self.chunk().emit_end(line);
 
                 self.chunk().emit_else(line);
-                self.emit_u16(Op::LOCAL_GET, call_slot);
-                self.emit_u16(Op::LOCAL_GET, callee_slot);
-                for a in &arg_exprs {
-                    self.compile_expr(a)?;
-                }
-                self.emit_direct_callable_invoke((arg_exprs.len() + 1) as u8);
+                self.emit_call_ref_with_arg_slots(call_slot, Some(callee_slot), &arg_slots);
                 self.chunk().emit_end(line);
                 self.chunk().emit_end(line);
                 return Ok(());
@@ -10168,6 +10240,14 @@ impl Compiler {
             let is_local =
                 self.scope().resolve(name).is_some() || self.has_static_local_binding(name);
             let canon_name = self.canon(name);
+            // Same rule as a bare READ, asked on the CALL spelling — which is
+            // the one that actually reaches it, since a bare callee never
+            // passes through `compile_expr`'s `Ident` arm. Without this the
+            // `enum_members` lookup below answers with whichever module
+            // registered last.
+            if let Some(err) = self.ambiguous_module_member_error(name) {
+                return Err(err);
+            }
             let is_direct_global = self.defined_globals.contains(&canon_name)
                 || self.defined_functions.contains(&canon_name);
             if let Some(callable_global) =
@@ -10206,7 +10286,7 @@ impl Compiler {
                 self.emit_var_get(name);
             }
             self.emit_u16(Op::LOCAL_SET, callee_slot);
-            self.emit_source_function_callable_name_resolution(callee_slot);
+            self.emit_callable_value_resolution(callee_slot);
             let receiver_key = self.str_const("__vybe_method_receiver");
             self.emit_u16(Op::LOCAL_GET, callee_slot);
             self.emit_struct_field_op(Op::STRUCT_GET, 0, receiver_key);
@@ -10533,7 +10613,7 @@ impl Compiler {
         self.compile_expr(callee)?;
         let callee_slot = self.define_local("__call_ref_callee");
         self.emit_u16(Op::LOCAL_SET, callee_slot);
-        self.emit_source_function_callable_name_resolution(callee_slot);
+        self.emit_callable_value_resolution(callee_slot);
 
         // A callee that is an OBJECT, not a function: dispatch through the Call
         // SLOT. `Counter()(3)`, `A()(3)(4)`, `makeAdder()(2)` — the callee here

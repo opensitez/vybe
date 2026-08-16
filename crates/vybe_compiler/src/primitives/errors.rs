@@ -215,6 +215,12 @@ pub fn exception_tag(chunk: &mut Chunk) -> u16 {
 pub struct TryTableClause {
     pub kind: u8,
     pub tag: u16,
+    /// Spec `labelidx` — the relative BLOCK DEPTH whose `end` is where this
+    /// clause's handler code begins, resolved in the context OUTSIDE the
+    /// `try_table`'s own label (spec: `C ⊢ catch x l` checks `C.labels[l]`,
+    /// and `C` is the context before the try's label is pushed). `0` therefore
+    /// names the block immediately enclosing the `try_table`.
+    pub label: u16,
 }
 
 /// Emit a `try_table` header with N catch clauses — the single source of
@@ -223,31 +229,66 @@ pub struct TryTableClause {
 /// lowering, and the `.wasm` reader that imports foreign modules).
 ///
 /// Internal fixed-width layout: `[try_table, u8 clause_count, per clause:
-/// u8 kind, u16 tag, u16 offset]`. Clauses are matched by TAG IDENTITY in the
-/// order given. Returns each clause's offset-placeholder position; patch it
-/// with [`patch_catch`] once that clause's handler code has been emitted. The
-/// caller emits the protected body next, then [`emit_try_end`].
+/// u8 kind, u16 tag, u16 label]`. Clauses are matched by TAG IDENTITY in the
+/// order given. Nothing is returned and nothing is patched: the handler target
+/// is a spec `labelidx`, known at emit time. The caller emits the protected
+/// body next, then [`emit_try_end`].
 /// Stack: unchanged.
-pub fn emit_try_table(chunk: &mut Chunk, clauses: &[TryTableClause], line: u32) -> Vec<usize> {
-    let pairs: Vec<(u8, u16)> = clauses.iter().map(|c| (c.kind, c.tag)).collect();
-    chunk.emit_try_table_clauses(&pairs, line)
+/// `params`/`results` are the spec blocktype `bt` — `try_table` is a block and
+/// may take and produce values. The language-level `try` produces none.
+pub fn emit_try_table(
+    chunk: &mut Chunk,
+    params: u8,
+    results: u8,
+    clauses: &[TryTableClause],
+    line: u32,
+) {
+    let triples: Vec<(u8, u16, u16)> = clauses
+        .iter()
+        .map(|c| (c.kind, c.tag, c.label))
+        .collect();
+    chunk.emit_try_table_clauses(params, results, &triples, line);
 }
 
-/// Emit the start of a try block. Returns the offset_pos to patch later.
-/// Spec `try_table` with one `catch $vybe:exception` clause — the handler
-/// receives the exception object (the tag's payload). Thin wrapper over the
-/// shared [`emit_try_table`] primitive.
-/// Stack: unchanged
-pub fn emit_try_start(chunk: &mut Chunk, line: u32) -> usize {
+/// Open a try: emits the HANDLER BLOCK, then the `try_table` inside it.
+///
+/// Two labels are opened, not one. The handler block exists so the catch
+/// clause has a `labelidx` to name — branching to it lands on its `end`, which
+/// is exactly where the catch arms begin. It carries ONE result, because the
+/// exception object the clause pushes travels as that block's result when the
+/// branch fires (spec: `C.labels[l]` must be the tag's payload types).
+///
+/// The caller must, in order:
+///   1. account for TWO label levels (handler block + `try_table`),
+///   2. emit the protected body,
+///   3. [`emit_try_end`] — closes the `try_table`, dropping one level,
+///   4. emit the normal-path `br`, which is now ONE DEEPER than it would be
+///      without the handler block,
+///   5. [`emit_handler_block_end`] — the catch arms follow it.
+/// Stack: unchanged.
+pub fn emit_try_start(chunk: &mut Chunk, line: u32) {
     let tag = exception_tag(chunk);
+    chunk.emit_block_typed(line, 1);
     emit_try_table(
         chunk,
+        0,
+        0, // a language-level `try` body produces no values
         &[TryTableClause {
             kind: CATCH_KIND_CATCH,
             tag,
+            // 0 = the handler block just opened. Resolved in the context
+            // OUTSIDE the try_table's own label, so the try does not count.
+            label: 0,
         }],
         line,
-    )[0]
+    );
+}
+
+/// Close the handler block opened by [`emit_try_start`]. The catch arms are
+/// emitted immediately after this `end` — it IS the branch target named by
+/// every clause's `labelidx`.
+pub fn emit_handler_block_end(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::END, line);
 }
 
 /// Emit the structural `end` that closes the `try_table` block opened by
@@ -261,16 +302,14 @@ pub fn emit_try_end(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::END, line);
 }
 
-/// Patch the catch handler offset after the handler code has been emitted.
-///
-/// The VM reads `offset` (2 bytes) and computes `catch_ip = ip + offset`,
-/// where ip is the position right after those 2 bytes (`offset_pos + 2`).
-/// The forward distance from that ip to the current end of code is the offset.
-pub fn patch_catch(chunk: &mut Chunk, offset_pos: usize) {
-    let jump = chunk.current_offset() as i32 - (offset_pos as i32 + 2);
-    chunk.code[offset_pos] = (jump >> 8) as u8;
-    chunk.code[offset_pos + 1] = (jump & 0xff) as u8;
-}
+// `patch_catch` is DELETED. It patched a forward byte distance into the
+// clause's third field, which the spec defines as a `labelidx` — a block
+// depth, not an offset. Beyond being the wrong quantity (it cannot survive
+// import from a conforming `.wasm`, where the reader has a real labelidx and
+// nowhere to put it), the distance was u16: past 65535 bytes of try body it
+// truncated silently and the handler resumed mid-instruction. The target is
+// now [`emit_handler_block_end`]'s label, resolved structurally, so there is
+// no distance to compute and no ceiling to exceed.
 
 /// Emit a throw — takes the exception value from TOS.
 /// Spec `throw <tagidx>`: the tag immediate selects the language-exception
@@ -417,6 +456,12 @@ pub fn exception_ancestors(name: &str) -> &'static [&'static str] {
         "GeneratorExit" => &["GeneratorExit", "BaseException"],
         "BaseException" => &["BaseException"],
         "Exception" => &["Exception", "BaseException"],
+        // PHP `PDOException extends RuntimeException`, so a `catch
+        // (RuntimeException)` / `catch (Exception)` / `catch (Throwable)` must
+        // all match it while `catch (PDOException)` stays narrow. Without an
+        // entry here the fallthrough is `&[]` — no ancestry is stamped and only
+        // an exact-name catch matches.
+        "PDOException" => &["PDOException", "RuntimeError", "Exception", "BaseException"],
         // LookupError branch
         "KeyError" => &["KeyError", "LookupError", "Exception", "BaseException"],
         "IndexError" => &["IndexError", "LookupError", "Exception", "BaseException"],

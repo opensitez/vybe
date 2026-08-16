@@ -47,6 +47,25 @@ impl Compiler {
             == Some(vybe_ast::builtin_slots::BuiltinType::Set)
     }
 
+    /// Whether `hint` names a plain NUMBER according to the language.
+    ///
+    /// `BigInt` is deliberately excluded where
+    /// `builtin_types::is_numeric` includes it: a bigint is its own runtime
+    /// value, not the `Value::Number` that the "reaches only type 0" argument
+    /// in `emit_rich_compare_locals` enumerates. Going through
+    /// `classify_with` is what makes that exclusion work at all — Kotlin
+    /// declares `[builtin_types] bigint = ["long"]`, so its `Long` resolves to
+    /// BigInt here and the platform table's `long → Int` row never applies.
+    pub(super) fn hint_is_builtin_number(&self, hint: &str) -> bool {
+        matches!(
+            vybe_ast::builtin_types::classify_with(&self.profile.builtin_type_spellings, hint),
+            Some(
+                vybe_ast::builtin_slots::BuiltinType::Int
+                    | vybe_ast::builtin_slots::BuiltinType::Double
+            )
+        )
+    }
+
     /// Whether `hint` names a `string` ACCORDING TO THE LANGUAGE.
     ///
     /// Distinct from `Self::is_string_type_hint`, which consults the PLATFORM

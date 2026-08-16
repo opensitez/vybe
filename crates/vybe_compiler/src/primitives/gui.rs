@@ -227,169 +227,26 @@ pub const HOST_FN_ACTIVE_DOCUMENT: &str = "activeDocument";
 /// CSSOM — `element.style`.
 pub const CSSOM_MODULE: &str = "web:cssom";
 
-// ─── Component Model Registration ────────────────────────────────────────────
+/// The live element type a control's ancestry must end in to carry a real rtt.
+///
+/// Declared in the tree vocabulary (`vybe_runtime::namespaces`) because it is a
+/// PLATFORM's declaration and the platform crates cannot see this one.
+pub use vybe_runtime::namespaces::DOM_ELEMENT_TYPE;
 
-/// Register all `vybe:gui` host functions as component module exports.
-/// This is called by the primitives/Linker to populate the component descriptor
-/// so all languages automatically get GUI functions without per-language
-/// profile duplication (similar to WASI registration).
-pub fn gui_component_exports() -> Vec<vybe_runtime::component_model::ComponentExport> {
-    use vybe_runtime::component::{FuncSig, ValType};
-    use vybe_runtime::component_model::{ComponentExport, ComponentItemKind};
+// The `vybe:gui` component-model export table used to live here — 157 lines
+// declaring `createForm`, `addControl`, `setProperty`, `onEvent`,
+// `newControlsCollection`, `runApplication`, `showForm`, `msgBox` and the rest
+// as component exports, with a doc comment saying the Linker called it to give
+// every language GUI functions without per-language profile duplication.
+//
+// **Nothing called it.** A repo-wide search found exactly one occurrence of
+// `gui_component_exports`: its own definition. It described a registration
+// path that does not exist, for a namespace being retired — so it read as the
+// authority on what `vybe:gui` offers while having no effect on anything.
+//
+// The live statement of what a control IS lives below, in the emit helpers and
+// the property-role tables. Those emit to `web:*`.
 
-    vec![
-        // Control creation
-        ComponentExport {
-            interface: GUI_MODULE.to_string(),
-            name: "createForm".to_string(),
-            kind: ComponentItemKind::Function(FuncSig {
-                name: "createForm".to_string(),
-                params: vec![ValType::String],
-                results: vec![ValType::Any],
-            }),
-        },
-        ComponentExport {
-            interface: GUI_MODULE.to_string(),
-            name: "addControl".to_string(),
-            kind: ComponentItemKind::Function(FuncSig {
-                name: "addControl".to_string(),
-                params: vec![],
-                results: vec![],
-            }),
-        },
-        ComponentExport {
-            interface: GUI_MODULE.to_string(),
-            name: "setProperty".to_string(),
-            kind: ComponentItemKind::Function(FuncSig {
-                name: "setProperty".to_string(),
-                params: vec![],
-                results: vec![],
-            }),
-        },
-        ComponentExport {
-            interface: GUI_MODULE.to_string(),
-            name: "getProperty".to_string(),
-            kind: ComponentItemKind::Function(FuncSig {
-                name: "getProperty".to_string(),
-                params: vec![],
-                results: vec![ValType::Any],
-            }),
-        },
-        // Event handling
-        ComponentExport {
-            interface: GUI_MODULE.to_string(),
-            name: "onEvent".to_string(),
-            kind: ComponentItemKind::Function(FuncSig {
-                name: "onEvent".to_string(),
-                params: vec![],
-                results: vec![],
-            }),
-        },
-        ComponentExport {
-            interface: GUI_MODULE.to_string(),
-            name: "removeEvent".to_string(),
-            kind: ComponentItemKind::Function(FuncSig {
-                name: "removeEvent".to_string(),
-                params: vec![],
-                results: vec![],
-            }),
-        },
-        ComponentExport {
-            interface: GUI_MODULE.to_string(),
-            name: "raiseEvent".to_string(),
-            kind: ComponentItemKind::Function(FuncSig {
-                name: "raiseEvent".to_string(),
-                params: vec![],
-                results: vec![],
-            }),
-        },
-        // Collections
-        ComponentExport {
-            interface: GUI_MODULE.to_string(),
-            name: "newControlsCollection".to_string(),
-            kind: ComponentItemKind::Function(FuncSig {
-                name: "newControlsCollection".to_string(),
-                params: vec![],
-                results: vec![ValType::Any],
-            }),
-        },
-        ComponentExport {
-            interface: GUI_MODULE.to_string(),
-            name: "newComponentsCollection".to_string(),
-            kind: ComponentItemKind::Function(FuncSig {
-                name: "newComponentsCollection".to_string(),
-                params: vec![],
-                results: vec![ValType::Any],
-            }),
-        },
-        ComponentExport {
-            interface: GUI_MODULE.to_string(),
-            name: "controlsAdd".to_string(),
-            kind: ComponentItemKind::Function(FuncSig {
-                name: "controlsAdd".to_string(),
-                params: vec![],
-                results: vec![],
-            }),
-        },
-        // Application
-        ComponentExport {
-            interface: GUI_MODULE.to_string(),
-            name: "runApplication".to_string(),
-            kind: ComponentItemKind::Function(FuncSig {
-                name: "runApplication".to_string(),
-                params: vec![],
-                results: vec![],
-            }),
-        },
-        ComponentExport {
-            interface: GUI_MODULE.to_string(),
-            name: "appExit".to_string(),
-            kind: ComponentItemKind::Function(FuncSig {
-                name: "appExit".to_string(),
-                params: vec![],
-                results: vec![],
-            }),
-        },
-        // Form lifecycle
-        ComponentExport {
-            interface: GUI_MODULE.to_string(),
-            name: "showForm".to_string(),
-            kind: ComponentItemKind::Function(FuncSig {
-                name: "showForm".to_string(),
-                params: vec![],
-                results: vec![],
-            }),
-        },
-        ComponentExport {
-            interface: GUI_MODULE.to_string(),
-            name: "closeForm".to_string(),
-            kind: ComponentItemKind::Function(FuncSig {
-                name: "closeForm".to_string(),
-                params: vec![],
-                results: vec![],
-            }),
-        },
-        ComponentExport {
-            interface: GUI_MODULE.to_string(),
-            name: "showFormDialog".to_string(),
-            kind: ComponentItemKind::Function(FuncSig {
-                name: "showFormDialog".to_string(),
-                params: vec![],
-                results: vec![],
-            }),
-        },
-        // Dialog
-        ComponentExport {
-            interface: GUI_MODULE.to_string(),
-            name: "msgBox".to_string(),
-            kind: ComponentItemKind::Function(FuncSig {
-                name: "msgBox".to_string(),
-                params: vec![],
-                results: vec![ValType::I32],
-            }),
-        },
-    ]
-}
 
 // ─── Emit helpers ────────────────────────────────────────────────────────────
 //
@@ -635,6 +492,36 @@ fn property_op(role: &str, setting: bool) -> (&'static str, &'static str, Option
             },
             Some("overflow"),
         ),
+        // **A table layout IS a grid.** `TableLayoutPanel.ColumnCount` (WinForms)
+        // and `TGridPanel`'s column count (VCL) mean exactly
+        // `grid-template-columns`, and unmapped they fell to the attribute
+        // fallback: `columncount="7"` landed on the element and NOTHING read it,
+        // so a 7x6 board rendered at whatever the widget was constructed with.
+        // The attribute fallback is right for decorative unknowns; a layout
+        // property with an exact CSS counterpart is not one.
+        //
+        // The count becomes `repeat(n, 1fr)` — equal tracks, which is what a
+        // table layout with no explicit column styles is. Explicit styles
+        // (`ColumnStyles.Add(Percent, …)`) refine it to real tracks later and
+        // overwrite this, exactly as a later CSS declaration would.
+        "columncount" => (
+            CSSOM_MODULE,
+            if setting {
+                "setStyleProperty"
+            } else {
+                "getStyleProperty"
+            },
+            Some("grid-template-columns"),
+        ),
+        "rowcount" => (
+            CSSOM_MODULE,
+            if setting {
+                "setStyleProperty"
+            } else {
+                "getStyleProperty"
+            },
+            Some("grid-template-rows"),
+        ),
         // `dock` joins these because it is geometry too, just expressed as a
         // rule instead of a number: the container computes the rect from it.
         // A frontend that spells it `Align` (VCL) or `Dock` (WinForms) reaches
@@ -858,16 +745,59 @@ impl Compiler {
     pub fn emit_gui_field(
         &mut self,
         field: &vybe_runtime::namespaces::FieldGui,
+        nest_coerce: Option<&str>,
         line: u32,
-    ) {
+    ) -> Result<(), String> {
         use vybe_runtime::namespaces::FieldGui;
         match field {
             // A child widget nests; a scalar sets the property. Both spellings
             // reach an operation that already exists, so neither needs a new
             // one.
+            // ⚠ The NEST half of this used to be missing entirely — the comment
+            // above described both operations and the code only ever emitted the
+            // property one. So `MaterialApp(home: CalculatorPage())` set an
+            // ATTRIBUTE from a widget, which stringifies: the document came out
+            // as `<flowlayoutpanel home="[object]">` with the whole page below
+            // the root collapsed into seven characters, and one control on
+            // screen.
+            //
+            // The test is `ref.test` against the DOM element type, not a probe
+            // for a marker field. A marker read is answered through the element
+            // attribute path — that is the same failure that made `_vfConcrete`
+            // over-run — whereas the rtt is what the object IS. It only became
+            // askable once a control was allocated with its own declared type;
+            // before that every element shared one type id and this question had
+            // no honest answer.
+            //
+            // `emit_is_instance_of` rather than a bare `REF_TEST`: it unions the
+            // rtt with the `__types` chain, so a frontend that has NOT declared
+            // the DOM tail still answers correctly from strings and keeps
+            // working.
             FieldGui::NestOrProp(key) => {
                 let role = key.to_ascii_lowercase();
+                let value = self.define_local("__gui_nest_value");
+                let parent = self.define_local("__gui_nest_parent");
+                self.emit_u16(Op::LOCAL_SET, value);
+                self.emit_u16(Op::LOCAL_SET, parent);
+                self.emit_gui_nest_coerce(nest_coerce, value, line)?;
+
+                let current = self.current;
+                crate::primitives::reflection::emit_is_instance_of(
+                    &mut self.chunks,
+                    current,
+                    value,
+                    vybe_runtime::namespaces::DOM_ELEMENT_TYPE,
+                    line,
+                );
+                self.chunk().emit_if(line);
+                self.emit_u16(Op::LOCAL_GET, parent);
+                self.emit_u16(Op::LOCAL_GET, value);
+                self.emit_gui_append_child(line);
+                self.chunk().emit_else(line);
+                self.emit_u16(Op::LOCAL_GET, parent);
+                self.emit_u16(Op::LOCAL_GET, value);
                 self.emit_gui_property_set(&role, line);
+                self.chunk().emit_end(line);
             }
             // A LIST of children — `Column(children: [...])`. Each element
             // appends, in order.
@@ -881,6 +811,7 @@ impl Compiler {
                 let parent = self.define_local("__gui_children_parent");
                 let index = self.define_local("__gui_children_i");
                 let count = self.define_local("__gui_children_n");
+                let item = self.define_local("__gui_children_item");
                 self.emit_u16(Op::LOCAL_SET, list);
                 self.emit_u16(Op::LOCAL_SET, parent);
 
@@ -898,10 +829,16 @@ impl Compiler {
                 ops::emit_dyn_lt(&mut self.chunks[current], line);
                 crate::primitives::loops::emit_loop_cond(&mut self.chunks, current, line);
 
-                self.emit_u16(Op::LOCAL_GET, parent);
+                // Coerce per ITEM, not per list: a `children:` list mixes
+                // concrete widgets with composites, and only the composite needs
+                // asking.
                 self.emit_u16(Op::LOCAL_GET, list);
                 self.emit_u16(Op::LOCAL_GET, index);
                 collections::emit_get(&mut self.chunks, current, line);
+                self.emit_u16(Op::LOCAL_SET, item);
+                self.emit_gui_nest_coerce(nest_coerce, item, line)?;
+                self.emit_u16(Op::LOCAL_GET, parent);
+                self.emit_u16(Op::LOCAL_GET, item);
                 self.emit_gui_append_child(line);
 
                 self.emit_u16(Op::LOCAL_GET, index);
@@ -921,6 +858,45 @@ impl Compiler {
                 self.emit_gui_property_set("text", line);
             }
         }
+        Ok(())
+    }
+
+    /// Replace `slot` with the node the value in it contributes, per the
+    /// platform's [`CtorSpec::nest_coerce`]. No-op when the platform declares
+    /// none — a control that IS its element has nothing to answer.
+    ///
+    /// The coercion is a plain call to a guest function of one argument, so the
+    /// platform authors it in the target language and the shared path stays
+    /// free of any framework's inflation rules. It must be TOTAL: it is applied
+    /// to every nested value, including the scalars that end up as properties,
+    /// so anything it does not recognise it returns unchanged.
+    ///
+    /// A coercion the program does not contain is skipped, and that is not a
+    /// silent shim — it is decidable. The function is part of the platform's
+    /// render runtime, which a frontend injects only into a program that
+    /// RENDERS. Absent ⟹ the program never attaches anything to a document ⟹
+    /// no nesting it performs is observable. What would be silent is the
+    /// opposite: coercing when the runtime is present but the widget's platform
+    /// forgot to declare it, which is why declaring it is the platform's job and
+    /// not something inferred here.
+    fn emit_gui_nest_coerce(
+        &mut self,
+        nest_coerce: Option<&str>,
+        slot: u16,
+        line: u32,
+    ) -> Result<(), String> {
+        let Some(name) = nest_coerce else {
+            return Ok(());
+        };
+        let Some(chunk_idx) = self.chunks.iter().position(|c| c.name == name) else {
+            return Ok(());
+        };
+        self.emit_u16(Op::REF_FUNC, chunk_idx as u16);
+        self.chunk().emit(0u8, line); // upvalue count
+        self.emit_u16(Op::LOCAL_GET, slot);
+        crate::primitives::callable::emit_direct_invoke_chunk(self.chunk(), 1, line);
+        self.emit_u16(Op::LOCAL_SET, slot);
+        Ok(())
     }
 
     /// Lower `gui.ctrl.<verb>` — stack in `[control]`, out `[value]`.
@@ -1077,6 +1053,16 @@ impl Compiler {
                 let parse_float = self.import("ecma:number", "parseFloat");
                 self.emit_host_call(parse_float, 1);
             }
+            // The inverse of the write: the store holds the EXPANDED track
+            // list (`vybe_widgets` normalises `repeat(7, 1fr)` on the way in),
+            // so the count is how many tracks there are. Splitting on a space
+            // and taking the length is the same trick `Lines` uses, and it
+            // makes the round trip an identity — write 7, read 7.
+            "columncount" | "rowcount" => {
+                emit_string_const(self.chunk(), " ", line);
+                strings::emit_split(self.chunk(), line);
+                strings::emit_length(self.chunk(), line);
+            }
             // Lines, from the text just read. Splitting on `\n` gives one more
             // element than there are lines whenever the text is empty or ends
             // in a break — and in exactly those cases the LAST element is the
@@ -1113,6 +1099,34 @@ impl Compiler {
             }
             _ => {}
         }
+    }
+
+    /// `RemoveHandler ctrl.Click, AddressOf H` IS `removeEventListener` —
+    /// stack in `[control, handler]`, out `[_]`.
+    ///
+    /// The counterpart of the `on<type>` branch in `emit_gui_property_set`, and
+    /// it did not exist: `compile_remove_handler_stmt` had no element branch at
+    /// all, so subscribing migrated to the web platform and UNsubscribing still
+    /// went to `vybe:gui`'s unbind host — against a registry the DOM path never
+    /// writes to. Removing a handler quietly did nothing.
+    ///
+    /// The handler is passed UNBOUND, deliberately. `addEventListener` stores
+    /// the wrapper `bind` produced, which the program has never seen and cannot
+    /// name; the host matches a bound listener by delegate equality precisely
+    /// for this case. Re-binding here would build a third object equal to
+    /// neither.
+    pub fn emit_remove_event_listener(&mut self, event: &str, line: u32) {
+        let handler = self.define_local("__gui_event_handler");
+        let ctrl = self.define_local("__gui_event_target");
+        self.emit_u16(Op::LOCAL_SET, handler);
+        self.emit_u16(Op::LOCAL_SET, ctrl);
+        let doc_idx = self.import(DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT);
+        self.chunk().emit_call(doc_idx, 0, line);
+        self.emit_u16(Op::LOCAL_GET, ctrl);
+        emit_string_const(self.chunk(), &event.to_ascii_lowercase(), line);
+        self.emit_u16(Op::LOCAL_GET, handler);
+        let idx = self.import(DOM_MODULE, "removeEventListener");
+        self.emit_host_call(idx, 4);
     }
 
     /// Lower `gui.prop_set.<role>` — stack in `[control, value]`, out `[_]`.
@@ -1255,6 +1269,23 @@ impl Compiler {
         let argc = match key {
             Some(k) => {
                 emit_string_const(self.chunk(), if k.is_empty() { role } else { k }, line);
+                // A track COUNT is not a track list. `ColumnCount := 7` means
+                // seven equal columns, which CSS spells `repeat(7, 1fr)` — and
+                // the count is a runtime value, so the string is built here
+                // rather than folded. Same shape as the `px` suffix below, for
+                // the same reason: the DOM takes CSS text, not a toolkit
+                // number.
+                if matches!(role, "columncount" | "rowcount") {
+                    emit_string_const(self.chunk(), "repeat(", line);
+                    self.emit_u16(Op::LOCAL_GET, value);
+                    strings::emit_to_string(self.chunk(), line);
+                    ops::emit_dyn_add(self.chunk(), line);
+                    emit_string_const(self.chunk(), ", 1fr)", line);
+                    ops::emit_dyn_add(self.chunk(), line);
+                    let idx = self.import(module, func);
+                    self.emit_host_call(idx, 4);
+                    return;
+                }
                 self.emit_u16(Op::LOCAL_GET, value);
                 // `disabled`/`hidden` are the INVERSE of enabled/visible; the
                 // frontend lowered to the ATTRIBUTE role, so negate here once.
@@ -1294,6 +1325,20 @@ impl Compiler {
 pub struct ControlElement {
     pub tag: String,
     pub input_type: String,
+    /// CSS the control is BORN with — `Row` is a `div` that declares
+    /// `display: flex; flex-direction: row`.
+    ///
+    /// The element alone cannot say this: `Panel`, `Row` and `Column` are all
+    /// `div`, and what separates them is a display mode, which is a STYLE and
+    /// not a tag. guiplan's conversion table has carried a "Declares" column
+    /// for exactly this and there was no mechanism behind it, so the only way
+    /// to express a flex container was to invent a `vybe-*` tag — a pseudo-tag
+    /// naming no widget kind, which renders as a 120x20 label.
+    ///
+    /// Declared CSS, not a layout flag: it lands through the same
+    /// `setStyleProperty` a program would use, so it cascades, serializes into
+    /// the `style` attribute, and a browser would do the same thing with it.
+    pub declares: Vec<(String, String)>,
 }
 
 impl ControlElement {
@@ -1303,11 +1348,35 @@ impl ControlElement {
     /// `"body"`) because it owns the vocabulary — plib knows `TEdit` is a text
     /// input, and nothing in a shared crate should have to. That is the whole
     /// point: no per-language table lives here.
+    ///
+    /// `;` separates the element from the CSS it is born with, and each
+    /// declaration is ordinary `prop: value`:
+    ///
+    /// ```text
+    /// "button"                                  a plain element
+    /// "input:checkbox"                          element + input type
+    /// "div;display:flex;flex-direction:column"  element + declared CSS
+    /// ```
+    ///
+    /// The `:` split for an input type happens on the FIRST segment only, so a
+    /// value containing a colon cannot be mistaken for one.
     fn parse(decl: &str) -> ControlElement {
-        let (tag, input_type) = decl.split_once(':').unwrap_or((decl, ""));
+        let mut parts = decl.split(';');
+        let head = parts.next().unwrap_or("");
+        let (tag, input_type) = head.split_once(':').unwrap_or((head, ""));
+        let declares = parts
+            .filter_map(|d| d.split_once(':'))
+            .map(|(prop, value)| {
+                (
+                    prop.trim().to_ascii_lowercase(),
+                    value.trim().to_ascii_lowercase(),
+                )
+            })
+            .collect();
         ControlElement {
             tag: tag.trim().to_ascii_lowercase(),
             input_type: input_type.trim().to_ascii_lowercase(),
+            declares,
         }
     }
 
@@ -1389,6 +1458,7 @@ impl ControlElement {
         ControlElement {
             tag: format!("vybe-{}", if bare.is_empty() { "control" } else { &bare }),
             input_type: String::new(),
+            declares: Vec::new(),
         }
     }
 }
@@ -1418,10 +1488,30 @@ impl Compiler {
     /// form, so `Self.OnCreate := handler` — a property write on the form
     /// itself — missed the DOM path that its own buttons took.
     pub fn control_element_for_type(&self, type_name: &str) -> Option<ControlElement> {
-        if let Some(element) =
-            registered_control_element(&self.profile.namespaces.type_scopes, type_name)
-        {
-            return Some(element);
+        // **A user's own class shadows a platform type of the same name.**
+        //
+        // The construction path has always said so; this one did not, and the
+        // asymmetry is the bug: `Class Point` constructed correctly as a user
+        // object and then had its member READS routed to the GUI property axis,
+        // because `Point` is also a registered platform type. Every instance
+        // then answered from the same host getter, so `a.X` and `b.X` read the
+        // same value — the objects were never aliased, the reads were.
+        //
+        // The shadow skips the DIRECT lookup only, never the parent walk.
+        // `TForm1 = class(TForm)` is user-declared too and must still route:
+        // it is not a control because of its own name but because of what it
+        // derives from, and that is exactly the difference between the two
+        // cases. Bailing outright here would take every Pascal form with it.
+        // `shadows_builtin_type` is THE user-declaration question — see its doc.
+        // A raw `defined_classes` probe here answers differently from the other
+        // shadow sites, which is the split that let `Class Point` win in one
+        // path and lose in another.
+        if !self.shadows_builtin_type(type_name) {
+            if let Some(element) =
+                registered_control_element(&self.profile.namespaces.type_scopes, type_name)
+            {
+                return Some(element);
+            }
         }
         // Walk the declared parents. Bounded by the chain itself, and a cycle
         // in it would already have broken construction long before here.
@@ -1433,6 +1523,37 @@ impl Compiler {
                 return Some(element);
             }
             current = self.pending_class_parent(&parent);
+        }
+        // **A control is a control by NAME too — the same answer construction
+        // gives.**
+        //
+        // `emit_control_element` resolves the registry and falls back to
+        // `ControlElement::custom`, so an unregistered control still becomes
+        // `<vybe-button>`. This function stopped at `None`, so the very same
+        // type constructed as an element and then was not recognised as one
+        // for its events or its properties. One fact, two answers.
+        //
+        // The gap between them is exactly where the legacy `vybe:gui::onEvent`
+        // path lived: `should_use_gui_event_host` fires precisely when a type
+        // has a control NAME but no registered element. That path is not a
+        // working fallback to preserve — it imports `removeEvent`, which is
+        // registered nowhere, so unsubscribing through it calls a host
+        // function that does not exist.
+        //
+        // WinForms is the case that made it visible. Those classes are
+        // adapters, the same way the VB ones are, and they should reach the
+        // DOM through here rather than speak `vybe:gui` directly.
+        //
+        // `canonical_control_name` is the gate, so this claims nothing about
+        // an arbitrary type — only about names the shared table already calls
+        // controls. The user shadow still applies: `Class Button` is the
+        // user's class, not a control.
+        // Same predicate as the direct lookup above — `shadows_builtin_type`,
+        // not a second probe. Asking the shadow question two ways here is the
+        // very split that let `Class Point` win in one path and lose in
+        // another.
+        if !self.shadows_builtin_type(type_name) && !canonical_control_name(type_name).is_empty() {
+            return Some(ControlElement::custom(type_name));
         }
         None
     }
@@ -1467,9 +1588,10 @@ impl Compiler {
             return None;
         }
         let canon_last = self.canon(last);
-        if self.defined_functions.contains(&canon_last)
-            || self.defined_classes.contains(&canon_last)
-        {
+        // Same predicate as every other shadow site. A declared FUNCTION of the
+        // name also wins here — a call is being classified, so a user function
+        // owns the callee spelling as much as a user class owns a type name.
+        if self.shadows_builtin_type(last) || self.defined_functions.contains(&canon_last) {
             return None;
         }
         vybe_runtime::namespaces::is_registered_type(&self.profile.namespaces.type_scopes, last)
@@ -1514,8 +1636,26 @@ impl Compiler {
                 _ => None,
             }
         };
-        if let Some(role) = declared(type_name) {
-            return Some(role);
+        // A USER-DECLARED class owns its own members: a platform type that
+        // happens to share its name must not answer for them.
+        //
+        // `constructed_control_type_name` above already refuses to treat a
+        // user-declared name as a control; this is the same rule for property
+        // ACCESS, which did not have it. Without it, `Class Point` with a field
+        // `X` had every `p.X` read compiled to a host property getter — the
+        // platform `System.Drawing.Point.X` role — instead of a struct field
+        // read, so two distinct Points answered with one shared value and it
+        // looked exactly like object aliasing. Exact name match, so `MyPoint`
+        // and `Pointer` were always fine and only the collision bit.
+        //
+        // ONLY the direct lookup is skipped. The parent walk below still
+        // consults platform roles, which is what keeps `Class MyForm Inherits
+        // Form` working — the user name owns nothing of its own, but it
+        // inherits `Form`'s roles exactly as before.
+        if !self.shadows_builtin_type(type_name) {
+            if let Some(role) = declared(type_name) {
+                return Some(role);
+            }
         }
         let mut current = self.pending_class_parent(type_name);
         while let Some(parent) = current {
@@ -1798,6 +1938,30 @@ impl Compiler {
         if element.establishes_containing_block() {
             self.emit_container_is_positioned(line);
         }
+        for (prop, value) in &element.declares {
+            self.emit_declared_style(prop, value, line);
+        }
+    }
+
+    /// One piece of CSS a control is BORN with (`ControlElement::declares`).
+    ///
+    /// Emitted here, at creation, so it is in place before any constructor
+    /// argument is applied — a program's own `style` write then simply
+    /// overrides it, which is the cascade behaving normally rather than a
+    /// precedence rule invented for controls.
+    fn emit_declared_style(&mut self, prop: &str, value: &str, line: u32) {
+        let element = self.define_local("__gui_declared_style");
+        self.emit_u16(Op::LOCAL_TEE, element);
+        let doc_idx = self.import(DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT);
+        self.chunk().emit_call(doc_idx, 0, line);
+        self.emit_u16(Op::LOCAL_GET, element);
+        emit_string_const(self.chunk(), prop, line);
+        emit_string_const(self.chunk(), value, line);
+        let set_idx = self.import(CSSOM_MODULE, "setStyleProperty");
+        self.emit_host_call(set_idx, 4);
+        // Same contract as `emit_container_is_positioned`: the host call's
+        // result is dropped so this leaves exactly the element.
+        self.chunk().emit_op(Op::DROP, line);
     }
 
     /// Stamp `__control_type` — "this object is a node in the document, and
@@ -2054,4 +2218,96 @@ pub fn emit_get_control_name(chunk: &mut Chunk, line: u32) {
 pub fn emit_get_control_type(chunk: &mut Chunk, line: u32) {
     let key = chunk.add_constant(Value::String(Arc::from(CONTROL_TYPE_FIELD)));
     chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
+}
+
+
+// ── Linkable chunk builders ──────────────────────────────────────────────────
+//
+// Linkable chunk builders — the standalone-chunk packaging of what the
+// `emit_*` forms splice inline. A language prefix in a name records which
+// frontend first needed a linkable chunk, not a language-specific meaning.
+
+// ── rgb(r, g, b) → i32 — pack 24-bit color (VB RGB / GDI 0x00BBGGRR) ─
+//
+// VB stores RGB color as 0x00BBGGRR (little-endian) — blue in high byte,
+// red in low byte. Pack: `(b << 16) | (g << 8) | r`. Pure i32 ops.
+pub fn build_rgb(_imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_rgb");
+    c.arity = 3;
+    c.local_count = 3;
+
+    // (b & 0xFF) << 16
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    c.emit_op(Op::I32_FROM_F64, 0);
+    let mask = c.add_constant(Value::I32(0xFF));
+    crate::primitives::expressions::emit_const_index(&mut c, mask, 0);
+    c.emit_op(Op::I32_AND, 0);
+    let sh16 = c.add_constant(Value::I32(16));
+    crate::primitives::expressions::emit_const_index(&mut c, sh16, 0);
+    c.emit_op(Op::I32_SHL, 0);
+
+    // (g & 0xFF) << 8
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op(Op::I32_FROM_F64, 0);
+    crate::primitives::expressions::emit_const_index(&mut c, mask, 0);
+    c.emit_op(Op::I32_AND, 0);
+    let sh8 = c.add_constant(Value::I32(8));
+    crate::primitives::expressions::emit_const_index(&mut c, sh8, 0);
+    c.emit_op(Op::I32_SHL, 0);
+    c.emit_op(Op::I32_OR, 0);
+
+    // (r & 0xFF)
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op(Op::I32_FROM_F64, 0);
+    crate::primitives::expressions::emit_const_index(&mut c, mask, 0);
+    c.emit_op(Op::I32_AND, 0);
+    c.emit_op(Op::I32_OR, 0);
+
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── qbcolor(c) → i32 — QBasic 16-color palette → packed RGB ──
+//
+// QBasic's COLOR statement uses the EGA/VGA 16-color palette. Map
+// 0-15 to standard palette entries; out-of-range returns black.
+pub fn build_qbcolor(_imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_qbcolor");
+    c.arity = 1;
+    c.local_count = 1;
+
+    // QBasic palette in 0x00BBGGRR (VB RGB) layout:
+    // 0=black, 1=blue, 2=green, 3=cyan, 4=red, 5=magenta, 6=brown,
+    // 7=lightgray, 8=darkgray, 9=lightblue, 10=lightgreen,
+    // 11=lightcyan, 12=lightred, 13=lightmagenta, 14=yellow, 15=white.
+    let palette: [i32; 16] = [
+        0x000000, 0x800000, 0x008000, 0x808000, 0x000080, 0x800080, 0x008080, 0xC0C0C0, 0x808080,
+        0xFF0000, 0x00FF00, 0xFFFF00, 0x0000FF, 0xFF00FF, 0x00FFFF, 0xFFFFFF,
+    ];
+
+    // Build the palette as a constant array, then ARRAY_GET by index.
+    // Compile-time pack: emit ARRAY_NEW + 16 push-style emits → array.
+    // Simpler: chain SELECTs for the 16 entries — but that's 15 selects
+    // and bloats the chunk. Use a small array literal instead.
+    let arr_locals_start = 1u16;
+    c.local_count = 2;
+    crate::primitives::collections::emit_array_new_into(_imports, &mut c, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, arr_locals_start, 0);
+    for &val in palette.iter() {
+        let v_const = c.add_constant(Value::I32(val));
+        c.emit_op_u16(Op::LOCAL_GET, arr_locals_start, 0);
+        crate::primitives::expressions::emit_const_index(&mut c, v_const, 0);
+        crate::primitives::collections::emit_push_into(_imports, &mut c, 0);
+        c.emit_op(Op::DROP, 0);
+    }
+    // ARRAY_GET(arr, idx & 0xF) — clamp via mask so out-of-range wraps.
+    c.emit_op_u16(Op::LOCAL_GET, arr_locals_start, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op(Op::I32_FROM_F64, 0);
+    let mask = c.add_constant(Value::I32(0xF));
+    crate::primitives::expressions::emit_const_index(&mut c, mask, 0);
+    c.emit_op(Op::I32_AND, 0);
+    crate::primitives::collections::emit_get_into(_imports, &mut c, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
 }

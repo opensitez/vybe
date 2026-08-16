@@ -61,26 +61,23 @@ pub fn emit_function_epilogue(chunk: &mut Chunk, line: u32) {
 }
 
 /// Start shared async-body scaffolding for function-like chunks.
-/// Returns the catch jump to patch once the body has been emitted.
 /// The caller remains responsible for Promise.resolve / Promise.reject
 /// wrapping because import indices live at the compiler layer.
-pub fn emit_async_body_start(chunk: &mut Chunk, line: u32) -> usize {
-    crate::primitives::errors::emit_try_start(chunk, line)
+pub fn emit_async_body_start(chunk: &mut Chunk, line: u32) {
+    crate::primitives::errors::emit_try_start(chunk, line);
 }
 
 /// Finish the normal fallthrough path of a shared async body.
 /// Leaves `undefined` on the stack so the compiler can wrap it with
 /// `Promise.resolve(undefined)` before returning.
-pub fn emit_async_body_fallthrough(chunk: &mut Chunk, catch_jump: usize, line: u32) {
+pub fn emit_async_body_fallthrough(chunk: &mut Chunk, line: u32) {
     crate::primitives::errors::emit_try_end(chunk, line);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
-    let _ = catch_jump;
 }
 
-/// Patch the catch edge for a shared async body so the compiler can
-/// emit its rejection path.
-pub fn patch_async_body_catch(chunk: &mut Chunk, catch_jump: usize) {
-    crate::primitives::errors::patch_catch(chunk, catch_jump);
+/// Close the structural handler block so the compiler can emit rejection code.
+pub fn end_async_body_handler(chunk: &mut Chunk, line: u32) {
+    crate::primitives::errors::emit_handler_block_end(chunk, line);
 }
 
 /// Emit ref_func to push a closure reference onto the stack.
@@ -322,6 +319,26 @@ impl Compiler {
             }
         }
         self.chunk().emit_end(line);
+    }
+
+    /// Resolve the value in `slot` to the callable it DENOTES, in place.
+    ///
+    /// The one entry point for that question, so a call, a callback and an
+    /// `is_callable`-style predicate cannot answer it differently. Two steps,
+    /// each inert unless the frontend's profile asks for it:
+    ///
+    /// 1. [`Self::emit_source_function_callable_name_resolution`] — a string
+    ///    that names a function declared in this module.
+    /// 2. [`Self::emit_callable_designator_in_slot`] — `"Class::method"` and a
+    ///    `[receiver, "method"]` pair.
+    ///
+    /// A callable OBJECT is not resolved here: it is dispatched at the call
+    /// site through the `Call` protocol slot, which needs the receiver the call
+    /// was written on. Resolving it to a bound method here as well would be a
+    /// second answer to a question the slot probe already answers.
+    pub(crate) fn emit_callable_value_resolution(&mut self, slot: u16) {
+        self.emit_source_function_callable_name_resolution(slot);
+        self.emit_callable_designator_in_slot(slot);
     }
 }
 

@@ -17,6 +17,7 @@
 // `impl Compiler` walkers alongside them are one layer now — this crate IS
 // the emitter, so there is no second module to route through.
 pub mod addressable_storage;
+pub mod array_transforms;
 pub mod base64;
 pub mod bigint;
 pub mod builtin_slots;
@@ -54,10 +55,11 @@ pub mod ops;
 pub mod packing;
 pub mod platforms;
 pub mod pointers;
+pub mod polyfills;
 pub mod prelude; // parse cache + splice for language preludes — one place, not four
 pub mod proxy;
 pub mod random;
-pub mod runtime_helpers;
+pub mod regex;
 pub mod sets;
 pub mod sorted_collection;
 pub mod sprintf;
@@ -70,7 +72,7 @@ pub mod tuples;
 pub mod type_registry;
 pub mod url;
 pub mod xml;
-pub use runtime_helpers::RuntimeHelpers;
+pub use polyfills::RuntimeHelpers;
 pub use target::Target;
 pub use type_registry::CompileTimeTypes;
 
@@ -480,6 +482,19 @@ pub struct Compiler {
     /// must evaluate to `"undefined"`, never throw — so the unresolvable-binding
     /// ReferenceError in `emit_var_get` is suppressed in this context.
     in_typeof_operand: bool,
+    /// A CONDITION is being compiled and would rather have a raw i32 than a
+    /// boxed `Bool`. Set only by `compile_condition_to_i32`, and **taken** at
+    /// the top of `compile_expr` — so it reaches the outermost operator and
+    /// can never leak into a nested operand, where the boxed value is what the
+    /// surrounding expression is entitled to.
+    want_i32_condition: bool,
+    /// The request above was honoured: the value on the stack is an i32.
+    /// Written ONLY by `emit_i32_to_bool_or_report`, where reporting and
+    /// skipping the boxing are the same statement — so "the boxing was
+    /// skipped" and "the stack holds an i32" cannot disagree. The dangerous
+    /// direction is a report without a skip: `BR_IF` accepts a `Bool` happily,
+    /// so the loop would key on the wrong thing in silence.
+    gave_i32_condition: bool,
     /// Every name the program lexically declares (`let`/`const`/`var`/params/
     /// etc.) as a local, across all scopes — populated only for languages with
     /// `unresolved_reference_throws`. A name in this set that is unresolvable in
@@ -555,13 +570,45 @@ pub struct Compiler {
     /// probe below actually asks, so producer and consumer agree by
     /// construction.
     pub(crate) program_has_index_accessor: bool,
-    global_type_hints: HashMap<String, String>,
+    /// The declared type of each global, WITH its `TypeBinding`.
+    ///
+    /// Was a bare `String`, which meant a global's declaration could say what
+    /// it was but not whether that was enforced — and a top-level `var i:
+    /// Integer` is how most Pascal is written, so the whole language's globals
+    /// were unusable to any caller that needs the guarantee.
+    global_type_hints: HashMap<String, vybe_ast::TypeHint>,
     /// Map from member name → containing namespace name.
     /// Used for bare-name resolution within modules/namespaces/enums.
     /// E.g. `Main` inside `Module Program` resolves to `Program.Main`.
     /// `Green` inside `enum TColor` resolves to `TColor.Green`.
     /// Models the WASM Component Model's namespace-scoped imports.
     enum_members: HashMap<String, String>,
+    /// Every module that contributes a given BARE member name, in declaration
+    /// order.
+    ///
+    /// [`Self::enum_members`] answers "which owner does this bare name belong
+    /// to" with ONE owner, so a second contributor silently displaces the
+    /// first — the name resolves to whichever module was declared last. That
+    /// is not what the languages say. A module contributes its members to the
+    /// enclosing scope, and when two modules contribute the SAME name the
+    /// unqualified reference is an ERROR, not a silent pick:
+    ///
+    /// | language | diagnostic |
+    /// |---|---|
+    /// | VB.NET | BC30562 `'X' is ambiguous between declarations in Modules 'A, B'` |
+    /// | C# | CS0104 `'X' is an ambiguous reference` |
+    ///
+    /// Keeping every contributor rather than the last is what makes that
+    /// question answerable at all: a lookup returning `Option` cannot say "two
+    /// answers", so the ambiguity had nowhere to be represented and the
+    /// overwrite was the only reachable outcome.
+    ///
+    /// Only names a module actually PUBLISHES are recorded — a module-private
+    /// member is not contributed and so cannot collide (see the visibility
+    /// rule where module members are compiled). Qualified access is unaffected:
+    /// `A.X` and `B.X` name different members and stay legal, which is why the
+    /// error belongs at the REFERENCE and not at the declaration.
+    module_member_contributors: HashMap<String, Vec<String>>,
     /// Reverse enum lookup: enum type -> underlying integer -> member name.
     enum_value_names: HashMap<String, HashMap<i64, String>>,
     enum_flags: HashSet<String>,
@@ -732,7 +779,18 @@ pub struct Compiler {
     ///
     /// It is walked by the SAME `resolve_segments` as every platform root, so
     /// this is one more root in one resolver, not a second resolver.
-    user_namespace_tree: crate::primitives::namespaces::Subtree,
+    ///
+    /// Written at the point of DECLARATION by
+    /// `declare_user_namespace_member`, not derived from `defined_classes`
+    /// afterwards. That ordering is forced: predeclaration resolves while it
+    /// declares — normalizing a class asks for its parent's identity — so a
+    /// root built only after that pass answers nothing for the pass's own
+    /// queries. Being the storage rather than a projection also removes the
+    /// staleness question a derived tree could only ever guess at.
+    ///
+    /// `RefCell` because resolution takes `&self` and must be able to read it
+    /// from the middle of a query.
+    user_namespace_tree: std::cell::RefCell<crate::primitives::namespaces::Subtree>,
     /// Snapshot of the current module's source imports.
     ///
     /// Used for narrow source-shape decisions that depend on the ambient
@@ -2325,6 +2383,11 @@ pub struct HostImportMetadata {
 pub struct CompileResult {
     pub chunks: Vec<Chunk>,
     pub host_imports: HostImportMetadata,
+    /// What the module DECLARED about presenting a UI
+    /// ([`vybe_ast::Directives::app_shell`]), carried out so the embedder can
+    /// read it without re-walking the tree. `None` states nothing — the
+    /// document answers instead.
+    pub app_shell: Option<vybe_ast::AppShell>,
 }
 
 fn is_php_builtin_constant_name(name: &str) -> bool {
@@ -2407,6 +2470,8 @@ impl Compiler {
             in_strict: false,
             directives: vec![vybe_ast::Directives::default()],
             in_typeof_operand: false,
+            want_i32_condition: false,
+            gave_i32_condition: false,
             program_lexical_names: HashSet::new(),
             shared_global_slots: HashMap::new(),
             shared_global_names: Vec::new(),
@@ -2430,6 +2495,7 @@ impl Compiler {
             program_has_index_accessor: false,
             global_type_hints: HashMap::new(),
             enum_members: HashMap::new(),
+            module_member_contributors: HashMap::new(),
             enum_value_names: HashMap::new(),
             enum_flags: HashSet::new(),
             reflection_types: HashMap::new(),
@@ -2836,7 +2902,6 @@ impl Compiler {
         let merged_body = merged_body;
 
         self.predeclare_type_names(&merged_body, None);
-        self.build_user_namespace_tree();
         self.collect_module_variable_names(&merged_body);
         self.collect_reflection_metadata(&merged_body);
 
@@ -2977,7 +3042,7 @@ impl Compiler {
         // compilation and recurse through `Compiler::compile`.
         // and recurse forever. Cheap thread-local guard since polyfill
         // compilation is single-threaded at vybex build time.
-        if !crate::primitives::runtime_helpers::is_compiling_runtime_helper() {
+        if !crate::primitives::polyfills::is_compiling_runtime_helper() {
             // The exclusion list is profile data — a language that supplies
             // its own implementation of a shared helper names it there, rather
             // than the shared crate carrying a per-language table.
@@ -2995,9 +3060,15 @@ impl Compiler {
         Self::normalize_import_table(&mut self.chunks);
         common::globals::declare_free_globals(&mut self.chunks);
         let host_imports = self.collected_host_imports();
+        // Frame 0 is the module's own declaration (installed above from
+        // `module.directives`); an in-source `Directive` with `Module` scope
+        // writes through to it, so reading the base frame answers for the whole
+        // unit however it was stated.
+        let app_shell = self.directives.first().and_then(|d| d.app_shell);
         Ok(CompileResult {
             chunks: self.chunks,
             host_imports,
+            app_shell,
         })
     }
 }

@@ -27,6 +27,18 @@ pub struct Local {
     /// from one that IS it — so php's `global $g` read a promoted global raw.
     /// Resolution already knows the difference. Ask it.
     pub holds_reference: bool,
+    /// This binding is a FUNCTION DECLARED HERE — a nested `function`/
+    /// `procedure` — and the value is its parameter count.
+    ///
+    /// It lives on the binding for the same reason `is_const` and
+    /// `holds_reference` do. A nested declaration deliberately does NOT enter
+    /// `defined_functions` (`classes.rs` — a flat set made sibling frames race
+    /// for one name), so the only record that a local IS a callable was gone by
+    /// the time an expression asked. `function_min_arity` could not answer
+    /// either: it is a flat name-keyed map, so a local variable sharing a name
+    /// with some unrelated function elsewhere would answer for it.
+    /// Resolution knows which binding is in scope. Ask it.
+    pub declared_arity: Option<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -174,6 +186,7 @@ impl Scope {
             type_hint,
             is_const: false,
             holds_reference: false,
+            declared_arity: None,
         });
         self.defined_names.push((slot, name.to_string()));
         self.next_slot += 1;
@@ -199,6 +212,7 @@ impl Scope {
             type_hint,
             is_const: false,
             holds_reference: false,
+            declared_arity: None,
         });
         self.defined_names.push((slot, name.to_string()));
         self.next_slot += 1;
@@ -214,6 +228,23 @@ impl Scope {
                 return;
             }
         }
+    }
+
+    /// Record that the local in `slot` is a nested function of `arity`
+    /// parameters (see `Local::declared_arity`).
+    pub fn mark_declared_arity(&mut self, slot: u16, arity: u8) {
+        for l in self.locals.iter_mut().rev() {
+            if l.slot == slot {
+                l.declared_arity = Some(arity);
+                return;
+            }
+        }
+    }
+
+    /// The parameter count of the nested function bound to `name` here, or
+    /// `None` when `name` is not in this scope or is an ordinary value.
+    pub fn resolve_declared_arity(&self, name: &str) -> Option<u8> {
+        self.resolve_local(name).and_then(|l| l.declared_arity)
     }
 
     /// Returns `true` if a binding for `name` is in scope and is `const`.
@@ -327,7 +358,6 @@ impl Scope {
     /// The full declared type, not just its spelling — the caller needs
     /// [`vybe_ast::TypeBinding`], which `resolve_type` drops on the way to
     /// `&str`. Same exact-then-folded order as [`Scope::resolve_type`].
-    #[allow(dead_code)]
     pub fn resolve_declared(&self, name: &str) -> Option<&vybe_ast::TypeHint> {
         for l in self.locals.iter().rev() {
             if l.name == name {

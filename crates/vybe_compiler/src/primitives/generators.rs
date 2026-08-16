@@ -893,7 +893,7 @@ pub fn build_async_generator_next(imports: &mut Chunk) -> Chunk {
     let reject_idx = c.add_import("ecma:promise", "reject");
     let is_done_idx = c.add_import("ecma:value", "isGeneratorDone");
 
-    let try_patch = crate::primitives::errors::emit_try_start(&mut c, 0);
+    crate::primitives::errors::emit_try_start(&mut c, 0);
 
     crate::primitives::globals::emit_read(&mut c, "__js_this", 0);
     c.emit_struct_field_op(Op::STRUCT_GET, 0, returned_key, 0); // null if never stamped
@@ -977,7 +977,7 @@ pub fn build_async_generator_next(imports: &mut Chunk) -> Chunk {
     c.emit_call(resolve_idx, 1, 0);
     c.emit_op(Op::RETURN, 0);
 
-    crate::primitives::errors::patch_catch(&mut c, try_patch);
+    crate::primitives::errors::emit_handler_block_end(&mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, err_local, 0);
     c.emit_op_u16(Op::LOCAL_GET, err_local, 0);
     c.emit_call(reject_idx, 1, 0);
@@ -1594,4 +1594,366 @@ impl Compiler {
         self.chunk().emit_end(line);
         self.emit_u16(Op::LOCAL_GET, result_slot as u16);
     }
+}
+
+
+// ── Linkable chunk builders ──────────────────────────────────────────────────
+//
+// Linkable chunk builders — the standalone-chunk packaging of what the
+// `emit_*` forms splice inline. A language prefix in a name records which
+// frontend first needed a linkable chunk, not a language-specific meaning.
+
+// ── __vybe_iter_drain(v) → [...v.iterator()] ────────────────
+//
+// User-defined `[Symbol.iterator]()` drain — what for-of and array-spread
+// route through (JS profile) when the source isn't a built-in iterable.
+// Walker rewrites `[Symbol.iterator]` to canonical method name `iterator`,
+// so we look up that key. The protocol drives `.next()` until `{ done:
+// true }` and collects values into an array. For non-iterable receivers
+// we return the input unchanged so existing iterForOf / concat paths see
+// the natural shape (Array → as-is, String → per-codepoint at the host
+// level, etc.).
+//
+// Method-call protocol: `__js_this` is bound to the receiver before each
+// method invocation per ECMA-262 §13.3.7 (CallMemberExpression). We save
+// the caller's `__js_this` on entry and restore on exit so calling
+// iter_drain doesn't leak our internal `this` rebinds.
+pub fn build_iter_drain(imports: &mut Chunk) -> Chunk {
+    use std::sync::Arc;
+    let mut c = Chunk::new("__stdlib_iter_drain");
+    c.arity = 1;
+    // v(0) + result(1) + out(2) + it(3) + method(4) + step(5) + counter(6) + saved_this(7)
+    c.local_count = 8;
+    let v = 0u16;
+    let result = 1;
+    let out = 2;
+    let it = 3;
+    let method = 4;
+    let step = 5;
+    let counter = 6;
+    let saved_this = 7;
+    let async_iter_key = c.add_constant(vybe_runtime::Value::String(Arc::from("asyncIterator")));
+    // NOT yet on the Iterator slot. Swapping this single key for
+    // `__vybe_slot_5` cost one python `class` test (246/310 → 245/311): the
+    // helper probes ONE alternate key, and the slot and the spelling are not
+    // interchangeable here — a native iterable reaches this path too, and only
+    // the spelling is present on those. Iterator needs a two-key probe (slot,
+    // then spelling) rather than a substitution. The slot itself is verified
+    // stamped and callable: `getattr(r, "__vybe_slot_5")()` returns a working
+    // iterator. See flexclassplan.md §2g.
+    let iter_slot_key = c.add_constant(vybe_runtime::Value::String(Arc::from(
+        vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Iterator).as_str(),
+    )));
+    let iter_alt_key = c.add_constant(vybe_runtime::Value::String(Arc::from("__iter__")));
+    let done_key = c.add_constant(vybe_runtime::Value::String(Arc::from("done")));
+    let value_key = c.add_constant(vybe_runtime::Value::String(Arc::from("value")));
+
+    // Single function-level outer block as the structured-control-flow
+    // exit label. Every "early return" sets `result` and `br exit` to
+    // here. Single RETURN at the function's true end keeps the VM's
+    // label_stack invariants intact (RETURN doesn't unwind active
+    // BLOCK labels, so RETURN-from-inside-a-block leaks labels to the
+    // caller — a real bug observed when this fn ran inside nested
+    // for-of loops).
+    let exit_block = c.emit_block(0);
+
+    // saved_this = __js_this
+    crate::primitives::globals::emit_read(&mut c, "__js_this", 0);
+    c.emit_op_u16(Op::LOCAL_SET, saved_this, 0);
+
+    // Fast path: built-in Array → result = v, exit. Walking the
+    // prototype chain for `iterator` would resolve to Array.prototype's
+    // iterator and turn a plain `[1,2,3]` into a user-iterator drain.
+    let arr_step = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    {
+        let idx = c.add_import("ecma:array", "isArray");
+        c.emit_call(idx, 1, 0);
+    }
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0); // not array → continue past this block
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_br(1, 0); // exit
+    c.emit_end(0);
+    c.patch_block(arr_step);
+
+    // Primitive strings are iterable by Unicode scalar value for JS
+    // for-of/spread/yield*. They do not have object properties for
+    // getMethodForCall to find here, so materialize through the shared
+    // ECMA for-of adapter before the object-method protocol path.
+    let string_step = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    {
+        let idx = c.add_import("wasm:js-string", "test");
+        c.emit_call(idx, 1, 0);
+    }
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0); // not string → continue past this block
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    crate::primitives::collections::emit_import_call_into(
+        imports,
+        &mut c,
+        "ecma:object",
+        "iterForOf",
+        1,
+        0,
+    );
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_br(1, 0); // exit
+    c.emit_end(0);
+    c.patch_block(string_step);
+
+    // method = getMethodForCall(v, "iterator") — walks prototype chain and
+    // binds the receiver for HostFunctions. For bytecode functions, the
+    // caller sets __js_this directly.
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    c.emit_string_const("iterator", 0);
+    crate::primitives::collections::emit_import_call_into(
+        imports,
+        &mut c,
+        "ecma:value",
+        "getMethodForCall",
+        2,
+        0,
+    );
+    c.emit_op_u16(Op::LOCAL_SET, method, 0);
+
+    // Symbol-keyed [Symbol.iterator] methods are stored as "Symbol(@@iterator)"
+    // by ecma:array.set. Try getMethodForCall with that key when "iterator" fails.
+    let try_sym = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, method, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    c.emit_string_const("Symbol(@@iterator)", 0);
+    crate::primitives::collections::emit_import_call_into(
+        imports,
+        &mut c,
+        "ecma:value",
+        "getMethodForCall",
+        2,
+        0,
+    );
+    c.emit_op_u16(Op::LOCAL_SET, method, 0);
+    c.emit_end(0);
+    c.patch_block(try_sym);
+
+    let try_alt = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, method, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    c.emit_struct_field_op(Op::STRUCT_GET, 0, iter_alt_key, 0);
+    c.emit_op_u16(Op::LOCAL_SET, method, 0);
+    c.emit_end(0);
+    c.patch_block(try_alt);
+
+    let try_async = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, method, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    c.emit_struct_field_op(Op::STRUCT_GET, 0, async_iter_key, 0);
+    c.emit_op_u16(Op::LOCAL_SET, method, 0);
+    c.emit_end(0);
+    c.patch_block(try_async);
+
+    // The Iterator SLOT — Python `__iter__`, Ruby `each`, C# `GetEnumerator`,
+    // Dart `iterator`. Another link in the probe chain rather than a
+    // replacement for the spelling below: this helper also runs on values that
+    // never went through a class, and those carry a native iterator or the bare
+    // spelling, not a slot.
+    let try_slot = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, method, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    c.emit_struct_field_op(Op::STRUCT_GET, 0, iter_slot_key, 0);
+    c.emit_op_u16(Op::LOCAL_SET, method, 0);
+    c.emit_end(0);
+    c.patch_block(try_slot);
+
+    // typeof method !== "function" → result = v, exit
+    let has_method = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, method, 0);
+    {
+        let idx = c.add_import("ecma:value", "typeof");
+        c.emit_call(idx, 1, 0);
+    }
+    c.emit_string_const("function", 0);
+    crate::primitives::ops::emit_dyn_eq_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0); // is function → skip early-exit
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_br(1, 0); // exit
+    c.emit_end(0);
+    c.patch_block(has_method);
+
+    // __js_this = v; it = method()
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    crate::primitives::globals::emit_write(&mut c, "__js_this", 0);
+    c.emit_op_u16(Op::LOCAL_GET, method, 0);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut c, 0, 0);
+    crate::primitives::functions::emit_await_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, it, 0);
+
+    // out = []
+    crate::primitives::collections::emit_array_new_into(imports, &mut c, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, out, 0);
+
+    // it null/undefined → result = out, exit
+    let it_ok = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, it, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, out, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_br(1, 0); // exit
+    c.emit_end(0);
+    c.patch_block(it_ok);
+
+    // If iterator() returned a generator continuation, drain it with the
+    // shared WASM stack-switching generator path. Generator continuations do
+    // not expose a normal object-shaped own `next` method, so the generic
+    // protocol loop below would otherwise collect nothing.
+    c.emit_op_u16(Op::LOCAL_GET, it, 0);
+    crate::primitives::collections::emit_import_call_into(
+        imports,
+        &mut c,
+        "ecma:value",
+        "isGenerator",
+        1,
+        0,
+    );
+    crate::primitives::ops::emit_dyn_to_bool_into(imports, &mut c, 0);
+    c.emit_if(0);
+    c.emit_op_u16(Op::LOCAL_GET, it, 0);
+    c.emit_op_u16(Op::LOCAL_SET, v, 0);
+    crate::primitives::generators::emit_drain_into_array_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_br(1, 0); // exit
+    c.emit_end(0);
+
+    // method = getMethodForCall(it, "next")
+    c.emit_op_u16(Op::LOCAL_GET, it, 0);
+    c.emit_string_const("next", 0);
+    crate::primitives::collections::emit_import_call_into(
+        imports,
+        &mut c,
+        "ecma:value",
+        "getMethodForCall",
+        2,
+        0,
+    );
+    c.emit_op_u16(Op::LOCAL_SET, method, 0);
+
+    // typeof method !== "function" → result = out, exit
+    let next_ok = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, method, 0);
+    {
+        let idx = c.add_import("ecma:value", "typeof");
+        c.emit_call(idx, 1, 0);
+    }
+    c.emit_string_const("function", 0);
+    crate::primitives::ops::emit_dyn_eq_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, out, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_br(1, 0); // exit
+    c.emit_end(0);
+    c.patch_block(next_ok);
+
+    // counter = 0
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, counter, 0);
+
+    // Drain loop: while (counter < cap) {
+    //   __js_this = it; step = method();
+    //   if step null/undefined or step.done → break
+    //   out.push(step.value); counter++;
+    // }
+    let drain_block = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
+
+    c.emit_op_u16(Op::LOCAL_GET, counter, 0);
+    c.emit_i32_const(1_000_000, 0);
+    crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(1, 0); // counter >= cap → break
+
+    c.emit_op_u16(Op::LOCAL_GET, it, 0);
+    crate::primitives::globals::emit_write(&mut c, "__js_this", 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, method, 0);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut c, 0, 0);
+    crate::primitives::functions::emit_await_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, step, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, step, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    c.emit_br_if(1, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, step, 0);
+    c.emit_struct_field_op(Op::STRUCT_GET, 0, done_key, 0);
+    crate::primitives::ops::emit_dyn_to_bool_into(imports, &mut c, 0);
+    c.emit_br_if(1, 0);
+
+    // out.push(step.value); push returns new length → drop it.
+    c.emit_op_u16(Op::LOCAL_GET, out, 0);
+    c.emit_op_u16(Op::LOCAL_GET, step, 0);
+    c.emit_struct_field_op(Op::STRUCT_GET, 0, value_key, 0);
+    crate::primitives::collections::emit_push_into(imports, &mut c, 0);
+    c.emit_op(Op::DROP, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, counter, 0);
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
+    crate::primitives::ops::emit_dyn_add_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, counter, 0);
+
+    c.emit_br(0, 0); // continue loop
+    c.emit_end(0);
+    c.patch_loop(loop_p);
+    c.emit_end(0);
+    c.patch_block(drain_block);
+
+    // result = out
+    c.emit_op_u16(Op::LOCAL_GET, out, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+
+    // exit_block end — single function-level RETURN follows.
+    c.emit_end(0);
+    c.patch_block(exit_block);
+
+    // Restore __js_this and return result. RETURN is at the function's
+    // top level, so structured control flow has fully unwound by the
+    // time we hit it — no leaked labels.
+    c.emit_op_u16(Op::LOCAL_GET, saved_this, 0);
+    crate::primitives::globals::emit_write(&mut c, "__js_this", 0);
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── String.raw(strings, ...values) → interleave strings and values ──
+// Tagged template function that returns the raw string without escape processing.
+// strings[0] + values[0] + strings[1] + values[1] + ... + strings[N]
+// Since this is called as a tagged template, strings is an array and
+// values are individual args. With rest params, values is already an array.
+// `build_drain_generator` removed — nothing referenced
+// `__vybe_drain_generator`. Draining goes through
+// `emit_drain_into_array_into` inline at the call site.
+
+pub fn build_generator_self() -> Chunk {
+    let mut c = Chunk::new("__stdlib_generator_self");
+    c.arity = 0;
+    c.local_count = 0;
+    crate::primitives::globals::emit_read(&mut c, "__js_this", 0);
+    c.emit_op(Op::RETURN, 0);
+    c
 }

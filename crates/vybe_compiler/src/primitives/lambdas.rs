@@ -379,10 +379,7 @@ impl Compiler {
         // its promise surface is the attached `.next()` driver.
         let async_try = if is_async && !is_generator && self.profile.async_wraps_body_in_try {
             let line = self.line;
-            Some(common::functions::emit_async_body_start(
-                &mut self.chunks[self.current],
-                line,
-            ))
+            { common::functions::emit_async_body_start(&mut self.chunks[self.current], line); Some(()) }
         } else {
             None
         };
@@ -412,15 +409,15 @@ impl Compiler {
             self.active_async_try_depth = self.active_async_try_depth.saturating_sub(1);
         }
 
-        if let Some(catch_jump) = async_try {
+        if async_try.is_some() {
             let line = self.line;
             let chunk = &mut self.chunks[self.current];
-            common::functions::emit_async_body_fallthrough(chunk, catch_jump, line);
+            common::functions::emit_async_body_fallthrough(chunk, line);
             let resolve_idx = self.import("ecma:promise", "resolve");
             self.emit_host_call(resolve_idx, 1);
             self.emit(Op::RETURN);
             let chunk = &mut self.chunks[self.current];
-            common::functions::patch_async_body_catch(chunk, catch_jump);
+            common::functions::end_async_body_handler(chunk, line);
             let reject_idx = self.import("ecma:promise", "reject");
             self.emit_host_call(reject_idx, 1);
             self.emit(Op::RETURN);

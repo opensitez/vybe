@@ -22,6 +22,7 @@
 
 use super::Compiler;
 use crate::primitives::namespaces::{self, ResolutionTarget};
+use vybe_runtime::namespaces::UserGlobalKind;
 
 /// Lazy platform-tree registration: every platform/language package
 /// contributes its descriptor DATA to the shared tree before a walk
@@ -245,6 +246,21 @@ impl Compiler {
     /// Locals are NOT consulted here: a type position is not a value position,
     /// and a variable named `Customer` does not shadow the type `Customer`.
     pub(crate) fn resolve_user_namespace_type(&self, name: &str) -> Option<String> {
+        self.resolve_user_namespace_member(name, UserGlobalKind::Type)
+    }
+
+    /// The same three tiers for a declared FUNCTION.
+    ///
+    /// Functions never had a tree at all: `resolve_namespaced_function_identity`
+    /// ran a flat cascade over `defined_functions` ending in a unique-suffix
+    /// GUESS. Types and functions are now the same question asked of the same
+    /// root, discriminated by [`UserGlobalKind`] so a type position cannot
+    /// accept a function or the reverse.
+    pub(crate) fn resolve_user_namespace_function(&self, name: &str) -> Option<String> {
+        self.resolve_user_namespace_member(name, UserGlobalKind::Function)
+    }
+
+    fn resolve_user_namespace_member(&self, name: &str, want: UserGlobalKind) -> Option<String> {
         let normalized = namespaces::normalize_source_path(name);
         if normalized.is_empty() {
             return None;
@@ -255,17 +271,21 @@ impl Compiler {
             return None;
         }
 
+        let tree = self.user_namespace_tree.borrow();
         let walk = |prefix: Option<&str>| -> Option<String> {
             let mut path: Vec<&str> = Vec::new();
             if let Some(prefix) = prefix {
                 path.extend(prefix.split('.').filter(|s| !s.is_empty()));
             }
             path.extend_from_slice(&segments);
-            match namespaces::resolve_in(&self.user_namespace_tree, &path) {
-                Some(ResolutionTarget::Ctor { path, .. }) => Some(path),
-                // A NamespaceObject means the name is a namespace, not a type
-                // — `MyApp.Models` in a type position resolves to nothing, the
-                // same answer real compilers give.
+            match namespaces::resolve_in(&tree, &path) {
+                Some(ResolutionTarget::UserGlobal { identity, kind }) if kind == want => {
+                    Some(identity)
+                }
+                // A NamespaceObject means the name is a namespace, not a
+                // declaration — `MyApp.Models` in a type position resolves to
+                // nothing, the same answer real compilers give. A declaration
+                // of the OTHER kind is equally not an answer.
                 _ => None,
             }
         };
@@ -293,37 +313,43 @@ impl Compiler {
                 return Some(hit);
             }
         }
+        // An import written INSIDE a namespace names a namespace relative to it.
+        //
+        //     namespace App.Deep { class Helper {} }
+        //     namespace App { using Deep; ... Helper.Tag() ... }
+        //
+        // `using Deep;` there means `App.Deep`, and real C# resolves it — the
+        // program above prints `App.Deep.Helper` under the .NET SDK. Vybe died
+        // with "undefined is not callable": the tiers above try the import as
+        // WRITTEN (`deep.helper`) and the enclosing context against the BARE
+        // name (`app.helper`), and the answer is neither — it is the two
+        // combined. VB's `Imports` inside a `Namespace` has the same rule, so
+        // this is one walk in the common resolver, not a C# arm.
+        //
+        // Last, and therefore purely additive: every name that resolved before
+        // still resolves to the same identity by an earlier tier, and only
+        // names that previously resolved to NOTHING can reach here.
+        //
+        // KNOWN LIMIT: C# searches the enclosing namespaces outward for the
+        // import's own name, so with both a global `Deep` and an `App.Deep` in
+        // scope it binds `App.Deep`, where this binds the global one at the
+        // tier above. Closing that needs each import to carry the namespace it
+        // was written in; `source_namespace_imports` is a flat list filled at
+        // link time and has already lost it. Not silently wrong for the case
+        // above — wrong only when BOTH spellings exist, which no test covers.
+        for context in self.source_namespace_contexts() {
+            let mut scope: Vec<&str> = context.split('.').filter(|s| !s.is_empty()).collect();
+            while !scope.is_empty() {
+                let base = scope.join(".");
+                for prefix in &self.source_namespace_imports {
+                    if let Some(hit) = walk(Some(&format!("{base}.{prefix}"))) {
+                        return Some(hit);
+                    }
+                }
+                scope.pop();
+            }
+        }
         None
-    }
-
-    /// A DECLARED type hint, reduced to the one canonical identity.
-    ///
-    /// `Dim c As MyApp.Models.Customer` and `Dim c As Customer` name one class,
-    /// and every consumer of a hint keys on the identity `NamespaceDecl`
-    /// lowering produced. Without this the qualified spelling matched nothing,
-    /// the local silently degraded to dynamic, and its property writes went to
-    /// the object's dynamic bag while the class's own methods kept reading the
-    /// declared field — one property with two storages.
-    ///
-    /// Only a spelling that RESOLVES is rewritten, so a builtin (`Integer`), a
-    /// platform type (`System.Text.StringBuilder`) and an unknown name are all
-    /// passed through untouched.
-    pub(crate) fn canonicalize_declared_type_hint(
-        &self,
-        type_hint: Option<vybe_ast::TypeHint>,
-    ) -> Option<vybe_ast::TypeHint> {
-        let mut type_hint = type_hint?;
-        let spelling = type_hint.spelling();
-        // Only a plain dotted name. A generic argument list or an array suffix
-        // is a COMPOSITE spelling whose parts each need resolving; rewriting
-        // the whole string against a type name would corrupt it.
-        if !spelling.contains('.') || spelling.contains(['<', '[', '(', ' ', ',']) {
-            return Some(type_hint);
-        }
-        if let Some(canonical) = self.resolve_user_namespace_type(spelling) {
-            type_hint.set_spelling(canonical);
-        }
-        Some(type_hint)
     }
 
     /// Sorted dump of every Link-phase (name → target) binding — the
@@ -374,9 +400,20 @@ mod user_root_tests {
         let profile = crate::profile::parse_profile("[compiler]\n").expect("bare profile");
         let mut compiler = Compiler::with_profile(profile);
         for class in classes {
-            compiler.defined_classes.insert((*class).to_string());
+            // The real declaration entry point, not a raw set insert: the tree
+            // is the storage now, so poking `defined_classes` behind its back
+            // would test a state the compiler can never actually be in.
+            compiler.declare_class_identity(class);
         }
-        compiler.build_user_namespace_tree();
+        compiler
+    }
+
+    fn compiler_with_functions(functions: &[&str]) -> Compiler {
+        let profile = crate::profile::parse_profile("[compiler]\n").expect("bare profile");
+        let mut compiler = Compiler::with_profile(profile);
+        for function in functions {
+            compiler.declare_function_identity(function);
+        }
         compiler
     }
 
@@ -404,10 +441,87 @@ mod user_root_tests {
         assert_eq!(c.resolve_user_namespace_type("myapp.models"), None);
     }
 
+    /// A class whose name repeats the namespace ROOT — `namespace Demo.Sub {
+    /// class Demo }`. The root segment is a namespace AND the leaf is a type;
+    /// both spellings have to keep working.
+    #[test]
+    fn class_named_after_its_namespace_root() {
+        let c = compiler_with(&["Demo.Sub.Demo"]);
+        assert_eq!(
+            c.resolve_user_namespace_type("Demo.Sub.Demo").as_deref(),
+            Some("Demo.Sub.Demo")
+        );
+        assert_eq!(c.resolve_user_namespace_type("Demo"), None);
+    }
+
+    /// The shape that was actually order-dependent: a BARE class whose name is
+    /// also a namespace root. Built from a `HashSet`, whichever arrived first
+    /// decided whether the root was a type or a namespace, and the other
+    /// spelling stopped resolving — differently from run to run. Insertion is
+    /// sorted shallowest-first so the bare type exists before anything descends
+    /// through its statics.
+    #[test]
+    fn bare_class_and_namespace_sharing_a_root_both_resolve() {
+        for order in [
+            ["Demo", "Demo.Sub.Demo"],
+            ["Demo.Sub.Demo", "Demo"],
+        ] {
+            let c = compiler_with(&order);
+            assert_eq!(
+                c.resolve_user_namespace_type("Demo").as_deref(),
+                Some("Demo"),
+                "bare class lost, insertion order {order:?}"
+            );
+            assert_eq!(
+                c.resolve_user_namespace_type("Demo.Sub.Demo").as_deref(),
+                Some("Demo.Sub.Demo"),
+                "qualified class lost, insertion order {order:?}"
+            );
+        }
+    }
+
     #[test]
     fn unknown_name_resolves_to_nothing() {
         let c = compiler_with(&["myapp.models.customer"]);
         assert_eq!(c.resolve_user_namespace_type("myapp.models.order"), None);
+    }
+
+    /// A declared FUNCTION resolves through the same root as a type.
+    #[test]
+    fn qualified_function_resolves_to_its_identity() {
+        let c = compiler_with_functions(&["myapp.utils.repeat"]);
+        assert_eq!(
+            c.resolve_user_namespace_function("myapp.utils.repeat")
+                .as_deref(),
+            Some("myapp.utils.repeat")
+        );
+    }
+
+    /// The kinds do not answer for each other. This is what the flat sets could
+    /// never express: `defined_functions` and `defined_classes` were two
+    /// unrelated sets of strings, so nothing stopped a type position from
+    /// accepting a function name that happened to match.
+    #[test]
+    fn a_function_is_not_a_type_and_a_type_is_not_a_function() {
+        let f = compiler_with_functions(&["myapp.utils.repeat"]);
+        assert_eq!(f.resolve_user_namespace_type("myapp.utils.repeat"), None);
+
+        let t = compiler_with(&["myapp.models.customer"]);
+        assert_eq!(
+            t.resolve_user_namespace_function("myapp.models.customer"),
+            None
+        );
+    }
+
+    /// A bare name whose namespace was never imported resolves to NOTHING.
+    ///
+    /// This is the behaviour the retired unique-suffix guess used to fake: it
+    /// answered `customer` with `myapp.models.customer` purely because that was
+    /// the only class whose name ended that way. Real VB/C# reject it (BC30002).
+    #[test]
+    fn bare_name_without_an_import_does_not_resolve() {
+        let c = compiler_with(&["myapp.models.customer"]);
+        assert_eq!(c.resolve_user_namespace_type("customer"), None);
     }
 }
 

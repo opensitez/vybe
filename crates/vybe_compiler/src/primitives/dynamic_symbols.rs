@@ -550,6 +550,136 @@ impl Compiler {
         Ok(())
     }
 
+    /// Resolve a **callable designator** held in `slot`, in place.
+    ///
+    /// The sibling of [`Self::emit_class_designator`], asking the same kind of
+    /// question one step further out: not *which class does this value denote*
+    /// but *which callable*. Which spelling a value is, is a property of the
+    /// VALUE, so it is settled at run time.
+    ///
+    /// One spelling is resolved here: a two-element `[receiver, "method"]`
+    /// pair whose first element is an OBJECT. The result is the method BOUND
+    /// to that receiver — one callable value, which is what lets every asker
+    /// (a call, `is_callable`, a callback handed to a sort) read the same
+    /// answer with no receiver out-parameter.
+    ///
+    /// A plain function value, a string naming a declared function, and an
+    /// object filling [`ProtocolSlot::Call`](vybe_ast::ProtocolSlot::Call) are
+    /// already answered — by the call site, by
+    /// [`Self::emit_source_function_callable_name_resolution`] and by the Call
+    /// slot probe respectively.
+    ///
+    /// ⛔ A class NAME that is only known at run time — `"Class::method"`, or a
+    /// pair whose first element is a string — is deliberately NOT resolved
+    /// here, and the reason is a hard size limit rather than a missing idea.
+    /// Resolving a name needs [`Self::emit_symbol_ref_for_name_on_stack`], one
+    /// comparison per declared symbol each guarding the language's autoload
+    /// sequence. That is affordable at a `New` or `StaticAccess` site, which
+    /// is why `emit_class_designator` can inline it; it is not affordable at
+    /// EVERY call site. `Chunk::emit_try_table_clauses` patches a catch
+    /// handler as a two-byte offset, so one inflated call site inside a `try`
+    /// pushed the body past 65535 bytes, the offset truncated, and execution
+    /// resumed mid-instruction (`Invalid opcode: 0x0000 0x2000`). Those two
+    /// spellings are resolved by the frontend instead, where the name is
+    /// literal — see `php_callable_target_expr`.
+    ///
+    /// Gated on `source_function_callable_aliases`, the axis that already
+    /// declares *"this language has PHP/Ruby-style dynamic callables"*. It has
+    /// to be gated on something: the VM reads an ARRAY callee as a .NET
+    /// multicast delegate, so a language that means that must not have its
+    /// arrays claimed here.
+    pub(crate) fn emit_callable_designator_in_slot(&mut self, slot: u16) {
+        if !self.profile.source_function_callable_aliases {
+            return;
+        }
+        let line = self.line;
+
+        // Every local is declared BEFORE the first branch — see the note in
+        // `emit_class_designator`.
+        let member_slot = self.define_local("__callable_designator_member");
+        let receiver_slot = self.define_local("__callable_designator_receiver");
+        let resolved_slot = self.define_local("__callable_designator_resolved");
+
+        // Guarded by `isArray`, not by a length probe on any object:
+        // `collections::emit_len` falls back to `Object.keys().length`, so an
+        // ordinary two-field instance would have answered 2 and been taken
+        // apart as a pair.
+        self.emit_u16(Op::LOCAL_GET, slot);
+        let is_array_idx = self.import("ecma:array", "isArray");
+        self.emit_host_call(is_array_idx, 1);
+        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+        self.chunk().emit_if(line);
+
+        self.emit_u16(Op::LOCAL_GET, slot);
+        let length_idx = self.import("ecma:array", "length");
+        self.emit_host_call(length_idx, 1);
+        self.emit_const(Value::I32(2));
+        crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
+        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+        self.chunk().emit_if(line);
+
+        self.emit_u16(Op::LOCAL_GET, slot);
+        self.emit_const(Value::I32(1));
+        self.emit(Op::ARRAY_GET);
+        self.emit_u16(Op::LOCAL_SET, member_slot);
+
+        self.emit_u16(Op::LOCAL_GET, slot);
+        self.emit_const(Value::I32(0));
+        self.emit(Op::ARRAY_GET);
+        self.emit_u16(Op::LOCAL_SET, receiver_slot);
+
+        // The first element must be an OBJECT to be a receiver. A STRING
+        // there names a CLASS, which this cannot resolve — see the note
+        // above — and anything else is not a callable pair at all: `[1, 2]`
+        // is just an array, and reading member `2` off the number `1` threw
+        // where php answers `false`.
+        self.emit_u16(Op::LOCAL_GET, receiver_slot);
+        crate::primitives::reflection::emit_typeof_in_chunk(self.chunk(), line);
+        self.emit_const(Value::String(std::sync::Arc::from("object")));
+        crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
+        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+        self.chunk().emit_if(line);
+
+        // `ecma:function.bind` supplies the fresh function object — mutating
+        // the method read off the instance is not an option, since a class
+        // whose methods are not distinct per instance hands back the INTERNED
+        // funcref and the write would land on every instance at once.
+        //
+        // The receiver is then stamped as `__vybe_method_receiver`, which is
+        // the property every call path in this compiler reads to pass the
+        // receiver as the leading ARGUMENT. `bind` alone sets the ECMA `this`,
+        // and a method compiled with an explicit receiver parameter never
+        // reads that: the first real argument landed in the receiver's slot
+        // and `hi($n)` printed an empty `$n`.
+        self.emit_u16(Op::LOCAL_GET, receiver_slot);
+        self.emit_u16(Op::LOCAL_GET, member_slot);
+        crate::primitives::reflection::emit_get_property_in_chunk(self.chunk(), line);
+        self.emit_u16(Op::LOCAL_SET, resolved_slot);
+
+        // Only a member that IS there gets bound. `[1, 2]` is a two-element
+        // array and not a callable: reading member `2` off `1` yields nothing,
+        // and binding nothing threw where php just answers `false`.
+        self.emit_u16(Op::LOCAL_GET, resolved_slot);
+        self.emit(Op::REF_IS_NULL);
+        self.emit(Op::I32_EQZ);
+        self.chunk().emit_if(line);
+
+        self.emit_u16(Op::LOCAL_GET, resolved_slot);
+        self.emit_u16(Op::LOCAL_GET, receiver_slot);
+        let bind_idx = self.import("ecma:function", "bind");
+        self.emit_host_call(bind_idx, 2);
+        self.emit_u16(Op::LOCAL_SET, slot);
+        self.emit_u16(Op::LOCAL_GET, slot);
+        self.emit_u16(Op::LOCAL_GET, receiver_slot);
+        let receiver_key = self.str_const("__vybe_method_receiver");
+        self.emit_struct_field_op(Op::STRUCT_SET, 0, receiver_key);
+
+        self.chunk().emit_end(line);
+        self.chunk().emit_end(line);
+        self.chunk().emit_end(line);
+        self.chunk().emit_end(line);
+    }
+
     /// [`Self::emit_symbol_ref_by_runtime_name`] with the name already on the
     /// stack. Stack: `[name] -> [symbol | undefined]`.
     pub(crate) fn emit_symbol_ref_for_name_on_stack(&mut self) {

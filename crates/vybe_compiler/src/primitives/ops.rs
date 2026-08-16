@@ -642,7 +642,71 @@ pub fn emit_dyn_ge(chunk: &mut Chunk, line: u32) {
 /// `ecma:value.toNumber` via `chunk.add_import`, which targets *this*
 /// chunk's import table. Never route it through an `_into` shared-runtime
 /// chunk (that would add the import to the wrong table).
-fn emit_js_relational_cmp(chunk: &mut Chunk, line: u32, op: CmpOp) {
+fn emit_js_relational_cmp(
+    chunk: &mut Chunk,
+    line: u32,
+    op: CmpOp,
+    a_known_num: bool,
+    b_known_num: bool,
+) {
+    // ── Operands this emitter MATERIALISED ITSELF ──────────────────────
+    //
+    // `a_known_num` / `b_known_num` mean the caller pushed that operand as a
+    // numeric constant (`f64.const 13`), so every question the ladder asks
+    // about it has a compile-time answer: `wasm:js-number.test` is 1,
+    // `wasm:js-number.toF64` is the identity, and — because a constant number
+    // is neither — `both string?` and `both bigint?` are FALSE whenever
+    // EITHER operand is one. Asking anyway cost 2 host calls per iteration on
+    // the taken path and 4 more on the mixed path, for `i < 13`.
+    //
+    // `Literal::BigInt` is a separate AST variant and is never reported here,
+    // so the bigint arm is only ever dropped when it is provably unreachable.
+    if a_known_num && b_known_num {
+        // Both constants: the number arm is the only reachable one, and the
+        // operands are already on the stack in order.
+        chunk.emit_op(f64_cmp_op(&op), line);
+        return;
+    }
+    if a_known_num || b_known_num {
+        let slots = alloc_locals(chunk, 2);
+        let b_slot = slots;
+        let a_slot = slots + 1;
+
+        let test_num = chunk.add_import("wasm:js-number", "test");
+        let to_f64 = chunk.add_import("wasm:js-number", "toF64");
+        let to_number = chunk.add_import("ecma:value", "toNumber");
+
+        save(chunk, b_slot, line);
+        save(chunk, a_slot, line);
+
+        // Only the UNKNOWN side is asked; the `i32.and` goes with the other.
+        load(chunk, if a_known_num { b_slot } else { a_slot }, line);
+        call1(chunk, test_num, line);
+        chunk.emit_if(line);
+        load(chunk, a_slot, line);
+        if !a_known_num {
+            call1(chunk, to_f64, line);
+        }
+        load(chunk, b_slot, line);
+        if !b_known_num {
+            call1(chunk, to_f64, line);
+        }
+        chunk.emit_op(f64_cmp_op(&op), line);
+        chunk.emit_else(line);
+        // Mixed: ToNumber the unknown side (NaN-safe — `"foo" < 0` is false).
+        load(chunk, a_slot, line);
+        if !a_known_num {
+            call1(chunk, to_number, line);
+        }
+        load(chunk, b_slot, line);
+        if !b_known_num {
+            call1(chunk, to_number, line);
+        }
+        chunk.emit_op(f64_cmp_op(&op), line);
+        chunk.emit_end(line);
+        return;
+    }
+
     let slots = alloc_locals(chunk, 2);
     let b_slot = slots;
     let a_slot = slots + 1;
@@ -708,17 +772,17 @@ fn emit_js_relational_cmp(chunk: &mut Chunk, line: u32, op: CmpOp) {
     // Result is i32 (0 or 1) — WASM-compliant for IF/BR_IF conditions.
 }
 
-pub fn emit_js_lt(chunk: &mut Chunk, line: u32) {
-    emit_js_relational_cmp(chunk, line, CmpOp::Lt);
+pub fn emit_js_lt(chunk: &mut Chunk, line: u32, a_known_num: bool, b_known_num: bool) {
+    emit_js_relational_cmp(chunk, line, CmpOp::Lt, a_known_num, b_known_num);
 }
-pub fn emit_js_gt(chunk: &mut Chunk, line: u32) {
-    emit_js_relational_cmp(chunk, line, CmpOp::Gt);
+pub fn emit_js_gt(chunk: &mut Chunk, line: u32, a_known_num: bool, b_known_num: bool) {
+    emit_js_relational_cmp(chunk, line, CmpOp::Gt, a_known_num, b_known_num);
 }
-pub fn emit_js_le(chunk: &mut Chunk, line: u32) {
-    emit_js_relational_cmp(chunk, line, CmpOp::Le);
+pub fn emit_js_le(chunk: &mut Chunk, line: u32, a_known_num: bool, b_known_num: bool) {
+    emit_js_relational_cmp(chunk, line, CmpOp::Le, a_known_num, b_known_num);
 }
-pub fn emit_js_ge(chunk: &mut Chunk, line: u32) {
-    emit_js_relational_cmp(chunk, line, CmpOp::Ge);
+pub fn emit_js_ge(chunk: &mut Chunk, line: u32, a_known_num: bool, b_known_num: bool) {
+    emit_js_relational_cmp(chunk, line, CmpOp::Ge, a_known_num, b_known_num);
 }
 
 // ── emit_dyn_add ──────────────────────────────────────────────────────
@@ -786,19 +850,89 @@ fn emit_to_primitive_in_place(chunk: &mut Chunk, slot: u16, line: u32) {
 }
 
 pub fn emit_dyn_add(chunk: &mut Chunk, line: u32) {
+    emit_dyn_add_known(chunk, line, false, false);
+}
+
+/// Push operand `slot` coerced to a string, for the concat arm of `+`.
+///
+/// `known_num` says this emitter wrote the value itself as an f64 constant, so
+/// "is it already a string?" has a compile-time answer — no — and the whole
+/// test/cast branch collapses to the numeric side.
+fn emit_add_operand_as_string(chunk: &mut Chunk, slot: u16, known_num: bool, line: u32) {
+    let str_from_f64 = chunk.add_import("wasm:js-string", "fromF64");
+    if known_num {
+        load(chunk, slot, line);
+        call1(chunk, str_from_f64, line);
+        return;
+    }
+    let test_str = chunk.add_import("wasm:js-string", "test");
+    let str_cast = chunk.add_import("wasm:js-string", "cast");
+    let to_f64 = chunk.add_import("wasm:js-number", "toF64");
+    let test_bool = chunk.add_import("wasm:js-boolean", "test");
+    let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
+    load(chunk, slot, line);
+    call1(chunk, test_str, line); // i32: 1 if already string
+    chunk.emit_if(line);
+    load(chunk, slot, line);
+    call1(chunk, str_cast, line);
+    chunk.emit_else(line);
+    emit_js_to_number_f64(chunk, slot, to_f64, test_bool, cast_bool, line);
+    call1(chunk, str_from_f64, line);
+    chunk.emit_end(line);
+}
+
+/// Push operand `slot` as a raw f64, for the numeric arm of `+`.
+///
+/// `known_num` collapses the entire ToNumber ladder — undefined? null?
+/// boolean? unbox? — to a bare load, because the value in the slot is the
+/// `f64.const` this emitter just wrote.
+fn emit_add_operand_as_f64(chunk: &mut Chunk, slot: u16, known_num: bool, line: u32) {
+    if known_num {
+        load(chunk, slot, line);
+        return;
+    }
+    let to_f64 = chunk.add_import("wasm:js-number", "toF64");
+    let test_bool = chunk.add_import("wasm:js-boolean", "test");
+    let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
+    emit_js_to_number_f64(chunk, slot, to_f64, test_bool, cast_bool, line);
+}
+
+/// ECMA §13.15.3 `+`, with the operands the emitter already knows about.
+///
+/// `a_known_num` / `b_known_num` say that operand is a numeric constant THIS
+/// emitter pushed (`emit_const(Value::F64(..))` / a number literal), not an
+/// inferred or annotated type. Every runtime question the coercion path asks
+/// about such an operand therefore has a compile-time answer:
+///
+/// - `emit_to_primitive_in_place` — a primitive is already primitive;
+/// - `wasm:js-string test` — a number is not a string, so the `OR` collapses
+///   to the other operand and, when BOTH are known, the concat arm is dead;
+/// - `wasm:js-bigint test` — the bigint arm is `test(a) AND test(b)`, so ONE
+///   known number makes the whole arm unreachable. `Literal::BigInt` is a
+///   separate variant and is never marked known, so the arm is only ever
+///   dropped when provably false.
+/// - the ToNumber ladder — see `emit_add_operand_as_f64`.
+///
+/// `emit_dyn_add` is this with both flags `false`, so every existing caller
+/// emits the same instruction sequence as before. △ Not byte-identical: the
+/// operand-coercion imports moved into the two helpers below, so the import
+/// TABLE is ordered differently. `add_import` dedups by name and every
+/// `CallHost` still resolves to the right entry — but a bytecode-dump diff
+/// will show shifted import indices, which is not a regression.
+///
+/// △ Only `emit_step_by_one` calls in today, always as `(false, true)`. The
+/// `a_known_num` shapes and the both-known early return are therefore emitted
+/// by no caller and covered by no test — whoever wires `compile_binop_operands`
+/// through here is their first user and should verify them.
+pub fn emit_dyn_add_known(chunk: &mut Chunk, line: u32, a_known_num: bool, b_known_num: bool) {
     let slots = alloc_locals(chunk, 2);
     let b_slot = slots;
     let a_slot = slots + 1;
 
     let test_str = chunk.add_import("wasm:js-string", "test");
-    let str_cast = chunk.add_import("wasm:js-string", "cast");
     let str_concat = chunk.add_import("wasm:js-string", "concat");
-    let str_from_f64 = chunk.add_import("wasm:js-string", "fromF64");
     let test_bigint = chunk.add_import("wasm:js-bigint", "test");
-    let to_f64 = chunk.add_import("wasm:js-number", "toF64");
     let from_f64 = chunk.add_import("wasm:js-number", "fromF64");
-    let test_bool = chunk.add_import("wasm:js-boolean", "test");
-    let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
 
     save(chunk, b_slot, line);
     save(chunk, a_slot, line);
@@ -807,56 +941,64 @@ pub fn emit_dyn_add(chunk: &mut Chunk, line: u32) {
     // and it matters: the String test below is on the PRIMITIVES, not on the
     // originals, so an object whose `toString` yields a string concatenates
     // rather than being forced through a numeric coercion.
-    emit_to_primitive_in_place(chunk, a_slot, line);
-    emit_to_primitive_in_place(chunk, b_slot, line);
+    if !a_known_num {
+        emit_to_primitive_in_place(chunk, a_slot, line);
+    }
+    if !b_known_num {
+        emit_to_primitive_in_place(chunk, b_slot, line);
+    }
+
+    // Both operands are known numbers: neither the concat arm nor the bigint
+    // arm is reachable, so `+` is the f64 add it always was.
+    if a_known_num && b_known_num {
+        load(chunk, a_slot, line);
+        load(chunk, b_slot, line);
+        chunk.emit_op(Op::F64_ADD, line);
+        call1(chunk, from_f64, line);
+        return;
+    }
 
     // either is a string → string concatenation
-    load(chunk, a_slot, line);
-    call1(chunk, test_str, line);
-    load(chunk, b_slot, line);
-    call1(chunk, test_str, line);
-    chunk.emit_op(Op::I32_OR, line); // i32: 1 if either is string
+    if !a_known_num {
+        load(chunk, a_slot, line);
+        call1(chunk, test_str, line);
+    }
+    if !b_known_num {
+        load(chunk, b_slot, line);
+        call1(chunk, test_str, line);
+    }
+    if !a_known_num && !b_known_num {
+        chunk.emit_op(Op::I32_OR, line); // i32: 1 if either is string
+    }
     chunk.emit_if(line);
-    // coerce a to string
-    load(chunk, a_slot, line);
-    call1(chunk, test_str, line); // i32: 1 if a is already string
-    chunk.emit_if(line);
-    load(chunk, a_slot, line);
-    call1(chunk, str_cast, line);
-    chunk.emit_else(line);
-    emit_js_to_number_f64(chunk, a_slot, to_f64, test_bool, cast_bool, line);
-    call1(chunk, str_from_f64, line);
-    chunk.emit_end(line);
-    // coerce b to string
-    load(chunk, b_slot, line);
-    call1(chunk, test_str, line);
-    chunk.emit_if(line);
-    load(chunk, b_slot, line);
-    call1(chunk, str_cast, line);
-    chunk.emit_else(line);
-    emit_js_to_number_f64(chunk, b_slot, to_f64, test_bool, cast_bool, line);
-    call1(chunk, str_from_f64, line);
-    chunk.emit_end(line);
+    emit_add_operand_as_string(chunk, a_slot, a_known_num, line);
+    emit_add_operand_as_string(chunk, b_slot, b_known_num, line);
     call2(chunk, str_concat, line);
 
     chunk.emit_else(line);
-    // both bigint → i64.add
-    load(chunk, a_slot, line);
-    call1(chunk, test_bigint, line);
-    load(chunk, b_slot, line);
-    call1(chunk, test_bigint, line);
-    chunk.emit_op(Op::I32_AND, line);
-    chunk.emit_if(line);
-    load(chunk, a_slot, line);
-    load(chunk, b_slot, line);
-    chunk.emit_op(Op::I64_ADD, line);
-    chunk.emit_else(line);
+    // both bigint → i64.add. One known number makes the `AND` provably false,
+    // so the arm is emitted only when neither operand is known.
+    let bigint_arm = !a_known_num && !b_known_num;
+    if bigint_arm {
+        load(chunk, a_slot, line);
+        call1(chunk, test_bigint, line);
+        load(chunk, b_slot, line);
+        call1(chunk, test_bigint, line);
+        chunk.emit_op(Op::I32_AND, line);
+        chunk.emit_if(line);
+        load(chunk, a_slot, line);
+        load(chunk, b_slot, line);
+        chunk.emit_op(Op::I64_ADD, line);
+        chunk.emit_else(line);
+    }
     // number + number (or coerce) → f64.add
-    emit_js_to_number_f64(chunk, a_slot, to_f64, test_bool, cast_bool, line);
-    emit_js_to_number_f64(chunk, b_slot, to_f64, test_bool, cast_bool, line);
+    emit_add_operand_as_f64(chunk, a_slot, a_known_num, line);
+    emit_add_operand_as_f64(chunk, b_slot, b_known_num, line);
     chunk.emit_op(Op::F64_ADD, line);
     call1(chunk, from_f64, line);
-    chunk.emit_end(line); // bigint
+    if bigint_arm {
+        chunk.emit_end(line); // bigint
+    }
     chunk.emit_end(line); // string
 }
 
@@ -1266,4 +1408,60 @@ pub fn emit_dyn_neg_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
     code.emit_op(Op::F64_NEG, line);
     call1(code, from_f64, line);
     code.emit_end(line);
+}
+
+
+// ── Linkable chunk builders ──────────────────────────────────────────────────
+//
+// Linkable chunk builders — the standalone-chunk packaging of what the
+// `emit_*` forms splice inline. A language prefix in a name records which
+// frontend first needed a linkable chunk, not a language-specific meaning.
+
+// ── dynMul(a, b) → string repeat or numeric multiply ─────────
+pub fn build_dyn_mul(imports: &mut Chunk) -> Chunk {
+    use std::sync::Arc;
+    let mut c = Chunk::new("__stdlib_dynmul");
+    c.arity = 2;
+    c.local_count = 2;
+    let str_tag = c.add_constant(Value::String(Arc::from("string")));
+    // if typeof(a) == "string": return str_repeat(a, b)
+    let a_block_p = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    crate::primitives::reflection::emit_typeof_in_chunk(&mut c, 0);
+    crate::primitives::expressions::emit_const_index(&mut c, str_tag, 0);
+    crate::primitives::ops::emit_dyn_eq_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0); // skip if a is NOT string
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    {
+        let idx = c.add_import("ecma:string", "repeat");
+        c.emit_call(idx, 2, 0);
+    }
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0);
+    c.patch_block(a_block_p);
+    // if typeof(b) == "string": return str_repeat(b, a)
+    let b_block_p = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    crate::primitives::reflection::emit_typeof_in_chunk(&mut c, 0);
+    crate::primitives::expressions::emit_const_index(&mut c, str_tag, 0);
+    crate::primitives::ops::emit_dyn_eq_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0); // skip if b is NOT string
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    {
+        let idx = c.add_import("ecma:string", "repeat");
+        c.emit_call(idx, 2, 0);
+    }
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0);
+    c.patch_block(b_block_p);
+    // numeric
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op(Op::F64_MUL, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
 }

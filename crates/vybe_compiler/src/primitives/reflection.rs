@@ -2720,3 +2720,319 @@ pub fn emit_instanceof_chain(
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, types_key, line); // []
     chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line); // [array]
 }
+
+
+// ── Linkable chunk builders ──────────────────────────────────────────────────
+//
+// Linkable chunk builders — the standalone-chunk packaging of what the
+// `emit_*` forms above splice inline. Same concept, same module.
+
+// `build_has_property` removed — nothing referenced `__vybe_hasproperty`.
+
+// ── deleteProperty(obj, key) → bool ─────────────────────────
+#[allow(dead_code)]
+pub fn build_delete_property(imports: &mut Chunk) -> Chunk {
+    // Can't delete properties in pure bytecode. Set to null as fallback.
+    let mut c = Chunk::new("__stdlib_deleteproperty");
+    c.arity = 2;
+    c.local_count = 2;
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0); // obj
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0); // key
+    c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0); // value = null
+    crate::primitives::collections::emit_set_into(imports, &mut c, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_bool_const(true, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// `build_js_instance_of` removed — nothing referenced
+// `__vybe_js_instanceof`. `instanceof` walks the prototype chain via
+// the identity path (`rtt` ∪ `__types`) instead.
+
+// ── vartype(v) → i32 — VB VarType: enum-style type tag ──────────
+//
+// VB's VbVarType enum:
+//   0=Empty, 1=Null, 2=Integer, 3=Long, 4=Single, 5=Double,
+//   6=Currency, 7=Date, 8=String, 9=Object, 10=Error, 11=Boolean,
+//   12=Variant, 13=DataObject, 14=Decimal, 17=Byte, 18=Char,
+//   8192=Array (added to base type)
+//
+// We collapse to the JS-typeof landscape:
+//   null/Nothing → 0, "boolean" → 11, integral numerics → 2,
+//   non-integral numerics → 5, "i32" → 2, "i64" → 3,
+//   "string" → 8, arrays → 8194, "object" → 9,
+//   DateTime → 7, default 12.
+pub fn build_vartype(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_vartype");
+    c.arity = 1;
+    c.local_count = 3; // val(0), result(1), tag(2)
+    let val = 0u16;
+    let result = 1u16;
+    let tag = 2u16;
+
+    let bool_str = c.add_constant(Value::String(std::sync::Arc::from("boolean")));
+    let num_str = c.add_constant(Value::String(std::sync::Arc::from("number")));
+    let i32_str = c.add_constant(Value::String(std::sync::Arc::from("i32")));
+    let i64_str = c.add_constant(Value::String(std::sync::Arc::from("i64")));
+    let str_str = c.add_constant(Value::String(std::sync::Arc::from("string")));
+    let obj_str = c.add_constant(Value::String(std::sync::Arc::from("object")));
+    let type_key = c.add_constant(Value::String(std::sync::Arc::from("__type")));
+    let dt_str = c.add_constant(Value::String(std::sync::Arc::from("DateTime")));
+    let v12 = c.add_constant(Value::I32(12));
+    let v0 = c.add_constant(Value::I32(0));
+    let v2 = c.add_constant(Value::I32(2));
+    let v3 = c.add_constant(Value::I32(3));
+    let v11 = c.add_constant(Value::I32(11));
+    let v5 = c.add_constant(Value::I32(5));
+    let v8 = c.add_constant(Value::I32(8));
+    let v9 = c.add_constant(Value::I32(9));
+    let v7 = c.add_constant(Value::I32(7));
+    let v8194 = c.add_constant(Value::I32(8194));
+
+    // result = 12 (Variant) — fallthrough default
+    crate::primitives::expressions::emit_const_index(&mut c, v12, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+
+    // null / Nothing → Empty (0)
+    c.emit_op_u16(Op::LOCAL_GET, val, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    let is_null = c.emit_block(0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0);
+    crate::primitives::expressions::emit_const_index(&mut c, v0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_br(1, 0);
+    c.emit_end(0);
+    c.patch_block(is_null);
+
+    // arrays are a distinct VM kind, not "object"
+    c.emit_op_u16(Op::LOCAL_GET, val, 0);
+    emit_is_array(&mut c, 0);
+    let is_array = c.emit_block(0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0);
+    crate::primitives::expressions::emit_const_index(&mut c, v8194, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_br(1, 0);
+    c.emit_end(0);
+    c.patch_block(is_array);
+
+    // tag = typeof(val)
+    c.emit_op_u16(Op::LOCAL_GET, val, 0);
+    emit_typeof_in_chunk(&mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, tag, 0);
+
+    let done = c.emit_block(0);
+
+    macro_rules! check {
+        ($s:expr, $v:expr) => {
+            c.emit_op_u16(Op::LOCAL_GET, tag, 0);
+            crate::primitives::expressions::emit_const_index(&mut c, $s, 0);
+            crate::primitives::strings::emit_str_equals(&mut c, 0);
+            c.emit_dup(0);
+            // [is_match, is_match]
+            let _block = c.emit_block(0);
+            crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+            c.emit_br_if(0, 0);
+            // matched: set result and exit outer block
+            crate::primitives::expressions::emit_const_index(&mut c, $v, 0);
+            c.emit_op_u16(Op::LOCAL_SET, result, 0);
+            c.emit_br(2, 0);
+            c.emit_end(0);
+            c.patch_block(_block);
+            c.emit_op(Op::DROP, 0); // drop the leftover bool
+        };
+    }
+    check!(bool_str, v11);
+    check!(i32_str, v2);
+    check!(i64_str, v3);
+    check!(str_str, v8);
+
+    c.emit_op_u16(Op::LOCAL_GET, tag, 0);
+    crate::primitives::expressions::emit_const_index(&mut c, num_str, 0);
+    crate::primitives::strings::emit_str_equals(&mut c, 0);
+    let is_number = c.emit_block(0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, val, 0);
+    c.emit_op(Op::F64_TRUNC, 0);
+    c.emit_op_u16(Op::LOCAL_GET, val, 0);
+    crate::primitives::ops::emit_dyn_eq_into(imports, &mut c, 0);
+    let is_integral = c.emit_block(0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0);
+    crate::primitives::expressions::emit_const_index(&mut c, v2, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_br(2, 0);
+    c.emit_end(0);
+    c.patch_block(is_integral);
+
+    crate::primitives::expressions::emit_const_index(&mut c, v5, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_br(1, 0);
+    c.emit_end(0);
+    c.patch_block(is_number);
+
+    // typeof == "object" — distinguish arrays, DateTime, and generic Object.
+    c.emit_op_u16(Op::LOCAL_GET, tag, 0);
+    crate::primitives::expressions::emit_const_index(&mut c, obj_str, 0);
+    crate::primitives::strings::emit_str_equals(&mut c, 0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0);
+
+    // It's an object; check __type
+    c.emit_op_u16(Op::LOCAL_GET, val, 0);
+    c.emit_struct_field_op(Op::STRUCT_GET, 0, type_key, 0);
+    crate::primitives::expressions::emit_const_index(&mut c, dt_str, 0);
+    crate::primitives::strings::emit_str_equals(&mut c, 0);
+    let _is_dt = c.emit_block(0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0);
+    crate::primitives::expressions::emit_const_index(&mut c, v7, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_br(1, 0); // exit outer block
+    c.emit_end(0);
+    c.patch_block(_is_dt);
+
+    // Generic object → 9
+    crate::primitives::expressions::emit_const_index(&mut c, v9, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+
+    c.emit_end(0);
+    c.patch_block(done);
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── isdate(v) → bool — true if `v.__type == "DateTime"` (VB IsDate) ──
+//
+// Vybe's DateTime adapter stamps `__type = "DateTime"` on the wrapper
+// object. Non-objects, or objects without that stamp, return false.
+pub fn build_isdate(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_isdate");
+    c.arity = 1;
+    c.local_count = 2;
+    let parse_idx = c.add_import("ecma:date", "parse");
+    let obj_str = c.add_constant(Value::String(std::sync::Arc::from("object")));
+    let str_str = c.add_constant(Value::String(std::sync::Arc::from("string")));
+    let type_key = c.add_constant(Value::String(std::sync::Arc::from("__type")));
+    let dt_str = c.add_constant(Value::String(std::sync::Arc::from("DateTime")));
+
+    let done = c.emit_block(0);
+
+    // result = false initially (skip if not an object)
+    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 1, 0);
+
+    // if typeof(v) == "string" → parseable strings also count as dates.
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    emit_typeof_in_chunk(&mut c, 0);
+    crate::primitives::expressions::emit_const_index(&mut c, str_str, 0);
+    crate::primitives::strings::emit_str_equals(&mut c, 0);
+    c.emit_if(0);
+
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_call(parse_idx, 1, 0);
+    c.emit_dup(0);
+    crate::primitives::ops::emit_dyn_eq_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 1, 0);
+    c.emit_br(1, 0);
+    c.emit_end(0);
+
+    // if typeof(v) != "object" → done with false
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    emit_typeof_in_chunk(&mut c, 0);
+    crate::primitives::expressions::emit_const_index(&mut c, obj_str, 0);
+    crate::primitives::strings::emit_str_equals(&mut c, 0);
+    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_dyn_to_bool_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0);
+
+    // result = (v.__type == "DateTime")
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_struct_field_op(Op::STRUCT_GET, 0, type_key, 0);
+    crate::primitives::expressions::emit_const_index(&mut c, dt_str, 0);
+    crate::primitives::strings::emit_str_equals(&mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 1, 0);
+
+    c.emit_end(0);
+    c.patch_block(done);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    crate::primitives::ops::emit_dyn_to_bool_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_i32_to_bool(&mut c, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// `build_isobject` removed — nothing referenced `__vybe_isobject`.
+
+// ── id(v) → number — Python `id` / Ruby `object_id` — pseudo-stable
+// identity. For primitives returns `Number(v)`; for objects walks the
+// `__id` stamp (Vybe writes one per `STRUCT_NEW`) or falls back to
+// `String(v)`'s length for objects without it. ECMA-262 doesn't expose
+// raw object addresses (intentionally — GC-relocatable), so this is a
+// best-effort stable handle that satisfies the Python/Ruby contract
+// (same object → same id within a run).
+pub fn build_id(_imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_id");
+    c.arity = 1;
+    c.local_count = 1;
+    let to_str = c.add_import("ecma:string", "String");
+    let len_idx = c.add_import("ecma:string", "length");
+
+    // Convert value to string and return its length as a stand-in id.
+    // Same value (toString-stable) → same id. Not unique across all
+    // values but matches the contract for compile_ok-style tests.
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_call(to_str, 1, 0);
+    c.emit_call(len_idx, 1, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── hash(v) → number — Python `hash` / Ruby `Object#hash` ─────────
+// Same shape as `id` for now: derive a stable integer from the
+// stringified value. Not cryptographic — matches the Python guarantee
+// that `hash(a) == hash(b)` whenever `a == b` for hashable types.
+pub fn build_hash(_imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_hash");
+    c.arity = 1;
+    c.local_count = 1;
+    let to_str = c.add_import("ecma:string", "String");
+    let len_idx = c.add_import("ecma:string", "length");
+
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_call(to_str, 1, 0);
+    c.emit_call(len_idx, 1, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── Type predicates ──────────────────────────────────────────────────
+//
+// Single-value type tests, the yes/no counterpart to [`emit_typeof`]'s
+// type-name string. Each is one host call; the predicate form exists so
+// call sites branch on a bool instead of comparing typeof output against
+// a string constant.
+
+/// Stack: `[value] -> [bool]`.
+pub(crate) fn emit_is_undefined(chunk: &mut Chunk, line: u32) {
+    let idx = chunk.add_import("wasm:js-undefined", "test");
+    chunk.emit_call(idx, 1, line);
+}
+
+/// Stack: `[value] -> [bool]`.
+pub(crate) fn emit_is_string(chunk: &mut Chunk, line: u32) {
+    let idx = chunk.add_import("wasm:js-string", "test");
+    chunk.emit_call(idx, 1, line);
+}
+
+/// Stack: `[value] -> [bool]`. ECMA-262 `Array.isArray` (§23.1.2.2) —
+/// true for a real Array exotic object only, not for array-likes.
+pub(crate) fn emit_is_array(chunk: &mut Chunk, line: u32) {
+    let idx = chunk.add_import("ecma:array", "isArray");
+    chunk.emit_call(idx, 1, line);
+}

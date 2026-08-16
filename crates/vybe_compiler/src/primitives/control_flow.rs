@@ -1610,7 +1610,6 @@ impl Compiler {
         name: &str,
         type_hint: Option<vybe_ast::TypeHint>,
     ) -> u16 {
-        let type_hint = self.canonicalize_declared_type_hint(type_hint);
         {
             let scope = self.scopes.last_mut().unwrap();
             let chunk_locals = self.chunks[self.current].local_count;
@@ -1788,4 +1787,33 @@ impl Compiler {
         };
         Some((self.label_depth - ctx.continue_label_depth) as u8)
     }
+}
+
+
+// ── Linkable chunk builders ──────────────────────────────────────────────────
+//
+// Linkable chunk builders — the standalone-chunk packaging of what the
+// `emit_*` forms splice inline. A language prefix in a name records which
+// frontend first needed a linkable chunk, not a language-specific meaning.
+
+// ── iif(c, a, b) → value — VB IIf eager-evaluated ternary ────────
+//
+// Args are evaluated before call (eager — both branches always run),
+// matching .NET `IIf(condition, truePart, falsePart)`. SELECT picks the
+// correct one. Note: this is NOT a short-circuiting `If(...)` — VB has
+// distinct lazy `If(c, a, b)` operator handled at compile time elsewhere.
+pub fn build_iif(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_iif");
+    c.arity = 3;
+    c.local_count = 3;
+    // SELECT pops [a, b, cond]; returns a if cond truthy.
+    // Args land in locals in declaration order: cond=0, a=1, b=2.
+    // We need stack [a, b, cond] for SELECT.
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0); // a (true branch)
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0); // b (false branch)
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0); // cond
+    crate::primitives::ops::emit_dyn_to_bool_into(imports, &mut c, 0);
+    c.emit_op(Op::SELECT, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
 }

@@ -101,9 +101,10 @@ impl Compiler {
     /// policy:
     ///
     /// 1. exact dotted identity wins,
-    /// 2. bare names inside the current namespace prefer `current.name`,
-    /// 3. legacy flattened declarations may still be reached by last segment,
-    ///    unless the leading segment is a mounted host/package namespace root.
+    /// 2. root-qualified bare names opt out of the enclosing namespace,
+    /// 3. everything else is the `user.<unit>.*` tree — the same three tiers a
+    ///    TYPE resolves through (exact, enclosing namespace innermost-first,
+    ///    each imported prefix), asked of a declared FUNCTION.
     pub(crate) fn resolve_namespaced_function_identity(&self, name: &str) -> Option<String> {
         if !self.profile.uses_common_resolver {
             return None;
@@ -127,47 +128,42 @@ impl Compiler {
             return Some(exact);
         }
 
-        if !normalized.contains('.') && !self.has_accessible_local_binding(name) {
-            let bare = self.canon(&normalized);
-            if let Some(qualified) = self
-                .current_namespace
-                .as_deref()
-                .map(|ns| self.canon(&format!("{ns}.{bare}")))
-                .filter(|qualified| self.defined_functions.contains(qualified))
-            {
-                return Some(qualified);
-            }
-        }
-
-        if let Some(qualified) = self.resolve_source_namespace_value(&normalized) {
-            if self.defined_functions.contains(&qualified) {
-                return Some(qualified);
-            }
-        }
-
-        if normalized.contains('.') {
-            let mut parts = normalized.split('.');
-            let first = parts.next().unwrap_or_default();
-            let last = normalized.rsplit('.').next().unwrap_or(normalized.as_str());
-            let last_canon = self.canon(last);
-            if !first.is_empty() && !self.profile.is_namespace_root(&first.to_lowercase()) {
-                let suffix = format!(".{exact}");
-                let mut matches = self
-                    .defined_functions
-                    .iter()
-                    .filter(|function| function.ends_with(&suffix));
-                if let Some(qualified) = matches.next().cloned() {
-                    if matches.next().is_none() {
-                        return Some(qualified);
-                    }
-                }
-            }
-            if !first.is_empty()
-                && !self.profile.is_namespace_root(&first.to_lowercase())
-                && self.defined_functions.contains(&last_canon)
-            {
-                return Some(last_canon);
-            }
+        // TWO flat tiers stood here and both are gone: a `current_namespace`
+        // probe of `defined_functions`, then `resolve_source_namespace_value`,
+        // which scans that same set for the exact spelling, then each enclosing
+        // namespace, then each import. Every answer either was a strict subset
+        // of the tree walk below or was the identical answer reached by
+        // scanning a flat set instead of walking scope.
+        //
+        // Subsets, precisely: the `current_namespace` probe consulted ONE
+        // namespace and never popped a segment, where `source_namespace_contexts`
+        // supplies both the enclosing `Namespace` and the namespace of the class
+        // being compiled — not the same thing, since a method body compiles with
+        // `current_namespace` already unwound — and the tree walks them
+        // innermost-first. `resolve_source_namespace_value` used those same
+        // contexts and the same `source_namespace_imports`, in the same order,
+        // over `defined_functions ∪ defined_globals`, then filtered the result
+        // back down to `defined_functions` — so its `defined_globals` arm could
+        // never produce an answer here at all.
+        //
+        // They cannot disagree with the tree about membership either: the whole
+        // program has ONE `defined_functions.insert`, inside
+        // `declare_function_identity`, which registers the tree leaf in the same
+        // breath. A name is in both or in neither.
+        //
+        // The `user.<unit>.*` root — the same three tiers (exact spelling,
+        // enclosing namespace innermost-first, each imported prefix) that a
+        // TYPE resolves through, now asked of a declared FUNCTION.
+        //
+        // What stood here was the shape types were rescued from: a
+        // `ends_with(".{name}")` scan of `defined_functions` accepting a
+        // unique match, then a bare last-segment lookup. Both are guesses over
+        // a flat set — they answer by coincidence of spelling rather than by
+        // scope, so a namespace that was never imported still resolved, and
+        // two namespaces declaring the same member name made the answer depend
+        // on how many happened to exist.
+        if let Some(qualified) = self.resolve_user_namespace_function(&normalized) {
+            return Some(qualified);
         }
 
         None
@@ -198,6 +194,9 @@ fn resolve_segments(
         match node {
             NamespaceNode::Namespace(children) => current = children,
             NamespaceNode::Type { statics, .. } => current = statics,
+            // A user declaration is a namespace over what is declared under
+            // it, the same way a `Type` is a namespace over its statics.
+            NamespaceNode::UserGlobal { children, .. } => current = children,
             NamespaceNode::Alias(target) => {
                 // Re-root the walk at the alias target with the remaining
                 // segments appended.
@@ -244,6 +243,13 @@ pub enum ResolutionTarget {
     /// materialize an ECMA-262 §16.2 module-namespace object if a runtime
     /// value is required.
     NamespaceObject(Path),
+    /// A declaration of the unit being compiled, resolved through the
+    /// `user.<unit>.*` root. `identity` is the canonical global name every
+    /// downstream table keys on.
+    UserGlobal {
+        identity: Path,
+        kind: vybe_runtime::namespaces::UserGlobalKind,
+    },
 }
 
 fn terminal(
@@ -284,6 +290,16 @@ fn terminal(
             .last()
             .and_then(|(_, n)| terminal(forest, n, path, alias_depth)),
         NamespaceNode::Const(v) => Some(ResolutionTarget::Const(v.clone())),
+        // The unit's own declaration. Deliberately NOT a `Ctor`: construction
+        // of a user class goes through the class machinery keyed on
+        // `identity`, and answering `Ctor` here would also make a declared
+        // FUNCTION look constructible.
+        NamespaceNode::UserGlobal { identity, kind, .. } => {
+            Some(ResolutionTarget::UserGlobal {
+                identity: identity.clone(),
+                kind: *kind,
+            })
+        }
         NamespaceNode::Alias(target) => {
             let segs: Vec<&str> = target.split('.').collect();
             resolve_segments(forest, &segs, alias_depth + 1)

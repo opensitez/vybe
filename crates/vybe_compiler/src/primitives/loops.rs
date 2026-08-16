@@ -93,6 +93,24 @@ pub fn emit_loop_cond(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_br_if(1, line);
 }
 
+/// [`emit_loop_cond`] for a condition the caller has ALREADY reduced to an i32.
+///
+/// The ToBoolean ladder inside `emit_loop_cond` coerces whatever is on the
+/// stack — including an i32 0/1, which it re-classifies as a *number* and
+/// pushes back through `js-number:test` / `toF64` / a NaN check. A caller that
+/// ran the ladder itself therefore paid for it twice, every iteration.
+///
+/// ⛔ The precondition is NOT checked and CANNOT be. `Op::BR_IF` rejects a
+/// non-i32 loudly, but `Op::I32_EQZ` reads through `Value::as_i32`, which
+/// coerces everything and answers 0 for an object — so a wrong caller gets a
+/// loop that silently never runs, not an error. Use ONLY where the i32 is
+/// provable. `emit_condition_truthiness_from_stack` is such a proof: every one
+/// of its branches ends in an i32 (`emit_dyn_to_bool`, or Python's `I32_NE`).
+pub fn emit_loop_cond_from_i32(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_br_if(1, line);
+}
+
 /// End of loop: branch back to loop start, emit END for loop and block.
 pub fn emit_loop_end(chunks: &mut [Chunk], current: usize, state: LoopState, line: u32) {
     // br_label 0 = continue loop (jump to loop start)
@@ -145,6 +163,27 @@ pub fn emit_do_loop_end(
         crate::primitives::ops::emit_dyn_not(&mut chunks[current], line);
     } else {
         crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    }
+    // br_if_label 0 = continue loop if condition is true
+    chunks[current].emit_br_if(0, line);
+    chunks[current].emit_end(line); // end loop
+    chunks[current].patch_loop(state.loop_patch);
+    chunks[current].emit_end(line); // end block
+    chunks[current].patch_block(state.block_patch);
+}
+
+/// [`emit_do_loop_end`] for a condition already reduced to an i32.
+/// Same precondition, and the same reason it cannot be checked — see
+/// [`emit_loop_cond_from_i32`].
+pub fn emit_do_loop_end_from_i32(
+    chunks: &mut [Chunk],
+    current: usize,
+    state: LoopState,
+    negate: bool,
+    line: u32,
+) {
+    if negate {
+        chunks[current].emit_op(Op::I32_EQZ, line);
     }
     // br_if_label 0 = continue loop if condition is true
     chunks[current].emit_br_if(0, line);

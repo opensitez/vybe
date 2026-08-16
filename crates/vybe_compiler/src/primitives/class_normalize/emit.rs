@@ -27,6 +27,38 @@ use vybe_ast::class_normalize::types::*;
 /// Entry point from `compile_stmt`. Receives the raw AST fields from
 /// `StmtKind::ClassDecl`, normalises per language, then hands off to
 /// `emit_class`.
+/// Resolve each declared base NAME to the class identity it denotes.
+///
+/// A base is written in source the way the programmer sees it — `Inherits
+/// Animal`, `extends Animal` — while the class it names may live in a
+/// namespace and be registered as `animals.animal`. Case-folding alone
+/// (`canon`) yields `animal`, which matches no class, and the derived class
+/// then inherits NOTHING: its own methods cannot see an inherited member by
+/// bare name, even though the base's own methods still can, and writes and
+/// external reads keep working. That combination reads like a property bug
+/// rather than a resolution one.
+///
+/// Done here because this is the single point where `parent` and `bases` are
+/// filled for every language — resolving in `classes.rs` would fix `parent`
+/// and leave the `bases[1..]` multiple-inheritance path on the raw spelling,
+/// which is the same defect one arm over.
+///
+/// `resolve_source_namespace_type` is the resolver the `New` path and
+/// `metadata.rs` already use, so the enclosing namespace and the file's
+/// imports are honoured here exactly as they are there. An unresolved name
+/// keeps its original spelling, so a base that is not a user-namespaced type
+/// reaches the existing `canon` downstream unchanged.
+fn resolve_declared_bases(compiler: &Compiler, parents: &[String]) -> Vec<String> {
+    parents
+        .iter()
+        .map(|p| {
+            compiler
+                .resolve_source_namespace_type(p)
+                .unwrap_or_else(|| p.clone())
+        })
+        .collect()
+}
+
 /// Produce the normalized class WITHOUT emitting it.
 ///
 /// Split out of `emit_class_from_ast` so the declaration pass can normalize
@@ -70,13 +102,14 @@ pub fn normalize_class_from_ast(
     //
     nc.span = span;
     nc.name = cname.to_string();
-    nc.parent = parents.first().cloned();
+    let resolved_parents = resolve_declared_bases(compiler, parents);
+    nc.parent = resolved_parents.first().cloned();
     nc.is_abstract = modifiers.is_abstract;
     nc.is_sealed = modifiers.is_sealed;
     nc.is_partial = modifiers.is_partial;
     // ALL direct bases: `parent` is `bases[0]`; `bases[1..]` is only read
     // behind the `class_multiple_inheritance` opt-in.
-    nc.bases = parents.to_vec();
+    nc.bases = resolved_parents;
     // Interfaces are a COMMON concept — `classes.rs` merges them with
     // reflection interfaces, dedups and registers them, which is what lets a
     // Java class implement a PHP interface. So the DECLARED list is filled here
@@ -122,7 +155,10 @@ pub fn emit_class_from_ast(
             // Equality is a separate axis and reads `nc.semantics.equality`.
             nc.is_value_type = semantics.storage == vybe_ast::ValueStorage::Value;
             nc.semantics = semantics;
-            nc.bases = parents.to_vec();
+            // Same resolution as the normalize path below — this arm reuses a
+            // class normalized during the declaration pass and would otherwise
+            // overwrite its resolved bases with the raw source spelling.
+            nc.bases = resolve_declared_bases(compiler, parents);
             nc
         }
         None => normalize_class_from_ast(

@@ -795,3 +795,16 @@ pub fn emit_ob_get_flush(chunks: &mut [Chunk], current: usize, line: u32) {
         emit_ob_pop_and_flush(chunks, current, line);
     });
 }
+
+
+// ── Linkable chunk builders ──────────────────────────────────────────────────
+//
+// Linkable chunk builders — the standalone-chunk packaging of what the
+// `emit_*` forms splice inline. A language prefix in a name records which
+// frontend first needed a linkable chunk, not a language-specific meaning.
+
+// `build_pascal_write` / `build_pascal_writeln` removed — nothing
+// referenced `__vybe_pascal_write{,ln}`. Pascal `Write`/`WriteLn` route
+// through the buffered writer in this module instead. Their shared
+// `emit_pascal_write_buffer` (read the buffer global, fold null and
+// undefined to `""`) went with them as its only two callers.
