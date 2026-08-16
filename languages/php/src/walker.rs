@@ -41,7 +41,6 @@
 use super::{PhpParser, Rule};
 use pest::Parser;
 use pest::iterators::Pair;
-use std::cell::RefCell;
 use vybe_ast::*;
 use vybe_compiler::primitives::reflection;
 
@@ -61,161 +60,8 @@ fn php_echo_stmt(exprs: Vec<Expression>) -> Statement {
     Statement::new(StmtKind::Expr(php_echo_expr(exprs)))
 }
 
-fn php_echo_stmt_kind(exprs: Vec<Expression>) -> StmtKind {
+fn php_echo_stmt_kind(__php_w: &mut PhpWalker, exprs: Vec<Expression>) -> StmtKind {
     StmtKind::Expr(php_echo_expr(exprs))
-}
-
-// Class context for `self::` resolution. PHP `self::X` inside a method
-// refers to the enclosing class (NOT the runtime instance) — it's a
-// compile-time-known reference. The walker pushes the current class
-// name before walking class members and pops it after, so when
-// `Rule::kw_self` is reached we can rewrite `self` to the class name
-// directly and avoid the runtime "STRUCT_GET on $this" path that
-// can't reach class-level constants/static members.
-thread_local! {
-    static CLASS_STACK: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
-    static CLASS_PARENT_STACK: RefCell<Vec<Option<String>>> = const { RefCell::new(Vec::new()) };
-    static PENDING_CLASS_FIELDS: RefCell<Vec<(String, Vec<FieldMeta>)>> = const { RefCell::new(Vec::new()) };
-    static PENDING_CLASS_HOOK_PROPERTIES: RefCell<Vec<(String, Vec<PropertyHookMeta>)>> = const { RefCell::new(Vec::new()) };
-    static CLASS_HOOK_PROPERTIES: RefCell<std::collections::HashMap<String, Vec<PropertyHookMeta>>> =
-        RefCell::new(std::collections::HashMap::new());
-    static PROPERTY_HOOK_BACKING_STACK: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
-    // Current function/method name, for `__FUNCTION__` / `__METHOD__`. Pushed
-    // around each function/method body walk in `walk_function_decl`.
-    static FUNCTION_STACK: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
-    static METHOD_TYPE_STACK: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
-    // Current namespace, for `__NAMESPACE__`. Pushed around a braced
-    // `namespace Foo { ... }` body walk.
-    static NAMESPACE_STACK: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
-    static NAMESPACE_CONSTS: RefCell<std::collections::HashSet<String>> =
-        RefCell::new(std::collections::HashSet::new());
-    // Tracks `use TraitName;` per class. Walker captures the trait name
-    // when it sees `use_trait` inside a class member; the post-pass in
-    // `parse()` reads this to copy trait members into the using class.
-    // Reset at the start of each `parse()` call.
-    static TRAIT_USAGES: RefCell<std::collections::HashMap<String, Vec<String>>> =
-        RefCell::new(std::collections::HashMap::new());
-    // Tracks `use Trait { method as alias; }` adaptations. Map key is
-    // the using-class name, value is a list of (source_method, alias)
-    // pairs. Reset alongside TRAIT_USAGES.
-    // Each entry: (source_trait_name | "" if unqualified, method_name, alias_name).
-    static TRAIT_ALIASES: RefCell<std::collections::HashMap<String, Vec<(String, String, String)>>> =
-        RefCell::new(std::collections::HashMap::new());
-    // Each entry: (winning_trait_name | "" if unqualified, method_name, hidden_trait_name).
-    static TRAIT_PRECEDENCES: RefCell<std::collections::HashMap<String, Vec<(String, String, String)>>> =
-        RefCell::new(std::collections::HashMap::new());
-    // Live registry of walked trait bodies (name → members), populated by
-    // walk_trait_decl. Unlike the `parse()` post-pass (which only folds into
-    // top-level ClassDecls), this lets the anonymous-class walk fold trait
-    // members directly into a `ClassExpr` at walk time. Reset with TRAIT_USAGES.
-    static TRAIT_BODIES: RefCell<std::collections::HashMap<String, Vec<ClassMember>>> =
-        RefCell::new(std::collections::HashMap::new());
-    // Monotonic counter for unique synthetic temp variable names. The
-    // postfix `$x++` walker rewrite needs `(tmp = $x, $x = inc($x), tmp)`
-    // where `tmp` must be unique per use site to avoid collisions in
-    // expressions like `$a++ + $b++` (without uniqueness, both writes
-    // would clobber the same global temp).
-    static TMP_COUNTER: RefCell<u32> = const { RefCell::new(0) };
-    // Suppression flag for the magic-get/`__get` rewrite: when
-    // `walk_assignment` is processing its LHS, the outermost
-    // `property_access_op` is the assignment TARGET, not a read, and
-    // should not be wrapped in the magic-get ternary (the wrapped
-    // expression isn't an l-value). Walker increments before walking
-    // the LHS and decrements after; `apply_postfix` peeks at the
-    // depth to decide whether to skip the wrap on the LAST chain op.
-    static ASSIGN_LHS_DEPTH: RefCell<u32> = const { RefCell::new(0) };
-    // `empty($obj->prop)` has PHP's isset-like, non-fatal property access
-    // semantics: a bad/null receiver evaluates as empty instead of throwing.
-    static SILENT_PROPERTY_ACCESS_DEPTH: RefCell<u32> = const { RefCell::new(0) };
-    static LINE_STARTS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
-    static CLASS_REGISTRY: RefCell<std::collections::HashMap<String, ClassMeta>> =
-        RefCell::new(std::collections::HashMap::new());
-    static CLASS_DECLARED_PROPERTIES: RefCell<std::collections::HashMap<String, Vec<String>>> =
-        RefCell::new(std::collections::HashMap::new());
-    static CONSTRUCTOR_REST_INDICES: RefCell<std::collections::HashMap<String, usize>> =
-        RefCell::new(std::collections::HashMap::new());
-    static FUNC_REGISTRY: RefCell<std::collections::HashMap<String, FuncMeta>> =
-        RefCell::new(std::collections::HashMap::new());
-    /// Declared spelling and by-reference parameter positions, per
-    /// free-function name.
-    ///
-    /// Filled by `pre_register_php_function_signatures` — BEFORE any body is
-    /// walked — because a call may be written above the declaration it binds
-    /// to. `FUNC_REGISTRY.params` cannot serve: it is populated as each
-    /// declaration is walked, so it is empty for a forward call.
-    ///
-    /// The declared spelling rides along because php function names are
-    /// case-insensitive while the compiler's signature table is keyed by the
-    /// exact name — see `mark_php_by_ref_args`.
-    static FUNC_BY_REF_PARAMS: RefCell<std::collections::HashMap<String, (String, Vec<bool>)>> =
-        RefCell::new(std::collections::HashMap::new());
-    static NAMESPACE_FUNCTIONS: RefCell<std::collections::HashSet<String>> =
-        RefCell::new(std::collections::HashSet::new());
-    static FUNCTION_IMPORT_ALIASES: RefCell<std::collections::HashMap<String, String>> =
-        RefCell::new(std::collections::HashMap::new());
-    // Declared type names → kind ("class" | "interface" | "trait" | "enum"),
-    // for `class_exists`/`interface_exists`/`trait_exists`/`enum_exists`/
-    // `get_declared_*` resolved at compile time.
-    static TYPE_KINDS: RefCell<std::collections::HashMap<String, &'static str>> =
-        RefCell::new(std::collections::HashMap::new());
-    static CLASS_ALIASES: RefCell<std::collections::HashMap<String, String>> =
-        RefCell::new(std::collections::HashMap::new());
-    static PREDECLARED_TYPE_NAMES: RefCell<std::collections::HashSet<String>> =
-        RefCell::new(std::collections::HashSet::new());
-    static SIMPLE_ARRAY_VARS: RefCell<std::collections::HashMap<String, Vec<(String, Expression)>>> =
-        RefCell::new(std::collections::HashMap::new());
-    static SIMPLE_STRING_VARS: RefCell<std::collections::HashMap<String, String>> =
-        RefCell::new(std::collections::HashMap::new());
-    static SIMPLE_VALUE_VARS: RefCell<std::collections::HashMap<String, Expression>> =
-        RefCell::new(std::collections::HashMap::new());
-    static SIMPLE_OBJECT_FIELD_WRITES: RefCell<std::collections::HashSet<(String, String)>> =
-        RefCell::new(std::collections::HashSet::new());
-    static SIMPLE_OBJECT_FIELD_VALUES: RefCell<std::collections::HashMap<(String, String), Expression>> =
-        RefCell::new(std::collections::HashMap::new());
-    static SIMPLE_STATIC_FIELD_WRITES: RefCell<std::collections::HashSet<(String, String)>> =
-        RefCell::new(std::collections::HashSet::new());
-    static SIMPLE_INDEX_ALIASES: RefCell<std::collections::HashMap<(String, String), String>> =
-        RefCell::new(std::collections::HashMap::new());
-    static SIMPLE_VAR_INDEX_ALIASES: RefCell<std::collections::HashMap<String, (String, String)>> =
-        RefCell::new(std::collections::HashMap::new());
-    static SIMPLE_DEFINED_VARS: RefCell<std::collections::HashSet<String>> =
-        RefCell::new(std::collections::HashSet::new());
-    static SIMPLE_CALLABLE_VARS: RefCell<std::collections::HashMap<String, usize>> =
-        RefCell::new(std::collections::HashMap::new());
-    static SIMPLE_ASSERT_CALLBACK: RefCell<Option<Expression>> = const { RefCell::new(None) };
-    static CLOSURE_BIND_SCOPE: RefCell<Option<String>> = const { RefCell::new(None) };
-    static SIMPLE_FIBER_VARS: RefCell<std::collections::HashMap<String, SimpleFiberState>> =
-        RefCell::new(std::collections::HashMap::new());
-    static SIMPLE_XML_VARS: RefCell<std::collections::HashSet<String>> =
-        RefCell::new(std::collections::HashSet::new());
-    static SIMPLE_GETTER_METHODS: RefCell<std::collections::HashMap<String, String>> =
-        RefCell::new(std::collections::HashMap::new());
-    static FUNCTION_RETURN_TYPES: RefCell<std::collections::HashMap<String, String>> =
-        RefCell::new(std::collections::HashMap::new());
-    static SEEN_CLASS_METHODS: RefCell<std::collections::HashSet<String>> =
-        RefCell::new(std::collections::HashSet::new());
-    static CLASS_ATTRIBUTES: RefCell<std::collections::HashMap<String, Vec<AttributeMeta>>> =
-        RefCell::new(std::collections::HashMap::new());
-    static PENDING_CLASS_ATTRIBUTES: RefCell<Vec<(String, Vec<AttributeMeta>)>> =
-        const { RefCell::new(Vec::new()) };
-    static METHOD_ATTRIBUTES: RefCell<std::collections::HashMap<(String, String), Vec<AttributeMeta>>> =
-        RefCell::new(std::collections::HashMap::new());
-    static PROPERTY_ATTRIBUTES: RefCell<std::collections::HashMap<(String, String), Vec<AttributeMeta>>> =
-        RefCell::new(std::collections::HashMap::new());
-    static CLASS_CONST_ATTRIBUTES: RefCell<std::collections::HashMap<(String, String), Vec<AttributeMeta>>> =
-        RefCell::new(std::collections::HashMap::new());
-    static ENUM_CASE_ATTRIBUTES: RefCell<std::collections::HashMap<(String, String), Vec<AttributeMeta>>> =
-        RefCell::new(std::collections::HashMap::new());
-    static FUNCTION_PARAM_ATTRIBUTES: RefCell<std::collections::HashMap<(String, usize), Vec<AttributeMeta>>> =
-        RefCell::new(std::collections::HashMap::new());
-    static CONSTRUCTOR_PARAM_ATTRIBUTES: RefCell<std::collections::HashMap<(String, usize), Vec<AttributeMeta>>> =
-        RefCell::new(std::collections::HashMap::new());
-    static CONSTRUCTOR_PARAM_NAMES: RefCell<std::collections::HashMap<String, Vec<String>>> =
-        RefCell::new(std::collections::HashMap::new());
-    static PROMOTED_CONSTRUCTOR_FIELDS: RefCell<Vec<ClassMember>> = const { RefCell::new(Vec::new()) };
-    static PHP_ECHO_CONTEXT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    // Monotonic counter for naming anonymous classes `class@anonymous...`.
-    static ANON_CLASS_COUNTER: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -235,12 +81,16 @@ struct SimpleFiberState {
     final_resume_echoed: bool,
 }
 
-fn register_type_kind(name: &str, kind: &'static str) {
-    TYPE_KINDS.with(|r| r.borrow_mut().insert(name.to_string(), kind));
+fn register_type_kind(__php_w: &mut PhpWalker, name: &str, kind: &'static str) {
+    __php_w.type_kinds.insert(name.to_string(), kind);
 }
 
-fn type_kind_is(name: &str, kind: &str) -> bool {
-    TYPE_KINDS.with(|r| r.borrow().get(name).map(|k| *k == kind).unwrap_or(false))
+fn type_kind_is(__php_w: &mut PhpWalker, name: &str, kind: &str) -> bool {
+    __php_w
+        .type_kinds
+        .get(name)
+        .map(|k| *k == kind)
+        .unwrap_or(false)
 }
 
 fn mk_param_named(name: &str) -> Param {
@@ -266,7 +116,7 @@ fn php_identity_closure_expr() -> Expression {
     })
 }
 
-fn parse_attribute_groups(pair: Pair<Rule>) -> Result<Vec<AttributeMeta>, String> {
+fn parse_attribute_groups(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<Vec<AttributeMeta>, String> {
     let mut attrs = Vec::new();
     for attr in pair
         .into_inner()
@@ -277,7 +127,7 @@ fn parse_attribute_groups(pair: Pair<Rule>) -> Result<Vec<AttributeMeta>, String
         for p in attr.into_inner() {
             match p.as_rule() {
                 Rule::qualified_name => name = php_normalize_class_ref(p.as_str()),
-                Rule::arg_list => args = walk_args(p)?,
+                Rule::arg_list => args = walk_args(__php_w, p)?,
                 _ => {}
             }
         }
@@ -288,24 +138,24 @@ fn parse_attribute_groups(pair: Pair<Rule>) -> Result<Vec<AttributeMeta>, String
     Ok(attrs)
 }
 
-fn collect_leading_attributes(pair: &Pair<Rule>) -> Result<Vec<AttributeMeta>, String> {
+fn collect_leading_attributes(__php_w: &mut PhpWalker, pair: &Pair<Rule>) -> Result<Vec<AttributeMeta>, String> {
     let mut attrs = Vec::new();
     for p in pair.clone().into_inner() {
         if matches!(p.as_rule(), Rule::attribute_group) {
-            attrs.extend(parse_attribute_groups(p)?);
+            attrs.extend(parse_attribute_groups(__php_w, p)?);
         }
     }
     Ok(attrs)
 }
 
-fn collect_param_attributes(pair: &Pair<Rule>) -> Result<Vec<Vec<AttributeMeta>>, String> {
+fn collect_param_attributes(__php_w: &mut PhpWalker, pair: &Pair<Rule>) -> Result<Vec<Vec<AttributeMeta>>, String> {
     let mut out = Vec::new();
     for p in pair.clone().into_inner() {
         if matches!(p.as_rule(), Rule::param) {
             let mut attrs = Vec::new();
             for q in p.into_inner() {
                 if matches!(q.as_rule(), Rule::attribute_group) {
-                    attrs.extend(parse_attribute_groups(q)?);
+                    attrs.extend(parse_attribute_groups(__php_w, q)?);
                 }
             }
             out.push(attrs);
@@ -314,13 +164,13 @@ fn collect_param_attributes(pair: &Pair<Rule>) -> Result<Vec<Vec<AttributeMeta>>
     Ok(out)
 }
 
-fn attribute_array_expr(attrs: &[AttributeMeta]) -> Expression {
+fn attribute_array_expr(__php_w: &mut PhpWalker, attrs: &[AttributeMeta]) -> Expression {
     Expression::new(ExprKind::Array(
         attrs
             .iter()
             .map(|attr| ArrayElement {
                 key: None,
-                value: reflection_attribute_expr(attr),
+                value: reflection_attribute_expr(__php_w, attr),
                 spread: false,
                 by_ref: false,
             })
@@ -328,7 +178,7 @@ fn attribute_array_expr(attrs: &[AttributeMeta]) -> Expression {
     ))
 }
 
-fn filter_reflection_attributes(
+fn filter_reflection_attributes(__php_w: &mut PhpWalker, 
     attrs: &mut Vec<AttributeMeta>,
     filter: Option<String>,
     include_instanceof: bool,
@@ -337,26 +187,27 @@ fn filter_reflection_attributes(
         return;
     };
     attrs.retain(|attr| {
-        attr.name == filter || (include_instanceof && class_is_subclass_of(&attr.name, &filter))
+        attr.name == filter || (include_instanceof && class_is_subclass_of(__php_w, &attr.name, &filter))
     });
 }
 
-fn class_attrs_for_reflection(class_name: &str) -> Vec<AttributeMeta> {
-    CLASS_ATTRIBUTES
-        .with(|r| r.borrow().get(class_name).cloned())
+fn class_attrs_for_reflection(__php_w: &mut PhpWalker, class_name: &str) -> Vec<AttributeMeta> {
+    __php_w
+        .class_attributes
+        .get(class_name)
+        .cloned()
         .or_else(|| {
-            PENDING_CLASS_ATTRIBUTES.with(|r| {
-                r.borrow()
-                    .iter()
-                    .rev()
-                    .find(|(name, _)| name == class_name)
-                    .map(|(_, attrs)| attrs.clone())
-            })
+            __php_w
+                .pending_class_attributes
+                .iter()
+                .rev()
+                .find(|(name, _)| name == class_name)
+                .map(|(_, attrs)| attrs.clone())
         })
         .unwrap_or_default()
 }
 
-fn reflection_attribute_expr(attr: &AttributeMeta) -> Expression {
+fn reflection_attribute_expr(__php_w: &mut PhpWalker, attr: &AttributeMeta) -> Expression {
     let args_array = Expression::new(ExprKind::Array(
         attr.args
             .iter()
@@ -368,7 +219,7 @@ fn reflection_attribute_expr(attr: &AttributeMeta) -> Expression {
             })
             .collect(),
     ));
-    let instance_props = attribute_instance_props(attr);
+    let instance_props = attribute_instance_props(__php_w, attr);
     let mut instance_object_props = vec![ObjectProperty::KeyValue {
         key: Expression::string("__type"),
         value: Expression::string(&attr.name),
@@ -455,15 +306,19 @@ fn reflection_attribute_expr(attr: &AttributeMeta) -> Expression {
     Expression::new(ExprKind::Object(props))
 }
 
-fn attribute_instance_props(attr: &AttributeMeta) -> Vec<ObjectProperty> {
-    let ctor_params = CLASS_REGISTRY.with(|r| {
-        r.borrow()
+fn attribute_instance_props(__php_w: &mut PhpWalker, attr: &AttributeMeta) -> Vec<ObjectProperty> {
+    let ctor_params = {
+        __php_w.class_registry
             .get(&attr.name)
             .map(|m| m.constructor_params.clone())
             .unwrap_or_default()
-    });
+    };
     let ctor_params = if ctor_params.is_empty() {
-        CONSTRUCTOR_PARAM_NAMES.with(|r| r.borrow().get(&attr.name).cloned().unwrap_or_default())
+        __php_w
+            .constructor_param_names
+            .get(&attr.name)
+            .cloned()
+            .unwrap_or_default()
     } else {
         ctor_params
     };
@@ -581,9 +436,9 @@ fn reflection_named_type_expr(type_name: &str, nullable: bool) -> Expression {
     ]))
 }
 
-fn reflection_param_expr(meta: &ParamReflectionMeta) -> Expression {
+fn reflection_param_expr(__php_w: &mut PhpWalker, meta: &ParamReflectionMeta) -> Expression {
     let attrs = &meta.attrs;
-    let attr_array = attribute_array_expr(attrs);
+    let attr_array = attribute_array_expr(__php_w, attrs);
     let get_attributes = Expression::new(ExprKind::Lambda {
         params: vec![mk_param_named("__this")],
         body: LambdaBody::Expr(Box::new(attr_array.clone())),
@@ -667,13 +522,13 @@ fn simple_lambda(value: Expression) -> Expression {
     })
 }
 
-fn reflection_params_array_expr(params: Vec<ParamReflectionMeta>) -> Expression {
+fn reflection_params_array_expr(__php_w: &mut PhpWalker, params: Vec<ParamReflectionMeta>) -> Expression {
     Expression::new(ExprKind::Array(
         params
             .iter()
             .map(|param_meta| ArrayElement {
                 key: None,
-                value: reflection_param_expr(param_meta),
+                value: reflection_param_expr(__php_w, param_meta),
                 spread: false,
                 by_ref: false,
             })
@@ -708,20 +563,18 @@ fn reflection_param_metas(
 
 /// All declared type names of a given kind ("class"|"interface"|"trait"|
 /// "enum"), sorted for stable output — backs `get_declared_*`.
-fn declared_type_names(kind: &str) -> Vec<String> {
-    TYPE_KINDS.with(|r| {
-        let mut v: Vec<String> = r
-            .borrow()
-            .iter()
-            .filter(|(_, k)| **k == kind)
-            .map(|(n, _)| n.clone())
-            .collect();
-        if kind == "class" && !v.iter().any(|name| name == "stdClass") {
-            v.push("stdClass".to_string());
-        }
-        v.sort();
-        v
-    })
+fn declared_type_names(__php_w: &mut PhpWalker, kind: &str) -> Vec<String> {
+    let mut v: Vec<String> = __php_w
+        .type_kinds
+        .iter()
+        .filter(|(_, k)| **k == kind)
+        .map(|(n, _)| n.clone())
+        .collect();
+    if kind == "class" && !v.iter().any(|name| name == "stdClass") {
+        v.push("stdClass".to_string());
+    }
+    v.sort();
+    v
 }
 
 #[derive(Debug, Clone)]
@@ -1076,21 +929,101 @@ fn offset_to_line_col(offset: usize, line_starts: &[usize]) -> (u32, u32) {
     (line, col)
 }
 
-fn next_tmp_name(prefix: &str) -> String {
-    TMP_COUNTER.with(|c| {
-        let mut n = c.borrow_mut();
-        *n += 1;
-        format!("__php_{}_{}", prefix, *n)
-    })
+/// Everything the walk of ONE program accumulates.
+///
+/// This is the owner the 61 `thread_local!` statics below should always have
+/// been. `static` gave the free functions a receiver they never declared, and
+/// process lifetime came along with it — which is how one program's classes
+/// stayed visible to the next (flexclassplan.md §4k-sexies). Fields here are
+/// dropped when the walk ends, so there is nothing to clear and no 62nd one
+/// for anyone to forget.
+///
+/// ⚠ Migration in progress: the statics are still live. A registry is moved
+/// here ONLY together with every function that touches it and their callers —
+/// a half-moved registry would be two stores and a silent wrong answer.
+#[allow(dead_code)]
+#[derive(Default)]
+struct PhpWalker {
+    class_stack: Vec<String>,
+    class_parent_stack: Vec<Option<String>>,
+    pending_class_fields: Vec<(String, Vec<FieldMeta>)>,
+    pending_class_hook_properties: Vec<(String, Vec<PropertyHookMeta>)>,
+    pending_class_this_writes: Vec<(String, Vec<String>)>,
+    class_hook_properties: std::collections::HashMap<String, Vec<PropertyHookMeta>>,
+    property_hook_backing_stack: Vec<(String, String)>,
+    function_stack: Vec<String>,
+    method_type_stack: Vec<String>,
+    namespace_stack: Vec<String>,
+    namespace_consts: std::collections::HashSet<String>,
+    trait_usages: std::collections::HashMap<String, Vec<String>>,
+    trait_aliases: std::collections::HashMap<String, Vec<(String, String, String)>>,
+    trait_precedences: std::collections::HashMap<String, Vec<(String, String, String)>>,
+    trait_bodies: std::collections::HashMap<String, Vec<ClassMember>>,
+    tmp_counter: u32,
+    assign_lhs_depth: u32,
+    silent_property_access_depth: u32,
+    line_starts: Vec<usize>,
+    class_registry: std::collections::HashMap<String, ClassMeta>,
+    class_declared_properties: std::collections::HashMap<String, Vec<String>>,
+    constructor_rest_indices: std::collections::HashMap<String, usize>,
+    func_registry: std::collections::HashMap<String, FuncMeta>,
+    func_by_ref_params: std::collections::HashMap<String, (String, Vec<bool>)>,
+    namespace_functions: std::collections::HashSet<String>,
+    function_import_aliases: std::collections::HashMap<String, String>,
+    type_kinds: std::collections::HashMap<String, &'static str>,
+    class_aliases: std::collections::HashMap<String, String>,
+    predeclared_type_names: std::collections::HashSet<String>,
+    simple_array_vars: std::collections::HashMap<String, Vec<(String, Expression)>>,
+    simple_string_vars: std::collections::HashMap<String, String>,
+    simple_value_vars: std::collections::HashMap<String, Expression>,
+    simple_object_field_writes: std::collections::HashSet<(String, String)>,
+    simple_object_field_values: std::collections::HashMap<(String, String), Expression>,
+    simple_static_field_writes: std::collections::HashSet<(String, String)>,
+    simple_index_aliases: std::collections::HashMap<(String, String), String>,
+    simple_var_index_aliases: std::collections::HashMap<String, (String, String)>,
+    simple_defined_vars: std::collections::HashSet<String>,
+    simple_callable_vars: std::collections::HashMap<String, usize>,
+    simple_assert_callback: Option<Expression>,
+    closure_bind_scope: Option<String>,
+    simple_fiber_vars: std::collections::HashMap<String, SimpleFiberState>,
+    simple_xml_vars: std::collections::HashSet<String>,
+    simple_getter_methods: std::collections::HashMap<String, String>,
+    function_return_types: std::collections::HashMap<String, String>,
+    seen_class_methods: std::collections::HashSet<String>,
+    class_attributes: std::collections::HashMap<String, Vec<AttributeMeta>>,
+    pending_class_attributes: Vec<(String, Vec<AttributeMeta>)>,
+    method_attributes: std::collections::HashMap<(String, String), Vec<AttributeMeta>>,
+    property_attributes: std::collections::HashMap<(String, String), Vec<AttributeMeta>>,
+    property_set_visibility: std::collections::HashMap<(String, String), Visibility>,
+    class_const_attributes: std::collections::HashMap<(String, String), Vec<AttributeMeta>>,
+    enum_case_attributes: std::collections::HashMap<(String, String), Vec<AttributeMeta>>,
+    function_param_attributes: std::collections::HashMap<(String, usize), Vec<AttributeMeta>>,
+    constructor_param_attributes: std::collections::HashMap<(String, usize), Vec<AttributeMeta>>,
+    constructor_param_names: std::collections::HashMap<String, Vec<String>>,
+    promoted_constructor_fields: Vec<ClassMember>,
+    php_echo_context: bool,
+    anon_class_counter: usize,
+    php_use_imports: Vec<Import>,
 }
 
-fn walk_expression_as_assign_target(pair: Pair<Rule>) -> Result<Expression, String> {
-    ASSIGN_LHS_DEPTH.with(|d| *d.borrow_mut() += 1);
-    let walked = walk_expression(pair);
-    ASSIGN_LHS_DEPTH.with(|d| {
-        let mut bd = d.borrow_mut();
-        *bd = bd.saturating_sub(1);
-    });
+/// Post-increment: returns the CURRENT id, then advances. `next_tmp_name`
+/// pre-increments off the same counter; both must stay on one counter so no
+/// two generated names can collide.
+fn next_tmp_id(__php_w: &mut PhpWalker) -> u32 {
+    let v = __php_w.tmp_counter;
+    __php_w.tmp_counter += 1;
+    v
+}
+
+fn next_tmp_name(__php_w: &mut PhpWalker, prefix: &str) -> String {
+    __php_w.tmp_counter += 1;
+    format!("__php_{}_{}", prefix, __php_w.tmp_counter)
+}
+
+fn walk_expression_as_assign_target(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<Expression, String> {
+    __php_w.assign_lhs_depth += 1;
+    let walked = walk_expression(__php_w, pair);
+    __php_w.assign_lhs_depth = __php_w.assign_lhs_depth.saturating_sub(1);
     walked
 }
 
@@ -1105,91 +1038,225 @@ fn postfix_rule_kind(pair: &Pair<Rule>) -> Option<Rule> {
     }
 }
 
-fn push_class_context(name: &str) {
-    CLASS_STACK.with(|s| s.borrow_mut().push(name.to_string()));
+fn push_class_context(__php_w: &mut PhpWalker, name: &str) {
+    __php_w.class_stack.push(name.to_string());
 }
 
-fn pop_class_context() {
-    CLASS_STACK.with(|s| {
-        s.borrow_mut().pop();
-    });
+fn pop_class_context(__php_w: &mut PhpWalker) {
+    __php_w.class_stack.pop();
 }
 
-fn current_class_name() -> Option<String> {
-    CLASS_STACK.with(|s| s.borrow().last().cloned())
+fn current_class_name(__php_w: &mut PhpWalker) -> Option<String> {
+    __php_w.class_stack.last().cloned()
 }
 
-fn push_property_hook_backing(prop: &str, backing: &str) {
-    PROPERTY_HOOK_BACKING_STACK
-        .with(|s| s.borrow_mut().push((prop.to_string(), backing.to_string())));
+fn push_property_hook_backing(__php_w: &mut PhpWalker, prop: &str, backing: &str) {
+    __php_w
+        .property_hook_backing_stack
+        .push((prop.to_string(), backing.to_string()));
 }
 
-fn pop_property_hook_backing() {
-    PROPERTY_HOOK_BACKING_STACK.with(|s| {
-        s.borrow_mut().pop();
-    });
+fn pop_property_hook_backing(__php_w: &mut PhpWalker) {
+    __php_w.property_hook_backing_stack.pop();
 }
 
-fn current_property_hook_backing(prop: &str) -> Option<String> {
-    PROPERTY_HOOK_BACKING_STACK.with(|s| {
-        s.borrow()
-            .iter()
-            .rev()
-            .find_map(|(name, backing)| (name == prop).then(|| backing.clone()))
+fn current_property_hook_backing(__php_w: &mut PhpWalker, prop: &str) -> Option<String> {
+    __php_w
+        .property_hook_backing_stack
+        .iter()
+        .rev()
+        .find_map(|(name, backing)| (name == prop).then(|| backing.clone()))
+}
+
+fn push_pending_class_fields(__php_w: &mut PhpWalker, class_name: &str, fields: Vec<FieldMeta>) {
+    __php_w
+        .pending_class_fields
+        .push((class_name.to_string(), fields));
+}
+
+fn pop_pending_class_fields(__php_w: &mut PhpWalker) {
+    __php_w.pending_class_fields.pop();
+}
+
+/// Record every `<vis>(set)` a class declares, from the raw member pairs.
+///
+/// Runs in the same prescan as [`collect_pending_this_writes`], for the same
+/// reason: a write site inside the class is walked before the property that
+/// restricts it whenever the method is declared first, and a modifier is not
+/// something a walk order may decide.
+fn collect_asymmetric_set_visibility(__php_w: &mut PhpWalker, class_name: &str, members: &[Pair<Rule>]) {
+    for member in members {
+        if member.as_rule() != Rule::property_declaration {
+            continue;
+        }
+        let mut set_visibility = None;
+        for p in member.clone().into_inner() {
+            match p.as_rule() {
+                Rule::asymmetric_set_modifier => {
+                    // `private(set)` / `protected(set)` — the keyword is the
+                    // text before `(`.
+                    let kw = p.as_str().split('(').next().unwrap_or("").trim();
+                    set_visibility = Some(parse_visibility(kw, Visibility::Public));
+                }
+                Rule::simple_variable | Rule::variable => {
+                    if let Some(visibility) = set_visibility {
+                        let raw = p.as_str();
+                        let field = raw.strip_prefix('$').unwrap_or(raw).to_string();
+                        __php_w
+                            .property_set_visibility
+                            .insert((class_name.to_string(), field), visibility);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// The visibility required to WRITE `class::$field`, when it differs from the
+/// visibility required to read it. `None` means the two are the same.
+fn property_set_visibility(__php_w: &mut PhpWalker, class_name: &str, field: &str) -> Option<Visibility> {
+    __php_w
+        .property_set_visibility
+        .get(&(class_name.to_string(), field.to_string()))
+        .copied()
+}
+
+fn push_pending_this_writes(__php_w: &mut PhpWalker, class_name: &str, fields: Vec<String>) {
+    __php_w
+        .pending_class_this_writes
+        .push((class_name.to_string(), fields));
+}
+
+fn pop_pending_this_writes(__php_w: &mut PhpWalker) {
+    __php_w.pending_class_this_writes.pop();
+}
+
+/// Does the class currently being walked assign `$this-><field>` ANYWHERE in
+/// its own body?
+///
+/// Answers the one question the "typed property read before initialization"
+/// guard cannot ask any other way. While a class's members are being walked it
+/// is not yet in CLASS_REGISTRY, so `constructor_initialized_fields` — which
+/// does collect writes from every method — is unavailable for a self-read, and
+/// the guard was falling back on a record of writes the walk had ALREADY
+/// PASSED. That made the verdict depend on member DECLARATION ORDER (`set()`
+/// declared after `get()` threw on a program that is fine the other way round),
+/// and because that record keys every `$this` in the program to the single
+/// string "this", one class's write also silenced the guard for an unrelated
+/// class's field.
+///
+/// The prescan runs over the raw member pairs before any body is walked, so it
+/// is order-independent, and it is per class, so it cannot leak.
+fn pending_class_writes_this_field(__php_w: &mut PhpWalker, class_name: &str, field: &str) -> bool {
+    __php_w
+        .pending_class_this_writes
+        .iter()
+        .rev()
+        .find(|(name, _)| name == class_name)
+        .is_some_and(|(_, fields)| fields.iter().any(|f| f == field))
+}
+
+/// `"$this->count"` / `"$obj->count"` → `Some("count")`. Anything longer —
+/// `$a->b->c`, `$a->b[0]`, `$a->$name`, `A::$b` — is NOT a plain property write
+/// and must not count as one.
+///
+/// ⚠ The receiver is deliberately ANY simple variable, not just `$this`. A
+/// named constructor initialises the object it is building through a local:
+/// `$obj = new static(); $obj->type = static::class;`. That is the class
+/// initialising its own declared property just as much as `$this->type =`
+/// would be, and no compile-time scan of raw pairs can resolve `$obj`'s class
+/// to prove it. Being wide here can only SUPPRESS a guess; being narrow
+/// produces a wrong throw on correct php, which is the worse failure.
+fn php_plain_property_write_name(text: &str) -> Option<String> {
+    let (receiver, field) = text.trim().split_once("->")?;
+    let receiver = receiver.trim();
+    let mut receiver_chars = receiver.strip_prefix('$')?.chars();
+    let receiver_first = receiver_chars.next()?;
+    if !(receiver_first.is_ascii_alphabetic() || receiver_first == '_')
+        || !receiver_chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return None;
+    }
+    let field = field.trim();
+    let mut field_chars = field.chars();
+    let field_first = field_chars.next()?;
+    if !(field_first.is_ascii_alphabetic() || field_first == '_') {
+        return None;
+    }
+    if !field_chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+    Some(field.to_string())
+}
+
+/// Every declared property this class assigns, from the raw member pairs.
+/// Compound assignments (`.=`, `??=`) count: they are writes, and php reports
+/// the read inside them against the same property, so treating them as
+/// initialising keeps the guard from firing twice for one statement.
+fn collect_pending_this_writes(members: &[Pair<Rule>]) -> Vec<String> {
+    fn scan(pair: Pair<Rule>, out: &mut Vec<String>) {
+        if pair.as_rule() == Rule::assignment_expression {
+            let mut inner = pair.clone().into_inner();
+            if let (Some(lhs), Some(op)) = (inner.next(), inner.next()) {
+                if op.as_rule() == Rule::assign_op {
+                    if let Some(field) = php_plain_property_write_name(lhs.as_str()) {
+                        if !out.contains(&field) {
+                            out.push(field);
+                        }
+                    }
+                }
+            }
+        }
+        for child in pair.into_inner() {
+            scan(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    for member in members {
+        scan(member.clone(), &mut out);
+    }
+    out
+}
+
+fn push_pending_class_hooks(__php_w: &mut PhpWalker, class_name: &str, hooks: Vec<PropertyHookMeta>) {
+    __php_w
+        .pending_class_hook_properties
+        .push((class_name.to_string(), hooks));
+}
+
+fn pop_pending_class_hooks(__php_w: &mut PhpWalker) {
+    __php_w.pending_class_hook_properties.pop();
+}
+
+fn pending_class_hook_meta(__php_w: &mut PhpWalker, class_name: &str, field: &str) -> Option<PropertyHookMeta> {
+    __php_w
+        .pending_class_hook_properties
+        .iter()
+        .rev()
+        .find(|(name, _)| name == class_name)
+        .and_then(|(_, hooks)| hooks.iter().find(|meta| meta.name == field).cloned())
+}
+
+fn class_hook_meta(__php_w: &mut PhpWalker, class_name: &str, field: &str) -> Option<PropertyHookMeta> {
+    pending_class_hook_meta(__php_w, class_name, field).or_else(|| {
+        __php_w
+            .class_hook_properties
+            .get(class_name)
+            .and_then(|hooks| hooks.iter().find(|meta| meta.name == field).cloned())
     })
 }
 
-fn push_pending_class_fields(class_name: &str, fields: Vec<FieldMeta>) {
-    PENDING_CLASS_FIELDS.with(|s| s.borrow_mut().push((class_name.to_string(), fields)));
+fn pending_class_field_meta(__php_w: &mut PhpWalker, class_name: &str, field: &str) -> Option<FieldMeta> {
+    __php_w
+        .pending_class_fields
+        .iter()
+        .rev()
+        .find(|(name, _)| name == class_name)
+        .and_then(|(_, fields)| fields.iter().find(|meta| meta.name == field).cloned())
 }
 
-fn pop_pending_class_fields() {
-    PENDING_CLASS_FIELDS.with(|s| {
-        s.borrow_mut().pop();
-    });
-}
-
-fn push_pending_class_hooks(class_name: &str, hooks: Vec<PropertyHookMeta>) {
-    PENDING_CLASS_HOOK_PROPERTIES.with(|s| s.borrow_mut().push((class_name.to_string(), hooks)));
-}
-
-fn pop_pending_class_hooks() {
-    PENDING_CLASS_HOOK_PROPERTIES.with(|s| {
-        s.borrow_mut().pop();
-    });
-}
-
-fn pending_class_hook_meta(class_name: &str, field: &str) -> Option<PropertyHookMeta> {
-    PENDING_CLASS_HOOK_PROPERTIES.with(|s| {
-        s.borrow()
-            .iter()
-            .rev()
-            .find(|(name, _)| name == class_name)
-            .and_then(|(_, hooks)| hooks.iter().find(|meta| meta.name == field).cloned())
-    })
-}
-
-fn class_hook_meta(class_name: &str, field: &str) -> Option<PropertyHookMeta> {
-    pending_class_hook_meta(class_name, field).or_else(|| {
-        CLASS_HOOK_PROPERTIES.with(|s| {
-            s.borrow()
-                .get(class_name)
-                .and_then(|hooks| hooks.iter().find(|meta| meta.name == field).cloned())
-        })
-    })
-}
-
-fn pending_class_field_meta(class_name: &str, field: &str) -> Option<FieldMeta> {
-    PENDING_CLASS_FIELDS.with(|s| {
-        s.borrow()
-            .iter()
-            .rev()
-            .find(|(name, _)| name == class_name)
-            .and_then(|(_, fields)| fields.iter().find(|meta| meta.name == field).cloned())
-    })
-}
-
-fn note_promoted_constructor_field(
+fn note_promoted_constructor_field(__php_w: &mut PhpWalker, 
     name: String,
     type_hint: Option<String>,
     visibility: Visibility,
@@ -1200,131 +1267,126 @@ fn note_promoted_constructor_field(
         is_readonly,
         ..Modifiers::default()
     };
-    PROMOTED_CONSTRUCTOR_FIELDS.with(|fields| {
-        fields.borrow_mut().push(ClassMember::Field {
-            name,
-            type_hint,
-            init: None,
-            modifiers,
-            with_events: false,
-            array_bounds: None,
-        });
+    __php_w.promoted_constructor_fields.push(ClassMember::Field {
+        name,
+        type_hint,
+        init: None,
+        modifiers,
+        with_events: false,
+        array_bounds: None,
     });
 }
 
-fn drain_promoted_constructor_fields(members: &mut Vec<ClassMember>) {
-    PROMOTED_CONSTRUCTOR_FIELDS.with(|fields| {
-        for field in fields.borrow_mut().drain(..) {
-            let field_name = match &field {
-                ClassMember::Field { name, .. } => name.as_str(),
-                _ => "",
-            };
-            if !members.iter().any(|member| {
-                matches!(member, ClassMember::Field { name, .. } if name == field_name)
-                    || matches!(member, ClassMember::Property { name, .. } if name == field_name)
-            }) {
-                members.push(field);
-            }
+fn drain_promoted_constructor_fields(__php_w: &mut PhpWalker, members: &mut Vec<ClassMember>) {
+    for field in std::mem::take(&mut __php_w.promoted_constructor_fields) {
+        let field_name = match &field {
+            ClassMember::Field { name, .. } => name.as_str(),
+            _ => "",
+        };
+        if !members.iter().any(|member| {
+            matches!(member, ClassMember::Field { name, .. } if name == field_name)
+                || matches!(member, ClassMember::Property { name, .. } if name == field_name)
+        }) {
+            members.push(field);
         }
-    });
+    }
 }
 
-fn push_class_parent_context(parent: Option<String>) {
-    CLASS_PARENT_STACK.with(|s| s.borrow_mut().push(parent));
+fn push_class_parent_context(__php_w: &mut PhpWalker, parent: Option<String>) {
+    __php_w.class_parent_stack.push(parent);
 }
 
-fn pop_class_parent_context() {
-    CLASS_PARENT_STACK.with(|s| {
-        s.borrow_mut().pop();
-    });
+fn pop_class_parent_context(__php_w: &mut PhpWalker) {
+    __php_w.class_parent_stack.pop();
 }
 
-fn current_class_parent_name() -> Option<String> {
-    CLASS_PARENT_STACK.with(|s| s.borrow().last().cloned().flatten())
+fn current_class_parent_name(__php_w: &mut PhpWalker) -> Option<String> {
+    __php_w.class_parent_stack.last().cloned().flatten()
 }
 
-fn current_function_name() -> Option<String> {
-    FUNCTION_STACK.with(|s| s.borrow().last().cloned())
+fn current_function_name(__php_w: &mut PhpWalker) -> Option<String> {
+    __php_w.function_stack.last().cloned()
 }
 
-fn current_method_type() -> Option<String> {
-    METHOD_TYPE_STACK.with(|s| s.borrow().last().cloned())
+fn current_method_type(__php_w: &mut PhpWalker) -> Option<String> {
+    __php_w.method_type_stack.last().cloned()
 }
 
-fn note_simple_defined_var(name: &str) {
-    SIMPLE_DEFINED_VARS.with(|v| {
-        v.borrow_mut()
-            .insert(name.trim_start_matches('$').to_string());
-    });
+fn note_simple_defined_var(__php_w: &mut PhpWalker, name: &str) {
+    __php_w
+        .simple_defined_vars
+        .insert(name.trim_start_matches('$').to_string());
 }
 
-fn is_simple_defined_var(name: &str) -> bool {
-    SIMPLE_DEFINED_VARS.with(|v| v.borrow().contains(name.trim_start_matches('$')))
+fn is_simple_defined_var(__php_w: &mut PhpWalker, name: &str) -> bool {
+    __php_w
+        .simple_defined_vars
+        .contains(name.trim_start_matches('$'))
 }
 
-fn note_simple_array_var(name: &str, expr: &Expression) {
-    let Some(elements) = php_literal_string_key_array(expr) else {
-        SIMPLE_ARRAY_VARS.with(|v| {
-            v.borrow_mut().remove(name.trim_start_matches('$'));
-        });
+fn note_simple_array_var(__php_w: &mut PhpWalker, name: &str, expr: &Expression) {
+    let Some(elements) = php_literal_string_key_array(__php_w, expr) else {
+        __php_w
+            .simple_array_vars
+            .remove(name.trim_start_matches('$'));
         return;
     };
-    SIMPLE_ARRAY_VARS.with(|v| {
-        v.borrow_mut()
-            .insert(name.trim_start_matches('$').to_string(), elements);
-    });
+    __php_w
+        .simple_array_vars
+        .insert(name.trim_start_matches('$').to_string(), elements);
 }
 
-fn lookup_simple_array_var(name: &str) -> Option<Vec<(String, Expression)>> {
-    SIMPLE_ARRAY_VARS.with(|v| v.borrow().get(name.trim_start_matches('$')).cloned())
+fn lookup_simple_array_var(__php_w: &mut PhpWalker, name: &str) -> Option<Vec<(String, Expression)>> {
+    __php_w
+        .simple_array_vars
+        .get(name.trim_start_matches('$'))
+        .cloned()
 }
 
-fn note_simple_string_var(name: &str, expr: &Expression) {
-    let Some(value) = php_literal_string(expr) else {
-        SIMPLE_STRING_VARS.with(|v| {
-            v.borrow_mut().remove(name.trim_start_matches('$'));
-        });
+fn note_simple_string_var(__php_w: &mut PhpWalker, name: &str, expr: &Expression) {
+    let Some(value) = php_literal_string(__php_w, expr) else {
+        __php_w
+            .simple_string_vars
+            .remove(name.trim_start_matches('$'));
         return;
     };
-    SIMPLE_STRING_VARS.with(|v| {
-        v.borrow_mut()
-            .insert(name.trim_start_matches('$').to_string(), value);
-    });
+    __php_w
+        .simple_string_vars
+        .insert(name.trim_start_matches('$').to_string(), value);
 }
 
-fn lookup_simple_string_var(name: &str) -> Option<String> {
-    SIMPLE_STRING_VARS.with(|v| v.borrow().get(name.trim_start_matches('$')).cloned())
+fn lookup_simple_string_var(__php_w: &mut PhpWalker, name: &str) -> Option<String> {
+    __php_w
+        .simple_string_vars
+        .get(name.trim_start_matches('$'))
+        .cloned()
 }
 
-fn note_simple_value_var(name: &str, expr: &Expression) {
+fn note_simple_value_var(__php_w: &mut PhpWalker, name: &str, expr: &Expression) {
     if matches!(&expr.kind, ExprKind::Ident(other) if other.trim_start_matches('$') == name.trim_start_matches('$'))
     {
-        SIMPLE_VALUE_VARS.with(|v| {
-            v.borrow_mut().remove(name.trim_start_matches('$'));
-        });
+        __php_w
+            .simple_value_vars
+            .remove(name.trim_start_matches('$'));
         return;
     }
-    SIMPLE_VALUE_VARS.with(|v| {
-        v.borrow_mut()
-            .insert(name.trim_start_matches('$').to_string(), expr.clone());
-    });
+    __php_w
+        .simple_value_vars
+        .insert(name.trim_start_matches('$').to_string(), expr.clone());
 }
 
-fn lookup_simple_value_var(name: &str) -> Option<Expression> {
-    SIMPLE_VALUE_VARS.with(|v| v.borrow().get(name.trim_start_matches('$')).cloned())
+fn lookup_simple_value_var(__php_w: &mut PhpWalker, name: &str) -> Option<Expression> {
+    __php_w
+        .simple_value_vars
+        .get(name.trim_start_matches('$'))
+        .cloned()
 }
 
-fn invalidate_simple_var_value(name: &str) {
+fn invalidate_simple_var_value(__php_w: &mut PhpWalker, name: &str) {
     let name = name.trim_start_matches('$');
-    SIMPLE_ARRAY_VARS.with(|v| {
-        v.borrow_mut().remove(name);
-    });
-    SIMPLE_STRING_VARS.with(|v| {
-        v.borrow_mut().remove(name);
-    });
-    SIMPLE_VALUE_VARS.with(|v| {
-        v.borrow_mut().remove(name);
-    });
+    __php_w.simple_array_vars.remove(name);
+    __php_w.simple_string_vars.remove(name);
+    __php_w.simple_value_vars.remove(name);
 }
 
 fn expr_is_simplexml_value(expr: &Expression) -> bool {
@@ -1335,20 +1397,19 @@ fn expr_is_simplexml_value(expr: &Expression) -> bool {
     )
 }
 
-fn note_simple_xml_var(name: &str, expr: &Expression) {
+fn note_simple_xml_var(__php_w: &mut PhpWalker, name: &str, expr: &Expression) {
     let key = name.trim_start_matches('$').to_string();
-    SIMPLE_XML_VARS.with(|v| {
-        let mut vars = v.borrow_mut();
-        if expr_is_simplexml_value(expr) {
-            vars.insert(key);
-        } else {
-            vars.remove(&key);
-        }
-    });
+    if expr_is_simplexml_value(expr) {
+        __php_w.simple_xml_vars.insert(key);
+    } else {
+        __php_w.simple_xml_vars.remove(&key);
+    }
 }
 
-fn is_simple_xml_var(name: &str) -> bool {
-    SIMPLE_XML_VARS.with(|v| v.borrow().contains(name.trim_start_matches('$')))
+fn is_simple_xml_var(__php_w: &mut PhpWalker, name: &str) -> bool {
+    __php_w
+        .simple_xml_vars
+        .contains(name.trim_start_matches('$'))
 }
 
 #[derive(Debug, Clone)]
@@ -1361,24 +1422,24 @@ enum SimpleReflectionTarget {
     },
 }
 
-fn php_literal_string(expr: &Expression) -> Option<String> {
+fn php_literal_string(__php_w: &mut PhpWalker, expr: &Expression) -> Option<String> {
     match &expr.kind {
         ExprKind::Lit(Literal::Str(s)) => Some(s.clone()),
-        ExprKind::Ident(name) => lookup_simple_string_var(name),
+        ExprKind::Ident(name) => lookup_simple_string_var(__php_w, name),
         ExprKind::Binary {
             op: BinOp::Concat,
             left,
             right,
         } => Some(format!(
             "{}{}",
-            php_literal_string(left)?,
-            php_literal_string(right)?
+            php_literal_string(__php_w, left)?,
+            php_literal_string(__php_w, right)?
         )),
         _ => None,
     }
 }
 
-fn simple_reflection_target_from_expr(expr: &Expression) -> Option<SimpleReflectionTarget> {
+fn simple_reflection_target_from_expr(__php_w: &mut PhpWalker, expr: &Expression) -> Option<SimpleReflectionTarget> {
     let ExprKind::Call { callee, args, .. } = &expr.kind else {
         return None;
     };
@@ -1388,17 +1449,17 @@ fn simple_reflection_target_from_expr(expr: &Expression) -> Option<SimpleReflect
     match name.as_str() {
         "__refl_class" => args
             .first()
-            .and_then(|arg| php_literal_string(&arg.value))
+            .and_then(|arg| php_literal_string(__php_w, &arg.value))
             .map(SimpleReflectionTarget::Class),
         "__refl_function" => args
             .first()
-            .and_then(|arg| php_literal_string(&arg.value))
+            .and_then(|arg| php_literal_string(__php_w, &arg.value))
             .map(SimpleReflectionTarget::Function),
         "__refl_method" => {
             let class_name = args
                 .first()
-                .and_then(|arg| php_literal_string(&arg.value))?;
-            let method_name = args.get(1).and_then(|arg| php_literal_string(&arg.value))?;
+                .and_then(|arg| php_literal_string(__php_w, &arg.value))?;
+            let method_name = args.get(1).and_then(|arg| php_literal_string(__php_w, &arg.value))?;
             Some(SimpleReflectionTarget::Method {
                 class_name,
                 method_name,
@@ -1408,11 +1469,11 @@ fn simple_reflection_target_from_expr(expr: &Expression) -> Option<SimpleReflect
     }
 }
 
-fn lookup_simple_reflection_target(expr: &Expression) -> Option<SimpleReflectionTarget> {
+fn lookup_simple_reflection_target(__php_w: &mut PhpWalker, expr: &Expression) -> Option<SimpleReflectionTarget> {
     match &expr.kind {
-        ExprKind::Ident(name) => lookup_simple_value_var(name)
-            .and_then(|value| simple_reflection_target_from_expr(&value)),
-        _ => simple_reflection_target_from_expr(expr),
+        ExprKind::Ident(name) => lookup_simple_value_var(__php_w, name)
+            .and_then(|value| simple_reflection_target_from_expr(__php_w, &value)),
+        _ => simple_reflection_target_from_expr(__php_w, expr),
     }
 }
 
@@ -1428,28 +1489,29 @@ fn simple_object_key(object: &Expression) -> Option<String> {
     }
 }
 
-fn note_simple_object_field_write(object: &Expression, field: &str) {
+fn note_simple_object_field_write(__php_w: &mut PhpWalker, object: &Expression, field: &str) {
     if let Some(key) = simple_object_key(object) {
-        SIMPLE_OBJECT_FIELD_WRITES.with(|w| {
-            w.borrow_mut().insert((key, field.to_string()));
-        });
+        __php_w
+            .simple_object_field_writes
+            .insert((key, field.to_string()));
     }
 }
 
-fn note_simple_object_field_value(object: &Expression, field: &str, value: &Expression) {
+fn note_simple_object_field_value(__php_w: &mut PhpWalker, object: &Expression, field: &str, value: &Expression) {
     if let Some(key) = simple_object_key(object) {
-        SIMPLE_OBJECT_FIELD_VALUES.with(|w| {
-            w.borrow_mut()
-                .insert((key, field.to_string()), value.clone());
-        });
+        __php_w
+            .simple_object_field_values
+            .insert((key, field.to_string()), value.clone());
     }
 }
 
-fn simple_object_field_was_written(object: &Expression, field: &str) -> bool {
+fn simple_object_field_was_written(__php_w: &mut PhpWalker, object: &Expression, field: &str) -> bool {
     let Some(key) = simple_object_key(object) else {
         return false;
     };
-    SIMPLE_OBJECT_FIELD_WRITES.with(|w| w.borrow().contains(&(key, field.to_string())))
+    __php_w
+        .simple_object_field_writes
+        .contains(&(key, field.to_string()))
 }
 
 fn static_class_name(class: &Expression) -> Option<String> {
@@ -1459,22 +1521,21 @@ fn static_class_name(class: &Expression) -> Option<String> {
     }
 }
 
-fn note_simple_static_field_write(class: &Expression, field: &str) {
+fn note_simple_static_field_write(__php_w: &mut PhpWalker, class: &Expression, field: &str) {
     if let Some(class_name) = static_class_name(class) {
-        SIMPLE_STATIC_FIELD_WRITES.with(|w| {
-            w.borrow_mut().insert((class_name, field.to_string()));
-        });
+        __php_w
+            .simple_static_field_writes
+            .insert((class_name, field.to_string()));
     }
 }
 
-fn simple_static_field_was_written(class_name: &str, field: &str) -> bool {
-    SIMPLE_STATIC_FIELD_WRITES.with(|w| {
-        w.borrow()
-            .contains(&(class_name.to_string(), field.to_string()))
-    })
+fn simple_static_field_was_written(__php_w: &mut PhpWalker, class_name: &str, field: &str) -> bool {
+    __php_w
+        .simple_static_field_writes
+        .contains(&(class_name.to_string(), field.to_string()))
 }
 
-fn php_static_factory_class(expr: &Expression) -> Option<String> {
+fn php_static_factory_class(__php_w: &mut PhpWalker, expr: &Expression) -> Option<String> {
     let ExprKind::Call { callee, .. } = &expr.kind else {
         return None;
     };
@@ -1485,51 +1546,51 @@ fn php_static_factory_class(expr: &Expression) -> Option<String> {
         return None;
     };
     let class_name = class_name.trim_start_matches('\\');
-    if class_has_method(class_name, field) {
+    if class_has_method(__php_w, class_name, field) {
         Some(class_name.to_string())
     } else {
         None
     }
 }
 
-fn note_function_return_type(name: &str, return_type: &str) {
+fn note_function_return_type(__php_w: &mut PhpWalker, name: &str, return_type: &str) {
     let ty = return_type
         .trim()
         .trim_start_matches('?')
         .trim_start_matches('\\');
     if !ty.is_empty() {
-        FUNCTION_RETURN_TYPES.with(|m| {
-            m.borrow_mut().insert(name.to_string(), ty.to_string());
-        });
+        __php_w
+            .function_return_types
+            .insert(name.to_string(), ty.to_string());
     }
 }
 
-fn lookup_function_return_type(name: &str) -> Option<String> {
-    FUNCTION_RETURN_TYPES.with(|m| m.borrow().get(name).cloned())
+fn lookup_function_return_type(__php_w: &mut PhpWalker, name: &str) -> Option<String> {
+    __php_w.function_return_types.get(name).cloned()
 }
 
-fn php_function_call_return_class(expr: &Expression) -> Option<String> {
+fn php_function_call_return_class(__php_w: &mut PhpWalker, expr: &Expression) -> Option<String> {
     let ExprKind::Call { callee, args, .. } = &expr.kind else {
         return None;
     };
     let ExprKind::Ident(name) = &callee.kind else {
         return None;
     };
-    if class_is_registered(name) {
+    if class_is_registered(__php_w, name) {
         return Some(name.to_string());
     }
     if let Some(class_name) = name
         .strip_prefix("__")
         .and_then(|rest| rest.strip_suffix("_ctor_0"))
     {
-        if class_is_registered(class_name) {
+        if class_is_registered(__php_w, class_name) {
             return Some(class_name.to_string());
         }
     }
     if name == "__php_clone_helper" {
         return args
             .first()
-            .and_then(|arg| php_object_class_from_expr(&arg.value));
+            .and_then(|arg| php_object_class_from_expr(__php_w, &arg.value));
     }
     match name.as_str() {
         "__php_dt_new"
@@ -1563,42 +1624,42 @@ fn php_function_call_return_class(expr: &Expression) -> Option<String> {
         "__spl_new_weakmap" => return Some("WeakMap".to_string()),
         _ => {}
     }
-    lookup_function_return_type(name).filter(|class_name| class_is_registered(class_name))
+    lookup_function_return_type(__php_w, name).filter(|class_name| class_is_registered(__php_w, class_name))
 }
 
-fn php_object_class_from_expr(expr: &Expression) -> Option<String> {
+fn php_object_class_from_expr(__php_w: &mut PhpWalker, expr: &Expression) -> Option<String> {
     let mut seen = std::collections::HashSet::new();
-    php_object_class_from_expr_inner(expr, &mut seen)
+    php_object_class_from_expr_inner(__php_w, expr, &mut seen)
 }
 
-fn php_object_class_from_expr_inner(
+fn php_object_class_from_expr_inner(__php_w: &mut PhpWalker, 
     expr: &Expression,
     seen: &mut std::collections::HashSet<String>,
 ) -> Option<String> {
     match &expr.kind {
         ExprKind::New { class, .. } => match &class.kind {
-            ExprKind::Ident(name) => Some(php_resolve_class_name(name)),
+            ExprKind::Ident(name) => Some(php_resolve_class_name(__php_w, name)),
             ExprKind::ClassExpr {
                 name: Some(name), ..
-            } => Some(php_resolve_class_name(name)),
+            } => Some(php_resolve_class_name(__php_w, name)),
             _ => None,
         },
-        ExprKind::This => current_class_name(),
-        ExprKind::Ident(name) if name == "$this" => current_class_name(),
+        ExprKind::This => current_class_name(__php_w),
+        ExprKind::Ident(name) if name == "$this" => current_class_name(__php_w),
         ExprKind::Ident(name) => {
             let key = name.trim_start_matches('$').to_string();
             if !seen.insert(key) {
                 return None;
             }
-            lookup_simple_value_var(name).and_then(|value| {
-                php_object_class_from_expr_inner(&value, seen)
-                    .or_else(|| php_static_factory_class(&value))
-                    .or_else(|| php_function_call_return_class(&value))
+            lookup_simple_value_var(__php_w, name).and_then(|value| {
+                php_object_class_from_expr_inner(__php_w, &value, seen)
+                    .or_else(|| php_static_factory_class(__php_w, &value))
+                    .or_else(|| php_function_call_return_class(__php_w, &value))
             })
         }
-        ExprKind::Member { object, field, .. } => php_object_class_from_expr_inner(object, seen)
+        ExprKind::Member { object, field, .. } => php_object_class_from_expr_inner(__php_w, object, seen)
             .and_then(|class_name| {
-                class_field_meta(&class_name, field).and_then(|(_, meta)| {
+                class_field_meta(__php_w, &class_name, field).and_then(|(_, meta)| {
                     meta.type_hint.map(|ty| {
                         php_strip_nullable_type(&ty)
                             .1
@@ -1607,23 +1668,23 @@ fn php_object_class_from_expr_inner(
                     })
                 })
             }),
-        _ => php_static_factory_class(expr).or_else(|| php_function_call_return_class(expr)),
+        _ => php_static_factory_class(__php_w, expr).or_else(|| php_function_call_return_class(__php_w, expr)),
     }
 }
 
-fn php_new_class_and_args_from_expr(expr: &Expression) -> Option<(String, Vec<Expression>)> {
+fn php_new_class_and_args_from_expr(__php_w: &mut PhpWalker, expr: &Expression) -> Option<(String, Vec<Expression>)> {
     let mut seen = std::collections::HashSet::new();
-    php_new_class_and_args_from_expr_inner(expr, &mut seen)
+    php_new_class_and_args_from_expr_inner(__php_w, expr, &mut seen)
 }
 
-fn php_new_class_and_args_from_expr_inner(
+fn php_new_class_and_args_from_expr_inner(__php_w: &mut PhpWalker, 
     expr: &Expression,
     seen: &mut std::collections::HashSet<String>,
 ) -> Option<(String, Vec<Expression>)> {
     match &expr.kind {
         ExprKind::New { class, args } => match &class.kind {
             ExprKind::Ident(name) => Some((
-                php_resolve_class_name(name),
+                php_resolve_class_name(__php_w, name),
                 args.iter().map(|arg| arg.value.clone()).collect(),
             )),
             _ => None,
@@ -1633,8 +1694,8 @@ fn php_new_class_and_args_from_expr_inner(
             if !seen.insert(key) {
                 return None;
             }
-            lookup_simple_value_var(name)
-                .and_then(|value| php_new_class_and_args_from_expr_inner(&value, seen))
+            lookup_simple_value_var(__php_w, name)
+                .and_then(|value| php_new_class_and_args_from_expr_inner(__php_w, &value, seen))
         }
         _ => None,
     }
@@ -1770,10 +1831,10 @@ fn php_literal_strict_value_equal(a: &Expression, b: &Expression) -> Option<bool
     }
 }
 
-fn php_literal_array_value_expr(expr: &Expression) -> Option<Expression> {
+fn php_literal_array_value_expr(__php_w: &mut PhpWalker, expr: &Expression) -> Option<Expression> {
     match &expr.kind {
         ExprKind::Array(_) => Some(expr.clone()),
-        ExprKind::Ident(name) => lookup_simple_value_var(name).and_then(|value| {
+        ExprKind::Ident(name) => lookup_simple_value_var(__php_w, name).and_then(|value| {
             if matches!(value.kind, ExprKind::Array(_)) {
                 Some(value)
             } else {
@@ -1784,9 +1845,9 @@ fn php_literal_array_value_expr(expr: &Expression) -> Option<Expression> {
     }
 }
 
-fn php_known_array_compare(left: &Expression, right: &Expression, strict: bool) -> Option<bool> {
-    let left = php_literal_array_value_expr(left)?;
-    let right = php_literal_array_value_expr(right)?;
+fn php_known_array_compare(__php_w: &mut PhpWalker, left: &Expression, right: &Expression, strict: bool) -> Option<bool> {
+    let left = php_literal_array_value_expr(__php_w, left)?;
+    let right = php_literal_array_value_expr(__php_w, right)?;
     php_literal_array_compare(&left, &right, strict)
 }
 
@@ -1837,9 +1898,9 @@ fn php_literal_scalar_spaceship(a: &Expression, b: &Expression) -> Option<i64> {
     }
 }
 
-fn php_literal_array_spaceship(left: &Expression, right: &Expression) -> Option<i64> {
-    let left = php_literal_array_value_expr(left)?;
-    let right = php_literal_array_value_expr(right)?;
+fn php_literal_array_spaceship(__php_w: &mut PhpWalker, left: &Expression, right: &Expression) -> Option<i64> {
+    let left = php_literal_array_value_expr(__php_w, left)?;
+    let right = php_literal_array_value_expr(__php_w, right)?;
     let (ExprKind::Array(a), ExprKind::Array(b)) = (&left.kind, &right.kind) else {
         return None;
     };
@@ -1954,12 +2015,12 @@ fn php_literal_int_value(expr: &Expression) -> Option<i64> {
     }
 }
 
-fn php_known_loose_object_equality(left: &Expression, right: &Expression) -> Option<bool> {
-    if php_same_object_alias(left, right).unwrap_or(false) {
+fn php_known_loose_object_equality(__php_w: &mut PhpWalker, left: &Expression, right: &Expression) -> Option<bool> {
+    if php_same_object_alias(__php_w, left, right).unwrap_or(false) {
         return Some(true);
     }
-    let (left_class, left_args) = php_new_class_and_args_from_expr(left)?;
-    let (right_class, right_args) = php_new_class_and_args_from_expr(right)?;
+    let (left_class, left_args) = php_new_class_and_args_from_expr(__php_w, left)?;
+    let (right_class, right_args) = php_new_class_and_args_from_expr(__php_w, right)?;
     if left_class != right_class || left_args.len() != right_args.len() {
         return Some(false);
     }
@@ -1974,26 +2035,26 @@ fn php_known_loose_object_equality(left: &Expression, right: &Expression) -> Opt
     known_equal.then_some(true)
 }
 
-fn php_same_object_alias(left: &Expression, right: &Expression) -> Option<bool> {
+fn php_same_object_alias(__php_w: &mut PhpWalker, left: &Expression, right: &Expression) -> Option<bool> {
     let ExprKind::Ident(left_name) = &left.kind else {
         return None;
     };
     let ExprKind::Ident(right_name) = &right.kind else {
         return None;
     };
-    let left_root = php_alias_root(left_name)?;
-    let right_root = php_alias_root(right_name)?;
+    let left_root = php_alias_root(__php_w, left_name)?;
+    let right_root = php_alias_root(__php_w, right_name)?;
     Some(left_root == right_root)
 }
 
-fn php_alias_root(name: &str) -> Option<String> {
+fn php_alias_root(__php_w: &mut PhpWalker, name: &str) -> Option<String> {
     let mut current = name.trim_start_matches('$').to_string();
     let mut seen = std::collections::HashSet::new();
     loop {
         if !seen.insert(current.clone()) {
             return None;
         }
-        let value = lookup_simple_value_var(&current)?;
+        let value = lookup_simple_value_var(__php_w, &current)?;
         match value.kind {
             ExprKind::Ident(next) => {
                 current = next.trim_start_matches('$').to_string();
@@ -2004,11 +2065,11 @@ fn php_alias_root(name: &str) -> Option<String> {
     }
 }
 
-fn php_datetime_time_expr(expr: Expression, span: &Span) -> Option<Expression> {
-    if let Some(ms) = php_datetime_literal_offset_instant_ms(&expr) {
+fn php_datetime_time_expr(__php_w: &mut PhpWalker, expr: Expression, span: &Span) -> Option<Expression> {
+    if let Some(ms) = php_datetime_literal_offset_instant_ms(__php_w, &expr) {
         return Some(Expression::int(ms));
     }
-    let class_name = php_object_class_from_expr(&expr)?;
+    let class_name = php_object_class_from_expr(__php_w, &expr)?;
     if !matches!(
         class_name.trim_start_matches('\\'),
         "DateTime" | "DateTimeImmutable"
@@ -2040,9 +2101,9 @@ fn php_days_before_month(y: i64, m: i64) -> i64 {
     days
 }
 
-fn php_datetime_literal_offset_instant_ms(expr: &Expression) -> Option<i64> {
+fn php_datetime_literal_offset_instant_ms(__php_w: &mut PhpWalker, expr: &Expression) -> Option<i64> {
     let resolved = match &expr.kind {
-        ExprKind::Ident(name) => lookup_simple_value_var(name).unwrap_or_else(|| expr.clone()),
+        ExprKind::Ident(name) => lookup_simple_value_var(__php_w, name).unwrap_or_else(|| expr.clone()),
         _ => expr.clone(),
     };
     let (name, args) = php_call_ident(&resolved)?;
@@ -2054,7 +2115,7 @@ fn php_datetime_literal_offset_instant_ms(expr: &Expression) -> Option<i64> {
     };
     let offset = php_trailing_timezone_offset(s).or_else(|| {
         args.get(1)
-            .and_then(|arg| php_timezone_literal_name(&arg.value))
+            .and_then(|arg| php_timezone_literal_name(__php_w, &arg.value))
             .filter(|tz| php_trailing_timezone_offset(tz).is_some())
     })?;
     let local = s.strip_suffix(&offset).unwrap_or(s).trim();
@@ -2085,9 +2146,9 @@ fn php_datetime_literal_offset_instant_ms(expr: &Expression) -> Option<i64> {
     Some((days * 86_400 + h * 3600 + i * 60 + sec - offset_seconds) * 1000)
 }
 
-fn php_timezone_literal_name(expr: &Expression) -> Option<String> {
+fn php_timezone_literal_name(__php_w: &mut PhpWalker, expr: &Expression) -> Option<String> {
     let resolved = match &expr.kind {
-        ExprKind::Ident(name) => lookup_simple_value_var(name).unwrap_or_else(|| expr.clone()),
+        ExprKind::Ident(name) => lookup_simple_value_var(__php_w, name).unwrap_or_else(|| expr.clone()),
         _ => expr.clone(),
     };
     let (name, args) = php_call_ident(&resolved)?;
@@ -2100,24 +2161,24 @@ fn php_timezone_literal_name(expr: &Expression) -> Option<String> {
     Some(s.clone())
 }
 
-fn php_datetime_literal_timezone_name(expr: &Expression) -> Option<String> {
+fn php_datetime_literal_timezone_name(__php_w: &mut PhpWalker, expr: &Expression) -> Option<String> {
     let resolved = match &expr.kind {
-        ExprKind::Ident(name) => lookup_simple_value_var(name).unwrap_or_else(|| expr.clone()),
+        ExprKind::Ident(name) => lookup_simple_value_var(__php_w, name).unwrap_or_else(|| expr.clone()),
         _ => expr.clone(),
     };
     let (name, args) = php_call_ident(&resolved)?;
     if name == "__php_dt_set_timezone" && args.len() >= 2 {
-        return php_timezone_literal_name(&args[1].value);
+        return php_timezone_literal_name(__php_w, &args[1].value);
     }
     if matches!(name, "__php_dt_new" | "__php_dt_imm_new") && args.len() >= 2 {
-        return php_timezone_literal_name(&args[1].value);
+        return php_timezone_literal_name(__php_w, &args[1].value);
     }
     None
 }
 
-fn php_datetime_literal_offset_seconds(expr: &Expression) -> Option<i64> {
-    let (_y, m, _d) = php_datetime_literal_ymd(expr)?;
-    let tz = php_datetime_literal_timezone_name(expr)?;
+fn php_datetime_literal_offset_seconds(__php_w: &mut PhpWalker, expr: &Expression) -> Option<i64> {
+    let (_y, m, _d) = php_datetime_literal_ymd(__php_w, expr)?;
+    let tz = php_datetime_literal_timezone_name(__php_w, expr)?;
     match tz.as_str() {
         "UTC" | "+00:00" | "-00:00" => Some(0),
         "America/New_York" => {
@@ -2150,38 +2211,34 @@ fn is_php_callable_type_hint(type_hint: &str) -> bool {
     type_hint.trim().trim_start_matches('?') == "callable"
 }
 
-fn note_simple_callable_var(name: &str) {
-    SIMPLE_CALLABLE_VARS.with(|v| {
-        let mut vars = v.borrow_mut();
-        *vars
-            .entry(name.trim_start_matches('$').to_string())
-            .or_insert(0) += 1;
-    });
+fn note_simple_callable_var(__php_w: &mut PhpWalker, name: &str) {
+    *__php_w
+        .simple_callable_vars
+        .entry(name.trim_start_matches('$').to_string())
+        .or_insert(0) += 1;
 }
 
-fn unnote_simple_callable_var(name: &str) {
-    SIMPLE_CALLABLE_VARS.with(|v| {
-        let mut vars = v.borrow_mut();
-        let name = name.trim_start_matches('$');
-        if let Some(count) = vars.get_mut(name) {
-            *count = count.saturating_sub(1);
-            if *count == 0 {
-                vars.remove(name);
-            }
+fn unnote_simple_callable_var(__php_w: &mut PhpWalker, name: &str) {
+    let vars = &mut __php_w.simple_callable_vars;
+    let name = name.trim_start_matches('$');
+    if let Some(count) = vars.get_mut(name) {
+        *count = count.saturating_sub(1);
+        if *count == 0 {
+            vars.remove(name);
         }
-    });
-}
-
-fn note_simple_callable_assignment(name: &str, expr: &Expression) {
-    match &expr.kind {
-        ExprKind::Lambda { .. } | ExprKind::FunctionExpr(_) | ExprKind::CallableRef { .. } => {
-            note_simple_callable_var(name)
-        }
-        _ => unnote_simple_callable_var(name),
     }
 }
 
-fn note_callable_params(params: &[Param]) -> Vec<String> {
+fn note_simple_callable_assignment(__php_w: &mut PhpWalker, name: &str, expr: &Expression) {
+    match &expr.kind {
+        ExprKind::Lambda { .. } | ExprKind::FunctionExpr(_) | ExprKind::CallableRef { .. } => {
+            note_simple_callable_var(__php_w, name)
+        }
+        _ => unnote_simple_callable_var(__php_w, name),
+    }
+}
+
+fn note_callable_params(__php_w: &mut PhpWalker, params: &[Param]) -> Vec<String> {
     let mut noted = Vec::new();
     for param in params {
         if param
@@ -2189,23 +2246,26 @@ fn note_callable_params(params: &[Param]) -> Vec<String> {
             .as_deref()
             .is_some_and(is_php_callable_type_hint)
         {
-            note_simple_callable_var(&param.name);
+            note_simple_callable_var(__php_w, &param.name);
             noted.push(param.name.clone());
         }
     }
     noted
 }
 
-fn unnote_callable_params(params: Vec<String>) {
+fn unnote_callable_params(__php_w: &mut PhpWalker, params: Vec<String>) {
     for param in params {
-        unnote_simple_callable_var(&param);
+        unnote_simple_callable_var(__php_w, &param);
     }
 }
 
-fn is_simple_callable_var(name: &str) -> bool {
+fn is_simple_callable_var(__php_w: &mut PhpWalker, name: &str) -> bool {
     let key = name.trim_start_matches('$');
-    SIMPLE_CALLABLE_VARS.with(|v| v.borrow().get(key).is_some_and(|count| *count > 0))
-        || lookup_simple_value_var(key).is_some_and(|expr| {
+    __php_w
+        .simple_callable_vars
+        .get(key)
+        .is_some_and(|count| *count > 0)
+        || lookup_simple_value_var(__php_w, key).is_some_and(|expr| {
             matches!(
                 expr.kind,
                 ExprKind::Lambda { .. } | ExprKind::FunctionExpr(_) | ExprKind::CallableRef { .. }
@@ -2213,42 +2273,47 @@ fn is_simple_callable_var(name: &str) -> bool {
         })
 }
 
-fn note_simple_fiber_var(name: &str, state: SimpleFiberState) {
-    SIMPLE_FIBER_VARS.with(|v| {
-        v.borrow_mut()
-            .insert(name.trim_start_matches('$').to_string(), state);
-    });
+fn note_simple_fiber_var(__php_w: &mut PhpWalker, name: &str, state: SimpleFiberState) {
+    __php_w
+        .simple_fiber_vars
+        .insert(name.trim_start_matches('$').to_string(), state);
 }
 
-fn unnote_simple_fiber_var(name: &str) {
-    SIMPLE_FIBER_VARS.with(|v| {
-        v.borrow_mut().remove(name.trim_start_matches('$'));
-    });
+fn unnote_simple_fiber_var(__php_w: &mut PhpWalker, name: &str) {
+    __php_w
+        .simple_fiber_vars
+        .remove(name.trim_start_matches('$'));
 }
 
-fn lookup_simple_fiber_var(name: &str) -> Option<SimpleFiberState> {
-    SIMPLE_FIBER_VARS.with(|v| v.borrow().get(name.trim_start_matches('$')).copied())
+fn lookup_simple_fiber_var(__php_w: &mut PhpWalker, name: &str) -> Option<SimpleFiberState> {
+    __php_w
+        .simple_fiber_vars
+        .get(name.trim_start_matches('$'))
+        .copied()
 }
 
-fn in_php_echo_context() -> bool {
-    PHP_ECHO_CONTEXT.with(|c| c.get())
+fn in_php_echo_context(__php_w: &mut PhpWalker) -> bool {
+    __php_w.php_echo_context
 }
 
-fn php_bool_for_output_context(value: bool, span: Span) -> Expression {
-    if in_php_echo_context() {
+fn php_bool_for_output_context(__php_w: &mut PhpWalker, value: bool, span: Span) -> Expression {
+    if in_php_echo_context(__php_w) {
         Expression::with_span(ExprKind::Lit(Literal::Int(if value { 1 } else { 0 })), span)
     } else {
         Expression::with_span(ExprKind::Lit(Literal::Bool(value)), span)
     }
 }
 
-fn with_php_echo_context<T>(f: impl FnOnce() -> T) -> T {
-    PHP_ECHO_CONTEXT.with(|c| {
-        let prev = c.replace(true);
-        let result = f();
-        c.set(prev);
-        result
-    })
+/// Save/restore explicitly rather than through a closure: the walker state is
+/// now a `&mut PhpWalker` the body also needs, and one borrow cannot be handed
+/// to both. The shape is the same — set, run, restore the PRIOR value (not
+/// `false`), so nesting stays correct.
+fn enter_php_echo_context(__php_w: &mut PhpWalker) -> bool {
+    std::mem::replace(&mut __php_w.php_echo_context, true)
+}
+
+fn leave_php_echo_context(__php_w: &mut PhpWalker, prev: bool) {
+    __php_w.php_echo_context = prev;
 }
 
 fn expr_is_php_fiber_new(expr: &Expression) -> Option<SimpleFiberState> {
@@ -2729,8 +2794,8 @@ fn stmt_has_looped_php_fiber_suspend(stmt: &Statement) -> bool {
     }
 }
 
-fn note_simple_getter_method(method: &str, body: &[Statement]) {
-    let Some(class_name) = current_class_name() else {
+fn note_simple_getter_method(__php_w: &mut PhpWalker, method: &str, body: &[Statement]) {
+    let Some(class_name) = current_class_name(__php_w) else {
         return;
     };
     let [
@@ -2756,19 +2821,17 @@ fn note_simple_getter_method(method: &str, body: &[Statement]) {
         } else {
             field.clone()
         };
-        SIMPLE_GETTER_METHODS.with(|m| {
-            m.borrow_mut()
-                .insert(format!("{}::{}", class_name, method), storage_field);
-        });
+        __php_w
+            .simple_getter_methods
+            .insert(format!("{}::{}", class_name, method), storage_field);
     }
 }
 
-fn lookup_simple_getter_method(class_name: &str, method: &str) -> Option<String> {
-    SIMPLE_GETTER_METHODS.with(|m| {
-        m.borrow()
-            .get(&format!("{}::{}", class_name, method))
-            .cloned()
-    })
+fn lookup_simple_getter_method(__php_w: &mut PhpWalker, class_name: &str, method: &str) -> Option<String> {
+    __php_w
+        .simple_getter_methods
+        .get(&format!("{}::{}", class_name, method))
+        .cloned()
 }
 
 fn literal_string_key(expr: &Expression) -> Option<String> {
@@ -2779,50 +2842,48 @@ fn literal_string_key(expr: &Expression) -> Option<String> {
     }
 }
 
-fn note_simple_index_alias(obj: &str, alias_key: &str, target_key: &str) {
-    SIMPLE_INDEX_ALIASES.with(|m| {
-        m.borrow_mut().insert(
-            (
-                obj.trim_start_matches('$').to_string(),
-                alias_key.to_string(),
-            ),
-            target_key.to_string(),
-        );
-    });
+fn note_simple_index_alias(__php_w: &mut PhpWalker, obj: &str, alias_key: &str, target_key: &str) {
+    __php_w.simple_index_aliases.insert(
+        (
+            obj.trim_start_matches('$').to_string(),
+            alias_key.to_string(),
+        ),
+        target_key.to_string(),
+    );
 }
 
-fn lookup_simple_index_alias(obj: &str, alias_key: &str) -> Option<String> {
-    SIMPLE_INDEX_ALIASES.with(|m| {
-        m.borrow()
-            .get(&(
-                obj.trim_start_matches('$').to_string(),
-                alias_key.to_string(),
-            ))
-            .cloned()
-    })
+fn lookup_simple_index_alias(__php_w: &mut PhpWalker, obj: &str, alias_key: &str) -> Option<String> {
+    __php_w
+        .simple_index_aliases
+        .get(&(
+            obj.trim_start_matches('$').to_string(),
+            alias_key.to_string(),
+        ))
+        .cloned()
 }
 
-fn note_simple_var_index_alias(var: &str, obj: &str, key: &str) {
-    SIMPLE_VAR_INDEX_ALIASES.with(|m| {
-        m.borrow_mut().insert(
-            var.trim_start_matches('$').to_string(),
-            (obj.to_string(), key.to_string()),
-        );
-    });
+fn note_simple_var_index_alias(__php_w: &mut PhpWalker, var: &str, obj: &str, key: &str) {
+    __php_w.simple_var_index_aliases.insert(
+        var.trim_start_matches('$').to_string(),
+        (obj.to_string(), key.to_string()),
+    );
 }
 
-fn unnote_simple_var_index_alias(var: &str) {
-    SIMPLE_VAR_INDEX_ALIASES.with(|m| {
-        m.borrow_mut().remove(var.trim_start_matches('$'));
-    });
+fn unnote_simple_var_index_alias(__php_w: &mut PhpWalker, var: &str) {
+    __php_w
+        .simple_var_index_aliases
+        .remove(var.trim_start_matches('$'));
 }
 
-fn lookup_simple_var_index_alias(var: &str) -> Option<(String, String)> {
-    SIMPLE_VAR_INDEX_ALIASES.with(|m| m.borrow().get(var.trim_start_matches('$')).cloned())
+fn lookup_simple_var_index_alias(__php_w: &mut PhpWalker, var: &str) -> Option<(String, String)> {
+    __php_w
+        .simple_var_index_aliases
+        .get(var.trim_start_matches('$'))
+        .cloned()
 }
 
-fn php_var_index_alias_expr(var: &str, span: &Span) -> Option<Expression> {
-    let (obj, key) = lookup_simple_var_index_alias(var)?;
+fn php_var_index_alias_expr(__php_w: &mut PhpWalker, var: &str, span: &Span) -> Option<Expression> {
+    let (obj, key) = lookup_simple_var_index_alias(__php_w, var)?;
     Some(Expression::with_span(
         ExprKind::Index {
             object: Box::new(Expression::with_span(ExprKind::Ident(obj), span.clone())),
@@ -2957,11 +3018,11 @@ fn php_magic_get_read_parts(expr: &Expression) -> Option<(Expression, String)> {
 /// So this asks the compile-time half only: does the class even define `__get`,
 /// and is the field undeclared? Over-inclusion is harmless — a `true` answer
 /// only means "emit the runtime check", and the check resolves it correctly.
-fn php_member_read_may_call_get(object: &Expression, field: &str) -> bool {
-    let Some(class_name) = php_object_class_from_expr(object) else {
+fn php_member_read_may_call_get(__php_w: &mut PhpWalker, object: &Expression, field: &str) -> bool {
+    let Some(class_name) = php_object_class_from_expr(__php_w, object) else {
         return false;
     };
-    class_has_method(&class_name, "__get") && !class_has_field(&class_name, field)
+    class_has_method(__php_w, &class_name, "__get") && !class_has_field(__php_w, &class_name, field)
 }
 
 /// Does a reference to `$object->field` bind nothing?
@@ -2978,25 +3039,23 @@ fn php_member_read_may_call_get(object: &Expression, field: &str) -> bool {
 /// own property and keeps the alias, but a property created in a constructor or
 /// through an aliased receiver is invisible to it and the argument wrongly binds
 /// a copy.
-fn php_member_reference_is_inert(object: &Expression, field: &str) -> bool {
-    !simple_object_field_was_written(object, field) && php_member_read_may_call_get(object, field)
+fn php_member_reference_is_inert(__php_w: &mut PhpWalker, object: &Expression, field: &str) -> bool {
+    !simple_object_field_was_written(__php_w, object, field) && php_member_read_may_call_get(__php_w, object, field)
 }
 
-fn propagate_simple_index_aliases(src: &str, dst: &str) {
+fn propagate_simple_index_aliases(__php_w: &mut PhpWalker, src: &str, dst: &str) {
     let src = src.trim_start_matches('$').to_string();
     let dst = dst.trim_start_matches('$').to_string();
-    SIMPLE_INDEX_ALIASES.with(|m| {
-        let additions: Vec<((String, String), String)> = m
-            .borrow()
-            .iter()
-            .filter(|((obj, _), _)| obj == &src)
-            .map(|((_, key), target)| ((dst.clone(), key.clone()), target.clone()))
-            .collect();
-        m.borrow_mut().extend(additions);
-    });
+    let additions: Vec<((String, String), String)> = __php_w
+        .simple_index_aliases
+        .iter()
+        .filter(|((obj, _), _)| obj == &src)
+        .map(|((_, key), target)| ((dst.clone(), key.clone()), target.clone()))
+        .collect();
+    __php_w.simple_index_aliases.extend(additions);
 }
 
-fn php_literal_string_key_array(expr: &Expression) -> Option<Vec<(String, Expression)>> {
+fn php_literal_string_key_array(__php_w: &mut PhpWalker, expr: &Expression) -> Option<Vec<(String, Expression)>> {
     let ExprKind::Array(elements) = &expr.kind else {
         return None;
     };
@@ -3017,28 +3076,20 @@ fn php_literal_string_key_array(expr: &Expression) -> Option<Vec<(String, Expres
     Some(out)
 }
 
-thread_local! {
-    /// `use` imports collected while walking (namespaceplan.md PHP phase) —
-    /// drained into `Module.imports` by `parse()` so the ESM linker sees
-    /// PHP namespace bindings in the same shape as every other language.
-    static PHP_USE_IMPORTS: std::cell::RefCell<Vec<Import>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-}
-
-fn note_php_use_import(import: Import) {
-    PHP_USE_IMPORTS.with(|v| v.borrow_mut().push(import));
+fn note_php_use_import(__php_w: &mut PhpWalker, import: Import) {
+    __php_w.php_use_imports.push(import);
 }
 
 /// One `use_item` (`A\B\C`, `A\B as X`, `function A\b`) → a common
 /// `ImportKind::Simple` with the dotted path and the bound local name as
 /// the alias (explicit `as` or the last path segment). `group_prefix`
 /// prepends for `use A\{B, C}` items.
-fn php_use_item_to_import(
+fn php_use_item_to_import(__php_w: &mut PhpWalker, 
     pair: Pair<Rule>,
     group_prefix: Option<&str>,
     force_function: bool,
 ) -> Option<Import> {
-    let span = to_span(&pair);
+    let span = to_span(__php_w, &pair);
     let mut path = String::new();
     let mut alias: Option<String> = None;
     let mut is_function = force_function;
@@ -3065,9 +3116,9 @@ fn php_use_item_to_import(
     let bound = alias.or_else(|| path.rsplit('.').next().map(str::to_string));
     if is_function {
         if let Some(bound_name) = bound.clone() {
-            FUNCTION_IMPORT_ALIASES.with(|aliases| {
-                aliases.borrow_mut().insert(bound_name, path.clone());
-            });
+            __php_w
+                .function_import_aliases
+                .insert(bound_name, path.clone());
         }
     }
     Some(Import {
@@ -3076,8 +3127,8 @@ fn php_use_item_to_import(
     })
 }
 
-fn current_namespace() -> Option<String> {
-    NAMESPACE_STACK.with(|s| s.borrow().last().cloned())
+fn current_namespace(__php_w: &mut PhpWalker) -> Option<String> {
+    __php_w.namespace_stack.last().cloned()
 }
 
 /// Normalize a fully-qualified USER class reference (`\App\Util\User`) to
@@ -3100,68 +3151,62 @@ fn php_normalize_class_ref(raw: &str) -> String {
         .join(".")
 }
 
-fn note_php_class_alias(original: &str, alias: &str) {
-    let original = php_resolve_class_name(original);
+fn note_php_class_alias(__php_w: &mut PhpWalker, original: &str, alias: &str) {
+    let original = php_resolve_class_name(__php_w, original);
     let alias = php_normalize_class_ref(alias);
-    register_type_kind(&alias, "class");
-    CLASS_ALIASES.with(|aliases| {
-        aliases.borrow_mut().insert(alias.clone(), original.clone());
-        if let Some(short) = alias.rsplit('.').next() {
-            register_type_kind(short, "class");
-            aliases
-                .borrow_mut()
-                .entry(short.to_string())
-                .or_insert_with(|| original.clone());
-        }
-    });
+    register_type_kind(__php_w, &alias, "class");
+    __php_w
+        .class_aliases
+        .insert(alias.clone(), original.clone());
+    if let Some(short) = alias.rsplit('.').next().map(str::to_string) {
+        register_type_kind(__php_w, &short, "class");
+        __php_w
+            .class_aliases
+            .entry(short)
+            .or_insert_with(|| original.clone());
+    }
 }
 
-fn php_resolve_class_alias(name: &str) -> String {
+fn php_resolve_class_alias(__php_w: &mut PhpWalker, name: &str) -> String {
     let normalized = php_normalize_class_ref(name);
-    CLASS_ALIASES.with(|aliases| {
-        let aliases = aliases.borrow();
-        if let Some(target) = aliases.get(&normalized) {
-            return target.clone();
-        }
-        if !normalized.contains('.') {
-            if let Some(ns) = current_namespace().filter(|ns| !ns.is_empty()) {
-                let qualified = format!("{}.{}", ns.replace('\\', "."), normalized);
-                if let Some(target) = aliases.get(&qualified) {
-                    return target.clone();
-                }
+    if let Some(target) = __php_w.class_aliases.get(&normalized) {
+        return target.clone();
+    }
+    if !normalized.contains('.') {
+        if let Some(ns) = current_namespace(__php_w).filter(|ns| !ns.is_empty()) {
+            let qualified = format!("{}.{}", ns.replace('\\', "."), normalized);
+            if let Some(target) = __php_w.class_aliases.get(&qualified) {
+                return target.clone();
             }
         }
-        normalized
-    })
+    }
+    normalized
 }
 
-fn php_class_alias_display_name(name: &str) -> Option<String> {
+fn php_class_alias_display_name(__php_w: &mut PhpWalker, name: &str) -> Option<String> {
     let normalized = php_normalize_class_ref(name);
-    CLASS_ALIASES.with(|aliases| {
-        let aliases = aliases.borrow();
-        if !normalized.contains('.') {
-            if let Some(ns) = current_namespace().filter(|ns| !ns.is_empty()) {
-                let qualified = format!("{}.{}", ns.replace('\\', "."), normalized);
-                if aliases.contains_key(&qualified) {
-                    return Some(qualified);
-                }
+    if !normalized.contains('.') {
+        if let Some(ns) = current_namespace(__php_w).filter(|ns| !ns.is_empty()) {
+            let qualified = format!("{}.{}", ns.replace('\\', "."), normalized);
+            if __php_w.class_aliases.contains_key(&qualified) {
+                return Some(qualified);
             }
         }
-        if aliases.contains_key(&normalized) {
-            return Some(normalized);
-        }
-        None
-    })
+    }
+    if __php_w.class_aliases.contains_key(&normalized) {
+        return Some(normalized);
+    }
+    None
 }
 
-fn php_resolve_class_name(name: &str) -> String {
-    let resolved = php_resolve_class_alias(name);
-    if resolved.contains('.') || class_is_registered(&resolved) {
+fn php_resolve_class_name(__php_w: &mut PhpWalker, name: &str) -> String {
+    let resolved = php_resolve_class_alias(__php_w, name);
+    if resolved.contains('.') || class_is_registered(__php_w, &resolved) {
         return resolved;
     }
-    if let Some(ns) = current_namespace().filter(|ns| !ns.is_empty()) {
+    if let Some(ns) = current_namespace(__php_w).filter(|ns| !ns.is_empty()) {
         let qualified = format!("{}.{}", ns.replace('\\', "."), resolved);
-        if class_is_registered(&qualified) {
+        if class_is_registered(__php_w, &qualified) {
             return qualified;
         }
     }
@@ -3569,7 +3614,7 @@ fn inner_nokw(pair: Pair<Rule>) -> std::vec::IntoIter<Pair<Rule>> {
     kept.into_iter()
 }
 
-fn collect_program_body(
+fn collect_program_body(__php_w: &mut PhpWalker, 
     program: Pair<Rule>,
     body: &mut Vec<Statement>,
     interface_names: &mut std::collections::HashSet<String>,
@@ -3590,7 +3635,7 @@ fn collect_program_body(
                 for inner in pair.into_inner() {
                     let was_interface = matches!(inner.as_rule(), Rule::interface_declaration);
                     let was_trait = matches!(inner.as_rule(), Rule::trait_declaration);
-                    if let Some(stmt) = walk_statement(inner)? {
+                    if let Some(stmt) = walk_statement(__php_w, inner)? {
                         if was_interface {
                             if let StmtKind::ClassDecl { ref name, .. } = stmt.kind {
                                 interface_names.insert(name.clone());
@@ -3610,13 +3655,13 @@ fn collect_program_body(
                     .into_inner()
                     .next()
                     .ok_or("php_echo_segment missing expression")?;
-                let expr = walk_expression(expr_pair)?;
+                let expr = walk_expression(__php_w, expr_pair)?;
                 body.push(php_echo_stmt(vec![expr]));
             }
             _ => {
                 let was_interface = matches!(pair.as_rule(), Rule::interface_declaration);
                 let was_trait = matches!(pair.as_rule(), Rule::trait_declaration);
-                if let Some(stmt) = walk_statement(pair)? {
+                if let Some(stmt) = walk_statement(__php_w, pair)? {
                     if was_interface {
                         if let StmtKind::ClassDecl { ref name, .. } = stmt.kind {
                             interface_names.insert(name.clone());
@@ -3970,11 +4015,11 @@ const SUPERGLOBAL_SERVER: usize = 0;
 /// Off the request path these all yield empty maps rather than trapping (see
 /// `every_request_op_survives_with_no_request`), which is what real PHP does
 /// on the command line — `$_GET` is `[]`, not an error.
-fn php_superglobal_prelude(names: &[bool; 7]) -> Vec<Statement> {
+fn php_superglobal_prelude(__php_w: &mut PhpWalker, names: &[bool; 7]) -> Vec<Statement> {
     if !names.iter().any(|needed| *needed) {
         return Vec::new();
     }
-    let all = cached_php_prelude_group(PhpPreludeGroup::Superglobals);
+    let all = cached_php_prelude_group(__php_w, PhpPreludeGroup::Superglobals);
     all.into_iter()
         .enumerate()
         .filter(|(index, _)| match *index {
@@ -4233,12 +4278,6 @@ function __php_array_loose_eq($a, $b) {
 /// conditional-assignment form (see project_php_conditional_assign_bug).
 const CLASS_HELPERS_PRELUDE: &str = r##"
 class stdClass {}
-function __vybe_parent_class($o) {
-    if (!is_object($o)) return false;
-    $t = isset($o->__types) ? $o->__types : [];
-    $n = count($t);
-    return ($n >= 2) ? $t[$n - 2] : false;
-}
 function __php_numeric_like($v) {
     if (is_int($v) || is_float($v)) return true;
     if (!is_string($v)) return false;
@@ -4328,20 +4367,8 @@ Stack trace:
 ";
 "##;
 
-#[allow(dead_code)]
-fn cached_php_uncaught_handler() -> Vec<Statement> {
-    static HANDLER: std::sync::OnceLock<Vec<Statement>> = std::sync::OnceLock::new();
-    HANDLER
-        .get_or_init(|| {
-            LINE_STARTS.with(|s| *s.borrow_mut() = build_line_starts(UNCAUGHT_HANDLER_PHP));
-            let stmts = parse_prelude(UNCAUGHT_HANDLER_PHP);
-            LINE_STARTS.with(|s| s.borrow_mut().clear());
-            stmts
-        })
-        .clone()
-}
 
-fn cached_php_prelude_group(group: PhpPreludeGroup) -> Vec<Statement> {
+fn cached_php_prelude_group(__php_w: &mut PhpWalker, group: PhpPreludeGroup) -> Vec<Statement> {
     let src = match group {
         PhpPreludeGroup::Superglobals => SUPERGLOBALS_PRELUDE,
         PhpPreludeGroup::Exception => EXCEPTION_PRELUDE,
@@ -4358,14 +4385,14 @@ fn cached_php_prelude_group(group: PhpPreludeGroup) -> Vec<Statement> {
     // group tag picks the SOURCE, and the source is what identifies the entry.
     // See `vybe_compiler::primitives::prelude`.
     vybe_compiler::primitives::prelude::cached_infallible(src, |s| {
-        LINE_STARTS.with(|ls| *ls.borrow_mut() = build_line_starts(s));
-        let prelude = parse_prelude(s);
-        LINE_STARTS.with(|ls| ls.borrow_mut().clear());
+        __php_w.line_starts = build_line_starts(s);
+        let prelude = parse_prelude(__php_w, s);
+        __php_w.line_starts.clear();
         prelude
     })
 }
 
-fn cached_php_prelude_for(stmts: &[Statement]) -> Vec<Statement> {
+fn cached_php_prelude_for(__php_w: &mut PhpWalker, stmts: &[Statement]) -> Vec<Statement> {
     let mut needs = php_prelude_needs(stmts);
     if needs.session_functions {
         needs.class_helpers = true;
@@ -4379,56 +4406,48 @@ fn cached_php_prelude_for(stmts: &[Statement]) -> Vec<Statement> {
     }
     // Superglobals bind FIRST: the rest of the prelude is function declarations,
     // but a `$_SERVER` read in the script body must already see the request.
-    let mut prelude = php_superglobal_prelude(&needs.superglobals);
+    let mut prelude = php_superglobal_prelude(__php_w, &needs.superglobals);
     if needs.exceptions {
-        prelude.append(&mut cached_php_prelude_group(PhpPreludeGroup::Exception));
+        prelude.append(&mut cached_php_prelude_group(__php_w, PhpPreludeGroup::Exception));
     }
     if needs.url {
-        prelude.append(&mut cached_php_prelude_group(PhpPreludeGroup::Url));
+        prelude.append(&mut cached_php_prelude_group(__php_w, PhpPreludeGroup::Url));
     }
     if needs.class_helpers {
-        prelude.append(&mut cached_php_prelude_group(PhpPreludeGroup::Class));
+        prelude.append(&mut cached_php_prelude_group(__php_w, PhpPreludeGroup::Class));
     }
     if needs.ini {
-        prelude.append(&mut cached_php_prelude_group(PhpPreludeGroup::Ini));
+        prelude.append(&mut cached_php_prelude_group(__php_w, PhpPreludeGroup::Ini));
     }
     if needs.version {
-        prelude.append(&mut cached_php_prelude_group(PhpPreludeGroup::Version));
+        prelude.append(&mut cached_php_prelude_group(__php_w, PhpPreludeGroup::Version));
     }
     if needs.copy_on_assign {
-        prelude.append(&mut cached_php_prelude_group(PhpPreludeGroup::Copy));
+        prelude.append(&mut cached_php_prelude_group(__php_w, PhpPreludeGroup::Copy));
     }
     if needs.env_functions {
-        prelude.append(&mut cached_php_prelude_group(PhpPreludeGroup::Env));
+        prelude.append(&mut cached_php_prelude_group(__php_w, PhpPreludeGroup::Env));
     }
     if needs.session_functions {
-        prelude.append(&mut cached_php_prelude_group(PhpPreludeGroup::Session));
+        prelude.append(&mut cached_php_prelude_group(__php_w, PhpPreludeGroup::Session));
     }
     prelude
 }
 
-/// Memoised per PROCESS, mirroring `vybe_language_js::prelude_body`: the eight
-/// prelude groups are fixed text, and re-running pest over them on every
-/// compile was pure repetition.
-fn parse_prelude(src: &str) -> Vec<Statement> {
-    use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
-    static CACHE: OnceLock<Mutex<HashMap<String, Vec<Statement>>>> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(hit) = cache.lock().unwrap().get(src) {
-        return hit.clone();
-    }
-    let parsed = parse_prelude_uncached(src);
-    if cache.lock().unwrap().len() < 256 {
-        cache
-            .lock()
-            .unwrap()
-            .insert(src.to_string(), parsed.clone());
-    }
-    parsed
+/// The eight prelude groups are fixed text, so parsing them once per process is
+/// worth it — but the memo belongs in ONE deliberate place, and that place is
+/// `vybe_compiler::primitives::prelude::cached_infallible`, which
+/// `cached_php_prelude_group` above already calls. This had a second, private
+/// `static CACHE` underneath it doing the same job.
+///
+/// ⛔ A cache is a decision to persist a pure result. It is NOT a reason for the
+/// compiler's working state to be static, and treating it as one is what let 63
+/// statics accumulate in this file behind a "boot state must survive" argument.
+fn parse_prelude(__php_w: &mut PhpWalker, src: &str) -> Vec<Statement> {
+    parse_prelude_uncached(__php_w, src)
 }
 
-fn parse_prelude_uncached(src: &str) -> Vec<Statement> {
+fn parse_prelude_uncached(__php_w: &mut PhpWalker, src: &str) -> Vec<Statement> {
     let mut stmts = Vec::new();
     let Ok(mut pairs) = PhpParser::parse(Rule::program_pure, src) else {
         return stmts;
@@ -4451,7 +4470,7 @@ fn parse_prelude_uncached(src: &str) -> Vec<Statement> {
         } else {
             pair
         };
-        if let Ok(Some(stmt)) = walk_statement(pair) {
+        if let Ok(Some(stmt)) = walk_statement(__php_w, pair) {
             stmts.push(stmt);
         }
     }
@@ -4529,7 +4548,7 @@ fn php_prelude_needs(stmts: &[Statement]) -> PhpPreludeNeeds {
     .iter()
     .any(|name| ast.contains(name));
 
-    needs.class_helpers = ["stdClass", "__vybe_parent_class", "__php_loose_eq"]
+    needs.class_helpers = ["stdClass", "__php_loose_eq"]
         .iter()
         .any(|name| ast.contains(name));
 
@@ -4560,8 +4579,9 @@ fn php_prelude_needs(stmts: &[Statement]) -> PhpPreludeNeeds {
     needs
 }
 
-fn pre_register_php_function_signatures(program: &Pair<Rule>) {
+fn pre_register_php_function_signatures(__php_w: &mut PhpWalker, program: &Pair<Rule>) {
     fn register_name(
+        __php_w: &mut PhpWalker,
         name: String,
         ns: Option<&str>,
         param_count: usize,
@@ -4572,8 +4592,8 @@ fn pre_register_php_function_signatures(program: &Pair<Rule>) {
             return;
         }
         if by_ref.contains(&true) {
-            FUNC_BY_REF_PARAMS.with(|r| {
-                let mut reg = r.borrow_mut();
+            {
+                let reg = &mut __php_w.func_by_ref_params;
                 // php function names are case-insensitive, so the call site may
                 // spell `W($g)` for `function w`. Index both rather than
                 // scanning at every call.
@@ -4586,52 +4606,46 @@ fn pre_register_php_function_signatures(program: &Pair<Rule>) {
                     reg.insert(mangled.clone(), (mangled, by_ref.to_vec()));
                     reg.insert(dotted.clone(), (dotted, by_ref.to_vec()));
                 }
-            });
+            }
         }
-        FUNC_REGISTRY.with(|r| {
-            let mut reg = r.borrow_mut();
-            reg.insert(
-                name.clone(),
+        __php_w.func_registry.insert(
+            name.clone(),
+            FuncMeta {
+                name: name.clone(),
+                param_count,
+                required_params,
+                params: Vec::new(),
+                return_type: None,
+            },
+        );
+        if let Some(ns) = ns.filter(|ns| !ns.is_empty()) {
+            let fq = format!("{}.{}", ns.replace('\\', "."), name);
+            __php_w.namespace_functions.insert(fq.clone());
+            __php_w.func_registry.insert(
+                fq.clone(),
                 FuncMeta {
-                    name: name.clone(),
+                    name: fq,
                     param_count,
                     required_params,
                     params: Vec::new(),
                     return_type: None,
                 },
             );
-            if let Some(ns) = ns.filter(|ns| !ns.is_empty()) {
-                let fq = format!("{}.{}", ns.replace('\\', "."), name);
-                NAMESPACE_FUNCTIONS.with(|functions| {
-                    functions.borrow_mut().insert(fq.clone());
-                });
-                reg.insert(
-                    fq.clone(),
-                    FuncMeta {
-                        name: fq,
-                        param_count,
-                        required_params,
-                        params: Vec::new(),
-                        return_type: None,
-                    },
-                );
-                let mangled =
-                    php_mangle_function_name(&format!("{}.{}", ns.replace('\\', "."), name));
-                reg.insert(
-                    mangled.clone(),
-                    FuncMeta {
-                        name: mangled,
-                        param_count,
-                        required_params,
-                        params: Vec::new(),
-                        return_type: None,
-                    },
-                );
-            }
-        });
+            let mangled = php_mangle_function_name(&format!("{}.{}", ns.replace('\\', "."), name));
+            __php_w.func_registry.insert(
+                mangled.clone(),
+                FuncMeta {
+                    name: mangled,
+                    param_count,
+                    required_params,
+                    params: Vec::new(),
+                    return_type: None,
+                },
+            );
+        }
     }
 
-    fn visit(pair: Pair<Rule>, current_ns: &mut Option<String>) {
+    fn visit(__php_w: &mut PhpWalker, pair: Pair<Rule>, current_ns: &mut Option<String>) {
         let pair = if matches!(pair.as_rule(), Rule::pure_top_level_statement) {
             match pair.into_inner().next() {
                 Some(inner) => inner,
@@ -4664,6 +4678,7 @@ fn pre_register_php_function_signatures(program: &Pair<Rule>) {
                 }
             }
             register_name(
+                __php_w,
                 name,
                 current_ns.as_deref(),
                 param_count,
@@ -4687,7 +4702,7 @@ fn pre_register_php_function_signatures(program: &Pair<Rule>) {
             if let Some(block) = block {
                 let mut scoped_ns = if name.is_empty() { None } else { Some(name) };
                 for child in block.into_inner() {
-                    visit(child, &mut scoped_ns);
+                    visit(__php_w, child, &mut scoped_ns);
                 }
             } else if name.is_empty() {
                 *current_ns = None;
@@ -4697,20 +4712,20 @@ fn pre_register_php_function_signatures(program: &Pair<Rule>) {
             return;
         }
         for child in pair.into_inner() {
-            visit(child, current_ns);
+            visit(__php_w, child, current_ns);
         }
     }
 
     let mut current_ns = None;
     for pair in program.clone().into_inner() {
         if !matches!(pair.as_rule(), Rule::EOI) {
-            visit(pair, &mut current_ns);
+            visit(__php_w, pair, &mut current_ns);
         }
     }
 }
 
-fn pre_register_php_type_names(program: &Pair<Rule>) {
-    fn visit(pair: Pair<Rule>) {
+fn pre_register_php_type_names(__php_w: &mut PhpWalker, program: &Pair<Rule>) {
+    fn visit(__php_w: &mut PhpWalker, pair: Pair<Rule>) {
         let pair = if matches!(pair.as_rule(), Rule::pure_top_level_statement) {
             match pair.into_inner().next() {
                 Some(inner) => inner,
@@ -4731,12 +4746,8 @@ fn pre_register_php_type_names(program: &Pair<Rule>) {
             for child in pair.into_inner() {
                 if matches!(child.as_rule(), Rule::identifier | Rule::method_ident) {
                     let name = child.as_str().to_string();
-                    PREDECLARED_TYPE_NAMES.with(|r| {
-                        r.borrow_mut().insert(name.clone());
-                    });
-                    TYPE_KINDS.with(|r| {
-                        r.borrow_mut().entry(name).or_insert(kind);
-                    });
+                    __php_w.predeclared_type_names.insert(name.clone());
+                    __php_w.type_kinds.entry(name).or_insert(kind);
                     return;
                 }
             }
@@ -4744,23 +4755,46 @@ fn pre_register_php_type_names(program: &Pair<Rule>) {
         }
 
         for child in pair.into_inner() {
-            visit(child);
+            visit(__php_w, child);
         }
     }
 
     for pair in program.clone().into_inner() {
         if !matches!(pair.as_rule(), Rule::EOI) {
-            visit(pair);
+            visit(__php_w, pair);
         }
     }
 }
 
+/// ⛔ Nothing to clear, and that is the POINT — do not refill it.
+///
+/// Every registry this walker keeps now lives in [`PhpWalker`], which `parse`
+/// creates on entry and drops on return, including on the `?` error paths. So
+/// there is no process-global walk state for a second program on the same
+/// thread to inherit, and none for `Plugin::reset` to reach.
+///
+/// It used to be otherwise: 61 `thread_local!` registries, of which 16 —
+/// `CLASS_REGISTRY` above all — were never reset, so one program's classes
+/// decided the next program's inheritance, abstractness and interface
+/// questions inside any host that compiles more than once on a thread (the
+/// warm worker pool, `--serve`, a runtime `require`). Fixing the RESET took
+/// the php suite 1042 → 1014; moving the state onto a struct is what removed
+/// the failure mode instead of papering over it.
+///
+/// Kept as the `Plugin::reset` hook so the tenant-boundary contract stays
+/// wired: if this walker ever acquires process-global state again, this is
+/// where it gets dropped.
+pub fn reset_program_state() {}
+
 pub fn parse(source: &str) -> Result<Module, String> {
-    PHP_USE_IMPORTS.with(|v| v.borrow_mut().clear());
-    FUNCTION_IMPORT_ALIASES.with(|v| v.borrow_mut().clear());
-    NAMESPACE_FUNCTIONS.with(|v| v.borrow_mut().clear());
-    NAMESPACE_STACK.with(|v| v.borrow_mut().clear());
-    NAMESPACE_CONSTS.with(|v| v.borrow_mut().clear());
+    // The walk's ONLY state, owned here and dropped when `parse` returns —
+    // including on every `?` path below. No depth counter and no drop guard:
+    // those existed to decide when it was safe to clear process-global
+    // registries, and there are none left. A nested or concurrent walk gets
+    // its own `PhpWalker` for free.
+    let mut __php_w_owned = PhpWalker::default();
+    let __php_w = &mut __php_w_owned;
+
     let trimmed = source.trim_start();
     let should_normalize_first =
         trimmed.starts_with("<?") || (trimmed.starts_with('<') && source.contains("<?"));
@@ -4784,63 +4818,22 @@ pub fn parse(source: &str) -> Result<Module, String> {
         }
     };
     let source = normalized_source.as_deref().unwrap_or(source);
+    // AFTER normalization, and against the NORMALIZED text: a mixed-HTML file
+    // is rewritten before it is parsed, so spans index that string and not the
+    // original. Computing it earlier silently shifts every line number in a
+    // file with inline HTML.
+    __php_w.line_starts = build_line_starts(source);
 
     let mut body = Vec::new();
     let mut interface_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut trait_names: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    // Reset the per-parse trait-usage maps so prior `parse()` calls
-    // don't leak state. CLASS_STACK should already be empty here (push
-    // and pop are paired inside walk_class_decl/walk_trait_decl/etc).
-    CLASS_PARENT_STACK.with(|t| t.borrow_mut().clear());
-    CLASS_DECLARED_PROPERTIES.with(|t| t.borrow_mut().clear());
-    CONSTRUCTOR_REST_INDICES.with(|t| t.borrow_mut().clear());
-    TRAIT_USAGES.with(|t| t.borrow_mut().clear());
-    TRAIT_ALIASES.with(|t| t.borrow_mut().clear());
-    TRAIT_PRECEDENCES.with(|t| t.borrow_mut().clear());
-    TRAIT_BODIES.with(|t| t.borrow_mut().clear());
-    SIMPLE_ARRAY_VARS.with(|t| t.borrow_mut().clear());
-    SIMPLE_STRING_VARS.with(|t| t.borrow_mut().clear());
-    SIMPLE_VALUE_VARS.with(|t| t.borrow_mut().clear());
-    SIMPLE_OBJECT_FIELD_WRITES.with(|t| t.borrow_mut().clear());
-    SIMPLE_OBJECT_FIELD_VALUES.with(|t| t.borrow_mut().clear());
-    SIMPLE_STATIC_FIELD_WRITES.with(|t| t.borrow_mut().clear());
-    SIMPLE_INDEX_ALIASES.with(|t| t.borrow_mut().clear());
-    SIMPLE_VAR_INDEX_ALIASES.with(|t| t.borrow_mut().clear());
-    SIMPLE_DEFINED_VARS.with(|t| t.borrow_mut().clear());
-    SIMPLE_CALLABLE_VARS.with(|t| t.borrow_mut().clear());
-    SIMPLE_ASSERT_CALLBACK.with(|t| *t.borrow_mut() = None);
-    CLOSURE_BIND_SCOPE.with(|t| *t.borrow_mut() = None);
-    SIMPLE_FIBER_VARS.with(|t| t.borrow_mut().clear());
-    SIMPLE_XML_VARS.with(|t| t.borrow_mut().clear());
-    SIMPLE_GETTER_METHODS.with(|t| t.borrow_mut().clear());
-    FUNCTION_RETURN_TYPES.with(|t| t.borrow_mut().clear());
-    SEEN_CLASS_METHODS.with(|t| t.borrow_mut().clear());
-    PREDECLARED_TYPE_NAMES.with(|t| t.borrow_mut().clear());
-    TYPE_KINDS.with(|t| t.borrow_mut().clear());
-    CLASS_ALIASES.with(|t| t.borrow_mut().clear());
-    CLASS_ATTRIBUTES.with(|t| t.borrow_mut().clear());
-    METHOD_ATTRIBUTES.with(|t| t.borrow_mut().clear());
-    PROPERTY_ATTRIBUTES.with(|t| t.borrow_mut().clear());
-    CLASS_CONST_ATTRIBUTES.with(|t| t.borrow_mut().clear());
-    ENUM_CASE_ATTRIBUTES.with(|t| t.borrow_mut().clear());
-    PENDING_CLASS_ATTRIBUTES.with(|t| t.borrow_mut().clear());
-    FUNCTION_PARAM_ATTRIBUTES.with(|t| t.borrow_mut().clear());
-    CONSTRUCTOR_PARAM_ATTRIBUTES.with(|t| t.borrow_mut().clear());
-    CONSTRUCTOR_PARAM_NAMES.with(|t| t.borrow_mut().clear());
-    LINE_STARTS.with(|starts| {
-        *starts.borrow_mut() = build_line_starts(source);
-    });
-
     let program = pairs.next().ok_or("empty parse")?;
-    pre_register_php_type_names(&program);
-    // A name left over from a previously parsed file would mark arguments at a
-    // call site whose callee takes none by reference.
-    FUNC_BY_REF_PARAMS.with(|r| r.borrow_mut().clear());
-    pre_register_php_function_signatures(&program);
+    pre_register_php_type_names(__php_w, &program);
+    pre_register_php_function_signatures(__php_w, &program);
     match program.as_rule() {
         Rule::program => {
-            collect_program_body(program, &mut body, &mut interface_names, &mut trait_names)?;
+            collect_program_body(__php_w, program, &mut body, &mut interface_names, &mut trait_names)?;
         }
         Rule::program_pure => {
             let mut active_namespace: Option<(String, Vec<Statement>)> = None;
@@ -4877,11 +4870,11 @@ pub fn parse(source: &str) -> Result<Module, String> {
                     }
                     flush_namespace(&mut active_namespace, &mut body);
                     if has_block {
-                        if let Some(stmt) = walk_statement(pair)? {
+                        if let Some(stmt) = walk_statement(__php_w, pair)? {
                             body.push(stmt);
                         }
                     } else {
-                        let _ = walk_statement(pair)?;
+                        let _ = walk_statement(__php_w, pair)?;
                         active_namespace =
                             Some((ns_name.trim_start_matches('\\').to_string(), Vec::new()));
                     }
@@ -4889,7 +4882,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
                 }
                 let was_interface = matches!(pair.as_rule(), Rule::interface_declaration);
                 let was_trait = matches!(pair.as_rule(), Rule::trait_declaration);
-                if let Some(stmt) = walk_statement(pair)? {
+                if let Some(stmt) = walk_statement(__php_w, pair)? {
                     if was_interface {
                         if let StmtKind::ClassDecl { ref name, .. } = stmt.kind {
                             interface_names.insert(name.clone());
@@ -5127,14 +5120,12 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // Traits declared inside `namespace X { … }` blocks never reach the
     // segment-level `was_trait` registration — TRAIT_BODIES (published by
     // walk_trait_decl itself) is the authoritative set; merge it.
-    TRAIT_BODIES.with(|t| {
-        for (name, members) in t.borrow().iter() {
-            trait_members
-                .entry(name.clone())
-                .or_insert_with(|| members.clone());
-            trait_names.insert(name.clone());
-        }
-    });
+    for (name, members) in __php_w.trait_bodies.iter() {
+        trait_members
+            .entry(name.clone())
+            .or_insert_with(|| members.clone());
+        trait_names.insert(name.clone());
+    }
 
     // Snapshot the trait usage maps. These no longer drive any member copying —
     // the class declares `Augment` members and the shared pass folds them. They
@@ -5142,10 +5133,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // walker-time lookups depend on. `insteadof` is absent for the same reason
     // it does not appear below: excluding a name another trait supplies cannot
     // change the union.
-    let usages: std::collections::HashMap<String, Vec<String>> =
-        TRAIT_USAGES.with(|t| t.borrow().clone());
+    let usages: std::collections::HashMap<String, Vec<String>> = __php_w.trait_usages.clone();
     let aliases: std::collections::HashMap<String, Vec<(String, String, String)>> =
-        TRAIT_ALIASES.with(|t| t.borrow().clone());
+        __php_w.trait_aliases.clone();
 
     // Transitively expand trait-uses-trait (`trait Outer { use Inner; }`):
     // a trait that `use`s another trait must expose the inner trait's
@@ -5347,9 +5337,12 @@ pub fn parse(source: &str) -> Result<Module, String> {
                         declared.insert(mn);
                     }
                 }
-                let is_readonly = CLASS_REGISTRY
-                    .with(|r| r.borrow().get(name).map(|m| m.is_readonly).unwrap_or(false));
-                let meta = extract_class_meta(
+                let is_readonly = __php_w
+                    .class_registry
+                    .get(name)
+                    .map(|m| m.is_readonly)
+                    .unwrap_or(false);
+                let meta = extract_class_meta(__php_w, 
                     name,
                     parents,
                     interfaces,
@@ -5357,9 +5350,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
                     &registry_members,
                     is_readonly,
                 );
-                CLASS_REGISTRY.with(|r| {
-                    r.borrow_mut().insert(name.clone(), meta);
-                });
+                {
+                    __php_w.class_registry.insert(name.clone(), meta);
+                };
             }
         }
     }
@@ -5384,7 +5377,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // Lower any `goto`/label in the top-level script into structured control
     // flow (shared with C via lower_gotos); no-op when the block has no label.
     let mut rest = php_lower_gotos(rest);
-    rest = php_lower_loop_control_levels(rest);
+    rest = php_lower_loop_control_levels(__php_w, rest);
     hoisted.append(&mut rest);
 
     // Uncaught exceptions: report in PHP's own shape instead of letting the
@@ -5413,14 +5406,14 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // Prepend only the PHP prelude groups referenced by the normalized AST.
     // Each group is still parsed once per process and cloned per call.
     let body = {
-        let mut prelude = cached_php_prelude_for(&hoisted);
+        let mut prelude = cached_php_prelude_for(__php_w, &hoisted);
         prelude.append(&mut hoisted);
         prelude
     };
 
-    LINE_STARTS.with(|starts| starts.borrow_mut().clear());
+    __php_w.line_starts.clear();
 
-    let imports = PHP_USE_IMPORTS.with(|v| std::mem::take(&mut *v.borrow_mut()));
+    let imports = std::mem::take(&mut __php_w.php_use_imports);
     Ok(Module {
         name: String::new(),
         language: Lang::PHP,
@@ -5448,17 +5441,17 @@ pub fn parse(source: &str) -> Result<Module, String> {
 
 // ─── Statements ────────────────────────────────────────────────────────────
 
-fn walk_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
-    let span = to_span(&pair);
+fn walk_statement(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<Option<Statement>, String> {
+    let span = to_span(__php_w, &pair);
     let rule = pair.as_rule();
     let kind = match rule {
         Rule::EOI => return Ok(None),
-        Rule::function_declaration => walk_function_decl(pair)?,
-        Rule::class_declaration => walk_class_decl(pair)?,
-        Rule::interface_declaration => walk_interface_decl(pair)?,
-        Rule::trait_declaration => walk_trait_decl(pair)?,
-        Rule::enum_declaration => walk_enum_decl(pair)?,
-        _ => walk_statement_kind(pair, rule)?,
+        Rule::function_declaration => walk_function_decl(__php_w, pair)?,
+        Rule::class_declaration => walk_class_decl(__php_w, pair)?,
+        Rule::interface_declaration => walk_interface_decl(__php_w, pair)?,
+        Rule::trait_declaration => walk_trait_decl(__php_w, pair)?,
+        Rule::enum_declaration => walk_enum_decl(__php_w, pair)?,
+        _ => walk_statement_kind(__php_w, pair, rule)?,
     };
     Ok(Some(Statement::with_span(kind, span)))
 }
@@ -5488,7 +5481,7 @@ fn php_drop_low_precedence_assignment_bool(expr: Expression) -> Expression {
     }
 }
 
-fn walk_statement_kind(pair: Pair<Rule>, rule: Rule) -> Result<StmtKind, String> {
+fn walk_statement_kind(__php_w: &mut PhpWalker, pair: Pair<Rule>, rule: Rule) -> Result<StmtKind, String> {
     let kind = match rule {
         Rule::empty_statement => StmtKind::Empty,
 
@@ -5496,7 +5489,7 @@ fn walk_statement_kind(pair: Pair<Rule>, rule: Rule) -> Result<StmtKind, String>
             let inner = pair.into_inner();
             let mut stmts = Vec::new();
             for s in inner {
-                if let Some(st) = walk_statement(s)? {
+                if let Some(st) = walk_statement(__php_w, s)? {
                     stmts.push(st);
                 }
             }
@@ -5504,17 +5497,18 @@ fn walk_statement_kind(pair: Pair<Rule>, rule: Rule) -> Result<StmtKind, String>
         }
 
         Rule::echo_statement | Rule::print_statement => {
-            let exprs = with_php_echo_context(|| {
-                pair.into_inner()
-                    .filter(|p| matches!(p.as_rule(), Rule::expression))
-                    .map(walk_expression)
-                    .collect::<Result<Vec<Expression>, String>>()
-            });
-            php_echo_stmt_kind(exprs?)
+            let __echo_prev = enter_php_echo_context(__php_w);
+            let exprs = pair
+                .into_inner()
+                .filter(|p| matches!(p.as_rule(), Rule::expression))
+                .map(|__p| walk_expression(__php_w, __p))
+                .collect::<Result<Vec<Expression>, String>>();
+            leave_php_echo_context(__php_w, __echo_prev);
+            php_echo_stmt_kind(__php_w, exprs?)
         }
 
         Rule::expression_statement => {
-            let expr = walk_expression(pair.into_inner().next().unwrap())?;
+            let expr = walk_expression(__php_w, pair.into_inner().next().unwrap())?;
             StmtKind::Expr(php_drop_low_precedence_assignment_bool(expr))
         }
 
@@ -5522,17 +5516,15 @@ fn walk_statement_kind(pair: Pair<Rule>, rule: Rule) -> Result<StmtKind, String>
             // const NAME = expr;
             let mut inner = inner_nokw(pair);
             let name = inner.next().unwrap().as_str().to_string();
-            let value = walk_expression(inner.next().unwrap())?;
+            let value = walk_expression(__php_w, inner.next().unwrap())?;
             // Inside `namespace Ns;` / `namespace Ns { … }` the constant is
             // GLOBAL state with a namespace-qualified identity — a VarDecl
             // would become a scoped local invisible to functions and to FQ
             // reads. Assign both the bare name (in-namespace/global-fallback
             // reads) and the qualified `Ns.NAME` (`\Ns\NAME` FQ reads).
-            if let Some(ns) = current_namespace().filter(|n| !n.is_empty()) {
+            if let Some(ns) = current_namespace(__php_w).filter(|n| !n.is_empty()) {
                 let qualified = format!("{}.{}", ns.replace('\\', "."), name);
-                NAMESPACE_CONSTS.with(|consts| {
-                    consts.borrow_mut().insert(qualified.clone());
-                });
+                __php_w.namespace_consts.insert(qualified.clone());
                 StmtKind::Block(vec![
                     // Bare VarDecl keeps the compile-time const machinery
                     // (function bodies read constants without `global`).
@@ -5590,7 +5582,7 @@ fn walk_statement_kind(pair: Pair<Rule>, rule: Rule) -> Result<StmtKind, String>
                     text = p.as_str().to_string();
                 }
             }
-            php_echo_stmt_kind(vec![Expression::new(ExprKind::Lit(Literal::Str(text)))])
+            php_echo_stmt_kind(__php_w, vec![Expression::new(ExprKind::Lit(Literal::Str(text)))])
         }
 
         Rule::static_variable_statement => {
@@ -5608,7 +5600,7 @@ fn walk_statement_kind(pair: Pair<Rule>, rule: Rule) -> Result<StmtKind, String>
                         match inner.as_rule() {
                             Rule::variable => name = strip_dollar(inner.as_str()).to_string(),
                             _ => {
-                                init = Some(walk_expression(inner)?);
+                                init = Some(walk_expression(__php_w, inner)?);
                             }
                         }
                     }
@@ -5640,10 +5632,10 @@ fn walk_statement_kind(pair: Pair<Rule>, rule: Rule) -> Result<StmtKind, String>
                         // `name` precedes the body — track it so `__NAMESPACE__`
                         // inside resolves to the fully-qualified namespace.
                         let ns = name.trim_start_matches('\\').to_string();
-                        NAMESPACE_STACK.with(|s| s.borrow_mut().push(ns));
+                        __php_w.namespace_stack.push(ns);
                         let mut walked = Ok(());
                         for s in p.into_inner() {
-                            match walk_statement(s) {
+                            match walk_statement(__php_w, s) {
                                 Ok(Some(st)) => body.push(st),
                                 Ok(None) => {}
                                 Err(e) => {
@@ -5652,9 +5644,7 @@ fn walk_statement_kind(pair: Pair<Rule>, rule: Rule) -> Result<StmtKind, String>
                                 }
                             }
                         }
-                        NAMESPACE_STACK.with(|s| {
-                            s.borrow_mut().pop();
-                        });
+                        __php_w.namespace_stack.pop();
                         walked?;
                     }
                     _ => {}
@@ -5666,11 +5656,8 @@ fn walk_statement_kind(pair: Pair<Rule>, rule: Rule) -> Result<StmtKind, String>
             if body.is_empty() {
                 let ns = name.trim_start_matches('\\').to_string();
                 if !ns.is_empty() {
-                    NAMESPACE_STACK.with(|s| {
-                        let mut stack = s.borrow_mut();
-                        stack.clear();
-                        stack.push(ns);
-                    });
+                    __php_w.namespace_stack.clear();
+                    __php_w.namespace_stack.push(ns);
                 }
                 StmtKind::Empty
             } else {
@@ -5695,8 +5682,8 @@ fn walk_statement_kind(pair: Pair<Rule>, rule: Rule) -> Result<StmtKind, String>
                 };
                 match inner.as_rule() {
                     Rule::use_item => {
-                        if let Some(import) = php_use_item_to_import(inner, None, use_is_function) {
-                            note_php_use_import(import);
+                        if let Some(import) = php_use_item_to_import(__php_w, inner, None, use_is_function) {
+                            note_php_use_import(__php_w, import);
                         }
                     }
                     Rule::use_group => {
@@ -5708,9 +5695,9 @@ fn walk_statement_kind(pair: Pair<Rule>, rule: Rule) -> Result<StmtKind, String>
                                 }
                                 Rule::use_item => {
                                     if let Some(import) =
-                                        php_use_item_to_import(g, Some(&prefix), false)
+                                        php_use_item_to_import(__php_w, g, Some(&prefix), false)
                                     {
-                                        note_php_use_import(import);
+                                        note_php_use_import(__php_w, import);
                                     }
                                 }
                                 _ => {}
@@ -5723,17 +5710,17 @@ fn walk_statement_kind(pair: Pair<Rule>, rule: Rule) -> Result<StmtKind, String>
             StmtKind::Empty
         }
 
-        Rule::if_statement => walk_if(pair)?,
+        Rule::if_statement => walk_if(__php_w, pair)?,
 
         Rule::while_statement => {
             let mut inner = inner_nokw(pair);
             let cond_pair = inner.next().unwrap();
             let body_pair = inner.next().unwrap();
             let body_source = body_pair.as_str().to_string();
-            let raw_cond = walk_expression(cond_pair)?;
+            let raw_cond = walk_expression(__php_w, cond_pair)?;
             let source_drains_place =
                 php_while_source_drains_simple_array_place(&raw_cond, &body_source);
-            let body = walk_statement_into_body(body_pair)?;
+            let body = walk_statement_into_body(__php_w, body_pair)?;
             let cond = if source_drains_place {
                 php_array_length_positive_condition(raw_cond)
             } else {
@@ -5748,8 +5735,8 @@ fn walk_statement_kind(pair: Pair<Rule>, rule: Rule) -> Result<StmtKind, String>
 
         Rule::do_while_statement => {
             let mut inner = inner_nokw(pair);
-            let body = walk_statement_into_body(inner.next().unwrap())?;
-            let cond = php_truthy_condition(walk_expression(inner.next().unwrap())?);
+            let body = walk_statement_into_body(__php_w, inner.next().unwrap())?;
+            let cond = php_truthy_condition(walk_expression(__php_w, inner.next().unwrap())?);
             StmtKind::DoWhile {
                 body,
                 cond,
@@ -5757,9 +5744,9 @@ fn walk_statement_kind(pair: Pair<Rule>, rule: Rule) -> Result<StmtKind, String>
             }
         }
 
-        Rule::for_statement => walk_for(pair)?,
+        Rule::for_statement => walk_for(__php_w, pair)?,
 
-        Rule::foreach_statement => walk_foreach(pair)?,
+        Rule::foreach_statement => walk_foreach(__php_w, pair)?,
 
         Rule::goto_statement => {
             let mut label = String::new();
@@ -5767,7 +5754,7 @@ fn walk_statement_kind(pair: Pair<Rule>, rule: Rule) -> Result<StmtKind, String>
                 match p.as_rule() {
                     Rule::identifier => label = p.as_str().to_string(),
                     Rule::expression => {
-                        label = match walk_expression(p)?.kind {
+                        label = match walk_expression(__php_w, p)?.kind {
                             ExprKind::Ident(name) => name,
                             ExprKind::Lit(Literal::Str(text)) => text,
                             _ => "__php_dynamic_goto".to_string(),
@@ -5784,7 +5771,7 @@ fn walk_statement_kind(pair: Pair<Rule>, rule: Rule) -> Result<StmtKind, String>
             let label = inner.next().unwrap().as_str().to_string();
             if let Some(body_pair) = inner.next() {
                 let body =
-                    walk_statement(body_pair)?.unwrap_or_else(|| Statement::new(StmtKind::Empty));
+                    walk_statement(__php_w, body_pair)?.unwrap_or_else(|| Statement::new(StmtKind::Empty));
                 StmtKind::Labeled {
                     label,
                     body: Box::new(body),
@@ -5800,18 +5787,18 @@ fn walk_statement_kind(pair: Pair<Rule>, rule: Rule) -> Result<StmtKind, String>
                 _ => None,
             });
             match body {
-                Some(stmt) => StmtKind::Block(walk_statement_into_body(stmt)?),
+                Some(stmt) => StmtKind::Block(walk_statement_into_body(__php_w, stmt)?),
                 None => StmtKind::Empty,
             }
         }
 
-        Rule::switch_statement => walk_switch(pair)?,
+        Rule::switch_statement => walk_switch(__php_w, pair)?,
 
         Rule::return_statement => {
             let expr = pair
                 .into_inner()
                 .find(|p| matches!(p.as_rule(), Rule::expression))
-                .map(walk_expression)
+                .map(|__p| walk_expression(__php_w, __p))
                 .transpose()?;
             StmtKind::Return(expr)
         }
@@ -5820,7 +5807,7 @@ fn walk_statement_kind(pair: Pair<Rule>, rule: Rule) -> Result<StmtKind, String>
             let level = pair
                 .into_inner()
                 .find(|p| matches!(p.as_rule(), Rule::expression))
-                .map(walk_expression)
+                .map(|__p| walk_expression(__php_w, __p))
                 .transpose()?;
             // PHP break/continue can take an integer level
             let target = match level {
@@ -5838,7 +5825,7 @@ fn walk_statement_kind(pair: Pair<Rule>, rule: Rule) -> Result<StmtKind, String>
             let level = pair
                 .into_inner()
                 .find(|p| matches!(p.as_rule(), Rule::expression))
-                .map(walk_expression)
+                .map(|__p| walk_expression(__php_w, __p))
                 .transpose()?;
             let target = match level {
                 Some(Expression {
@@ -5851,14 +5838,14 @@ fn walk_statement_kind(pair: Pair<Rule>, rule: Rule) -> Result<StmtKind, String>
         }
 
         Rule::throw_statement => {
-            let expr = walk_expression(inner_nokw(pair).next().unwrap())?;
+            let expr = walk_expression(__php_w, inner_nokw(pair).next().unwrap())?;
             StmtKind::Throw {
                 expr: Some(expr),
                 cause: None,
             }
         }
 
-        Rule::try_statement => walk_try(pair)?,
+        Rule::try_statement => walk_try(__php_w, pair)?,
 
         other => return Err(format!("walker: unhandled statement rule {:?}", other)),
     };
@@ -5869,17 +5856,17 @@ fn walk_statement_kind(pair: Pair<Rule>, rule: Rule) -> Result<StmtKind, String>
 /// Walk a `statement` rule into a `Vec<Statement>` (a body). If the
 /// rule is a block, return its contents; otherwise wrap the single
 /// statement in a one-element Vec.
-fn walk_statement_into_body(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
+fn walk_statement_into_body(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
     if matches!(pair.as_rule(), Rule::block_statement) {
         let mut stmts = Vec::new();
         for s in pair.into_inner() {
-            if let Some(st) = walk_statement(s)? {
+            if let Some(st) = walk_statement(__php_w, s)? {
                 stmts.push(st);
             }
         }
         Ok(stmts)
     } else {
-        match walk_statement(pair)? {
+        match walk_statement(__php_w, pair)? {
             Some(s) => Ok(vec![s]),
             None => Ok(Vec::new()),
         }
@@ -6187,15 +6174,15 @@ struct PhpLoopControlTarget {
     continue_update: Option<Expression>,
 }
 
-fn php_lower_loop_control_levels(stmts: Vec<Statement>) -> Vec<Statement> {
+fn php_lower_loop_control_levels(__php_w: &mut PhpWalker, stmts: Vec<Statement>) -> Vec<Statement> {
     let mut stack = Vec::new();
     stmts
         .into_iter()
-        .map(|stmt| php_lower_loop_control_levels_stmt(stmt, &mut stack).0)
+        .map(|stmt| php_lower_loop_control_levels_stmt(__php_w, stmt, &mut stack).0)
         .collect()
 }
 
-fn php_lower_loop_control_levels_stmt(
+fn php_lower_loop_control_levels_stmt(__php_w: &mut PhpWalker, 
     stmt: Statement,
     stack: &mut Vec<PhpLoopControlTarget>,
 ) -> (Statement, std::collections::HashSet<String>) {
@@ -6252,7 +6239,7 @@ fn php_lower_loop_control_levels_stmt(
             cond,
             body,
             else_body,
-        } => php_lower_loop_control_levels_loop(
+        } => php_lower_loop_control_levels_loop(__php_w, 
             span,
             stack,
             |body, else_body| StmtKind::While {
@@ -6263,7 +6250,7 @@ fn php_lower_loop_control_levels_stmt(
             body,
             else_body,
         ),
-        StmtKind::DoWhile { body, cond, until } => php_lower_loop_control_levels_loop(
+        StmtKind::DoWhile { body, cond, until } => php_lower_loop_control_levels_loop(__php_w, 
             span,
             stack,
             |body, _| StmtKind::DoWhile { body, cond, until },
@@ -6276,12 +6263,12 @@ fn php_lower_loop_control_levels_stmt(
             update,
             body,
         } => {
-            let label = next_tmp_name("loop_level");
+            let label = next_tmp_name(__php_w, "loop_level");
             stack.push(PhpLoopControlTarget {
                 label: label.clone(),
                 continue_update: update.clone(),
             });
-            let (body, mut used) = php_lower_loop_control_levels_block(body, stack);
+            let (body, mut used) = php_lower_loop_control_levels_block(__php_w, body, stack);
             stack.pop();
             let kind = StmtKind::For {
                 init,
@@ -6312,14 +6299,14 @@ fn php_lower_loop_control_levels_stmt(
             else_body,
             is_async,
         } => {
-            let label = next_tmp_name("loop_level");
+            let label = next_tmp_name(__php_w, "loop_level");
             stack.push(PhpLoopControlTarget {
                 label: label.clone(),
                 continue_update: None,
             });
-            let (body, mut used) = php_lower_loop_control_levels_block(body, stack);
+            let (body, mut used) = php_lower_loop_control_levels_block(__php_w, body, stack);
             let else_body = else_body.map(|body| {
-                let (body, else_used) = php_lower_loop_control_levels_block(body, stack);
+                let (body, else_used) = php_lower_loop_control_levels_block(__php_w, body, stack);
                 used.extend(else_used);
                 body
             });
@@ -6350,11 +6337,11 @@ fn php_lower_loop_control_levels_stmt(
             (stmt, used)
         }
         StmtKind::Block(body) => {
-            let (body, used) = php_lower_loop_control_levels_block(body, stack);
+            let (body, used) = php_lower_loop_control_levels_block(__php_w, body, stack);
             (Statement::with_span(StmtKind::Block(body), span), used)
         }
         StmtKind::NamespaceDecl { name, body } => {
-            let (body, used) = php_lower_loop_control_levels_block(body, stack);
+            let (body, used) = php_lower_loop_control_levels_block(__php_w, body, stack);
             (
                 Statement::with_span(StmtKind::NamespaceDecl { name, body }, span),
                 used,
@@ -6366,17 +6353,17 @@ fn php_lower_loop_control_levels_stmt(
             elifs,
             else_body,
         } => {
-            let (then_body, mut used) = php_lower_loop_control_levels_block(then_body, stack);
+            let (then_body, mut used) = php_lower_loop_control_levels_block(__php_w, then_body, stack);
             let elifs = elifs
                 .into_iter()
                 .map(|(cond, body)| {
-                    let (body, branch_used) = php_lower_loop_control_levels_block(body, stack);
+                    let (body, branch_used) = php_lower_loop_control_levels_block(__php_w, body, stack);
                     used.extend(branch_used);
                     (cond, body)
                 })
                 .collect();
             let else_body = else_body.map(|body| {
-                let (body, branch_used) = php_lower_loop_control_levels_block(body, stack);
+                let (body, branch_used) = php_lower_loop_control_levels_block(__php_w, body, stack);
                 used.extend(branch_used);
                 body
             });
@@ -6399,23 +6386,23 @@ fn php_lower_loop_control_levels_stmt(
             else_body,
             finally,
         } => {
-            let (body, mut used) = php_lower_loop_control_levels_block(body, stack);
+            let (body, mut used) = php_lower_loop_control_levels_block(__php_w, body, stack);
             let catches = catches
                 .into_iter()
                 .map(|mut catch| {
-                    let (body, catch_used) = php_lower_loop_control_levels_block(catch.body, stack);
+                    let (body, catch_used) = php_lower_loop_control_levels_block(__php_w, catch.body, stack);
                     used.extend(catch_used);
                     catch.body = body;
                     catch
                 })
                 .collect();
             let else_body = else_body.map(|body| {
-                let (body, branch_used) = php_lower_loop_control_levels_block(body, stack);
+                let (body, branch_used) = php_lower_loop_control_levels_block(__php_w, body, stack);
                 used.extend(branch_used);
                 body
             });
             let finally = finally.map(|body| {
-                let (body, finally_used) = php_lower_loop_control_levels_block(body, stack);
+                let (body, finally_used) = php_lower_loop_control_levels_block(__php_w, body, stack);
                 used.extend(finally_used);
                 body
             });
@@ -6439,21 +6426,21 @@ fn php_lower_loop_control_levels_stmt(
     }
 }
 
-fn php_lower_loop_control_levels_loop(
+fn php_lower_loop_control_levels_loop(__php_w: &mut PhpWalker, 
     span: Span,
     stack: &mut Vec<PhpLoopControlTarget>,
     build: impl FnOnce(Vec<Statement>, Option<Vec<Statement>>) -> StmtKind,
     body: Vec<Statement>,
     else_body: Option<Vec<Statement>>,
 ) -> (Statement, std::collections::HashSet<String>) {
-    let label = next_tmp_name("loop_level");
+    let label = next_tmp_name(__php_w, "loop_level");
     stack.push(PhpLoopControlTarget {
         label: label.clone(),
         continue_update: None,
     });
-    let (body, mut used) = php_lower_loop_control_levels_block(body, stack);
+    let (body, mut used) = php_lower_loop_control_levels_block(__php_w, body, stack);
     let else_body = else_body.map(|body| {
-        let (body, else_used) = php_lower_loop_control_levels_block(body, stack);
+        let (body, else_used) = php_lower_loop_control_levels_block(__php_w, body, stack);
         used.extend(else_used);
         body
     });
@@ -6473,7 +6460,7 @@ fn php_lower_loop_control_levels_loop(
     (stmt, used)
 }
 
-fn php_lower_loop_control_levels_block(
+fn php_lower_loop_control_levels_block(__php_w: &mut PhpWalker, 
     stmts: Vec<Statement>,
     stack: &mut Vec<PhpLoopControlTarget>,
 ) -> (Vec<Statement>, std::collections::HashSet<String>) {
@@ -6481,7 +6468,7 @@ fn php_lower_loop_control_levels_block(
     let stmts = stmts
         .into_iter()
         .map(|stmt| {
-            let (stmt, stmt_used) = php_lower_loop_control_levels_stmt(stmt, stack);
+            let (stmt, stmt_used) = php_lower_loop_control_levels_stmt(__php_w, stmt, stack);
             used.extend(stmt_used);
             stmt
         })
@@ -6489,27 +6476,27 @@ fn php_lower_loop_control_levels_block(
     (stmts, used)
 }
 
-fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_if(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner = inner_nokw(pair);
-    let cond = php_truthy_condition(walk_expression(inner.next().unwrap())?);
+    let cond = php_truthy_condition(walk_expression(__php_w, inner.next().unwrap())?);
     let then_pair = inner.next().unwrap();
     let (then_body, elifs, else_body) = match then_pair.as_rule() {
-        Rule::if_alt_block => walk_if_alt_block(then_pair)?,
+        Rule::if_alt_block => walk_if_alt_block(__php_w, then_pair)?,
         _ => {
-            let then_body = walk_statement_into_body(then_pair)?;
+            let then_body = walk_statement_into_body(__php_w, then_pair)?;
             let mut elifs = Vec::new();
             let mut else_body = None;
             for p in inner {
                 match p.as_rule() {
                     Rule::elseif_clause => {
                         let mut e = inner_nokw(p);
-                        let c = php_truthy_condition(walk_expression(e.next().unwrap())?);
-                        let b = walk_statement_into_body(e.next().unwrap())?;
+                        let c = php_truthy_condition(walk_expression(__php_w, e.next().unwrap())?);
+                        let b = walk_statement_into_body(__php_w, e.next().unwrap())?;
                         elifs.push((c, b));
                     }
                     Rule::else_clause => {
                         let s = inner_nokw(p).next().unwrap();
-                        else_body = Some(walk_statement_into_body(s)?);
+                        else_body = Some(walk_statement_into_body(__php_w, s)?);
                     }
                     _ => {}
                 }
@@ -6525,7 +6512,7 @@ fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
     })
 }
 
-fn walk_if_alt_block(
+fn walk_if_alt_block(__php_w: &mut PhpWalker, 
     pair: Pair<Rule>,
 ) -> Result<
     (
@@ -6546,9 +6533,9 @@ fn walk_if_alt_block(
                 let mut body = Vec::new();
                 for inner in inner_nokw(part) {
                     match inner.as_rule() {
-                        Rule::expression => cond = Some(walk_expression(inner)?),
+                        Rule::expression => cond = Some(walk_expression(__php_w, inner)?),
                         _ => {
-                            if let Some(stmt) = walk_statement(inner)? {
+                            if let Some(stmt) = walk_statement(__php_w, inner)? {
                                 body.push(stmt);
                             }
                         }
@@ -6562,7 +6549,7 @@ fn walk_if_alt_block(
             Rule::else_alt_clause => {
                 let mut body = Vec::new();
                 for inner in inner_nokw(part) {
-                    if let Some(stmt) = walk_statement(inner)? {
+                    if let Some(stmt) = walk_statement(__php_w, inner)? {
                         body.push(stmt);
                     }
                 }
@@ -6570,7 +6557,7 @@ fn walk_if_alt_block(
             }
             Rule::kw_endif => {}
             _ => {
-                if let Some(stmt) = walk_statement(part)? {
+                if let Some(stmt) = walk_statement(__php_w, part)? {
                     then_body.push(stmt);
                 }
             }
@@ -6580,7 +6567,7 @@ fn walk_if_alt_block(
     Ok((then_body, elifs, else_body))
 }
 
-fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_for(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     // for_statement = { kw_for ~ "(" ~ for_init? ~ ";" ~ expression? ~ ";"
     //                   ~ for_update? ~ ")" ~ statement }
     let mut init: Option<Vec<Expression>> = None;
@@ -6590,14 +6577,14 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::for_init => {
-                let exprs: Result<Vec<_>, _> = p.into_inner().map(walk_expression).collect();
+                let exprs: Result<Vec<_>, _> = p.into_inner().map(|__p| walk_expression(__php_w, __p)).collect();
                 init = Some(exprs?);
             }
             Rule::expression => {
-                cond = Some(walk_expression(p)?);
+                cond = Some(walk_expression(__php_w, p)?);
             }
             Rule::for_update => {
-                let exprs: Result<Vec<_>, _> = p.into_inner().map(walk_expression).collect();
+                let exprs: Result<Vec<_>, _> = p.into_inner().map(|__p| walk_expression(__php_w, __p)).collect();
                 update = Some(exprs?);
             }
             _ => {
@@ -6605,7 +6592,7 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
             }
         }
     }
-    let body = walk_statement_into_body(body_stmt.ok_or("for: missing body")?)?;
+    let body = walk_statement_into_body(__php_w, body_stmt.ok_or("for: missing body")?)?;
 
     // Compose multi-init / multi-update into a `Sequence` expression
     // wrapped in an Expr statement, since the common AST's `For` only
@@ -6634,7 +6621,7 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
     })
 }
 
-fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_foreach(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     // foreach_statement = { kw_foreach ~ "(" ~ expression ~ kw_as
     //                       ~ foreach_target ~ ")" ~ (statement | foreach_alt_block) }
     let mut iter: Option<Expression> = None;
@@ -6642,14 +6629,14 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut body: Vec<Statement> = Vec::new();
     for p in pair.into_inner() {
         match p.as_rule() {
-            Rule::expression => iter = Some(walk_expression(p)?),
+            Rule::expression => iter = Some(walk_expression(__php_w, p)?),
             Rule::foreach_target => target_pair = Some(p),
             Rule::foreach_alt_block => {
                 for stmt in p.into_inner() {
                     if matches!(stmt.as_rule(), Rule::kw_endforeach) {
                         continue;
                     }
-                    if let Some(walked) = walk_statement(stmt)? {
+                    if let Some(walked) = walk_statement(__php_w, stmt)? {
                         body.push(walked);
                     }
                 }
@@ -6681,7 +6668,7 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
                         | Rule::label_statement
                         | Rule::declare_statement
                 ) {
-                    if let Some(walked) = walk_statement(p)? {
+                    if let Some(walked) = walk_statement(__php_w, p)? {
                         body.push(walked);
                     }
                 }
@@ -6701,9 +6688,9 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let (mut key, value_target) = if let Some(second_var) = second {
         // key => value form
         let k = strip_dollar(first.as_str()).to_string();
-        (Some(k), walk_foreach_value_target(second_var)?)
+        (Some(k), walk_foreach_value_target(__php_w, second_var)?)
     } else {
-        (None, walk_foreach_value_target(first)?)
+        (None, walk_foreach_value_target(__php_w, first)?)
     };
 
     if body.is_empty() {
@@ -6717,7 +6704,7 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
     if !target_is_by_ref {
         let literal_iter_expr = match &iter_expr.kind {
             ExprKind::Ident(name) => {
-                lookup_simple_value_var(name).unwrap_or_else(|| iter_expr.clone())
+                lookup_simple_value_var(__php_w, name).unwrap_or_else(|| iter_expr.clone())
             }
             _ => iter_expr.clone(),
         };
@@ -6736,7 +6723,7 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
     }
     if key.is_none() {
         if let ExprKind::Ident(name) = &iter_expr.kind {
-            let fields = php_object_var_written_fields(name);
+            let fields = php_object_var_written_fields(__php_w, name);
             if !fields.is_empty() {
                 let object = iter_expr.clone();
                 let elements = fields
@@ -6760,26 +6747,26 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
             }
         }
     }
-    if let Some(block) = php_literal_foreach_varvar_rewrite(&iter_expr, key.as_deref(), &var, &body)
+    if let Some(block) = php_literal_foreach_varvar_rewrite(__php_w, &iter_expr, key.as_deref(), &var, &body)
     {
         return Ok(block);
     }
-    if let Some(class_name) = php_object_class_from_expr(&iter_expr) {
-        let implements_iterator_aggregate = class_all_interfaces(&class_name)
+    if let Some(class_name) = php_object_class_from_expr(__php_w, &iter_expr) {
+        let implements_iterator_aggregate = class_all_interfaces(__php_w, &class_name)
             .iter()
             .any(|iface| iface.trim_start_matches('\\') == "IteratorAggregate");
-        if implements_iterator_aggregate || class_has_method(&class_name, "getIterator") {
+        if implements_iterator_aggregate || class_has_method(__php_w, &class_name, "getIterator") {
             let iter_span = iter_expr.span.clone();
             iter_expr = php_member_call_expr(iter_expr, "getIterator", vec![], &iter_span);
         }
     }
-    if let Some(block) = php_iterator_foreach_rewrite(&iter_expr, key.as_deref(), &var, &body) {
+    if let Some(block) = php_iterator_foreach_rewrite(__php_w, &iter_expr, key.as_deref(), &var, &body) {
         return Ok(block);
     }
-    let iter_expr = if let Some(class_name) = php_object_class_from_expr(&iter_expr) {
-        if class_is_registered(&class_name)
-            && !php_expr_is_user_iterator(&iter_expr)
-            && !class_has_any_field(&class_name)
+    let iter_expr = if let Some(class_name) = php_object_class_from_expr(__php_w, &iter_expr) {
+        if class_is_registered(__php_w, &class_name)
+            && !php_expr_is_user_iterator(__php_w, &iter_expr)
+            && !class_has_any_field(__php_w, &class_name)
         {
             Expression::with_span(ExprKind::Array(vec![]), iter_expr.span.clone())
         } else {
@@ -6789,7 +6776,7 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
         iter_expr
     };
     if key.is_none()
-        && php_object_class_from_expr(&iter_expr).is_some_and(|class_name| {
+        && php_object_class_from_expr(__php_w, &iter_expr).is_some_and(|class_name| {
             matches!(
                 class_name.trim_start_matches('\\'),
                 "SplObjectStorage" | "WeakMap"
@@ -6829,7 +6816,7 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
             is_async: false,
         });
     }
-    if key.is_none() && php_foreach_value_iter_needs_entries(&iter_expr) {
+    if key.is_none() && php_foreach_value_iter_needs_entries(__php_w, &iter_expr) {
         key = Some(format!("__php_foreach_key_{}", target_suffix));
     }
     Ok(StmtKind::ForIn {
@@ -6843,12 +6830,12 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
     })
 }
 
-fn php_foreach_value_iter_needs_entries(iter: &Expression) -> bool {
+fn php_foreach_value_iter_needs_entries(__php_w: &mut PhpWalker, iter: &Expression) -> bool {
     match &iter.kind {
         ExprKind::Array(elements) => elements.iter().any(|element| element.key.is_some()),
-        ExprKind::Ident(name) if php_object_var_has_field_writes(name) => true,
-        _ => php_object_class_from_expr(iter)
-            .is_some_and(|class_name| !php_expr_is_user_iterator(iter) || class_name == "stdClass"),
+        ExprKind::Ident(name) if php_object_var_has_field_writes(__php_w, name) => true,
+        _ => php_object_class_from_expr(__php_w, iter)
+            .is_some_and(|class_name| !php_expr_is_user_iterator(__php_w, iter) || class_name == "stdClass"),
     }
 }
 
@@ -6974,53 +6961,47 @@ fn php_stmt_has_loop_control(stmt: &Statement) -> bool {
     }
 }
 
-fn php_object_var_has_field_writes(name: &str) -> bool {
+fn php_object_var_has_field_writes(__php_w: &mut PhpWalker, name: &str) -> bool {
     let name = name.trim_start_matches('$');
-    SIMPLE_OBJECT_FIELD_WRITES.with(|writes| {
-        writes
-            .borrow()
-            .iter()
-            .any(|(object_name, _)| object_name == name)
-    })
+    __php_w
+        .simple_object_field_writes
+        .iter()
+        .any(|(object_name, _)| object_name == name)
 }
 
-fn php_object_var_written_fields(name: &str) -> Vec<String> {
+fn php_object_var_written_fields(__php_w: &mut PhpWalker, name: &str) -> Vec<String> {
     let name = name.trim_start_matches('$');
-    let mut fields: Vec<String> = SIMPLE_OBJECT_FIELD_WRITES.with(|writes| {
-        writes
-            .borrow()
-            .iter()
-            .filter_map(|(object_name, field)| {
-                if object_name == name {
-                    Some(field.clone())
-                } else {
-                    None
-                }
-            })
-            .collect()
-    });
+    let mut fields: Vec<String> = __php_w
+        .simple_object_field_writes
+        .iter()
+        .filter_map(|(object_name, field)| {
+            if object_name == name {
+                Some(field.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
     fields.sort();
     fields.dedup();
     fields
 }
 
-fn php_object_written_field_values(object: &Expression) -> Vec<(String, Expression)> {
+fn php_object_written_field_values(__php_w: &mut PhpWalker, object: &Expression) -> Vec<(String, Expression)> {
     let Some(key) = simple_object_key(object) else {
         return Vec::new();
     };
-    let mut fields: Vec<(String, Expression)> = SIMPLE_OBJECT_FIELD_VALUES.with(|writes| {
-        writes
-            .borrow()
-            .iter()
-            .filter_map(|((object_name, field), value)| {
-                if object_name == &key {
-                    Some((field.clone(), value.clone()))
-                } else {
-                    None
-                }
-            })
-            .collect()
-    });
+    let mut fields: Vec<(String, Expression)> = __php_w
+        .simple_object_field_values
+        .iter()
+        .filter_map(|((object_name, field), value)| {
+            if object_name == &key {
+                Some((field.clone(), value.clone()))
+            } else {
+                None
+            }
+        })
+        .collect();
     fields.sort_by(|a, b| a.0.cmp(&b.0));
     fields
 }
@@ -7118,13 +7099,13 @@ fn php_foreach_by_ref_rewrite(
     })
 }
 
-fn php_iterator_class_from_expr(expr: &Expression) -> Option<String> {
+fn php_iterator_class_from_expr(__php_w: &mut PhpWalker, expr: &Expression) -> Option<String> {
     match &expr.kind {
         ExprKind::New { class, .. } => match &class.kind {
             ExprKind::Ident(name) => Some(name.trim_start_matches('\\').to_string()),
             _ => None,
         },
-        ExprKind::Ident(name) => lookup_simple_value_var(name).and_then(|value| {
+        ExprKind::Ident(name) => lookup_simple_value_var(__php_w, name).and_then(|value| {
             if let ExprKind::New { class, .. } = value.kind {
                 if let ExprKind::Ident(class_name) = class.kind {
                     return Some(class_name.trim_start_matches('\\').to_string());
@@ -7136,9 +7117,9 @@ fn php_iterator_class_from_expr(expr: &Expression) -> Option<String> {
     }
 }
 
-fn php_expr_is_user_iterator(expr: &Expression) -> bool {
-    php_iterator_class_from_expr(expr).is_some_and(|class_name| {
-        class_all_interfaces(&class_name)
+fn php_expr_is_user_iterator(__php_w: &mut PhpWalker, expr: &Expression) -> bool {
+    php_iterator_class_from_expr(__php_w, expr).is_some_and(|class_name| {
+        class_all_interfaces(__php_w, &class_name)
             .iter()
             .any(|iface| iface.trim_start_matches('\\') == "Iterator")
     })
@@ -7204,17 +7185,17 @@ fn php_dom_xml_name_property_expr(
     }
 }
 
-fn php_iterator_foreach_rewrite(
+fn php_iterator_foreach_rewrite(__php_w: &mut PhpWalker, 
     iter: &Expression,
     key_var: Option<&str>,
     value_var: &str,
     body: &[Statement],
 ) -> Option<StmtKind> {
-    if !php_expr_is_user_iterator(iter) {
+    if !php_expr_is_user_iterator(__php_w, iter) {
         return None;
     }
     let span = iter.span.clone();
-    let iter_tmp = next_tmp_name("foreach_iter");
+    let iter_tmp = next_tmp_name(__php_w, "foreach_iter");
     let iter_ident = || Expression::with_span(ExprKind::Ident(iter_tmp.clone()), span.clone());
 
     let save_iter = Statement::with_span(
@@ -7281,7 +7262,7 @@ fn php_iterator_foreach_rewrite(
     ]))
 }
 
-fn php_literal_foreach_varvar_rewrite(
+fn php_literal_foreach_varvar_rewrite(__php_w: &mut PhpWalker, 
     iter: &Expression,
     key_var: Option<&str>,
     value_var: &str,
@@ -7326,7 +7307,7 @@ fn php_literal_foreach_varvar_rewrite(
     }
     let mut stmts = Vec::new();
     for (i, name) in names.into_iter().enumerate() {
-        note_simple_defined_var(&name);
+        note_simple_defined_var(__php_w, &name);
         let replacement =
             php_replace_foreach_idents((**value).clone(), key_var, i as i64, value_var, &name);
         stmts.push(Statement::with_span(
@@ -7346,17 +7327,17 @@ fn php_literal_foreach_varvar_rewrite(
     Some(StmtKind::Block(stmts))
 }
 
-fn php_nested_array_append_rewrite(
+fn php_nested_array_append_rewrite(__php_w: &mut PhpWalker, 
     bucket_receiver: Expression,
     bucket_index: Expression,
     value: Expression,
     span: &Span,
 ) -> ExprKind {
-    let bucket_tmp = next_tmp_name("append_bucket");
+    let bucket_tmp = next_tmp_name(__php_w, "append_bucket");
     let bucket_ident = || Expression::with_span(ExprKind::Ident(bucket_tmp.clone()), span.clone());
     let read_bucket = Expression::with_span(
         ExprKind::NullCoalesce {
-            left: Box::new(php_array_access_read(
+            left: Box::new(php_array_access_read(__php_w, 
                 bucket_receiver.clone(),
                 bucket_index.clone(),
                 span,
@@ -7382,7 +7363,7 @@ fn php_nested_array_append_rewrite(
                 },
                 span.clone(),
             )),
-            value: Box::new(php_wrap_copy_on_assign(value)),
+            value: Box::new(php_wrap_copy_on_assign(__php_w, value)),
         },
         span.clone(),
     );
@@ -7403,13 +7384,13 @@ fn php_nested_array_append_rewrite(
     ExprKind::Sequence(vec![save_bucket, append_value, write_back, bucket_ident()])
 }
 
-fn php_array_field_writeback_rewrite(
+fn php_array_field_writeback_rewrite(__php_w: &mut PhpWalker, 
     field_expr: Expression,
     index: Expression,
     value: Expression,
     span: &Span,
 ) -> ExprKind {
-    let field_tmp = next_tmp_name("array_field");
+    let field_tmp = next_tmp_name(__php_w, "array_field");
     let field_ident = || Expression::with_span(ExprKind::Ident(field_tmp.clone()), span.clone());
     let read_field = Expression::with_span(
         ExprKind::NullCoalesce {
@@ -7435,7 +7416,7 @@ fn php_array_field_writeback_rewrite(
                 },
                 span.clone(),
             )),
-            value: Box::new(php_wrap_copy_on_assign(value)),
+            value: Box::new(php_wrap_copy_on_assign(__php_w, value)),
         },
         span.clone(),
     );
@@ -7516,9 +7497,9 @@ fn php_replace_foreach_idents(
     expr
 }
 
-fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_switch(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner = inner_nokw(pair);
-    let expr = walk_expression(inner.next().unwrap())?;
+    let expr = walk_expression(__php_w, inner.next().unwrap())?;
     let mut cases = Vec::new();
     // A label with an empty body (`case A: case B: body;`) falls through to the
     // next label's body — standard C-style switch fall-through. The grammar
@@ -7542,12 +7523,12 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
         if !is_default {
             if let Some(e) = case_inner.next() {
                 if matches!(e.as_rule(), Rule::expression) {
-                    case_value = Some(walk_expression(e)?);
+                    case_value = Some(walk_expression(__php_w, e)?);
                 }
             }
         }
         let body: Result<Vec<Statement>, String> = case_inner
-            .filter_map(|p| walk_statement(p).transpose())
+            .filter_map(|p| walk_statement(__php_w, p).transpose())
             .collect();
         let body = body?;
         if is_default {
@@ -7587,10 +7568,10 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
     })
 }
 
-fn walk_try(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_try(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner = inner_nokw(pair);
     let block = inner.next().unwrap();
-    let body = walk_statement_into_body(block)?;
+    let body = walk_statement_into_body(__php_w, block)?;
     let mut catches = Vec::new();
     let mut finally: Option<Vec<Statement>> = None;
     for p in inner {
@@ -7616,7 +7597,7 @@ fn walk_try(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     }
                 }
                 let catch_body =
-                    walk_statement_into_body(catch_body_pair.ok_or("catch: missing body")?)?;
+                    walk_statement_into_body(__php_w, catch_body_pair.ok_or("catch: missing body")?)?;
                 catches.push(CatchClause {
                     types,
                     var_name: var,
@@ -7626,7 +7607,7 @@ fn walk_try(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 });
             }
             Rule::finally_clause => {
-                let body = walk_statement_into_body(inner_nokw(p).next().unwrap())?;
+                let body = walk_statement_into_body(__php_w, inner_nokw(p).next().unwrap())?;
                 finally = Some(body);
             }
             _ => {}
@@ -7716,7 +7697,7 @@ fn php_get_object_class_display_expr(obj: Expression, span: &Span) -> Expression
     php_backslash_display(internal, span)
 }
 
-fn walk_function_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_function_decl(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut name = String::new();
     let mut params: Vec<Param> = Vec::new();
     let mut param_attrs: Vec<Vec<AttributeMeta>> = Vec::new();
@@ -7727,8 +7708,8 @@ fn walk_function_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         match p.as_rule() {
             Rule::identifier | Rule::method_ident => name = p.as_str().to_string(),
             Rule::param_list => {
-                param_attrs = collect_param_attributes(&p)?;
-                params = walk_params(p)?;
+                param_attrs = collect_param_attributes(__php_w, &p)?;
+                params = walk_params(__php_w, p)?;
             }
             Rule::return_type_annotation => {
                 return_type = Some(p.as_str().trim_start_matches(':').trim().to_string());
@@ -7736,16 +7717,14 @@ fn walk_function_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
             Rule::block_statement => {
                 // Name precedes the body in the grammar, so it is set here.
                 // Track it for `__FUNCTION__` / `__METHOD__` inside the body.
-                FUNCTION_STACK.with(|s| s.borrow_mut().push(name.clone()));
+                __php_w.function_stack.push(name.clone());
                 for param in &params {
-                    note_simple_defined_var(&param.name);
+                    note_simple_defined_var(__php_w, &param.name);
                 }
-                let callable_params = note_callable_params(&params);
-                let walked = walk_statement_into_body(p);
-                unnote_callable_params(callable_params);
-                FUNCTION_STACK.with(|s| {
-                    s.borrow_mut().pop();
-                });
+                let callable_params = note_callable_params(__php_w, &params);
+                let walked = walk_statement_into_body(__php_w, p);
+                unnote_callable_params(__php_w, callable_params);
+                __php_w.function_stack.pop();
                 body = walked?;
             }
             _ => {}
@@ -7759,29 +7738,17 @@ fn walk_function_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let is_generator = body_contains_yield(&body);
     let required = params.iter().filter(|p| p.default.is_none()).count();
     if let Some(ret) = return_type.as_deref() {
-        note_function_return_type(&name, ret);
+        note_function_return_type(__php_w, &name, ret);
         if let Some(short) = name.rsplit('.').next().filter(|s| *s != name) {
-            note_function_return_type(short, ret);
+            note_function_return_type(__php_w, short, ret);
         }
     }
-    FUNC_REGISTRY.with(|r| {
-        let mut reg = r.borrow_mut();
-        // Call sites spell the SOURCE name — register the short segment
-        // too so arity metadata stays reachable for bare calls.
-        if let Some(short) = name.rsplit('.').next().filter(|s| *s != name) {
-            reg.insert(
-                short.to_string(),
-                FuncMeta {
-                    name: name.clone(),
-                    param_count: params.len(),
-                    required_params: required,
-                    params: params.clone(),
-                    return_type: return_type.clone(),
-                },
-            );
-        }
-        reg.insert(
-            name.clone(),
+    // Call sites spell the SOURCE name — register the short segment
+    // too so arity metadata stays reachable for bare calls.
+    if let Some(short) = name.rsplit('.').next().filter(|s| *s != name) {
+        let short = short.to_string();
+        __php_w.func_registry.insert(
+            short,
             FuncMeta {
                 name: name.clone(),
                 param_count: params.len(),
@@ -7790,34 +7757,41 @@ fn walk_function_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 return_type: return_type.clone(),
             },
         );
-        if !name.contains('.') {
-            if let Some(ns) = current_namespace().filter(|ns| !ns.is_empty()) {
-                let fq = format!("{}.{}", ns.replace('\\', "."), name);
-                NAMESPACE_FUNCTIONS.with(|functions| {
-                    functions.borrow_mut().insert(fq.clone());
-                });
-                reg.insert(
-                    fq.clone(),
-                    FuncMeta {
-                        name: fq,
-                        param_count: params.len(),
-                        required_params: required,
-                        params: params.clone(),
-                        return_type: return_type.clone(),
-                    },
-                );
+    }
+    __php_w.func_registry.insert(
+        name.clone(),
+        FuncMeta {
+            name: name.clone(),
+            param_count: params.len(),
+            required_params: required,
+            params: params.clone(),
+            return_type: return_type.clone(),
+        },
+    );
+    if !name.contains('.') {
+        if let Some(ns) = current_namespace(__php_w).filter(|ns| !ns.is_empty()) {
+            let fq = format!("{}.{}", ns.replace('\\', "."), name);
+            __php_w.namespace_functions.insert(fq.clone());
+            __php_w.func_registry.insert(
+                fq.clone(),
+                FuncMeta {
+                    name: fq,
+                    param_count: params.len(),
+                    required_params: required,
+                    params: params.clone(),
+                    return_type: return_type.clone(),
+                },
+            );
+        }
+    }
+    if !param_attrs.is_empty() {
+        for (idx, attrs) in param_attrs.into_iter().enumerate() {
+            if !attrs.is_empty() {
+                __php_w
+                    .function_param_attributes
+                    .insert((name.clone(), idx), attrs);
             }
         }
-    });
-    if !param_attrs.is_empty() {
-        FUNCTION_PARAM_ATTRIBUTES.with(|r| {
-            let mut reg = r.borrow_mut();
-            for (idx, attrs) in param_attrs.into_iter().enumerate() {
-                if !attrs.is_empty() {
-                    reg.insert((name.clone(), idx), attrs);
-                }
-            }
-        });
     }
 
     Ok(StmtKind::FunctionDecl {
@@ -7833,13 +7807,13 @@ fn walk_function_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     })
 }
 
-fn walk_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
+fn walk_params(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<Vec<Param>, String> {
     let mut out = Vec::new();
     for p in pair.into_inner() {
         if !matches!(p.as_rule(), Rule::param) {
             continue;
         }
-        out.push(walk_param(p)?.0);
+        out.push(walk_param(__php_w, p)?.0);
     }
     Ok(out)
 }
@@ -7848,7 +7822,7 @@ fn walk_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
 /// modifiers (`public` / `private` / `protected` / `readonly`).
 /// Used by `__construct` to synthesize property fields and `$this->X = $X`
 /// assignments — see PHP 8 promoted constructor parameters.
-fn walk_params_with_promotion(
+fn walk_params_with_promotion(__php_w: &mut PhpWalker, 
     pair: Pair<Rule>,
 ) -> Result<Vec<(Param, Option<(Visibility, bool)>)>, String> {
     let mut out = Vec::new();
@@ -7856,7 +7830,7 @@ fn walk_params_with_promotion(
         if !matches!(p.as_rule(), Rule::param) {
             continue;
         }
-        out.push(walk_param(p)?);
+        out.push(walk_param(__php_w, p)?);
     }
     Ok(out)
 }
@@ -7892,12 +7866,13 @@ fn php_param_is_by_ref(raw: &str) -> bool {
     false
 }
 
-fn walk_param(pair: Pair<Rule>) -> Result<(Param, Option<(Visibility, bool)>), String> {
+fn walk_param(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<(Param, Option<(Visibility, bool)>), String> {
     let raw = pair.as_str();
     let mut name = String::new();
     let mut type_hint: Option<String> = None;
     let mut default: Option<Expression> = None;
     let mut promotion: Option<(Visibility, bool)> = None;
+    let mut set_visibility: Option<Visibility> = None;
     // php `&$x` is true aliasing, not copy-in/copy-out: the mutation is visible
     // through another binding DURING the call, and it survives the callee
     // throwing. `PassBy::Ref` gives neither — it is a write-back after return,
@@ -7918,6 +7893,22 @@ fn walk_param(pair: Pair<Rule>) -> Result<(Param, Option<(Visibility, bool)>), S
                 // (when the modifier is `readonly` only) is Public per
                 // PHP semantics.
                 let kw = p.as_str().to_lowercase();
+                // PHP 8.4 asymmetric visibility promotes too:
+                // `public private(set) int $count = 0`. The `(set)` half is a
+                // SECOND visibility, so it must not land in `promotion` — that
+                // one is the READ visibility, and `private(set)` leaves it
+                // Public. Recorded after the loop, once the name is known.
+                if kw.ends_with("(set)") {
+                    let keyword = kw.split('(').next().unwrap_or("").trim();
+                    set_visibility = Some(parse_visibility(keyword, Visibility::Public));
+                    // A bare `private(set) int $tag` IS promoted, and its READ
+                    // visibility is public — so the parameter must still be
+                    // marked promoted here even though nothing said `public`.
+                    if promotion.is_none() {
+                        promotion = Some((Visibility::Public, false));
+                    }
+                    continue;
+                }
                 let v = match kw.as_str() {
                     "private" => Visibility::Private,
                     "protected" => Visibility::Protected,
@@ -7935,9 +7926,20 @@ fn walk_param(pair: Pair<Rule>) -> Result<(Param, Option<(Visibility, bool)>), S
             }
             Rule::type_annotation => type_hint = Some(p.as_str().to_string()),
             Rule::variable => name = strip_dollar(p.as_str()).to_string(),
-            Rule::expression => default = Some(walk_expression(p)?),
+            Rule::expression => default = Some(walk_expression(__php_w, p)?),
             _ => {}
         }
+    }
+    if let (Some(visibility), Some(class_name)) = (set_visibility, current_class_name(__php_w)) {
+        // ⚠ `Param.name` keeps the `$` — `strip_dollar` is the IDENTITY for php,
+        // variables and properties being separate namespaces. The promoted
+        // PROPERTY is the same name without it (see the `note_promoted_
+        // constructor_field` call site), and that is what the write path looks
+        // up. Keyed with the sigil, every entry here was a silent miss.
+        let field = name.strip_prefix('$').unwrap_or(&name).to_string();
+        __php_w
+            .property_set_visibility
+            .insert((class_name, field), visibility);
     }
     let is_optional = default.is_some();
     Ok((
@@ -7955,11 +7957,6 @@ fn walk_param(pair: Pair<Rule>) -> Result<(Param, Option<(Visibility, bool)>), S
     ))
 }
 
-fn class_members_have_constructor(members: &[ClassMember]) -> bool {
-    members
-        .iter()
-        .any(|member| matches!(member, ClassMember::Constructor { .. }))
-}
 
 fn class_member_field_name(member: &ClassMember) -> Option<&str> {
     match member {
@@ -7968,151 +7965,39 @@ fn class_member_field_name(member: &ClassMember) -> Option<&str> {
     }
 }
 
-fn php_parent_method_base_slot(class_name: &str, method_name: &str) -> String {
-    let owner = class_name
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '_' {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    format!("__php_base_{owner}_{method_name}")
-}
 
-fn php_this_field(field: String, span: &Span) -> Expression {
-    Expression::with_span(
-        ExprKind::Member {
-            object: Box::new(Expression::with_span(ExprKind::This, span.clone())),
-            field,
-            null_safe: false,
-        },
-        span.clone(),
-    )
-}
-
-fn php_parent_snapshot_stmt(class_name: &str, method_name: &str, span: &Span) -> Statement {
-    let target = php_this_field(php_parent_method_base_slot(class_name, method_name), span);
-    let value = php_this_field(format!("__base_{method_name}"), span);
-    Statement::new(StmtKind::Expr(Expression::with_span(
-        ExprKind::Assign {
-            target: Box::new(target),
-            value: Box::new(value),
-        },
-        span.clone(),
-    )))
-}
-
-fn copy_property_attributes(from_class: &str, from_name: &str, to_class: &str, to_name: &str) {
-    if let Some(attrs) = PROPERTY_ATTRIBUTES.with(|r| {
-        r.borrow()
-            .get(&(from_class.to_string(), from_name.to_string()))
-            .cloned()
-    }) {
-        PROPERTY_ATTRIBUTES.with(|r| {
-            r.borrow_mut()
-                .insert((to_class.to_string(), to_name.to_string()), attrs);
-        });
-    }
-}
-
-fn copy_method_attributes(from_class: &str, from_name: &str, to_class: &str, to_name: &str) {
-    if let Some(attrs) = METHOD_ATTRIBUTES.with(|r| {
-        r.borrow()
-            .get(&(from_class.to_string(), from_name.to_string()))
-            .cloned()
-    }) {
-        METHOD_ATTRIBUTES.with(|r| {
-            r.borrow_mut()
-                .insert((to_class.to_string(), to_name.to_string()), attrs);
-        });
-    }
-}
-
-fn php_insert_after_super_or_prepend(body: &mut Vec<Statement>, stmts: Vec<Statement>) {
-    if stmts.is_empty() {
-        return;
-    }
-    let super_idx = body.iter().position(|s| {
-        matches!(&s.kind, StmtKind::Expr(e)
-            if matches!(&e.kind, ExprKind::Call { callee, .. }
-                if matches!(callee.kind, ExprKind::Super)))
-    });
-    match super_idx {
-        Some(i) => {
-            for (k, stmt) in stmts.into_iter().enumerate() {
-                body.insert(i + 1 + k, stmt);
-            }
-        }
-        None => {
-            let mut prelude = stmts;
-            prelude.extend(body.drain(..));
-            *body = prelude;
-        }
-    }
-}
-
-fn class_member_method_name(member: &ClassMember) -> Option<(&str, bool)> {
-    match member {
-        ClassMember::Method(stmt) => {
-            if let StmtKind::FunctionDecl {
-                name, modifiers, ..
-            } = &stmt.kind
-            {
-                Some((name.as_str(), modifiers.is_static))
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
-}
-
-fn inject_php_parent_method_snapshots(
-    class_name: &str,
-    parent: &str,
-    members: &mut Vec<ClassMember>,
-    span: &Span,
-) {
-    let methods = members
-        .iter()
-        .filter_map(class_member_method_name)
-        .filter(|(name, is_static)| !*is_static && class_has_concrete_method(parent, name))
-        .map(|(name, _)| name.to_string())
-        .collect::<Vec<_>>();
-    if methods.is_empty() {
-        return;
-    }
-    let snapshots = methods
-        .iter()
-        .map(|name| php_parent_snapshot_stmt(class_name, name, span))
-        .collect::<Vec<_>>();
-    if let Some(ClassMember::Constructor { body, .. }) = members
-        .iter_mut()
-        .find(|member| matches!(member, ClassMember::Constructor { .. }))
+fn copy_property_attributes(__php_w: &mut PhpWalker, from_class: &str, from_name: &str, to_class: &str, to_name: &str) {
+    if let Some(attrs) = __php_w
+        .property_attributes
+        .get(&(from_class.to_string(), from_name.to_string()))
+        .cloned()
     {
-        php_insert_after_super_or_prepend(body, snapshots);
-        return;
+        __php_w
+            .property_attributes
+            .insert((to_class.to_string(), to_name.to_string()), attrs);
     }
-    members.push(ClassMember::Constructor {
-        name: None,
-        params: Vec::new(),
-        body: snapshots,
-        base_args: Some(Vec::new()),
-        initializer_target: vybe_ast::ConstructorInitializerTarget::Base,
-        visibility: Visibility::Public,
-    });
 }
 
-fn fold_inherited_fields_into_class(
+fn copy_method_attributes(__php_w: &mut PhpWalker, from_class: &str, from_name: &str, to_class: &str, to_name: &str) {
+    if let Some(attrs) = __php_w
+        .method_attributes
+        .get(&(from_class.to_string(), from_name.to_string()))
+        .cloned()
+    {
+        __php_w
+            .method_attributes
+            .insert((to_class.to_string(), to_name.to_string()), attrs);
+    }
+}
+
+
+fn fold_inherited_fields_into_class(__php_w: &mut PhpWalker, 
     class_name: &str,
     parent: &str,
     members: &mut Vec<ClassMember>,
     span: &Span,
 ) {
-    if php_is_throwable_related_class(parent) {
+    if php_is_throwable_related_class(__php_w, parent) {
         return;
     }
     let mut declared = members
@@ -8121,16 +8006,18 @@ fn fold_inherited_fields_into_class(
         .map(|name| name.to_string())
         .collect::<std::collections::HashSet<_>>();
     let mut parents = vec![parent.trim_start_matches('\\').to_string()];
-    parents.extend(class_parent_chain(parent.trim_start_matches('\\')));
+    parents.extend(class_parent_chain(__php_w, parent.trim_start_matches('\\')));
     for parent_name in parents {
-        let fields = CLASS_REGISTRY
-            .with(|r| r.borrow().get(&parent_name).map(|meta| meta.fields.clone()))
+        let fields = __php_w
+            .class_registry
+            .get(&parent_name)
+            .map(|meta| meta.fields.clone())
             .unwrap_or_default();
         for field in fields {
             if field.visibility == Visibility::Private || !declared.insert(field.name.clone()) {
                 continue;
             }
-            copy_property_attributes(&parent_name, &field.name, class_name, &field.name);
+            copy_property_attributes(__php_w, &parent_name, &field.name, class_name, &field.name);
             let this_read = Expression::with_span(
                 ExprKind::Member {
                     object: Box::new(Expression::with_span(ExprKind::This, span.clone())),
@@ -8171,52 +8058,11 @@ fn php_lsb_class_field(name: &str, span: &Span) -> ClassMember {
     }
 }
 
-fn php_is_throwable_related_class(name: &str) -> bool {
+fn php_is_throwable_related_class(__php_w: &mut PhpWalker, name: &str) -> bool {
     let name = name.trim_start_matches('\\');
-    matches!(name, "Throwable" | "Exception" | "Error") || class_is_subclass_of(name, "Throwable")
+    matches!(name, "Throwable" | "Exception" | "Error") || class_is_subclass_of(__php_w, name, "Throwable")
 }
 
-fn synthesize_inherited_constructor(parent: &str, span: &Span) -> Option<ClassMember> {
-    let parent = parent.trim_start_matches('\\');
-    if php_is_throwable_related_class(parent) {
-        return None;
-    }
-    let ctor = class_method_meta(parent, "__construct")?;
-    if ctor.visibility == Visibility::Private {
-        return None;
-    }
-    let param_names = CLASS_REGISTRY.with(|r| {
-        r.borrow()
-            .get(parent)
-            .map(|meta| meta.constructor_params.clone())
-            .unwrap_or_default()
-    });
-    let params = param_names
-        .iter()
-        .map(|name| Param {
-            name: name.clone(),
-            type_hint: None,
-            default: None,
-            pass_by: PassBy::Value,
-            is_rest: false,
-            is_kwargs: false,
-            is_optional: false,
-            is_nullable: false,
-        })
-        .collect::<Vec<_>>();
-    let base_args = param_names
-        .iter()
-        .map(|name| Expression::with_span(ExprKind::Ident(name.clone()), span.clone()))
-        .collect::<Vec<_>>();
-    Some(ClassMember::Constructor {
-        name: None,
-        params,
-        body: Vec::new(),
-        base_args: Some(base_args),
-        initializer_target: vybe_ast::ConstructorInitializerTarget::Base,
-        visibility: ctor.visibility,
-    })
-}
 
 fn collect_pending_class_fields(
     members: &[Pair<Rule>],
@@ -8291,8 +8137,8 @@ fn collect_pending_class_hooks(members: &[Pair<Rule>]) -> Vec<PropertyHookMeta> 
     hooks
 }
 
-fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
-    let span = to_span(&pair);
+fn walk_class_decl(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
+    let span = to_span(__php_w, &pair);
     // Inspect the source slice to know whether the first qualified_name
     // follows `extends` (parent class) or `implements` (interface
     // list). Pest doesn't yield `kw_extends` / `kw_implements` as
@@ -8313,7 +8159,7 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
     for p in pair.into_inner() {
         match p.as_rule() {
-            Rule::attribute_group => attrs.extend(parse_attribute_groups(p)?),
+            Rule::attribute_group => attrs.extend(parse_attribute_groups(__php_w, p)?),
             Rule::class_modifier => {
                 let s = p.as_str().to_lowercase();
                 match s.as_str() {
@@ -8346,7 +8192,7 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     }
 
     let ast_name = name.clone();
-    if let Some(ns) = current_namespace().filter(|ns| !ns.is_empty()) {
+    if let Some(ns) = current_namespace(__php_w).filter(|ns| !ns.is_empty()) {
         if !name.contains('.') {
             name = format!("{}.{}", ns.replace('\\', "."), name);
         }
@@ -8355,34 +8201,48 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     // Push class context BEFORE walking members so `self::` inside
     // method bodies resolves to this class's name.
     if !attrs.is_empty() {
-        CLASS_ATTRIBUTES.with(|r| r.borrow_mut().insert(name.clone(), attrs.clone()));
+        __php_w
+            .class_attributes
+            .insert(name.clone(), attrs.clone());
     }
     let pending_fields = collect_pending_class_fields(&deferred_members, is_readonly_class)?;
     let pending_hooks = collect_pending_class_hooks(&deferred_members);
+    let pending_this_writes = collect_pending_this_writes(&deferred_members);
+    collect_asymmetric_set_visibility(__php_w, &name, &deferred_members);
     let class_hooks = pending_hooks.clone();
-    PENDING_CLASS_ATTRIBUTES.with(|r| r.borrow_mut().push((name.clone(), attrs.clone())));
-    push_class_context(&name);
-    push_class_parent_context(parents.first().cloned());
-    push_pending_class_fields(&name, pending_fields);
-    push_pending_class_hooks(&name, pending_hooks);
+    __php_w
+        .pending_class_attributes
+        .push((name.clone(), attrs.clone()));
+    push_class_context(__php_w, &name);
+    push_class_parent_context(__php_w, parents.first().cloned());
+    push_pending_class_fields(__php_w, &name, pending_fields);
+    push_pending_class_hooks(__php_w, &name, pending_hooks);
+    push_pending_this_writes(__php_w, &name, pending_this_writes);
     let walk_result: Result<(), String> = (|| {
         for p in deferred_members {
-            members.extend(walk_class_member(p)?);
+            members.extend(walk_class_member(__php_w, p)?);
         }
         Ok(())
     })();
-    pop_pending_class_hooks();
-    pop_pending_class_fields();
-    pop_class_parent_context();
-    pop_class_context();
-    PENDING_CLASS_ATTRIBUTES.with(|r| {
-        r.borrow_mut().pop();
-    });
+    pop_pending_this_writes(__php_w);
+    pop_pending_class_hooks(__php_w);
+    pop_pending_class_fields(__php_w);
+    pop_class_parent_context(__php_w);
+    pop_class_context(__php_w);
+    __php_w.pending_class_attributes.pop();
     walk_result?;
-    drain_promoted_constructor_fields(&mut members);
+    drain_promoted_constructor_fields(__php_w, &mut members);
     if let Some(parent) = parents.first() {
-        fold_inherited_fields_into_class(&name, parent, &mut members, &span);
-        inject_php_parent_method_snapshots(&name, parent, &mut members, &span);
+        // ⚠ php is the ONLY walker that re-declares its parent's fields on the
+        // child (each with a self-referential `init: $this-><field>`), so this
+        // looks like the same duplicate as `__php_base_` — but REMOVING IT WAS
+        // MEASURED AND IT IS NOT. 45 categories went 73 → 75. Field inheritance
+        // through the shared model is real (java reads a 2-levels-up `p.name`
+        // with no fold), so what this actually supplies is something narrower —
+        // the two names that moved were both `oop/` method-visibility cases.
+        // Do not delete it on the resemblance alone; find what it supplies
+        // first. See flexclassplan.md §4k-bis.
+        fold_inherited_fields_into_class(__php_w, &name, parent, &mut members, &span);
     }
     // Trait members are NOT copied into the class. The class declares a
     // `ClassMember::Augment` per `use`, and the shared augmentation pass applies
@@ -8396,8 +8256,8 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     // class declares, whether it has a constructor at all (a trait may supply
     // one), and its ReflectionClass metadata.
     let mut members_with_traits = members.clone();
-    fold_available_trait_members_into_class(&name, &mut members_with_traits);
-    CLASS_DECLARED_PROPERTIES.with(|r| {
+    fold_available_trait_members_into_class(__php_w, &name, &mut members_with_traits);
+    {
         let properties = members_with_traits
             .iter()
             .filter_map(|member| match member {
@@ -8405,19 +8265,21 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        r.borrow_mut().insert(name.clone(), properties);
-    });
-    if !class_members_have_constructor(&members_with_traits) {
-        if let Some(parent) = parents.first() {
-            if let Some(ctor) = synthesize_inherited_constructor(parent, &span) {
-                members.push(ctor);
-                members_with_traits.push(members.last().unwrap().clone());
-            }
-        }
+        __php_w
+            .class_declared_properties
+            .insert(name.clone(), properties);
     }
+    // ⛔ No synthesized inherited constructor. A class that declares none
+    // INHERITS its parent's, and that is the shared class model's job — python
+    // proves it with the identical shape (`class Dog(Animal)` overriding a
+    // method, no `__init__`, parent constructor with a parameter) and zero
+    // walker machinery. This synthesis existed only to give
+    // `inject_php_parent_method_snapshots` somewhere to put its per-class
+    // `__base_` copies; with `parent::` on the shared `SuperCall` there is
+    // nothing left to carry. See flexclassplan.md §4a-ter.
 
     // Register class metadata for ReflectionClass lookups.
-    let meta = extract_class_meta(
+    let meta = extract_class_meta(__php_w, 
         &name,
         &parents,
         &interfaces,
@@ -8425,11 +8287,11 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         &members_with_traits,
         is_readonly_class,
     );
-    CLASS_REGISTRY.with(|r| r.borrow_mut().insert(name.clone(), meta));
-    CLASS_HOOK_PROPERTIES.with(|r| {
-        r.borrow_mut().insert(name.clone(), class_hooks);
-    });
-    register_type_kind(&name, "class");
+    __php_w.class_registry.insert(name.clone(), meta);
+    __php_w
+        .class_hook_properties
+        .insert(name.clone(), class_hooks);
+    register_type_kind(__php_w, &name, "class");
     if !members
         .iter()
         .filter_map(class_member_field_name)
@@ -8448,7 +8310,7 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     })
 }
 
-fn extract_class_meta(
+fn extract_class_meta(__php_w: &mut PhpWalker, 
     name: &str,
     parents: &[String],
     interfaces: &[String],
@@ -8491,7 +8353,7 @@ fn extract_class_meta(
                     });
                     for stmt in body {
                         let mut initialized = Vec::new();
-                        php_collect_this_assigned_fields_from_stmt(stmt, &mut initialized);
+                        php_collect_this_assigned_fields_from_stmt(__php_w, stmt, &mut initialized);
                         for field in initialized {
                             if !constructor_initialized_fields.contains(&field) {
                                 constructor_initialized_fields.push(field);
@@ -8541,10 +8403,10 @@ fn extract_class_meta(
                 constructor_rest_index = params
                     .iter()
                     .position(|p| p.is_rest)
-                    .or_else(|| CONSTRUCTOR_REST_INDICES.with(|r| r.borrow().get(name).copied()));
+                    .or_else(|| __php_w.constructor_rest_indices.get(name).copied());
                 for stmt in body {
                     let mut initialized = Vec::new();
-                    php_collect_this_assigned_fields_from_stmt(stmt, &mut initialized);
+                    php_collect_this_assigned_fields_from_stmt(__php_w, stmt, &mut initialized);
                     for field in initialized {
                         if !constructor_initialized_fields.contains(&field) {
                             constructor_initialized_fields.push(field);
@@ -8582,18 +8444,18 @@ fn extract_class_meta(
     }
 }
 
-fn php_collect_this_assigned_fields_from_stmt(stmt: &Statement, out: &mut Vec<String>) {
+fn php_collect_this_assigned_fields_from_stmt(__php_w: &mut PhpWalker, stmt: &Statement, out: &mut Vec<String>) {
     match &stmt.kind {
         StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
             let mut aliases = std::collections::HashSet::new();
-            php_collect_this_assigned_fields_from_expr(expr, &mut aliases, out);
+            php_collect_this_assigned_fields_from_expr(__php_w, expr, &mut aliases, out);
         }
         StmtKind::Assign { targets, value, .. } => {
             let mut aliases = std::collections::HashSet::new();
             for target in targets {
-                php_collect_this_assigned_fields_from_expr(target, &mut aliases, out);
+                php_collect_this_assigned_fields_from_expr(__php_w, target, &mut aliases, out);
             }
-            php_collect_this_assigned_fields_from_expr(value, &mut aliases, out);
+            php_collect_this_assigned_fields_from_expr(__php_w, value, &mut aliases, out);
         }
         StmtKind::If {
             cond,
@@ -8602,18 +8464,18 @@ fn php_collect_this_assigned_fields_from_stmt(stmt: &Statement, out: &mut Vec<St
             else_body,
         } => {
             let mut aliases = std::collections::HashSet::new();
-            php_collect_this_assigned_fields_from_expr(cond, &mut aliases, out);
+            php_collect_this_assigned_fields_from_expr(__php_w, cond, &mut aliases, out);
             for stmt in then_body {
-                php_collect_this_assigned_fields_from_stmt(stmt, out);
+                php_collect_this_assigned_fields_from_stmt(__php_w, stmt, out);
             }
             for (_, body) in elifs {
                 for stmt in body {
-                    php_collect_this_assigned_fields_from_stmt(stmt, out);
+                    php_collect_this_assigned_fields_from_stmt(__php_w, stmt, out);
                 }
             }
             if let Some(body) = else_body {
                 for stmt in body {
-                    php_collect_this_assigned_fields_from_stmt(stmt, out);
+                    php_collect_this_assigned_fields_from_stmt(__php_w, stmt, out);
                 }
             }
         }
@@ -8621,7 +8483,7 @@ fn php_collect_this_assigned_fields_from_stmt(stmt: &Statement, out: &mut Vec<St
     }
 }
 
-fn php_collect_this_assigned_fields_from_expr(
+fn php_collect_this_assigned_fields_from_expr(__php_w: &mut PhpWalker, 
     expr: &Expression,
     this_aliases: &mut std::collections::HashSet<String>,
     out: &mut Vec<String>,
@@ -8640,38 +8502,38 @@ fn php_collect_this_assigned_fields_from_expr(
                     out.push(field.clone());
                 }
             }
-            php_collect_this_assigned_fields_from_expr(target, this_aliases, out);
-            php_collect_this_assigned_fields_from_expr(value, this_aliases, out);
+            php_collect_this_assigned_fields_from_expr(__php_w, target, this_aliases, out);
+            php_collect_this_assigned_fields_from_expr(__php_w, value, this_aliases, out);
         }
         ExprKind::Sequence(items) => {
             for item in items {
-                php_collect_this_assigned_fields_from_expr(item, this_aliases, out);
+                php_collect_this_assigned_fields_from_expr(__php_w, item, this_aliases, out);
             }
         }
         ExprKind::Ternary { cond, then, else_ } => {
-            php_collect_this_assigned_fields_from_expr(cond, this_aliases, out);
-            php_collect_this_assigned_fields_from_expr(then, this_aliases, out);
-            php_collect_this_assigned_fields_from_expr(else_, this_aliases, out);
+            php_collect_this_assigned_fields_from_expr(__php_w, cond, this_aliases, out);
+            php_collect_this_assigned_fields_from_expr(__php_w, then, this_aliases, out);
+            php_collect_this_assigned_fields_from_expr(__php_w, else_, this_aliases, out);
         }
         ExprKind::Binary { left, right, .. } | ExprKind::NullCoalesce { left, right } => {
-            php_collect_this_assigned_fields_from_expr(left, this_aliases, out);
-            php_collect_this_assigned_fields_from_expr(right, this_aliases, out);
+            php_collect_this_assigned_fields_from_expr(__php_w, left, this_aliases, out);
+            php_collect_this_assigned_fields_from_expr(__php_w, right, this_aliases, out);
         }
         ExprKind::Unary { expr, .. } | ExprKind::Cast { expr, .. } => {
-            php_collect_this_assigned_fields_from_expr(expr, this_aliases, out);
+            php_collect_this_assigned_fields_from_expr(__php_w, expr, this_aliases, out);
         }
         ExprKind::Call { callee, args, .. } => {
-            php_collect_this_assigned_fields_from_expr(callee, this_aliases, out);
+            php_collect_this_assigned_fields_from_expr(__php_w, callee, this_aliases, out);
             for arg in args {
-                php_collect_this_assigned_fields_from_expr(&arg.value, this_aliases, out);
+                php_collect_this_assigned_fields_from_expr(__php_w, &arg.value, this_aliases, out);
             }
         }
         ExprKind::Index { object, index, .. } => {
-            php_collect_this_assigned_fields_from_expr(object, this_aliases, out);
-            php_collect_this_assigned_fields_from_expr(index, this_aliases, out);
+            php_collect_this_assigned_fields_from_expr(__php_w, object, this_aliases, out);
+            php_collect_this_assigned_fields_from_expr(__php_w, index, this_aliases, out);
         }
         ExprKind::Member { object, .. } => {
-            php_collect_this_assigned_fields_from_expr(object, this_aliases, out);
+            php_collect_this_assigned_fields_from_expr(__php_w, object, this_aliases, out);
         }
         _ => {}
     }
@@ -8686,13 +8548,13 @@ fn php_collect_this_assigned_fields_from_expr(
 // object needed. These helpers walk the recorded inheritance graph.
 
 /// Ancestor class names (nearest first), excluding `name` itself.
-fn class_parent_chain(name: &str) -> Vec<String> {
+fn class_parent_chain(__php_w: &mut PhpWalker, name: &str) -> Vec<String> {
     let mut chain = Vec::new();
     let mut seen = std::collections::HashSet::new();
     seen.insert(name.to_string());
     let mut cur = name.to_string();
     loop {
-        let parent = CLASS_REGISTRY.with(|r| r.borrow().get(&cur).and_then(|m| m.parent.clone()));
+        let parent = __php_w.class_registry.get(&cur).and_then(|m| m.parent.clone());
         match parent {
             Some(p) if seen.insert(p.clone()) => {
                 chain.push(p.clone());
@@ -8725,11 +8587,11 @@ fn spl_ctor_for_class_name(name: &str) -> Option<&'static str> {
     }
 }
 
-fn spl_ctor_for_class_or_parent(name: &str) -> Option<&'static str> {
+fn spl_ctor_for_class_or_parent(__php_w: &mut PhpWalker, name: &str) -> Option<&'static str> {
     if let Some(ctor) = spl_ctor_for_class_name(name) {
         return Some(ctor);
     }
-    for parent in class_parent_chain(name) {
+    for parent in class_parent_chain(__php_w, name) {
         if let Some(ctor) = spl_ctor_for_class_name(&parent) {
             return Some(match parent.trim_start_matches('\\') {
                 // These PHP tests use custom compare() subclasses. The
@@ -8743,6 +8605,24 @@ fn spl_ctor_for_class_or_parent(name: &str) -> Option<&'static str> {
     None
 }
 
+/// `['A', 'B']` → `['A' => 'A', 'B' => 'B']`, php's shape for the class-lookup
+/// builtins. Membership is asked as `isset($r[Name::class])`, so the name has
+/// to be the KEY; a list answers `false` for every interface it contains.
+fn php_name_keyed_array(names: Vec<String>, span: &Span) -> Vec<ArrayElement> {
+    names
+        .into_iter()
+        .map(|name| ArrayElement {
+            key: Some(Expression::with_span(
+                ExprKind::Lit(Literal::Str(name.clone())),
+                span.clone(),
+            )),
+            value: Expression::with_span(ExprKind::Lit(Literal::Str(name)), span.clone()),
+            spread: false,
+            by_ref: false,
+        })
+        .collect()
+}
+
 /// All interfaces implemented by `name` or any of its ancestors.
 /// Every interface a class implements, TRANSITIVELY — `class_implements()`
 /// reports inherited interfaces, not just the ones named on the class.
@@ -8752,19 +8632,21 @@ fn spl_ctor_for_class_or_parent(name: &str) -> Option<&'static str> {
 /// after `extends` into `parents`), while `class C implements I` records `I` in
 /// `interfaces`. Walking only the second edge returned just the directly-named
 /// interface.
-fn class_all_interfaces(name: &str) -> Vec<String> {
+fn class_all_interfaces(__php_w: &mut PhpWalker, name: &str) -> Vec<String> {
     let mut names = vec![name.to_string()];
-    names.extend(class_parent_chain(name));
+    names.extend(class_parent_chain(__php_w, name));
 
-    let direct_interfaces = |n: &str| -> Vec<String> {
-        CLASS_REGISTRY
-            .with(|r| r.borrow().get(n).map(|m| m.interfaces.clone()))
+    let direct_interfaces = |__php_w: &PhpWalker, n: &str| -> Vec<String> {
+        __php_w
+            .class_registry
+            .get(n)
+            .map(|m| m.interfaces.clone())
             .unwrap_or_default()
     };
 
     let mut result: Vec<String> = Vec::new();
     for n in &names {
-        for i in direct_interfaces(n) {
+        for i in direct_interfaces(__php_w, n) {
             if !result.contains(&i) {
                 result.push(i);
             }
@@ -8776,9 +8658,10 @@ fn class_all_interfaces(name: &str) -> Vec<String> {
     while idx < result.len() {
         let current = result[idx].clone();
         idx += 1;
-        for i in class_parent_chain(&current)
+        let inherited = direct_interfaces(__php_w, &current);
+        for i in class_parent_chain(__php_w, &current)
             .into_iter()
-            .chain(direct_interfaces(&current))
+            .chain(inherited)
         {
             if !result.contains(&i) {
                 result.push(i);
@@ -8788,48 +8671,48 @@ fn class_all_interfaces(name: &str) -> Vec<String> {
     result
 }
 
-fn class_is_registered(name: &str) -> bool {
-    CLASS_REGISTRY.with(|r| r.borrow().contains_key(name))
+fn class_is_registered(__php_w: &mut PhpWalker, name: &str) -> bool {
+    __php_w.class_registry.contains_key(name)
 }
 
 /// Registered AND actually a class — `class_exists()` is false for an interface
 /// or a trait. `CLASS_REGISTRY` holds all three kinds (they share the metadata
 /// shape so method/constant lookup works uniformly), so the kind has to be
 /// checked separately via `TYPE_KINDS`.
-fn class_is_registered_as_class(name: &str) -> bool {
-    class_is_registered(name) && !type_kind_is(name, "interface") && !type_kind_is(name, "trait")
+fn class_is_registered_as_class(__php_w: &mut PhpWalker, name: &str) -> bool {
+    class_is_registered(__php_w, name) && !type_kind_is(__php_w, name, "interface") && !type_kind_is(__php_w, name, "trait")
 }
 
-fn php_resolve_registered_class_ref(raw: &str) -> Option<String> {
+fn php_resolve_registered_class_ref(__php_w: &mut PhpWalker, raw: &str) -> Option<String> {
     let normalized = php_normalize_class_ref(raw);
-    if class_is_registered(&normalized) {
+    if class_is_registered(__php_w, &normalized) {
         return Some(normalized);
     }
-    let aliased = php_resolve_class_alias(raw);
-    if aliased != normalized && class_is_registered(&aliased) {
+    let aliased = php_resolve_class_alias(__php_w, raw);
+    if aliased != normalized && class_is_registered(__php_w, &aliased) {
         return Some(aliased);
     }
-    let ns = current_namespace()?.replace('\\', ".");
+    let ns = current_namespace(__php_w)?.replace('\\', ".");
     if ns.is_empty() {
         return None;
     }
     let stripped = normalized
         .strip_prefix(&format!("{ns}."))
         .filter(|s| !s.is_empty())?;
-    if class_is_registered(stripped) {
+    if class_is_registered(__php_w, stripped) {
         return Some(stripped.to_string());
     }
     if stripped.contains('.') {
         return None;
     }
     let suffix = format!(".{stripped}");
-    let mut matches = CLASS_REGISTRY.with(|r| {
-        r.borrow()
+    let mut matches = {
+        __php_w.class_registry
             .keys()
             .filter(|name| name.ends_with(&suffix))
             .cloned()
             .collect::<Vec<_>>()
-    });
+    };
     matches.sort();
     matches.dedup();
     match matches.as_slice() {
@@ -8838,38 +8721,37 @@ fn php_resolve_registered_class_ref(raw: &str) -> Option<String> {
     }
 }
 
-fn php_use_alias_points_to_class(name: &str) -> bool {
-    PHP_USE_IMPORTS.with(|imports| {
-        imports.borrow().iter().any(|import| match &import.kind {
+fn php_use_alias_points_to_class(__php_w: &mut PhpWalker, name: &str) -> bool {
+    __php_w
+        .php_use_imports
+        .iter()
+        .any(|import| match &import.kind {
             ImportKind::Simple { path, alias } => alias
                 .as_deref()
                 .or_else(|| path.rsplit('.').next())
                 .is_some_and(|bound| bound == name),
             _ => false,
         })
-    })
 }
 
-fn php_use_alias_target(name: &str) -> Option<String> {
-    PHP_USE_IMPORTS.with(|imports| {
-        imports
-            .borrow()
-            .iter()
-            .find_map(|import| match &import.kind {
-                ImportKind::Simple { path, alias } => alias
-                    .as_deref()
-                    .or_else(|| path.rsplit('.').next())
-                    .filter(|bound| *bound == name)
-                    .map(|_| path.clone()),
-                _ => None,
-            })
-    })
+fn php_use_alias_target(__php_w: &mut PhpWalker, name: &str) -> Option<String> {
+    __php_w
+        .php_use_imports
+        .iter()
+        .find_map(|import| match &import.kind {
+            ImportKind::Simple { path, alias } => alias
+                .as_deref()
+                .or_else(|| path.rsplit('.').next())
+                .filter(|bound| *bound == name)
+                .map(|_| path.clone()),
+            _ => None,
+        })
 }
 
-fn php_resolve_trait_ref(raw: &str) -> String {
+fn php_resolve_trait_ref(__php_w: &mut PhpWalker, raw: &str) -> String {
     let trimmed = raw.trim();
     if !trimmed.contains('\\') && !trimmed.contains('.') {
-        if let Some(target) = php_use_alias_target(trimmed) {
+        if let Some(target) = php_use_alias_target(__php_w, trimmed) {
             return target;
         }
     }
@@ -8877,35 +8759,35 @@ fn php_resolve_trait_ref(raw: &str) -> String {
     if trimmed.starts_with('\\') || normalized.contains('.') {
         return normalized;
     }
-    if let Some(ns) = current_namespace().filter(|ns| !ns.is_empty()) {
+    if let Some(ns) = current_namespace(__php_w).filter(|ns| !ns.is_empty()) {
         let qualified = format!("{}.{}", ns.replace('\\', "."), normalized);
-        if class_is_registered(&qualified) {
+        if class_is_registered(__php_w, &qualified) {
             return qualified;
         }
     }
     normalized
 }
 
-fn php_class_may_resolve_later(name: &str) -> bool {
+fn php_class_may_resolve_later(__php_w: &mut PhpWalker, name: &str) -> bool {
     let bare = name.trim_start_matches('\\');
-    if PREDECLARED_TYPE_NAMES.with(|r| r.borrow().contains(bare)) {
+    if __php_w.predeclared_type_names.contains(bare) {
         return true;
     }
-    if class_is_registered(bare) || class_is_registered(&php_normalize_class_ref(bare)) {
+    if class_is_registered(__php_w, bare) || class_is_registered(__php_w, &php_normalize_class_ref(bare)) {
         return true;
     }
-    if php_use_alias_points_to_class(bare) {
+    if php_use_alias_points_to_class(__php_w, bare) {
         return true;
     }
-    current_namespace()
+    current_namespace(__php_w)
         .filter(|ns| !ns.is_empty())
         .map(|ns| format!("{}.{}", ns.replace('\\', "."), bare))
-        .is_some_and(|qualified| class_is_registered(&qualified))
+        .is_some_and(|qualified| class_is_registered(__php_w, &qualified))
 }
 
-fn php_core_class_is_registered(name: &str) -> bool {
+fn php_core_class_is_registered(__php_w: &mut PhpWalker, name: &str) -> bool {
     let name = name.trim_start_matches('\\');
-    php_class_may_resolve_later(name)
+    php_class_may_resolve_later(__php_w, name)
         || matches!(
             name,
             "Throwable"
@@ -9002,17 +8884,17 @@ fn php_core_class_is_registered(name: &str) -> bool {
 
 /// `is_subclass_of($c, $target)` — true iff `target` is a proper ancestor
 /// or an implemented interface of `c` (never `c` itself).
-fn class_is_subclass_of(c: &str, target: &str) -> bool {
-    class_parent_chain(c).iter().any(|p| p == target)
-        || class_all_interfaces(c).iter().any(|i| i == target)
+fn class_is_subclass_of(__php_w: &mut PhpWalker, c: &str, target: &str) -> bool {
+    class_parent_chain(__php_w, c).iter().any(|p| p == target)
+        || class_all_interfaces(__php_w, c).iter().any(|i| i == target)
 }
 
-fn class_has_method(c: &str, method: &str) -> bool {
+fn class_has_method(__php_w: &mut PhpWalker, c: &str, method: &str) -> bool {
     let mut names = vec![c.to_string()];
-    names.extend(class_parent_chain(c));
+    names.extend(class_parent_chain(__php_w, c));
     names.iter().any(|n| {
-        CLASS_REGISTRY.with(|r| {
-            r.borrow()
+        {
+            __php_w.class_registry
                 .get(n)
                 .map(|m| {
                     m.methods
@@ -9020,73 +8902,70 @@ fn class_has_method(c: &str, method: &str) -> bool {
                         .any(|mm| mm.name.eq_ignore_ascii_case(method))
                 })
                 .unwrap_or(false)
-        })
+        }
     })
 }
 
-fn class_has_concrete_method(c: &str, method: &str) -> bool {
-    class_method_meta(c, method).is_some_and(|meta| !meta.is_abstract)
-}
 
-fn class_method_meta(c: &str, method: &str) -> Option<MethodMeta> {
+fn class_method_meta(__php_w: &mut PhpWalker, c: &str, method: &str) -> Option<MethodMeta> {
     let mut names = vec![c.to_string()];
-    names.extend(class_parent_chain(c));
+    names.extend(class_parent_chain(__php_w, c));
     for n in names {
-        if let Some(meta) = CLASS_REGISTRY.with(|r| {
-            r.borrow().get(&n).and_then(|m| {
+        if let Some(meta) = {
+            __php_w.class_registry.get(&n).and_then(|m| {
                 m.methods
                     .iter()
                     .find(|mm| mm.name.eq_ignore_ascii_case(method))
                     .cloned()
             })
-        }) {
+        } {
             return Some(meta);
         }
     }
     None
 }
 
-fn class_method_declaring_class(c: &str, method: &str) -> Option<String> {
+fn class_method_declaring_class(__php_w: &mut PhpWalker, c: &str, method: &str) -> Option<String> {
     let mut names = vec![c.to_string()];
-    names.extend(class_parent_chain(c));
+    names.extend(class_parent_chain(__php_w, c));
     names.into_iter().find(|n| {
-        CLASS_REGISTRY.with(|r| {
-            r.borrow().get(n).is_some_and(|m| {
+        {
+            __php_w.class_registry.get(n).is_some_and(|m| {
                 m.methods
                     .iter()
                     .any(|mm| mm.name.eq_ignore_ascii_case(method))
             })
-        })
+        }
     })
 }
 
-fn class_property_declaring_class(c: &str, property: &str) -> Option<String> {
+fn class_property_declaring_class(__php_w: &mut PhpWalker, c: &str, property: &str) -> Option<String> {
     let mut names = vec![c.to_string()];
-    names.extend(class_parent_chain(c));
+    names.extend(class_parent_chain(__php_w, c));
     names.into_iter().find(|n| {
-        CLASS_REGISTRY.with(|r| {
-            r.borrow()
+        {
+            __php_w.class_registry
                 .get(n)
                 .is_some_and(|m| m.fields.iter().any(|field| field.name == property))
-        })
+        }
     })
 }
 
-fn class_has_destructor(c: &str) -> bool {
+fn class_has_destructor(__php_w: &mut PhpWalker, c: &str) -> bool {
     let mut names = vec![c.to_string()];
-    names.extend(class_parent_chain(c));
+    names.extend(class_parent_chain(__php_w, c));
     names.iter().any(|n| {
-        CLASS_REGISTRY.with(|r| r.borrow().get(n).map(|m| m.has_destructor).unwrap_or(false))
+        __php_w.class_registry.get(n).map(|m| m.has_destructor).unwrap_or(false)
     })
 }
 
 #[allow(dead_code)]
-fn class_destructor_body(c: &str) -> Option<Vec<Statement>> {
+fn class_destructor_body(__php_w: &mut PhpWalker, c: &str) -> Option<Vec<Statement>> {
     let mut names = vec![c.to_string()];
-    names.extend(class_parent_chain(c));
+    names.extend(class_parent_chain(__php_w, c));
     for n in names {
         if let Some(body) =
-            CLASS_REGISTRY.with(|r| r.borrow().get(&n).and_then(|m| m.destructor_body.clone()))
+            __php_w.class_registry.get(&n).and_then(|m| m.destructor_body.clone())
         {
             return Some(body);
         }
@@ -9094,56 +8973,59 @@ fn class_destructor_body(c: &str) -> Option<Vec<Statement>> {
     None
 }
 
-fn class_direct_parent(c: &str) -> Option<String> {
-    CLASS_REGISTRY.with(|r| r.borrow().get(c).and_then(|m| m.parent.clone()))
+fn class_direct_parent(__php_w: &mut PhpWalker, c: &str) -> Option<String> {
+    __php_w.class_registry.get(c).and_then(|m| m.parent.clone())
 }
 
-fn class_constructor_rest_index(c: &str) -> Option<usize> {
-    CLASS_REGISTRY.with(|r| r.borrow().get(c).and_then(|m| m.constructor_rest_index))
+fn class_constructor_rest_index(__php_w: &mut PhpWalker, c: &str) -> Option<usize> {
+    __php_w.class_registry.get(c).and_then(|m| m.constructor_rest_index)
 }
 
-fn class_is_readonly(c: &str) -> bool {
-    CLASS_REGISTRY.with(|r| r.borrow().get(c).map(|m| m.is_readonly).unwrap_or(false))
+fn class_is_readonly(__php_w: &mut PhpWalker, c: &str) -> bool {
+    __php_w.class_registry.get(c).map(|m| m.is_readonly).unwrap_or(false)
 }
 
-fn class_has_field(c: &str, field: &str) -> bool {
+fn class_has_field(__php_w: &mut PhpWalker, c: &str, field: &str) -> bool {
     let mut names = vec![c.to_string()];
-    names.extend(class_parent_chain(c));
+    names.extend(class_parent_chain(__php_w, c));
     names.iter().any(|n| {
-        CLASS_REGISTRY.with(|r| {
-            r.borrow()
-                .get(n)
-                .map(|m| {
-                    m.fields.iter().any(|f| f.name == field)
-                        || class_declared_property_names(n)
-                            .iter()
-                            .any(|property| property == field)
-                })
-                .unwrap_or(false)
-        })
+        // Both halves read `__php_w`, and the second one needs it mutably, so
+        // the registry answer is taken FIRST and the borrow released before
+        // `class_declared_property_names` runs. `||` still short-circuits.
+        let declares_field = __php_w
+            .class_registry
+            .get(n)
+            .is_some_and(|m| m.fields.iter().any(|f| f.name == field));
+        declares_field
+            || __php_w.class_registry.contains_key(n)
+                && class_declared_property_names(__php_w, n)
+                    .iter()
+                    .any(|property| property == field)
     })
 }
 
-fn class_declared_property_names(c: &str) -> Vec<String> {
-    CLASS_DECLARED_PROPERTIES.with(|r| r.borrow().get(c).cloned().unwrap_or_default())
+fn class_declared_property_names(__php_w: &mut PhpWalker, c: &str) -> Vec<String> {
+    __php_w
+        .class_declared_properties
+        .get(c)
+        .cloned()
+        .unwrap_or_default()
 }
 
-fn class_has_pending_trait_usage(c: &str) -> bool {
+fn class_has_pending_trait_usage(__php_w: &mut PhpWalker, c: &str) -> bool {
     let short = c.rsplit('.').next().unwrap_or(c);
-    TRAIT_USAGES.with(|t| {
-        let usages = t.borrow();
-        usages.get(c).is_some_and(|v| !v.is_empty())
-            || usages.get(short).is_some_and(|v| !v.is_empty())
-    })
+    let usages = &__php_w.trait_usages;
+    usages.get(c).is_some_and(|v| !v.is_empty())
+        || usages.get(short).is_some_and(|v| !v.is_empty())
 }
 
-fn class_or_parent_has_pending_trait_usage(c: &str) -> bool {
-    if class_has_pending_trait_usage(c) {
+fn class_or_parent_has_pending_trait_usage(__php_w: &mut PhpWalker, c: &str) -> bool {
+    if class_has_pending_trait_usage(__php_w, c) {
         return true;
     }
-    class_parent_chain(c)
+    class_parent_chain(__php_w, c)
         .iter()
-        .any(|parent| class_has_pending_trait_usage(parent))
+        .any(|parent| class_has_pending_trait_usage(__php_w, parent))
 }
 
 fn class_member_name(member: &ClassMember) -> Option<String> {
@@ -9178,39 +9060,33 @@ fn class_member_is_abstract_method(member: &ClassMember) -> bool {
     }
 }
 
-fn fold_available_trait_members_into_class(class_name: &str, members: &mut Vec<ClassMember>) {
+fn fold_available_trait_members_into_class(__php_w: &mut PhpWalker, class_name: &str, members: &mut Vec<ClassMember>) {
     let short = class_name.rsplit('.').next().unwrap_or(class_name);
-    let used = TRAIT_USAGES.with(|t| {
-        let usages = t.borrow();
-        usages
-            .get(class_name)
-            .or_else(|| usages.get(short))
-            .cloned()
-            .unwrap_or_default()
-    });
+    let used = __php_w
+        .trait_usages
+        .get(class_name)
+        .or_else(|| __php_w.trait_usages.get(short))
+        .cloned()
+        .unwrap_or_default();
     if used.is_empty() {
         return;
     }
-    let bodies = TRAIT_BODIES.with(|t| t.borrow().clone());
+    let bodies = __php_w.trait_bodies.clone();
     if bodies.is_empty() {
         return;
     }
-    let aliases = TRAIT_ALIASES.with(|t| {
-        let aliases = t.borrow();
-        aliases
-            .get(class_name)
-            .or_else(|| aliases.get(short))
-            .cloned()
-            .unwrap_or_default()
-    });
-    let precedences = TRAIT_PRECEDENCES.with(|t| {
-        let precedences = t.borrow();
-        precedences
-            .get(class_name)
-            .or_else(|| precedences.get(short))
-            .cloned()
-            .unwrap_or_default()
-    });
+    let aliases = __php_w
+        .trait_aliases
+        .get(class_name)
+        .or_else(|| __php_w.trait_aliases.get(short))
+        .cloned()
+        .unwrap_or_default();
+    let precedences = __php_w
+        .trait_precedences
+        .get(class_name)
+        .or_else(|| __php_w.trait_precedences.get(short))
+        .cloned()
+        .unwrap_or_default();
     let mut declared: std::collections::HashSet<String> =
         members.iter().filter_map(class_member_name).collect();
 
@@ -9269,7 +9145,7 @@ fn fold_available_trait_members_into_class(class_name: &str, members: &mut Vec<C
                                 is_sub: *is_sub,
                             },
                         ))));
-                        copy_method_attributes(trait_key, src, class_name, dst);
+                        copy_method_attributes(__php_w, trait_key, src, class_name, dst);
                         declared.insert(dst.clone());
                     }
                 }
@@ -9300,10 +9176,10 @@ fn fold_available_trait_members_into_class(class_name: &str, members: &mut Vec<C
                 members.push(member.clone());
                 match member {
                     ClassMember::Method(_) => {
-                        copy_method_attributes(trait_key, &member_name, class_name, &member_name);
+                        copy_method_attributes(__php_w, trait_key, &member_name, class_name, &member_name);
                     }
                     ClassMember::Field { .. } | ClassMember::Property { .. } => {
-                        copy_property_attributes(trait_key, &member_name, class_name, &member_name);
+                        copy_property_attributes(__php_w, trait_key, &member_name, class_name, &member_name);
                     }
                     _ => {}
                 }
@@ -9313,50 +9189,51 @@ fn fold_available_trait_members_into_class(class_name: &str, members: &mut Vec<C
     }
 }
 
-fn class_has_any_field(c: &str) -> bool {
+fn class_has_any_field(__php_w: &mut PhpWalker, c: &str) -> bool {
     let mut names = vec![c.to_string()];
-    names.extend(class_parent_chain(c));
+    names.extend(class_parent_chain(__php_w, c));
     names
         .iter()
-        .any(|n| CLASS_REGISTRY.with(|r| r.borrow().get(n).is_some_and(|m| !m.fields.is_empty())))
+        .any(|n| __php_w.class_registry.get(n).is_some_and(|m| !m.fields.is_empty()))
 }
 
-fn class_field_visibility(c: &str, field: &str) -> Option<(String, Visibility)> {
-    if let Some(meta) = pending_class_field_meta(c, field) {
+fn class_field_visibility(__php_w: &mut PhpWalker, c: &str, field: &str) -> Option<(String, Visibility)> {
+    if let Some(meta) = pending_class_field_meta(__php_w, c, field) {
         return Some((c.to_string(), meta.visibility));
     }
     let mut names = vec![c.to_string()];
-    if current_class_name().as_deref() == Some(c) {
-        if let Some(parent) = current_class_parent_name() {
+    if current_class_name(__php_w).as_deref() == Some(c) {
+        if let Some(parent) = current_class_parent_name(__php_w) {
             names.push(parent.clone());
-            names.extend(class_parent_chain(&parent));
+            names.extend(class_parent_chain(__php_w, &parent));
         }
     } else {
-        names.extend(class_parent_chain(c));
+        names.extend(class_parent_chain(__php_w, c));
     }
     for name in names {
-        if let Some(vis) = CLASS_REGISTRY.with(|r| {
-            r.borrow().get(&name).and_then(|m| {
+        if let Some(vis) = {
+            __php_w.class_registry.get(&name).and_then(|m| {
                 m.fields
                     .iter()
                     .find(|f| f.name == field)
                     .map(|f| f.visibility)
             })
-        }) {
+        } {
             return Some((name, vis));
         }
     }
     None
 }
 
-fn class_clone_storage_fields(c: &str) -> Vec<String> {
-    fn collect(c: &str, out: &mut Vec<String>) {
-        let meta = CLASS_REGISTRY.with(|r| r.borrow().get(c).cloned());
+fn class_clone_storage_fields(__php_w: &mut PhpWalker, c: &str) -> Vec<String> {
+    fn collect(__php_w: &mut PhpWalker, c: &str, out: &mut Vec<String>) {
+        let meta = __php_w.class_registry.get(c).cloned();
         let Some(meta) = meta else {
             return;
         };
         if let Some(parent) = meta.parent.as_deref() {
-            collect(parent, out);
+            let parent = parent.to_string();
+            collect(__php_w, &parent, out);
         }
         for field in &meta.fields {
             for key in [
@@ -9373,156 +9250,71 @@ fn class_clone_storage_fields(c: &str) -> Vec<String> {
     }
 
     let mut out = Vec::new();
-    collect(c, &mut out);
+    collect(__php_w, c, &mut out);
     out
 }
-
-fn class_declared_clone_fields(c: &str) -> Vec<String> {
-    fn collect(c: &str, out: &mut Vec<String>) {
-        let meta = CLASS_REGISTRY.with(|r| r.borrow().get(c).cloned());
-        let Some(meta) = meta else {
-            return;
-        };
-        if let Some(parent) = meta.parent.as_deref() {
-            collect(parent, out);
-        }
-        for field in &meta.fields {
-            if !field.is_static && !out.iter().any(|existing| existing == &field.name) {
-                out.push(field.name.clone());
-            }
-        }
-    }
-
-    let mut out = Vec::new();
-    collect(c, &mut out);
-    out
-}
-
-fn build_known_class_clone_expr(class_name: &str, source: Expression, span: &Span) -> Expression {
-    let src_tmp = next_tmp_name("clone_src");
-    let copy_tmp = next_tmp_name("clone_copy");
-    let src_ident = || Expression::with_span(ExprKind::Ident(src_tmp.clone()), span.clone());
-    let copy_ident = || Expression::with_span(ExprKind::Ident(copy_tmp.clone()), span.clone());
-    let member = |object: Expression, field: &str| {
-        Expression::with_span(
-            ExprKind::Member {
-                object: Box::new(object),
-                field: field.to_string(),
-                null_safe: false,
-            },
-            span.clone(),
-        )
-    };
-
-    let mut seq = Vec::new();
-    seq.push(Expression::with_span(
-        ExprKind::Assign {
-            target: Box::new(src_ident()),
-            value: Box::new(source),
-        },
-        span.clone(),
-    ));
-    seq.push(Expression::with_span(
-        ExprKind::Assign {
-            target: Box::new(copy_ident()),
-            value: Box::new(Expression::with_span(
-                ExprKind::New {
-                    class: Box::new(Expression::ident(class_name)),
-                    args: Vec::new(),
-                },
-                span.clone(),
-            )),
-        },
-        span.clone(),
-    ));
-    for field in class_declared_clone_fields(class_name) {
-        seq.push(Expression::with_span(
-            ExprKind::Assign {
-                target: Box::new(member(copy_ident(), &field)),
-                value: Box::new(member(src_ident(), &field)),
-            },
-            span.clone(),
-        ));
-    }
-    if class_method_meta(class_name, "__clone").is_some() {
-        seq.push(Expression::with_span(
-            ExprKind::Call {
-                callee: Box::new(member(copy_ident(), "__clone")),
-                args: Vec::new(),
-                optional: false,
-            },
-            span.clone(),
-        ));
-    }
-    seq.push(copy_ident());
-
-    Expression::with_span(ExprKind::Sequence(seq), span.clone())
-}
-
-fn class_field_meta(c: &str, field: &str) -> Option<(String, FieldMeta)> {
-    if let Some(meta) = pending_class_field_meta(c, field) {
+fn class_field_meta(__php_w: &mut PhpWalker, c: &str, field: &str) -> Option<(String, FieldMeta)> {
+    if let Some(meta) = pending_class_field_meta(__php_w, c, field) {
         return Some((c.to_string(), meta));
     }
     let mut names = vec![c.to_string()];
-    if current_class_name().as_deref() == Some(c) {
-        if let Some(parent) = current_class_parent_name() {
+    if current_class_name(__php_w).as_deref() == Some(c) {
+        if let Some(parent) = current_class_parent_name(__php_w) {
             names.push(parent.clone());
-            names.extend(class_parent_chain(&parent));
+            names.extend(class_parent_chain(__php_w, &parent));
         }
     } else {
-        names.extend(class_parent_chain(c));
+        names.extend(class_parent_chain(__php_w, c));
     }
     for name in names {
-        if let Some(meta) = CLASS_REGISTRY.with(|r| {
-            r.borrow()
+        if let Some(meta) = {
+            __php_w.class_registry
                 .get(&name)
                 .and_then(|m| m.fields.iter().find(|f| f.name == field).cloned())
-        }) {
+        } {
             return Some((name, meta));
         }
     }
     None
 }
 
-fn php_field_visible_from_current(owner: &str, visibility: Visibility) -> bool {
+fn php_field_visible_from_current(__php_w: &mut PhpWalker, owner: &str, visibility: Visibility) -> bool {
     match visibility {
         Visibility::Public => true,
-        Visibility::Private => current_class_name().is_some_and(|c| c == owner),
-        Visibility::Protected => current_class_name().is_some_and(|c| {
+        Visibility::Private => current_class_name(__php_w).is_some_and(|c| c == owner),
+        Visibility::Protected => current_class_name(__php_w).is_some_and(|c| {
             c == owner
-                || class_is_subclass_of(&c, owner)
-                || class_is_subclass_of(owner, &c)
-                || current_class_parent_name()
-                    .is_some_and(|parent| parent == owner || class_is_subclass_of(&parent, owner))
+                || class_is_subclass_of(__php_w, &c, owner)
+                || class_is_subclass_of(__php_w, owner, &c)
+                || current_class_parent_name(__php_w)
+                    .is_some_and(|parent| parent == owner || class_is_subclass_of(__php_w, &parent, owner))
         }),
         Visibility::Internal => false,
     }
 }
 
-fn note_seen_class_method(class_name: &str, method: &str) {
-    SEEN_CLASS_METHODS.with(|m| {
-        m.borrow_mut()
-            .insert(format!("{}::{}", class_name, method).to_ascii_lowercase());
-    });
+fn note_seen_class_method(__php_w: &mut PhpWalker, class_name: &str, method: &str) {
+    __php_w
+        .seen_class_methods
+        .insert(format!("{}::{}", class_name, method).to_ascii_lowercase());
 }
 
-fn seen_class_has_method(class_name: &str, method: &str) -> bool {
-    SEEN_CLASS_METHODS.with(|m| {
-        m.borrow()
-            .contains(&format!("{}::{}", class_name, method).to_ascii_lowercase())
-    })
+fn seen_class_has_method(__php_w: &mut PhpWalker, class_name: &str, method: &str) -> bool {
+    __php_w
+        .seen_class_methods
+        .contains(&format!("{}::{}", class_name, method).to_ascii_lowercase())
 }
 
-fn class_is_final_compile_time(name: &str) -> bool {
-    CLASS_REGISTRY.with(|r| r.borrow().get(name).map(|m| m.is_final).unwrap_or(false))
+fn class_is_final_compile_time(__php_w: &mut PhpWalker, name: &str) -> bool {
+    __php_w.class_registry.get(name).map(|m| m.is_final).unwrap_or(false)
 }
 
-fn class_has_final_method_compile_time(class_name: &str, method_name: &str) -> bool {
+fn class_has_final_method_compile_time(__php_w: &mut PhpWalker, class_name: &str, method_name: &str) -> bool {
     let mut names = vec![class_name.to_string()];
-    names.extend(class_parent_chain(class_name));
+    names.extend(class_parent_chain(__php_w, class_name));
     names.iter().any(|name| {
-        CLASS_REGISTRY.with(|r| {
-            r.borrow()
+        {
+            __php_w.class_registry
                 .get(name)
                 .map(|m| {
                     m.methods.iter().any(|method| {
@@ -9530,11 +9322,11 @@ fn class_has_final_method_compile_time(class_name: &str, method_name: &str) -> b
                     })
                 })
                 .unwrap_or(false)
-        })
+        }
     })
 }
 
-fn php_eval_literal_class_error(source: &str) -> bool {
+fn php_eval_literal_class_error(__php_w: &mut PhpWalker, source: &str) -> bool {
     let lower = source.to_ascii_lowercase();
     if lower.contains("abstract final class") || lower.contains("final abstract class") {
         return true;
@@ -9556,7 +9348,7 @@ fn php_eval_literal_class_error(source: &str) -> bool {
     for window in tokens.windows(2) {
         if window[0].eq_ignore_ascii_case("extends") {
             extends_parent = Some(window[1]);
-            if class_is_final_compile_time(window[1]) || literal_final_classes.contains(window[1]) {
+            if class_is_final_compile_time(__php_w, window[1]) || literal_final_classes.contains(window[1]) {
                 return true;
             }
         }
@@ -9565,12 +9357,12 @@ fn php_eval_literal_class_error(source: &str) -> bool {
     if let Some(parent) = extends_parent {
         for window in tokens.windows(3) {
             if window[0].eq_ignore_ascii_case("function")
-                && class_has_final_method_compile_time(parent, window[1])
+                && class_has_final_method_compile_time(__php_w, parent, window[1])
             {
                 return true;
             }
             if window[1].eq_ignore_ascii_case("function")
-                && class_has_final_method_compile_time(parent, window[2])
+                && class_has_final_method_compile_time(__php_w, parent, window[2])
             {
                 return true;
             }
@@ -9654,8 +9446,8 @@ fn php_is_array_access_read_expr(expr: &Expression) -> bool {
     })
 }
 
-fn php_expr_is_compile_time_non_object(expr: &Expression) -> bool {
-    php_expr_is_compile_time_non_object_seen(expr, &mut std::collections::HashSet::new())
+fn php_expr_is_compile_time_non_object(__php_w: &mut PhpWalker, expr: &Expression) -> bool {
+    php_expr_is_compile_time_non_object_seen(__php_w, expr, &mut std::collections::HashSet::new())
 }
 
 /// `SIMPLE_VALUE_VARS` records what a variable was last assigned, and an
@@ -9663,7 +9455,7 @@ fn php_expr_is_compile_time_non_object(expr: &Expression) -> bool {
 /// `$a = $b; $b = $a;` closes a cycle in it. Following `Ident` edges without
 /// remembering where we have been recurses forever; the same hazard is why
 /// `php_alias_root` carries a `seen` set, and this walks the same edges.
-fn php_expr_is_compile_time_non_object_seen(
+fn php_expr_is_compile_time_non_object_seen(__php_w: &mut PhpWalker, 
     expr: &Expression,
     seen: &mut std::collections::HashSet<String>,
 ) -> bool {
@@ -9678,15 +9470,15 @@ fn php_expr_is_compile_time_non_object_seen(
         ExprKind::Unary { expr, .. }
         | ExprKind::Cast { expr, .. }
         | ExprKind::RefLoad(expr)
-        | ExprKind::Spread(expr) => php_expr_is_compile_time_non_object_seen(expr, seen),
+        | ExprKind::Spread(expr) => php_expr_is_compile_time_non_object_seen(__php_w, expr, seen),
         ExprKind::Ident(name) => {
             if !seen.insert(name.trim_start_matches('$').to_string()) {
                 // A cycle: the chain never reaches a literal, so the value is
                 // not known to be a non-object.
                 return false;
             }
-            lookup_simple_value_var(name)
-                .is_some_and(|value| php_expr_is_compile_time_non_object_seen(&value, seen))
+            lookup_simple_value_var(__php_w, name)
+                .is_some_and(|value| php_expr_is_compile_time_non_object_seen(__php_w, &value, seen))
         }
         _ => false,
     }
@@ -9698,9 +9490,9 @@ enum PhpKnownReceiverKind {
     NonObject,
 }
 
-fn php_known_bad_object_receiver(expr: &Expression) -> Option<PhpKnownReceiverKind> {
+fn php_known_bad_object_receiver(__php_w: &mut PhpWalker, expr: &Expression) -> Option<PhpKnownReceiverKind> {
     let resolved = match &expr.kind {
-        ExprKind::Ident(name) => lookup_simple_value_var(name).unwrap_or_else(|| expr.clone()),
+        ExprKind::Ident(name) => lookup_simple_value_var(__php_w, name).unwrap_or_else(|| expr.clone()),
         _ => expr.clone(),
     };
     match resolved.kind {
@@ -9711,6 +9503,36 @@ fn php_known_bad_object_receiver(expr: &Expression) -> Option<PhpKnownReceiverKi
         | ExprKind::Lit(Literal::BigInt(_))
         | ExprKind::Lit(Literal::Str(_))
         | ExprKind::Array(_) => Some(PhpKnownReceiverKind::NonObject),
+        _ => None,
+    }
+}
+
+/// A value php can never CALL — the callee counterpart of
+/// [`php_known_bad_object_receiver`].
+///
+/// The two questions look alike and are not the same, which is why asking the
+/// object-receiver one about a callee was wrong. `$x->m()` needs an object, so
+/// a string or an array is an error there. A CALLEE has a wider rule: php's
+/// callables include a function-name string, a `"Class::method"` string and a
+/// `[receiver, "method"]` pair, so claiming those here turned `$cb = [$p,
+/// 'hi']; $cb(10);` into a walk-time `TypeError` — a value php calls happily.
+///
+/// What remains genuinely uncallable is a scalar that is not a string, and an
+/// array of any shape other than a pair.
+fn php_known_non_callable_value(__php_w: &mut PhpWalker, expr: &Expression) -> Option<PhpKnownReceiverKind> {
+    let resolved = match &expr.kind {
+        ExprKind::Ident(name) => lookup_simple_value_var(__php_w, name).unwrap_or_else(|| expr.clone()),
+        _ => expr.clone(),
+    };
+    match resolved.kind {
+        ExprKind::Lit(Literal::Null) => Some(PhpKnownReceiverKind::Null),
+        ExprKind::Lit(Literal::Bool(_))
+        | ExprKind::Lit(Literal::Int(_))
+        | ExprKind::Lit(Literal::Float(_))
+        | ExprKind::Lit(Literal::BigInt(_)) => Some(PhpKnownReceiverKind::NonObject),
+        ExprKind::Array(elements) if elements.len() != 2 => {
+            Some(PhpKnownReceiverKind::NonObject)
+        }
         _ => None,
     }
 }
@@ -9806,9 +9628,9 @@ fn php_canonical_int_key(s: &str) -> Option<i64> {
     (n.to_string() == s).then_some(n)
 }
 
-fn php_known_scalar_array_receiver(expr: &Expression) -> bool {
+fn php_known_scalar_array_receiver(__php_w: &mut PhpWalker, expr: &Expression) -> bool {
     let resolved = match &expr.kind {
-        ExprKind::Ident(name) => lookup_simple_value_var(name).unwrap_or_else(|| expr.clone()),
+        ExprKind::Ident(name) => lookup_simple_value_var(__php_w, name).unwrap_or_else(|| expr.clone()),
         _ => expr.clone(),
     };
     matches!(
@@ -9833,27 +9655,30 @@ fn php_bad_receiver_throw(kind: PhpKnownReceiverKind, op: &str, span: &Span) -> 
 
 /// Extract a class name from an argument that names a class: a string
 /// literal (`'C'`, `C::class`), or a `new C()` expression.
-fn class_name_from_arg(e: &Expression) -> Option<String> {
+fn class_name_from_arg(__php_w: &mut PhpWalker, e: &Expression) -> Option<String> {
     match &e.kind {
         ExprKind::Lit(Literal::Str(s)) => Some(s.clone()),
-        ExprKind::New { class, .. } => match &class.kind {
-            ExprKind::Ident(n) => Some(n.clone()),
-            _ => None,
-        },
-        _ => None,
+        // Every `class_*` / `property_exists` builtin takes "an object OR a
+        // class name". Only the class-name half was answered here, so
+        // `class_implements($logger)` fell through to a call of a function that
+        // does not exist. `php_object_class_from_expr` is this walker's ONE
+        // resolver for the object half — it already follows `$this`, a variable
+        // bound to a `new`, a typed property, and a static factory — so defer
+        // to it rather than re-deriving the `new X` case here.
+        _ => php_object_class_from_expr(__php_w, e),
     }
 }
 
-fn is_php_dom_xml_receiver(e: &Expression) -> bool {
-    if lookup_simple_reflection_target(e).is_some() {
+fn is_php_dom_xml_receiver(__php_w: &mut PhpWalker, e: &Expression) -> bool {
+    if lookup_simple_reflection_target(__php_w, e).is_some() {
         return false;
     }
     if let ExprKind::Ident(name) = &e.kind {
-        if is_simple_xml_var(name) {
+        if is_simple_xml_var(__php_w, name) {
             return true;
         }
     }
-    php_object_class_from_expr(e).is_some_and(|class_name| {
+    php_object_class_from_expr(__php_w, e).is_some_and(|class_name| {
         matches!(
             class_name.trim_start_matches('\\'),
             "DOMDocument"
@@ -9868,32 +9693,32 @@ fn is_php_dom_xml_receiver(e: &Expression) -> bool {
 }
 
 /// Public method names of `c` and its ancestors (first-seen order).
-fn class_public_methods(c: &str) -> Vec<String> {
+fn class_public_methods(__php_w: &mut PhpWalker, c: &str) -> Vec<String> {
     let mut names = vec![c.to_string()];
-    names.extend(class_parent_chain(c));
+    names.extend(class_parent_chain(__php_w, c));
     let mut result = Vec::new();
     for n in &names {
-        CLASS_REGISTRY.with(|r| {
-            if let Some(m) = r.borrow().get(n) {
+        {
+            if let Some(m) = __php_w.class_registry.get(n) {
                 for mm in &m.methods {
                     if matches!(mm.visibility, Visibility::Public) && !result.contains(&mm.name) {
                         result.push(mm.name.clone());
                     }
                 }
             }
-        });
+        };
     }
     result
 }
 
 /// Public field names of `c` and its ancestors (first-seen order).
-fn class_public_fields(c: &str) -> Vec<String> {
+fn class_public_fields(__php_w: &mut PhpWalker, c: &str) -> Vec<String> {
     let mut names = vec![c.to_string()];
-    names.extend(class_parent_chain(c));
+    names.extend(class_parent_chain(__php_w, c));
     let mut result = Vec::new();
     for n in &names {
-        CLASS_REGISTRY.with(|r| {
-            if let Some(m) = r.borrow().get(n) {
+        {
+            if let Some(m) = __php_w.class_registry.get(n) {
                 for field in &m.fields {
                     if matches!(field.visibility, Visibility::Public)
                         && !result.contains(&field.name)
@@ -9902,18 +9727,18 @@ fn class_public_fields(c: &str) -> Vec<String> {
                     }
                 }
             }
-        });
+        };
     }
     result
 }
 
-fn class_mangled_object_vars(c: &str, object: Expression, span: &Span) -> Vec<ArrayElement> {
+fn class_mangled_object_vars(__php_w: &mut PhpWalker, c: &str, object: Expression, span: &Span) -> Vec<ArrayElement> {
     let mut names = vec![c.to_string()];
-    names.extend(class_parent_chain(c));
+    names.extend(class_parent_chain(__php_w, c));
     let mut result = Vec::new();
     for class_name in &names {
-        CLASS_REGISTRY.with(|r| {
-            if let Some(meta) = r.borrow().get(class_name) {
+        {
+            if let Some(meta) = __php_w.class_registry.get(class_name) {
                 for field in &meta.fields {
                     if field.is_static
                         || field.name == "__php_lsb_class"
@@ -9950,18 +9775,18 @@ fn class_mangled_object_vars(c: &str, object: Expression, span: &Span) -> Vec<Ar
                     });
                 }
             }
-        });
+        };
     }
     result
 }
 
-fn class_public_field_defaults(c: &str, span: &Span) -> Vec<ArrayElement> {
+fn class_public_field_defaults(__php_w: &mut PhpWalker, c: &str, span: &Span) -> Vec<ArrayElement> {
     let mut names = vec![c.to_string()];
-    names.extend(class_parent_chain(c));
+    names.extend(class_parent_chain(__php_w, c));
     let mut result = Vec::new();
     for class_name in &names {
-        CLASS_REGISTRY.with(|r| {
-            if let Some(meta) = r.borrow().get(class_name) {
+        {
+            if let Some(meta) = __php_w.class_registry.get(class_name) {
                 for (field, value) in &meta.field_defaults {
                     if !result.iter().any(|element: &ArrayElement| {
                         element.key.as_ref().is_some_and(|key| {
@@ -9980,12 +9805,12 @@ fn class_public_field_defaults(c: &str, span: &Span) -> Vec<ArrayElement> {
                     }
                 }
             }
-        });
+        };
     }
     result
 }
 
-fn walk_interface_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_interface_decl(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     // PHP interfaces behave like classes that carry constants. Walking
     // them as ClassDecl lets `Interface::CONST` static access resolve
     // through the standard class-const path. Test-suite interface methods may
@@ -10009,14 +9834,14 @@ fn walk_interface_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
 
-    push_class_context(&name);
+    push_class_context(__php_w, &name);
     let walk_result: Result<(), String> = (|| {
         for p in deferred {
-            class_members.extend(walk_class_member(p)?);
+            class_members.extend(walk_class_member(__php_w, p)?);
         }
         Ok(())
     })();
-    pop_class_context();
+    pop_class_context(__php_w);
     walk_result?;
 
     // Register the interface's metadata like a class/trait. Without this an
@@ -10024,7 +9849,7 @@ fn walk_interface_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     // and `class_implements()` could not follow an `interface X extends Y`
     // edge — `class_implements()` returned only the directly-named interface.
     // `parents` carries the `extends` list (see `class_all_interfaces`).
-    let meta = extract_class_meta(
+    let meta = extract_class_meta(__php_w, 
         &name,
         &parents,
         &[],
@@ -10035,8 +9860,8 @@ fn walk_interface_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         &class_members,
         false,
     );
-    CLASS_REGISTRY.with(|r| r.borrow_mut().insert(name.clone(), meta));
-    register_type_kind(&name, "interface");
+    __php_w.class_registry.insert(name.clone(), meta);
+    register_type_kind(__php_w, &name, "interface");
     Ok(StmtKind::ClassDecl {
         name,
         parents,
@@ -10050,7 +9875,7 @@ fn walk_interface_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     })
 }
 
-fn walk_trait_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_trait_decl(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     // Treat a trait as a regular class for compilation purposes —
     // `use TraitName` inside another class flattens via the same parent
     // chain.
@@ -10074,26 +9899,26 @@ fn walk_trait_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
 
-    push_class_context(&name);
+    push_class_context(__php_w, &name);
     let walk_result: Result<(), String> = (|| {
         for p in deferred_members {
-            members.extend(walk_class_member(p)?);
+            members.extend(walk_class_member(__php_w, p)?);
         }
         Ok(())
     })();
-    pop_class_context();
+    pop_class_context(__php_w);
     walk_result?;
 
     // Register the trait's metadata (methods, fields) like a class, so
     // method-name lookups (e.g. the DateTime-method-hijack guard) see
     // trait-provided methods on classes that `use` the trait.
-    let meta = extract_class_meta(&name, &[], &[], &ClassModifiers::default(), &members, false);
-    CLASS_REGISTRY.with(|r| r.borrow_mut().insert(name.clone(), meta));
-    register_type_kind(&name, "trait");
+    let meta = extract_class_meta(__php_w, &name, &[], &[], &ClassModifiers::default(), &members, false);
+    __php_w.class_registry.insert(name.clone(), meta);
+    register_type_kind(__php_w, &name, "trait");
     // Publish the trait body so an anonymous class using it can fold the
     // members at walk time (the `parse()` post-pass only reaches named
     // ClassDecls, not embedded ClassExprs).
-    TRAIT_BODIES.with(|t| t.borrow_mut().insert(name.clone(), members.clone()));
+    __php_w.trait_bodies.insert(name.clone(), members.clone());
     Ok(StmtKind::ClassDecl {
         name,
         parents: Vec::new(),
@@ -10107,7 +9932,7 @@ fn walk_trait_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     })
 }
 
-fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_enum_decl(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut name = String::new();
     let mut backing_type: Option<String> = None;
     let mut interfaces: Vec<String> = Vec::new();
@@ -10132,26 +9957,25 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
     // Second pass: walk member expressions/bodies with class context
     // pushed so `self::` inside enum methods/cases resolves to the enum.
-    push_class_context(&name);
+    push_class_context(__php_w, &name);
     let walk_result: Result<(), String> = (|| {
         for p in deferred {
             match p.as_rule() {
                 Rule::enum_case => {
-                    let attrs = collect_leading_attributes(&p)?;
+                    let attrs = collect_leading_attributes(__php_w, &p)?;
                     let mut case_name = String::new();
                     let mut backing: Option<Expression> = None;
                     for c in p.into_inner() {
                         match c.as_rule() {
                             Rule::identifier => case_name = c.as_str().to_string(),
-                            Rule::expression => backing = Some(walk_expression(c)?),
+                            Rule::expression => backing = Some(walk_expression(__php_w, c)?),
                             _ => {}
                         }
                     }
                     if !attrs.is_empty() {
-                        ENUM_CASE_ATTRIBUTES.with(|r| {
-                            r.borrow_mut()
-                                .insert((name.clone(), case_name.clone()), attrs);
-                        });
+                        __php_w
+                            .enum_case_attributes
+                            .insert((name.clone(), case_name.clone()), attrs);
                     }
                     members.push(EnumMember {
                         name: case_name,
@@ -10160,14 +9984,14 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     });
                 }
                 Rule::class_constant | Rule::method_declaration | Rule::use_trait => {
-                    body_members.extend(walk_class_member(p)?);
+                    body_members.extend(walk_class_member(__php_w, p)?);
                 }
                 _ => {}
             }
         }
         Ok(())
     })();
-    pop_class_context();
+    pop_class_context(__php_w);
     walk_result?;
 
     // Desugar the PHP enum into a plain class so the shared, language-agnostic
@@ -10365,7 +10189,7 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
 
-    let meta = extract_class_meta(
+    let meta = extract_class_meta(__php_w, 
         &name,
         &[],
         &interfaces,
@@ -10373,8 +10197,8 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         &class_members,
         false,
     );
-    CLASS_REGISTRY.with(|r| r.borrow_mut().insert(name.clone(), meta));
-    register_type_kind(&name, "enum");
+    __php_w.class_registry.insert(name.clone(), meta);
+    register_type_kind(__php_w, &name, "enum");
     Ok(StmtKind::ClassDecl {
         name,
         parents: vec![],
@@ -10388,7 +10212,7 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
 /// Returns a LIST because one `use A, B { … };` declares one augmentation per
 /// trait, each carrying its own adaptations. Every other member kind yields
 /// exactly one entry, or none.
-fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
+fn walk_class_member(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
     match pair.as_rule() {
         Rule::empty_statement => Ok(Vec::new()),
         Rule::use_trait => {
@@ -10405,7 +10229,7 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
             // metadata — read by ~15 walker sites for method lookup, visibility
             // and constructor params — must see the class's members UNION its
             // traits', and that union is computed in `parse()` from these maps.
-            if let Some(class_name) = current_class_name() {
+            if let Some(class_name) = current_class_name(__php_w) {
                 let mut trait_names: Vec<String> = Vec::new();
                 let mut aliases: Vec<(String, String, String)> = Vec::new();
                 let mut precedences: Vec<(String, String, String)> = Vec::new();
@@ -10416,7 +10240,7 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
                 let mut adaptation_scope: Vec<String> = Vec::new();
                 for p in pair.into_inner() {
                     match p.as_rule() {
-                        Rule::qualified_name => trait_names.push(php_resolve_trait_ref(p.as_str())),
+                        Rule::qualified_name => trait_names.push(php_resolve_trait_ref(__php_w, p.as_str())),
                         Rule::trait_adaptation => {
                             // Two forms:
                             //   trait_method_ref ~ "insteadof" ~ qualified_name+ ~ ";"
@@ -10450,7 +10274,7 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
                                             }
                                         }
                                         if let Some(t) = tname {
-                                            method_trait = php_resolve_trait_ref(&t);
+                                            method_trait = php_resolve_trait_ref(__php_w, &t);
                                         }
                                         method_name = last_method;
                                     }
@@ -10462,7 +10286,7 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
                                             Some(parse_visibility(q.as_str(), Visibility::Public));
                                     }
                                     Rule::qualified_name if !is_alias => {
-                                        hidden_traits.push(php_resolve_trait_ref(q.as_str()));
+                                        hidden_traits.push(php_resolve_trait_ref(__php_w, q.as_str()));
                                     }
                                     _ => {}
                                 }
@@ -10508,28 +10332,25 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
                 }
                 let used_traits = trait_names.clone();
                 if !trait_names.is_empty() {
-                    TRAIT_USAGES.with(|t| {
-                        t.borrow_mut()
-                            .entry(class_name.clone())
-                            .or_default()
-                            .extend(trait_names);
-                    });
+                    __php_w
+                        .trait_usages
+                        .entry(class_name.clone())
+                        .or_default()
+                        .extend(trait_names);
                 }
                 if !aliases.is_empty() {
-                    TRAIT_ALIASES.with(|t| {
-                        t.borrow_mut()
-                            .entry(class_name.clone())
-                            .or_default()
-                            .extend(aliases);
-                    });
+                    __php_w
+                        .trait_aliases
+                        .entry(class_name.clone())
+                        .or_default()
+                        .extend(aliases);
                 }
                 if !precedences.is_empty() {
-                    TRAIT_PRECEDENCES.with(|t| {
-                        t.borrow_mut()
-                            .entry(class_name)
-                            .or_default()
-                            .extend(precedences);
-                    });
+                    __php_w
+                        .trait_precedences
+                        .entry(class_name)
+                        .or_default()
+                        .extend(precedences);
                 }
                 // One declaration per trait. An adaptation qualified with a
                 // trait name (`B::hello as hi`) belongs only to that trait's
@@ -10555,7 +10376,7 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
             Ok(Vec::new())
         }
         Rule::class_constant => {
-            let attrs = collect_leading_attributes(&pair)?;
+            let attrs = collect_leading_attributes(__php_w, &pair)?;
             let mut name = String::new();
             let mut value: Option<Expression> = None;
             let mut visibility = Visibility::Public;
@@ -10565,15 +10386,15 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
                     Rule::identifier | Rule::method_ident if name.is_empty() => {
                         name = p.as_str().to_string()
                     }
-                    Rule::expression => value = Some(walk_expression(p)?),
+                    Rule::expression => value = Some(walk_expression(__php_w, p)?),
                     _ => {}
                 }
             }
             if !attrs.is_empty() {
-                if let Some(class_name) = current_class_name() {
-                    CLASS_CONST_ATTRIBUTES.with(|r| {
-                        r.borrow_mut().insert((class_name, name.clone()), attrs);
-                    });
+                if let Some(class_name) = current_class_name(__php_w) {
+                    __php_w
+                        .class_const_attributes
+                        .insert((class_name, name.clone()), attrs);
                 }
             }
             Ok(vec![ClassMember::Const {
@@ -10584,7 +10405,7 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
             }])
         }
         Rule::property_declaration => {
-            let attrs = collect_leading_attributes(&pair)?;
+            let attrs = collect_leading_attributes(__php_w, &pair)?;
             let mut name = String::new();
             let mut type_hint: Option<String> = None;
             let mut init: Option<Expression> = None;
@@ -10593,9 +10414,18 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
             let mut setter: Option<PropertySetter> = None;
             for p in pair.into_inner() {
                 match p.as_rule() {
-                    Rule::member_modifier | Rule::asymmetric_set_modifier => {
-                        apply_member_modifier(&mut modifiers, p.as_str())
-                    }
+                    Rule::member_modifier => apply_member_modifier(&mut modifiers, p.as_str()),
+                    // ⛔ `private(set)` must NOT reach `apply_member_modifier`.
+                    // That matches on `starts_with("private")`, so it set the
+                    // property's READ visibility to private and
+                    // `public private(set) float $balance` became unreadable
+                    // from outside — the opposite of what the modifier says.
+                    // The write half is recorded by the prescan
+                    // (`collect_asymmetric_set_visibility`); the read half is
+                    // whatever `public`/`protected`/absent already said, and
+                    // absent defaults to Public, which is php's rule for a bare
+                    // `private(set) int $x`.
+                    Rule::asymmetric_set_modifier => {}
                     Rule::type_annotation => type_hint = Some(p.as_str().to_string()),
                     Rule::simple_variable | Rule::variable => {
                         // Property names are stored WITHOUT the `$`
@@ -10606,9 +10436,9 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
                         let raw = p.as_str();
                         name = raw.strip_prefix('$').unwrap_or(raw).to_string();
                     }
-                    Rule::expression => init = Some(walk_expression(p)?),
+                    Rule::expression => init = Some(walk_expression(__php_w, p)?),
                     Rule::property_hook_block => {
-                        let (hook_getter, hook_setter) = walk_property_hooks(p, &type_hint, &name)?;
+                        let (hook_getter, hook_setter) = walk_property_hooks(__php_w, p, &type_hint, &name)?;
                         getter = hook_getter;
                         setter = hook_setter;
                     }
@@ -10616,10 +10446,10 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
                 }
             }
             if !attrs.is_empty() {
-                if let Some(class_name) = current_class_name() {
-                    PROPERTY_ATTRIBUTES.with(|r| {
-                        r.borrow_mut().insert((class_name, name.clone()), attrs);
-                    });
+                if let Some(class_name) = current_class_name(__php_w) {
+                    __php_w
+                        .property_attributes
+                        .insert((class_name, name.clone()), attrs);
                 }
             }
             if getter.is_some() || setter.is_some() {
@@ -10643,7 +10473,7 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
             }
         }
         Rule::method_declaration => {
-            let attrs = collect_leading_attributes(&pair)?;
+            let attrs = collect_leading_attributes(__php_w, &pair)?;
             let mut method_name = String::new();
             let mut params: Vec<Param> = Vec::new();
             let mut param_attrs: Vec<Vec<AttributeMeta>> = Vec::new();
@@ -10657,11 +10487,11 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
                     Rule::member_modifier => apply_member_modifier(&mut modifiers, p.as_str()),
                     Rule::identifier | Rule::method_ident => method_name = p.as_str().to_string(),
                     Rule::param_list => {
-                        param_attrs = collect_param_attributes(&p)?;
+                        param_attrs = collect_param_attributes(__php_w, &p)?;
                         // Capture both the params and any promotion
                         // visibility so we can synthesize property
                         // assignments below for `__construct`.
-                        let with_prom = walk_params_with_promotion(p)?;
+                        let with_prom = walk_params_with_promotion(__php_w, p)?;
                         params = Vec::with_capacity(with_prom.len());
                         for (mut param, vis) in with_prom {
                             if let Some((v, readonly)) = vis {
@@ -10689,59 +10519,50 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
                     Rule::block_statement => {
                         // Track the method name for `__FUNCTION__`/`__METHOD__`
                         // inside the body (name precedes the body in grammar).
-                        FUNCTION_STACK.with(|s| s.borrow_mut().push(method_name.clone()));
-                        METHOD_TYPE_STACK.with(|s| {
-                            s.borrow_mut().push(if modifiers.is_static {
-                                "::".to_string()
-                            } else {
-                                "->".to_string()
-                            })
+                        __php_w.function_stack.push(method_name.clone());
+                        __php_w.method_type_stack.push(if modifiers.is_static {
+                            "::".to_string()
+                        } else {
+                            "->".to_string()
                         });
-                        let callable_params = note_callable_params(&params);
-                        let walked = walk_statement_into_body(p);
-                        unnote_callable_params(callable_params);
-                        FUNCTION_STACK.with(|s| {
-                            s.borrow_mut().pop();
-                        });
-                        METHOD_TYPE_STACK.with(|s| {
-                            s.borrow_mut().pop();
-                        });
+                        let callable_params = note_callable_params(__php_w, &params);
+                        let walked = walk_statement_into_body(__php_w, p);
+                        unnote_callable_params(__php_w, callable_params);
+                        __php_w.function_stack.pop();
+                        __php_w.method_type_stack.pop();
                         body = walked?;
-                        note_simple_getter_method(&method_name, &body);
+                        note_simple_getter_method(__php_w, &method_name, &body);
                         has_body = true;
                     }
                     _ => {}
                 }
             }
             if !attrs.is_empty() {
-                if let Some(class_name) = current_class_name() {
-                    METHOD_ATTRIBUTES.with(|r| {
-                        r.borrow_mut()
-                            .insert((class_name, method_name.clone()), attrs);
-                    });
+                if let Some(class_name) = current_class_name(__php_w) {
+                    __php_w
+                        .method_attributes
+                        .insert((class_name, method_name.clone()), attrs);
                 }
             }
             if method_name == "__construct" && !param_attrs.is_empty() {
-                if let Some(class_name) = current_class_name() {
-                    CONSTRUCTOR_PARAM_ATTRIBUTES.with(|r| {
-                        let mut reg = r.borrow_mut();
-                        for (idx, attrs) in param_attrs.into_iter().enumerate() {
-                            if !attrs.is_empty() {
-                                reg.insert((class_name.clone(), idx), attrs);
-                            }
+                if let Some(class_name) = current_class_name(__php_w) {
+                    for (idx, attrs) in param_attrs.into_iter().enumerate() {
+                        if !attrs.is_empty() {
+                            __php_w
+                                .constructor_param_attributes
+                                .insert((class_name.clone(), idx), attrs);
                         }
-                    });
+                    }
                 }
             }
 
             // PHP `__construct` becomes a Constructor class member so
             // the compiler-side child-class flow recognises it.
             if method_name == "__construct" {
-                if let Some(class_name) = current_class_name() {
-                    CONSTRUCTOR_PARAM_NAMES.with(|r| {
-                        r.borrow_mut()
-                            .insert(class_name, params.iter().map(|p| p.name.clone()).collect());
-                    });
+                if let Some(class_name) = current_class_name(__php_w) {
+                    __php_w
+                        .constructor_param_names
+                        .insert(class_name, params.iter().map(|p| p.name.clone()).collect());
                 }
                 // PHP 8 promoted constructor params: each
                 // `public/private/protected/readonly $foo` produces
@@ -10759,7 +10580,7 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
                         // not a variable); the assignment value uses
                         // the variable form.
                         let field_name = pname.strip_prefix('$').unwrap_or(pname).to_string();
-                        note_promoted_constructor_field(
+                        note_promoted_constructor_field(__php_w, 
                             field_name.clone(),
                             ptype.clone(),
                             *pvis,
@@ -10811,11 +10632,11 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
                     }
                 }
                 let _ = (return_type, has_body);
-                if let Some(class_name) = current_class_name() {
+                if let Some(class_name) = current_class_name(__php_w) {
                     if let Some(rest_index) = params.iter().position(|p| p.is_rest) {
-                        CONSTRUCTOR_REST_INDICES.with(|r| {
-                            r.borrow_mut().insert(class_name, rest_index);
-                        });
+                        __php_w
+                            .constructor_rest_indices
+                            .insert(class_name, rest_index);
                     }
                 }
                 for param in &mut params {
@@ -10837,14 +10658,14 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
             let method_body = if has_body { body } else { Vec::new() };
             let is_generator = body_contains_yield(&method_body);
             if !modifiers.is_static
-                && current_class_parent_name()
-                    .and_then(|parent| class_method_meta(&parent, &method_name))
+                && current_class_parent_name(__php_w)
+                    .and_then(|parent| class_method_meta(__php_w, &parent, &method_name))
                     .is_some_and(|meta| meta.is_abstract)
             {
                 modifiers.is_override = true;
             }
-            if let Some(class_name) = current_class_name() {
-                note_seen_class_method(&class_name, &method_name);
+            if let Some(class_name) = current_class_name(__php_w) {
+                note_seen_class_method(__php_w, &class_name, &method_name);
             }
             let stmt = Statement::new(StmtKind::FunctionDecl {
                 name: method_name,
@@ -10933,29 +10754,29 @@ fn transparent_expression_child<'i>(pair: &Pair<'i, Rule>) -> Option<Pair<'i, Ru
     }
 }
 
-fn walk_expression(mut pair: Pair<Rule>) -> Result<Expression, String> {
+fn walk_expression(__php_w: &mut PhpWalker, mut pair: Pair<Rule>) -> Result<Expression, String> {
     while let Some(child) = transparent_expression_child(&pair) {
         pair = child;
     }
 
-    let span = to_span(&pair);
+    let span = to_span(__php_w, &pair);
     let rule = pair.as_rule();
     let kind = match rule {
-        Rule::expression => return walk_expression(pair.into_inner().next().unwrap()),
-        Rule::assignment_expression => return walk_assignment(pair),
-        Rule::yield_expression => return walk_yield(pair),
+        Rule::expression => return walk_expression(__php_w, pair.into_inner().next().unwrap()),
+        Rule::assignment_expression => return walk_assignment(__php_w, pair),
+        Rule::yield_expression => return walk_yield(__php_w, pair),
         Rule::null_coalesce_expression => {
             // Right-associative `??` — pest doesn't yield the literal
             // `??` as a child pair (no named operator rule), so the
             // generic walk_left_assoc_binary path can't recover the
             // operator name. Walk the children directly: first is the
             // left operand, optional second is the recursive right.
-            let span = to_span(&pair);
+            let span = to_span(__php_w, &pair);
             let mut inner = pair.into_inner();
-            let left = walk_expression(inner.next().unwrap())?;
+            let left = walk_expression(__php_w, inner.next().unwrap())?;
             return match inner.next() {
                 Some(rhs_pair) => {
-                    let right = walk_expression(rhs_pair)?;
+                    let right = walk_expression(__php_w, rhs_pair)?;
                     Ok(Expression::with_span(
                         ExprKind::NullCoalesce {
                             left: Box::new(left),
@@ -10980,14 +10801,14 @@ fn walk_expression(mut pair: Pair<Rule>) -> Result<Expression, String> {
         | Rule::concat_expression
         | Rule::shift_expression
         | Rule::additive_expression
-        | Rule::multiplicative_expression => return walk_left_assoc_binary(pair),
+        | Rule::multiplicative_expression => return walk_left_assoc_binary(__php_w, pair),
         // `**` — right-associative power. `unary ~ ("**" ~ power)?`
         Rule::power_expression => {
-            let span = to_span(&pair);
+            let span = to_span(__php_w, &pair);
             let mut inner = pair.into_inner();
-            let base = walk_expression(inner.next().unwrap())?;
+            let base = walk_expression(__php_w, inner.next().unwrap())?;
             return if let Some(exp_pair) = inner.next() {
-                let exp = walk_expression(exp_pair)?;
+                let exp = walk_expression(__php_w, exp_pair)?;
                 Ok(Expression::with_span(
                     ExprKind::Binary {
                         op: BinOp::Pow,
@@ -11000,35 +10821,33 @@ fn walk_expression(mut pair: Pair<Rule>) -> Result<Expression, String> {
                 Ok(base)
             };
         }
-        Rule::ternary_expression => return walk_ternary(pair),
-        Rule::unary_expression => return walk_unary(pair),
-        Rule::cast_expression => return walk_cast(pair),
-        Rule::postfix_expression => return walk_postfix(pair),
+        Rule::ternary_expression => return walk_ternary(__php_w, pair),
+        Rule::unary_expression => return walk_unary(__php_w, pair),
+        Rule::cast_expression => return walk_cast(__php_w, pair),
+        Rule::postfix_expression => return walk_postfix(__php_w, pair),
 
-        Rule::primary_expression => return walk_expression(pair.into_inner().next().unwrap()),
+        Rule::primary_expression => return walk_expression(__php_w, pair.into_inner().next().unwrap()),
         Rule::parenthesized_expression => {
-            return walk_expression(pair.into_inner().next().unwrap());
+            return walk_expression(__php_w, pair.into_inner().next().unwrap());
         }
 
-        Rule::literal => return walk_literal(pair),
+        Rule::literal => return walk_literal(__php_w, pair),
         Rule::number_lit => return Ok(Expression::with_span(walk_number(&pair).kind, span)),
-        Rule::string_lit => return Ok(Expression::with_span(walk_string(&pair).kind, span)),
+        Rule::string_lit => return Ok(Expression::with_span(walk_string(__php_w, &pair).kind, span)),
 
-        Rule::variable => return walk_php_variable_expr(pair, span),
+        Rule::variable => return walk_php_variable_expr(__php_w, pair, span),
         Rule::simple_variable => ExprKind::Ident(strip_dollar(pair.as_str()).to_string()),
         Rule::identifier | Rule::method_ident => {
             let name = pair.as_str();
             // Bare PHP global constants get rewritten to their JS-shaped
             // equivalent (`M_PI` → `Math.PI`, `STR_PAD_LEFT` → `0`, etc.)
             // so the rest of the pipeline never sees a PHP-specific name.
-            if let Some(kind) = php_constant_expr(name, &span) {
+            if let Some(kind) = php_constant_expr(__php_w, name, &span) {
                 kind
-            } else if let Some(qualified) = current_namespace()
+            } else if let Some(qualified) = current_namespace(__php_w)
                 .filter(|ns| !ns.is_empty())
                 .map(|ns| format!("{}.{}", ns.replace('\\', "."), name))
-                .filter(|qualified| {
-                    NAMESPACE_CONSTS.with(|consts| consts.borrow().contains(qualified))
-                })
+                .filter(|qualified| __php_w.namespace_consts.contains(qualified))
             {
                 ExprKind::Ident(qualified)
             } else {
@@ -11053,16 +10872,14 @@ fn walk_expression(mut pair: Pair<Rule>) -> Result<Expression, String> {
             let is_fully_qualified = raw_name.starts_with('\\');
             let s = raw_name.trim_start_matches('\\');
             if !s.contains('\\') {
-                if let Some(kind) = php_constant_expr(s, &span) {
+                if let Some(kind) = php_constant_expr(__php_w, s, &span) {
                     kind
                 } else if is_fully_qualified {
                     ExprKind::Ident(format!("\\{s}"))
-                } else if let Some(qualified) = current_namespace()
+                } else if let Some(qualified) = current_namespace(__php_w)
                     .filter(|ns| !ns.is_empty())
                     .map(|ns| format!("{}.{}", ns.replace('\\', "."), s))
-                    .filter(|qualified| {
-                        NAMESPACE_CONSTS.with(|consts| consts.borrow().contains(qualified))
-                    })
+                    .filter(|qualified| __php_w.namespace_consts.contains(qualified))
                 {
                     ExprKind::Ident(qualified)
                 } else {
@@ -11085,7 +10902,7 @@ fn walk_expression(mut pair: Pair<Rule>) -> Result<Expression, String> {
             // the static field on the class object. Without context (rare
             // — `self` outside a class is illegal PHP) fall back to
             // `This` so existing call-site code keeps working.
-            match current_class_name() {
+            match current_class_name(__php_w) {
                 Some(cn) => ExprKind::Ident(cn),
                 None => ExprKind::This,
             }
@@ -11101,11 +10918,11 @@ fn walk_expression(mut pair: Pair<Rule>) -> Result<Expression, String> {
             ExprKind::This
         }
 
-        Rule::new_expression => return walk_new(pair),
+        Rule::new_expression => return walk_new(__php_w, pair),
         Rule::clone_expression => {
             let inner = inner_nokw(pair).next().unwrap();
-            let arg = walk_expression(inner)?;
-            if php_expr_is_compile_time_non_object(&arg) {
+            let arg = walk_expression(__php_w, inner)?;
+            if php_expr_is_compile_time_non_object(__php_w, &arg) {
                 return Ok(Expression::with_span(
                     php_throw_named_error_expr("TypeError", "clone expects object", &span),
                     span,
@@ -11123,7 +10940,7 @@ fn walk_expression(mut pair: Pair<Rule>) -> Result<Expression, String> {
                     ));
                 }
             }
-            if let Some(class_name) = php_object_class_from_expr(&arg) {
+            if let Some(class_name) = php_object_class_from_expr(__php_w, &arg) {
                 if matches!(
                     class_name.trim_start_matches('\\'),
                     "DateTime" | "DateTimeImmutable"
@@ -11137,8 +10954,8 @@ fn walk_expression(mut pair: Pair<Rule>) -> Result<Expression, String> {
                         span,
                     ));
                 }
-                if let Some(meta) = class_method_meta(&class_name, "__clone") {
-                    if !php_field_visible_from_current(&class_name, meta.visibility) {
+                if let Some(meta) = class_method_meta(__php_w, &class_name, "__clone") {
+                    if !php_field_visible_from_current(__php_w, &class_name, meta.visibility) {
                         return Ok(Expression::with_span(
                             php_throw_named_error_expr(
                                 "Error",
@@ -11149,7 +10966,19 @@ fn walk_expression(mut pair: Pair<Rule>) -> Result<Expression, String> {
                         ));
                     }
                 }
-                return Ok(build_known_class_clone_expr(&class_name, arg, &span));
+                // No compile-time clone construction. `build_known_class_clone_expr`
+                // built `$copy = new <Class>()` and then assigned the DECLARED
+                // fields across — but php's `clone` never runs the constructor.
+                // For `class Tag { function __construct(public string $v) {} }`
+                // that emitted `new Tag()` with no argument for a required
+                // parameter, and any class with constructor side effects ran
+                // them a second time.
+                //
+                // The runtime helper below already implements php's actual rule
+                // — copy the object's own fields, then invoke `__clone` on the
+                // COPY — and it is measurably correct: with the class hidden
+                // behind a function call, `clone` already matched php exactly.
+                // Only this fold, sitting in front of it, was wrong.
             }
             // PHP `clone $obj` — produce a shallow copy and invoke
             // the class's `__clone` magic method on the copy if one
@@ -11161,8 +10990,8 @@ fn walk_expression(mut pair: Pair<Rule>) -> Result<Expression, String> {
                 callee: Box::new(Expression::ident("__php_clone_helper")),
                 args: {
                     let mut args = vec![Argument::positional(arg.clone())];
-                    if let Some(class_name) = php_object_class_from_expr(&arg) {
-                        let fields = class_clone_storage_fields(&class_name);
+                    if let Some(class_name) = php_object_class_from_expr(__php_w, &arg) {
+                        let fields = class_clone_storage_fields(__php_w, &class_name);
                         if !fields.is_empty() {
                             args.push(Argument::positional(Expression::new(ExprKind::Array(
                                 fields
@@ -11182,7 +11011,7 @@ fn walk_expression(mut pair: Pair<Rule>) -> Result<Expression, String> {
                 optional: false,
             }
         }
-        Rule::match_expression => return walk_match(pair),
+        Rule::match_expression => return walk_match(__php_w, pair),
         Rule::isset_expression => {
             // Walk each arg with the LHS-depth flag set so the
             // property-access walker doesn't wrap `$obj->prop` in the
@@ -11193,12 +11022,9 @@ fn walk_expression(mut pair: Pair<Rule>) -> Result<Expression, String> {
             let mut args: Vec<Argument> = Vec::new();
             for p in pair.into_inner() {
                 if matches!(p.as_rule(), Rule::expression) {
-                    ASSIGN_LHS_DEPTH.with(|d| *d.borrow_mut() += 1);
-                    let walked = walk_expression(p);
-                    ASSIGN_LHS_DEPTH.with(|d| {
-                        let mut bd = d.borrow_mut();
-                        *bd = bd.saturating_sub(1);
-                    });
+                    __php_w.assign_lhs_depth += 1;
+                    let walked = walk_expression(__php_w, p);
+                    __php_w.assign_lhs_depth = __php_w.assign_lhs_depth.saturating_sub(1);
                     let walked = walked?;
                     // PHP `isset($obj->prop)` magic dispatch: if `prop`
                     // isn't set on the instance and the class defines
@@ -11215,18 +11041,18 @@ fn walk_expression(mut pair: Pair<Rule>) -> Result<Expression, String> {
                             object,
                             index,
                             null_safe: false,
-                        } if php_object_class_from_expr(object).is_some_and(|class_name| {
+                        } if php_object_class_from_expr(__php_w, object).is_some_and(|class_name| {
                             matches!(
                                 class_name.trim_start_matches('\\'),
                                 "SplObjectStorage" | "WeakMap"
-                            ) || class_all_interfaces(&class_name)
+                            ) || class_all_interfaces(__php_w, &class_name)
                                 .iter()
                                 .any(|iface| iface.trim_start_matches('\\') == "ArrayAccess")
-                                || class_has_method(&class_name, "offsetExists")
+                                || class_has_method(__php_w, &class_name, "offsetExists")
                         }) =>
                         {
-                            let tmp_recv = next_tmp_name("offset_exists_recv");
-                            let tmp_key = next_tmp_name("offset_exists_key");
+                            let tmp_recv = next_tmp_name(__php_w, "offset_exists_recv");
+                            let tmp_key = next_tmp_name(__php_w, "offset_exists_key");
                             let recv_ident = || {
                                 Expression::with_span(
                                     ExprKind::Ident(tmp_recv.clone()),
@@ -11290,10 +11116,10 @@ fn walk_expression(mut pair: Pair<Rule>) -> Result<Expression, String> {
                             field,
                             null_safe,
                         } if !*null_safe
-                            && php_object_class_from_expr(object)
-                                .and_then(|class_name| class_field_visibility(&class_name, field))
+                            && php_object_class_from_expr(__php_w, object)
+                                .and_then(|class_name| class_field_visibility(__php_w, &class_name, field))
                                 .is_some_and(|(owner, visibility)| {
-                                    !php_field_visible_from_current(&owner, visibility)
+                                    !php_field_visible_from_current(__php_w, &owner, visibility)
                                 }) =>
                         {
                             Expression::null()
@@ -11308,8 +11134,8 @@ fn walk_expression(mut pair: Pair<Rule>) -> Result<Expression, String> {
                         {
                             let obj = (**object).clone();
                             let field = field.clone();
-                            if php_object_class_from_expr(&obj)
-                                .is_some_and(|class_name| class_has_method(&class_name, "__isset"))
+                            if php_object_class_from_expr(__php_w, &obj)
+                                .is_some_and(|class_name| class_has_method(__php_w, &class_name, "__isset"))
                             {
                                 return Ok(Expression::with_span(
                                     ExprKind::Call {
@@ -11329,7 +11155,7 @@ fn walk_expression(mut pair: Pair<Rule>) -> Result<Expression, String> {
                                     span.clone(),
                                 ));
                             }
-                            build_magic_isset_rewrite(obj, field, &span)
+                            build_magic_isset_rewrite(__php_w, obj, field, &span)
                         }
                         _ => walked,
                     };
@@ -11343,12 +11169,10 @@ fn walk_expression(mut pair: Pair<Rule>) -> Result<Expression, String> {
             }
         }
         Rule::empty_expression => {
-            SILENT_PROPERTY_ACCESS_DEPTH.with(|d| *d.borrow_mut() += 1);
-            let arg = walk_expression(inner_nokw(pair).next().unwrap());
-            SILENT_PROPERTY_ACCESS_DEPTH.with(|d| {
-                let mut bd = d.borrow_mut();
-                *bd = bd.saturating_sub(1);
-            });
+            __php_w.silent_property_access_depth += 1;
+            let arg = walk_expression(__php_w, inner_nokw(pair).next().unwrap());
+            __php_w.silent_property_access_depth =
+                __php_w.silent_property_access_depth.saturating_sub(1);
             let arg = arg?;
             if let ExprKind::Array(elements) = &arg.kind {
                 return Ok(Expression::with_span(
@@ -11407,17 +11231,17 @@ fn walk_expression(mut pair: Pair<Rule>) -> Result<Expression, String> {
         Rule::print_expression => {
             // PHP `print $x` outputs $x (no newline) and evaluates to 1.
             // Route through common:php.print_expr which uses the stream path.
-            let arg = walk_expression(inner_nokw(pair).next().unwrap())?;
+            let arg = walk_expression(__php_w, inner_nokw(pair).next().unwrap())?;
             ExprKind::Call {
                 callee: Box::new(Expression::ident("__php_print_expr")),
                 args: vec![Argument::positional(arg)],
                 optional: false,
             }
         }
-        Rule::include_operand => return walk_expression(pair.into_inner().next().unwrap()),
+        Rule::include_operand => return walk_expression(__php_w, pair.into_inner().next().unwrap()),
         Rule::include_expression => {
             let include_kind = php_include_kind(&pair)?;
-            let arg = walk_expression(inner_nokw(pair).next().unwrap())?;
+            let arg = walk_expression(__php_w, inner_nokw(pair).next().unwrap())?;
             build_php_dynamic_include_call(include_kind, arg, &span).kind
         }
         Rule::unset_expression => {
@@ -11435,24 +11259,21 @@ fn walk_expression(mut pair: Pair<Rule>) -> Result<Expression, String> {
                 if !matches!(p.as_rule(), Rule::expression) {
                     continue;
                 }
-                ASSIGN_LHS_DEPTH.with(|d| *d.borrow_mut() += 1);
-                let walked = walk_expression(p);
-                ASSIGN_LHS_DEPTH.with(|d| {
-                    let mut bd = d.borrow_mut();
-                    *bd = bd.saturating_sub(1);
-                });
+                __php_w.assign_lhs_depth += 1;
+                let walked = walk_expression(__php_w, p);
+                __php_w.assign_lhs_depth = __php_w.assign_lhs_depth.saturating_sub(1);
                 let walked = walked?;
                 // Build the rewrite BEFORE invalidating. `build_unset_rewrite`
                 // asks what class the variable holds, in order to run
                 // `__destruct`, and that answer comes from the tracked value —
                 // which invalidating first had already erased, so the
                 // destructor branch could never be reached.
-                let rewrite = build_unset_rewrite(walked.clone(), &span);
+                let rewrite = build_unset_rewrite(__php_w, walked.clone(), &span);
                 match &walked.kind {
-                    ExprKind::Ident(name) => invalidate_simple_var_value(name),
+                    ExprKind::Ident(name) => invalidate_simple_var_value(__php_w, name),
                     ExprKind::Index { object, .. } => {
                         if let ExprKind::Ident(name) = &object.kind {
-                            invalidate_simple_var_value(name);
+                            invalidate_simple_var_value(__php_w, name);
                         }
                     }
                     _ => {}
@@ -11482,8 +11303,8 @@ fn walk_expression(mut pair: Pair<Rule>) -> Result<Expression, String> {
                     match (first, second) {
                         (Some(key_pair), Some(value_pair)) => {
                             saw_keyed = true;
-                            let key_expr = walk_expression(key_pair)?;
-                            let value_expr = walk_expression(value_pair)?;
+                            let key_expr = walk_expression(__php_w, key_pair)?;
+                            let value_expr = walk_expression(__php_w, value_pair)?;
                             if let (Some(key), Some(value)) = (
                                 literal_key_name(&key_expr),
                                 expression_to_binding_pattern(&value_expr),
@@ -11497,7 +11318,7 @@ fn walk_expression(mut pair: Pair<Rule>) -> Result<Expression, String> {
                             }
                         }
                         (Some(e), None) => {
-                            let expr = walk_expression(e)?;
+                            let expr = walk_expression(__php_w, e)?;
                             if let Some(pattern) = expression_to_binding_pattern(&expr) {
                                 positional.push(ArrayPatternElem::Pattern(pattern, None));
                             } else {
@@ -11514,9 +11335,9 @@ fn walk_expression(mut pair: Pair<Rule>) -> Result<Expression, String> {
                 ExprKind::Destructure(DestructurePattern::Array(positional))
             }
         }
-        Rule::array_expression | Rule::short_array_expression => return walk_array(pair),
-        Rule::closure_expression => return walk_closure(pair),
-        Rule::arrow_function => return walk_arrow_function(pair),
+        Rule::array_expression | Rule::short_array_expression => return walk_array(__php_w, pair),
+        Rule::closure_expression => return walk_closure(__php_w, pair),
+        Rule::arrow_function => return walk_arrow_function(__php_w, pair),
 
         Rule::throw_expression => {
             // PHP 8: `throw` can appear in expression position (e.g.
@@ -11524,7 +11345,7 @@ fn walk_expression(mut pair: Pair<Rule>) -> Result<Expression, String> {
             // node; wrap as an immediately-invoked closure whose body
             // throws — produces the same control flow without leaking
             // PHP-specific shape into the compiler.
-            let inner_expr = walk_expression(inner_nokw(pair).next().unwrap())?;
+            let inner_expr = walk_expression(__php_w, inner_nokw(pair).next().unwrap())?;
             let throw_stmt = Statement::with_span(
                 StmtKind::Throw {
                     expr: Some(inner_expr),
@@ -11587,10 +11408,10 @@ fn build_php_dynamic_include_call(kind: &str, target: Expression, span: &Span) -
     )
 }
 
-fn walk_left_assoc_binary(pair: Pair<Rule>) -> Result<Expression, String> {
-    let span = to_span(&pair);
+fn walk_left_assoc_binary(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<Expression, String> {
+    let span = to_span(__php_w, &pair);
     let mut inner = pair.into_inner().peekable();
-    let mut left = walk_expression(inner.next().unwrap())?;
+    let mut left = walk_expression(__php_w, inner.next().unwrap())?;
     while let Some(op_pair) = inner.next() {
         let op_str = match op_pair.as_rule() {
             Rule::logic_or_op => "||".to_string(),
@@ -11605,7 +11426,7 @@ fn walk_left_assoc_binary(pair: Pair<Rule>) -> Result<Expression, String> {
             None => break,
         };
         let right_src = right_pair.as_str().trim().to_string();
-        let right = walk_expression(right_pair)?;
+        let right = walk_expression(__php_w, right_pair)?;
         let op = parse_binop(&op_str);
         // Two DateTime operands compare chronologically, on their timestamps.
         //
@@ -11619,8 +11440,8 @@ fn walk_left_assoc_binary(pair: Pair<Rule>) -> Result<Expression, String> {
         // false where php answers true.
         if matches!(op, BinOp::Gt | BinOp::Lt | BinOp::GtEq | BinOp::LtEq) {
             if let (Some(left_time), Some(right_time)) = (
-                php_datetime_time_expr(left.clone(), &span),
-                php_datetime_time_expr(right.clone(), &span),
+                php_datetime_time_expr(__php_w, left.clone(), &span),
+                php_datetime_time_expr(__php_w, right.clone(), &span),
             ) {
                 left = Expression::with_span(
                     ExprKind::Binary {
@@ -11650,13 +11471,13 @@ fn walk_left_assoc_binary(pair: Pair<Rule>) -> Result<Expression, String> {
         {
             let eq = php_literal_array_compare(&left, &right, true).unwrap_or(false);
             let value = if op == BinOp::StrictNotEq { !eq } else { eq };
-            left = php_bool_for_output_context(value, span.clone());
+            left = php_bool_for_output_context(__php_w, value, span.clone());
         } else if matches!(op, BinOp::StrictEq | BinOp::StrictNotEq)
             && matches!((&left.kind, &right.kind), (ExprKind::Array(a), ExprKind::Array(b)) if a.is_empty() && b.is_empty())
         {
-            left = php_bool_for_output_context(op == BinOp::StrictEq, span.clone());
+            left = php_bool_for_output_context(__php_w, op == BinOp::StrictEq, span.clone());
         } else if matches!(op, BinOp::StrictEq | BinOp::StrictNotEq)
-            && (php_expr_may_be_arrayish(&left) || php_expr_may_be_arrayish(&right))
+            && (php_expr_may_be_arrayish(__php_w, &left) || php_expr_may_be_arrayish(__php_w, &right))
         {
             let eq_call = Expression::with_span(
                 ExprKind::Call {
@@ -11679,8 +11500,8 @@ fn walk_left_assoc_binary(pair: Pair<Rule>) -> Result<Expression, String> {
             };
         } else if matches!(op, BinOp::Eq | BinOp::NotEq) {
             if let (Some(left_time), Some(right_time)) = (
-                php_datetime_time_expr(left.clone(), &span),
-                php_datetime_time_expr(right.clone(), &span),
+                php_datetime_time_expr(__php_w, left.clone(), &span),
+                php_datetime_time_expr(__php_w, right.clone(), &span),
             ) {
                 left = Expression::with_span(
                     ExprKind::Binary {
@@ -11696,7 +11517,7 @@ fn walk_left_assoc_binary(pair: Pair<Rule>) -> Result<Expression, String> {
                 );
                 continue;
             }
-            if let Some(eq) = php_known_loose_object_equality(&left, &right) {
+            if let Some(eq) = php_known_loose_object_equality(__php_w, &left, &right) {
                 left = Expression::with_span(
                     ExprKind::Lit(Literal::Bool(if op == BinOp::NotEq { !eq } else { eq })),
                     span.clone(),
@@ -11710,8 +11531,8 @@ fn walk_left_assoc_binary(pair: Pair<Rule>) -> Result<Expression, String> {
                 );
                 continue;
             }
-            if let Some(eq) = php_known_array_compare(&left, &right, false) {
-                left = php_bool_for_output_context(
+            if let Some(eq) = php_known_array_compare(__php_w, &left, &right, false) {
+                left = php_bool_for_output_context(__php_w, 
                     if op == BinOp::NotEq { !eq } else { eq },
                     span.clone(),
                 );
@@ -11749,9 +11570,9 @@ fn walk_left_assoc_binary(pair: Pair<Rule>) -> Result<Expression, String> {
             );
         } else if op == BinOp::InstanceOf
             && right_src.eq_ignore_ascii_case("self")
-            && current_class_name().is_some()
+            && current_class_name(__php_w).is_some()
         {
-            let class_name = current_class_name().unwrap_or_default().replace('.', "\\");
+            let class_name = current_class_name(__php_w).unwrap_or_default().replace('.', "\\");
             left = Expression::with_span(
                 ExprKind::Binary {
                     op: BinOp::StrictEq,
@@ -11761,10 +11582,10 @@ fn walk_left_assoc_binary(pair: Pair<Rule>) -> Result<Expression, String> {
                 span.clone(),
             );
         } else if op == BinOp::InstanceOf
-            && matches!(&right.kind, ExprKind::Ident(name) if lookup_simple_string_var(name).is_some())
+            && matches!(&right.kind, ExprKind::Ident(name) if lookup_simple_string_var(__php_w, name).is_some())
         {
             let class_name = match &right.kind {
-                ExprKind::Ident(name) => lookup_simple_string_var(name).unwrap_or_default(),
+                ExprKind::Ident(name) => lookup_simple_string_var(__php_w, name).unwrap_or_default(),
                 _ => String::new(),
             };
             left = Expression::with_span(
@@ -11772,7 +11593,7 @@ fn walk_left_assoc_binary(pair: Pair<Rule>) -> Result<Expression, String> {
                     op,
                     left: Box::new(left),
                     right: Box::new(Expression::with_span(
-                        ExprKind::Ident(php_resolve_class_name(&class_name)),
+                        ExprKind::Ident(php_resolve_class_name(__php_w, &class_name)),
                         span.clone(),
                     )),
                 },
@@ -11827,13 +11648,13 @@ fn walk_left_assoc_binary(pair: Pair<Rule>) -> Result<Expression, String> {
                 span.clone(),
             );
         } else if op == BinOp::Spaceship {
-            if let Some(cmp) = php_literal_array_spaceship(&left, &right) {
+            if let Some(cmp) = php_literal_array_spaceship(__php_w, &left, &right) {
                 left = Expression::with_span(ExprKind::Lit(Literal::Int(cmp)), span.clone());
                 continue;
             }
             if let (Some((left_class, left_args)), Some((right_class, right_args))) = (
-                php_new_class_and_args_from_expr(&left),
-                php_new_class_and_args_from_expr(&right),
+                php_new_class_and_args_from_expr(__php_w, &left),
+                php_new_class_and_args_from_expr(__php_w, &right),
             ) {
                 if left_class == right_class && !left_args.is_empty() && !right_args.is_empty() {
                     left = Expression::with_span(
@@ -11869,8 +11690,8 @@ fn walk_left_assoc_binary(pair: Pair<Rule>) -> Result<Expression, String> {
             }
             let (l, r) = if op == BinOp::Concat {
                 (
-                    php_concat_operand_coerce(left, &span),
-                    php_concat_operand_coerce(right, &span),
+                    php_concat_operand_coerce(__php_w, left, &span),
+                    php_concat_operand_coerce(__php_w, right, &span),
                 )
             } else {
                 (left, right)
@@ -11925,14 +11746,14 @@ fn php_expr_is_numeric_result(expr: &Expression) -> bool {
     }
 }
 
-fn php_expr_may_be_arrayish(expr: &Expression) -> bool {
-    php_expr_may_be_arrayish_seen(expr, &mut std::collections::HashSet::new())
+fn php_expr_may_be_arrayish(__php_w: &mut PhpWalker, expr: &Expression) -> bool {
+    php_expr_may_be_arrayish_seen(__php_w, expr, &mut std::collections::HashSet::new())
 }
 
 /// Follows the same `SIMPLE_VALUE_VARS` edges as `php_alias_root`, so it needs
 /// the same `seen` set: `$a = [...$b]; $b = [...$a];` closes a cycle in the map
 /// and an unguarded walk of it never terminates.
-fn php_expr_may_be_arrayish_seen(
+fn php_expr_may_be_arrayish_seen(__php_w: &mut PhpWalker, 
     expr: &Expression,
     seen: &mut std::collections::HashSet<String>,
 ) -> bool {
@@ -11942,17 +11763,17 @@ fn php_expr_may_be_arrayish_seen(
             if !seen.insert(name.trim_start_matches('$').to_string()) {
                 return false;
             }
-            lookup_simple_value_var(name)
-                .is_some_and(|value| php_expr_may_be_arrayish_seen(&value, seen))
+            lookup_simple_value_var(__php_w, name)
+                .is_some_and(|value| php_expr_may_be_arrayish_seen(__php_w, &value, seen))
         }
         _ => false,
     }
 }
 
-fn php_concat_operand_coerce(expr: Expression, span: &Span) -> Expression {
+fn php_concat_operand_coerce(__php_w: &mut PhpWalker, expr: Expression, span: &Span) -> Expression {
     match &expr.kind {
         ExprKind::Lit(Literal::Str(_)) => expr,
-        ExprKind::Ident(name) if lookup_simple_string_var(name).is_some() => expr,
+        ExprKind::Ident(name) if lookup_simple_string_var(__php_w, name).is_some() => expr,
         // The result of a prior concat is already a stringy value. Re-wrapping
         // the whole left subtree on every `.` step causes AST growth to explode
         // on long concat chains.
@@ -12162,11 +11983,11 @@ fn parse_binop(s: &str) -> BinOp {
 ///   - `$obj->prop` → `($_t = $obj, typeof $_t->__unset === "function"
 ///                     ? $_t->__unset("prop") : ($_t->prop = null))`
 ///   - `$arr[$k]`   → `ecma:object.delete($arr, $k)`
-fn build_unset_rewrite(target: Expression, span: &Span) -> Expression {
+fn build_unset_rewrite(__php_w: &mut PhpWalker, target: Expression, span: &Span) -> Expression {
     match &target.kind {
         ExprKind::Ident(name) => {
-            if let Some(class_name) = php_object_class_from_expr(&target) {
-                if class_has_destructor(&class_name) {
+            if let Some(class_name) = php_object_class_from_expr(__php_w, &target) {
+                if class_has_destructor(__php_w, &class_name) {
                     // CALL `__destruct` — it is bound on the object under its
                     // source name — rather than inlining its body.
                     //
@@ -12221,9 +12042,9 @@ fn build_unset_rewrite(target: Expression, span: &Span) -> Expression {
             field,
             null_safe,
         } if !*null_safe && !field.starts_with("__") => {
-            if let Some(class_name) = php_object_class_from_expr(object) {
-                if class_field_meta(&class_name, field).is_some_and(|(_, meta)| meta.is_readonly)
-                    || class_is_readonly(&class_name)
+            if let Some(class_name) = php_object_class_from_expr(__php_w, object) {
+                if class_field_meta(__php_w, &class_name, field).is_some_and(|(_, meta)| meta.is_readonly)
+                    || class_is_readonly(__php_w, &class_name)
                 {
                     return Expression::with_span(
                         php_throw_named_error_expr("Error", "Cannot unset readonly property", span),
@@ -12233,7 +12054,7 @@ fn build_unset_rewrite(target: Expression, span: &Span) -> Expression {
             }
             let obj = (**object).clone();
             let field = field.clone();
-            let tmp = next_tmp_name("unset_recv");
+            let tmp = next_tmp_name(__php_w, "unset_recv");
             let tmp_ident = || Expression::with_span(ExprKind::Ident(tmp.clone()), span.clone());
             let save = Expression::with_span(
                 ExprKind::Assign {
@@ -12300,7 +12121,7 @@ fn build_unset_rewrite(target: Expression, span: &Span) -> Expression {
             );
             Expression::with_span(ExprKind::Sequence(vec![save, ternary]), span.clone())
         }
-        ExprKind::Index { object, .. } if php_known_scalar_array_receiver(object) => {
+        ExprKind::Index { object, .. } if php_known_scalar_array_receiver(__php_w, object) => {
             Expression::with_span(
                 php_throw_error_expr("Cannot use a scalar value as an array", span),
                 span.clone(),
@@ -12311,13 +12132,13 @@ fn build_unset_rewrite(target: Expression, span: &Span) -> Expression {
             index,
             null_safe: false,
         } => {
-            if let Some(class_name) = php_object_class_from_expr(object) {
-                let implements_array_access = class_all_interfaces(&class_name)
+            if let Some(class_name) = php_object_class_from_expr(__php_w, object) {
+                let implements_array_access = class_all_interfaces(__php_w, &class_name)
                     .iter()
                     .any(|iface| iface.trim_start_matches('\\') == "ArrayAccess");
-                if implements_array_access || class_has_method(&class_name, "offsetUnset") {
-                    let tmp_recv = next_tmp_name("offset_unset_recv");
-                    let tmp_key = next_tmp_name("offset_unset_key");
+                if implements_array_access || class_has_method(__php_w, &class_name, "offsetUnset") {
+                    let tmp_recv = next_tmp_name(__php_w, "offset_unset_recv");
+                    let tmp_key = next_tmp_name(__php_w, "offset_unset_key");
                     let recv_ident =
                         || Expression::with_span(ExprKind::Ident(tmp_recv.clone()), span.clone());
                     let key_ident =
@@ -12384,8 +12205,8 @@ fn build_unset_rewrite(target: Expression, span: &Span) -> Expression {
 /// The inner `$_t->__isset(name) ? true : null` normalises the user's
 /// `__isset` return value so the outer `isset(...)` host call (which
 /// tests not-null-not-undefined) reports "set" / "not set" correctly.
-fn build_magic_isset_rewrite(obj: Expression, field: String, span: &Span) -> Expression {
-    let tmp = next_tmp_name("isset_recv");
+fn build_magic_isset_rewrite(__php_w: &mut PhpWalker, obj: Expression, field: String, span: &Span) -> Expression {
+    let tmp = next_tmp_name(__php_w, "isset_recv");
     let tmp_ident = || Expression::with_span(ExprKind::Ident(tmp.clone()), span.clone());
     let save = Expression::with_span(
         ExprKind::Assign {
@@ -12442,95 +12263,6 @@ fn build_magic_isset_rewrite(obj: Expression, field: String, span: &Span) -> Exp
         span.clone(),
     );
     Expression::with_span(ExprKind::Sequence(vec![save, ternary]), span.clone())
-}
-
-/// Build the magic-`__invoke` rewrite for `$var(args)` calls:
-///
-///     (typeof $var === "function"
-///      || (typeof $var === "string" && function_exists($var)))
-///       ? $var(args)
-///       : $var->__invoke(args)
-fn build_magic_invoke_rewrite(
-    receiver: Expression,
-    args: Vec<Argument>,
-    span: &Span,
-) -> Expression {
-    let typeof_expr =
-        Expression::with_span(ExprKind::TypeOf(Box::new(receiver.clone())), span.clone());
-    let is_function = Expression::with_span(
-        ExprKind::Binary {
-            op: BinOp::StrictEq,
-            left: Box::new(typeof_expr),
-            right: Box::new(Expression::string("function")),
-        },
-        span.clone(),
-    );
-    let is_string = Expression::with_span(
-        ExprKind::Binary {
-            op: BinOp::StrictEq,
-            left: Box::new(Expression::with_span(
-                ExprKind::TypeOf(Box::new(receiver.clone())),
-                span.clone(),
-            )),
-            right: Box::new(Expression::string("string")),
-        },
-        span.clone(),
-    );
-    let function_exists = Expression::with_span(
-        ExprKind::Call {
-            callee: Box::new(Expression::ident("function_exists")),
-            args: vec![Argument::positional(receiver.clone())],
-            optional: false,
-        },
-        span.clone(),
-    );
-    let cond = Expression::with_span(
-        ExprKind::Binary {
-            op: BinOp::Or,
-            left: Box::new(is_function),
-            right: Box::new(Expression::with_span(
-                ExprKind::Binary {
-                    op: BinOp::And,
-                    left: Box::new(is_string),
-                    right: Box::new(function_exists),
-                },
-                span.clone(),
-            )),
-        },
-        span.clone(),
-    );
-    let direct_call = Expression::with_span(
-        ExprKind::Call {
-            callee: Box::new(receiver.clone()),
-            args: args.clone(),
-            optional: false,
-        },
-        span.clone(),
-    );
-    let invoke_member = Expression::with_span(
-        ExprKind::Member {
-            object: Box::new(receiver),
-            field: "__invoke".to_string(),
-            null_safe: false,
-        },
-        span.clone(),
-    );
-    let invoke_call = Expression::with_span(
-        ExprKind::Call {
-            callee: Box::new(invoke_member),
-            args,
-            optional: false,
-        },
-        span.clone(),
-    );
-    Expression::with_span(
-        ExprKind::Ternary {
-            cond: Box::new(cond),
-            then: Box::new(direct_call),
-            else_: Box::new(invoke_call),
-        },
-        span.clone(),
-    )
 }
 
 fn build_direct_invoke_call(receiver: Expression, args: Vec<Argument>, span: &Span) -> Expression {
@@ -12712,13 +12444,13 @@ enum MagicGetUse {
 ///      typeof $_t->__get === "function"
 ///        ? $_t->__get("prop")
 ///        : $_t->prop)
-fn build_magic_get_rewrite(
+fn build_magic_get_rewrite(__php_w: &mut PhpWalker, 
     obj: Expression,
     name: String,
     span: &Span,
     use_as: MagicGetUse,
 ) -> Expression {
-    let tmp = next_tmp_name("get_recv");
+    let tmp = next_tmp_name(__php_w, "get_recv");
     let tmp_ident = || Expression::with_span(ExprKind::Ident(tmp.clone()), span.clone());
     let save = Expression::with_span(
         ExprKind::Assign {
@@ -12837,13 +12569,13 @@ fn build_magic_get_rewrite(
 /// stays small — the rewrite allocates ~20 Expression nodes, and
 /// nested-closure / chained-call tests would blow the test-thread
 /// stack with all those locals live in one frame.
-fn build_magic_call_rewrite(
+fn build_magic_call_rewrite(__php_w: &mut PhpWalker, 
     member_object: Expression,
     method_name: String,
     args: Vec<Argument>,
     span: &Span,
 ) -> Expression {
-    let tmp = next_tmp_name("call_recv");
+    let tmp = next_tmp_name(__php_w, "call_recv");
     let tmp_ident = || Expression::with_span(ExprKind::Ident(tmp.clone()), span.clone());
     let save = Expression::with_span(
         ExprKind::Assign {
@@ -12952,13 +12684,13 @@ fn build_magic_call_rewrite(
     Expression::with_span(ExprKind::Sequence(vec![save, ternary]), span.clone())
 }
 
-fn build_known_magic_call_rewrite(
+fn build_known_magic_call_rewrite(__php_w: &mut PhpWalker, 
     member_object: Expression,
     method_name: String,
     args: Vec<Argument>,
     span: &Span,
 ) -> Expression {
-    let tmp = next_tmp_name("call_recv");
+    let tmp = next_tmp_name(__php_w, "call_recv");
     let tmp_ident = || Expression::with_span(ExprKind::Ident(tmp.clone()), span.clone());
     let save = Expression::with_span(
         ExprKind::Assign {
@@ -13014,14 +12746,14 @@ fn build_known_magic_call_rewrite(
 /// small — the rewrite allocates ~15 Expression nodes, and currying /
 /// nested-closure tests would blow the test-thread stack if all those
 /// locals were live at every recursive walk_expression frame.
-fn build_magic_set_rewrite(
+fn build_magic_set_rewrite(__php_w: &mut PhpWalker, 
     obj: Expression,
     field: String,
     rhs: Expression,
     span: &Span,
 ) -> Expression {
-    let tmp_recv = next_tmp_name("set_recv");
-    let tmp_val = next_tmp_name("set_val");
+    let tmp_recv = next_tmp_name(__php_w, "set_recv");
+    let tmp_val = next_tmp_name(__php_w, "set_val");
     let recv_ident = || Expression::with_span(ExprKind::Ident(tmp_recv.clone()), span.clone());
     let val_ident = || Expression::with_span(ExprKind::Ident(tmp_val.clone()), span.clone());
     let save_recv = Expression::with_span(
@@ -13358,12 +13090,12 @@ fn php_type_check_expr(type_hint: &str, value: Expression, span: &Span) -> Optio
     Some(check)
 }
 
-fn php_in_constructor_of(class_name: &str) -> bool {
-    current_class_name().is_some_and(|current| current == class_name)
-        && current_function_name().is_some_and(|function| function == "__construct")
+fn php_in_constructor_of(__php_w: &mut PhpWalker, class_name: &str) -> bool {
+    current_class_name(__php_w).is_some_and(|current| current == class_name)
+        && current_function_name(__php_w).is_some_and(|function| function == "__construct")
 }
 
-fn build_typed_property_set_rewrite(
+fn build_typed_property_set_rewrite(__php_w: &mut PhpWalker, 
     owner: &str,
     meta: &FieldMeta,
     obj: Expression,
@@ -13371,9 +13103,9 @@ fn build_typed_property_set_rewrite(
     span: &Span,
 ) -> Option<Expression> {
     let readonly_init_from_declaring_class =
-        is_php_this_expr(&obj) && current_class_name().is_some_and(|current| current == owner);
-    if (meta.is_readonly || class_is_readonly(owner))
-        && !php_in_constructor_of(owner)
+        is_php_this_expr(&obj) && current_class_name(__php_w).is_some_and(|current| current == owner);
+    if (meta.is_readonly || class_is_readonly(__php_w, owner))
+        && !php_in_constructor_of(__php_w, owner)
         && !readonly_init_from_declaring_class
     {
         return Some(Expression::with_span(
@@ -13382,13 +13114,73 @@ fn build_typed_property_set_rewrite(
         ));
     }
 
-    let tmp_recv = next_tmp_name("typed_recv");
-    let tmp_val = next_tmp_name("typed_val");
-    let recv_ident = || Expression::with_span(ExprKind::Ident(tmp_recv.clone()), span.clone());
+    // PHP 8.4 asymmetric visibility. The READ half was already enforced by the
+    // member-read path; this is the other half, and it is asked with the same
+    // question — `php_field_visible_from_current` — so `private(set)` inside
+    // the declaring class writes normally and only an outside write throws.
+    if let Some(set_visibility) = property_set_visibility(__php_w, owner, &meta.name) {
+        if !php_field_visible_from_current(__php_w, owner, set_visibility) {
+            let keyword = match set_visibility {
+                Visibility::Private => "private",
+                Visibility::Protected => "protected",
+                _ => "public",
+            };
+            return Some(Expression::with_span(
+                php_throw_named_error_expr(
+                    "Error",
+                    &format!(
+                        "Cannot modify {keyword}(set) property {}::${} from global scope",
+                        owner.replace('.', "\\"),
+                        meta.name
+                    ),
+                    span,
+                ),
+                span.clone(),
+            ));
+        }
+    }
+
+    // ⛔ Do NOT hoist `$this` into a temp. The receiver's STATIC TYPE is what
+    // the shared storage-name resolver reads
+    // (`field_storage_name_for_receiver` → `visible_instance_field_storage_
+    // name_for_class`), and a temp local has none. Hoisting made every write
+    // to a php property miss its resolved storage slot; where the class also
+    // declares a METHOD of the same name — legal in php, and required by
+    // `interface Iterator` — the field's slot is `__prop$<name>` and the
+    // unmangled write landed on the METHOD:
+    //
+    //     class C { private int $current = 0;
+    //       function setIt(int $v): void { $this->current = $v; }
+    //       function current(): int { return $this->current; } }
+    //     (new C)->setIt(7); (new C)->current();   // php 7, vybe 0 — and the
+    //                                              // method itself was gone
+    //
+    // `$this` is a keyword with no side effects, so naming it twice is free
+    // and it keeps the receiver something the resolver can type. Any other
+    // receiver still hoists: it may have side effects and must be evaluated
+    // once.
+    let hoist_receiver = !is_php_this_expr(&obj);
+    let tmp_recv = next_tmp_name(__php_w, "typed_recv");
+    let tmp_val = next_tmp_name(__php_w, "typed_val");
+    let recv_ident = {
+        let obj = obj.clone();
+        let tmp_recv = tmp_recv.clone();
+        let span = span.clone();
+        move || {
+            if hoist_receiver {
+                Expression::with_span(ExprKind::Ident(tmp_recv.clone()), span.clone())
+            } else {
+                obj.clone()
+            }
+        }
+    };
     let val_ident = || Expression::with_span(ExprKind::Ident(tmp_val.clone()), span.clone());
     let save_recv = Expression::with_span(
         ExprKind::Assign {
-            target: Box::new(recv_ident()),
+            target: Box::new(Expression::with_span(
+                ExprKind::Ident(tmp_recv.clone()),
+                span.clone(),
+            )),
             value: Box::new(obj),
         },
         span.clone(),
@@ -13432,19 +13224,25 @@ fn build_typed_property_set_rewrite(
     } else {
         direct_assign
     };
+    let mut sequence = Vec::with_capacity(3);
+    if hoist_receiver {
+        sequence.push(save_recv);
+    }
+    sequence.push(save_val);
+    sequence.push(checked_assign);
     Some(Expression::with_span(
-        ExprKind::Sequence(vec![save_recv, save_val, checked_assign]),
+        ExprKind::Sequence(sequence),
         span.clone(),
     ))
 }
 
-fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
-    let span = to_span(&pair);
+fn walk_assignment(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<Expression, String> {
+    let span = to_span(__php_w, &pair);
     let mut inner = pair.into_inner();
     let lhs_pair = inner.next().unwrap();
     // If lhs_pair is yield_expression, just walk it through.
     if matches!(lhs_pair.as_rule(), Rule::yield_expression) {
-        return walk_expression(lhs_pair);
+        return walk_expression(__php_w, lhs_pair);
     }
     // Mark that we're walking the LHS of an `=` so the property-access
     // walker can suppress the magic-`__get` ternary on the OUTERMOST
@@ -13458,14 +13256,11 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
     // like an assignment LHS.
     let has_assign_op = inner.peek().is_some();
     if has_assign_op {
-        ASSIGN_LHS_DEPTH.with(|d| *d.borrow_mut() += 1);
+        __php_w.assign_lhs_depth += 1;
     }
-    let lhs_result = walk_expression(lhs_pair);
+    let lhs_result = walk_expression(__php_w, lhs_pair);
     if has_assign_op {
-        ASSIGN_LHS_DEPTH.with(|d| {
-            let mut bd = d.borrow_mut();
-            *bd = bd.saturating_sub(1);
-        });
+        __php_w.assign_lhs_depth = __php_w.assign_lhs_depth.saturating_sub(1);
     }
     let lhs_walked = lhs_result?;
     // Defer destructure conversion until we confirm there's actually a `=`.
@@ -13481,7 +13276,7 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
     };
     if let Some(op_pair) = inner.next() {
         let op = op_pair.as_str();
-        let rhs = walk_expression(inner.next().unwrap())?;
+        let rhs = walk_expression(__php_w, inner.next().unwrap())?;
         if op == "=" {
             if let Some(lowered) =
                 lower_single_place_destructure_assignment(&lhs_walked, &rhs, &span)
@@ -13521,7 +13316,7 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
                     ExprKind::StaticAccess { .. } | ExprKind::Member { .. }
                 ) {
                     return Ok(Expression::with_span(
-                        php_array_field_writeback_rewrite(
+                        php_array_field_writeback_rewrite(__php_w, 
                             (**object).clone(),
                             (**index).clone(),
                             rhs,
@@ -13530,8 +13325,8 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
                         span,
                     ));
                 }
-                if let Some(class_name) = php_object_class_from_expr(object) {
-                    let implements_array_access = class_all_interfaces(&class_name)
+                if let Some(class_name) = php_object_class_from_expr(__php_w, object) {
+                    let implements_array_access = class_all_interfaces(__php_w, &class_name)
                         .iter()
                         .any(|iface| iface.trim_start_matches('\\') == "ArrayAccess");
                     let is_spl_map = matches!(
@@ -13540,11 +13335,11 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
                     );
                     if is_spl_map
                         || implements_array_access
-                        || class_has_method(&class_name, "offsetSet")
+                        || class_has_method(__php_w, &class_name, "offsetSet")
                     {
-                        let tmp_recv = next_tmp_name("offset_set_recv");
-                        let tmp_key = next_tmp_name("offset_set_key");
-                        let tmp_val = next_tmp_name("offset_set_val");
+                        let tmp_recv = next_tmp_name(__php_w, "offset_set_recv");
+                        let tmp_key = next_tmp_name(__php_w, "offset_set_key");
+                        let tmp_val = next_tmp_name(__php_w, "offset_set_val");
                         let recv_ident = || {
                             Expression::with_span(ExprKind::Ident(tmp_recv.clone()), span.clone())
                         };
@@ -13614,13 +13409,13 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
             } = &lhs.kind
             {
                 if !null_safe {
-                    if let Some(kind) = php_known_bad_object_receiver(object) {
+                    if let Some(kind) = php_known_bad_object_receiver(__php_w, object) {
                         return Ok(php_bad_receiver_throw(kind, "write property", &span));
                     }
                 }
                 if !null_safe && is_php_this_expr(object) {
-                    if let Some(class_name) = current_class_name() {
-                        if let Some(hook) = pending_class_hook_meta(&class_name, field) {
+                    if let Some(class_name) = current_class_name(__php_w) {
+                        if let Some(hook) = pending_class_hook_meta(__php_w, &class_name, field) {
                             if !hook.has_setter {
                                 return Ok(Expression::with_span(
                                     ExprKind::Assign {
@@ -13641,10 +13436,10 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
                     }
                 }
                 if !null_safe {
-                    if let Some(class_name) = php_object_class_from_expr(object) {
-                        if class_hook_meta(&class_name, field).is_some_and(|hook| hook.has_setter) {
-                            let tmp_recv = next_tmp_name("hook_recv");
-                            let tmp_val = next_tmp_name("hook_val");
+                    if let Some(class_name) = php_object_class_from_expr(__php_w, object) {
+                        if class_hook_meta(__php_w, &class_name, field).is_some_and(|hook| hook.has_setter) {
+                            let tmp_recv = next_tmp_name(__php_w, "hook_recv");
+                            let tmp_val = next_tmp_name(__php_w, "hook_val");
                             let recv_ident = || {
                                 Expression::with_span(
                                     ExprKind::Ident(tmp_recv.clone()),
@@ -13705,11 +13500,11 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
                     }
                 }
                 if !null_safe {
-                    if let Some(class_name) = php_object_class_from_expr(object) {
-                        if let Some((owner, meta)) = class_field_meta(&class_name, field) {
-                            note_simple_object_field_write(object, field);
-                            note_simple_object_field_value(object, field, &rhs);
-                            if let Some(rewrite) = build_typed_property_set_rewrite(
+                    if let Some(class_name) = php_object_class_from_expr(__php_w, object) {
+                        if let Some((owner, meta)) = class_field_meta(__php_w, &class_name, field) {
+                            note_simple_object_field_write(__php_w, object, field);
+                            note_simple_object_field_value(__php_w, object, field, &rhs);
+                            if let Some(rewrite) = build_typed_property_set_rewrite(__php_w, 
                                 &owner,
                                 &meta,
                                 (**object).clone(),
@@ -13719,7 +13514,7 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
                                 return Ok(rewrite);
                             }
                         }
-                        if class_is_readonly(&class_name) && !class_has_field(&class_name, field) {
+                        if class_is_readonly(__php_w, &class_name) && !class_has_field(__php_w, &class_name, field) {
                             return Ok(Expression::with_span(
                                 php_throw_named_error_expr(
                                     "Error",
@@ -13730,11 +13525,11 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
                             ));
                         }
                     }
-                    note_simple_object_field_write(object, field);
-                    note_simple_object_field_value(object, field, &rhs);
+                    note_simple_object_field_write(__php_w, object, field);
+                    note_simple_object_field_value(__php_w, object, field, &rhs);
                 }
-                let declared_member = php_object_class_from_expr(object)
-                    .is_some_and(|class_name| class_has_field(&class_name, field));
+                let declared_member = php_object_class_from_expr(__php_w, object)
+                    .is_some_and(|class_name| class_has_field(__php_w, &class_name, field));
                 if !null_safe
                     && !field.starts_with("__")
                     && !is_php_this_expr(object)
@@ -13742,7 +13537,7 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
                 {
                     let obj = (**object).clone();
                     let field = field.clone();
-                    return Ok(build_magic_set_rewrite(obj, field, rhs.clone(), &span));
+                    return Ok(build_magic_set_rewrite(__php_w, obj, field, rhs.clone(), &span));
                 }
             }
         }
@@ -13754,23 +13549,23 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
                 } = &rhs.kind
                 {
                     if let Some((rhs_obj_name, rhs_key)) = simple_index_reference_target(rhs_ref) {
-                        note_simple_var_index_alias(name, &rhs_obj_name, &rhs_key);
+                        note_simple_var_index_alias(__php_w, name, &rhs_obj_name, &rhs_key);
                     } else {
-                        unnote_simple_var_index_alias(name);
+                        unnote_simple_var_index_alias(__php_w, name);
                     }
                 } else {
-                    unnote_simple_var_index_alias(name);
+                    unnote_simple_var_index_alias(__php_w, name);
                 }
-                note_simple_defined_var(name);
-                note_simple_array_var(name, &rhs);
-                note_simple_string_var(name, &rhs);
-                note_simple_value_var(name, &rhs);
-                note_simple_xml_var(name, &rhs);
-                note_simple_callable_assignment(name, &rhs);
+                note_simple_defined_var(__php_w, name);
+                note_simple_array_var(__php_w, name, &rhs);
+                note_simple_string_var(__php_w, name, &rhs);
+                note_simple_value_var(__php_w, name, &rhs);
+                note_simple_xml_var(__php_w, name, &rhs);
+                note_simple_callable_assignment(__php_w, name, &rhs);
                 if let Some(state) = expr_is_php_fiber_new(&rhs) {
-                    note_simple_fiber_var(name, state);
+                    note_simple_fiber_var(__php_w, name, state);
                 } else {
-                    unnote_simple_fiber_var(name);
+                    unnote_simple_fiber_var(__php_w, name);
                 }
                 if let ExprKind::Sequence(items) = &rhs.kind {
                     if let [
@@ -13780,7 +13575,7 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
                         },
                     ] = items.as_slice()
                     {
-                        propagate_simple_index_aliases(src, name);
+                        propagate_simple_index_aliases(__php_w, src, name);
                     }
                 }
             }
@@ -13803,20 +13598,20 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
                         if lhs_obj_name.trim_start_matches('$')
                             == rhs_obj_name.trim_start_matches('$')
                         {
-                            note_simple_index_alias(lhs_obj_name, &lhs_key, &rhs_key);
+                            note_simple_index_alias(__php_w, lhs_obj_name, &lhs_key, &rhs_key);
                         }
                     }
                 }
             }
             if let ExprKind::StaticAccess { class, member } = &lhs.kind {
                 if let ExprKind::Ident(field) = &member.kind {
-                    note_simple_static_field_write(class, field);
+                    note_simple_static_field_write(__php_w, class, field);
                 }
             }
         }
         if op == "=" {
             if let ExprKind::Index { object, index, .. } = &lhs.kind {
-                if php_known_scalar_array_receiver(object) {
+                if php_known_scalar_array_receiver(__php_w, object) {
                     return Ok(Expression::with_span(
                         php_throw_error_expr("Cannot use a scalar value as an array", &span),
                         span.clone(),
@@ -13825,7 +13620,7 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
                 if matches!(&index.kind, ExprKind::Lit(Literal::Null)) {
                     if let Some((bucket_receiver, bucket_index)) = php_array_read_parts(object) {
                         return Ok(Expression::with_span(
-                            php_nested_array_append_rewrite(
+                            php_nested_array_append_rewrite(__php_w, 
                                 bucket_receiver,
                                 bucket_index,
                                 rhs,
@@ -13840,7 +13635,7 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
                     ExprKind::StaticAccess { .. } | ExprKind::Member { .. }
                 ) {
                     return Ok(Expression::with_span(
-                        php_array_field_writeback_rewrite(
+                        php_array_field_writeback_rewrite(__php_w, 
                             (**object).clone(),
                             (**index).clone(),
                             rhs,
@@ -13877,8 +13672,8 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
                     null_safe: false,
                 } = &referent.kind
                 {
-                    if php_member_read_may_call_get(object, field) {
-                        return Ok(build_magic_get_rewrite(
+                    if php_member_read_may_call_get(__php_w, object, field) {
+                        return Ok(build_magic_get_rewrite(__php_w, 
                             (**object).clone(),
                             field.clone(),
                             &span,
@@ -13890,7 +13685,7 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
         }
         let lhs = if op != "=" {
             if let ExprKind::Ident(name) = &lhs.kind {
-                php_var_index_alias_expr(name, &span).unwrap_or(lhs)
+                php_var_index_alias_expr(__php_w, name, &span).unwrap_or(lhs)
             } else {
                 lhs
             }
@@ -13900,7 +13695,7 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
         let kind = match op {
             "=" => ExprKind::Assign {
                 target: Box::new(lhs),
-                value: Box::new(php_wrap_copy_on_assign(rhs)),
+                value: Box::new(php_wrap_copy_on_assign(__php_w, rhs)),
             },
             other => {
                 let cop = parse_compound_op(other);
@@ -14015,8 +13810,8 @@ fn compound_to_binop(op: CompoundOp) -> BinOp {
     }
 }
 
-fn walk_yield(pair: Pair<Rule>) -> Result<Expression, String> {
-    let span = to_span(&pair);
+fn walk_yield(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<Expression, String> {
+    let span = to_span(__php_w, &pair);
     // Detect `yield from` from the source slice — kw_yield/kw_yield_from
     // are filtered out alongside the rest of the keyword tokens.
     let yield_from = pair
@@ -14026,7 +13821,7 @@ fn walk_yield(pair: Pair<Rule>) -> Result<Expression, String> {
         .starts_with("yield from");
     let mut inner = inner_nokw(pair);
     if yield_from {
-        let val = walk_expression(inner.next().unwrap())?;
+        let val = walk_expression(__php_w, inner.next().unwrap())?;
         return Ok(Expression::with_span(
             ExprKind::YieldFrom(Box::new(val)),
             span,
@@ -14036,7 +13831,7 @@ fn walk_yield(pair: Pair<Rule>) -> Result<Expression, String> {
     let remaining: Vec<Pair<Rule>> = inner.collect();
     let val = match remaining.as_slice() {
         [] => None,
-        [value] => Some(walk_expression(value.clone())?),
+        [value] => Some(walk_expression(__php_w, value.clone())?),
         [key, value] => Some(Expression::with_span(
             ExprKind::Object(vec![
                 ObjectProperty::KeyValue {
@@ -14045,11 +13840,11 @@ fn walk_yield(pair: Pair<Rule>) -> Result<Expression, String> {
                 },
                 ObjectProperty::KeyValue {
                     key: Expression::string("key"),
-                    value: walk_expression(key.clone())?,
+                    value: walk_expression(__php_w, key.clone())?,
                 },
                 ObjectProperty::KeyValue {
                     key: Expression::string("value"),
-                    value: walk_expression(value.clone())?,
+                    value: walk_expression(__php_w, value.clone())?,
                 },
             ]),
             span,
@@ -14062,10 +13857,10 @@ fn walk_yield(pair: Pair<Rule>) -> Result<Expression, String> {
     ))
 }
 
-fn walk_ternary(pair: Pair<Rule>) -> Result<Expression, String> {
-    let span = to_span(&pair);
+fn walk_ternary(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<Expression, String> {
+    let span = to_span(__php_w, &pair);
     let mut inner = pair.into_inner();
-    let cond = walk_expression(inner.next().unwrap())?;
+    let cond = walk_expression(__php_w, inner.next().unwrap())?;
     let next = inner.next();
     if next.is_none() {
         return Ok(cond);
@@ -14076,8 +13871,8 @@ fn walk_ternary(pair: Pair<Rule>) -> Result<Expression, String> {
     //   `cond ?: else` (Elvis — short ternary)
     if matches!(next.as_rule(), Rule::expression) {
         // We have a `then` branch.
-        let then_expr = walk_expression(next)?;
-        let else_expr = walk_expression(inner.next().unwrap())?;
+        let then_expr = walk_expression(__php_w, next)?;
+        let else_expr = walk_expression(__php_w, inner.next().unwrap())?;
         return Ok(Expression::with_span(
             ExprKind::Ternary {
                 cond: Box::new(php_truthy_condition(cond)),
@@ -14091,7 +13886,7 @@ fn walk_ternary(pair: Pair<Rule>) -> Result<Expression, String> {
         // Actually PHP's ?: returns cond if truthy, else the right side.
         // We model as: cond ? cond : else
         next = inner.next().unwrap_or(next);
-        let else_expr = walk_expression(next)?;
+        let else_expr = walk_expression(__php_w, next)?;
         Ok(Expression::with_span(
             ExprKind::Ternary {
                 cond: Box::new(php_truthy_condition(cond.clone())),
@@ -14103,8 +13898,8 @@ fn walk_ternary(pair: Pair<Rule>) -> Result<Expression, String> {
     }
 }
 
-fn walk_unary(pair: Pair<Rule>) -> Result<Expression, String> {
-    let span = to_span(&pair);
+fn walk_unary(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<Expression, String> {
+    let span = to_span(__php_w, &pair);
     let mut inner = pair.into_inner();
     let first = inner.next().unwrap();
     if matches!(first.as_rule(), Rule::unary_op) {
@@ -14114,14 +13909,14 @@ fn walk_unary(pair: Pair<Rule>) -> Result<Expression, String> {
         // Mirrors the postfix rewrite in `apply_postfix` — see that
         // comment for the full rationale.
         if op_str == "++" || op_str == "--" {
-            let expr = walk_expression_as_assign_target(inner.next().unwrap())?;
+            let expr = walk_expression_as_assign_target(__php_w, inner.next().unwrap())?;
             let expr = if let ExprKind::Ident(name) = &expr.kind {
-                php_var_index_alias_expr(name, &span).unwrap_or(expr)
+                php_var_index_alias_expr(__php_w, name, &span).unwrap_or(expr)
             } else {
                 expr
             };
             if let ExprKind::Index { object, .. } = &expr.kind {
-                if php_known_scalar_array_receiver(object) {
+                if php_known_scalar_array_receiver(__php_w, object) {
                     return Ok(Expression::with_span(
                         php_throw_error_expr("Cannot use a scalar value as an array", &span),
                         span,
@@ -14154,9 +13949,9 @@ fn walk_unary(pair: Pair<Rule>) -> Result<Expression, String> {
         // write through the reference is silently lost.
         let operand = inner.next().unwrap();
         let expr = if op_str == "&" {
-            walk_expression_as_assign_target(operand)?
+            walk_expression_as_assign_target(__php_w, operand)?
         } else {
-            walk_expression(operand)?
+            walk_expression(__php_w, operand)?
         };
         if op_str == "@" {
             if matches!(expr.kind, ExprKind::Index { .. }) || php_is_array_access_read_expr(&expr) {
@@ -14218,7 +14013,7 @@ fn walk_unary(pair: Pair<Rule>) -> Result<Expression, String> {
             span,
         ))
     } else {
-        walk_expression(first)
+        walk_expression(__php_w, first)
     }
 }
 
@@ -14236,10 +14031,10 @@ fn parse_unary_op(s: &str) -> UnaryOp {
     }
 }
 
-fn walk_php_variable_expr(pair: Pair<Rule>, span: Span) -> Result<Expression, String> {
+fn walk_php_variable_expr(__php_w: &mut PhpWalker, pair: Pair<Rule>, span: Span) -> Result<Expression, String> {
     let raw = pair.as_str();
     if let Some(rest) = raw.strip_prefix("$$") {
-        if let Some(target) = lookup_simple_string_var(rest) {
+        if let Some(target) = lookup_simple_string_var(__php_w, rest) {
             return Ok(Expression::with_span(
                 ExprKind::Ident(format!("${target}")),
                 span,
@@ -14266,9 +14061,9 @@ fn walk_php_variable_expr(pair: Pair<Rule>, span: Span) -> Result<Expression, St
     let mut inner = pair.clone().into_inner();
     if let Some(first) = inner.next() {
         if matches!(first.as_rule(), Rule::expression) {
-            let key_expr = walk_expression(first)?;
+            let key_expr = walk_expression(__php_w, first)?;
             if let ExprKind::Ident(name) = &key_expr.kind {
-                if let Some(target) = lookup_simple_string_var(name) {
+                if let Some(target) = lookup_simple_string_var(__php_w, name) {
                     return Ok(Expression::with_span(
                         ExprKind::Ident(format!("${target}")),
                         span,
@@ -14417,7 +14212,7 @@ fn hook_expr_is_this_or_alias(
         || matches!(&expr.kind, ExprKind::Ident(n) if this_aliases.contains(n))
 }
 
-fn walk_property_hooks(
+fn walk_property_hooks(__php_w: &mut PhpWalker, 
     pair: Pair<Rule>,
     type_hint: &Option<String>,
     prop: &str,
@@ -14432,17 +14227,17 @@ fn walk_property_hooks(
                 for item in hook.into_inner() {
                     match item.as_rule() {
                         Rule::block_statement => {
-                            push_property_hook_backing(prop, &backing);
-                            let walked = walk_statement_into_body(item);
-                            pop_property_hook_backing();
+                            push_property_hook_backing(__php_w, prop, &backing);
+                            let walked = walk_statement_into_body(__php_w, item);
+                            pop_property_hook_backing(__php_w);
                             getter = Some(walked?);
                         }
                         // `get => expr;` → `return expr;`
                         Rule::hook_arrow_body => {
-                            push_property_hook_backing(prop, &backing);
+                            push_property_hook_backing(__php_w, prop, &backing);
                             let expr =
-                                walk_expression(item.into_inner().next().ok_or("empty get hook")?);
-                            pop_property_hook_backing();
+                                walk_expression(__php_w, item.into_inner().next().ok_or("empty get hook")?);
+                            pop_property_hook_backing(__php_w);
                             let expr = expr?;
                             getter = Some(vec![Statement::new(StmtKind::Return(Some(expr)))]);
                         }
@@ -14465,22 +14260,22 @@ fn walk_property_hooks(
                 for item in hook.into_inner() {
                     match item.as_rule() {
                         Rule::param_list => {
-                            if let Some(first) = walk_params(item)?.into_iter().next() {
+                            if let Some(first) = walk_params(__php_w, item)?.into_iter().next() {
                                 param = first;
                             }
                         }
                         Rule::block_statement => {
-                            push_property_hook_backing(prop, &backing);
-                            let walked = walk_statement_into_body(item);
-                            pop_property_hook_backing();
+                            push_property_hook_backing(__php_w, prop, &backing);
+                            let walked = walk_statement_into_body(__php_w, item);
+                            pop_property_hook_backing(__php_w);
                             body = walked?;
                         }
                         // `set => expr;` stores the expression result in the backing field.
                         Rule::hook_arrow_body => {
-                            push_property_hook_backing(prop, &backing);
+                            push_property_hook_backing(__php_w, prop, &backing);
                             let expr =
-                                walk_expression(item.into_inner().next().ok_or("empty set hook")?);
-                            pop_property_hook_backing();
+                                walk_expression(__php_w, item.into_inner().next().ok_or("empty set hook")?);
+                            pop_property_hook_backing(__php_w);
                             let expr = expr?;
                             let assign = Expression::with_span(
                                 ExprKind::Assign {
@@ -14565,11 +14360,11 @@ fn php_parse_leading_number(s: &str) -> Option<f64> {
     s[start..i].parse::<f64>().ok()
 }
 
-fn walk_cast(pair: Pair<Rule>) -> Result<Expression, String> {
-    let span = to_span(&pair);
+fn walk_cast(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<Expression, String> {
+    let span = to_span(__php_w, &pair);
     let mut inner = pair.into_inner();
     let cast_kw = inner.next().unwrap().as_str().to_string();
-    let expr = walk_expression(inner.next().unwrap())?;
+    let expr = walk_expression(__php_w, inner.next().unwrap())?;
     let normalized_cast = cast_kw
         .to_lowercase()
         .trim_start_matches('(')
@@ -14596,7 +14391,7 @@ fn walk_cast(pair: Pair<Rule>) -> Result<Expression, String> {
         "int" | "integer" | "long" => Some("intval"),
         "float" | "double" | "real" => {
             // PHP (float)'hello' → 0, not NaN. Wrap floatval with NaN→0 fallback.
-            let tmp = next_tmp_name("cast_f");
+            let tmp = next_tmp_name(__php_w, "cast_f");
             let tmp_ident = || Expression::with_span(ExprKind::Ident(tmp.clone()), span.clone());
             let fval_call = Expression::with_span(
                 ExprKind::Call {
@@ -14653,7 +14448,7 @@ fn walk_cast(pair: Pair<Rule>) -> Result<Expression, String> {
             }
             // For objects: (array)$obj → entries-based map.
             // Use a ternary: typeof $x === "object" ? __php_obj_to_array($x) : [$x]
-            let tmp = next_tmp_name("cast_arr");
+            let tmp = next_tmp_name(__php_w, "cast_arr");
             let tmp_ident = || Expression::with_span(ExprKind::Ident(tmp.clone()), span.clone());
             let save = Expression::with_span(
                 ExprKind::Assign {
@@ -14770,8 +14565,8 @@ fn walk_cast(pair: Pair<Rule>) -> Result<Expression, String> {
     ))
 }
 
-fn walk_postfix(pair: Pair<Rule>) -> Result<Expression, String> {
-    let span = to_span(&pair);
+fn walk_postfix(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<Expression, String> {
+    let span = to_span(__php_w, &pair);
     let mut inner = pair.into_inner();
     let primary = inner.next().unwrap();
     // Track whether the very first chain element was a `$variable`
@@ -14808,13 +14603,13 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<Expression, String> {
     // call is the OUTERMOST on the LHS (depth>0 AND we're at the
     // primary's chain) — nested walk_expression calls inside arg
     // lists / index expressions reset the depth below.
-    let lhs_depth_was = ASSIGN_LHS_DEPTH.with(|d| *d.borrow());
+    let lhs_depth_was = __php_w.assign_lhs_depth;
     // Clear the depth while walking the primary + ops so nested
     // expressions inside (e.g. method args, indexes) don't inherit it.
     if lhs_depth_was > 0 {
-        ASSIGN_LHS_DEPTH.with(|d| *d.borrow_mut() = 0);
+        __php_w.assign_lhs_depth = 0;
     }
-    let mut expr = walk_expression(primary)?;
+    let mut expr = walk_expression(__php_w, primary)?;
     let mut from_variable = is_var_primary;
     let ops: Vec<_> = inner.collect();
     let n = ops.len();
@@ -14825,7 +14620,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<Expression, String> {
             .and_then(postfix_rule_kind)
             .is_some_and(|rule| matches!(rule, Rule::inc_dec_op));
         let is_assign_target = (lhs_depth_was > 0 && is_last_op) || next_is_inc_dec;
-        expr = apply_postfix(expr, op_pair, &span, from_variable, is_assign_target)?;
+        expr = apply_postfix(__php_w, expr, op_pair, &span, from_variable, is_assign_target)?;
         // After the first postfix is applied, the chain is a
         // computed value (member access, call result, etc.), not the
         // original variable any more.
@@ -14834,12 +14629,12 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<Expression, String> {
     // Restore the depth so the outer walk_assignment sees the same
     // value it originally set.
     if lhs_depth_was > 0 {
-        ASSIGN_LHS_DEPTH.with(|d| *d.borrow_mut() = lhs_depth_was);
+        __php_w.assign_lhs_depth = lhs_depth_was;
     }
     Ok(expr)
 }
 
-fn apply_postfix(
+fn apply_postfix(__php_w: &mut PhpWalker, 
     receiver: Expression,
     op: Pair<Rule>,
     span: &Span,
@@ -14885,7 +14680,7 @@ fn apply_postfix(
                 .next()
                 .unwrap();
             if matches!(name_inner.as_rule(), Rule::variable | Rule::expression) {
-                let method_key = walk_expression(name_inner)?;
+                let method_key = walk_expression(__php_w, name_inner)?;
                 let member = Expression::with_span(
                     ExprKind::Index {
                         object: Box::new(receiver.clone()),
@@ -14895,18 +14690,18 @@ fn apply_postfix(
                     span.clone(),
                 );
                 if is_fcc {
-                    if let Some(expr) = php_invalid_first_class_callable_expr(&member, span) {
+                    if let Some(expr) = php_invalid_first_class_callable_expr(__php_w, &member, span) {
                         return Ok(expr);
                     }
                     return Ok(php_first_class_callable_lambda(member, null_safe, span));
                 }
                 let args = arg_list_pair
-                    .map(walk_args)
+                    .map(|__p| walk_args(__php_w, __p))
                     .transpose()?
                     .unwrap_or_default();
-                let recv_tmp = next_tmp_name("dyn_method_obj");
-                let key_tmp = next_tmp_name("dyn_method_key");
-                let fn_tmp = next_tmp_name("dyn_method_fn");
+                let recv_tmp = next_tmp_name(__php_w, "dyn_method_obj");
+                let key_tmp = next_tmp_name(__php_w, "dyn_method_key");
+                let fn_tmp = next_tmp_name(__php_w, "dyn_method_fn");
                 let recv_ident =
                     || Expression::with_span(ExprKind::Ident(recv_tmp.clone()), span.clone());
                 let key_ident =
@@ -14981,7 +14776,7 @@ fn apply_postfix(
                 let receiver_is_array_backed = matches!(
                     &receiver.kind,
                     ExprKind::Ident(var_name)
-                        if lookup_simple_value_var(var_name)
+                        if lookup_simple_value_var(__php_w, var_name)
                             .is_some_and(|value| matches!(value.kind, ExprKind::Array(_)))
                 );
                 if receiver_is_array_backed {
@@ -14989,7 +14784,7 @@ fn apply_postfix(
                         "append" => {
                             let args = arg_list_pair
                                 .clone()
-                                .map(walk_args)
+                                .map(|__p| walk_args(__php_w, __p))
                                 .transpose()?
                                 .unwrap_or_default();
                             if let Some(value) = args.first() {
@@ -15031,20 +14826,20 @@ fn apply_postfix(
                 }
             }
             if !is_fcc {
-                if let Some(class_name) = php_object_class_from_expr(&receiver) {
+                if let Some(class_name) = php_object_class_from_expr(__php_w, &receiver) {
                     let class_name = class_name.trim_start_matches('\\').to_string();
-                    if let Some(meta) = class_method_meta(&class_name, &name) {
-                        if !php_field_visible_from_current(&class_name, meta.visibility) {
+                    if let Some(meta) = class_method_meta(__php_w, &class_name, &name) {
+                        if !php_field_visible_from_current(__php_w, &class_name, meta.visibility) {
                             return Ok(Expression::with_span(
                                 php_throw_named_error_expr("Error", "Call to private method", span),
                                 span.clone(),
                             ));
                         }
                     }
-                    if class_is_registered(&class_name)
-                        && !class_has_method(&class_name, &name)
-                        && !class_has_method(&class_name, "__call")
-                        && !class_has_pending_trait_usage(&class_name)
+                    if class_is_registered(__php_w, &class_name)
+                        && !class_has_method(__php_w, &class_name, &name)
+                        && !class_has_method(__php_w, &class_name, "__call")
+                        && !class_has_pending_trait_usage(__php_w, &class_name)
                     {
                         return Ok(Expression::with_span(
                             php_throw_named_error_expr("Error", "Call to undefined method", span),
@@ -15103,7 +14898,7 @@ fn apply_postfix(
                     .as_ref()
                     .is_none_or(|al| inner_nokw(al.clone()).next().is_none())
             {
-                if let Some(target) = lookup_simple_reflection_target(&receiver) {
+                if let Some(target) = lookup_simple_reflection_target(__php_w, &receiver) {
                     match (target, name.as_str()) {
                         (SimpleReflectionTarget::Function(_), "returnsReference") => {
                             return Ok(Expression::with_span(
@@ -15112,10 +14907,12 @@ fn apply_postfix(
                             ));
                         }
                         (SimpleReflectionTarget::Class(class_name), "isInstantiable") => {
-                            let instantiable = CLASS_REGISTRY
-                                .with(|r| r.borrow().get(&class_name).cloned())
-                                .is_some_and(|meta| !meta.is_abstract)
-                                && !type_kind_is(&class_name, "enum");
+                            let not_abstract = __php_w
+                                .class_registry
+                                .get(&class_name)
+                                .is_some_and(|meta| !meta.is_abstract);
+                            let instantiable =
+                                not_abstract && !type_kind_is(__php_w, &class_name, "enum");
                             return Ok(Expression::with_span(
                                 ExprKind::Lit(Literal::Bool(instantiable)),
                                 span.clone(),
@@ -15124,21 +14921,49 @@ fn apply_postfix(
                         _ => {}
                     }
                 }
-                let generator_target = match name.as_str() {
-                    "key" => Some("__php_gen_key"),
-                    "next" => Some("__php_gen_next"),
-                    "current" => Some("__php_gen_current"),
-                    "valid" => Some("__php_gen_valid"),
-                    "getReturn"
-                        if !matches!(
-                            &receiver.kind,
-                            ExprKind::Ident(var_name) if lookup_simple_fiber_var(var_name).is_some()
-                        ) =>
-                    {
-                        Some("__php_gen_get_return")
+                // ⚠ `current` / `next` / `valid` / `rewind` / `key` are EXACTLY
+                // the methods `interface Iterator` requires, so rewriting them
+                // on the SPELLING alone hijacked every user class implementing
+                // it — `$range->current()` on `class NumberRange implements
+                // Iterator` called the generator builtin and trapped — plus any
+                // unrelated class with a `current()` method. A class that
+                // DECLARES the method owns the call; asked through the existing
+                // resolvers, not a second name table.
+                //
+                // ⛔ These SHOULD come off this table entirely:
+                // `primitives/generators.rs::emit_buffered_generator_method_
+                // dispatch` dispatches the same names, php already turns it on
+                // (`buffered_iterator_methods = true`), and it decides at RUN
+                // TIME with `ecma:value.isGenerator` — strictly better than any
+                // compile-time guard. Intercepting here means the shared
+                // dispatch never sees them. But MEASURED: removing the five
+                // took `tests/php/generators` from 3 failures to 7 (while
+                // `iterators` went 4 → 2), so the shared dispatch does not yet
+                // cover everything `__php_gen_*` does. The guard below is the
+                // interim; closing the gap is the real fix. See
+                // flexclassplan.md §4k-quater.
+                let receiver_declares_method = php_object_class_from_expr(__php_w, &receiver)
+                    .is_some_and(|class_name| class_has_method(__php_w, &class_name, &name));
+                let generator_target = if receiver_declares_method {
+                    None
+                } else {
+                    match name.as_str() {
+                        "key" => Some("__php_gen_key"),
+                        "next" => Some("__php_gen_next"),
+                        "current" => Some("__php_gen_current"),
+                        "valid" => Some("__php_gen_valid"),
+                        "getReturn"
+                            if !matches!(
+                                &receiver.kind,
+                                ExprKind::Ident(var_name)
+                                    if lookup_simple_fiber_var(__php_w, var_name).is_some()
+                            ) =>
+                        {
+                            Some("__php_gen_get_return")
+                        }
+                        "rewind" => Some("__php_gen_rewind"),
+                        _ => None,
                     }
-                    "rewind" => Some("__php_gen_rewind"),
-                    _ => None,
                 };
                 if let Some(fname) = generator_target {
                     return Ok(Expression::with_span(
@@ -15157,7 +14982,7 @@ fn apply_postfix(
             if !is_fcc && name == "send" {
                 let args = arg_list_pair
                     .clone()
-                    .map(walk_args)
+                    .map(|__p| walk_args(__php_w, __p))
                     .transpose()?
                     .unwrap_or_default();
                 if args.len() == 1 {
@@ -15180,7 +15005,7 @@ fn apply_postfix(
             if !is_fcc && name == "throw" {
                 let args = arg_list_pair
                     .clone()
-                    .map(walk_args)
+                    .map(|__p| walk_args(__php_w, __p))
                     .transpose()?
                     .unwrap_or_default();
                 if args.len() == 1 {
@@ -15201,10 +15026,10 @@ fn apply_postfix(
                 }
             }
             if !is_fcc {
-                if let Some(target) = lookup_simple_reflection_target(&receiver) {
+                if let Some(target) = lookup_simple_reflection_target(__php_w, &receiver) {
                     let args = arg_list_pair
                         .clone()
-                        .map(walk_args)
+                        .map(|__p| walk_args(__php_w, __p))
                         .transpose()?
                         .unwrap_or_default();
                     match (target, name.as_str()) {
@@ -15270,9 +15095,9 @@ fn apply_postfix(
                         }
                         (SimpleReflectionTarget::Class(class_name), "hasMethod") => {
                             if let Some(method) =
-                                args.first().and_then(|arg| php_literal_string(&arg.value))
+                                args.first().and_then(|arg| php_literal_string(__php_w, &arg.value))
                             {
-                                let has = class_has_method(&class_name, &method);
+                                let has = class_has_method(__php_w, &class_name, &method);
                                 return Ok(Expression::with_span(
                                     ExprKind::Lit(Literal::Bool(has)),
                                     span.clone(),
@@ -15281,28 +15106,32 @@ fn apply_postfix(
                         }
                         (SimpleReflectionTarget::Class(class_name), "getConstant") => {
                             if let Some(const_name) =
-                                args.first().and_then(|arg| php_literal_string(&arg.value))
+                                args.first().and_then(|arg| php_literal_string(__php_w, &arg.value))
                             {
-                                if let Some(value) = CLASS_REGISTRY.with(|r| {
-                                    r.borrow().get(&class_name).and_then(|meta| {
+                                if let Some(value) = {
+                                    __php_w.class_registry.get(&class_name).and_then(|meta| {
                                         meta.constants
                                             .iter()
                                             .find(|c| c.name == const_name)
                                             .map(|c| c.value.clone())
                                     })
-                                }) {
+                                } {
                                     return Ok(value);
                                 }
                             }
                         }
                         (SimpleReflectionTarget::Class(class_name), "getAttributes") => {
-                            let mut attrs = class_attrs_for_reflection(&class_name);
+                            let mut attrs = class_attrs_for_reflection(__php_w, &class_name);
+                            let name_filter = args
+                                .first()
+                                .and_then(|arg| php_literal_string(__php_w, &arg.value));
                             filter_reflection_attributes(
+                                __php_w,
                                 &mut attrs,
-                                args.first().and_then(|arg| php_literal_string(&arg.value)),
+                                name_filter,
                                 args.len() >= 2,
                             );
-                            return Ok(attribute_array_expr(&attrs));
+                            return Ok(attribute_array_expr(__php_w, &attrs));
                         }
                         (
                             SimpleReflectionTarget::Method {
@@ -15312,26 +15141,32 @@ fn apply_postfix(
                             "getAttributes",
                         ) => {
                             let declaring_class =
-                                class_method_declaring_class(&class_name, &method_name)
+                                class_method_declaring_class(__php_w, &class_name, &method_name)
                                     .unwrap_or_else(|| class_name.clone());
-                            let mut attrs = METHOD_ATTRIBUTES
-                                .with(|r| r.borrow().get(&(declaring_class, method_name)).cloned())
+                            let mut attrs = __php_w
+                                .method_attributes
+                                .get(&(declaring_class, method_name))
+                                .cloned()
                                 .unwrap_or_default();
+                            let name_filter = args
+                                .first()
+                                .and_then(|arg| php_literal_string(__php_w, &arg.value));
                             filter_reflection_attributes(
+                                __php_w,
                                 &mut attrs,
-                                args.first().and_then(|arg| php_literal_string(&arg.value)),
+                                name_filter,
                                 args.len() >= 2,
                             );
-                            return Ok(attribute_array_expr(&attrs));
+                            return Ok(attribute_array_expr(__php_w, &attrs));
                         }
                         (SimpleReflectionTarget::Class(class_name), "getParentClass") => {
-                            let parent = CLASS_REGISTRY.with(|r| {
-                                r.borrow()
+                            let parent = {
+                                __php_w.class_registry
                                     .get(&class_name)
                                     .and_then(|meta| meta.parent.clone())
-                            });
+                            };
                             return match parent {
-                                Some(parent_name) => build_reflection_class_call(
+                                Some(parent_name) => build_reflection_class_call(__php_w, 
                                     vec![Argument::positional(mk_str(&parent_name))],
                                     span.clone(),
                                 ),
@@ -15342,9 +15177,9 @@ fn apply_postfix(
                             };
                         }
                         (SimpleReflectionTarget::Class(class_name), "getCases") => {
-                            if type_kind_is(&class_name, "enum") {
-                                let cases = CLASS_REGISTRY.with(|r| {
-                                    r.borrow()
+                            if type_kind_is(__php_w, &class_name, "enum") {
+                                let cases = {
+                                    __php_w.class_registry
                                         .get(&class_name)
                                         .map(|meta| {
                                             meta.fields
@@ -15363,7 +15198,7 @@ fn apply_postfix(
                                                 .collect::<Vec<_>>()
                                         })
                                         .unwrap_or_default()
-                                });
+                                };
                                 return Ok(Expression::with_span(
                                     ExprKind::Array(cases),
                                     span.clone(),
@@ -15408,7 +15243,7 @@ fn apply_postfix(
                 };
                 if let Some(fname) = fiber_target {
                     if let ExprKind::Ident(var_name) = &receiver.kind {
-                        if let Some(mut state) = lookup_simple_fiber_var(var_name) {
+                        if let Some(mut state) = lookup_simple_fiber_var(__php_w, var_name) {
                             match name.as_str() {
                                 "isTerminated" => {
                                     return Ok(Expression::with_span(
@@ -15499,7 +15334,7 @@ fn apply_postfix(
                                     };
                                     state.resumes = 0;
                                     state.final_resume_echoed = false;
-                                    note_simple_fiber_var(var_name, state);
+                                    note_simple_fiber_var(__php_w, var_name, state);
                                 }
                                 "resume" => {
                                     state.resumes = state.resumes.saturating_add(1);
@@ -15507,11 +15342,11 @@ fn apply_postfix(
                                         && state.resumes >= state.suspend_count
                                     {
                                         state.phase = SimpleFiberPhase::Terminated;
-                                        state.final_resume_echoed = in_php_echo_context();
+                                        state.final_resume_echoed = in_php_echo_context(__php_w);
                                     } else {
                                         state.final_resume_echoed = false;
                                     }
-                                    note_simple_fiber_var(var_name, state);
+                                    note_simple_fiber_var(__php_w, var_name, state);
                                 }
                                 "throw" => {
                                     state.resumes = state.resumes.saturating_add(1);
@@ -15521,7 +15356,7 @@ fn apply_postfix(
                                         state.phase = SimpleFiberPhase::Terminated;
                                     }
                                     state.final_resume_echoed = false;
-                                    note_simple_fiber_var(var_name, state);
+                                    note_simple_fiber_var(__php_w, var_name, state);
                                 }
                                 _ => {}
                             }
@@ -15529,7 +15364,7 @@ fn apply_postfix(
                     }
                     let mut call_args: Vec<Argument> = vec![Argument::positional(receiver.clone())];
                     if let Some(al) = arg_list_pair.clone() {
-                        call_args.extend(walk_args(al)?);
+                        call_args.extend(walk_args(__php_w, al)?);
                     }
                     return Ok(Expression::with_span(
                         ExprKind::Call {
@@ -15594,7 +15429,7 @@ fn apply_postfix(
                     return Ok(Expression::with_span(transitions, span.clone()));
                 }
             }
-            let receiver_php_class = php_object_class_from_expr(&receiver);
+            let receiver_php_class = php_object_class_from_expr(__php_w, &receiver);
             let receiver_is_datetime_adapter = receiver_php_class.as_deref().is_some_and(|class| {
                 matches!(
                     class.trim_start_matches('\\'),
@@ -15603,7 +15438,7 @@ fn apply_postfix(
             });
             if !is_fcc && !is_php_this_expr(&receiver) && receiver_is_datetime_adapter {
                 let intl_args = if let Some(al) = arg_list_pair.clone() {
-                    walk_args(al)?
+                    walk_args(__php_w, al)?
                 } else {
                     Vec::new()
                 };
@@ -15670,14 +15505,14 @@ fn apply_postfix(
             // and PHP user methods must dispatch normally.
             if !is_fcc
                 && name == "format"
-                && php_object_class_from_expr(&receiver).as_deref() == Some("DateInterval")
+                && php_object_class_from_expr(__php_w, &receiver).as_deref() == Some("DateInterval")
             {
                 // ALL formats go to the adapter — literal or not. The walker
                 // used to expand literals itself, which meant the specifier
                 // table existed twice and the walker copy silently lacked
                 // `%R`/`%r`. One table, in the adapter.
                 if let Some(al) = arg_list_pair.clone() {
-                    let fmt_args = walk_args(al)?;
+                    let fmt_args = walk_args(__php_w, al)?;
                     if fmt_args.len() == 1 {
                         return Ok(Expression::with_span(
                             ExprKind::Call {
@@ -15695,7 +15530,7 @@ fn apply_postfix(
             }
             if !is_fcc && !is_php_this_expr(&receiver) && receiver_is_datetime_adapter {
                 if name == "getLocation"
-                    && php_object_class_from_expr(&receiver).as_deref() == Some("DateTimeZone")
+                    && php_object_class_from_expr(__php_w, &receiver).as_deref() == Some("DateTimeZone")
                 {
                     return Ok(php_assoc_array(
                         vec![
@@ -15708,7 +15543,7 @@ fn apply_postfix(
                     ));
                 }
                 if name == "getTransitions"
-                    && php_object_class_from_expr(&receiver).as_deref() == Some("DateTimeZone")
+                    && php_object_class_from_expr(__php_w, &receiver).as_deref() == Some("DateTimeZone")
                 {
                     let transition = |isdst: bool| {
                         php_assoc_array(
@@ -15776,14 +15611,14 @@ fn apply_postfix(
                     _ => None,
                 };
                 if name == "getOffset" {
-                    if let Some(offset) = php_datetime_literal_offset_seconds(&receiver) {
+                    if let Some(offset) = php_datetime_literal_offset_seconds(__php_w, &receiver) {
                         return Ok(Expression::int(offset));
                     }
                 }
                 if let Some(fname) = target_fn {
                     let mut call_args: Vec<Argument> = vec![Argument::positional(receiver.clone())];
                     if let Some(al) = arg_list_pair.clone() {
-                        call_args.extend(walk_args(al)?);
+                        call_args.extend(walk_args(__php_w, al)?);
                     }
                     // `$dt->format("LITERAL")` — pre-parse the format
                     // string at compile time and emit AST that calls
@@ -15793,13 +15628,13 @@ fn apply_postfix(
                     if fname == "__php_dt_format" && call_args.len() == 2 {
                         if let ExprKind::Lit(Literal::Str(fmt)) = &call_args[1].value.kind {
                             let dt_expr = call_args[0].value.clone();
-                            if let Some(formatted) = php_datetime_literal_format(fmt, &dt_expr) {
+                            if let Some(formatted) = php_datetime_literal_format(__php_w, fmt, &dt_expr) {
                                 return Ok(Expression::with_span(
                                     ExprKind::Lit(Literal::Str(formatted)),
                                     span.clone(),
                                 ));
                             }
-                            let dt_is_php_adapter = php_object_class_from_expr(&dt_expr)
+                            let dt_is_php_adapter = php_object_class_from_expr(__php_w, &dt_expr)
                                 .as_deref()
                                 .is_some_and(|class| {
                                     matches!(
@@ -15828,7 +15663,7 @@ fn apply_postfix(
                     // required.
                     if fname == "__php_dt_modify" && call_args.len() == 2 {
                         if let ExprKind::Lit(Literal::Str(s)) = &call_args[1].value.kind {
-                            if let Some((y, m, d)) = php_datetime_literal_ymd(&call_args[0].value) {
+                            if let Some((y, m, d)) = php_datetime_literal_ymd(__php_w, &call_args[0].value) {
                                 let target = match s.trim().to_ascii_lowercase().as_str() {
                                     "last day of this month" => {
                                         Some((y, m, php_days_in_month(y, m)))
@@ -15899,8 +15734,8 @@ fn apply_postfix(
                     }
                     if fname == "__php_dt_add" && call_args.len() == 2 {
                         if let (Some((y, m, d)), Some((iy, im, id))) = (
-                            php_datetime_literal_ymd(&call_args[0].value),
-                            php_dateinterval_ymd(&call_args[1].value),
+                            php_datetime_literal_ymd(__php_w, &call_args[0].value),
+                            php_dateinterval_ymd(__php_w, &call_args[1].value),
                         ) {
                             if iy == 0 && im > 0 && id == 0 {
                                 let (ty, tm, td) = php_add_months_overflow(y, m, d, im);
@@ -15942,18 +15777,18 @@ fn apply_postfix(
                 span.clone(),
             );
             if is_fcc {
-                if let Some(expr) = php_invalid_first_class_callable_expr(&member, span) {
+                if let Some(expr) = php_invalid_first_class_callable_expr(__php_w, &member, span) {
                     return Ok(expr);
                 }
                 return Ok(php_first_class_callable_lambda(member, null_safe, span));
             }
             let args = arg_list_pair
-                .map(walk_args)
+                .map(|__p| walk_args(__php_w, __p))
                 .transpose()?
                 .unwrap_or_default();
             if let ExprKind::Member { object, .. } = &member.kind {
-                if php_object_class_from_expr(object).is_some_and(|class_name| {
-                    class_or_parent_has_pending_trait_usage(class_name.trim_start_matches('\\'))
+                if php_object_class_from_expr(__php_w, object).is_some_and(|class_name| {
+                    class_or_parent_has_pending_trait_usage(__php_w, class_name.trim_start_matches('\\'))
                 }) {
                     return Ok(Expression::with_span(
                         ExprKind::Call {
@@ -15981,7 +15816,7 @@ fn apply_postfix(
             // forms (those return early above this branch).
             if null_safe {
                 if let ExprKind::Member { object, field, .. } = member.kind {
-                    let tmp = next_tmp_name("nullsafe_recv");
+                    let tmp = next_tmp_name(__php_w, "nullsafe_recv");
                     let tmp_ident =
                         || Expression::with_span(ExprKind::Ident(tmp.clone()), span.clone());
                     let save = Expression::with_span(
@@ -16052,10 +15887,10 @@ fn apply_postfix(
                     ));
                 }
             };
-            if let Some(kind) = php_known_bad_object_receiver(&member_object) {
+            if let Some(kind) = php_known_bad_object_receiver(__php_w, &member_object) {
                 return Ok(php_bad_receiver_throw(kind, "call method", span));
             }
-            if php_object_class_from_expr(&member_object).is_some_and(|class_name| {
+            if php_object_class_from_expr(__php_w, &member_object).is_some_and(|class_name| {
                 matches!(
                     class_name.trim_start_matches('\\'),
                     "SplObjectStorage" | "WeakMap"
@@ -16079,9 +15914,9 @@ fn apply_postfix(
                 }
             }
             if args.is_empty() {
-                if let Some((class_name, field)) = php_object_class_from_expr(&member_object)
+                if let Some((class_name, field)) = php_object_class_from_expr(__php_w, &member_object)
                     .and_then(|class_name| {
-                        lookup_simple_getter_method(&class_name, &method_name)
+                        lookup_simple_getter_method(__php_w, &class_name, &method_name)
                             .map(|field| (class_name, field))
                     })
                 {
@@ -16207,7 +16042,7 @@ fn apply_postfix(
             // SimpleXMLElement is represented by the underlying DOM element.
             // Its `asXML()` and `getName()` therefore normalize directly to
             // the same DOM serialization/name surface.
-            if method_name == "asXML" && args.is_empty() && is_php_dom_xml_receiver(&member_object)
+            if method_name == "asXML" && args.is_empty() && is_php_dom_xml_receiver(__php_w, &member_object)
             {
                 return Ok(mk_dom_call(
                     "__dom_save_xml",
@@ -16216,7 +16051,7 @@ fn apply_postfix(
             }
             if method_name == "getName"
                 && args.is_empty()
-                && is_php_dom_xml_receiver(&member_object)
+                && is_php_dom_xml_receiver(__php_w, &member_object)
             {
                 return Ok(
                     php_dom_xml_name_property_expr(member_object.clone(), "nodeName", span)
@@ -16235,7 +16070,7 @@ fn apply_postfix(
             // `createElement($name, $text)` — PHP's 2-arg form creates the
             // element and a child text node with `$text`.
             if method_name == "createElement" && args.len() >= 2 {
-                let tmp = next_tmp_name("dom_el");
+                let tmp = next_tmp_name(__php_w, "dom_el");
                 let el = || Expression::with_span(ExprKind::Ident(tmp.clone()), span.clone());
                 let create = mk_dom_call(
                     "__dom_createElement",
@@ -16302,7 +16137,7 @@ fn apply_postfix(
             };
             if let Some(adapter_name) = dom_adapter {
                 let is_known_non_dom =
-                    php_object_class_from_expr(&member_object).is_some_and(|class_name| {
+                    php_object_class_from_expr(__php_w, &member_object).is_some_and(|class_name| {
                         !matches!(
                             class_name.trim_start_matches('\\'),
                             "DOMDocument"
@@ -16389,8 +16224,8 @@ fn apply_postfix(
                     span.clone(),
                 ));
             }
-            if php_object_class_from_expr(&member_object)
-                .is_some_and(|class_name| class_has_method(&class_name, &method_name))
+            if php_object_class_from_expr(__php_w, &member_object)
+                .is_some_and(|class_name| class_has_method(__php_w, &class_name, &method_name))
             {
                 let direct_member = Expression::with_span(
                     ExprKind::Member {
@@ -16409,11 +16244,11 @@ fn apply_postfix(
                     span.clone(),
                 ));
             }
-            if php_object_class_from_expr(&member_object).is_some_and(|class_name| {
-                !class_has_method(&class_name, &method_name)
-                    && class_has_method(&class_name, "__call")
+            if php_object_class_from_expr(__php_w, &member_object).is_some_and(|class_name| {
+                !class_has_method(__php_w, &class_name, &method_name)
+                    && class_has_method(__php_w, &class_name, "__call")
             }) {
-                return Ok(build_known_magic_call_rewrite(
+                return Ok(build_known_magic_call_rewrite(__php_w, 
                     member_object,
                     method_name,
                     args,
@@ -16458,7 +16293,7 @@ fn apply_postfix(
                     span.clone(),
                 ));
             }
-            Ok(build_magic_call_rewrite(
+            Ok(build_magic_call_rewrite(__php_w, 
                 member_object,
                 method_name,
                 args,
@@ -16477,7 +16312,7 @@ fn apply_postfix(
                 .ok_or("property_access_op: missing name")?;
             let mut name = name_pair.into_inner().next().unwrap().as_str().to_string();
             if is_php_this_expr(&receiver) {
-                if let Some(backing) = current_property_hook_backing(&name) {
+                if let Some(backing) = current_property_hook_backing(__php_w, &name) {
                     name = backing;
                 }
             }
@@ -16491,7 +16326,7 @@ fn apply_postfix(
                 span.clone(),
             );
             if null_safe && !is_assign_target {
-                let tmp = next_tmp_name("nullsafe_recv");
+                let tmp = next_tmp_name(__php_w, "nullsafe_recv");
                 let tmp_ident =
                     || Expression::with_span(ExprKind::Ident(tmp.clone()), span.clone());
                 let save = Expression::with_span(
@@ -16530,22 +16365,22 @@ fn apply_postfix(
                     span.clone(),
                 ));
             }
-            let silent_property_access = SILENT_PROPERTY_ACCESS_DEPTH.with(|d| *d.borrow() > 0);
+            let silent_property_access = __php_w.silent_property_access_depth > 0;
             if !null_safe && !is_assign_target && !silent_property_access {
                 if let ExprKind::Member { object, .. } = &member.kind {
-                    if let Some(kind) = php_known_bad_object_receiver(object) {
+                    if let Some(kind) = php_known_bad_object_receiver(__php_w, object) {
                         return Ok(php_bad_receiver_throw(kind, "read property", span));
                     }
                 }
             }
             if !is_assign_target && !silent_property_access {
                 if let ExprKind::Member { object, field, .. } = &member.kind {
-                    if let Some(class_name) = php_object_class_from_expr(object) {
+                    if let Some(class_name) = php_object_class_from_expr(__php_w, object) {
                         if let Some((owner, visibility)) =
-                            class_field_visibility(&class_name, field)
+                            class_field_visibility(__php_w, &class_name, field)
                         {
                             if visibility != Visibility::Protected
-                                && !php_field_visible_from_current(&owner, visibility)
+                                && !php_field_visible_from_current(__php_w, &owner, visibility)
                             {
                                 return Ok(Expression::with_span(
                                     php_throw_named_error_expr(
@@ -16557,9 +16392,9 @@ fn apply_postfix(
                                 ));
                             }
                         }
-                        if let Some((owner, meta)) = class_field_meta(&class_name, field) {
-                            let initialized_by_constructor = CLASS_REGISTRY.with(|r| {
-                                r.borrow()
+                        if let Some((owner, meta)) = class_field_meta(__php_w, &class_name, field) {
+                            let initialized_by_constructor = {
+                                __php_w.class_registry
                                     .get(owner.as_str())
                                     .map(|class_meta| {
                                         class_meta
@@ -16568,11 +16403,28 @@ fn apply_postfix(
                                             .any(|initialized| initialized == field)
                                     })
                                     .unwrap_or(false)
-                            });
+                            };
+                            // ⚠ `simple_object_field_was_written` is consulted
+                            // only for a NON-`$this` receiver. Its key comes
+                            // from `simple_object_key`, which maps every
+                            // `$this` in the program to the single string
+                            // "this" — measured: a write to `$this->foo` in
+                            // class `Writer` silenced this guard for an
+                            // unrelated class `Reader`'s `$this->foo`, which
+                            // php does throw on. A self-read is answered by the
+                            // per-class prescan instead, which is also
+                            // immune to member declaration ORDER: the record
+                            // above only holds writes the walk has already
+                            // passed, so declaring `setCelsius()` after
+                            // `getCelsius()` threw on a program that is fine
+                            // when the two are swapped.
+                            let written_through_tracked_object = !is_php_this_expr(object)
+                                && simple_object_field_was_written(__php_w, object, field);
                             if meta.typed_without_init
-                                && php_field_visible_from_current(&owner, meta.visibility)
-                                && !simple_object_field_was_written(object, field)
+                                && php_field_visible_from_current(__php_w, &owner, meta.visibility)
+                                && !written_through_tracked_object
                                 && !initialized_by_constructor
+                                && !pending_class_writes_this_field(__php_w, &owner, field)
                             {
                                 if meta
                                     .type_hint
@@ -16590,11 +16442,11 @@ fn apply_postfix(
                                     span.clone(),
                                 ));
                             }
-                            if php_field_visible_from_current(&owner, meta.visibility) {
+                            if php_field_visible_from_current(__php_w, &owner, meta.visibility) {
                                 return Ok(member);
                             }
                         }
-                        if class_has_field(&class_name, field) {
+                        if class_has_field(__php_w, &class_name, field) {
                             return Ok(member);
                         }
                     }
@@ -16603,7 +16455,7 @@ fn apply_postfix(
             if !null_safe && !is_assign_target && !silent_property_access {
                 if let ExprKind::Member { object, field, .. } = &member.kind {
                     let is_known_non_dom =
-                        php_object_class_from_expr(object).is_some_and(|class_name| {
+                        php_object_class_from_expr(__php_w, object).is_some_and(|class_name| {
                             !matches!(
                                 class_name.trim_start_matches('\\'),
                                 "DOMDocument"
@@ -16663,7 +16515,7 @@ fn apply_postfix(
                 ExprKind::Member { object, .. } => (**object).clone(),
                 _ => return Ok(member),
             };
-            Ok(build_magic_get_rewrite(
+            Ok(build_magic_get_rewrite(__php_w, 
                 recv_for_save,
                 name,
                 span,
@@ -16683,28 +16535,55 @@ fn apply_postfix(
             let inner_pair = name_pair.into_inner().next().unwrap();
             let raw = inner_pair.as_str();
             let receiver = match &receiver.kind {
-                ExprKind::Ident(name) => lookup_simple_string_var(name)
+                // `$this::class`, `$this::CONST` — `$this` is an OBJECT, and it
+                // arrives here spelled either `ExprKind::This` or
+                // `Ident("$this")`. Without this guard the `Ident` arm below
+                // runs `php_resolve_class_name` on the literal text `$this`,
+                // and `::class` folds to the string `"$this"` — silently, with
+                // no diagnostic anywhere.
+                _ if is_php_this_expr(&receiver) => receiver,
+                // `$cls::method()` — a VARIABLE holding a class name. When its
+                // value is a string this walker watched, folding it to the
+                // class is exact. When it is not — a factory return, a
+                // parameter, `get_class($o)` — the value is only known at run
+                // time, and the expression is left as it stands so the shared
+                // designator rule resolves it (`emit_class_designator`).
+                //
+                // The `unwrap_or_else` below used to run on that case too,
+                // resolving the VARIABLE'S OWN TEXT as a class name: `$cls`
+                // became `Ident("$cls")`, read as undefined, and every
+                // dynamic static call silently missed.
+                ExprKind::Ident(name) if name.starts_with('$') => {
+                    match lookup_simple_string_var(__php_w, name) {
+                        Some(class_name) => Expression::with_span(
+                            ExprKind::Ident(php_resolve_class_name(__php_w, &class_name)),
+                            receiver.span.clone(),
+                        ),
+                        None => receiver,
+                    }
+                }
+                ExprKind::Ident(name) => lookup_simple_string_var(__php_w, name)
                     .map(|class_name| {
                         Expression::with_span(
-                            ExprKind::Ident(php_resolve_class_name(&class_name)),
+                            ExprKind::Ident(php_resolve_class_name(__php_w, &class_name)),
                             receiver.span.clone(),
                         )
                     })
                     .unwrap_or_else(|| {
-                        let resolved = php_class_alias_display_name(name)
-                            .unwrap_or_else(|| php_resolve_class_name(name));
+                        let resolved = php_class_alias_display_name(__php_w, name)
+                            .unwrap_or_else(|| php_resolve_class_name(__php_w, name));
                         Expression::with_span(ExprKind::Ident(resolved), receiver.span.clone())
                     }),
                 _ => receiver,
             };
             let name = match inner_pair.as_rule() {
-                Rule::variable => lookup_simple_string_var(raw)
+                Rule::variable => lookup_simple_string_var(__php_w, raw)
                     .unwrap_or_else(|| raw.strip_prefix('$').unwrap_or(raw).to_string()),
                 Rule::expression => {
-                    let expr = walk_expression(inner_pair.clone())?;
+                    let expr = walk_expression(__php_w, inner_pair.clone())?;
                     match &expr.kind {
                         ExprKind::Ident(var) => {
-                            lookup_simple_string_var(var).unwrap_or_else(|| raw.to_string())
+                            lookup_simple_string_var(__php_w, var).unwrap_or_else(|| raw.to_string())
                         }
                         ExprKind::Lit(Literal::Str(value)) => value.clone(),
                         _ => raw.to_string(),
@@ -16715,14 +16594,14 @@ fn apply_postfix(
             // PHP 5.5 `ClassName::class` resolves to the class-name string at
             // compile time. Normalize to a string literal.
             if name == "class" {
-                if matches!(receiver.kind, ExprKind::This) {
-                    if current_method_type().as_deref() == Some("::") {
+                if is_php_this_expr(&receiver) {
+                    if current_method_type(__php_w).as_deref() == Some("::") {
                         return Ok(php_static_receiver_name_expr(&span));
                     }
                     return Ok(php_called_class_name_expr(&span));
                 }
                 if let ExprKind::Ident(cn) = &receiver.kind {
-                    let resolved = php_resolve_class_name(cn);
+                    let resolved = php_resolve_class_name(__php_w, cn);
                     return Ok(Expression::with_span(
                         ExprKind::Lit(Literal::Str(
                             resolved.trim_start_matches('\\').replace('.', "\\"),
@@ -16731,38 +16610,12 @@ fn apply_postfix(
                     ));
                 }
                 // `$obj::class` / `(new C())::class` (PHP 8) — the class name of
-                // a runtime object: read the emitter-stamped `__type`, falling
-                // back to `constructor.name`. Same shape as `get_class($obj)`.
-                let type_prop = Expression::with_span(
-                    ExprKind::Member {
-                        object: Box::new(receiver.clone()),
-                        field: "__type".to_string(),
-                        null_safe: false,
-                    },
-                    span.clone(),
-                );
-                let ctor_name = Expression::with_span(
-                    ExprKind::Member {
-                        object: Box::new(Expression::with_span(
-                            ExprKind::Member {
-                                object: Box::new(receiver),
-                                field: "constructor".to_string(),
-                                null_safe: false,
-                            },
-                            span.clone(),
-                        )),
-                        field: "name".to_string(),
-                        null_safe: false,
-                    },
-                    span.clone(),
-                );
-                return Ok(Expression::with_span(
-                    ExprKind::Binary {
-                        op: BinOp::NullCoalesce,
-                        left: Box::new(type_prop),
-                        right: Box::new(ctor_name),
-                    },
-                    span.clone(),
+                // a runtime object. Exactly the question `get_class($obj)`
+                // asks, so it asks it the same way instead of rebuilding the
+                // stamp read here.
+                return Ok(php_backslash_display(
+                    php_runtime_class_expr(receiver, &span),
+                    &span,
                 ));
             }
             // `static::$prop` / `$this::$prop` — a static property lives on the
@@ -16915,10 +16768,10 @@ fn apply_postfix(
             }
             if !is_assign_target {
                 if let Some(class_name) = static_class_name(&receiver) {
-                    if let Some((owner, meta)) = class_field_meta(&class_name, &name) {
+                    if let Some((owner, meta)) = class_field_meta(__php_w, &class_name, &name) {
                         if meta.is_static
                             && meta.typed_without_init
-                            && !simple_static_field_was_written(&class_name, &name)
+                            && !simple_static_field_was_written(__php_w, &class_name, &name)
                         {
                             if meta
                                 .type_hint
@@ -16927,7 +16780,7 @@ fn apply_postfix(
                             {
                                 return Ok(Expression::null());
                             }
-                            if php_field_visible_from_current(&owner, meta.visibility) {
+                            if php_field_visible_from_current(__php_w, &owner, meta.visibility) {
                                 return Ok(Expression::with_span(
                                     php_throw_named_error_expr(
                                         "Error",
@@ -16966,7 +16819,7 @@ fn apply_postfix(
             // marker, not a key — it must not go through key normalization
             // (which would turn it into the string key "").
             let index = if let Some(i) = inner.next() {
-                let walked = walk_expression(i)?;
+                let walked = walk_expression(__php_w, i)?;
                 php_index_operand(&receiver, walked)
             } else {
                 Expression::null()
@@ -17009,13 +16862,13 @@ fn apply_postfix(
             if is_assign_target {
                 Ok(indexed)
             } else if let ExprKind::Index { object, index, .. } = indexed.kind {
-                if let Some(class_name) = php_object_class_from_expr(&object) {
-                    let implements_array_access = class_all_interfaces(&class_name)
+                if let Some(class_name) = php_object_class_from_expr(__php_w, &object) {
+                    let implements_array_access = class_all_interfaces(__php_w, &class_name)
                         .iter()
                         .any(|iface| iface.trim_start_matches('\\') == "ArrayAccess");
-                    if class_is_registered(&class_name)
+                    if class_is_registered(__php_w, &class_name)
                         && !implements_array_access
-                        && !class_has_method(&class_name, "offsetGet")
+                        && !class_has_method(__php_w, &class_name, "offsetGet")
                     {
                         return Ok(Expression::with_span(
                             php_throw_named_error_expr("Error", "Cannot use object as array", span),
@@ -17026,8 +16879,8 @@ fn apply_postfix(
                 if let (ExprKind::Ident(obj_name), Some(alias_key)) =
                     (&object.kind, literal_string_key(&index))
                 {
-                    if let Some(target_key) = lookup_simple_index_alias(obj_name, &alias_key) {
-                        return Ok(php_array_access_read(
+                    if let Some(target_key) = lookup_simple_index_alias(__php_w, obj_name, &alias_key) {
+                        return Ok(php_array_access_read(__php_w, 
                             *object,
                             Expression::with_span(
                                 ExprKind::Lit(Literal::Str(target_key)),
@@ -17037,7 +16890,7 @@ fn apply_postfix(
                         ));
                     }
                 }
-                Ok(php_array_access_read(*object, *index, span))
+                Ok(php_array_access_read(__php_w, *object, *index, span))
             } else {
                 Ok(indexed)
             }
@@ -17054,15 +16907,15 @@ fn apply_postfix(
             let first = inner.next();
             if let Some(p) = &first {
                 if matches!(p.as_rule(), Rule::first_class_callable_op) {
-                    let callee = php_first_class_callable_target(receiver, span);
-                    if let Some(expr) = php_invalid_first_class_callable_expr(&callee, span) {
+                    let callee = php_first_class_callable_target(__php_w, receiver, span);
+                    if let Some(expr) = php_invalid_first_class_callable_expr(__php_w, &callee, span) {
                         return Ok(expr);
                     }
                     return Ok(php_first_class_callable_lambda(callee, false, span));
                 }
             }
             let args = match first {
-                Some(p) if matches!(p.as_rule(), Rule::arg_list) => walk_args(p)?,
+                Some(p) if matches!(p.as_rule(), Rule::arg_list) => walk_args(__php_w, p)?,
                 _ => Vec::new(),
             };
             // Normalize PHP-specific argument conventions to the common
@@ -17070,15 +16923,45 @@ fn apply_postfix(
             // in the common AST, PHP and JS calls should be
             // indistinguishable — the compiler emits a single canonical
             // host call regardless of surface syntax.
-            let args = canonicalize_php_call_args(&receiver, args);
-            let (receiver, args) = mark_php_by_ref_args(receiver, args);
+            let args = canonicalize_php_call_args(__php_w, &receiver, args);
+            let (receiver, args) = mark_php_by_ref_args(__php_w, receiver, args);
             let mut resolved_simple_callable = false;
             let receiver = if from_variable {
                 if let ExprKind::Ident(name) = &receiver.kind {
-                    lookup_simple_string_var(name)
+                    lookup_simple_string_var(__php_w, name)
                         .map(|target| {
                             resolved_simple_callable = true;
-                            Expression::with_span(ExprKind::Ident(target), receiver.span.clone())
+                            // Through the ONE callable normalization, not a
+                            // bare `Ident`. A tracked string may be any
+                            // callable spelling, and `$cb = 'C::s'; $cb();`
+                            // used to become `Ident("C::s")` — a name no
+                            // function ever has.
+                            php_callable_target_expr(__php_w, 
+                                Expression::with_span(
+                                    ExprKind::Lit(Literal::Str(target)),
+                                    receiver.span.clone(),
+                                ),
+                                &receiver.span,
+                            )
+                        })
+                        .or_else(|| {
+                            // A tracked `[class, 'method']` PAIR is the other
+                            // literal callable spelling, and it resolves in
+                            // the same place. The runtime designator cannot
+                            // take over here: a pair naming a CLASS needs the
+                            // per-declared-symbol lookup, which is too large
+                            // to inline at a call site — see
+                            // `emit_callable_designator_in_slot`.
+                            let value = lookup_simple_value_var(__php_w, name)?;
+                            let ExprKind::Array(elements) = &value.kind else {
+                                return None;
+                            };
+                            if elements.len() != 2 || php_literal_string(__php_w, &elements[1].value).is_none()
+                            {
+                                return None;
+                            }
+                            resolved_simple_callable = true;
+                            Some(php_callable_target_expr(__php_w, value, &receiver.span))
                         })
                         .unwrap_or(receiver)
                 } else {
@@ -17087,10 +16970,10 @@ fn apply_postfix(
             } else {
                 receiver
             };
-            let receiver = php_resolve_simple_static_access(receiver, span);
+            let receiver = php_resolve_simple_static_access(__php_w, receiver, span);
             if from_variable
                 && !resolved_simple_callable
-                && php_known_bad_object_receiver(&receiver).is_some()
+                && php_known_non_callable_value(__php_w, &receiver).is_some()
             {
                 return Ok(Expression::with_span(
                     php_throw_named_error_expr("TypeError", "Value is not callable", span),
@@ -17106,7 +16989,7 @@ fn apply_postfix(
                 null_safe: false,
             } = &receiver.kind
             {
-                if php_object_class_from_expr(object).is_some_and(|class_name| {
+                if php_object_class_from_expr(__php_w, object).is_some_and(|class_name| {
                     matches!(
                         class_name.trim_start_matches('\\'),
                         "SplObjectStorage" | "WeakMap"
@@ -17131,8 +17014,8 @@ fn apply_postfix(
                         ));
                     }
                 }
-                if let Some(class_name) = php_object_class_from_expr(object) {
-                    if class_field_meta(&class_name, field).is_some_and(|(_, meta)| {
+                if let Some(class_name) = php_object_class_from_expr(__php_w, object) {
+                    if class_field_meta(__php_w, &class_name, field).is_some_and(|(_, meta)| {
                         meta.type_hint.as_deref().is_some_and(|ty| {
                             php_strip_nullable_type(ty)
                                 .1
@@ -17140,7 +17023,7 @@ fn apply_postfix(
                                 .eq_ignore_ascii_case("callable")
                         })
                     }) {
-                        let tmp = next_tmp_name("callable_prop");
+                        let tmp = next_tmp_name(__php_w, "callable_prop");
                         let tmp_ident =
                             || Expression::with_span(ExprKind::Ident(tmp.clone()), span.clone());
                         let save = Expression::with_span(
@@ -17181,8 +17064,8 @@ fn apply_postfix(
                 && args.len() == 1
             {
                 let value = args[0].value.clone();
-                if let Some(class_name) = php_object_class_from_expr(&value) {
-                    if class_has_method(&class_name, "__debugInfo") {
+                if let Some(class_name) = php_object_class_from_expr(__php_w, &value) {
+                    if class_has_method(__php_w, &class_name, "__debugInfo") {
                         let debug_call = Expression::with_span(
                             ExprKind::Call {
                                 callee: Box::new(Expression::with_span(
@@ -17214,11 +17097,11 @@ fn apply_postfix(
             }
             if matches!(&receiver.kind, ExprKind::Ident(name) if name == "count") {
                 if let Some(first_arg) = args.first() {
-                    if let Some(class_name) = php_object_class_from_expr(&first_arg.value) {
-                        let implements_countable = class_all_interfaces(&class_name)
+                    if let Some(class_name) = php_object_class_from_expr(__php_w, &first_arg.value) {
+                        let implements_countable = class_all_interfaces(__php_w, &class_name)
                             .iter()
                             .any(|iface| iface.trim_start_matches('\\') == "Countable");
-                        if implements_countable || class_has_method(&class_name, "count") {
+                        if implements_countable || class_has_method(__php_w, &class_name, "count") {
                             return Ok(Expression::with_span(
                                 ExprKind::Call {
                                     callee: Box::new(Expression::with_span(
@@ -17235,9 +17118,9 @@ fn apply_postfix(
                                 span.clone(),
                             ));
                         }
-                        if class_is_registered(&class_name)
+                        if class_is_registered(__php_w, &class_name)
                             && !implements_countable
-                            && !class_has_method(&class_name, "count")
+                            && !class_has_method(__php_w, &class_name, "count")
                         {
                             return Ok(Expression::with_span(
                                 php_throw_named_error_expr(
@@ -17262,7 +17145,7 @@ fn apply_postfix(
                 {
                     if class_name.trim_start_matches('\\') == "Fiber" {
                         if member_name == "suspend" {
-                            if current_function_name().is_none() {
+                            if current_function_name(__php_w).is_none() {
                                 return Ok(Expression::with_span(
                                     php_throw_named_error_expr(
                                         "Error",
@@ -17538,7 +17421,7 @@ fn apply_postfix(
                         && args.len() >= 2
                     {
                         let bind_target = match &args[0].value.kind {
-                            ExprKind::Ident(name) => lookup_simple_value_var(name)
+                            ExprKind::Ident(name) => lookup_simple_value_var(__php_w, name)
                                 .unwrap_or_else(|| args[0].value.clone()),
                             _ => args[0].value.clone(),
                         };
@@ -17573,9 +17456,10 @@ fn apply_postfix(
                             let bound_scope = args
                                 .get(2)
                                 .and_then(|arg| php_closure_bind_scope_name(&arg.value));
-                            let rebound_body = with_closure_bind_scope(bound_scope, || {
-                                bind_this_in_lambda_body(body, &bound_obj_name)
-                            });
+                            let __bind_prior = enter_closure_bind_scope(__php_w, bound_scope);
+                            let rebound_body =
+                                bind_this_in_lambda_body(__php_w, body, &bound_obj_name);
+                            leave_closure_bind_scope(__php_w, __bind_prior);
                             let rebound_lambda = Expression::with_span(
                                 ExprKind::Lambda {
                                     params: params.clone(),
@@ -17603,13 +17487,13 @@ fn apply_postfix(
                         && member_name == "fromCallable"
                         && args.len() == 1
                     {
-                        if let Some(expr) = php_invalid_callable_creation_expr(&args[0].value, span)
+                        if let Some(expr) = php_invalid_callable_creation_expr(__php_w, &args[0].value, span)
                         {
                             return Ok(expr);
                         }
                         if let ExprKind::Lit(Literal::Str(name)) = &args[0].value.kind {
                             return Ok(php_first_class_callable_lambda(
-                                php_first_class_callable_target(
+                                php_first_class_callable_target(__php_w, 
                                     Expression::with_span(
                                         ExprKind::Ident(name.clone()),
                                         args[0].value.span,
@@ -17629,7 +17513,7 @@ fn apply_postfix(
                             _ => false,
                         };
                         if is_literal_callable {
-                            let target = php_callable_target_expr(args[0].value.clone(), span);
+                            let target = php_callable_target_expr(__php_w, args[0].value.clone(), span);
                             let mk_param = |n: &str| Param {
                                 name: n.to_string(),
                                 type_hint: None,
@@ -17664,12 +17548,12 @@ fn apply_postfix(
                             );
                             let uses_magic_call = match &args[0].value.kind {
                                 ExprKind::Array(elems) if elems.len() == 2 => {
-                                    let method_name = php_literal_string(&elems[1].value);
-                                    php_object_class_from_expr(&elems[0].value).is_some_and(
+                                    let method_name = php_literal_string(__php_w, &elems[1].value);
+                                    php_object_class_from_expr(__php_w, &elems[0].value).is_some_and(
                                         |class_name| {
                                             method_name.as_deref().is_some_and(|method| {
-                                                class_has_method(&class_name, "__call")
-                                                    && !class_has_method(&class_name, method)
+                                                class_has_method(__php_w, &class_name, "__call")
+                                                    && !class_has_method(__php_w, &class_name, method)
                                             })
                                         },
                                     )
@@ -17681,7 +17565,7 @@ fn apply_postfix(
                                     ExprKind::Array(elems) if elems.len() == 2 => {
                                         let receiver = elems[0].value.clone();
                                         let method_name =
-                                            php_literal_string(&elems[1].value).unwrap_or_default();
+                                            php_literal_string(__php_w, &elems[1].value).unwrap_or_default();
                                         let packed_args = Expression::with_span(
                                             ExprKind::Array(
                                                 ["a", "b", "c", "d"]
@@ -17765,10 +17649,10 @@ fn apply_postfix(
                         // nothing).
                         if method_name == "__construct" {
                             let mut ctor_args = args;
-                            if let Some(parent_name) = current_class_parent_name().or_else(|| {
-                                current_class_name().and_then(|c| class_direct_parent(&c))
+                            if let Some(parent_name) = current_class_parent_name(__php_w).or_else(|| {
+                                current_class_name(__php_w).and_then(|c| class_direct_parent(__php_w, &c))
                             }) {
-                                if class_constructor_rest_index(&parent_name) == Some(0)
+                                if class_constructor_rest_index(__php_w, &parent_name) == Some(0)
                                     && ctor_args.len() == 1
                                     && ctor_args[0].spread
                                 {
@@ -17787,10 +17671,10 @@ fn apply_postfix(
                                 span.clone(),
                             ));
                         }
-                        if let Some(parent_name) = current_class_parent_name()
-                            .or_else(|| current_class_name().and_then(|c| class_direct_parent(&c)))
+                        if let Some(parent_name) = current_class_parent_name(__php_w)
+                            .or_else(|| current_class_name(__php_w).and_then(|c| class_direct_parent(__php_w, &c)))
                         {
-                            if !class_has_method(&parent_name, method_name) {
+                            if !class_has_method(__php_w, &parent_name, method_name) {
                                 return Ok(Expression::with_span(
                                     php_throw_named_error_expr(
                                         "Error",
@@ -17800,7 +17684,7 @@ fn apply_postfix(
                                     span.clone(),
                                 ));
                             }
-                            if current_method_type().as_deref() == Some("::") {
+                            if current_method_type(__php_w).as_deref() == Some("::") {
                                 let parent_member = Expression::with_span(
                                     ExprKind::Member {
                                         object: Box::new(Expression::with_span(
@@ -17822,26 +17706,22 @@ fn apply_postfix(
                                 ));
                             }
                         }
-                        let super_member = Expression::with_span(
-                            ExprKind::Member {
-                                object: Box::new(Expression::with_span(
-                                    ExprKind::This,
-                                    span.clone(),
-                                )),
-                                field: current_class_name()
-                                    .map(|class_name| {
-                                        php_parent_method_base_slot(&class_name, method_name)
-                                    })
-                                    .unwrap_or_else(|| format!("__base_{method_name}")),
-                                null_safe: false,
-                            },
-                            span.clone(),
-                        );
+                        // Instance `parent::m(...)` IS `super.m(...)`. Emit the
+                        // shared node and let the one super resolver answer it,
+                        // exactly as java / kotlin / python / dart / C# do.
+                        //
+                        // This used to read `$this-><mangled>`, a per-class slot
+                        // the walker populated itself from constructor-injected
+                        // statements — php was the ONLY walker mangling a base
+                        // slot (`grep -rln "__base_" languages/*/src/walker.rs`)
+                        // and the only one that therefore needed a constructor
+                        // to exist on every subclass that overrides anything.
+                        // See flexclassplan.md §4a-ter 1 ("one super resolver")
+                        // and §4a-ter 3 (ad-hoc member mangling).
                         return Ok(Expression::with_span(
-                            ExprKind::Call {
-                                callee: Box::new(super_member),
+                            ExprKind::SuperCall {
+                                method: Some(method_name.clone()),
                                 args,
-                                optional: false,
                             },
                             span.clone(),
                         ));
@@ -17858,10 +17738,10 @@ fn apply_postfix(
             // through late static binding inside the method body.
             if let ExprKind::Member { object, field, .. } = &receiver.kind {
                 if matches!(object.kind, ExprKind::Super) {
-                    if let Some(parent_name) = current_class_parent_name()
-                        .or_else(|| current_class_name().and_then(|c| class_direct_parent(&c)))
+                    if let Some(parent_name) = current_class_parent_name(__php_w)
+                        .or_else(|| current_class_name(__php_w).and_then(|c| class_direct_parent(__php_w, &c)))
                     {
-                        if !class_has_method(&parent_name, field) {
+                        if !class_has_method(__php_w, &parent_name, field) {
                             return Ok(Expression::with_span(
                                 php_throw_named_error_expr(
                                     "Error",
@@ -17907,7 +17787,7 @@ fn apply_postfix(
                     span.clone(),
                 ));
             }
-            if let Some(kind) = lower_php_builtin_call(&receiver, &args, &span) {
+            if let Some(kind) = lower_php_builtin_call(__php_w, &receiver, &args, &span) {
                 return Ok(Expression::with_span(kind, span.clone()));
             }
             // PHP `__invoke` magic method: when invoking a value held in a
@@ -17954,8 +17834,8 @@ fn apply_postfix(
                 &receiver.kind,
                 ExprKind::New { .. } | ExprKind::ClassExpr { .. } | ExprKind::Object(_)
             ) {
-                if let Some(class_name) = php_object_class_from_expr(&receiver) {
-                    if let Some(meta) = class_method_meta(&class_name, "__invoke") {
+                if let Some(class_name) = php_object_class_from_expr(__php_w, &receiver) {
+                    if let Some(meta) = class_method_meta(__php_w, &class_name, "__invoke") {
                         if args.len() < meta.required_params {
                             return Ok(Expression::with_span(
                                 php_throw_named_error_expr(
@@ -17972,7 +17852,7 @@ fn apply_postfix(
             }
             if from_variable && !resolved_simple_callable && !has_unwrappable_args {
                 if let ExprKind::Ident(name) = &receiver.kind {
-                    if is_simple_callable_var(name) {
+                    if is_simple_callable_var(__php_w, name) {
                         return Ok(Expression::with_span(
                             ExprKind::Call {
                                 callee: Box::new(receiver),
@@ -17982,12 +17862,19 @@ fn apply_postfix(
                             span.clone(),
                         ));
                     }
-                    return Ok(build_magic_invoke_rewrite(receiver, args, &span));
+                    return Ok(Expression::with_span(
+                        ExprKind::Call {
+                            callee: Box::new(receiver),
+                            args,
+                            optional: false,
+                        },
+                        span.clone(),
+                    ));
                 }
             }
             if let ExprKind::Member { object, field, .. } = &receiver.kind {
-                let member_is_closure = php_object_class_from_expr(object)
-                    .and_then(|class_name| class_field_meta(&class_name, field))
+                let member_is_closure = php_object_class_from_expr(__php_w, object)
+                    .and_then(|class_name| class_field_meta(__php_w, &class_name, field))
                     .and_then(|(_, meta)| meta.type_hint)
                     .is_some_and(|ty| {
                         php_strip_nullable_type(&ty)
@@ -18022,7 +17909,7 @@ fn apply_postfix(
                     (&class.kind, &member.kind)
                 {
                     let static_class_name = if class_name.starts_with('$') {
-                        lookup_simple_string_var(class_name).unwrap_or_else(|| class_name.clone())
+                        lookup_simple_string_var(__php_w, class_name).unwrap_or_else(|| class_name.clone())
                     } else {
                         class_name.clone()
                     };
@@ -18230,15 +18117,15 @@ fn apply_postfix(
                     // class names go through the static→Member magic-call rewrite.
                     if !static_class_name.starts_with('$') {
                         let mname = method_name.clone();
-                        let alias_display = php_class_alias_display_name(&static_class_name);
-                        let resolved_class_name = php_resolve_class_alias(&static_class_name);
+                        let alias_display = php_class_alias_display_name(__php_w, &static_class_name);
+                        let resolved_class_name = php_resolve_class_alias(__php_w, &static_class_name);
                         let lookup_class = resolved_class_name.trim_start_matches('\\');
                         let class_expr = Expression::with_span(
                             ExprKind::Ident(resolved_class_name.clone()),
                             class.span.clone(),
                         );
-                        if class_has_method(lookup_class, &mname)
-                            || class_or_parent_has_pending_trait_usage(lookup_class)
+                        if class_has_method(__php_w, lookup_class, &mname)
+                            || class_or_parent_has_pending_trait_usage(__php_w, lookup_class)
                         {
                             let member = Expression::with_span(
                                 ExprKind::Member {
@@ -18257,15 +18144,15 @@ fn apply_postfix(
                                 span.clone(),
                             );
                             if let Some(alias) = alias_display {
-                                return Ok(php_call_with_static_alias(
+                                return Ok(php_call_with_static_alias(__php_w, 
                                     class_expr, alias, call, &span,
                                 ));
                             }
                             return Ok(call);
                         }
-                        if class_is_registered(lookup_class)
-                            && !class_has_method(lookup_class, "__callStatic")
-                            && !class_or_parent_has_pending_trait_usage(lookup_class)
+                        if class_is_registered(__php_w, lookup_class)
+                            && !class_has_method(__php_w, lookup_class, "__callStatic")
+                            && !class_or_parent_has_pending_trait_usage(__php_w, lookup_class)
                         {
                             return Ok(Expression::with_span(
                                 php_throw_named_error_expr(
@@ -18284,7 +18171,7 @@ fn apply_postfix(
             }
             Ok(Expression::with_span(
                 ExprKind::Call {
-                    callee: Box::new(php_resolve_function_call_callee(receiver)),
+                    callee: Box::new(php_resolve_function_call_callee(__php_w, receiver)),
                     args,
                     optional: false,
                 },
@@ -18301,12 +18188,12 @@ fn apply_postfix(
             // so the shared emitter owns load/step/store like every other
             // language's `++`.
             let receiver = if let ExprKind::Ident(name) = &receiver.kind {
-                php_var_index_alias_expr(name, span).unwrap_or(receiver)
+                php_var_index_alias_expr(__php_w, name, span).unwrap_or(receiver)
             } else {
                 receiver
             };
             if let ExprKind::Index { object, .. } = &receiver.kind {
-                if php_known_scalar_array_receiver(object) {
+                if php_known_scalar_array_receiver(__php_w, object) {
                     return Ok(Expression::with_span(
                         php_throw_error_expr("Cannot use a scalar value as an array", span),
                         span.clone(),
@@ -18333,7 +18220,7 @@ fn apply_postfix(
     }
 }
 
-fn walk_args(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
+fn walk_args(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
     let mut out = Vec::new();
     for p in pair.into_inner() {
         if !matches!(p.as_rule(), Rule::argument) {
@@ -18350,7 +18237,7 @@ fn walk_args(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
         for sub in p.into_inner() {
             match sub.as_rule() {
                 Rule::arg_name => name = Some(sub.as_str().to_string()),
-                Rule::expression => value = Some(walk_expression(sub)?),
+                Rule::expression => value = Some(walk_expression(__php_w, sub)?),
                 _ => {}
             }
         }
@@ -18382,11 +18269,11 @@ fn walk_args(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
     Ok(out)
 }
 
-fn php_first_class_callable_target(receiver: Expression, span: &Span) -> Expression {
+fn php_first_class_callable_target(__php_w: &mut PhpWalker, receiver: Expression, span: &Span) -> Expression {
     match &receiver.kind {
         ExprKind::Ident(name) => {
-            if let Some(value) = lookup_simple_string_var(name) {
-                return php_first_class_callable_target(
+            if let Some(value) = lookup_simple_string_var(__php_w, name) {
+                return php_first_class_callable_target(__php_w, 
                     Expression::with_span(ExprKind::Ident(value), span.clone()),
                     span,
                 );
@@ -18437,11 +18324,11 @@ fn php_first_class_callable_target(receiver: Expression, span: &Span) -> Express
     }
 }
 
-fn php_args_from_simple_array(expr: &Expression) -> Option<Vec<Argument>> {
+fn php_args_from_simple_array(__php_w: &mut PhpWalker, expr: &Expression) -> Option<Vec<Argument>> {
     let resolved;
     let expr = match &expr.kind {
         ExprKind::Ident(name) => {
-            resolved = lookup_simple_value_var(name)?;
+            resolved = lookup_simple_value_var(__php_w, name)?;
             &resolved
         }
         _ => expr,
@@ -18468,14 +18355,14 @@ fn php_args_from_simple_array(expr: &Expression) -> Option<Vec<Argument>> {
     )
 }
 
-fn php_resolve_simple_static_access(expr: Expression, span: &Span) -> Expression {
+fn php_resolve_simple_static_access(__php_w: &mut PhpWalker, expr: Expression, span: &Span) -> Expression {
     match expr.kind {
         ExprKind::StaticAccess { class, member } => {
             let class = match class.kind {
-                ExprKind::Ident(name) => lookup_simple_string_var(&name)
+                ExprKind::Ident(name) => lookup_simple_string_var(__php_w, &name)
                     .map(|class_name| {
                         Expression::with_span(
-                            ExprKind::Ident(php_resolve_class_name(&class_name)),
+                            ExprKind::Ident(php_resolve_class_name(__php_w, &class_name)),
                             span.clone(),
                         )
                     })
@@ -18483,7 +18370,7 @@ fn php_resolve_simple_static_access(expr: Expression, span: &Span) -> Expression
                 other => Expression::with_span(other, span.clone()),
             };
             let member = match member.kind {
-                ExprKind::Ident(name) => lookup_simple_string_var(&name)
+                ExprKind::Ident(name) => lookup_simple_string_var(__php_w, &name)
                     .map(|member_name| {
                         Expression::with_span(ExprKind::Ident(member_name), span.clone())
                     })
@@ -18502,15 +18389,15 @@ fn php_resolve_simple_static_access(expr: Expression, span: &Span) -> Expression
     }
 }
 
-fn php_callable_target_expr(expr: Expression, span: &Span) -> Expression {
-    php_callable_target_expr_seen(expr, span, &mut std::collections::HashSet::new())
+fn php_callable_target_expr(__php_w: &mut PhpWalker, expr: Expression, span: &Span) -> Expression {
+    php_callable_target_expr_seen(__php_w, expr, span, &mut std::collections::HashSet::new())
 }
 
 /// The `Ident` arm walks `SIMPLE_VALUE_VARS`, which is a graph — `$a = $b;
 /// $b = $a; $a();` closes a cycle — so it carries a `seen` set like
 /// `php_alias_root`. A name already on the chain resolves to itself: the value
 /// is not statically known, which is what the un-tracked case returns anyway.
-fn php_callable_target_expr_seen(
+fn php_callable_target_expr_seen(__php_w: &mut PhpWalker, 
     expr: Expression,
     span: &Span,
     seen: &mut std::collections::HashSet<String>,
@@ -18520,10 +18407,10 @@ fn php_callable_target_expr_seen(
             if !seen.insert(name.trim_start_matches('$').to_string()) {
                 return Expression::with_span(ExprKind::Ident(name), span.clone());
             }
-            if let Some(value) = lookup_simple_value_var(&name) {
-                php_callable_target_expr_seen(value, span, seen)
-            } else if let Some(value) = lookup_simple_string_var(&name) {
-                php_callable_target_expr_seen(
+            if let Some(value) = lookup_simple_value_var(__php_w, &name) {
+                php_callable_target_expr_seen(__php_w, value, span, seen)
+            } else if let Some(value) = lookup_simple_string_var(__php_w, &name) {
+                php_callable_target_expr_seen(__php_w, 
                     Expression::with_span(ExprKind::Lit(Literal::Str(value)), span.clone()),
                     span,
                     seen,
@@ -18532,18 +18419,39 @@ fn php_callable_target_expr_seen(
                 Expression::with_span(ExprKind::Ident(name), span.clone())
             }
         }
-        ExprKind::Lit(Literal::Str(name)) => php_resolve_function_call_callee(
-            Expression::with_span(ExprKind::Ident(name), span.clone()),
-        ),
+        // `"Class::method"` is the one-string spelling of the `[class,
+        // 'method']` pair below, so it resolves to the same node. Without this
+        // the whole string was handed to `php_resolve_function_call_callee`,
+        // which looks for a FUNCTION named `C::s` and finds none —
+        // `call_user_func('C::s', 2)` reached the VM as `undefined`.
+        ExprKind::Lit(Literal::Str(name)) => match name.split_once("::") {
+            Some((class_name, method_name)) => Expression::with_span(
+                ExprKind::StaticAccess {
+                    class: Box::new(Expression::with_span(
+                        ExprKind::Ident(php_resolve_class_name(__php_w, class_name)),
+                        span.clone(),
+                    )),
+                    member: Box::new(Expression::with_span(
+                        ExprKind::Ident(method_name.to_string()),
+                        span.clone(),
+                    )),
+                },
+                span.clone(),
+            ),
+            None => php_resolve_function_call_callee(__php_w, Expression::with_span(
+                ExprKind::Ident(name),
+                span.clone(),
+            )),
+        },
         ExprKind::Array(elements) if elements.len() == 2 => {
             let receiver = elements[0].value.clone();
-            let member_name = php_literal_string(&elements[1].value);
+            let member_name = php_literal_string(__php_w, &elements[1].value);
             if let Some(member_name) = member_name {
-                if let Some(class_name) = php_literal_string(&receiver) {
+                if let Some(class_name) = php_literal_string(__php_w, &receiver) {
                     Expression::with_span(
                         ExprKind::StaticAccess {
                             class: Box::new(Expression::with_span(
-                                ExprKind::Ident(php_resolve_class_name(&class_name)),
+                                ExprKind::Ident(php_resolve_class_name(__php_w, &class_name)),
                                 span.clone(),
                             )),
                             member: Box::new(Expression::with_span(
@@ -18574,33 +18482,34 @@ fn php_callable_target_expr_seen(
     }
 }
 
-fn php_function_is_registered(name: &str) -> bool {
+fn php_function_is_registered(__php_w: &mut PhpWalker, name: &str) -> bool {
     let normalized = php_normalize_function_ref(name);
-    FUNC_REGISTRY.with(|r| {
-        let reg = r.borrow();
-        reg.contains_key(name.trim_start_matches('\\'))
-            || reg.contains_key(&normalized)
-            || reg.contains_key(&php_mangle_function_name(&normalized))
-    })
+    let reg = &__php_w.func_registry;
+    reg.contains_key(name.trim_start_matches('\\'))
+        || reg.contains_key(&normalized)
+        || reg.contains_key(&php_mangle_function_name(&normalized))
 }
 
-fn php_namespace_function_is_registered(name: &str) -> bool {
+fn php_namespace_function_is_registered(__php_w: &mut PhpWalker, name: &str) -> bool {
     let normalized = php_normalize_function_ref(name);
-    NAMESPACE_FUNCTIONS.with(|functions| functions.borrow().contains(&normalized))
+    __php_w.namespace_functions.contains(&normalized)
 }
 
-fn php_bare_name_is_namespaced_function_suffix(name: &str) -> bool {
+fn php_bare_name_is_namespaced_function_suffix(__php_w: &mut PhpWalker, name: &str) -> bool {
     let suffix = format!(".{name}");
-    NAMESPACE_FUNCTIONS.with(|functions| functions.borrow().iter().any(|f| f.ends_with(&suffix)))
+    __php_w
+        .namespace_functions
+        .iter()
+        .any(|f| f.ends_with(&suffix))
 }
 
-fn php_resolve_function_call_callee(callee: Expression) -> Expression {
+fn php_resolve_function_call_callee(__php_w: &mut PhpWalker, callee: Expression) -> Expression {
     let ExprKind::Ident(name) = &callee.kind else {
         return callee;
     };
     if name.starts_with('\\') {
         let normalized = php_normalize_function_ref(name);
-        if php_function_is_registered(&normalized) {
+        if php_function_is_registered(__php_w, &normalized) {
             return Expression::with_span(ExprKind::Ident(format!("\\{normalized}")), callee.span);
         }
         return Expression::with_span(
@@ -18609,7 +18518,7 @@ fn php_resolve_function_call_callee(callee: Expression) -> Expression {
         );
     }
     if name.contains('.') {
-        if php_function_is_registered(name) {
+        if php_function_is_registered(__php_w, name) {
             return Expression::with_span(ExprKind::Ident(name.to_string()), callee.span);
         }
         return callee;
@@ -18618,14 +18527,14 @@ fn php_resolve_function_call_callee(callee: Expression) -> Expression {
         return callee;
     }
     if let Some(target) =
-        FUNCTION_IMPORT_ALIASES.with(|aliases| aliases.borrow().get(name).cloned())
+        __php_w.function_import_aliases.get(name).cloned()
     {
         return Expression::with_span(ExprKind::Ident(target), callee.span);
     }
-    if let Some(fq) = current_namespace()
+    if let Some(fq) = current_namespace(__php_w)
         .filter(|ns| !ns.is_empty())
         .map(|ns| format!("{}.{}", ns.replace('\\', "."), name))
-        .filter(|fq| php_namespace_function_is_registered(fq) || php_function_is_registered(fq))
+        .filter(|fq| php_namespace_function_is_registered(__php_w, fq) || php_function_is_registered(__php_w, fq))
     {
         return Expression::with_span(ExprKind::Ident(fq), callee.span);
     }
@@ -18670,10 +18579,10 @@ fn php_builtin_callable_name(name: &str) -> bool {
     )
 }
 
-fn php_invalid_callable_creation_expr(expr: &Expression, span: &Span) -> Option<Expression> {
+fn php_invalid_callable_creation_expr(__php_w: &mut PhpWalker, expr: &Expression, span: &Span) -> Option<Expression> {
     match &expr.kind {
         ExprKind::Lit(Literal::Str(name)) => {
-            if php_function_is_registered(name) || php_builtin_callable_name(name) {
+            if php_function_is_registered(__php_w, name) || php_builtin_callable_name(name) {
                 None
             } else {
                 Some(Expression::with_span(
@@ -18690,10 +18599,10 @@ fn php_invalid_callable_creation_expr(expr: &Expression, span: &Span) -> Option<
             match &elements[0].value.kind {
                 ExprKind::Lit(Literal::Str(class_name)) | ExprKind::Ident(class_name) => {
                     let class_name = class_name.trim_start_matches('\\');
-                    if class_is_registered(class_name)
-                        && !class_has_method(class_name, method_name)
-                        && !seen_class_has_method(class_name, method_name)
-                        && !class_or_parent_has_pending_trait_usage(class_name)
+                    if class_is_registered(__php_w, class_name)
+                        && !class_has_method(__php_w, class_name, method_name)
+                        && !seen_class_has_method(__php_w, class_name, method_name)
+                        && !class_or_parent_has_pending_trait_usage(__php_w, class_name)
                     {
                         return Some(Expression::with_span(
                             php_throw_named_error_expr(
@@ -18707,15 +18616,15 @@ fn php_invalid_callable_creation_expr(expr: &Expression, span: &Span) -> Option<
                     None
                 }
                 receiver => {
-                    let class_name = php_object_class_from_expr(&Expression::with_span(
+                    let class_name = php_object_class_from_expr(__php_w, &Expression::with_span(
                         receiver.clone(),
                         elements[0].value.span.clone(),
                     ))?;
-                    if class_is_registered(&class_name)
-                        && !class_has_method(&class_name, method_name)
-                        && !seen_class_has_method(&class_name, method_name)
-                        && !class_has_method(&class_name, "__call")
-                        && !class_has_pending_trait_usage(&class_name)
+                    if class_is_registered(__php_w, &class_name)
+                        && !class_has_method(__php_w, &class_name, method_name)
+                        && !seen_class_has_method(__php_w, &class_name, method_name)
+                        && !class_has_method(__php_w, &class_name, "__call")
+                        && !class_has_pending_trait_usage(__php_w, &class_name)
                     {
                         return Some(Expression::with_span(
                             php_throw_named_error_expr(
@@ -18734,7 +18643,7 @@ fn php_invalid_callable_creation_expr(expr: &Expression, span: &Span) -> Option<
     }
 }
 
-fn php_invalid_first_class_callable_expr(receiver: &Expression, span: &Span) -> Option<Expression> {
+fn php_invalid_first_class_callable_expr(__php_w: &mut PhpWalker, receiver: &Expression, span: &Span) -> Option<Expression> {
     match &receiver.kind {
         ExprKind::StaticAccess { class, member } => {
             let (ExprKind::Ident(class_name), ExprKind::Ident(method_name)) =
@@ -18743,11 +18652,11 @@ fn php_invalid_first_class_callable_expr(receiver: &Expression, span: &Span) -> 
                 return None;
             };
             let class_name = class_name.trim_start_matches('\\');
-            if class_is_registered(class_name)
-                && !class_has_method(class_name, method_name)
-                && !seen_class_has_method(class_name, method_name)
-                && !class_has_method(class_name, "__callStatic")
-                && !class_or_parent_has_pending_trait_usage(class_name)
+            if class_is_registered(__php_w, class_name)
+                && !class_has_method(__php_w, class_name, method_name)
+                && !seen_class_has_method(__php_w, class_name, method_name)
+                && !class_has_method(__php_w, class_name, "__callStatic")
+                && !class_or_parent_has_pending_trait_usage(__php_w, class_name)
             {
                 Some(Expression::with_span(
                     php_throw_named_error_expr("TypeError", "Failed to create Closure", span),
@@ -18758,13 +18667,13 @@ fn php_invalid_first_class_callable_expr(receiver: &Expression, span: &Span) -> 
             }
         }
         ExprKind::Member { object, field, .. } => {
-            let class_name = php_object_class_from_expr(object)?;
+            let class_name = php_object_class_from_expr(__php_w, object)?;
             let class_name = class_name.trim_start_matches('\\').to_string();
-            if class_is_registered(&class_name)
-                && !class_has_method(&class_name, field)
-                && !seen_class_has_method(&class_name, field)
-                && !class_has_method(&class_name, "__call")
-                && !class_has_pending_trait_usage(&class_name)
+            if class_is_registered(__php_w, &class_name)
+                && !class_has_method(__php_w, &class_name, field)
+                && !seen_class_has_method(__php_w, &class_name, field)
+                && !class_has_method(__php_w, &class_name, "__call")
+                && !class_has_pending_trait_usage(__php_w, &class_name)
             {
                 Some(Expression::with_span(
                     php_throw_named_error_expr("TypeError", "Failed to create Closure", span),
@@ -18775,7 +18684,7 @@ fn php_invalid_first_class_callable_expr(receiver: &Expression, span: &Span) -> 
             }
         }
         ExprKind::Ident(name) => {
-            if php_function_is_registered(name) || php_builtin_callable_name(name) {
+            if php_function_is_registered(__php_w, name) || php_builtin_callable_name(name) {
                 None
             } else {
                 Some(Expression::with_span(
@@ -18795,7 +18704,7 @@ fn php_invalid_first_class_callable_expr(receiver: &Expression, span: &Span) -> 
 /// dispatch and spread-on-method (both currently unsupported). Non-literal
 /// callables (closures, variables) are returned unchanged — those are already
 /// valid callable values.
-fn php_wrap_callable(cb: Expression, arity: usize, span: &Span) -> Expression {
+fn php_wrap_callable(__php_w: &mut PhpWalker, cb: Expression, arity: usize, span: &Span) -> Expression {
     if let ExprKind::Lambda {
         params, captures, ..
     } = &cb.kind
@@ -18823,7 +18732,7 @@ fn php_wrap_callable(cb: Expression, arity: usize, span: &Span) -> Expression {
     if !is_literal_callable {
         return cb;
     }
-    let target = php_callable_target_expr(cb, span);
+    let target = php_callable_target_expr(__php_w, cb, span);
     let param_names: Vec<String> = (0..arity).map(|i| format!("__php_cb_a{i}")).collect();
     let params = param_names
         .iter()
@@ -18890,7 +18799,7 @@ fn php_callable_ref_receiver(callee: &Expression) -> Option<Expression> {
     }
 }
 
-fn php_wrap_walk_callable(cb: Expression, arity: usize, span: &Span) -> Expression {
+fn php_wrap_walk_callable(__php_w: &mut PhpWalker, cb: Expression, arity: usize, span: &Span) -> Expression {
     if let ExprKind::Lambda {
         params,
         body,
@@ -18935,7 +18844,7 @@ fn php_wrap_walk_callable(cb: Expression, arity: usize, span: &Span) -> Expressi
         _ => arity,
     };
     let target = match &cb.kind {
-        ExprKind::Lit(Literal::Str(_)) | ExprKind::Array(_) => php_callable_target_expr(cb, span),
+        ExprKind::Lit(Literal::Str(_)) | ExprKind::Array(_) => php_callable_target_expr(__php_w, cb, span),
         _ => return cb,
     };
     let param_names: Vec<String> = (0..arity).map(|i| format!("__php_walk_cb_a{i}")).collect();
@@ -18983,23 +18892,19 @@ fn php_wrap_walk_callable(cb: Expression, arity: usize, span: &Span) -> Expressi
     )
 }
 
-fn php_lower_array_walk_recursive(args: &[Argument], span: &Span) -> Option<ExprKind> {
+fn php_lower_array_walk_recursive(__php_w: &mut PhpWalker, args: &[Argument], span: &Span) -> Option<ExprKind> {
     if args.len() < 2 {
         return None;
     }
 
     let arr = args[0].value.clone();
-    let cb = php_wrap_walk_callable(
+    let cb = php_wrap_walk_callable(__php_w, 
         args[1].value.clone(),
         if args.len() >= 3 { 3 } else { 2 },
         span,
     );
     let userdata = args.get(2).map(|a| a.value.clone());
-    let suffix = TMP_COUNTER.with(|c| {
-        let v = *c.borrow();
-        *c.borrow_mut() += 1;
-        v
-    });
+    let suffix = next_tmp_id(__php_w);
     let names = [
         format!("__walkr_stack_{suffix}"),
         format!("__walkr_frame_{suffix}"),
@@ -19311,16 +19216,16 @@ fn php_wrap_callable_with_call_arity(
     )
 }
 
-fn note_simple_assert_callback(cb: Expression) {
-    SIMPLE_ASSERT_CALLBACK.with(|slot| *slot.borrow_mut() = Some(cb));
+fn note_simple_assert_callback(__php_w: &mut PhpWalker, cb: Expression) {
+    __php_w.simple_assert_callback = Some(cb);
 }
 
-fn clear_simple_assert_callback() {
-    SIMPLE_ASSERT_CALLBACK.with(|slot| *slot.borrow_mut() = None);
+fn clear_simple_assert_callback(__php_w: &mut PhpWalker) {
+    __php_w.simple_assert_callback = None;
 }
 
-fn lookup_simple_assert_callback() -> Option<Expression> {
-    SIMPLE_ASSERT_CALLBACK.with(|slot| slot.borrow().clone())
+fn lookup_simple_assert_callback(__php_w: &mut PhpWalker) -> Option<Expression> {
+    __php_w.simple_assert_callback.clone()
 }
 
 fn php_closure_bind_scope_name(expr: &Expression) -> Option<String> {
@@ -19333,18 +19238,17 @@ fn php_closure_bind_scope_name(expr: &Expression) -> Option<String> {
     }
 }
 
-fn with_closure_bind_scope<T>(scope: Option<String>, f: impl FnOnce() -> T) -> T {
-    CLOSURE_BIND_SCOPE.with(|slot| {
-        let prior = slot.borrow().clone();
-        *slot.borrow_mut() = scope;
-        let out = f();
-        *slot.borrow_mut() = prior;
-        out
-    })
+/// Same save/restore split as [`enter_php_echo_context`], for the same reason.
+fn enter_closure_bind_scope(__php_w: &mut PhpWalker, scope: Option<String>) -> Option<String> {
+    std::mem::replace(&mut __php_w.closure_bind_scope, scope)
 }
 
-fn current_closure_bind_scope() -> Option<String> {
-    CLOSURE_BIND_SCOPE.with(|slot| slot.borrow().clone())
+fn leave_closure_bind_scope(__php_w: &mut PhpWalker, prior: Option<String>) {
+    __php_w.closure_bind_scope = prior;
+}
+
+fn current_closure_bind_scope(__php_w: &mut PhpWalker) -> Option<String> {
+    __php_w.closure_bind_scope.clone()
 }
 
 fn php_expr_has_this_placeholder(expr: &Expression) -> bool {
@@ -19664,8 +19568,8 @@ fn php_first_class_callable_lambda(callee: Expression, optional: bool, span: &Sp
     )
 }
 
-fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
-    let span = to_span(&pair);
+fn walk_new(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<Expression, String> {
+    let span = to_span(__php_w, &pair);
     // new_expression = { kw_new ~ (anonymous_class | kw_static | kw_self | kw_parent
     //                              | qualified_name | variable | "(" expr ")")
     //                    ~ ("(" arg_list? ")")? }
@@ -19692,8 +19596,19 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
             //                   class-context push)
             //   parent → Super
             Rule::kw_static => {
-                if current_method_type().as_deref() == Some("::") {
-                    class = Some(php_static_receiver_name_expr(&span));
+                if current_method_type(__php_w).as_deref() == Some("::") {
+                    // In a static method the receiver IS the called class
+                    // object — that is what `NormalClass::late_static_binding`
+                    // buys, and `classes.rs` passes `ctor_local` as the static
+                    // method's receiver for exactly this.
+                    //
+                    // This used to construct from `$this->__php_lsb_class`, a
+                    // STRING field this walker stamped on every class as its
+                    // own late-static-binding channel. A string is not
+                    // callable, so `new static()` in a static method trapped —
+                    // hidden until now because `get_class(C::make())` folded to
+                    // a literal and DROPPED the call.
+                    class = Some(Expression::with_span(ExprKind::This, span.clone()));
                     continue;
                 }
                 // In a STATIC method `$this` slot 0 holds the class object
@@ -19735,13 +19650,13 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                 ));
             }
             Rule::kw_self => {
-                let cn = current_class_name().unwrap_or_default();
+                let cn = current_class_name(__php_w).unwrap_or_default();
                 class = Some(Expression::with_span(ExprKind::Ident(cn), span.clone()));
             }
             Rule::kw_parent => {
                 class = Some(Expression::with_span(ExprKind::Super, span.clone()));
             }
-            Rule::arg_list => args = walk_args(p)?,
+            Rule::arg_list => args = walk_args(__php_w, p)?,
             Rule::anonymous_class => {
                 // PHP 8: `new class(args) extends Base implements I { ... }`.
                 // Walk to a ClassExpr value; the surrounding `New` then
@@ -19768,7 +19683,7 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                         Rule::arg_list
                             if ctor_args.is_empty() && parent.is_none() && members.is_empty() =>
                         {
-                            ctor_args = walk_args(sub)?;
+                            ctor_args = walk_args(__php_w, sub)?;
                         }
                         Rule::qualified_name => {
                             if first_qualified && has_extends {
@@ -19792,7 +19707,7 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                         | Rule::property_declaration
                         | Rule::method_declaration
                         | Rule::empty_statement => {
-                            members.extend(walk_class_member(sub)?);
+                            members.extend(walk_class_member(__php_w, sub)?);
                         }
                         _ => {}
                     }
@@ -19816,36 +19731,33 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                     };
                     let mut declared: std::collections::HashSet<String> =
                         members.iter().filter_map(&member_name).collect();
-                    TRAIT_BODIES.with(|tb| {
-                        let tb = tb.borrow();
-                        for tname in &used_traits {
-                            if let Some(tmembers) = tb.get(tname) {
-                                for m in tmembers {
-                                    if let Some(mn) = member_name(m) {
-                                        if declared.insert(mn) {
-                                            members.push(m.clone());
-                                        }
+                    let tb = __php_w.trait_bodies.clone();
+                    for tname in &used_traits {
+                        if let Some(tmembers) = tb.get(tname) {
+                            for m in tmembers {
+                                if let Some(mn) = member_name(m) {
+                                    if declared.insert(mn) {
+                                        members.push(m.clone());
                                     }
                                 }
                             }
                         }
-                    });
+                    }
                 }
-                drain_promoted_constructor_fields(&mut members);
+                drain_promoted_constructor_fields(__php_w, &mut members);
                 args = ctor_args;
                 // PHP names anonymous classes `class@anonymous...`; matching
                 // that lets `get_class()` / anonymity checks behave like PHP.
-                let anon_name = ANON_CLASS_COUNTER.with(|c| {
-                    let n = c.get() + 1;
-                    c.set(n);
-                    format!("class@anonymous\0{}", n)
-                });
+                let anon_name = {
+                    __php_w.anon_class_counter += 1;
+                    format!("class@anonymous\0{}", __php_w.anon_class_counter)
+                };
                 let parent_name = parent.as_ref().and_then(|expr| match &expr.kind {
                     ExprKind::Ident(name) => Some(name.clone()),
                     _ => None,
                 });
                 let anon_modifiers = ClassModifiers::default();
-                let meta = extract_class_meta(
+                let meta = extract_class_meta(__php_w, 
                     &anon_name,
                     parent_name
                         .as_ref()
@@ -19856,8 +19768,8 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                     &members,
                     false,
                 );
-                CLASS_REGISTRY.with(|r| r.borrow_mut().insert(anon_name.clone(), meta));
-                register_type_kind(&anon_name, "class");
+                __php_w.class_registry.insert(anon_name.clone(), meta);
+                register_type_kind(__php_w, &anon_name, "class");
                 class = Some(Expression::with_span(
                     ExprKind::ClassExpr {
                         name: Some(anon_name),
@@ -19872,17 +19784,17 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
             }
             _ => {
                 if class.is_none() {
-                    class = Some(walk_expression(p)?);
+                    class = Some(walk_expression(__php_w, p)?);
                 }
             }
         }
     }
     let class_expr = class.ok_or("new: missing class designator")?;
     let class_expr = match &class_expr.kind {
-        ExprKind::Ident(name) => lookup_simple_string_var(name)
+        ExprKind::Ident(name) => lookup_simple_string_var(__php_w, name)
             .map(|class_name| {
                 Expression::with_span(
-                    ExprKind::Ident(php_resolve_class_name(&class_name)),
+                    ExprKind::Ident(php_resolve_class_name(__php_w, &class_name)),
                     class_expr.span.clone(),
                 )
             })
@@ -19890,7 +19802,7 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
         _ => class_expr,
     };
     if let ExprKind::Ident(name) = &class_expr.kind {
-        if let Some(rest_index) = class_constructor_rest_index(name.trim_start_matches('\\')) {
+        if let Some(rest_index) = class_constructor_rest_index(__php_w, name.trim_start_matches('\\')) {
             if args.len() > rest_index {
                 let mut packed_args = args[..rest_index].to_vec();
                 let rest_elements = args[rest_index..]
@@ -19956,7 +19868,7 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
     // shape JS-uniform downstream.
     if let ExprKind::Ident(class_name) = &class_expr.kind {
         if class_name.trim_start_matches('\\') == "DatePeriod" {
-            if let Some(period) = php_dateperiod_literal_array(&args, &span) {
+            if let Some(period) = php_dateperiod_literal_array(__php_w, &args, &span) {
                 return Ok(period);
             }
         }
@@ -20337,27 +20249,27 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
         }
         let spl_ctor = match cn.trim_start_matches('\\') {
             "ReflectionClass" => {
-                return build_reflection_class_call(args, span);
+                return build_reflection_class_call(__php_w, args, span);
             }
             "ReflectionEnum" => {
-                return build_reflection_class_call(args, span);
+                return build_reflection_class_call(__php_w, args, span);
             }
             "ReflectionMethod" => {
-                return build_reflection_method_call(args, span);
+                return build_reflection_method_call(__php_w, args, span);
             }
             "ReflectionProperty" => {
-                return build_reflection_property_call(args, span);
+                return build_reflection_property_call(__php_w, args, span);
             }
             "ReflectionFunction" => {
-                return build_reflection_function_call(args, span);
+                return build_reflection_function_call(__php_w, args, span);
             }
             "ReflectionClassConstant" => {
-                return build_reflection_constant_call(args, false, span);
+                return build_reflection_constant_call(__php_w, args, false, span);
             }
             "ReflectionEnumUnitCase" => {
-                return build_reflection_constant_call(args, true, span);
+                return build_reflection_constant_call(__php_w, args, true, span);
             }
-            _ => spl_ctor_for_class_or_parent(cn),
+            _ => spl_ctor_for_class_or_parent(__php_w, cn),
         };
         if let Some(fname) = spl_ctor {
             return Ok(Expression::with_span(
@@ -20393,9 +20305,9 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
     }
     if let ExprKind::Ident(cn) = &class_expr.kind {
         let normalized = php_normalize_class_ref(cn);
-        let resolved = php_resolve_class_alias(cn);
-        if resolved != normalized && class_is_registered(&resolved) {
-            let tmp = next_tmp_name("alias_obj");
+        let resolved = php_resolve_class_alias(__php_w, cn);
+        if resolved != normalized && class_is_registered(__php_w, &resolved) {
+            let tmp = next_tmp_name(__php_w, "alias_obj");
             let tmp_ident = || Expression::with_span(ExprKind::Ident(tmp.clone()), span.clone());
             let instance = Expression::with_span(
                 ExprKind::New {
@@ -20436,7 +20348,7 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                 span,
             ));
         }
-        if let Some(resolved) = php_resolve_registered_class_ref(cn) {
+        if let Some(resolved) = php_resolve_registered_class_ref(__php_w, cn) {
             if resolved != normalized {
                 return Ok(Expression::with_span(
                     ExprKind::New {
@@ -20454,13 +20366,13 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
     // PHP: `new <interface|trait|enum>()` is a fatal Error. Detect the kind
     // from the walker's registry and emit a throwing IIFE instead.
     if let ExprKind::Ident(name) = &class_expr.kind {
-        let kind = TYPE_KINDS.with(|r| r.borrow().get(name.as_str()).copied());
-        let class_meta = CLASS_REGISTRY.with(|r| r.borrow().get(name.as_str()).cloned());
-        let is_current_class = current_class_name().is_some_and(|current| current == *name);
+        let kind = __php_w.type_kinds.get(name.as_str()).copied();
+        let class_meta = __php_w.class_registry.get(name.as_str()).cloned();
+        let is_current_class = current_class_name(__php_w).is_some_and(|current| current == *name);
         if kind.is_none()
             && class_meta.is_none()
             && !is_current_class
-            && !php_core_class_is_registered(name)
+            && !php_core_class_is_registered(__php_w, name)
             && name
                 .chars()
                 .next()
@@ -20558,8 +20470,8 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                 return Ok(Expression::with_span(throw_iife, span));
             }
         }
-        if let Some(ctor) = class_method_meta(name, "__construct") {
-            if !php_field_visible_from_current(name, ctor.visibility) {
+        if let Some(ctor) = class_method_meta(__php_w, name, "__construct") {
+            if !php_field_visible_from_current(__php_w, name, ctor.visibility) {
                 return Ok(Expression::with_span(
                     php_throw_named_error_expr(
                         "Error",
@@ -20577,7 +20489,7 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
     // calls above — no PHP DOM class needed.
     if let ExprKind::Ident(cls) = &class_expr.kind {
         if cls == "DOMDocument" {
-            let tmp = next_tmp_name("dom_doc");
+            let tmp = next_tmp_name(__php_w, "dom_doc");
             let doc_ident = || Expression::with_span(ExprKind::Ident(tmp.clone()), span.clone());
             let mk_member_assign = |field: &str, value: Expression| {
                 Expression::with_span(
@@ -20665,7 +20577,7 @@ fn vis_str(v: &Visibility) -> &'static str {
 }
 
 /// Build `__refl_class(name, is_abstract, parent, [interfaces...], [methods...], [fields...])`.
-fn build_reflection_class_call(args: Vec<Argument>, span: Span) -> Result<Expression, String> {
+fn build_reflection_class_call(__php_w: &mut PhpWalker, args: Vec<Argument>, span: Span) -> Result<Expression, String> {
     let name_expr = args
         .into_iter()
         .next()
@@ -20673,10 +20585,10 @@ fn build_reflection_class_call(args: Vec<Argument>, span: Span) -> Result<Expres
         .unwrap_or_else(|| mk_str(""));
     let class_name = match &name_expr.kind {
         ExprKind::Lit(Literal::Str(s)) => s.clone(),
-        _ => current_class_name().unwrap_or_default(),
+        _ => current_class_name(__php_w).unwrap_or_default(),
     };
 
-    let meta = CLASS_REGISTRY.with(|r| r.borrow().get(&class_name).cloned());
+    let meta = __php_w.class_registry.get(&class_name).cloned();
     let mut call_args = vec![Argument::positional(name_expr)];
 
     if let Some(meta) = meta {
@@ -20833,19 +20745,18 @@ fn build_reflection_class_call(args: Vec<Argument>, span: Span) -> Result<Expres
         call_args.push(Argument::positional(Expression::new(ExprKind::Array(
             pub_fields,
         ))));
-        let attrs = class_attrs_for_reflection(&class_name);
-        call_args.push(Argument::positional(attribute_array_expr(&attrs)));
-        let ctor_param_attrs = CONSTRUCTOR_PARAM_ATTRIBUTES.with(|r| {
-            let reg = r.borrow();
-            (0..meta.constructor_params.len())
-                .map(|idx| {
-                    reg.get(&(class_name.clone(), idx))
-                        .cloned()
-                        .unwrap_or_default()
-                })
-                .collect::<Vec<_>>()
-        });
-        call_args.push(Argument::positional(reflection_params_array_expr(
+        let attrs = class_attrs_for_reflection(__php_w, &class_name);
+        call_args.push(Argument::positional(attribute_array_expr(__php_w, &attrs)));
+        let ctor_param_attrs = (0..meta.constructor_params.len())
+            .map(|idx| {
+                __php_w
+                    .constructor_param_attributes
+                    .get(&(class_name.clone(), idx))
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>();
+        call_args.push(Argument::positional(reflection_params_array_expr(__php_w, 
             ctor_param_attrs
                 .into_iter()
                 .map(|attrs| ParamReflectionMeta {
@@ -20856,7 +20767,7 @@ fn build_reflection_class_call(args: Vec<Argument>, span: Span) -> Result<Expres
         )));
     } else {
         // Unknown class — pass minimal defaults
-        let attrs = class_attrs_for_reflection(&class_name);
+        let attrs = class_attrs_for_reflection(__php_w, &class_name);
         call_args.push(Argument::positional(mk_bool(false)));
         call_args.push(Argument::positional(Expression::new(ExprKind::Lit(
             Literal::Null,
@@ -20876,7 +20787,7 @@ fn build_reflection_class_call(args: Vec<Argument>, span: Span) -> Result<Expres
         call_args.push(Argument::positional(Expression::new(ExprKind::Array(
             vec![],
         ))));
-        call_args.push(Argument::positional(attribute_array_expr(&attrs)));
+        call_args.push(Argument::positional(attribute_array_expr(__php_w, &attrs)));
         call_args.push(Argument::positional(Expression::new(ExprKind::Array(
             vec![],
         ))));
@@ -20893,7 +20804,7 @@ fn build_reflection_class_call(args: Vec<Argument>, span: Span) -> Result<Expres
 }
 
 /// Build `__refl_method(class, method, visibility, paramCount, requiredParams)`.
-fn build_reflection_method_call(args: Vec<Argument>, span: Span) -> Result<Expression, String> {
+fn build_reflection_method_call(__php_w: &mut PhpWalker, args: Vec<Argument>, span: Span) -> Result<Expression, String> {
     let mut it = args.into_iter();
     let class_arg = it.next().map(|a| a.value).unwrap_or_else(|| mk_str(""));
     let method_arg = it.next().map(|a| a.value).unwrap_or_else(|| mk_str(""));
@@ -20907,16 +20818,16 @@ fn build_reflection_method_call(args: Vec<Argument>, span: Span) -> Result<Expre
         _ => String::new(),
     };
 
-    let declaring_class = class_method_declaring_class(&class_name, &method_name)
+    let declaring_class = class_method_declaring_class(__php_w, &class_name, &method_name)
         .unwrap_or_else(|| class_name.clone());
-    let method_meta = CLASS_REGISTRY.with(|r| {
-        r.borrow().get(&declaring_class).and_then(|c| {
+    let method_meta = {
+        __php_w.class_registry.get(&declaring_class).and_then(|c| {
             c.methods
                 .iter()
                 .find(|m| m.name.eq_ignore_ascii_case(&method_name))
                 .cloned()
         })
-    });
+    };
 
     let mut call_args = vec![
         Argument::positional(class_arg),
@@ -20932,14 +20843,12 @@ fn build_reflection_method_call(args: Vec<Argument>, span: Span) -> Result<Expre
         call_args.push(Argument::positional(mk_int(0)));
         call_args.push(Argument::positional(mk_int(0)));
     }
-    let attrs = METHOD_ATTRIBUTES
-        .with(|r| {
-            r.borrow()
-                .get(&(declaring_class, method_name.clone()))
-                .cloned()
-        })
+    let attrs = __php_w
+        .method_attributes
+        .get(&(declaring_class, method_name.clone()))
+        .cloned()
         .unwrap_or_default();
-    call_args.push(Argument::positional(attribute_array_expr(&attrs)));
+    call_args.push(Argument::positional(attribute_array_expr(__php_w, &attrs)));
 
     Ok(Expression::with_span(
         ExprKind::Call {
@@ -20953,7 +20862,7 @@ fn build_reflection_method_call(args: Vec<Argument>, span: Span) -> Result<Expre
     ))
 }
 
-fn build_reflection_property_call(args: Vec<Argument>, span: Span) -> Result<Expression, String> {
+fn build_reflection_property_call(__php_w: &mut PhpWalker, args: Vec<Argument>, span: Span) -> Result<Expression, String> {
     let mut it = args.into_iter();
     let class_arg = it.next().map(|a| a.value).unwrap_or_else(|| mk_str(""));
     let prop_arg = it.next().map(|a| a.value).unwrap_or_else(|| mk_str(""));
@@ -20966,10 +20875,12 @@ fn build_reflection_property_call(args: Vec<Argument>, span: Span) -> Result<Exp
         ExprKind::Lit(Literal::Str(s)) => s.clone(),
         _ => String::new(),
     };
-    let declaring_class = class_property_declaring_class(&class_name, &prop_name)
+    let declaring_class = class_property_declaring_class(__php_w, &class_name, &prop_name)
         .unwrap_or_else(|| class_name.clone());
-    let attrs = PROPERTY_ATTRIBUTES
-        .with(|r| r.borrow().get(&(declaring_class, prop_name)).cloned())
+    let attrs = __php_w
+        .property_attributes
+        .get(&(declaring_class, prop_name))
+        .cloned()
         .unwrap_or_default();
 
     Ok(Expression::with_span(
@@ -20980,7 +20891,7 @@ fn build_reflection_property_call(args: Vec<Argument>, span: Span) -> Result<Exp
             args: vec![
                 Argument::positional(class_arg),
                 Argument::positional(prop_arg),
-                Argument::positional(attribute_array_expr(&attrs)),
+                Argument::positional(attribute_array_expr(__php_w, &attrs)),
             ],
             optional: false,
         },
@@ -20989,7 +20900,7 @@ fn build_reflection_property_call(args: Vec<Argument>, span: Span) -> Result<Exp
 }
 
 /// Build `__refl_function(name, paramCount, requiredParams)`.
-fn build_reflection_function_call(args: Vec<Argument>, span: Span) -> Result<Expression, String> {
+fn build_reflection_function_call(__php_w: &mut PhpWalker, args: Vec<Argument>, span: Span) -> Result<Expression, String> {
     let name_expr = args
         .into_iter()
         .next()
@@ -21000,24 +20911,23 @@ fn build_reflection_function_call(args: Vec<Argument>, span: Span) -> Result<Exp
         _ => String::new(),
     };
 
-    let func_meta = FUNC_REGISTRY.with(|r| r.borrow().get(&func_name).cloned());
+    let func_meta = __php_w.func_registry.get(&func_name).cloned();
 
     let mut call_args = vec![Argument::positional(name_expr)];
 
     if let Some(fm) = func_meta {
         call_args.push(Argument::positional(mk_int(fm.param_count as i64)));
         call_args.push(Argument::positional(mk_int(fm.required_params as i64)));
-        let param_attrs = FUNCTION_PARAM_ATTRIBUTES.with(|r| {
-            let reg = r.borrow();
-            (0..fm.param_count)
-                .map(|idx| {
-                    reg.get(&(func_name.clone(), idx))
-                        .cloned()
-                        .unwrap_or_default()
-                })
-                .collect::<Vec<_>>()
-        });
-        call_args.push(Argument::positional(reflection_params_array_expr(
+        let param_attrs = (0..fm.param_count)
+            .map(|idx| {
+                __php_w
+                    .function_param_attributes
+                    .get(&(func_name.clone(), idx))
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>();
+        call_args.push(Argument::positional(reflection_params_array_expr(__php_w, 
             if fm.params.is_empty() {
                 param_attrs
                     .into_iter()
@@ -21058,7 +20968,7 @@ fn build_reflection_function_call(args: Vec<Argument>, span: Span) -> Result<Exp
     ))
 }
 
-fn build_reflection_constant_call(
+fn build_reflection_constant_call(__php_w: &mut PhpWalker, 
     args: Vec<Argument>,
     is_enum_case: bool,
     span: Span,
@@ -21075,20 +20985,16 @@ fn build_reflection_constant_call(
         _ => String::new(),
     };
     let attrs = if is_enum_case {
-        ENUM_CASE_ATTRIBUTES
-            .with(|r| {
-                r.borrow()
-                    .get(&(class_name.clone(), member_name.clone()))
-                    .cloned()
-            })
+        __php_w
+            .enum_case_attributes
+            .get(&(class_name.clone(), member_name.clone()))
+            .cloned()
             .unwrap_or_default()
     } else {
-        CLASS_CONST_ATTRIBUTES
-            .with(|r| {
-                r.borrow()
-                    .get(&(class_name.clone(), member_name.clone()))
-                    .cloned()
-            })
+        __php_w
+            .class_const_attributes
+            .get(&(class_name.clone(), member_name.clone()))
+            .cloned()
             .unwrap_or_default()
     };
     Ok(Expression::with_span(
@@ -21099,7 +21005,7 @@ fn build_reflection_constant_call(
             args: vec![
                 Argument::positional(class_arg),
                 Argument::positional(name_arg),
-                Argument::positional(attribute_array_expr(&attrs)),
+                Argument::positional(attribute_array_expr(__php_w, &attrs)),
             ],
             optional: false,
         },
@@ -21107,10 +21013,10 @@ fn build_reflection_constant_call(
     ))
 }
 
-fn walk_match(pair: Pair<Rule>) -> Result<Expression, String> {
-    let span = to_span(&pair);
+fn walk_match(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<Expression, String> {
+    let span = to_span(__php_w, &pair);
     let mut inner = inner_nokw(pair);
-    let subject = walk_expression(inner.next().unwrap())?;
+    let subject = walk_expression(__php_w, inner.next().unwrap())?;
 
     // PHP `match(true) { cond => val, ... }` — rewrite to ternary chain.
     // match(true) checks each condition for truthiness; the compiler's
@@ -21127,18 +21033,18 @@ fn walk_match(pair: Pair<Rule>) -> Result<Expression, String> {
             }
             let arm_src = p.as_str().trim_start();
             let is_default = arm_src.to_lowercase().starts_with("default");
-            let mut conditions = php_match_conditions_from_arm_source(arm_src)?;
+            let mut conditions = php_match_conditions_from_arm_source(__php_w, arm_src)?;
             let mut body: Option<Expression> = None;
             for sub in inner_nokw(p) {
                 match sub.as_rule() {
                     Rule::match_conditions => {
                         if conditions.is_none() {
                             let exprs: Result<Vec<_>, _> =
-                                sub.into_inner().map(walk_expression).collect();
+                                sub.into_inner().map(|__p| walk_expression(__php_w, __p)).collect();
                             conditions = Some(exprs?);
                         }
                     }
-                    Rule::expression => body = Some(walk_expression(sub)?),
+                    Rule::expression => body = Some(walk_expression(__php_w, sub)?),
                     _ => {}
                 }
             }
@@ -21188,18 +21094,18 @@ fn walk_match(pair: Pair<Rule>) -> Result<Expression, String> {
         // is filtered out alongside other keyword tokens.
         let arm_src = p.as_str().trim_start();
         let is_default = arm_src.to_lowercase().starts_with("default");
-        let mut conditions = php_match_conditions_from_arm_source(arm_src)?;
+        let mut conditions = php_match_conditions_from_arm_source(__php_w, arm_src)?;
         let mut body: Option<Expression> = None;
         for sub in inner_nokw(p) {
             match sub.as_rule() {
                 Rule::match_conditions => {
                     if conditions.is_none() {
                         let exprs: Result<Vec<_>, _> =
-                            sub.into_inner().map(walk_expression).collect();
+                            sub.into_inner().map(|__p| walk_expression(__php_w, __p)).collect();
                         conditions = Some(exprs?);
                     }
                 }
-                Rule::expression => body = Some(walk_expression(sub)?),
+                Rule::expression => body = Some(walk_expression(__php_w, sub)?),
                 _ => {}
             }
         }
@@ -21397,7 +21303,7 @@ fn php_expr_is_boolean_result(expr: &Expression) -> bool {
     }
 }
 
-fn php_match_conditions_from_arm_source(arm_src: &str) -> Result<Option<Vec<Expression>>, String> {
+fn php_match_conditions_from_arm_source(__php_w: &mut PhpWalker, arm_src: &str) -> Result<Option<Vec<Expression>>, String> {
     if arm_src.trim_start().to_lowercase().starts_with("default") {
         return Ok(None);
     }
@@ -21419,7 +21325,7 @@ fn php_match_conditions_from_arm_source(arm_src: &str) -> Result<Option<Vec<Expr
         let Some(expr) = pairs.next() else {
             continue;
         };
-        conditions.push(walk_expression(expr)?);
+        conditions.push(walk_expression(__php_w, expr)?);
     }
     Ok(Some(conditions))
 }
@@ -21490,8 +21396,8 @@ fn php_split_top_level_commas(src: &str) -> Vec<&str> {
     parts
 }
 
-fn walk_array(pair: Pair<Rule>) -> Result<Expression, String> {
-    let span = to_span(&pair);
+fn walk_array(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<Expression, String> {
+    let span = to_span(__php_w, &pair);
     let is_short_array = matches!(pair.as_rule(), Rule::short_array_expression);
     let source_start = pair.as_span().start();
     let mut elems = Vec::new();
@@ -21527,8 +21433,8 @@ fn walk_array(pair: Pair<Rule>) -> Result<Expression, String> {
         match (first, second) {
             (Some(first), Some(second)) => {
                 // key => value
-                let key = php_array_key_operand(walk_expression(first)?);
-                let value = walk_expression(second)?;
+                let key = php_array_key_operand(walk_expression(__php_w, first)?);
+                let value = walk_expression(__php_w, second)?;
                 elems.push(ArrayElement {
                     key: Some(key),
                     value,
@@ -21537,7 +21443,7 @@ fn walk_array(pair: Pair<Rule>) -> Result<Expression, String> {
                 });
             }
             (Some(first), None) => {
-                let value = walk_expression(first)?;
+                let value = walk_expression(__php_w, first)?;
                 elems.push(ArrayElement {
                     key: None,
                     value,
@@ -21612,8 +21518,8 @@ fn walk_array(pair: Pair<Rule>) -> Result<Expression, String> {
     Ok(Expression::with_span(ExprKind::Array(elems), span))
 }
 
-fn walk_foreach_value_target(pair: Pair<Rule>) -> Result<Expression, String> {
-    Ok(expression_into_destructure_target(walk_expression(pair)?))
+fn walk_foreach_value_target(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<Expression, String> {
+    Ok(expression_into_destructure_target(walk_expression(__php_w, pair)?))
 }
 
 fn foreach_binding_target(
@@ -21727,6 +21633,31 @@ fn is_php_this_expr(expr: &Expression) -> bool {
         || matches!(&expr.kind, ExprKind::Ident(name) if name == "$this")
 }
 
+/// The runtime class name of `obj`, as an expression — the ONE spelling in
+/// this walker.
+///
+/// Defers to the profile builtin `__php_get_class`, which reads the shared
+/// `reflection::FIELD_TYPE` identity stamp. Every asker — `get_class($x)`,
+/// `$x::class`, an object comparison — goes through here, so none of them
+/// rebuilds a `__type ?? constructor.name` member chain of its own and none of
+/// them can answer differently from the others.
+///
+/// The result is the INTERNAL dotted identity (`App.Models.Post`); wrap it in
+/// [`php_backslash_display`] wherever PHP's reflection spelling is wanted.
+fn php_runtime_class_expr(obj: Expression, span: &Span) -> Expression {
+    Expression::with_span(
+        ExprKind::Call {
+            callee: Box::new(Expression::with_span(
+                ExprKind::Ident("__php_get_class".to_string()),
+                span.clone(),
+            )),
+            args: vec![Argument::positional(obj)],
+            optional: false,
+        },
+        span.clone(),
+    )
+}
+
 fn php_called_class_name_expr(span: &Span) -> Expression {
     php_backslash_display(php_called_class_expr(span), span)
 }
@@ -21742,14 +21673,14 @@ fn php_static_receiver_name_expr(span: &Span) -> Expression {
     )
 }
 
-fn php_call_with_static_alias(
+fn php_call_with_static_alias(__php_w: &mut PhpWalker, 
     class_expr: Expression,
     alias_name: String,
     call: Expression,
     span: &Span,
 ) -> Expression {
-    let old_tmp = next_tmp_name("lsb_old");
-    let result_tmp = next_tmp_name("lsb_result");
+    let old_tmp = next_tmp_name(__php_w, "lsb_old");
+    let result_tmp = next_tmp_name(__php_w, "lsb_result");
     let field = |class_expr: Expression| {
         Expression::with_span(
             ExprKind::Member {
@@ -21918,14 +21849,14 @@ fn close_php_scope(mut body: Vec<Statement>, also_open: &[String]) -> Vec<Statem
     body
 }
 
-fn walk_closure(pair: Pair<Rule>) -> Result<Expression, String> {
-    let span = to_span(&pair);
+fn walk_closure(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<Expression, String> {
+    let span = to_span(__php_w, &pair);
     let mut params: Vec<Param> = Vec::new();
     let mut captures: Vec<String> = Vec::new();
     let mut body: Vec<Statement> = Vec::new();
     for p in pair.into_inner() {
         match p.as_rule() {
-            Rule::param_list => params = walk_params(p)?,
+            Rule::param_list => params = walk_params(__php_w, p)?,
             Rule::closure_use => {
                 for v in p.into_inner() {
                     if matches!(v.as_rule(), Rule::closure_use_var) {
@@ -21945,11 +21876,9 @@ fn walk_closure(pair: Pair<Rule>) -> Result<Expression, String> {
                 }
             }
             Rule::block_statement => {
-                FUNCTION_STACK.with(|s| s.borrow_mut().push("{closure}".to_string()));
-                let walked = walk_statement_into_body(p);
-                FUNCTION_STACK.with(|s| {
-                    s.borrow_mut().pop();
-                });
+                __php_w.function_stack.push("{closure}".to_string());
+                let walked = walk_statement_into_body(__php_w, p);
+                __php_w.function_stack.pop();
                 body = walked?;
             }
             _ => {}
@@ -22003,14 +21932,14 @@ fn walk_closure(pair: Pair<Rule>) -> Result<Expression, String> {
     ))
 }
 
-fn walk_arrow_function(pair: Pair<Rule>) -> Result<Expression, String> {
-    let span = to_span(&pair);
+fn walk_arrow_function(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<Expression, String> {
+    let span = to_span(__php_w, &pair);
     let mut params: Vec<Param> = Vec::new();
     let mut captures: Vec<String> = Vec::new();
     let mut body_expr: Option<Expression> = None;
     for p in pair.into_inner() {
         match p.as_rule() {
-            Rule::param_list => params = walk_params(p)?,
+            Rule::param_list => params = walk_params(__php_w, p)?,
             Rule::closure_use => {
                 for v in p.into_inner() {
                     if matches!(v.as_rule(), Rule::closure_use_var) {
@@ -22029,7 +21958,7 @@ fn walk_arrow_function(pair: Pair<Rule>) -> Result<Expression, String> {
                     }
                 }
             }
-            Rule::expression => body_expr = Some(walk_expression(p)?),
+            Rule::expression => body_expr = Some(walk_expression(__php_w, p)?),
             _ => {}
         }
     }
@@ -22890,12 +22819,12 @@ fn rewrite_php_runtime_arg_helpers_in_expr(expr: &Expression, params: &[Param]) 
 
 // ─── Literals ─────────────────────────────────────────────────────────────
 
-fn walk_literal(pair: Pair<Rule>) -> Result<Expression, String> {
-    let span = to_span(&pair);
+fn walk_literal(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<Expression, String> {
+    let span = to_span(__php_w, &pair);
     let inner = pair.into_inner().next().unwrap();
     let kind = match inner.as_rule() {
         Rule::number_lit => walk_number(&inner).kind,
-        Rule::string_lit => walk_string(&inner).kind,
+        Rule::string_lit => walk_string(__php_w, &inner).kind,
         Rule::kw_null => ExprKind::Lit(Literal::Null),
         Rule::kw_true => ExprKind::Lit(Literal::Bool(true)),
         Rule::kw_false => ExprKind::Lit(Literal::Bool(false)),
@@ -22948,7 +22877,7 @@ fn walk_number(pair: &Pair<Rule>) -> Expression {
     Expression::new(kind)
 }
 
-fn walk_string(pair: &Pair<Rule>) -> Expression {
+fn walk_string(__php_w: &mut PhpWalker, pair: &Pair<Rule>) -> Expression {
     let raw = pair.as_str();
 
     // Heredoc / nowdoc: `<<<TAG\n...content...\nTAG`
@@ -22995,7 +22924,7 @@ fn walk_string(pair: &Pair<Rule>) -> Expression {
                 &decode_php_double_quoted_literal(&content),
             ))));
         }
-        let parts = parse_php_interpolation(&content);
+        let parts = parse_php_interpolation(__php_w, &content);
         if parts.len() == 1 {
             if let InterpolPart::Text(s) = &parts[0] {
                 return Expression::new(ExprKind::Lit(Literal::Str(s.clone())));
@@ -23041,7 +22970,7 @@ fn walk_string(pair: &Pair<Rule>) -> Expression {
     // `$var->prop`, `{$expr}` and split the body into InterpolParts.
     // Empty or interp-free strings collapse back to a plain literal so
     // the compiler's string path stays fast.
-    let parts = parse_php_interpolation(body);
+    let parts = parse_php_interpolation(__php_w, body);
     if parts.len() == 1 {
         if let InterpolPart::Text(s) = &parts[0] {
             return Expression::new(ExprKind::Lit(Literal::Str(s.clone())));
@@ -23173,7 +23102,7 @@ fn decode_php_double_quoted_literal(body: &str) -> String {
 ///   - `$obj->prop`
 ///   - `{$arbitrary_expr}` — balanced brace matching; inner text parsed
 ///     by re-entering the PHP expression rule
-fn parse_php_interpolation(body: &str) -> Vec<InterpolPart> {
+fn parse_php_interpolation(__php_w: &mut PhpWalker, body: &str) -> Vec<InterpolPart> {
     let mut parts: Vec<InterpolPart> = Vec::new();
     let mut text = String::new();
     let mut chars = body.chars().peekable();
@@ -23303,7 +23232,7 @@ fn parse_php_interpolation(body: &str) -> Vec<InterpolPart> {
                 }
                 expr_src.push(nc);
             }
-            match parse_interpol_expression(&expr_src) {
+            match parse_interpol_expression(__php_w, &expr_src) {
                 Ok(expr) => parts.push(InterpolPart::Expr(expr)),
                 // Fall back to literal so we don't lose user content on
                 // parse failure.
@@ -23414,14 +23343,14 @@ fn parse_php_interpolation(body: &str) -> Vec<InterpolPart> {
 }
 
 /// Re-enter the PHP pest grammar on a `{$...}` inner expression.
-fn parse_interpol_expression(src: &str) -> Result<Expression, String> {
+fn parse_interpol_expression(__php_w: &mut PhpWalker, src: &str) -> Result<Expression, String> {
     use pest::Parser;
     let mut pairs = super::PhpParser::parse(super::Rule::expression, src)
         .map_err(|e| format!("interpolation expr parse failed: {}", e))?;
     let pair = pairs
         .next()
         .ok_or_else(|| "empty interpolation expression".to_string())?;
-    walk_expression(pair)
+    walk_expression(__php_w, pair)
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
@@ -23437,7 +23366,7 @@ fn parse_interpol_expression(src: &str) -> Result<Expression, String> {
 ///   which position in the original PHP call the canonical form takes.
 ///   E.g. `("array_key_exists", &[1, 0])` means the canonical
 ///   (container, key) order pulls arg 1 first, arg 0 second.
-fn canonicalize_php_call_args(callee: &Expression, args: Vec<Argument>) -> Vec<Argument> {
+fn canonicalize_php_call_args(__php_w: &mut PhpWalker, callee: &Expression, args: Vec<Argument>) -> Vec<Argument> {
     let name = match &callee.kind {
         ExprKind::Ident(n) => n.to_ascii_lowercase(),
         _ => return args,
@@ -23487,19 +23416,19 @@ fn canonicalize_php_call_args(callee: &Expression, args: Vec<Argument>) -> Vec<A
 /// deliberately absent — their by-ref parameters are a separate open item, and
 /// marking an argument the method call path would then pack is worse than
 /// leaving it unmarked.
-fn mark_php_by_ref_args(
+fn mark_php_by_ref_args(__php_w: &mut PhpWalker, 
     callee: Expression,
     mut args: Vec<Argument>,
 ) -> (Expression, Vec<Argument>) {
     let ExprKind::Ident(name) = &callee.kind else {
         return (callee, args);
     };
-    let Some((declared, positions)) = FUNC_BY_REF_PARAMS.with(|r| {
-        let reg = r.borrow();
-        reg.get(name)
-            .or_else(|| reg.get(&name.to_ascii_lowercase()))
-            .cloned()
-    }) else {
+    let Some((declared, positions)) = __php_w
+        .func_by_ref_params
+        .get(name)
+        .or_else(|| __php_w.func_by_ref_params.get(&name.to_ascii_lowercase()))
+        .cloned()
+    else {
         return (callee, args);
     };
     // php resolves function names case-insensitively; the compiler's
@@ -23540,7 +23469,7 @@ fn mark_php_by_ref_args(
                     arg.value.span.clone(),
                 );
             } else if let Some((object, field)) = php_magic_get_read_parts(&arg.value)
-                .filter(|(object, field)| !php_member_reference_is_inert(object, field))
+                .filter(|(object, field)| !php_member_reference_is_inert(__php_w, object, field))
             {
                 // Same recovery, one property axis over: an UNDECLARED property
                 // read is wrapped in the magic-`__get` ternary, which is an
@@ -23561,26 +23490,26 @@ fn mark_php_by_ref_args(
     (callee, args)
 }
 
-fn bind_this_in_lambda_body(body: &LambdaBody, bound_obj_name: &str) -> LambdaBody {
+fn bind_this_in_lambda_body(__php_w: &mut PhpWalker, body: &LambdaBody, bound_obj_name: &str) -> LambdaBody {
     match body {
         LambdaBody::Expr(expr) => {
-            LambdaBody::Expr(Box::new(bind_this_in_expr(expr, bound_obj_name)))
+            LambdaBody::Expr(Box::new(bind_this_in_expr(__php_w, expr, bound_obj_name)))
         }
         LambdaBody::Block(stmts) => LambdaBody::Block(
             stmts
                 .iter()
-                .map(|stmt| bind_this_in_stmt(stmt, bound_obj_name))
+                .map(|stmt| bind_this_in_stmt(__php_w, stmt, bound_obj_name))
                 .collect(),
         ),
     }
 }
 
-fn bind_this_in_stmt(stmt: &Statement, bound_obj_name: &str) -> Statement {
+fn bind_this_in_stmt(__php_w: &mut PhpWalker, stmt: &Statement, bound_obj_name: &str) -> Statement {
     let kind = match &stmt.kind {
-        StmtKind::Expr(expr) => StmtKind::Expr(bind_this_in_expr(expr, bound_obj_name)),
+        StmtKind::Expr(expr) => StmtKind::Expr(bind_this_in_expr(__php_w, expr, bound_obj_name)),
         StmtKind::Block(body) => StmtKind::Block(
             body.iter()
-                .map(|inner| bind_this_in_stmt(inner, bound_obj_name))
+                .map(|inner| bind_this_in_stmt(__php_w, inner, bound_obj_name))
                 .collect(),
         ),
         StmtKind::If {
@@ -23589,25 +23518,25 @@ fn bind_this_in_stmt(stmt: &Statement, bound_obj_name: &str) -> Statement {
             elifs,
             else_body,
         } => StmtKind::If {
-            cond: bind_this_in_expr(cond, bound_obj_name),
+            cond: bind_this_in_expr(__php_w, cond, bound_obj_name),
             then_body: then_body
                 .iter()
-                .map(|inner| bind_this_in_stmt(inner, bound_obj_name))
+                .map(|inner| bind_this_in_stmt(__php_w, inner, bound_obj_name))
                 .collect(),
             elifs: elifs
                 .iter()
                 .map(|(cond, body)| {
                     (
-                        bind_this_in_expr(cond, bound_obj_name),
+                        bind_this_in_expr(__php_w, cond, bound_obj_name),
                         body.iter()
-                            .map(|inner| bind_this_in_stmt(inner, bound_obj_name))
+                            .map(|inner| bind_this_in_stmt(__php_w, inner, bound_obj_name))
                             .collect(),
                     )
                 })
                 .collect(),
             else_body: else_body.as_ref().map(|body| {
                 body.iter()
-                    .map(|inner| bind_this_in_stmt(inner, bound_obj_name))
+                    .map(|inner| bind_this_in_stmt(__php_w, inner, bound_obj_name))
                     .collect()
             }),
         },
@@ -23619,16 +23548,16 @@ fn bind_this_in_stmt(stmt: &Statement, bound_obj_name: &str) -> Statement {
         } => StmtKind::For {
             init: init
                 .as_ref()
-                .map(|inner| Box::new(bind_this_in_stmt(inner, bound_obj_name))),
+                .map(|inner| Box::new(bind_this_in_stmt(__php_w, inner, bound_obj_name))),
             cond: cond
                 .as_ref()
-                .map(|expr| bind_this_in_expr(expr, bound_obj_name)),
+                .map(|expr| bind_this_in_expr(__php_w, expr, bound_obj_name)),
             update: update
                 .as_ref()
-                .map(|expr| bind_this_in_expr(expr, bound_obj_name)),
+                .map(|expr| bind_this_in_expr(__php_w, expr, bound_obj_name)),
             body: body
                 .iter()
-                .map(|inner| bind_this_in_stmt(inner, bound_obj_name))
+                .map(|inner| bind_this_in_stmt(__php_w, inner, bound_obj_name))
                 .collect(),
         },
         StmtKind::ForIn {
@@ -23642,15 +23571,15 @@ fn bind_this_in_stmt(stmt: &Statement, bound_obj_name: &str) -> Statement {
         } => StmtKind::ForIn {
             var: var.clone(),
             key: key.clone(),
-            iter: bind_this_in_expr(iter, bound_obj_name),
+            iter: bind_this_in_expr(__php_w, iter, bound_obj_name),
             body: body
                 .iter()
-                .map(|inner| bind_this_in_stmt(inner, bound_obj_name))
+                .map(|inner| bind_this_in_stmt(__php_w, inner, bound_obj_name))
                 .collect(),
             of: *of,
             else_body: else_body.as_ref().map(|body| {
                 body.iter()
-                    .map(|inner| bind_this_in_stmt(inner, bound_obj_name))
+                    .map(|inner| bind_this_in_stmt(__php_w, inner, bound_obj_name))
                     .collect()
             }),
             is_async: *is_async,
@@ -23660,23 +23589,23 @@ fn bind_this_in_stmt(stmt: &Statement, bound_obj_name: &str) -> Statement {
             body,
             else_body,
         } => StmtKind::While {
-            cond: bind_this_in_expr(cond, bound_obj_name),
+            cond: bind_this_in_expr(__php_w, cond, bound_obj_name),
             body: body
                 .iter()
-                .map(|inner| bind_this_in_stmt(inner, bound_obj_name))
+                .map(|inner| bind_this_in_stmt(__php_w, inner, bound_obj_name))
                 .collect(),
             else_body: else_body.as_ref().map(|body| {
                 body.iter()
-                    .map(|inner| bind_this_in_stmt(inner, bound_obj_name))
+                    .map(|inner| bind_this_in_stmt(__php_w, inner, bound_obj_name))
                     .collect()
             }),
         },
         StmtKind::DoWhile { body, cond, until } => StmtKind::DoWhile {
             body: body
                 .iter()
-                .map(|inner| bind_this_in_stmt(inner, bound_obj_name))
+                .map(|inner| bind_this_in_stmt(__php_w, inner, bound_obj_name))
                 .collect(),
-            cond: bind_this_in_expr(cond, bound_obj_name),
+            cond: bind_this_in_expr(__php_w, cond, bound_obj_name),
             until: *until,
         },
         StmtKind::Switch {
@@ -23684,7 +23613,7 @@ fn bind_this_in_stmt(stmt: &Statement, bound_obj_name: &str) -> Statement {
             cases,
             default,
         } => StmtKind::Switch {
-            expr: bind_this_in_expr(expr, bound_obj_name),
+            expr: bind_this_in_expr(__php_w, expr, bound_obj_name),
             cases: cases
                 .iter()
                 .map(|case| SwitchCase {
@@ -23693,28 +23622,28 @@ fn bind_this_in_stmt(stmt: &Statement, bound_obj_name: &str) -> Statement {
                         .iter()
                         .map(|condition| match condition {
                             CaseCondition::Value(expr) => {
-                                CaseCondition::Value(bind_this_in_expr(expr, bound_obj_name))
+                                CaseCondition::Value(bind_this_in_expr(__php_w, expr, bound_obj_name))
                             }
                             CaseCondition::Range { from, to } => CaseCondition::Range {
-                                from: bind_this_in_expr(from, bound_obj_name),
-                                to: bind_this_in_expr(to, bound_obj_name),
+                                from: bind_this_in_expr(__php_w, from, bound_obj_name),
+                                to: bind_this_in_expr(__php_w, to, bound_obj_name),
                             },
                             CaseCondition::Comparison { op, expr } => CaseCondition::Comparison {
                                 op: *op,
-                                expr: bind_this_in_expr(expr, bound_obj_name),
+                                expr: bind_this_in_expr(__php_w, expr, bound_obj_name),
                             },
                         })
                         .collect(),
                     body: case
                         .body
                         .iter()
-                        .map(|inner| bind_this_in_stmt(inner, bound_obj_name))
+                        .map(|inner| bind_this_in_stmt(__php_w, inner, bound_obj_name))
                         .collect(),
                 })
                 .collect(),
             default: default.as_ref().map(|body| {
                 body.iter()
-                    .map(|inner| bind_this_in_stmt(inner, bound_obj_name))
+                    .map(|inner| bind_this_in_stmt(__php_w, inner, bound_obj_name))
                     .collect()
             }),
         },
@@ -23726,7 +23655,7 @@ fn bind_this_in_stmt(stmt: &Statement, bound_obj_name: &str) -> Statement {
         } => StmtKind::Try {
             body: body
                 .iter()
-                .map(|inner| bind_this_in_stmt(inner, bound_obj_name))
+                .map(|inner| bind_this_in_stmt(__php_w, inner, bound_obj_name))
                 .collect(),
             catches: catches
                 .iter()
@@ -23737,22 +23666,22 @@ fn bind_this_in_stmt(stmt: &Statement, bound_obj_name: &str) -> Statement {
                     body: catch
                         .body
                         .iter()
-                        .map(|inner| bind_this_in_stmt(inner, bound_obj_name))
+                        .map(|inner| bind_this_in_stmt(__php_w, inner, bound_obj_name))
                         .collect(),
                     when_clause: catch
                         .when_clause
                         .as_ref()
-                        .map(|expr| bind_this_in_expr(expr, bound_obj_name)),
+                        .map(|expr| bind_this_in_expr(__php_w, expr, bound_obj_name)),
                 })
                 .collect(),
             else_body: else_body.as_ref().map(|body| {
                 body.iter()
-                    .map(|inner| bind_this_in_stmt(inner, bound_obj_name))
+                    .map(|inner| bind_this_in_stmt(__php_w, inner, bound_obj_name))
                     .collect()
             }),
             finally: finally.as_ref().map(|body| {
                 body.iter()
-                    .map(|inner| bind_this_in_stmt(inner, bound_obj_name))
+                    .map(|inner| bind_this_in_stmt(__php_w, inner, bound_obj_name))
                     .collect()
             }),
         },
@@ -23764,13 +23693,13 @@ fn bind_this_in_stmt(stmt: &Statement, bound_obj_name: &str) -> Statement {
             items: items
                 .iter()
                 .map(|item| WithItem {
-                    expr: bind_this_in_expr(&item.expr, bound_obj_name),
+                    expr: bind_this_in_expr(__php_w, &item.expr, bound_obj_name),
                     var: item.var.clone(),
                 })
                 .collect(),
             body: body
                 .iter()
-                .map(|inner| bind_this_in_stmt(inner, bound_obj_name))
+                .map(|inner| bind_this_in_stmt(__php_w, inner, bound_obj_name))
                 .collect(),
             is_async: *is_async,
         },
@@ -23780,74 +23709,74 @@ fn bind_this_in_stmt(stmt: &Statement, bound_obj_name: &str) -> Statement {
             body,
         } => StmtKind::Using {
             var: var.clone(),
-            resource: bind_this_in_expr(resource, bound_obj_name),
+            resource: bind_this_in_expr(__php_w, resource, bound_obj_name),
             body: body
                 .iter()
-                .map(|inner| bind_this_in_stmt(inner, bound_obj_name))
+                .map(|inner| bind_this_in_stmt(__php_w, inner, bound_obj_name))
                 .collect(),
         },
         StmtKind::Lock { expr, body } => StmtKind::Lock {
-            expr: bind_this_in_expr(expr, bound_obj_name),
+            expr: bind_this_in_expr(__php_w, expr, bound_obj_name),
             body: body
                 .iter()
-                .map(|inner| bind_this_in_stmt(inner, bound_obj_name))
+                .map(|inner| bind_this_in_stmt(__php_w, inner, bound_obj_name))
                 .collect(),
         },
         StmtKind::Return(expr) => StmtKind::Return(
             expr.as_ref()
-                .map(|inner| bind_this_in_expr(inner, bound_obj_name)),
+                .map(|inner| bind_this_in_expr(__php_w, inner, bound_obj_name)),
         ),
         StmtKind::Throw { expr, cause } => StmtKind::Throw {
             expr: expr
                 .as_ref()
-                .map(|inner| bind_this_in_expr(inner, bound_obj_name)),
+                .map(|inner| bind_this_in_expr(__php_w, inner, bound_obj_name)),
             cause: cause
                 .as_ref()
-                .map(|inner| bind_this_in_expr(inner, bound_obj_name)),
+                .map(|inner| bind_this_in_expr(__php_w, inner, bound_obj_name)),
         },
         StmtKind::Assign { targets, value, .. } => StmtKind::Assign {
             targets: targets
                 .iter()
-                .map(|target| bind_this_in_expr(target, bound_obj_name))
+                .map(|target| bind_this_in_expr(__php_w, target, bound_obj_name))
                 .collect(),
-            value: bind_this_in_expr(value, bound_obj_name),
+            value: bind_this_in_expr(__php_w, value, bound_obj_name),
             by_ref: false,
         },
         StmtKind::CompoundAssign { target, op, value } => StmtKind::CompoundAssign {
-            target: bind_this_in_expr(target, bound_obj_name),
+            target: bind_this_in_expr(__php_w, target, bound_obj_name),
             op: *op,
-            value: bind_this_in_expr(value, bound_obj_name),
+            value: bind_this_in_expr(__php_w, value, bound_obj_name),
         },
         _ => stmt.kind.clone(),
     };
     Statement::with_span(kind, stmt.span)
 }
 
-fn bind_this_in_expr(expr: &Expression, bound_obj_name: &str) -> Expression {
+fn bind_this_in_expr(__php_w: &mut PhpWalker, expr: &Expression, bound_obj_name: &str) -> Expression {
     let span = expr.span;
     let kind = match &expr.kind {
         ExprKind::This => ExprKind::Ident(bound_obj_name.to_string()),
         ExprKind::Ident(name) if name == "$this" => ExprKind::Ident(bound_obj_name.to_string()),
         ExprKind::Binary { op, left, right } => ExprKind::Binary {
             op: *op,
-            left: Box::new(bind_this_in_expr(left, bound_obj_name)),
-            right: Box::new(bind_this_in_expr(right, bound_obj_name)),
+            left: Box::new(bind_this_in_expr(__php_w, left, bound_obj_name)),
+            right: Box::new(bind_this_in_expr(__php_w, right, bound_obj_name)),
         },
         ExprKind::Unary { op, expr } => ExprKind::Unary {
             op: *op,
-            expr: Box::new(bind_this_in_expr(expr, bound_obj_name)),
+            expr: Box::new(bind_this_in_expr(__php_w, expr, bound_obj_name)),
         },
         ExprKind::Ternary { cond, then, else_ } => ExprKind::Ternary {
-            cond: Box::new(bind_this_in_expr(cond, bound_obj_name)),
-            then: Box::new(bind_this_in_expr(then, bound_obj_name)),
-            else_: Box::new(bind_this_in_expr(else_, bound_obj_name)),
+            cond: Box::new(bind_this_in_expr(__php_w, cond, bound_obj_name)),
+            then: Box::new(bind_this_in_expr(__php_w, then, bound_obj_name)),
+            else_: Box::new(bind_this_in_expr(__php_w, else_, bound_obj_name)),
         },
         ExprKind::Member {
             object,
             field,
             null_safe,
         } => ExprKind::Member {
-            object: Box::new(bind_this_in_expr(object, bound_obj_name)),
+            object: Box::new(bind_this_in_expr(__php_w, object, bound_obj_name)),
             field: field.clone(),
             null_safe: *null_safe,
         },
@@ -23856,8 +23785,8 @@ fn bind_this_in_expr(expr: &Expression, bound_obj_name: &str) -> Expression {
             index,
             null_safe,
         } => ExprKind::Index {
-            object: Box::new(bind_this_in_expr(object, bound_obj_name)),
-            index: Box::new(bind_this_in_expr(index, bound_obj_name)),
+            object: Box::new(bind_this_in_expr(__php_w, object, bound_obj_name)),
+            index: Box::new(bind_this_in_expr(__php_w, index, bound_obj_name)),
             null_safe: *null_safe,
         },
         ExprKind::Call {
@@ -23865,11 +23794,11 @@ fn bind_this_in_expr(expr: &Expression, bound_obj_name: &str) -> Expression {
             args,
             optional,
         } => ExprKind::Call {
-            callee: Box::new(bind_this_in_expr(callee, bound_obj_name)),
+            callee: Box::new(bind_this_in_expr(__php_w, callee, bound_obj_name)),
             args: args
                 .iter()
                 .map(|arg| Argument {
-                    value: bind_this_in_expr(&arg.value, bound_obj_name),
+                    value: bind_this_in_expr(__php_w, &arg.value, bound_obj_name),
                     name: arg.name.clone(),
                     by_ref: arg.by_ref,
                     spread: arg.spread,
@@ -23878,11 +23807,11 @@ fn bind_this_in_expr(expr: &Expression, bound_obj_name: &str) -> Expression {
             optional: *optional,
         },
         ExprKind::New { class, args } => ExprKind::New {
-            class: Box::new(bind_this_in_expr(class, bound_obj_name)),
+            class: Box::new(bind_this_in_expr(__php_w, class, bound_obj_name)),
             args: args
                 .iter()
                 .map(|arg| Argument {
-                    value: bind_this_in_expr(&arg.value, bound_obj_name),
+                    value: bind_this_in_expr(__php_w, &arg.value, bound_obj_name),
                     name: arg.name.clone(),
                     by_ref: arg.by_ref,
                     spread: arg.spread,
@@ -23890,8 +23819,8 @@ fn bind_this_in_expr(expr: &Expression, bound_obj_name: &str) -> Expression {
                 .collect(),
         },
         ExprKind::Assign { target, value } => ExprKind::Assign {
-            target: Box::new(bind_this_in_expr(target, bound_obj_name)),
-            value: Box::new(bind_this_in_expr(value, bound_obj_name)),
+            target: Box::new(bind_this_in_expr(__php_w, target, bound_obj_name)),
+            value: Box::new(bind_this_in_expr(__php_w, value, bound_obj_name)),
         },
         ExprKind::Array(elements) => ExprKind::Array(
             elements
@@ -23900,8 +23829,8 @@ fn bind_this_in_expr(expr: &Expression, bound_obj_name: &str) -> Expression {
                     key: element
                         .key
                         .as_ref()
-                        .map(|key| bind_this_in_expr(key, bound_obj_name)),
-                    value: bind_this_in_expr(&element.value, bound_obj_name),
+                        .map(|key| bind_this_in_expr(__php_w, key, bound_obj_name)),
+                    value: bind_this_in_expr(__php_w, &element.value, bound_obj_name),
                     spread: element.spread,
                     by_ref: element.by_ref,
                 })
@@ -23910,13 +23839,13 @@ fn bind_this_in_expr(expr: &Expression, bound_obj_name: &str) -> Expression {
         ExprKind::Tuple(items) => ExprKind::Tuple(
             items
                 .iter()
-                .map(|item| bind_this_in_expr(item, bound_obj_name))
+                .map(|item| bind_this_in_expr(__php_w, item, bound_obj_name))
                 .collect(),
         ),
         ExprKind::Set(items) => ExprKind::Set(
             items
                 .iter()
-                .map(|item| bind_this_in_expr(item, bound_obj_name))
+                .map(|item| bind_this_in_expr(__php_w, item, bound_obj_name))
                 .collect(),
         ),
         ExprKind::Object(props) => ExprKind::Object(
@@ -23924,15 +23853,15 @@ fn bind_this_in_expr(expr: &Expression, bound_obj_name: &str) -> Expression {
                 .iter()
                 .map(|prop| match prop {
                     ObjectProperty::KeyValue { key, value } => ObjectProperty::KeyValue {
-                        key: bind_this_in_expr(key, bound_obj_name),
-                        value: bind_this_in_expr(value, bound_obj_name),
+                        key: bind_this_in_expr(__php_w, key, bound_obj_name),
+                        value: bind_this_in_expr(__php_w, value, bound_obj_name),
                     },
                     ObjectProperty::Spread(expr) => {
-                        ObjectProperty::Spread(bind_this_in_expr(expr, bound_obj_name))
+                        ObjectProperty::Spread(bind_this_in_expr(__php_w, expr, bound_obj_name))
                     }
                     ObjectProperty::Computed { key, value } => ObjectProperty::Computed {
-                        key: bind_this_in_expr(key, bound_obj_name),
-                        value: bind_this_in_expr(value, bound_obj_name),
+                        key: bind_this_in_expr(__php_w, key, bound_obj_name),
+                        value: bind_this_in_expr(__php_w, value, bound_obj_name),
                     },
                     other => other.clone(),
                 })
@@ -23943,10 +23872,10 @@ fn bind_this_in_expr(expr: &Expression, bound_obj_name: &str) -> Expression {
                 .iter()
                 .map(|part| match part {
                     InterpolPart::Expr(expr) => {
-                        InterpolPart::Expr(bind_this_in_expr(expr, bound_obj_name))
+                        InterpolPart::Expr(bind_this_in_expr(__php_w, expr, bound_obj_name))
                     }
                     InterpolPart::Formatted(expr, fmt) => InterpolPart::Formatted(
-                        bind_this_in_expr(expr, bound_obj_name),
+                        bind_this_in_expr(__php_w, expr, bound_obj_name),
                         fmt.clone(),
                     ),
                     other => other.clone(),
@@ -23954,30 +23883,30 @@ fn bind_this_in_expr(expr: &Expression, bound_obj_name: &str) -> Expression {
                 .collect(),
         ),
         ExprKind::IsType { expr, type_name } => ExprKind::IsType {
-            expr: Box::new(bind_this_in_expr(expr, bound_obj_name)),
+            expr: Box::new(bind_this_in_expr(__php_w, expr, bound_obj_name)),
             type_name: type_name.clone(),
         },
         ExprKind::Cast { expr, type_name } => ExprKind::Cast {
-            expr: Box::new(bind_this_in_expr(expr, bound_obj_name)),
+            expr: Box::new(bind_this_in_expr(__php_w, expr, bound_obj_name)),
             type_name: type_name.clone(),
         },
         ExprKind::TypeOf(expr) => {
-            ExprKind::TypeOf(Box::new(bind_this_in_expr(expr, bound_obj_name)))
+            ExprKind::TypeOf(Box::new(bind_this_in_expr(__php_w, expr, bound_obj_name)))
         }
         ExprKind::NullCoalesce { left, right } => ExprKind::NullCoalesce {
-            left: Box::new(bind_this_in_expr(left, bound_obj_name)),
-            right: Box::new(bind_this_in_expr(right, bound_obj_name)),
+            left: Box::new(bind_this_in_expr(__php_w, left, bound_obj_name)),
+            right: Box::new(bind_this_in_expr(__php_w, right, bound_obj_name)),
         },
         ExprKind::Spread(expr) => {
-            ExprKind::Spread(Box::new(bind_this_in_expr(expr, bound_obj_name)))
+            ExprKind::Spread(Box::new(bind_this_in_expr(__php_w, expr, bound_obj_name)))
         }
-        ExprKind::Await(expr) => ExprKind::Await(Box::new(bind_this_in_expr(expr, bound_obj_name))),
+        ExprKind::Await(expr) => ExprKind::Await(Box::new(bind_this_in_expr(__php_w, expr, bound_obj_name))),
         ExprKind::Yield(expr) => ExprKind::Yield(
             expr.as_ref()
-                .map(|inner| Box::new(bind_this_in_expr(inner, bound_obj_name))),
+                .map(|inner| Box::new(bind_this_in_expr(__php_w, inner, bound_obj_name))),
         ),
         ExprKind::YieldFrom(expr) => {
-            ExprKind::YieldFrom(Box::new(bind_this_in_expr(expr, bound_obj_name)))
+            ExprKind::YieldFrom(Box::new(bind_this_in_expr(__php_w, expr, bound_obj_name)))
         }
         ExprKind::Comprehension {
             kind,
@@ -23985,32 +23914,32 @@ fn bind_this_in_expr(expr: &Expression, bound_obj_name: &str) -> Expression {
             generators,
         } => ExprKind::Comprehension {
             kind: *kind,
-            element: Box::new(bind_this_in_expr(element, bound_obj_name)),
+            element: Box::new(bind_this_in_expr(__php_w, element, bound_obj_name)),
             generators: generators.clone(),
         },
         ExprKind::Slice { lower, upper, step } => ExprKind::Slice {
             lower: lower
                 .as_ref()
-                .map(|inner| Box::new(bind_this_in_expr(inner, bound_obj_name))),
+                .map(|inner| Box::new(bind_this_in_expr(__php_w, inner, bound_obj_name))),
             upper: upper
                 .as_ref()
-                .map(|inner| Box::new(bind_this_in_expr(inner, bound_obj_name))),
+                .map(|inner| Box::new(bind_this_in_expr(__php_w, inner, bound_obj_name))),
             step: step
                 .as_ref()
-                .map(|inner| Box::new(bind_this_in_expr(inner, bound_obj_name))),
+                .map(|inner| Box::new(bind_this_in_expr(__php_w, inner, bound_obj_name))),
         },
         ExprKind::Walrus { target, value } => ExprKind::Walrus {
-            target: Box::new(bind_this_in_expr(target, bound_obj_name)),
-            value: Box::new(bind_this_in_expr(value, bound_obj_name)),
+            target: Box::new(bind_this_in_expr(__php_w, target, bound_obj_name)),
+            value: Box::new(bind_this_in_expr(__php_w, value, bound_obj_name)),
         },
-        ExprKind::Void(expr) => ExprKind::Void(Box::new(bind_this_in_expr(expr, bound_obj_name))),
+        ExprKind::Void(expr) => ExprKind::Void(Box::new(bind_this_in_expr(__php_w, expr, bound_obj_name))),
         ExprKind::Delete(expr) => {
-            ExprKind::Delete(Box::new(bind_this_in_expr(expr, bound_obj_name)))
+            ExprKind::Delete(Box::new(bind_this_in_expr(__php_w, expr, bound_obj_name)))
         }
         ExprKind::Sequence(exprs) => ExprKind::Sequence(
             exprs
                 .iter()
-                .map(|inner| bind_this_in_expr(inner, bound_obj_name))
+                .map(|inner| bind_this_in_expr(__php_w, inner, bound_obj_name))
                 .collect(),
         ),
         ExprKind::Range {
@@ -24018,8 +23947,8 @@ fn bind_this_in_expr(expr: &Expression, bound_obj_name: &str) -> Expression {
             end,
             inclusive,
         } => ExprKind::Range {
-            start: Box::new(bind_this_in_expr(start, bound_obj_name)),
-            end: Box::new(bind_this_in_expr(end, bound_obj_name)),
+            start: Box::new(bind_this_in_expr(__php_w, start, bound_obj_name)),
+            end: Box::new(bind_this_in_expr(__php_w, end, bound_obj_name)),
             inclusive: *inclusive,
         },
         ExprKind::StaticAccess { class, member } => {
@@ -24028,30 +23957,30 @@ fn bind_this_in_expr(expr: &Expression, bound_obj_name: &str) -> Expression {
                 ExprKind::Ident(name) => name == "$this",
                 _ => false,
             };
-            let bound_scope = current_closure_bind_scope();
+            let bound_scope = current_closure_bind_scope(__php_w);
             let class_expr = if is_late_static_placeholder
                 || (bound_scope.is_some() && php_expr_has_this_placeholder(class))
             {
                 bound_scope
                     .clone()
                     .map(|scope| Expression::with_span(ExprKind::Ident(scope), class.span))
-                    .unwrap_or_else(|| bind_this_in_expr(class, bound_obj_name))
+                    .unwrap_or_else(|| bind_this_in_expr(__php_w, class, bound_obj_name))
             } else {
-                bind_this_in_expr(class, bound_obj_name)
+                bind_this_in_expr(__php_w, class, bound_obj_name)
             };
             let member_expr = if let (Some(scope), ExprKind::Ident(member_name)) =
                 (bound_scope.as_deref(), &member.kind)
             {
-                if class_field_visibility(scope, member_name)
+                if class_field_visibility(__php_w, scope, member_name)
                     .is_some_and(|(_, visibility)| visibility == Visibility::Private)
                     && !member_name.starts_with('#')
                 {
                     Expression::with_span(ExprKind::Ident(format!("#{member_name}")), member.span)
                 } else {
-                    bind_this_in_expr(member, bound_obj_name)
+                    bind_this_in_expr(__php_w, member, bound_obj_name)
                 }
             } else {
-                bind_this_in_expr(member, bound_obj_name)
+                bind_this_in_expr(__php_w, member, bound_obj_name)
             };
             ExprKind::StaticAccess {
                 class: Box::new(class_expr),
@@ -24059,17 +23988,17 @@ fn bind_this_in_expr(expr: &Expression, bound_obj_name: &str) -> Expression {
             }
         }
         ExprKind::Match { subject, arms } => ExprKind::Match {
-            subject: Box::new(bind_this_in_expr(subject, bound_obj_name)),
+            subject: Box::new(bind_this_in_expr(__php_w, subject, bound_obj_name)),
             arms: arms
                 .iter()
                 .map(|arm| MatchArm {
                     conditions: arm.conditions.as_ref().map(|conditions| {
                         conditions
                             .iter()
-                            .map(|expr| bind_this_in_expr(expr, bound_obj_name))
+                            .map(|expr| bind_this_in_expr(__php_w, expr, bound_obj_name))
                             .collect()
                     }),
-                    body: bind_this_in_expr(&arm.body, bound_obj_name),
+                    body: bind_this_in_expr(__php_w, &arm.body, bound_obj_name),
                 })
                 .collect(),
         },
@@ -24108,11 +24037,11 @@ fn strip_dollar(s: &str) -> &str {
 /// are already unique so they are left alone (mirrors Go's
 /// `go_requires_fixed_array_copy`). `RefOf` (`$a = &$b`) is deliberately NOT
 /// matched, so reference assignment keeps aliasing.
-fn php_wrap_copy_on_assign(rhs: Expression) -> Expression {
+fn php_wrap_copy_on_assign(__php_w: &mut PhpWalker, rhs: Expression) -> Expression {
     match &rhs.kind {
         ExprKind::Ident(name) if !name.starts_with("__") => {
-            if lookup_simple_value_var(name)
-                .and_then(|value| php_new_class_and_args_from_expr(&value))
+            if lookup_simple_value_var(__php_w, name)
+                .and_then(|value| php_new_class_and_args_from_expr(__php_w, &value))
                 .is_some()
             {
                 return rhs;
@@ -24148,7 +24077,7 @@ fn php_assoc_array(items: Vec<(&str, Expression)>, span: &Span) -> Expression {
     )
 }
 
-fn php_debug_backtrace_expr(args: &[Argument], span: &Span) -> ExprKind {
+fn php_debug_backtrace_expr(__php_w: &mut PhpWalker, args: &[Argument], span: &Span) -> ExprKind {
     let limit = args.get(1).and_then(|arg| match &arg.value.kind {
         ExprKind::Lit(Literal::Int(v)) if *v > 0 => Some(*v as usize),
         ExprKind::Lit(Literal::Float(v)) if *v > 0.0 => Some(*v as usize),
@@ -24160,9 +24089,9 @@ fn php_debug_backtrace_expr(args: &[Argument], span: &Span) -> ExprKind {
         _ => false,
     });
 
-    let current_function = current_function_name().unwrap_or_else(|| "{main}".to_string());
-    let current_class = current_class_name().unwrap_or_default().replace('.', "\\");
-    let current_type = current_method_type().unwrap_or_default();
+    let current_function = current_function_name(__php_w).unwrap_or_else(|| "{main}".to_string());
+    let current_class = current_class_name(__php_w).unwrap_or_default().replace('.', "\\");
+    let current_type = current_method_type(__php_w).unwrap_or_default();
     let mut frames = Vec::new();
     let mut current_items = vec![
         (
@@ -24283,20 +24212,20 @@ fn php_array_has_key(expr: &Expression, key: &str) -> bool {
     })
 }
 
-fn php_class_has_method(class_name: &str, method: &str) -> bool {
-    CLASS_REGISTRY.with(|r| {
-        r.borrow()
+fn php_class_has_method(__php_w: &mut PhpWalker, class_name: &str, method: &str) -> bool {
+    {
+        __php_w.class_registry
             .get(class_name.trim_start_matches('\\'))
             .map(|meta| meta.methods.iter().any(|m| m.name == method))
             .unwrap_or(false)
-    })
+    }
 }
 
-fn php_unserialize_serialize_roundtrip_expr(expr: Expression, span: &Span) -> ExprKind {
+fn php_unserialize_serialize_roundtrip_expr(__php_w: &mut PhpWalker, expr: Expression, span: &Span) -> ExprKind {
     if let ExprKind::New { class, .. } = &expr.kind {
         if let ExprKind::Ident(class_name) = &class.kind {
-            if php_class_has_method(class_name, "__wakeup") {
-                let tmp = next_tmp_name("unser_obj");
+            if php_class_has_method(__php_w, class_name, "__wakeup") {
+                let tmp = next_tmp_name(__php_w, "unser_obj");
                 let tmp_ident =
                     || Expression::with_span(ExprKind::Ident(tmp.clone()), span.clone());
                 let assign = Expression::with_span(
@@ -24328,7 +24257,7 @@ fn php_unserialize_serialize_roundtrip_expr(expr: Expression, span: &Span) -> Ex
     ExprKind::Sequence(vec![expr])
 }
 
-fn php_unserialize_static_expr(args: &[Argument], span: &Span) -> Option<ExprKind> {
+fn php_unserialize_static_expr(__php_w: &mut PhpWalker, args: &[Argument], span: &Span) -> Option<ExprKind> {
     if let Some(options) = args.get(1).map(|a| &a.value) {
         if php_array_option_bool(options, "allowed_classes") == Some(false) {
             return Some(php_new_incomplete_class_expr(span));
@@ -24342,7 +24271,7 @@ fn php_unserialize_static_expr(args: &[Argument], span: &Span) -> Option<ExprKin
     if let ExprKind::Call { callee, args, .. } = &payload.value.kind {
         if matches!(&callee.kind, ExprKind::Ident(name) if name == "serialize") {
             if let Some(serialized) = args.first() {
-                return Some(php_unserialize_serialize_roundtrip_expr(
+                return Some(php_unserialize_serialize_roundtrip_expr(__php_w, 
                     serialized.value.clone(),
                     span,
                 ));
@@ -24562,14 +24491,14 @@ fn php_call_ident(expr: &Expression) -> Option<(&str, &[Argument])> {
     Some((name.as_str(), args.as_slice()))
 }
 
-fn php_datetime_literal_ymd(expr: &Expression) -> Option<(i64, i64, i64)> {
+fn php_datetime_literal_ymd(__php_w: &mut PhpWalker, expr: &Expression) -> Option<(i64, i64, i64)> {
     let resolved = match &expr.kind {
-        ExprKind::Ident(name) => lookup_simple_value_var(name).unwrap_or_else(|| expr.clone()),
+        ExprKind::Ident(name) => lookup_simple_value_var(__php_w, name).unwrap_or_else(|| expr.clone()),
         _ => expr.clone(),
     };
     let (name, args) = php_call_ident(&resolved)?;
     if name == "__php_dt_set_timezone" {
-        return php_datetime_literal_ymd(&args.first()?.value);
+        return php_datetime_literal_ymd(__php_w, &args.first()?.value);
     }
     if name != "__php_dt_new" && name != "__php_dt_imm_new" {
         return None;
@@ -24585,14 +24514,14 @@ fn php_datetime_literal_ymd(expr: &Expression) -> Option<(i64, i64, i64)> {
     Some((y, m, d))
 }
 
-fn php_datetime_literal_ymdhis(expr: &Expression) -> Option<(i64, i64, i64, i64, i64, i64)> {
+fn php_datetime_literal_ymdhis(__php_w: &mut PhpWalker, expr: &Expression) -> Option<(i64, i64, i64, i64, i64, i64)> {
     let resolved = match &expr.kind {
-        ExprKind::Ident(name) => lookup_simple_value_var(name).unwrap_or_else(|| expr.clone()),
+        ExprKind::Ident(name) => lookup_simple_value_var(__php_w, name).unwrap_or_else(|| expr.clone()),
         _ => expr.clone(),
     };
     let (name, args) = php_call_ident(&resolved)?;
     if name == "__php_dt_set_timezone" {
-        return php_datetime_literal_ymdhis(&args.first()?.value);
+        return php_datetime_literal_ymdhis(__php_w, &args.first()?.value);
     }
     if !matches!(name, "__php_dt_new" | "__php_dt_imm_new") {
         return None;
@@ -24625,8 +24554,8 @@ fn php_datetime_literal_ymdhis(expr: &Expression) -> Option<(i64, i64, i64, i64,
     Some((y, m, d, h, i, s))
 }
 
-fn php_datetime_literal_format(fmt: &str, expr: &Expression) -> Option<String> {
-    let (y, m, d, h, i, _s) = php_datetime_literal_ymdhis(expr)?;
+fn php_datetime_literal_format(__php_w: &mut PhpWalker, fmt: &str, expr: &Expression) -> Option<String> {
+    let (y, m, d, h, i, _s) = php_datetime_literal_ymdhis(__php_w, expr)?;
     let month_full = [
         "",
         "January",
@@ -24797,9 +24726,9 @@ fn php_datetimezone_new_expr(name: String, span: &Span) -> Expression {
     )
 }
 
-fn php_dateinterval_days(expr: &Expression) -> Option<i64> {
+fn php_dateinterval_days(__php_w: &mut PhpWalker, expr: &Expression) -> Option<i64> {
     let resolved = match &expr.kind {
-        ExprKind::Ident(name) => lookup_simple_value_var(name).unwrap_or_else(|| expr.clone()),
+        ExprKind::Ident(name) => lookup_simple_value_var(__php_w, name).unwrap_or_else(|| expr.clone()),
         _ => expr.clone(),
     };
     let (name, args) = php_call_ident(&resolved)?;
@@ -24813,9 +24742,9 @@ fn php_dateinterval_days(expr: &Expression) -> Option<i64> {
     }
 }
 
-fn php_dateinterval_ymd(expr: &Expression) -> Option<(i64, i64, i64)> {
+fn php_dateinterval_ymd(__php_w: &mut PhpWalker, expr: &Expression) -> Option<(i64, i64, i64)> {
     let resolved = match &expr.kind {
-        ExprKind::Ident(name) => lookup_simple_value_var(name).unwrap_or_else(|| expr.clone()),
+        ExprKind::Ident(name) => lookup_simple_value_var(__php_w, name).unwrap_or_else(|| expr.clone()),
         _ => expr.clone(),
     };
     let (name, args) = php_call_ident(&resolved)?;
@@ -24887,12 +24816,12 @@ fn php_date_string((y, m, d): (i64, i64, i64)) -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
-fn php_dateperiod_literal_array(args: &[Argument], span: &Span) -> Option<Expression> {
+fn php_dateperiod_literal_array(__php_w: &mut PhpWalker, args: &[Argument], span: &Span) -> Option<Expression> {
     if args.len() < 3 {
         return None;
     }
-    let start = php_datetime_literal_ymd(&args[0].value)?;
-    let step_days = php_dateinterval_days(&args[1].value)?;
+    let start = php_datetime_literal_ymd(__php_w, &args[0].value)?;
+    let step_days = php_dateinterval_days(__php_w, &args[1].value)?;
     if step_days <= 0 {
         return None;
     }
@@ -24914,7 +24843,7 @@ fn php_dateperiod_literal_array(args: &[Argument], span: &Span) -> Option<Expres
             }
         }
         _ => {
-            let end = php_datetime_literal_ymd(&args[2].value)?;
+            let end = php_datetime_literal_ymd(__php_w, &args[2].value)?;
             let mut n = if exclude_start { 1 } else { 0 };
             loop {
                 let date = php_add_days(start.0, start.1, start.2, n * step_days);
@@ -24949,13 +24878,13 @@ fn php_dateperiod_literal_array(args: &[Argument], span: &Span) -> Option<Expres
     ))
 }
 
-fn php_extract_expr(args: &[Argument], span: &Span) -> Option<ExprKind> {
+fn php_extract_expr(__php_w: &mut PhpWalker, args: &[Argument], span: &Span) -> Option<ExprKind> {
     if args.is_empty() {
         return None;
     }
     let elements = match &args[0].value.kind {
-        ExprKind::Array(_) => php_literal_string_key_array(&args[0].value)?,
-        ExprKind::Ident(name) => lookup_simple_array_var(name)?,
+        ExprKind::Array(_) => php_literal_string_key_array(__php_w, &args[0].value)?,
+        ExprKind::Ident(name) => lookup_simple_array_var(__php_w, name)?,
         _ => return None,
     };
     let mode = args
@@ -24974,20 +24903,20 @@ fn php_extract_expr(args: &[Argument], span: &Span) -> Option<ExprKind> {
     for (key, value) in elements {
         let target = match mode {
             // EXTR_SKIP
-            1 if is_simple_defined_var(&key) => continue,
+            1 if is_simple_defined_var(__php_w, &key) => continue,
             // EXTR_PREFIX_SAME
-            2 if is_simple_defined_var(&key) => {
+            2 if is_simple_defined_var(__php_w, &key) => {
                 format!("{}_{}", prefix.as_deref().unwrap_or(""), key)
             }
             // EXTR_PREFIX_ALL
             3 => format!("{}_{}", prefix.as_deref().unwrap_or(""), key),
             _ => key,
         };
-        note_simple_defined_var(&target);
+        note_simple_defined_var(__php_w, &target);
         seq.push(Expression::with_span(
             ExprKind::Assign {
                 target: Box::new(Expression::with_span(ExprKind::Ident(target), span.clone())),
-                value: Box::new(php_wrap_copy_on_assign(value)),
+                value: Box::new(php_wrap_copy_on_assign(__php_w, value)),
             },
             span.clone(),
         ));
@@ -25000,9 +24929,9 @@ fn php_extract_expr(args: &[Argument], span: &Span) -> Option<ExprKind> {
     Some(ExprKind::Sequence(seq))
 }
 
-fn php_array_access_read(receiver: Expression, index: Expression, span: &Span) -> Expression {
-    let obj_tmp = next_tmp_name("offset_obj");
-    let idx_tmp = next_tmp_name("offset_idx");
+fn php_array_access_read(__php_w: &mut PhpWalker, receiver: Expression, index: Expression, span: &Span) -> Expression {
+    let obj_tmp = next_tmp_name(__php_w, "offset_obj");
+    let idx_tmp = next_tmp_name(__php_w, "offset_idx");
     let obj_ident = || Expression::with_span(ExprKind::Ident(obj_tmp.clone()), span.clone());
     let idx_ident = || Expression::with_span(ExprKind::Ident(idx_tmp.clone()), span.clone());
 
@@ -25174,7 +25103,7 @@ fn php_natkey(inner: Expression, fold_case: bool, span: &Span) -> Expression {
 }
 
 /// Build a comparator lambda `fn(__x, __y) => strcmp(natkey(__x), natkey(__y))`.
-fn php_natcmp_lambda(fold_case: bool, span: &Span) -> Expression {
+fn php_natcmp_lambda(__php_w: &mut PhpWalker, fold_case: bool, span: &Span) -> Expression {
     let x = Expression::with_span(ExprKind::Ident("__x".to_string()), span.clone());
     let y = Expression::with_span(ExprKind::Ident("__y".to_string()), span.clone());
     let body = php_mk_call(
@@ -25225,7 +25154,25 @@ fn php_natcmp_lambda(fold_case: bool, span: &Span) -> Expression {
 /// `method_exists` / `property_exists` belong in a runtime primitive reading
 /// the annotation the class compiler stamps, reached through the profile's
 /// builtin table (`intrinsic:symbol_exists:<kind>`), not here.
-fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -> Option<ExprKind> {
+/// A literal string argument, following one level of variable binding.
+///
+/// Was a closure capturing the walker, which held a unique borrow of it for the
+/// whole (very long) body of `lower_php_builtin_call` and collided with every
+/// other use in between. A plain function takes the borrow only for the call.
+fn lit_str_arg(__php_w: &mut PhpWalker, args: &[Argument], i: usize) -> Option<String> {
+    match &args.get(i)?.value.kind {
+        ExprKind::Lit(Literal::Str(s)) => Some(s.clone()),
+        ExprKind::Ident(name) => {
+            lookup_simple_value_var(__php_w, name).and_then(|expr| match expr.kind {
+                ExprKind::Lit(Literal::Str(s)) => Some(s),
+                _ => None,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn lower_php_builtin_call(__php_w: &mut PhpWalker, callee: &Expression, args: &[Argument], span: &Span) -> Option<ExprKind> {
     let name = match &callee.kind {
         ExprKind::Ident(n) => n.as_str(),
         _ => return None,
@@ -25260,18 +25207,6 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
         callee: Box::new(callee),
         args: call_args.into_iter().map(Argument::positional).collect(),
         optional: false,
-    };
-    let lit_str_arg = |i: usize| -> Option<String> {
-        match &args.get(i)?.value.kind {
-            ExprKind::Lit(Literal::Str(s)) => Some(s.clone()),
-            ExprKind::Ident(name) => {
-                lookup_simple_value_var(name).and_then(|expr| match expr.kind {
-                    ExprKind::Lit(Literal::Str(s)) => Some(s),
-                    _ => None,
-                })
-            }
-            _ => None,
-        }
     };
     let lit_int_arg = |i: usize| -> Option<i64> {
         match &args.get(i)?.value.kind {
@@ -25368,10 +25303,10 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
     Some(match name {
         "class_alias" | "\\class_alias" if args.len() >= 2 => {
             if let (Some(original), Some(alias)) = (
-                php_literal_string(&args[0].value),
-                php_literal_string(&args[1].value),
+                php_literal_string(__php_w, &args[0].value),
+                php_literal_string(__php_w, &args[1].value),
             ) {
-                note_php_class_alias(&original, &alias);
+                note_php_class_alias(__php_w, &original, &alias);
             }
             ExprKind::Lit(Literal::Bool(true))
         }
@@ -25401,11 +25336,11 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
         "dom_import_simplexml" if args.len() == 1 => return Some(arg(0)?.kind),
         "iterator_to_array" if !args.is_empty() => {
             let first = arg(0)?;
-            if let Some(class_name) = php_object_class_from_expr(&first) {
-                let implements_iterator_aggregate = class_all_interfaces(&class_name)
+            if let Some(class_name) = php_object_class_from_expr(__php_w, &first) {
+                let implements_iterator_aggregate = class_all_interfaces(__php_w, &class_name)
                     .iter()
                     .any(|iface| iface.trim_start_matches('\\') == "IteratorAggregate");
-                if implements_iterator_aggregate || class_has_method(&class_name, "getIterator") {
+                if implements_iterator_aggregate || class_has_method(__php_w, &class_name, "getIterator") {
                     let iter_call = Expression::with_span(
                         ExprKind::Call {
                             callee: Box::new(Expression::with_span(
@@ -25433,7 +25368,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
                 return None;
             }
         }
-        "debug_backtrace" => php_debug_backtrace_expr(args, span),
+        "debug_backtrace" => php_debug_backtrace_expr(__php_w, args, span),
         "microtime" if args.is_empty() => {
             ExprKind::Lit(Literal::Str("0.000000 1700000000".to_string()))
         }
@@ -25497,7 +25432,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             }
         }
         "stream_is_local" if args.len() == 1 => {
-            if let Some(path) = lit_str_arg(0) {
+            if let Some(path) = lit_str_arg(__php_w, args, 0) {
                 ExprKind::Lit(Literal::Bool(
                     !path.contains("://")
                         || path.starts_with("file://")
@@ -25576,7 +25511,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             out.kind
         }
         "token_get_all" if !args.is_empty() => {
-            let source = lit_str_arg(0)?;
+            let source = lit_str_arg(__php_w, args, 0)?;
             if args.len() >= 2 && source.contains("class { public") {
                 ExprKind::Call {
                     callee: Box::new(Expression::with_span(
@@ -25739,10 +25674,10 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             }
         }
         "str_getcsv" if !args.is_empty() => {
-            let row = lit_str_arg(0)?;
-            let delimiter = lit_str_arg(1).and_then(|s| s.chars().next()).unwrap_or(',');
-            let enclosure = lit_str_arg(2).and_then(|s| s.chars().next()).unwrap_or('"');
-            let escape = lit_str_arg(3)
+            let row = lit_str_arg(__php_w, args, 0)?;
+            let delimiter = lit_str_arg(__php_w, args, 1).and_then(|s| s.chars().next()).unwrap_or(',');
+            let enclosure = lit_str_arg(__php_w, args, 2).and_then(|s| s.chars().next()).unwrap_or('"');
+            let escape = lit_str_arg(__php_w, args, 3)
                 .and_then(|s| s.chars().next())
                 .unwrap_or('\\');
             ExprKind::Array(
@@ -25758,11 +25693,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             )
         }
         "sscanf" if args.len() > 2 => {
-            let tmp_id = TMP_COUNTER.with(|c| {
-                let v = *c.borrow();
-                *c.borrow_mut() += 1;
-                v
-            });
+            let tmp_id = next_tmp_id(__php_w);
             let tmp_name = format!("__php_sscanf_{tmp_id}");
             let tmp_ident =
                 || Expression::with_span(ExprKind::Ident(tmp_name.clone()), span.clone());
@@ -25796,16 +25727,16 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             ExprKind::Sequence(seq)
         }
         "unserialize" if !args.is_empty() => {
-            if let Some(kind) = php_unserialize_static_expr(args, span) {
+            if let Some(kind) = php_unserialize_static_expr(__php_w, args, span) {
                 kind
             } else {
                 return None;
             }
         }
         "serialize" if args.len() == 1 => {
-            if let Some(class_name) = php_object_class_from_expr(&args[0].value) {
-                if php_class_has_method(&class_name, "__sleep") {
-                    ExprKind::Lit(Literal::Str(class_public_fields(&class_name).join(",")))
+            if let Some(class_name) = php_object_class_from_expr(__php_w, &args[0].value) {
+                if php_class_has_method(__php_w, &class_name, "__sleep") {
+                    ExprKind::Lit(Literal::Str(class_public_fields(__php_w, &class_name).join(",")))
                 } else {
                     return None;
                 }
@@ -25894,30 +25825,18 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             // IIFE: build result array by iterating indices
             let i_name = format!(
                 "__map_i_{}",
-                TMP_COUNTER.with(|c| {
-                    let v = *c.borrow();
-                    *c.borrow_mut() += 1;
-                    v
-                })
+                next_tmp_id(__php_w)
             );
             let i_ident = || Expression::with_span(ExprKind::Ident(i_name.clone()), span.clone());
             let out_name = format!(
                 "__map_out_{}",
-                TMP_COUNTER.with(|c| {
-                    let v = *c.borrow();
-                    *c.borrow_mut() += 1;
-                    v
-                })
+                next_tmp_id(__php_w)
             );
             let out_ident =
                 || Expression::with_span(ExprKind::Ident(out_name.clone()), span.clone());
             let len_name = format!(
                 "__map_len_{}",
-                TMP_COUNTER.with(|c| {
-                    let v = *c.borrow();
-                    *c.borrow_mut() += 1;
-                    v
-                })
+                next_tmp_id(__php_w)
             );
             let len_ident =
                 || Expression::with_span(ExprKind::Ident(len_name.clone()), span.clone());
@@ -25928,11 +25847,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
                 let name = format!(
                     "__map_arr{}_{}",
                     idx,
-                    TMP_COUNTER.with(|c| {
-                        let v = *c.borrow();
-                        *c.borrow_mut() += 1;
-                        v
-                    })
+                    next_tmp_id(__php_w)
                 );
                 init_stmts.push(Statement::with_span(
                     StmtKind::Assign {
@@ -26032,7 +25947,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
                 .collect();
             let cb_call = Expression::with_span(
                 ExprKind::Call {
-                    callee: Box::new(php_callable_target_expr(callback, span)),
+                    callee: Box::new(php_callable_target_expr(__php_w, callback, span)),
                     args: cb_args.into_iter().map(Argument::positional).collect(),
                     optional: false,
                 },
@@ -26118,7 +26033,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             // `[Class, m]` / `[obj, m]` / "name" callback becomes a real closure.
             let arity = args.len() - 1;
             let mut mapped_args = Vec::with_capacity(args.len());
-            mapped_args.push(php_wrap_callable(arg(0)?, arity, span));
+            mapped_args.push(php_wrap_callable(__php_w, arg(0)?, arity, span));
             mapped_args.extend(args.iter().skip(1).map(|arg| arg.value.clone()));
             mk_call(Expression::ident("array_map"), mapped_args)
         }
@@ -26128,30 +26043,30 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
         // buffer primitive's `CALL_REF` and the VM reports "string is not
         // callable". Arity 1: handlers receive the buffer.
         "ob_start" if !args.is_empty() => {
-            let mut mapped_args = vec![php_wrap_callable(arg(0)?, 1, span)];
+            let mut mapped_args = vec![php_wrap_callable(__php_w, arg(0)?, 1, span)];
             mapped_args.extend(args.iter().skip(1).map(|arg| arg.value.clone()));
             mk_call(Expression::ident("ob_start"), mapped_args)
         }
         // Comparator-taking sorts: `[Class, m]` / `[obj, m]` / "name" → closure.
         fname @ ("usort" | "uasort" | "uksort") if args.len() == 2 => mk_call(
             Expression::ident(fname),
-            vec![arg(0)?, php_wrap_callable(arg(1)?, 2, span)],
+            vec![arg(0)?, php_wrap_callable(__php_w, arg(1)?, 2, span)],
         ),
         fname @ ("array_udiff" | "array_uintersect") if args.len() == 3 => mk_call(
             Expression::ident(fname),
-            vec![arg(0)?, arg(1)?, php_wrap_callable(arg(2)?, 2, span)],
+            vec![arg(0)?, arg(1)?, php_wrap_callable(__php_w, arg(2)?, 2, span)],
         ),
         fname @ "array_intersect_ukey" if args.len() == 3 => mk_call(
             Expression::ident(fname),
-            vec![arg(0)?, arg(1)?, php_wrap_callable(arg(2)?, 2, span)],
+            vec![arg(0)?, arg(1)?, php_wrap_callable(__php_w, arg(2)?, 2, span)],
         ),
         fname @ ("array_udiff_uassoc" | "array_uintersect_uassoc") if args.len() == 4 => mk_call(
             Expression::ident(fname),
             vec![
                 arg(0)?,
                 arg(1)?,
-                php_wrap_callable(arg(2)?, 2, span),
-                php_wrap_callable(arg(3)?, 2, span),
+                php_wrap_callable(__php_w, arg(2)?, 2, span),
+                php_wrap_callable(__php_w, arg(3)?, 2, span),
             ],
         ),
         fname @ ("array_replace_recursive" | "array_merge_recursive") if args.len() > 2 => {
@@ -26167,7 +26082,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             }
             folded.kind
         }
-        "array_walk_recursive" if args.len() >= 2 => php_lower_array_walk_recursive(args, span)?,
+        "array_walk_recursive" if args.len() >= 2 => php_lower_array_walk_recursive(__php_w, args, span)?,
         "array_multisort" if !args.is_empty() => {
             let mut groups: Vec<(Expression, Vec<i64>)> = Vec::new();
             let mut i = 0usize;
@@ -26193,11 +26108,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
                 return None;
             }
 
-            let tmp_id = TMP_COUNTER.with(|c| {
-                let v = *c.borrow();
-                *c.borrow_mut() += 1;
-                v
-            });
+            let tmp_id = next_tmp_id(__php_w);
             let i_name = format!("__php_multisort_i_{tmp_id}");
             let j_name = format!("__php_multisort_j_{tmp_id}");
             let len_name = format!("__php_multisort_len_{tmp_id}");
@@ -26420,7 +26331,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             } else {
                 visible_arity.max(1)
             };
-            let mut new_args = vec![arg(0)?, php_wrap_callable(arg(1)?, callback_arity, span)];
+            let mut new_args = vec![arg(0)?, php_wrap_callable(__php_w, arg(1)?, callback_arity, span)];
             new_args.extend(args.iter().skip(2).map(|a| a.value.clone()));
             if args.len() == 2 && visible_arity >= 2 {
                 new_args.push(Expression::int(1));
@@ -26458,7 +26369,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
         "eval" if args.len() == 1 => {
             let source = arg(0)?;
             if let ExprKind::Lit(Literal::Str(code)) = &source.kind {
-                if php_eval_literal_class_error(code) {
+                if php_eval_literal_class_error(__php_w, code) {
                     return Some(php_throw_error_expr("Class declaration error", span));
                 }
                 if php_eval_literal_parse_error(code) {
@@ -26554,11 +26465,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
         }
         // `vfprintf($stream, $fmt, $args)` → `fwrite($stream, vsprintf(...))`.
         "vfprintf" if args.len() == 3 => {
-            let tmp_id = TMP_COUNTER.with(|c| {
-                let v = *c.borrow();
-                *c.borrow_mut() += 1;
-                v
-            });
+            let tmp_id = next_tmp_id(__php_w);
             let tmp = Expression::with_span(
                 ExprKind::Ident(format!("__php_vfprintf_buf_{tmp_id}")),
                 span.clone(),
@@ -26596,7 +26503,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             ExprKind::Sequence(vec![save, write, ret])
         }
         "set_error_handler" if !args.is_empty() => {
-            let mut call_args = vec![php_wrap_callable(arg(0)?, 4, span)];
+            let mut call_args = vec![php_wrap_callable(__php_w, arg(0)?, 4, span)];
             call_args.extend(args.iter().skip(1).map(|a| a.value.clone()));
             mk_call(Expression::ident("set_error_handler"), call_args)
         }
@@ -26624,7 +26531,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             let forwarded = Expression::with_span(ExprKind::Ident(param.to_string()), span.clone());
             let body = Expression::with_span(
                 ExprKind::Call {
-                    callee: Box::new(php_callable_target_expr(callback, span)),
+                    callee: Box::new(php_callable_target_expr(__php_w, callback, span)),
                     args: vec![Argument {
                         name: None,
                         value: forwarded,
@@ -26663,7 +26570,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
         // and PHP named-unpack arrays all flow through the existing compiler
         // call logic.
         "call_user_func" if !args.is_empty() => ExprKind::Call {
-            callee: Box::new(php_callable_target_expr(arg(0)?, span)),
+            callee: Box::new(php_callable_target_expr(__php_w, arg(0)?, span)),
             args: args.iter().skip(1).cloned().collect(),
             optional: false,
         },
@@ -26681,8 +26588,8 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             )
         }
         "call_user_func_array" if args.len() == 2 => ExprKind::Call {
-            callee: Box::new(php_callable_target_expr(arg(0)?, span)),
-            args: php_args_from_simple_array(&args[1].value).unwrap_or_else(|| {
+            callee: Box::new(php_callable_target_expr(__php_w, arg(0)?, span)),
+            args: php_args_from_simple_array(__php_w, &args[1].value).unwrap_or_else(|| {
                 vec![Argument {
                     name: None,
                     value: args[1].value.clone(),
@@ -26738,7 +26645,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
                 )),
             }
         }
-        "extract" if !args.is_empty() => php_extract_expr(args, span)?,
+        "extract" if !args.is_empty() => php_extract_expr(__php_w, args, span)?,
         // ── compact(name, ...) → ['name' => $name, ...] ──────────────────
         // PHP `compact('a', 'b')` (or `compact(['a', 'b'])`) builds an array
         // mapping each NAME to the value of the same-named variable. With
@@ -26760,15 +26667,18 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
                     _ => return None,
                 }
             }
-            let elements = names
+            let defined: Vec<String> = names
                 .into_iter()
-                .filter(|n| is_simple_defined_var(n))
+                .filter(|n| is_simple_defined_var(__php_w, n))
+                .collect();
+            let elements = defined
+                .into_iter()
                 .map(|n| ArrayElement {
                     key: Some(Expression::with_span(
                         ExprKind::Lit(Literal::Str(n.clone())),
                         span.clone(),
                     )),
-                    value: lookup_simple_value_var(&n).unwrap_or_else(|| {
+                    value: lookup_simple_value_var(__php_w, &n).unwrap_or_else(|| {
                         Expression::with_span(ExprKind::Ident(format!("${n}")), span.clone())
                     }),
                     spread: false,
@@ -26808,11 +26718,11 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
         // order, preserving keys — i.e. `uasort` with the natural comparator.
         "natsort" if args.len() == 1 => mk_call(
             Expression::ident("uasort"),
-            vec![arg(0)?, php_natcmp_lambda(false, span)],
+            vec![arg(0)?, php_natcmp_lambda(__php_w, false, span)],
         ),
         "natcasesort" if args.len() == 1 => mk_call(
             Expression::ident("uasort"),
-            vec![arg(0)?, php_natcmp_lambda(true, span)],
+            vec![arg(0)?, php_natcmp_lambda(__php_w, true, span)],
         ),
         // `sort($a, SORT_NATURAL|SORT_NUMERIC)` — reindexing sort by a flag
         // comparator. SORT_STRING/REGULAR stay on the `sort_in_place` adapter.
@@ -26820,7 +26730,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             // SORT_NATURAL == 6
             ExprKind::Lit(Literal::Int(6)) => mk_call(
                 Expression::ident("usort"),
-                vec![arg(0)?, php_natcmp_lambda(false, span)],
+                vec![arg(0)?, php_natcmp_lambda(__php_w, false, span)],
             ),
             // SORT_NUMERIC == 1 — `__x - __y` coerces operands numerically.
             ExprKind::Lit(Literal::Int(1)) => {
@@ -26939,91 +26849,80 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             {
                 return Some(ExprKind::Lit(Literal::Bool(true)));
             }
+            // A LITERAL naming a php builtin is the one thing the runtime
+            // resolver below documentedly cannot see: `strlen` and friends
+            // never become module globals, so the per-symbol comparison chain
+            // in `emit_symbol_ref_for_name_on_stack` has nothing to match.
+            // This is the same corpus the literal CALL path resolves against
+            // — `php_builtin_callable_name` — so the two still agree. A
+            // builtin name held in a variable misses here exactly as it
+            // misses when called, which is a separate gap and not hidden.
             if let ExprKind::Lit(Literal::Str(name)) = &args[0].value.kind {
+                if !name.contains("::") && php_builtin_callable_name(name) {
+                    return Some(ExprKind::Lit(Literal::Bool(true)));
+                }
+                // A LITERAL `"Class::method"`, answered here for the same
+                // reason: the runtime resolver cannot resolve a class NAME at
+                // a call site (the per-symbol lookup is too large to inline —
+                // see `emit_callable_designator_in_slot`), so the literal
+                // spelling is settled where it is literal. This is the same
+                // corpus `php_callable_target_expr` resolves the CALL against,
+                // so the two still agree.
                 if let Some((class_name, method_name)) = name.split_once("::") {
-                    return Some(ExprKind::Lit(Literal::Bool(class_has_method(
+                    return Some(ExprKind::Lit(Literal::Bool(class_has_method(__php_w, 
                         class_name.trim_start_matches('\\'),
                         method_name,
                     ))));
                 }
             }
+            // The literal `[Class::class, 'method']` pair, same reason.
             if let ExprKind::Array(elements) = &args[0].value.kind {
                 if elements.len() == 2 {
-                    let method_name = match &elements[1].value.kind {
-                        ExprKind::Lit(Literal::Str(name)) => Some(name.as_str()),
-                        _ => None,
-                    };
-                    if let Some(method_name) = method_name {
-                        let class_name = match &elements[0].value.kind {
-                            ExprKind::New { class, .. } => match &class.kind {
-                                ExprKind::Ident(name) => {
-                                    Some(name.trim_start_matches('\\').to_string())
-                                }
-                                _ => None,
-                            },
-                            ExprKind::This => current_class_name(),
-                            ExprKind::Ident(name) if name == "$this" => current_class_name(),
-                            ExprKind::Lit(Literal::Str(name)) => {
-                                Some(name.trim_start_matches('\\').to_string())
-                            }
-                            _ => None,
-                        };
-                        if let Some(class_name) = class_name {
-                            return Some(ExprKind::Lit(Literal::Bool(
-                                class_has_method(&class_name, method_name)
-                                    || seen_class_has_method(&class_name, method_name),
-                            )));
-                        }
+                    if let (Some(class_name), Some(method_name)) = (
+                        php_literal_string(__php_w, &elements[0].value),
+                        php_literal_string(__php_w, &elements[1].value),
+                    ) {
+                        let class_name = class_name.trim_start_matches('\\').to_string();
+                        return Some(ExprKind::Lit(Literal::Bool(
+                            class_has_method(__php_w, &class_name, &method_name)
+                                || seen_class_has_method(__php_w, &class_name, &method_name),
+                        )));
                     }
                 }
             }
-            // PHP `is_callable($x)` matches:
-            //   - actual functions/closures (typeof === "function")
-            //   - string function names that resolve via function_exists()
-            //   - objects implementing `__invoke` magic method
+            // PHP's callable rule, asked the ONE way the call path asks it.
             //
-            // Walker emits:
-            //   typeof $x === "function" ||
-            //   (typeof $x === "string" && function_exists($x)) ||
-            //   (typeof $x === "object" &&
-            //   typeof $x->__invoke === "function")
+            // A `CallableRef` around the value says "this denotes callable
+            // code", and the shared resolver behind it turns a function-name
+            // string, a `"Class::method"` string and a `[receiver, 'method']`
+            // pair into the callable each one names — the same resolution
+            // `$x(...)` performs. So `is_callable($x)` and calling `$x` can no
+            // longer disagree, which they did: this used to fold literal
+            // spellings against `class_has_method` and then fall back to a
+            // hand-built ladder of its own.
             //
-            // The double-typeof check on the same expression is fine —
-            // `arg(0)?` returns a freshly-built clone each call.
-            let left_typeof = Expression::with_span(
+            // A callable OBJECT is the second half, and it is asked by ROLE:
+            // whatever fills `ProtocolSlot::Call` — PHP spells it `__invoke`,
+            // but the slot key is derived from the slot NUMBER, so a class
+            // built by another frontend answers here too. The `__invoke`
+            // member test this replaces could only ever see PHP's spelling.
+            let resolved = Expression::with_span(
+                ExprKind::CallableRef {
+                    target: Box::new(arg(0)?),
+                    receiver: None,
+                    binding: CallableBinding::Static,
+                    adapter: None,
+                },
+                span.clone(),
+            );
+            let resolves_to_function = Expression::with_span(
                 ExprKind::Binary {
                     op: BinOp::StrictEq,
                     left: Box::new(Expression::with_span(
-                        ExprKind::TypeOf(Box::new(arg(0)?)),
+                        ExprKind::TypeOf(Box::new(resolved)),
                         span.clone(),
                     )),
                     right: Box::new(Expression::string("function")),
-                },
-                span.clone(),
-            );
-            let is_string = Expression::with_span(
-                ExprKind::Binary {
-                    op: BinOp::StrictEq,
-                    left: Box::new(Expression::with_span(
-                        ExprKind::TypeOf(Box::new(arg(0)?)),
-                        span.clone(),
-                    )),
-                    right: Box::new(Expression::string("string")),
-                },
-                span.clone(),
-            );
-            let string_callable = Expression::with_span(
-                ExprKind::Binary {
-                    op: BinOp::And,
-                    left: Box::new(is_string),
-                    right: Box::new(Expression::with_span(
-                        ExprKind::Call {
-                            callee: Box::new(Expression::ident("function_exists")),
-                            args: vec![Argument::positional(arg(0)?)],
-                            optional: false,
-                        },
-                        span.clone(),
-                    )),
                 },
                 span.clone(),
             );
@@ -27038,44 +26937,36 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
                 },
                 span.clone(),
             );
-            let invoke_member = Expression::with_span(
+            let call_slot_member = Expression::with_span(
                 ExprKind::Member {
                     object: Box::new(arg(0)?),
-                    field: "__invoke".to_string(),
+                    field: vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Call),
                     null_safe: false,
                 },
                 span.clone(),
             );
-            let invoke_typeof = Expression::with_span(
+            let fills_call_slot = Expression::with_span(
                 ExprKind::Binary {
                     op: BinOp::StrictEq,
                     left: Box::new(Expression::with_span(
-                        ExprKind::TypeOf(Box::new(invoke_member)),
+                        ExprKind::TypeOf(Box::new(call_slot_member)),
                         span.clone(),
                     )),
                     right: Box::new(Expression::string("function")),
                 },
                 span.clone(),
             );
-            let obj_with_invoke = Expression::with_span(
-                ExprKind::Binary {
-                    op: BinOp::And,
-                    left: Box::new(is_obj),
-                    right: Box::new(invoke_typeof),
-                },
-                span.clone(),
-            );
             ExprKind::Binary {
                 op: BinOp::Or,
-                left: Box::new(Expression::with_span(
+                left: Box::new(resolves_to_function),
+                right: Box::new(Expression::with_span(
                     ExprKind::Binary {
-                        op: BinOp::Or,
-                        left: Box::new(left_typeof),
-                        right: Box::new(string_callable),
+                        op: BinOp::And,
+                        left: Box::new(is_obj),
+                        right: Box::new(fills_call_slot),
                     },
                     span.clone(),
                 )),
-                right: Box::new(obj_with_invoke),
             }
         }
         "is_null" => {
@@ -27158,7 +27049,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
                     return Some(ExprKind::Lit(Literal::Bool(false)));
                 }
             }
-            let tmp = next_tmp_name("isnum");
+            let tmp = next_tmp_name(__php_w, "isnum");
             let tmp_ident = || Expression::with_span(ExprKind::Ident(tmp.clone()), span.clone());
             let save = Expression::with_span(
                 ExprKind::Assign {
@@ -27310,7 +27201,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
                 let normalized = if name.starts_with('\\') || name.contains('\\') {
                     php_normalize_class_ref(bare)
                 } else {
-                    php_resolve_class_name(bare)
+                    php_resolve_class_name(__php_w, bare)
                 };
                 if bare.eq_ignore_ascii_case("stdClass")
                     || matches!(
@@ -27323,8 +27214,8 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
                             | "IntlCalendar"
                             | "Transliterator"
                     )
-                    || class_is_registered_as_class(bare)
-                    || class_is_registered_as_class(&normalized)
+                    || class_is_registered_as_class(__php_w, bare)
+                    || class_is_registered_as_class(__php_w, &normalized)
                 {
                     return Some(ExprKind::Lit(Literal::Bool(true)));
                 }
@@ -27359,7 +27250,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
                 // intrinsic, which canonicalizes the name and reads the
                 // callable alias — see
                 // [[project_php_function_exists_compile_time_fold]].
-                if !name.contains('\\') && php_bare_name_is_namespaced_function_suffix(name) {
+                if !name.contains('\\') && php_bare_name_is_namespaced_function_suffix(__php_w, name) {
                     // A bare name that only exists as a NAMESPACED suffix is
                     // genuinely not callable unqualified — an authoritative no,
                     // and a fact about NAME RESOLUTION rather than about whether
@@ -27435,7 +27326,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
                 return None;
             }
             let value_tmp = Expression::with_span(
-                ExprKind::Ident(next_tmp_name("array_shift_value")),
+                ExprKind::Ident(next_tmp_name(__php_w, "array_shift_value")),
                 span.clone(),
             );
             let save_value = Expression::with_span(
@@ -27480,11 +27371,11 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             ExprKind::Sequence(vec![save_value, null_if_empty])
         }
         "grapheme_strlen" if !args.is_empty() => {
-            let s = lit_str_arg(0)?;
+            let s = lit_str_arg(__php_w, args, 0)?;
             ExprKind::Lit(Literal::Int(s.chars().count() as i64))
         }
         "grapheme_substr" if args.len() >= 2 => {
-            let s = lit_str_arg(0)?;
+            let s = lit_str_arg(__php_w, args, 0)?;
             let start = lit_int_arg(1)? as usize;
             let len = args.get(2).and_then(|_| lit_int_arg(2)).map(|n| n as usize);
             let chars = s.chars().skip(start);
@@ -27496,8 +27387,8 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             ExprKind::Lit(Literal::Str(out))
         }
         "grapheme_strpos" if args.len() >= 2 => {
-            let hay = lit_str_arg(0)?;
-            let needle = lit_str_arg(1)?;
+            let hay = lit_str_arg(__php_w, args, 0)?;
+            let needle = lit_str_arg(__php_w, args, 1)?;
             let pos = hay
                 .chars()
                 .collect::<Vec<_>>()
@@ -27524,57 +27415,33 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             // Display form is backslash-qualified (`App\Models\Post`);
             // the dotted spelling is the internal identity only.
             ExprKind::Lit(Literal::Str(
-                current_class_name().unwrap_or_default().replace('.', "\\"),
+                current_class_name(__php_w).unwrap_or_default().replace('.', "\\"),
             ))
         }
+        // `get_class($obj)` is a RUNTIME question, and the walker is the wrong
+        // place to answer it. It resolves through the shared identity stamp in
+        // `emitter/reflection_adapter::emit_php_get_class` — the same
+        // `reflection::FIELD_TYPE` that `emit_instanceof` reads and that every
+        // stamped frontend writes, so an object built by another language
+        // answers here too.
+        //
+        // This used to fold `php_object_class_from_expr`, which reports the
+        // class an expression is DECLARED as. For `$this` that is the class the
+        // method was written in — so `get_class($this)` answered `Base` where
+        // PHP answers `Kid`, because any subclass inherits the method. The only
+        // compile-time half left is PHP's `TypeError` for a non-object.
         "get_class" if args.len() == 1 => {
-            // $obj.__type ?? $obj.constructor.name
             let obj = arg(0)?;
-            if php_expr_is_compile_time_non_object(&obj) {
+            if php_expr_is_compile_time_non_object(__php_w, &obj) {
                 return Some(php_throw_named_error_expr(
                     "TypeError",
                     "get_class expects object",
                     span,
                 ));
             }
-            if let Some(class_name) = php_object_class_from_expr(&obj) {
-                return Some(ExprKind::Lit(Literal::Str(class_name.replace('.', "\\"))));
-            }
-            let type_prop = Expression::with_span(
-                ExprKind::Member {
-                    object: Box::new(obj.clone()),
-                    field: "__type".to_string(),
-                    null_safe: false,
-                },
-                span.clone(),
-            );
-            let ctor = Expression::with_span(
-                ExprKind::Member {
-                    object: Box::new(obj),
-                    field: "constructor".to_string(),
-                    null_safe: false,
-                },
-                span.clone(),
-            );
-            let ctor_name = Expression::with_span(
-                ExprKind::Member {
-                    object: Box::new(ctor),
-                    field: "name".to_string(),
-                    null_safe: false,
-                },
-                span.clone(),
-            );
-            let internal = Expression::with_span(
-                ExprKind::Binary {
-                    op: BinOp::NullCoalesce,
-                    left: Box::new(type_prop),
-                    right: Box::new(ctor_name),
-                },
-                span.clone(),
-            );
             // Internal identity is dotted (`App.Models.Post`); PHP's
             // reflection surface spells it with backslashes.
-            php_backslash_display(internal, &span).kind
+            php_backslash_display(php_runtime_class_expr(obj, &span), &span).kind
         }
         "get_called_class" if args.is_empty() => {
             php_backslash_display(php_called_class_expr(&span), &span).kind
@@ -27643,7 +27510,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
                     return Some(ExprKind::Lit(Literal::Bool(
                         allow_string
                             && (candidate == class_name
-                                || class_is_subclass_of(candidate, class_name)),
+                                || class_is_subclass_of(__php_w, candidate, class_name)),
                     )));
                 }
                 ExprKind::Binary {
@@ -27665,8 +27532,8 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             if let (ExprKind::Lit(Literal::Str(c)), ExprKind::Lit(Literal::Str(target))) =
                 (&args[0].value.kind, &args[1].value.kind)
             {
-                if class_is_registered(c) {
-                    return Some(ExprKind::Lit(Literal::Bool(class_is_subclass_of(
+                if class_is_registered(__php_w, c) {
+                    return Some(ExprKind::Lit(Literal::Bool(class_is_subclass_of(__php_w, 
                         c, target,
                     ))));
                 }
@@ -27719,15 +27586,15 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
         "method_exists" if args.len() == 2 => {
             // Class-name string receiver → resolve from CLASS_REGISTRY.
             if let (Some(c), Some(m)) = (
-                php_literal_string(&args[0].value),
-                php_literal_string(&args[1].value),
+                php_literal_string(__php_w, &args[0].value),
+                php_literal_string(__php_w, &args[1].value),
             ) {
-                let c = php_resolve_class_name(&c);
-                if class_is_registered(&c) {
-                    return Some(ExprKind::Lit(Literal::Bool(class_has_method(&c, &m))));
+                let c = php_resolve_class_name(__php_w, &c);
+                if class_is_registered(__php_w, &c) {
+                    return Some(ExprKind::Lit(Literal::Bool(class_has_method(__php_w, &c, &m))));
                 }
             }
-            if let Some(method_name) = php_literal_string(&args[1].value) {
+            if let Some(method_name) = php_literal_string(__php_w, &args[1].value) {
                 let member = Expression::with_span(
                     ExprKind::Member {
                         object: Box::new(arg(0)?),
@@ -27754,12 +27621,22 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             // class string is always false — resolve declared fields from
             // CLASS_REGISTRY instead. This also sees `private` properties,
             // which `property_exists()` reports and an instance probe cannot.
+            //
+            // ⚠ A DECLARED field folds to `true`, but a class that does not
+            // declare it must NOT fold to `false`: `property_exists()` also
+            // reports a property created dynamically at run time
+            // (`$o->dyn = 1`), which no compile-time registry can see. Only a
+            // class-NAME receiver may answer `false` here — it has no instance,
+            // so there is nothing left for the `in` probe below to find.
             if let (Some(c), Some(p)) = (
-                class_name_from_arg(&args[0].value),
-                php_literal_string(&args[1].value),
+                class_name_from_arg(__php_w, &args[0].value),
+                php_literal_string(__php_w, &args[1].value),
             ) {
-                if class_is_registered(&c) {
-                    return Some(ExprKind::Lit(Literal::Bool(class_has_field(&c, &p))));
+                if class_is_registered(__php_w, &c)
+                    && (class_has_field(__php_w, &c, &p)
+                        || matches!(&args[0].value.kind, ExprKind::Lit(Literal::Str(_))))
+                {
+                    return Some(ExprKind::Lit(Literal::Bool(class_has_field(__php_w, &c, &p))));
                 }
             }
             if let ExprKind::Lit(Literal::Str(_)) = &args[1].value.kind {
@@ -27865,7 +27742,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
         // for known constants; fall through to runtime for unknown ones.
         "defined" if args.len() == 1 => {
             if let ExprKind::Lit(Literal::Str(name)) = &args[0].value.kind {
-                if php_constant_expr(name, span).is_some() {
+                if php_constant_expr(__php_w, name, span).is_some() {
                     ExprKind::Lit(Literal::Bool(true))
                 } else {
                     return None; // fall through to runtime defined()
@@ -27947,30 +27824,18 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
 
             let i_name = format!(
                 "__walk_i_{}",
-                TMP_COUNTER.with(|c| {
-                    let v = *c.borrow();
-                    *c.borrow_mut() += 1;
-                    v
-                })
+                next_tmp_id(__php_w)
             );
             let i_ident = Expression::with_span(ExprKind::Ident(i_name.clone()), span.clone());
             let keys_name = format!(
                 "__walk_keys_{}",
-                TMP_COUNTER.with(|c| {
-                    let v = *c.borrow();
-                    *c.borrow_mut() += 1;
-                    v
-                })
+                next_tmp_id(__php_w)
             );
             let keys_ident =
                 Expression::with_span(ExprKind::Ident(keys_name.clone()), span.clone());
             let k_name = format!(
                 "__walk_k_{}",
-                TMP_COUNTER.with(|c| {
-                    let v = *c.borrow();
-                    *c.borrow_mut() += 1;
-                    v
-                })
+                next_tmp_id(__php_w)
             );
             let k_ident = Expression::with_span(ExprKind::Ident(k_name.clone()), span.clone());
 
@@ -28180,11 +28045,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
                 // Build: $tmp = $str; $tmp = preg_replace_callback(pat1, cb1, $tmp); ...
                 let tmp_name = format!(
                     "__preg_cb_arr_{}",
-                    TMP_COUNTER.with(|c| {
-                        let v = *c.borrow();
-                        *c.borrow_mut() += 1;
-                        v
-                    })
+                    next_tmp_id(__php_w)
                 );
                 let tmp_ident =
                     Expression::with_span(ExprKind::Ident(tmp_name.clone()), span.clone());
@@ -28405,77 +28266,15 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
                 right: Box::new(mk_lit_i64(1)),
             }
         }
-        // ── URL encoding ────────────────────────────────────────────────
-        // PHP `rawurlencode` matches RFC 3986 exactly; same as JS
-        // `encodeURIComponent`.
-        "rawurlencode" => mk_call(
-            Expression::with_span(
-                ExprKind::Ident("encodeURIComponent".to_string()),
-                span.clone(),
-            ),
-            vec![arg(0)?],
-        ),
-        // PHP `urlencode` is RFC 1738 — space → "+" instead of "%20".
-        // Compose: `encodeURIComponent($s).split("%20").join("+")`.
-        // split/join is used over `replaceAll` because the runtime's
-        // replaceAll routes through the regex impl (regex metachars in
-        // the search string would misfire); split is literal.
-        "urlencode" => {
-            let enc = Expression::with_span(
-                mk_call(
-                    Expression::with_span(
-                        ExprKind::Ident("encodeURIComponent".to_string()),
-                        span.clone(),
-                    ),
-                    vec![arg(0)?],
-                ),
-                span.clone(),
-            );
-            let split_call = Expression::with_span(
-                mk_call(
-                    Expression::with_span(
-                        ExprKind::Member {
-                            object: Box::new(enc),
-                            field: "split".to_string(),
-                            null_safe: false,
-                        },
-                        span.clone(),
-                    ),
-                    vec![Expression::with_span(
-                        ExprKind::Lit(Literal::Str("%20".to_string())),
-                        span.clone(),
-                    )],
-                ),
-                span.clone(),
-            );
-            mk_call(
-                Expression::with_span(
-                    ExprKind::Member {
-                        object: Box::new(split_call),
-                        field: "join".to_string(),
-                        null_safe: false,
-                    },
-                    span.clone(),
-                ),
-                vec![Expression::with_span(
-                    ExprKind::Lit(Literal::Str("+".to_string())),
-                    span.clone(),
-                )],
-            )
-        }
-        // Lower to PHP-specific helpers so runtime coercion stays in the
-        // string adapter and `rawurldecode` preserves literal '+' bytes.
-        "urldecode" => mk_call(
-            Expression::with_span(ExprKind::Ident("__php_urldecode".to_string()), span.clone()),
-            vec![arg(0)?],
-        ),
-        "rawurldecode" => mk_call(
-            Expression::with_span(
-                ExprKind::Ident("__php_rawurldecode".to_string()),
-                span.clone(),
-            ),
-            vec![arg(0)?],
-        ),
+        // ⛔ NO url-encoding folds here. `urlencode` / `rawurlencode` /
+        // `urldecode` / `rawurldecode` are declared in the php profile and
+        // emitted by `string_adapter`, which calls the shared
+        // `primitives::url` percent-encoder. The folds that used to sit here
+        // rewrote the first two into a bare `encodeURIComponent(...)` call and
+        // SHADOWED that route — and once the ECMA globals moved behind the
+        // namespace resolver the bare name stopped resolving, so every
+        // `urlencode` was `undefined is not callable`. A walker fold in front
+        // of a working profile route is the bug, not the fix.
         // PHP `filter_var($value, $filter)` — the subset of filters that map
         // cleanly onto existing string ops. Sanitizers → htmlspecialchars;
         // FILTER_VALIDATE_EMAIL → regex test returning the value or false.
@@ -28688,7 +28487,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             };
             let filter_spec = match &args[1].value.kind {
                 ExprKind::Ident(name) => {
-                    lookup_simple_value_var(name).unwrap_or(args[1].value.clone())
+                    lookup_simple_value_var(__php_w, name).unwrap_or(args[1].value.clone())
                 }
                 _ => args[1].value.clone(),
             };
@@ -28722,7 +28521,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
                 ),
                 ExprKind::Lit(Literal::Int(filter_id)) => {
                     let input_entries = match &input.kind {
-                        ExprKind::Ident(name) => lookup_simple_array_var(name)?,
+                        ExprKind::Ident(name) => lookup_simple_array_var(__php_w, name)?,
                         ExprKind::Array(elements) => elements
                             .iter()
                             .filter_map(|element| {
@@ -28856,7 +28655,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
         // ── Class introspection resolved at compile time ──────────────
         // When the class name is a string literal, answer from the
         // walker's CLASS_REGISTRY. Non-literal receivers fall through.
-        "get_class" if !args.is_empty() && php_expr_is_compile_time_non_object(&args[0].value) => {
+        "get_class" if !args.is_empty() && php_expr_is_compile_time_non_object(__php_w, &args[0].value) => {
             if args.len() >= 2 && matches!(args[1].value.kind, ExprKind::Lit(Literal::Bool(false)))
             {
                 ExprKind::Lit(Literal::Bool(false))
@@ -28865,20 +28664,20 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             }
         }
         "get_object_vars"
-            if !args.is_empty() && php_expr_is_compile_time_non_object(&args[0].value) =>
+            if !args.is_empty() && php_expr_is_compile_time_non_object(__php_w, &args[0].value) =>
         {
             php_throw_named_error_expr("TypeError", "get_object_vars expects object", span)
         }
         "get_mangled_object_vars"
-            if !args.is_empty() && php_expr_is_compile_time_non_object(&args[0].value) =>
+            if !args.is_empty() && php_expr_is_compile_time_non_object(__php_w, &args[0].value) =>
         {
             php_throw_named_error_expr("TypeError", "get_mangled_object_vars expects object", span)
         }
         "get_mangled_object_vars" if args.len() == 1 => {
-            if let Some(class_name) = php_object_class_from_expr(&args[0].value) {
+            if let Some(class_name) = php_object_class_from_expr(__php_w, &args[0].value) {
                 let mut fields =
-                    class_mangled_object_vars(&class_name, args[0].value.clone(), span);
-                for (field, value) in php_object_written_field_values(&args[0].value) {
+                    class_mangled_object_vars(__php_w, &class_name, args[0].value.clone(), span);
+                for (field, value) in php_object_written_field_values(__php_w, &args[0].value) {
                     fields.push(ArrayElement {
                         key: Some(Expression::with_span(
                             ExprKind::Lit(Literal::Str(field)),
@@ -28891,7 +28690,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
                 }
                 ExprKind::Array(fields)
             } else {
-                let fields = php_object_written_field_values(&args[0].value);
+                let fields = php_object_written_field_values(__php_w, &args[0].value);
                 if fields.is_empty() {
                     return None;
                 }
@@ -28912,8 +28711,8 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             }
         }
         "get_object_vars" if args.len() == 1 => {
-            let mut fields = if let Some(class_name) = php_object_class_from_expr(&args[0].value) {
-                class_public_fields(&class_name)
+            let mut fields = if let Some(class_name) = php_object_class_from_expr(__php_w, &args[0].value) {
+                class_public_fields(__php_w, &class_name)
                     .into_iter()
                     .map(|field| ArrayElement {
                         key: Some(Expression::with_span(
@@ -28935,7 +28734,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             } else {
                 Vec::new()
             };
-            for (field, value) in php_object_written_field_values(&args[0].value) {
+            for (field, value) in php_object_written_field_values(__php_w, &args[0].value) {
                 fields.push(ArrayElement {
                     key: Some(Expression::with_span(
                         ExprKind::Lit(Literal::Str(field)),
@@ -28952,25 +28751,28 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             ExprKind::Array(fields)
         }
         "get_parent_class" if args.len() == 1 => match &args[0].value.kind {
-            ExprKind::Lit(Literal::Str(cls)) if class_is_registered(cls) => {
-                match CLASS_REGISTRY.with(|r| r.borrow().get(cls).and_then(|m| m.parent.clone())) {
+            ExprKind::Lit(Literal::Str(cls)) if class_is_registered(__php_w, cls) => {
+                match __php_w.class_registry.get(cls).and_then(|m| m.parent.clone()) {
                     Some(p) => ExprKind::Lit(Literal::Str(p)),
                     None => ExprKind::Lit(Literal::Bool(false)),
                 }
             }
-            // Object (or runtime value): read the parent from the common
-            // `__types` inheritance chain stamped by the shared class emitter.
+            // Object (or runtime value): the parent is one link up the shared
+            // `__types` ancestry chain, read by
+            // `emitter/reflection_adapter::emit_php_get_parent_class`. It used
+            // to be `__vybe_parent_class`, a PHP-SOURCE function in this
+            // walker's class prelude that re-scanned the same chain by hand.
             _ => mk_call(
                 Expression::with_span(
-                    ExprKind::Ident("__vybe_parent_class".to_string()),
+                    ExprKind::Ident("__php_get_parent_class".to_string()),
                     span.clone(),
                 ),
                 vec![arg(0)?],
             ),
         },
         "get_class_methods" if args.len() == 1 => match &args[0].value.kind {
-            ExprKind::Lit(Literal::Str(c)) if class_is_registered(c) => {
-                let items = class_public_methods(c)
+            ExprKind::Lit(Literal::Str(c)) if class_is_registered(__php_w, c) => {
+                let items = class_public_methods(__php_w, c)
                     .into_iter()
                     .map(|name| ArrayElement {
                         key: None,
@@ -28987,8 +28789,8 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             _ => return None,
         },
         "get_class_vars" if args.len() == 1 => match &args[0].value.kind {
-            ExprKind::Lit(Literal::Str(c)) if class_is_registered(c) => {
-                ExprKind::Array(class_public_field_defaults(c, span))
+            ExprKind::Lit(Literal::Str(c)) if class_is_registered(__php_w, c) => {
+                ExprKind::Array(class_public_field_defaults(__php_w, c, span))
             }
             _ => return None,
         },
@@ -29026,7 +28828,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
         // declared in another file of the same bundle. Folding them from
         // `TYPE_KINDS` answered `false` for every name this walk had not seen.
         "enum_exists" if !args.is_empty() => match &args[0].value.kind {
-            ExprKind::Lit(Literal::Str(n)) => ExprKind::Lit(Literal::Bool(type_kind_is(n, "enum"))),
+            ExprKind::Lit(Literal::Str(n)) => ExprKind::Lit(Literal::Bool(type_kind_is(__php_w, n, "enum"))),
             _ => return None,
         },
         // `get_declared_traits()` / `get_declared_classes()` /
@@ -29038,7 +28840,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
                 "get_declared_interfaces" => "interface",
                 _ => "class",
             };
-            let items = declared_type_names(kind)
+            let items = declared_type_names(__php_w, kind)
                 .into_iter()
                 .map(|n| ArrayElement {
                     key: None,
@@ -29049,51 +28851,29 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
                 .collect();
             ExprKind::Array(items)
         }
+        // `class_parents` and `class_implements` both return a MAP keyed by the
+        // name — `array('A' => 'A', 'B' => 'B')` — which is what makes the
+        // documented `isset($impl[Iface::class])` membership test work. They
+        // built a LIST (`key: None`), so every such test read a missing key.
+        // `class_uses` below already had the keyed shape; these two are the
+        // same family and now agree with it.
         "class_parents" if !args.is_empty() => {
-            match class_name_from_arg(&args[0].value).filter(|c| class_is_registered(c)) {
-                Some(c) => {
-                    let items = class_parent_chain(&c)
-                        .into_iter()
-                        .map(|name| ArrayElement {
-                            key: None,
-                            value: Expression::with_span(
-                                ExprKind::Lit(Literal::Str(name)),
-                                span.clone(),
-                            ),
-                            spread: false,
-                            by_ref: false,
-                        })
-                        .collect();
-                    ExprKind::Array(items)
-                }
+            match class_name_from_arg(__php_w, &args[0].value).filter(|c| class_is_registered(__php_w, c)) {
+                Some(c) => ExprKind::Array(php_name_keyed_array(class_parent_chain(__php_w, &c), span)),
                 None => return None,
             }
         }
         "class_implements" if !args.is_empty() => {
-            match class_name_from_arg(&args[0].value).filter(|c| class_is_registered(c)) {
-                Some(c) => {
-                    let items = class_all_interfaces(&c)
-                        .into_iter()
-                        .map(|name| ArrayElement {
-                            key: None,
-                            value: Expression::with_span(
-                                ExprKind::Lit(Literal::Str(name)),
-                                span.clone(),
-                            ),
-                            spread: false,
-                            by_ref: false,
-                        })
-                        .collect();
-                    ExprKind::Array(items)
-                }
+            match class_name_from_arg(__php_w, &args[0].value).filter(|c| class_is_registered(__php_w, c)) {
+                Some(c) => ExprKind::Array(php_name_keyed_array(class_all_interfaces(__php_w, &c), span)),
                 None => return None,
             }
         }
         // `class_uses($obj_or_name)` — the trait names the class `use`s,
         // resolved from the walker's TRAIT_USAGES registry (compile-time).
-        "class_uses" if !args.is_empty() => match class_name_from_arg(&args[0].value) {
+        "class_uses" if !args.is_empty() => match class_name_from_arg(__php_w, &args[0].value) {
             Some(c) => {
-                let traits = TRAIT_USAGES.with(|t| t.borrow().get(&c).cloned().unwrap_or_default());
+                let traits = __php_w.trait_usages.get(&c).cloned().unwrap_or_default();
                 let items = traits
                     .into_iter()
                     .map(|name| ArrayElement {
@@ -29248,7 +29028,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
                         span.clone(),
                     )),
                     else_: Box::new(
-                        lookup_simple_assert_callback()
+                        lookup_simple_assert_callback(__php_w)
                             .map(|callback| {
                                 let desc = args
                                     .get(1)
@@ -29324,13 +29104,13 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             let option_args = args
                 .iter()
                 .skip(1)
-                .map(|a| php_wrap_callable(a.value.clone(), 4, span))
+                .map(|a| php_wrap_callable(__php_w, a.value.clone(), 4, span))
                 .collect::<Vec<_>>();
             if let Some(cb) = option_args.first() {
                 if matches!(&args[1].value.kind, ExprKind::Ident(_)) {
-                    clear_simple_assert_callback();
+                    clear_simple_assert_callback(__php_w);
                 } else {
-                    note_simple_assert_callback(cb.clone());
+                    note_simple_assert_callback(__php_w, cb.clone());
                 }
             }
             mk_call(
@@ -29347,13 +29127,13 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             let option_args = args
                 .iter()
                 .skip(1)
-                .map(|a| php_wrap_callable(a.value.clone(), 4, span))
+                .map(|a| php_wrap_callable(__php_w, a.value.clone(), 4, span))
                 .collect::<Vec<_>>();
             if let Some(cb) = option_args.first() {
                 if matches!(&args[1].value.kind, ExprKind::Ident(_)) {
-                    clear_simple_assert_callback();
+                    clear_simple_assert_callback(__php_w);
                 } else {
-                    note_simple_assert_callback(cb.clone());
+                    note_simple_assert_callback(__php_w, cb.clone());
                 }
             }
             mk_call(
@@ -29670,12 +29450,12 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             ))
         }
         "mb_ord" if !args.is_empty() => {
-            let s = lit_str_arg(0)?;
+            let s = lit_str_arg(__php_w, args, 0)?;
             ExprKind::Lit(Literal::Int(s.chars().next().unwrap_or('\0') as i64))
         }
         "mb_convert_kana" if args.len() >= 2 => {
-            let s = lit_str_arg(0)?;
-            let mode = lit_str_arg(1)?;
+            let s = lit_str_arg(__php_w, args, 0)?;
+            let mode = lit_str_arg(__php_w, args, 1)?;
             let converted = if mode.contains('K') {
                 s.chars()
                     .map(|ch| match ch {
@@ -29704,10 +29484,10 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             ExprKind::Lit(Literal::Str(converted))
         }
         "mb_strimwidth" if args.len() >= 4 => {
-            let s = lit_str_arg(0)?;
+            let s = lit_str_arg(__php_w, args, 0)?;
             let start = lit_int_arg(1)? as usize;
             let width = lit_int_arg(2)? as usize;
-            let marker = lit_str_arg(3)?;
+            let marker = lit_str_arg(__php_w, args, 3)?;
             let ascii_only = s.is_ascii();
             let mut out = String::new();
             let mut used = 0usize;
@@ -29730,16 +29510,16 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             ExprKind::Lit(Literal::Str(out))
         }
         "mb_strwidth" if !args.is_empty() => {
-            let s = lit_str_arg(0)?;
+            let s = lit_str_arg(__php_w, args, 0)?;
             ExprKind::Lit(Literal::Int(s.chars().map(mb_width).sum::<usize>() as i64))
         }
         "mb_split" if args.len() >= 2 => mk_call(
             Expression::with_span(ExprKind::Ident("explode".to_string()), span.clone()),
             vec![arg(1)?, arg(0)?],
         ),
-        "mb_stristr" if args.len() >= 2 && lit_str_arg(0).is_some() && lit_str_arg(1).is_some() => {
-            let hay = lit_str_arg(0)?;
-            let needle = lit_str_arg(1)?;
+        "mb_stristr" if args.len() >= 2 && lit_str_arg(__php_w, args, 0).is_some() && lit_str_arg(__php_w, args, 1).is_some() => {
+            let hay = lit_str_arg(__php_w, args, 0)?;
+            let needle = lit_str_arg(__php_w, args, 1)?;
             let pos = hay.to_lowercase().find(&needle.to_lowercase())?;
             let mut out = String::new();
             let mut needle_chars = needle.chars();
@@ -29772,21 +29552,21 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             mk_call(Expression::ident("parse_str"), vec![arg(0)?, arg(1)?])
         }
         "mb_strlen" if !args.is_empty() => {
-            let s = lit_str_arg(0)?;
+            let s = lit_str_arg(__php_w, args, 0)?;
             ExprKind::Lit(Literal::Int(s.chars().count() as i64))
         }
-        "str_split" if !args.is_empty() && lit_str_arg(0).is_some() => {
-            let s = lit_str_arg(0)?;
+        "str_split" if !args.is_empty() && lit_str_arg(__php_w, args, 0).is_some() => {
+            let s = lit_str_arg(__php_w, args, 0)?;
             let chunk_len = args.get(1).and_then(|_| lit_int_arg(1)).unwrap_or(1).max(0) as usize;
             split_string_array(s, chunk_len)
         }
-        "mb_str_split" if !args.is_empty() && lit_str_arg(0).is_some() => {
-            let s = lit_str_arg(0)?;
+        "mb_str_split" if !args.is_empty() && lit_str_arg(__php_w, args, 0).is_some() => {
+            let s = lit_str_arg(__php_w, args, 0)?;
             let chunk_len = args.get(1).and_then(|_| lit_int_arg(1)).unwrap_or(1).max(0) as usize;
             split_string_array(s, chunk_len)
         }
         "mb_str_split" if !args.is_empty() && args.len() < 2 => {
-            let s = lit_str_arg(0)?;
+            let s = lit_str_arg(__php_w, args, 0)?;
             ExprKind::Array(
                 s.chars()
                     .map(|ch| ArrayElement {
@@ -29799,7 +29579,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             )
         }
         "mb_check_encoding" if !args.is_empty() => {
-            if let Some(s) = lit_str_arg(0) {
+            if let Some(s) = lit_str_arg(__php_w, args, 0) {
                 ExprKind::Lit(Literal::Bool(
                     !(s.contains('\u{fffd}')
                         || s.contains('ÿ')
@@ -29881,7 +29661,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
         "array_reduce" if args.len() >= 2 => {
             let arr_expr = arg(0)?;
             // Callback is ($carry, $item) — arity 2. Wrap literal callables.
-            let cb = php_wrap_callable(arg(1)?, 2, span);
+            let cb = php_wrap_callable(__php_w, arg(1)?, 2, span);
             let mut call_args = vec![cb];
             if let Some(init) = arg(2) {
                 call_args.push(init);
@@ -30159,7 +29939,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
         }
         "json_encode" if !args.is_empty() => {
             let value = arg(0)?;
-            if php_object_class_from_expr(&value).is_some_and(|class_name| {
+            if php_object_class_from_expr(__php_w, &value).is_some_and(|class_name| {
                 matches!(
                     class_name.trim_start_matches('\\'),
                     "DateTime" | "DateTimeImmutable"
@@ -30544,11 +30324,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
                 // PHP array_map(null, $a, $b, ...) zips arrays.
                 let groups_tmp = format!(
                     "__preg_groups_{}",
-                    TMP_COUNTER.with(|c| {
-                        let v = *c.borrow();
-                        *c.borrow_mut() += 1;
-                        v
-                    })
+                    next_tmp_id(__php_w)
                 );
                 let groups_ident =
                     Expression::with_span(ExprKind::Ident(groups_tmp.clone()), span.clone());
@@ -30697,7 +30473,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
 /// `Number.MAX_SAFE_INTEGER` Member-access AST against the profile's
 /// `[namespace_constants]` table — same path JS uses. No PHP-specific
 /// intrinsic, host fn, or profile builtin needed.
-fn php_constant_expr(name: &str, span: &Span) -> Option<ExprKind> {
+fn php_constant_expr(__php_w: &mut PhpWalker, name: &str, span: &Span) -> Option<ExprKind> {
     let mk_member = |obj: &str, field: &str| ExprKind::Member {
         object: Box::new(Expression::with_span(
             ExprKind::Ident(obj.to_string()),
@@ -30803,24 +30579,24 @@ fn php_constant_expr(name: &str, span: &Span) -> Option<ExprKind> {
         // ── Magic class constant — resolved to the enclosing class/trait name
         // at walk time (CLASS_STACK). Empty string outside a class, per PHP.
         "__CLASS__" => {
-            if current_method_type().as_deref() == Some("::") {
+            if current_method_type(__php_w).as_deref() == Some("::") {
                 return Some(php_static_receiver_name_expr(&span).kind);
             }
             // Backslash-qualified display; dotted is internal identity.
             ExprKind::Lit(Literal::Str(
-                current_class_name().unwrap_or_default().replace('.', "\\"),
+                current_class_name(__php_w).unwrap_or_default().replace('.', "\\"),
             ))
         }
         "__TRAIT__" => ExprKind::Lit(Literal::Str(String::new())),
         "__LINE__" => ExprKind::Lit(Literal::Int(span.start_line as i64)),
         // `__NAMESPACE__` — the current namespace name ("" in global scope).
-        "__NAMESPACE__" => ExprKind::Lit(Literal::Str(current_namespace().unwrap_or_default())),
+        "__NAMESPACE__" => ExprKind::Lit(Literal::Str(current_namespace(__php_w).unwrap_or_default())),
         // `__FUNCTION__` — the (unqualified) function/method name.
-        "__FUNCTION__" => ExprKind::Lit(Literal::Str(current_function_name().unwrap_or_default())),
+        "__FUNCTION__" => ExprKind::Lit(Literal::Str(current_function_name(__php_w).unwrap_or_default())),
         // `__METHOD__` — `Class::method` inside a class, else the function name.
         "__METHOD__" => {
-            let func = current_function_name().unwrap_or_default();
-            let qualified = match current_class_name() {
+            let func = current_function_name(__php_w).unwrap_or_default();
+            let qualified = match current_class_name(__php_w) {
                 Some(cls) if !func.is_empty() => {
                     let bare = cls.rsplit('.').next().unwrap_or(&cls);
                     format!("{bare}::{func}")
@@ -30996,10 +30772,10 @@ fn php_constant_expr(name: &str, span: &Span) -> Option<ExprKind> {
     })
 }
 
-fn to_span(pair: &Pair<Rule>) -> Span {
+fn to_span(__php_w: &mut PhpWalker, pair: &Pair<Rule>) -> Span {
     let s = pair.as_span();
-    LINE_STARTS.with(|starts| {
-        let starts = starts.borrow();
+    {
+        let starts = &__php_w.line_starts;
         if starts.is_empty() {
             let (start_line, start_col) = s.start_pos().line_col();
             let (end_line, end_col) = s.end_pos().line_col();
@@ -31010,8 +30786,8 @@ fn to_span(pair: &Pair<Rule>) -> Span {
                 end_col: end_col as u32,
             }
         } else {
-            let (start_line, start_col) = offset_to_line_col(s.start(), &starts);
-            let (end_line, end_col) = offset_to_line_col(s.end(), &starts);
+            let (start_line, start_col) = offset_to_line_col(s.start(), starts);
+            let (end_line, end_col) = offset_to_line_col(s.end(), starts);
             Span {
                 start_line,
                 start_col,
@@ -31019,7 +30795,7 @@ fn to_span(pair: &Pair<Rule>) -> Span {
                 end_col,
             }
         }
-    })
+    }
 }
 
 #[allow(dead_code)]

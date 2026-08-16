@@ -353,8 +353,15 @@ param = {
     attribute_group* ~ param_modifier* ~ type_annotation? ~ "&"? ~ "..."? ~ variable ~ ("=" ~ expression)?
 }
 
-// PHP 8 promoted constructor parameters: `public int $foo`, `private $bar`
-param_modifier = { kw_public | kw_private | kw_protected | kw_readonly }
+// PHP 8 promoted constructor parameters: `public int $foo`, `private $bar`.
+// PHP 8.4 asymmetric visibility promotes too — `public private(set) int $n`
+// and the bare `protected(set) string $t` — so the same modifier the property
+// rule accepts has to be reachable here. It must come FIRST: `private` alone
+// would otherwise match and leave `(set)` unconsumed.
+param_modifier = {
+    asymmetric_set_modifier
+    | kw_public | kw_private | kw_protected | kw_readonly
+}
 
 // Type annotations are accepted but the walker discards them (we don't
 // type-check). Supports `?Foo`, `int|string`, `Foo&Bar`, `array`, etc.
@@ -452,7 +459,13 @@ property_declaration = {
     attribute_group* ~ (asymmetric_set_modifier | member_modifier)* ~ type_annotation?
     ~ (
         simple_variable ~ ("=" ~ expression)? ~ ("," ~ simple_variable ~ ("=" ~ expression)?)* ~ ";"
-        | simple_variable ~ property_hook_block
+        // PHP 8.4 BACKED property: a default AND hooks. `$field` inside a hook
+        // reads this property's backing storage, which is what makes the
+        // initializer meaningful — a virtual property has nothing to initialize.
+        // Without the optional default here neither alternative matched
+        // (`= 0` fails the first at the missing `;`, and fails the second
+        // outright), so every backed hook was a parse error.
+        | simple_variable ~ ("=" ~ expression)? ~ property_hook_block
     )
 }
 
@@ -467,8 +480,11 @@ property_hook = _{ property_get_hook | property_set_hook }
 // PHP 8.4 hooks come in arrow (`get => expr;`) and block (`get { ... }`)
 // forms; `set` may omit its parameter list (implicit `$value`).
 // `;` form is the abstract hook used in interface declarations (`get;`).
-property_get_hook = { kw_get ~ (hook_arrow_body | block_statement | ";") }
-property_set_hook = { kw_set ~ ("(" ~ param_list? ~ ")")? ~ (hook_arrow_body | block_statement | ";") }
+// `final` is the ONE modifier php 8.4 accepts on a hook — `public get` and
+// `static get` are both fatal ("Cannot use the <m> modifier on a property
+// hook"), so this is not `member_modifier*`.
+property_get_hook = { kw_final? ~ kw_get ~ (hook_arrow_body | block_statement | ";") }
+property_set_hook = { kw_final? ~ kw_set ~ ("(" ~ param_list? ~ ")")? ~ (hook_arrow_body | block_statement | ";") }
 hook_arrow_body = { "=>" ~ expression ~ ";" }
 
 method_declaration = {

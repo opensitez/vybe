@@ -1010,6 +1010,14 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.array_rand" => {
             crate::emitter::array_adapter::emit_php_array_rand(chunks, current, argc, line)
         }
+        "php.get_class" => {
+            crate::emitter::reflection_adapter::emit_php_get_class(chunks, current, argc, line)
+        }
+        "php.get_parent_class" => {
+            crate::emitter::reflection_adapter::emit_php_get_parent_class(
+                chunks, current, argc, line,
+            )
+        }
         "php.refl_class" => {
             crate::emitter::reflection_adapter::emit_refl_class(chunks, current, argc, line)
         }

@@ -107,6 +107,21 @@ impl vybe_runtime::Plugin for Plugin {
     fn init(&self, _fw: &mut vybe_runtime::Framework<'_>) {
         register();
     }
+    /// Drop the walker's per-program registries at the TENANT BOUNDARY.
+    ///
+    /// `VM::reset_to` rolls back everything the VM owns, but the front end runs
+    /// in this process before any VM state exists, so its `thread_local!`
+    /// registries were never in that reset's reach — `CLASS_REGISTRY` among
+    /// them, which answers every inheritance, abstractness and interface
+    /// question the walker asks. In a reused VM one program's classes were
+    /// still visible to the next.
+    ///
+    /// This hook is where the framework already expects that to be handled:
+    /// `Plugin::reset` is documented as "process-global state a plugin owns
+    /// directly, which is exactly why the VM's own reset could never reach it."
+    fn reset(&self) {
+        crate::walker::reset_program_state();
+    }
 }
 
 // Link-time registration: this crate submits its plugin to the one registry.

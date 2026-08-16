@@ -135,10 +135,37 @@ fn emit_stringify(chunk: &mut Chunk, line: u32) {
     let test_bigint = chunk.add_import("wasm:js-bigint", "test");
     let bigint_to_string = chunk.add_import("ecma:bigint", "toString");
     let from_i64 = chunk.add_import("wasm:js-string", "fromI64");
+    let test_str = chunk.add_import("wasm:js-string", "test");
     let v_slot = alloc_local(chunk);
     let _ty_slot = alloc_local(chunk);
 
     lset(chunk, v_slot, line);
+
+    // ── Already a string: hand it straight back ────────────────────────────
+    //
+    // NOT a shortcut with a different answer — the SAME answer with the ladder
+    // removed. A string falls through every branch below (`REF_IS_NULL` false;
+    // not boolean, bigint or number; `v !== v` false because a string equals
+    // itself, which is why the INF/NAN probes cannot catch the literal strings
+    // `"INF"`/`"NAN"`) and lands on the terminal default, `"" + v` — and `"" + s`
+    // is the identity on a string. The comment on the NaN probe below already
+    // says as much.
+    //
+    // Worth the test because php reaches here from THREE positions — `.`,
+    // `echo`/`print`, and interpolation `"$a$b"` — and in all three the operand
+    // is usually already a string. The ladder it skips runs three `emit_dyn_eq`
+    // ladders and an `emit_dyn_add` ladder: 556 executed instructions per `.`,
+    // measured.
+    //
+    // ⚠ Deliberately does NOT catch an object with `__toString`: that is an
+    // object, `wasm:js-string.test` is false for it, and it keeps the `"" + v`
+    // path that reaches ToPrimitive. A fast path that swallowed it would return
+    // a non-string in silence.
+    lget(chunk, v_slot, line);
+    chunk.emit_call(test_str, 1, line);
+    chunk.emit_if_value(line);
+    lget(chunk, v_slot, line);
+    chunk.emit_else(line);
 
     lget(chunk, v_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
@@ -248,6 +275,8 @@ fn emit_stringify(chunk: &mut Chunk, line: u32) {
     chunk.emit_end(line);
     chunk.emit_end(line);
     chunk.emit_end(line);
+    chunk.emit_end(line);
+    // …and the string fast path that wraps all seven.
     chunk.emit_end(line);
 }
 

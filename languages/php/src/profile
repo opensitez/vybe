@@ -51,6 +51,14 @@ buffered_iterator_methods = true    # $gen->current()/next()/valid()/send()/
 source_function_callable_aliases = true # String callables and dynamic name
                                         # dispatch resolve declared functions
                                         # through the common callable alias path.
+callable_objects = true             # `$obj(...)` on a class defining `__invoke`.
+                                    # `protocol.rs` already binds that spelling
+                                    # to `ProtocolSlot::Call`; this says the
+                                    # call site should PROBE that slot. Without
+                                    # it the walker hand-built a typeof ternary
+                                    # ending in a `->__invoke` NAME test — a
+                                    # second answer to a question the shared
+                                    # call path already answers by role.
 self_keyword = "$this"              # PHP variables canonicalize with the $
                                     # sigil (see strip_dollar in walker.rs).
                                     # `$this` IS the scope name; matching
@@ -942,6 +950,11 @@ __spl_new_splfileobject        = { emit = "common:php.spl_fileobject",          
 __spl_new_spltempfileobject    = { emit = "common:php.spl_tempfileobject",       min_args = 0, max_args = 1 }
 __spl_new_splobjectstorage     = { emit = "common:php.spl_splobjectstorage",     min_args = 0, max_args = 0 }
 __spl_new_weakmap              = { emit = "common:php.spl_weakmap",              min_args = 0, max_args = 0 }
+# Class identity is a RUNTIME question, answered from the shared `__type` /
+# `__types` stamps every frontend writes — not folded in the walker, which
+# could only ever answer with the class an expression is DECLARED as.
+__php_get_class                = { emit = "common:php.get_class",                min_args = 1, max_args = 1 }
+__php_get_parent_class         = { emit = "common:php.get_parent_class",         min_args = 1, max_args = 1 }
 __refl_class                   = { emit = "common:php.refl_class",               min_args = 1, max_args = 10 }
 __refl_method                  = { emit = "common:php.refl_method",              min_args = 2, max_args = 6 }
 __refl_property                = { emit = "common:php.refl_property",            min_args = 2, max_args = 3 }

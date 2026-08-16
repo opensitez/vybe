@@ -893,6 +893,59 @@ pub fn emit_php_pdo_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     lget(chunk, conn_slot, line);
 }
 
+/// After a `wasi:sql` call, act on whether it FAILED.
+///
+/// The host used to print the failure and hand back `-1` or an empty row set,
+/// so `$db->exec("INSERT …")` on a read-only database looked like a success
+/// that changed no rows. `wasi:sql.lastError(conn)` returns the trace (empty
+/// when the last call succeeded).
+///
+/// The trace is stashed as `__pdo_error` for `errorCode()` to report, and under
+/// `ERRMODE_EXCEPTION` (2) it is also RAISED — `ERRMODE_SILENT` (0) and
+/// `ERRMODE_WARNING` (1) leave the caller to ask, exactly as PHP does.
+///
+/// Throwing goes through `errors::emit_throw`, which imports the exception TAG
+/// and emits it as the opcode's two operand bytes. A bare `emit_op(Op::THROW)`
+/// reads the following two bytes of adapter code as the tag and dies with
+/// `catch label 0 out of range` — the failure looks structural and is not.
+/// Stack: unchanged.
+fn emit_record_failure(chunks: &mut [Chunk], current: usize, conn_slot: u16, line: u32) {
+    let msg_slot = alloc_local(&mut chunks[current]);
+    lget(&mut chunks[current], conn_slot, line);
+    call_import(chunks, current, "wasi:sql", "lastError", 1, line);
+    lset(&mut chunks[current], msg_slot, line);
+
+    lget(&mut chunks[current], conn_slot, line);
+    lget(&mut chunks[current], msg_slot, line);
+    struct_set_key(&mut chunks[current], "__pdo_error", line);
+
+    emit_string_slot_nonempty(&mut chunks[current], msg_slot, line);
+    chunks[current].emit_if(line);
+    lget(&mut chunks[current], conn_slot, line);
+    struct_get_key(&mut chunks[current], "__pdo_attr", line);
+    push_const(&mut chunks[current], Value::F64(2.0), line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    // PHP's message shape, so `$e->getMessage()` reads the way a PDO user
+    // expects rather than exposing the bare driver text.
+    let text_slot = alloc_local(&mut chunks[current]);
+    push_str(&mut chunks[current], "SQLSTATE[HY000]: General error: ", line);
+    lset(&mut chunks[current], text_slot, line);
+    concat_slot_with_slot(&mut chunks[current], text_slot, msg_slot, line);
+    chunks[current].emit_struct_new(0, 0, line);
+    chunks[current].emit_dup(line);
+    lget(&mut chunks[current], text_slot, line);
+    vybe_compiler::primitives::errors::emit_exception_new_finalize(
+        &mut chunks[current],
+        "PDOException",
+        line,
+    );
+    vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+}
+
 pub fn emit_php_pdo_query(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     let sql_slot = alloc_local(chunk);
@@ -927,6 +980,10 @@ pub fn emit_php_pdo_exec(chunks: &mut [Chunk], current: usize, _argc: u8, line: 
     lget(chunk, conn_slot, line);
     lget(chunk, sql_slot, line);
     call_import(chunks, current, "wasi:sql", "execute", 2, line);
+    let affected_slot = alloc_local(&mut chunks[current]);
+    lset(&mut chunks[current], affected_slot, line);
+    emit_record_failure(chunks, current, conn_slot, line);
+    lget(&mut chunks[current], affected_slot, line);
 }
 
 pub fn emit_php_pdo_prepare(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -2505,12 +2562,30 @@ pub fn emit_php_pdo_quote(chunks: &mut [Chunk], current: usize, _argc: u8, line:
 }
 
 /// `$stmt->errorCode()` → SQLSTATE "00000" on success. Stack: `[stmt]` → `[str]`.
+/// `$pdo->errorCode()` — `00000` when the last call succeeded, `HY000` when it
+/// did not. Previously hard-coded to success, which made a failed write
+/// indistinguishable from a successful one.
 pub fn emit_php_pdo_error_code(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    for _ in 0..argc as u16 {
+    for _ in 0..argc as u16 - 1 {
         chunk.emit_op(Op::DROP, line);
     }
-    push_str(chunk, "00000", line);
+    let conn_slot = alloc_local(chunk);
+    lset(chunk, conn_slot, line);
+    let msg_slot = alloc_local(&mut chunks[current]);
+    lget(&mut chunks[current], conn_slot, line);
+    struct_get_key(&mut chunks[current], "__pdo_error", line);
+    lset(&mut chunks[current], msg_slot, line);
+
+    let code_slot = alloc_local(&mut chunks[current]);
+    push_str(&mut chunks[current], "00000", line);
+    lset(&mut chunks[current], code_slot, line);
+    emit_string_slot_nonempty(&mut chunks[current], msg_slot, line);
+    chunks[current].emit_if(line);
+    push_str(&mut chunks[current], "HY000", line);
+    lset(&mut chunks[current], code_slot, line);
+    chunks[current].emit_end(line);
+    lget(&mut chunks[current], code_slot, line);
 }
 
 /// `$pdo->lastInsertId()` — the id of the last inserted row via

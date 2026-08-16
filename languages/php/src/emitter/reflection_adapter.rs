@@ -584,3 +584,104 @@ pub fn emit_refl_constant(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, li
         line,
     );
 }
+
+// ── Class identity ──────────────────────────────────────────────────────
+//
+// PHP's `get_class` / `get_parent_class` / `$obj::class` all ask ONE question:
+// what class is this object, at runtime. The answer lives in the identity
+// stamps `reflection::FIELD_TYPE` and `reflection::FIELD_TYPES` — the same
+// keys `reflection::emit_instanceof` reads and every stamped frontend writes,
+// so an object built by another language answers here too.
+//
+// Before this, PHP asked in two of its own ways instead:
+//
+//   * the WALKER rebuilt `$obj->__type ?? $obj->constructor->name` as an AST
+//     member chain, once per asker, and const-folded it to the class the
+//     method was DECLARED in — so `get_class($this)` said `Base` where PHP
+//     says `Kid`, and `$this::class` folded to the literal string `"$this"`;
+//   * `__vybe_parent_class`, written in PHP SOURCE in the walker's class
+//     prelude, re-scanned `__types` by hand.
+//
+// Neither could see an object from another frontend, and both drifted from
+// the stamp they were reading. Asking through the shared constants is what
+// makes a PHP `get_class()` answer for a Dart or Python instance.
+
+/// PHP `get_class($obj)` — the object's RUNTIME class name.
+///
+/// Reads `FIELD_TYPE`, falling back to `constructor.name` for an object on
+/// the prototype path that carries no stamp. Never folded: the class of
+/// `$this` is only known at runtime, because any subclass inherits the
+/// method.
+///
+/// Stack: `[obj] -> [string]`.
+pub fn emit_php_get_class(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let obj = chunk.alloc_scratch(1);
+    let name = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, obj, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunk.emit_string_const(reflection::FIELD_TYPE, line);
+    reflection::emit_get_property_in_chunk(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, name, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, name, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunk.emit_string_const("constructor", line);
+    reflection::emit_get_property_in_chunk(chunk, line);
+    chunk.emit_string_const("name", line);
+    reflection::emit_get_property_in_chunk(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, name, line);
+    chunk.emit_end(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, name, line);
+}
+
+/// PHP `get_parent_class($obj)` — the class one step up, or `false`.
+///
+/// `FIELD_TYPES` is the ancestry chain `emit_instanceof_chain` stamps,
+/// ordered base-first with the object's own class last, so the parent is the
+/// second-from-last entry. An object with no chain (or fewer than two links)
+/// has no parent, which PHP spells `false`.
+///
+/// Stack: `[obj] -> [string | false]`.
+pub fn emit_php_get_parent_class(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let obj = chunk.alloc_scratch(1);
+    let types = chunk.alloc_scratch(1);
+    let n = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, obj, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunk.emit_string_const(reflection::FIELD_TYPES, line);
+    reflection::emit_get_property_in_chunk(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, types, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, types, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if_value(line);
+    chunk.emit_bool_const(false, line);
+    chunk.emit_else(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, types, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, n, line);
+
+    // n < 2 → no parent link in the chain.
+    chunk.emit_op_u16(Op::LOCAL_GET, n, line);
+    chunk.emit_f64_const(2.0, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_bool_const(false, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, types, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, n, line);
+    chunk.emit_f64_const(2.0, line);
+    chunk.emit_op(Op::F64_SUB, line);
+    let _ = chunk;
+    vybe_compiler::primitives::collections::emit_get(chunks, current, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+}

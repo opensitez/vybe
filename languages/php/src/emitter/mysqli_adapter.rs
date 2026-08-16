@@ -508,12 +508,41 @@ pub fn emit_php_mysqli_connect_error(chunks: &mut [Chunk], current: usize, argc:
     global_get_key(chunk, "__php_mysqli_connect_error", line);
 }
 
+/// `mysqli_error($link)` — the last error on THIS connection.
+///
+/// Previously it dropped the link and returned the global connect-error slot,
+/// which is only ever written when `mysqli_connect` fails. A failed
+/// `mysqli_query` therefore left it empty and the failure was invisible — the
+/// same hole PDO had. `wasi:sql.lastError(link)` carries the per-connection
+/// trace; the connect-error global remains the fallback so a failure to connect
+/// (where there is no connection to ask) still reports.
 pub fn emit_php_mysqli_error(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    let chunk = &mut chunks[current];
-    for _ in 0..argc {
-        chunk.emit_op(Op::DROP, line);
+    for _ in 1..argc {
+        chunks[current].emit_op(Op::DROP, line);
     }
-    global_get_key(chunk, "__php_mysqli_connect_error", line);
+    let link_slot = alloc_local(&mut chunks[current]);
+    if argc == 0 {
+        chunks[current].emit_op(Op::NULL, line);
+    }
+    lset(&mut chunks[current], link_slot, line);
+
+    let out_slot = alloc_local(&mut chunks[current]);
+    lget(&mut chunks[current], link_slot, line);
+    {
+        let idx = chunks[current].add_import("wasi:sql", "lastError");
+        chunks[current].emit_call(idx, 1, line);
+    }
+    lset(&mut chunks[current], out_slot, line);
+
+    emit_slot_is_nonempty_string(&mut chunks[current], out_slot, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_else(line);
+    // No per-connection trace: fall back to the connect-error global, which is
+    // the only place a failure with no connection can have been recorded.
+    global_get_key(&mut chunks[current], "__php_mysqli_connect_error", line);
+    lset(&mut chunks[current], out_slot, line);
+    chunks[current].emit_end(line);
+    lget(&mut chunks[current], out_slot, line);
 }
 
 pub fn emit_php_mysqli_query(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -690,12 +719,37 @@ pub fn emit_php_mysqli_ping(chunks: &mut [Chunk], current: usize, _argc: u8, lin
     chunk.emit_end(line);
 }
 
+/// `mysqli_errno($link)` — non-zero when the last call on this connection
+/// failed. MySQL's own codes are not available through `wasi:sql`, so a failure
+/// reports the generic 1105 (`ER_UNKNOWN_ERROR`) rather than inventing a
+/// specific one; `mysqli_error()` carries the text that actually identifies it.
 pub fn emit_php_mysqli_errno(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    let chunk = &mut chunks[current];
-    for _ in 0..argc {
-        chunk.emit_op(Op::DROP, line);
+    for _ in 1..argc {
+        chunks[current].emit_op(Op::DROP, line);
     }
-    global_get_key(chunk, "__php_mysqli_connect_errno", line);
+    let link_slot = alloc_local(&mut chunks[current]);
+    if argc == 0 {
+        chunks[current].emit_op(Op::NULL, line);
+    }
+    lset(&mut chunks[current], link_slot, line);
+
+    let msg_slot = alloc_local(&mut chunks[current]);
+    lget(&mut chunks[current], link_slot, line);
+    {
+        let idx = chunks[current].add_import("wasi:sql", "lastError");
+        chunks[current].emit_call(idx, 1, line);
+    }
+    lset(&mut chunks[current], msg_slot, line);
+
+    let out_slot = alloc_local(&mut chunks[current]);
+    global_get_key(&mut chunks[current], "__php_mysqli_connect_errno", line);
+    lset(&mut chunks[current], out_slot, line);
+    emit_slot_is_nonempty_string(&mut chunks[current], msg_slot, line);
+    chunks[current].emit_if(line);
+    push_const(&mut chunks[current], Value::F64(1105.0), line);
+    lset(&mut chunks[current], out_slot, line);
+    chunks[current].emit_end(line);
+    lget(&mut chunks[current], out_slot, line);
 }
 
 pub fn emit_php_mysqli_affected_rows(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
