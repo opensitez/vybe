@@ -1,11 +1,22 @@
 ! vybe-test: fortran/arrays/type_bound_subroutine_populates_allocatable_array
 ! origin: languages/fortran/tests/fortran/test_arrays.rs
-
-program test
+module m
     type :: list
     contains
         procedure :: fill
     end type list
+contains
+    subroutine fill(self, arr)
+        class(list), intent(in) :: self
+        integer, allocatable, intent(out) :: arr(:)
+        allocate(arr(3))
+        arr(1) = 5
+        arr(2) = 3
+        arr(3) = 8
+    end subroutine fill
+end module m
+program driver
+use m
     type(list) :: value
     integer, allocatable :: arr(:)
 
@@ -23,13 +34,4 @@ end if
     stop 1
 end if
 
-contains
-    subroutine fill(self, arr)
-        class(list), intent(in) :: self
-        integer, allocatable, intent(out) :: arr(:)
-        allocate(arr(3))
-        arr(1) = 5
-        arr(2) = 3
-        arr(3) = 8
-    end subroutine fill
-end program test
+end program driver

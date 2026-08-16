@@ -16,8 +16,8 @@ if ((b(2)) /= 12) then
     print *, "FAIL: want [12] got [", b(2), "]"
     stop 1
 end if
-if ((sum(b)) /= 25) then
-    print *, "FAIL: want [25] got [", sum(b), "]"
+if ((sum(b)) /= 35) then
+    print *, "FAIL: want [35] got [", sum(b), "]"
     stop 1
 end if
 end program t

@@ -14,6 +14,10 @@ if ((stride_sum(v, 5, 2)) /= vybe_check_w(vybe_check_i)) then
     print *, "FAIL at ", vybe_check_i, " got [", stride_sum(v, 5, 2), "]"
     stop 1
 end if
+if (vybe_check_i /= 1) then
+    print *, "FAIL: ", vybe_check_i, " line(s), wanted 1"
+    stop 1
+end if
 contains
 function stride_sum(a, n, step) result(s)
 integer, intent(in) :: a(n), n, step
@@ -23,8 +27,4 @@ do i = 1, n, step
 s = s + a(i)
 end do
 end function stride_sum
-if (vybe_check_i /= 1) then
-    print *, "FAIL: ", vybe_check_i, " line(s), wanted 1"
-    stop 1
-end if
 end program t

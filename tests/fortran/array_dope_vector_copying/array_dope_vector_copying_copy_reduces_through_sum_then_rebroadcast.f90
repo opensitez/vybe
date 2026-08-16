@@ -1,7 +1,7 @@
 ! vybe-test: fortran/array_dope_vector_copying/array_dope_vector_copying_copy_reduces_through_sum_then_rebroadcast
 ! origin: languages/fortran/tests/fortran/test_array_dope_vector_copying.rs
 
-program array_dope_vector_copying_copy_reduces_through_sum_then_rebroadcast
+program t
     integer, allocatable :: source(:)
     integer, allocatable :: target(:)
     integer :: total
@@ -20,4 +20,4 @@ end if
     print *, "FAIL: want [21] got [", target(1), "]"
     stop 1
 end if
-end program array_dope_vector_copying_copy_reduces_through_sum_then_rebroadcast
+end program t

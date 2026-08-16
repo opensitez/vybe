@@ -7,7 +7,7 @@ logical :: debug = .false.
 end module flags
 program t
 use flags, only: active
-if ((active) /= 1) then
+if (.not. (active)) then
     print *, "FAIL: want [1] got [", active, "]"
     stop 1
 end if

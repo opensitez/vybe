@@ -8,8 +8,8 @@ if ((int(row(1))) /= 1) then
     print *, "FAIL: want [1] got [", int(row(1)), "]"
     stop 1
 end if
-if ((int(row(2))) /= 4) then
-    print *, "FAIL: want [4] got [", int(row(2)), "]"
+if ((int(row(2))) /= 3) then
+    print *, "FAIL: want [3] got [", int(row(2)), "]"
     stop 1
 end if
 end program t

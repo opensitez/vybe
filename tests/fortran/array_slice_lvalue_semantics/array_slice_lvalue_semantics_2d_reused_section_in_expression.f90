@@ -9,8 +9,8 @@ program array_slice_lvalue_semantics_2d_reused_section_in_expression
     print *, "FAIL: want [2] got [", values(2, 1), "]"
     stop 1
 end if
-    if ((values(3, 3)) /= 8) then
-    print *, "FAIL: want [8] got [", values(3, 3), "]"
+    if ((values(3, 3)) /= 9) then
+    print *, "FAIL: want [9] got [", values(3, 3), "]"
     stop 1
 end if
     if ((sum(values)) /= 45) then

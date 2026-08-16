@@ -11,9 +11,9 @@ program test_file_rewind_and_endfile_behavior
     write(unit, '(I0)') 7
     write(unit, '(I0)') 9
     rewind(unit)
-    read(unit, '(I0)') first
+    read(unit, *) first
     endfile(unit)
-    read(unit, '(I0)', iostat=code) second
+    read(unit, *, iostat=code) second
 
     print *, first
     print *, code

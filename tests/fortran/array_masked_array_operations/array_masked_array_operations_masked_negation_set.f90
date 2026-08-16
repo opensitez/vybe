@@ -10,8 +10,8 @@ program array_masked_array_operations_masked_negation_set
     else where
         result = values
     end where
-    if ((sum(result)) /= 20) then
-    print *, "FAIL: want [20] got [", sum(result), "]"
+    if ((sum(result)) /= 10) then
+    print *, "FAIL: want [10] got [", sum(result), "]"
     stop 1
 end if
     if ((result(1)) /= 3) then

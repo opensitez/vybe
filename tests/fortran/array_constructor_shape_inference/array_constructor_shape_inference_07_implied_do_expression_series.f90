@@ -1,7 +1,7 @@
 ! vybe-test: fortran/array_constructor_shape_inference/array_constructor_shape_inference_07_implied_do_expression_series
 ! origin: languages/fortran/tests/fortran/test_array_constructor_shape_inference.rs
 
-program test_array_constructor_shape_inference_07_implied_do_expression_series
+program t
     integer, allocatable :: values(:)
     values = (/ (i * 3 - 1, i = 1, 5) /)
     if ((size(values)) /= 5) then
@@ -20,4 +20,4 @@ end if
     print *, "FAIL: want [14] got [", values(size(values)), "]"
     stop 1
 end if
-end program test_array_constructor_shape_inference_07_implied_do_expression_series
+end program t

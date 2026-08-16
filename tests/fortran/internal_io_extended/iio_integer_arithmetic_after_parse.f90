@@ -3,7 +3,7 @@
 program t
 character(len=6) :: buf = '6'
 integer :: n
-read(buf, '(I0)') n
+read(buf, *) n
 if ((n * n) /= 36) then
     print *, "FAIL: want [36] got [", n * n, "]"
     stop 1

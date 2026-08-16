@@ -2,8 +2,8 @@
 ! origin: languages/fortran/tests/fortran/test_kind_inquiry.rs
 program t
 real :: x = 0.0
-if ((digits(x)) /= 15) then
-    print *, "FAIL: want [15] got [", digits(x), "]"
+if ((digits(x)) /= 24) then
+    print *, "FAIL: want [24] got [", digits(x), "]"
     stop 1
 end if
 end program t

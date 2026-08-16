@@ -2,7 +2,7 @@
 ! origin: languages/fortran/tests/fortran/test_transfer.rs
 
 program test
-    if ((real_bits_roundtrip(1.0)) /= 1) then
+    if (.not. (real_bits_roundtrip(1.0))) then
     print *, "FAIL: want [1] got [", real_bits_roundtrip(1.0), "]"
     stop 1
 end if

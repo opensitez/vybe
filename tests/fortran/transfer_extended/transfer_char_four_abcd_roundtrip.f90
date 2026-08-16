@@ -5,7 +5,7 @@ character(len=4) :: s = 'ABCD', u
 integer :: n
 n = transfer(s, 0)
 u = transfer(n, '    ')
-if ((u == s) /= 1) then
+if (.not. (u == s)) then
     print *, "FAIL: want [1] got [", u == s, "]"
     stop 1
 end if

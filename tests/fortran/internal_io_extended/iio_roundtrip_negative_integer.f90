@@ -4,6 +4,6 @@ program t
 character(len=10) :: buf
 integer :: x = -18, y
 write(buf, '(I0)') x
-read(buf, '(I0)') y
+read(buf, *) y
 print *, y
 end program t

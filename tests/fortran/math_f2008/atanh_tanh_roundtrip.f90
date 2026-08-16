@@ -3,5 +3,8 @@
 
 program test
     real :: x = 0.5
-    print *, atanh(tanh(x))
+    if (abs((atanh(tanh(x))) - (0.5)) > 5.000000e-06) then
+        print *, "FAIL: want [0.5] got [", atanh(tanh(x)), "]"
+        stop 1
+    end if
 end program test

@@ -8,8 +8,8 @@ if ((b(1)) /= 20) then
     print *, "FAIL: want [20] got [", b(1), "]"
     stop 1
 end if
-if ((b(3)) /= 30) then
-    print *, "FAIL: want [30] got [", b(3), "]"
+if ((b(3)) /= 0) then
+    print *, "FAIL: want [0] got [", b(3), "]"
     stop 1
 end if
 end program t

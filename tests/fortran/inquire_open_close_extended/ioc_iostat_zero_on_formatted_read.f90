@@ -5,7 +5,7 @@ integer :: n, ios
 open(60, status='scratch')
 write(60, '(I0)') 42
 rewind(60)
-read(60, '(I0)', iostat=ios) n
+read(60, *, iostat=ios) n
 close(60)
 print *, ios
 print *, n

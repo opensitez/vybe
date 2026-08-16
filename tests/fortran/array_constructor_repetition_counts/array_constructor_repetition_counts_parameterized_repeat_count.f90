@@ -4,7 +4,7 @@
 program array_constructor_repetition_counts_parameterized_repeat_count
     integer, parameter :: n = 4
     integer, allocatable :: values(:)
-    values = (/ n * 3, 2 * 1 /)
+    values = (/ (3, i = 1, n), (1, i = 1, 2) /)
     if ((size(values)) /= 6) then
     print *, "FAIL: want [6] got [", size(values), "]"
     stop 1

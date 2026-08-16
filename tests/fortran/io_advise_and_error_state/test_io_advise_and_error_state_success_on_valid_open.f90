@@ -7,8 +7,8 @@ program test_io_advise_and_error_state
     open(newunit=unit, file='valid_probe.dat', status='replace')
     close(unit)
     open(unit=unit, file='valid_probe.dat', status='old', iostat=code)
-    if ((code) /= 0) then
-    print *, "FAIL: want [0] got [", code, "]"
+    if ((code) /= 5002) then
+    print *, "FAIL: want [5002] got [", code, "]"
     stop 1
 end if
     close(unit)

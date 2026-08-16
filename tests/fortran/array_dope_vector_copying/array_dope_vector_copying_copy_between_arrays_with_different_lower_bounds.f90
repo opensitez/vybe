@@ -1,7 +1,7 @@
 ! vybe-test: fortran/array_dope_vector_copying/array_dope_vector_copying_copy_between_arrays_with_different_lower_bounds
 ! origin: languages/fortran/tests/fortran/test_array_dope_vector_copying.rs
 
-program array_dope_vector_copying_copy_between_arrays_with_different_lower_bounds
+program t
     integer :: left(-1:4)
     integer :: right(10:15)
     left = (/ 1, 2, 3, 4, 5, 6 /)
@@ -22,4 +22,4 @@ end if
     print *, "FAIL: want [6] got [", right(15), "]"
     stop 1
 end if
-end program array_dope_vector_copying_copy_between_arrays_with_different_lower_bounds
+end program t

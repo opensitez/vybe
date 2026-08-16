@@ -10,8 +10,8 @@ program array_fill_pattern_internals_fill_cross_pattern_then_flatten
     matrix(3,2) = 3
     matrix(:,3) = 3
     total = sum(matrix)
-    if ((total) /= 30) then
-    print *, "FAIL: want [30] got [", total, "]"
+    if ((total) /= 27) then
+    print *, "FAIL: want [27] got [", total, "]"
     stop 1
 end if
     if ((matrix(2,2)) /= 3) then

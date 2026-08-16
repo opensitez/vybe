@@ -3,7 +3,7 @@
 program t
 integer :: a(1) = [42]
 integer :: m(3)
-m = reshape(a, [3], pad=-1)
+m = reshape(a, [3], pad=[-1])
 if ((m(1)) /= 42) then
     print *, "FAIL: want [42] got [", m(1), "]"
     stop 1

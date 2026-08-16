@@ -21,8 +21,8 @@ end if
     else
         status = -1
     end if
-    if ((status) /= 7) then
-    print *, "FAIL: want [7] got [", status, "]"
+    if ((status) /= -1) then
+    print *, "FAIL: want [-1] got [", status, "]"
     stop 1
 end if
 end program array_bounds_check_failure_paths_section_outside_reject

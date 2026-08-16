@@ -7,6 +7,10 @@ integer :: vybe_check_w(3) = [ 1, 2, 3 ]
     call tick()
     call tick()
     call tick()
+if (vybe_check_i /= 3) then
+    print *, "FAIL: ", vybe_check_i, " line(s), wanted 3"
+    stop 1
+end if
 contains
     subroutine tick()
         integer, save :: n = 0
@@ -21,8 +25,4 @@ contains
             stop 1
         end if
     end subroutine tick
-if (vybe_check_i /= 3) then
-    print *, "FAIL: ", vybe_check_i, " line(s), wanted 3"
-    stop 1
-end if
 end program t

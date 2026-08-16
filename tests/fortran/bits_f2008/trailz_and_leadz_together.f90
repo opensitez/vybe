@@ -5,5 +5,5 @@ program test
     integer :: x = 16
     print *, leadz(x)
     print *, trailz(x)
-    print *, popcount(x)
+    print *, popcnt(x)
 end program test

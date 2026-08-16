@@ -5,7 +5,7 @@ integer :: n
 open(11, status='scratch')
 write(11, '(I0)') 55
 rewind(11)
-read(11, '(I0)') n
+read(11, *) n
 close(11)
 print *, n
 end program t

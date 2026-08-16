@@ -8,8 +8,8 @@ write(30, '(I0)') 11
 write(31, '(I0)') 22
 rewind(30)
 rewind(31)
-read(30, '(I0)') a
-read(31, '(I0)') b
+read(30, *) a
+read(31, *) b
 close(30)
 close(31)
 print *, a

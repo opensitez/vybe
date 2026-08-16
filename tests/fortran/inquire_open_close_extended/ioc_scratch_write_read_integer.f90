@@ -5,7 +5,7 @@ integer :: n
 open(20, status='scratch')
 write(20, '(I0)') 123
 rewind(20)
-read(20, '(I0)') n
+read(20, *) n
 close(20)
 print *, n
 end program t

@@ -1,6 +1,6 @@
 ! vybe-test: fortran/if_construct_extended/if_elif_temperature_mild_branch
 ! origin: languages/fortran/tests/fortran/test_if_construct_extended.rs
-program t
+program driver
 integer :: vybe_check_i = 0
 character(len=4) :: vybe_check_w(1) = [ "mild" ]
 real :: t = 20.0
@@ -49,4 +49,4 @@ if (vybe_check_i /= 1) then
     print *, "FAIL: ", vybe_check_i, " line(s), wanted 1"
     stop 1
 end if
-end program t
+end program driver

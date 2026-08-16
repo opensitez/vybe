@@ -9,5 +9,5 @@ go to 99
 20          print *, 20
 go to 99
 30          print *, 30
-+99          continue
+99          continue
 end program statement_f77_legacy_compat_computed_goto

@@ -22,8 +22,8 @@ end if
     print *, "FAIL: want [3] got [", result(3), "]"
     stop 1
 end if
-    if ((sum(result)) /= 20) then
-    print *, "FAIL: want [20] got [", sum(result), "]"
+    if ((sum(result)) /= 21) then
+    print *, "FAIL: want [21] got [", sum(result), "]"
     stop 1
 end if
 end program array_masked_array_operations_masked_redundant_mask

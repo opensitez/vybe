@@ -7,7 +7,7 @@ program test
     integer :: recovered
     bytes = transfer(original, bytes)
     recovered = transfer(bytes, 0)
-    if ((original == recovered) /= 1) then
+    if (.not. (original == recovered)) then
     print *, "FAIL: want [1] got [", original == recovered, "]"
     stop 1
 end if

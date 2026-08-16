@@ -3,7 +3,7 @@
 program t
 integer :: a(3) = [10, 20, 30]
 integer :: m(2,3)
-m = reshape(a, [2, 3], pad=1, order='C')
+m = reshape(a, [2, 3], pad=[1], order=[2, 1])
 if ((m(1,1)) /= 10) then
     print *, "FAIL: want [10] got [", m(1,1), "]"
     stop 1

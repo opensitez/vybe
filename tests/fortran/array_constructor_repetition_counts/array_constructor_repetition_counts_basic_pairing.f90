@@ -3,7 +3,7 @@
 
 program array_constructor_repetition_counts_basic_pairing
     integer, allocatable :: values(:)
-    values = (/ 2 * 10, 3 * 20 /)
+    values = (/ (10, i = 1, 2), (20, i = 1, 3) /)
     if ((size(values)) /= 5) then
     print *, "FAIL: want [5] got [", size(values), "]"
     stop 1

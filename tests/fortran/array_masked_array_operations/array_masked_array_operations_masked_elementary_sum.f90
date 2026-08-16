@@ -10,8 +10,8 @@ program array_masked_array_operations_masked_elementary_sum
     print *, "FAIL: want [45] got [", masked_sum, "]"
     stop 1
 end if
-    if ((count(values > 9)) /= 4) then
-    print *, "FAIL: want [4] got [", count(values > 9), "]"
+    if ((count(values > 9)) /= 3) then
+    print *, "FAIL: want [3] got [", count(values > 9), "]"
     stop 1
 end if
 end program array_masked_array_operations_masked_elementary_sum

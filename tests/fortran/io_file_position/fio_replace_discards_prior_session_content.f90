@@ -8,7 +8,7 @@ close(31)
 open(31, file='fio_replace_stale.dat', status='replace')
 write(31, '(I0)') 222
 rewind(31)
-read(31, '(I0)') n
+read(31, *) n
 close(31, status='delete')
 print *, n
 end program t

@@ -1,6 +1,6 @@
 ! vybe-test: fortran/fortran2003_extended/tbp_nested_point_distance_origin
 ! origin: languages/fortran/tests/fortran/test_fortran2003_extended.rs
-program t
+module m
 type :: Coord
 real :: x, y
 contains
@@ -11,15 +11,6 @@ type(Coord) :: start, finish
 contains
 procedure :: span
 end type Segment
-type(Segment) :: s
-s%start%x = 0.0
-s%start%y = 0.0
-s%finish%x = 3.0
-s%finish%y = 4.0
-if ((int(s%span())) /= 5) then
-    print *, "FAIL: want [5] got [", int(s%span()), "]"
-    stop 1
-end if
 contains
 function len(self) result(d)
 class(Coord), intent(in) :: self
@@ -31,4 +22,16 @@ class(Segment), intent(in) :: self
 real :: d
 d = sqrt((self%finish%x - self%start%x)**2 + (self%finish%y - self%start%y)**2)
 end function span
-end program t
+end module m
+program driver
+use m
+type(Segment) :: s
+s%start%x = 0.0
+s%start%y = 0.0
+s%finish%x = 3.0
+s%finish%y = 4.0
+if ((int(s%span())) /= 5) then
+    print *, "FAIL: want [5] got [", int(s%span()), "]"
+    stop 1
+end if
+end program driver

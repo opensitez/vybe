@@ -20,14 +20,14 @@ integer :: vybe_check_w(1) = [ 120 ]
         stop 1
     end if
 
+if (vybe_check_i /= 1) then
+    print *, "FAIL: ", vybe_check_i, " line(s), wanted 1"
+    stop 1
+end if
 contains
     subroutine set_scale(v, state)
         integer, intent(in) :: v
         integer, intent(inout) :: state
         state = state * v
     end subroutine set_scale
-if (vybe_check_i /= 1) then
-    print *, "FAIL: ", vybe_check_i, " line(s), wanted 1"
-    stop 1
-end if
 end program procedure_quality_elemental_like_loop

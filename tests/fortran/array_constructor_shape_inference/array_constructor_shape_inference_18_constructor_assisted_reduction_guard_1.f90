@@ -1,7 +1,7 @@
 ! vybe-test: fortran/array_constructor_shape_inference/array_constructor_shape_inference_18_constructor_assisted_reduction_guard_1
 ! origin: languages/fortran/tests/fortran/test_array_constructor_shape_inference.rs
 
-program test_array_constructor_shape_inference_18_constructor_assisted_reduction_guard_1
+program t
     call validate_values((/ 10, 20, 30, 40, 50 /), 50, 150)
 contains
     subroutine validate_values(values, expected_last, expected_sum)
@@ -23,4 +23,4 @@ end if
     stop 1
 end if
     end subroutine validate_values
-end program test_array_constructor_shape_inference_18_constructor_assisted_reduction_guard_1
+end program t

@@ -1,7 +1,7 @@
 ! vybe-test: fortran/array_fill_pattern_internals/array_fill_pattern_internals_fill_section_with_scalar_then_restore
 ! origin: languages/fortran/tests/fortran/test_array_fill_pattern_internals.rs
 
-program array_fill_pattern_internals_fill_section_with_scalar_then_restore
+program t
     integer, allocatable :: values(:)
     values = (/ 10, 20, 30, 40, 50 /)
     values(2:4) = 0
@@ -18,4 +18,4 @@ end if
     print *, "FAIL: want [0] got [", values(4), "]"
     stop 1
 end if
-end program array_fill_pattern_internals_fill_section_with_scalar_then_restore
+end program t

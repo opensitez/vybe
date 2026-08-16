@@ -3,7 +3,7 @@
 
 program array_constructor_repetition_counts_fixed_shape_integer_array
     integer :: values(6)
-    values = (/ 3 * 4, 2 * 6, 1 * 10 /)
+    values = (/ (4, i = 1, 3), (6, i = 1, 2), (10, i = 1, 1) /)
     if ((size(values)) /= 6) then
     print *, "FAIL: want [6] got [", size(values), "]"
     stop 1

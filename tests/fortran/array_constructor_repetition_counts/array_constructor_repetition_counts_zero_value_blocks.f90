@@ -3,7 +3,7 @@
 
 program array_constructor_repetition_counts_zero_value_blocks
     integer, allocatable :: values(:)
-    values = (/ 3 * 0, 2 * 7, 1 * 0 /)
+    values = (/ (0, i = 1, 3), (7, i = 1, 2), (0, i = 1, 1) /)
     if ((size(values)) /= 6) then
     print *, "FAIL: want [6] got [", size(values), "]"
     stop 1

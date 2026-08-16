@@ -23,6 +23,10 @@ integer :: vybe_check_w(2) = [ 10, 28 ]
         print *, "FAIL at ", vybe_check_i, " got [", total(x), "]"
         stop 1
     end if
+if (vybe_check_i /= 2) then
+    print *, "FAIL: ", vybe_check_i, " line(s), wanted 2"
+    stop 1
+end if
 contains
     integer function adjust(v)
         integer, intent(in) :: v
@@ -37,8 +41,4 @@ contains
             total = total + i
         end do
     end function total
-if (vybe_check_i /= 2) then
-    print *, "FAIL: ", vybe_check_i, " line(s), wanted 2"
-    stop 1
-end if
 end program full_program_internal_procedures

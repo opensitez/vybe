@@ -2,12 +2,12 @@
 ! origin: languages/fortran/tests/fortran/test_kinds.rs
 
 program test
-    if ((kind(1)) /= 8) then
-    print *, "FAIL: want [8] got [", kind(1), "]"
+    if ((kind(1)) /= 4) then
+    print *, "FAIL: want [4] got [", kind(1), "]"
     stop 1
 end if
-    if ((selected_int_kind(9)) /= 8) then
-    print *, "FAIL: want [8] got [", selected_int_kind(9), "]"
+    if ((selected_int_kind(9)) /= 4) then
+    print *, "FAIL: want [4] got [", selected_int_kind(9), "]"
     stop 1
 end if
     if ((selected_real_kind(15, 307)) /= 8) then

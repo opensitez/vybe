@@ -3,7 +3,7 @@
 program t
 integer :: a(4) = [1, 2, 3, 4]
 integer :: m(2,2)
-m = reshape(a, [2, 2], pad=99)
+m = reshape(a, [2, 2], pad=[99])
 if ((sum(m)) /= 10) then
     print *, "FAIL: want [10] got [", sum(m), "]"
     stop 1

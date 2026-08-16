@@ -1,7 +1,7 @@
 ! vybe-test: fortran/array_constructor_shape_inference/array_constructor_shape_inference_21_zero_repetition_yields_empty_array
 ! origin: languages/fortran/tests/fortran/test_array_constructor_shape_inference.rs
 
-program test_array_constructor_shape_inference_21_zero_repetition_yields_empty_array
+program t
 integer :: vybe_check_i = 0
 integer :: vybe_check_w(2) = [ 0, 1 ]
     integer, allocatable :: values(:)
@@ -40,4 +40,4 @@ if (vybe_check_i /= 2) then
     print *, "FAIL: ", vybe_check_i, " line(s), wanted 2"
     stop 1
 end if
-end program test_array_constructor_shape_inference_21_zero_repetition_yields_empty_array
+end program t

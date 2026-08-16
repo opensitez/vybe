@@ -1,5 +1,6 @@
 ! vybe-test: fortran/pointer_alloc_extended/compile_nested_type_allocatable_allocate
 ! origin: languages/fortran/tests/fortran/test_pointer_alloc_extended.rs
+program t
 
 type :: Inner
     real, allocatable :: coeffs(:)
@@ -9,7 +10,6 @@ type :: Outer
     type(Inner) :: layer
 end type Outer
 
-program t
     type(Outer) :: obj
     allocate(obj%layer%coeffs(3))
     obj%layer%coeffs = [1.0, 2.0, 3.0]

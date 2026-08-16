@@ -1,7 +1,7 @@
 ! vybe-test: fortran/select_type_polymorphic_matching/select_type_polymorphic_matching_type_is_exact_child_expected_miss
 ! origin: languages/fortran/tests/fortran/test_select_type_polymorphic_matching.rs
 
-program select_type_polymorphic_matching_type_is_exact_child_expected_miss
+program t
 integer :: vybe_check_i = 0
 integer :: vybe_check_w(1) = [ 0 ]
     type :: Base
@@ -39,4 +39,4 @@ if (vybe_check_i /= 1) then
     print *, "FAIL: ", vybe_check_i, " line(s), wanted 1"
     stop 1
 end if
-end program select_type_polymorphic_matching_type_is_exact_child_expected_miss
+end program t

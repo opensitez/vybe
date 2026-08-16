@@ -6,7 +6,7 @@ open(73, file='ioc_ext_asis.dat', status='replace')
 write(73, '(I0)') 33
 close(73)
 open(73, file='ioc_ext_asis.dat', status='old', position='asis')
-read(73, '(I0)') n
+read(73, *) n
 close(73, status='delete')
 print *, n
 end program t

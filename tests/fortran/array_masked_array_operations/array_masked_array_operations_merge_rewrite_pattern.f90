@@ -6,8 +6,8 @@ program array_masked_array_operations_merge_rewrite_pattern
     integer :: result(4)
     values = (/ 1, 2, 3, 4 /)
     result = merge(values*3, values, values > 2)
-    if ((sum(result)) /= 16) then
-    print *, "FAIL: want [16] got [", sum(result), "]"
+    if ((sum(result)) /= 24) then
+    print *, "FAIL: want [24] got [", sum(result), "]"
     stop 1
 end if
     if ((result(2)) /= 2) then

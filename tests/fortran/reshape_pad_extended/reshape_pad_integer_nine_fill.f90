@@ -3,13 +3,13 @@
 program t
 integer :: a(3) = [1, 2, 3]
 integer :: m(2,2)
-m = reshape(a, [2, 2], pad=9)
-if ((m(1,2)) /= 2) then
-    print *, "FAIL: want [2] got [", m(1,2), "]"
+m = reshape(a, [2, 2], pad=[9])
+if ((m(1,2)) /= 3) then
+    print *, "FAIL: want [3] got [", m(1,2), "]"
     stop 1
 end if
-if ((m(2,1)) /= 3) then
-    print *, "FAIL: want [3] got [", m(2,1), "]"
+if ((m(2,1)) /= 2) then
+    print *, "FAIL: want [2] got [", m(2,1), "]"
     stop 1
 end if
 if ((m(2,2)) /= 9) then

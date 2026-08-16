@@ -21,8 +21,8 @@ end if
     print *, "FAIL: want [30] got [", result(5), "]"
     stop 1
 end if
-    if ((sum(result)) /= 34) then
-    print *, "FAIL: want [34] got [", sum(result), "]"
+    if ((sum(result)) /= 50) then
+    print *, "FAIL: want [50] got [", sum(result), "]"
     stop 1
 end if
 end program array_masked_array_operations_basic_where_mask

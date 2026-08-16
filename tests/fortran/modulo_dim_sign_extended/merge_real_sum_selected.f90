@@ -4,8 +4,8 @@ program t
 real :: a(3)=[0.5,1.5,2.5]
 real :: b(3)=[5.0,4.0,3.0]
 logical :: m(3)=[.true.,.false.,.true.]
-if ((nint(sum(merge(a,b,m))*10)) /= 90) then
-    print *, "FAIL: want [90] got [", nint(sum(merge(a,b,m))*10), "]"
+if ((nint(sum(merge(a,b,m))*10)) /= 70) then
+    print *, "FAIL: want [70] got [", nint(sum(merge(a,b,m))*10), "]"
     stop 1
 end if
 end program t

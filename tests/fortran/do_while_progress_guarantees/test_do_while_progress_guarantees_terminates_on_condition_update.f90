@@ -1,7 +1,7 @@
 ! vybe-test: fortran/do_while_progress_guarantees/test_do_while_progress_guarantees_terminates_on_condition_update
 ! origin: languages/fortran/tests/fortran/test_do_while_progress_guarantees.rs
 
-program test_do_while_progress_guarantees_terminates_on_condition_update
+program t
 integer :: vybe_check_i = 0
 integer :: vybe_check_w(2) = [ 20, 90 ]
     integer :: i
@@ -36,4 +36,4 @@ if (vybe_check_i /= 2) then
     print *, "FAIL: ", vybe_check_i, " line(s), wanted 2"
     stop 1
 end if
-end program test_do_while_progress_guarantees_terminates_on_condition_update
+end program t

@@ -3,6 +3,14 @@
 program t
 real :: f
 integer :: i
-f = modf(0.0, i)
-print *, i, f
+i = int(0.0)
+f = 0.0 - real(i)
+if (i /= 0) then
+    print *, "FAIL: want [0] got [", i, "]"
+    stop 1
+end if
+if (nint(f * 100) /= 0) then
+    print *, "FAIL: want [0] got [", nint(f * 100), "]"
+    stop 1
+end if
 end program t

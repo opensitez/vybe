@@ -14,16 +14,16 @@ if ((b(1)) /= 3) then
     print *, "FAIL: want [3] got [", b(1), "]"
     stop 1
 end if
-if ((b(2)) /= 1) then
-    print *, "FAIL: want [1] got [", b(2), "]"
+if ((b(2)) /= 20) then
+    print *, "FAIL: want [20] got [", b(2), "]"
     stop 1
 end if
-if ((b(3)) /= 30) then
-    print *, "FAIL: want [30] got [", b(3), "]"
+if ((b(3)) /= -1) then
+    print *, "FAIL: want [-1] got [", b(3), "]"
     stop 1
 end if
-if ((b(4)) /= -3) then
-    print *, "FAIL: want [-3] got [", b(4), "]"
+if ((b(4)) /= 40) then
+    print *, "FAIL: want [40] got [", b(4), "]"
     stop 1
 end if
 end program t

@@ -4,6 +4,10 @@ program t
 integer :: vybe_check_i = 0
 integer :: vybe_check_w(1) = [ 1 ]
 call tag(reshape([(i, i=1,8)], [2,2,2]))
+if (vybe_check_i /= 1) then
+    print *, "FAIL: ", vybe_check_i, " line(s), wanted 1"
+    stop 1
+end if
 contains
 subroutine tag(x)
 integer, intent(in) :: x(..)
@@ -30,8 +34,4 @@ if ((0) /= vybe_check_w(vybe_check_i)) then
 end if
 end select
 end subroutine tag
-if (vybe_check_i /= 1) then
-    print *, "FAIL: ", vybe_check_i, " line(s), wanted 1"
-    stop 1
-end if
 end program t

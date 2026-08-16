@@ -1,7 +1,7 @@
 ! vybe-test: fortran/array_fill_pattern_internals/array_fill_pattern_internals_vectorized_fill_via_repeat_expression
 ! origin: languages/fortran/tests/fortran/test_array_fill_pattern_internals.rs
 
-program array_fill_pattern_internals_vectorized_fill_via_repeat_expression
+program t
     integer, allocatable :: values(:)
     values = (/ 3 * 0 /)
     if ((size(values)) /= 3) then
@@ -21,4 +21,4 @@ end if
     print *, "FAIL: want [11] got [", values(3), "]"
     stop 1
 end if
-end program array_fill_pattern_internals_vectorized_fill_via_repeat_expression
+end program t

@@ -9,8 +9,8 @@
 10  seen = seen + 1
 20  seen = seen + 2
 30  seen = seen + 3
-    if ((seen) /= 1) then
-    print *, "FAIL: want [1] got [", seen, "]"
+    if ((seen) /= 6) then
+    print *, "FAIL: want [6] got [", seen, "]"
     stop 1
 end if
 end program statement_free_form_legacy_associated_goto_and_arithmetic_if

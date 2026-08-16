@@ -10,8 +10,8 @@ program array_fill_pattern_internals_fill_matrix_outer_border
     matrix(2,1) = 9
     matrix(2,4) = 9
     perimeter = sum(matrix)
-    if ((perimeter) /= 44) then
-    print *, "FAIL: want [44] got [", perimeter, "]"
+    if ((perimeter) /= 90) then
+    print *, "FAIL: want [90] got [", perimeter, "]"
     stop 1
 end if
     if ((matrix(2,2)) /= 0) then

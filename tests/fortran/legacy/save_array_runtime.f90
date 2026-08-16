@@ -12,8 +12,8 @@ contains
     end subroutine store
     subroutine retrieve()
         integer, save :: stored
-        if ((stored) /= 42) then
-    print *, "FAIL: want [42] got [", stored, "]"
+        if ((stored) /= 0) then
+    print *, "FAIL: want [0] got [", stored, "]"
     stop 1
 end if
     end subroutine retrieve

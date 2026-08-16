@@ -3,7 +3,7 @@
 program t
 real :: a(2) = [1.0, 2.0]
 real :: m(3)
-m = reshape(a, [3], pad=0.0)
+m = reshape(a, [3], pad=[0.0])
 if ((int(m(3) * 10)) /= 0) then
     print *, "FAIL: want [0] got [", int(m(3) * 10), "]"
     stop 1

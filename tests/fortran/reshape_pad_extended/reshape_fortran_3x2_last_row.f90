@@ -4,8 +4,8 @@ program t
 integer :: a(6) = [1, 2, 3, 4, 5, 6]
 integer :: m(3,2)
 m = reshape(a, [3, 2])
-if ((m(3,1)) /= 5) then
-    print *, "FAIL: want [5] got [", m(3,1), "]"
+if ((m(3,1)) /= 3) then
+    print *, "FAIL: want [3] got [", m(3,1), "]"
     stop 1
 end if
 if ((m(3,2)) /= 6) then

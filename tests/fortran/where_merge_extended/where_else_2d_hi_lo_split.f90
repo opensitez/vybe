@@ -12,8 +12,8 @@ if ((r(1,1)) /= 1) then
     print *, "FAIL: want [1] got [", r(1,1), "]"
     stop 1
 end if
-if ((r(1,2)) /= 12) then
-    print *, "FAIL: want [12] got [", r(1,2), "]"
+if ((r(1,2)) /= 3) then
+    print *, "FAIL: want [3] got [", r(1,2), "]"
     stop 1
 end if
 if ((r(2,2)) /= 16) then

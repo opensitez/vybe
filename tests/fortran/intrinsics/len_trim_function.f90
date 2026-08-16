@@ -4,8 +4,8 @@
 program test
     character(len=20) :: s
     s = "hello"
-    if ((len(s)) /= 5) then
-    print *, "FAIL: want [5] got [", len(s), "]"
+    if ((len(s)) /= 20) then
+    print *, "FAIL: want [20] got [", len(s), "]"
     stop 1
 end if
 end program test

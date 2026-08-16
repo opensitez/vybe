@@ -6,8 +6,8 @@ program array_transfer_between_kinds_int_to_real
     real :: sink
     source = 1
     sink = transfer(source, sink)
-    if ((int(sink)) /= 1) then
-    print *, "FAIL: want [1] got [", int(sink), "]"
+    if ((int(sink)) /= 0) then
+    print *, "FAIL: want [0] got [", int(sink), "]"
     stop 1
 end if
 end program array_transfer_between_kinds_int_to_real

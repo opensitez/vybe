@@ -1,5 +1,6 @@
 ! vybe-test: fortran/reshape_pad_extended/reshape_compile_shape_mismatch_no_pad
 ! origin: languages/fortran/tests/fortran/test_reshape_pad_extended.rs
+! vybe-test-mode: compile-fail
 
 program t
     integer :: a(3) = [1, 2, 3]

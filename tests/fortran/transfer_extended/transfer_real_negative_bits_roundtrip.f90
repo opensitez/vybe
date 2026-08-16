@@ -4,7 +4,7 @@ program t
 real :: x = -2.5
 integer :: n
 n = transfer(x, 0)
-if ((transfer(n, 0.0) == x) /= 1) then
+if (.not. (transfer(n, 0.0) == x)) then
     print *, "FAIL: want [1] got [", transfer(n, 0.0) == x, "]"
     stop 1
 end if

@@ -6,6 +6,10 @@ integer :: vybe_check_i = 0
 integer :: vybe_check_w(2) = [ 1, 0 ]
     call handle([1, 2, 3])
     call inspect(42)
+if (vybe_check_i /= 2) then
+    print *, "FAIL: ", vybe_check_i, " line(s), wanted 2"
+    stop 1
+end if
 contains
     subroutine handle(x)
         integer, intent(in) :: x(..)
@@ -58,8 +62,4 @@ contains
             end if
         end select
     end subroutine inspect
-if (vybe_check_i /= 2) then
-    print *, "FAIL: ", vybe_check_i, " line(s), wanted 2"
-    stop 1
-end if
 end program t

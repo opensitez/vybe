@@ -4,12 +4,12 @@ program t
 integer :: a(4)=[1,2,3,4]
 integer :: b(4)
 b=cshift(a,3)
-if ((b(1)) /= 2) then
-    print *, "FAIL: want [2] got [", b(1), "]"
+if ((b(1)) /= 4) then
+    print *, "FAIL: want [4] got [", b(1), "]"
     stop 1
 end if
-if ((b(4)) /= 1) then
-    print *, "FAIL: want [1] got [", b(4), "]"
+if ((b(4)) /= 3) then
+    print *, "FAIL: want [3] got [", b(4), "]"
     stop 1
 end if
 end program t

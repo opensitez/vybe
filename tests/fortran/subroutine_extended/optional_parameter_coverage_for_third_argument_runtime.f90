@@ -7,6 +7,10 @@ integer :: vybe_check_w(3) = [ 1, 3, 6 ]
     call tagged(1)
     call tagged(1, 2)
     call tagged(1, 2, 3)
+if (vybe_check_i /= 3) then
+    print *, "FAIL: ", vybe_check_i, " line(s), wanted 3"
+    stop 1
+end if
 contains
     subroutine tagged(a, b, c)
         integer, intent(in) :: a
@@ -29,8 +33,4 @@ contains
             stop 1
         end if
     end subroutine tagged
-if (vybe_check_i /= 3) then
-    print *, "FAIL: ", vybe_check_i, " line(s), wanted 3"
-    stop 1
-end if
 end program t

@@ -1,7 +1,7 @@
 ! vybe-test: fortran/array_dope_vector_copying/array_dope_vector_copying_temporary_to_alloc_assign_after_bound_calculation
 ! origin: languages/fortran/tests/fortran/test_array_dope_vector_copying.rs
 
-program array_dope_vector_copying_temporary_to_alloc_assign_after_bound_calculation
+program t
     integer, allocatable :: src(:)
     integer, allocatable :: dst(:)
     integer :: n
@@ -24,4 +24,4 @@ end if
     print *, "FAIL: want [24] got [", dst(3), "]"
     stop 1
 end if
-end program array_dope_vector_copying_temporary_to_alloc_assign_after_bound_calculation
+end program t

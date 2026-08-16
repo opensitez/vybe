@@ -1,7 +1,7 @@
 ! vybe-test: fortran/array_constructor_shape_inference/array_constructor_shape_inference_13_allocatable_resize_shrinks
 ! origin: languages/fortran/tests/fortran/test_array_constructor_shape_inference.rs
 
-program test_array_constructor_shape_inference_13_allocatable_resize_shrinks
+program t
     integer, allocatable :: values(:)
     values = (/ 1, 2, 3, 4, 5, 6 /)
     if ((size(values)) /= 6) then
@@ -21,4 +21,4 @@ end if
     print *, "FAIL: want [99] got [", values(1), "]"
     stop 1
 end if
-end program test_array_constructor_shape_inference_13_allocatable_resize_shrinks
+end program t

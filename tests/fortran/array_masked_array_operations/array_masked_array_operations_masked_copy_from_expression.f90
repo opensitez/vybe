@@ -8,8 +8,8 @@ program array_masked_array_operations_masked_copy_from_expression
     where (values >= 3)
         result = values + 10
     end where
-    if ((sum(result)) /= 47) then
-    print *, "FAIL: want [47] got [", sum(result), "]"
+    if ((sum(result)) /= 60) then
+    print *, "FAIL: want [60] got [", sum(result), "]"
     stop 1
 end if
     if ((result(1)) /= 0) then

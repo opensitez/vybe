@@ -4,8 +4,8 @@ program t
 logical, allocatable :: flag
 allocate(flag)
 flag = .true.
-if ((flag) /= 1) then
-    print *, "FAIL: want [1] got [", flag, "]"
+if (flag .neqv. .true.) then
+    print *, "FAIL: want [true] got [", flag, "]"
     stop 1
 end if
 deallocate(flag)

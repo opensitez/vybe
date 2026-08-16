@@ -9,12 +9,12 @@ program array_implied_do_ordering_sectioned_implied_do_fill
     print *, "FAIL: want [1] got [", a(1), "]"
     stop 1
 end if
-    if ((a(5)) /= 8) then
-    print *, "FAIL: want [8] got [", a(5), "]"
+    if ((a(5)) /= 6) then
+    print *, "FAIL: want [6] got [", a(5), "]"
     stop 1
 end if
-    if ((sum(a)) /= 34) then
-    print *, "FAIL: want [34] got [", sum(a), "]"
+    if ((sum(a)) /= 38) then
+    print *, "FAIL: want [38] got [", sum(a), "]"
     stop 1
 end if
 end program array_implied_do_ordering_sectioned_implied_do_fill

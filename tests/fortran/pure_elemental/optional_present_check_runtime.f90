@@ -6,6 +6,10 @@ integer :: vybe_check_i = 0
 integer :: vybe_check_w(2) = [ 3, 7 ]
     call maybe(3)
     call maybe(3, 4)
+if (vybe_check_i /= 2) then
+    print *, "FAIL: ", vybe_check_i, " line(s), wanted 2"
+    stop 1
+end if
 contains
     subroutine maybe(n, extra)
         integer, intent(in) :: n
@@ -23,8 +27,4 @@ contains
             stop 1
         end if
     end subroutine maybe
-if (vybe_check_i /= 2) then
-    print *, "FAIL: ", vybe_check_i, " line(s), wanted 2"
-    stop 1
-end if
 end program test

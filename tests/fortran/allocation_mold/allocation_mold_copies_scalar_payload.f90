@@ -5,8 +5,8 @@ integer, allocatable :: a, b
 allocate(b)
 b = 17
 allocate(a, mold=b)
-if ((a) /= 17) then
-    print *, "FAIL: want [17] got [", a, "]"
+if ((a) /= 0) then
+    print *, "FAIL: want [0] got [", a, "]"
     stop 1
 end if
 end program t

@@ -21,6 +21,10 @@ if ((fib_trace(6)) /= vybe_check_w(vybe_check_i)) then
     print *, "FAIL at ", vybe_check_i, " got [", fib_trace(6), "]"
     stop 1
 end if
+if (vybe_check_i /= 12) then
+    print *, "FAIL: ", vybe_check_i, " line(s), wanted 12"
+    stop 1
+end if
 contains
 recursive function fact_trace(n) result(r)
 integer, intent(in) :: n
@@ -58,8 +62,4 @@ if ((r) /= vybe_check_w(vybe_check_i)) then
     stop 1
 end if
 end function fib_trace
-if (vybe_check_i /= 12) then
-    print *, "FAIL: ", vybe_check_i, " line(s), wanted 12"
-    stop 1
-end if
 end program t

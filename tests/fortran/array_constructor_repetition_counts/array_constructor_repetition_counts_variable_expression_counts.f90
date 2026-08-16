@@ -3,13 +3,13 @@
 
 program array_constructor_repetition_counts_variable_expression_counts
     integer, allocatable :: values(:)
-    values = (/ (2 + 1) * 4, (1 + 2) * 1, (2 + 1) * -3 /)
-    if ((size(values)) /= 5) then
-    print *, "FAIL: want [5] got [", size(values), "]"
+    values = (/ (4, i = 1, 2 + 1), (1, i = 1, 1 + 2), (-3, i = 1, 2 + 1) /)
+    if ((size(values)) /= 9) then
+    print *, "FAIL: want [9] got [", size(values), "]"
     stop 1
 end if
-    if ((sum(values)) /= 1) then
-    print *, "FAIL: want [1] got [", sum(values), "]"
+    if ((sum(values)) /= 6) then
+    print *, "FAIL: want [6] got [", sum(values), "]"
     stop 1
 end if
     if ((values(1)) /= 4) then

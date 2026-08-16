@@ -1,5 +1,6 @@
 ! vybe-test: fortran/reshape_pad_extended/reshape_compile_order_invalid_literal
 ! origin: languages/fortran/tests/fortran/test_reshape_pad_extended.rs
+! vybe-test-mode: compile-fail
 
 program t
     integer :: a(4) = [1, 2, 3, 4]

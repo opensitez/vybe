@@ -3,8 +3,8 @@
 program t
 integer :: x
 x=merge(merge(1,2,.true.),merge(3,4,.false.),.false.)
-if ((x) /= 3) then
-    print *, "FAIL: want [3] got [", x, "]"
+if ((x) /= 4) then
+    print *, "FAIL: want [4] got [", x, "]"
     stop 1
 end if
 end program t

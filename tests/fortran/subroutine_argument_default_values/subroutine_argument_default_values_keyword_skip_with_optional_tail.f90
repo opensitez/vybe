@@ -1,7 +1,7 @@
 ! vybe-test: fortran/subroutine_argument_default_values/subroutine_argument_default_values_keyword_skip_with_optional_tail
 ! origin: languages/fortran/tests/fortran/test_subroutine_argument_default_values.rs
 
-program subroutine_argument_default_values_keyword_skip_with_optional_tail
+program t
     if ((combine(a=2, c=7)) /= 9) then
     print *, "FAIL: want [9] got [", combine(a=2, c=7), "]"
     stop 1
@@ -18,4 +18,4 @@ contains
         if (present(b)) combine = combine + b
         if (present(c)) combine = combine + c
     end function combine
-end program subroutine_argument_default_values_keyword_skip_with_optional_tail
+end program t

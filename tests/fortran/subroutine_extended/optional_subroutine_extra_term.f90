@@ -5,6 +5,10 @@ integer :: vybe_check_i = 0
 integer :: vybe_check_w(2) = [ 4, 10 ]
 call accumulate(4)
 call accumulate(4, 6)
+if (vybe_check_i /= 2) then
+    print *, "FAIL: ", vybe_check_i, " line(s), wanted 2"
+    stop 1
+end if
 contains
 subroutine accumulate(base, extra)
 integer, intent(in) :: base
@@ -22,8 +26,4 @@ if ((total) /= vybe_check_w(vybe_check_i)) then
     stop 1
 end if
 end subroutine accumulate
-if (vybe_check_i /= 2) then
-    print *, "FAIL: ", vybe_check_i, " line(s), wanted 2"
-    stop 1
-end if
 end program t

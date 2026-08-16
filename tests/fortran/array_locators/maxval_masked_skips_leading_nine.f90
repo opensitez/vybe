@@ -3,8 +3,8 @@
 program t
 integer :: a(6) = [1, 9, 2, 8, 3, 7]
 logical :: mask(6) = [.false., .false., .true., .true., .true., .true.]
-if ((maxval(a, mask=mask)) /= 9) then
-    print *, "FAIL: want [9] got [", maxval(a, mask=mask), "]"
+if ((maxval(a, mask=mask)) /= 8) then
+    print *, "FAIL: want [8] got [", maxval(a, mask=mask), "]"
     stop 1
 end if
 end program t

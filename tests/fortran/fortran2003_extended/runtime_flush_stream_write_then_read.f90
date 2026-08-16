@@ -9,7 +9,7 @@ program t
     write(u, '(I0)') 123
     flush(u)
     rewind(u)
-    read(u, '(I0)') value
+    read(u, *) value
     close(u)
     print *, value
 end program t

@@ -1,7 +1,7 @@
 ! vybe-test: fortran/pointer_alloc_extended/compile_nullify_reassociate_multiple_pointers
 ! origin: languages/fortran/tests/fortran/test_pointer_alloc_extended.rs
 
-program t
+program driver
     integer, target :: s = 1, t = 2, u = 3
     integer, pointer :: p => null(), q => null(), r => null()
     p => s
@@ -13,4 +13,4 @@ program t
     print *, p
     print *, r
     print *, associated(q)
-end program t
+end program driver

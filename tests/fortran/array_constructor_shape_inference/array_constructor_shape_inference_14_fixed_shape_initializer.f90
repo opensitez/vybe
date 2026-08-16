@@ -1,7 +1,7 @@
 ! vybe-test: fortran/array_constructor_shape_inference/array_constructor_shape_inference_14_fixed_shape_initializer
 ! origin: languages/fortran/tests/fortran/test_array_constructor_shape_inference.rs
 
-program test_array_constructor_shape_inference_14_fixed_shape_initializer
+program t
     integer :: values(4) = (/ 2, 4, 6, 8 /)
     if ((size(values)) /= 4) then
     print *, "FAIL: want [4] got [", size(values), "]"
@@ -19,4 +19,4 @@ end if
     print *, "FAIL: want [8] got [", values(size(values)), "]"
     stop 1
 end if
-end program test_array_constructor_shape_inference_14_fixed_shape_initializer
+end program t

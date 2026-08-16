@@ -3,7 +3,7 @@
 program t
 integer :: a(12) = [(i, i = 1, 12)]
 integer :: m(2,3,2)
-m = reshape(a, [2, 3, 2], order='C')
+m = reshape(a, [2, 3, 2], order=[3, 2, 1])
 if ((sum(m)) /= 78) then
     print *, "FAIL: want [78] got [", sum(m), "]"
     stop 1

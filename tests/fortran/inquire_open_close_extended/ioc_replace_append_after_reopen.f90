@@ -8,7 +8,7 @@ close(46)
 open(46, file='ioc_ext_rep7.dat', status='old', position='append')
 write(46, '(I0)') 5
 rewind(46)
-read(46, '(I0)') n
+read(46, *) n
 close(46, status='delete')
 print *, n
 end program t

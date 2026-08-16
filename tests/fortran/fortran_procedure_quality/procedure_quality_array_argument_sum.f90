@@ -18,6 +18,10 @@ integer :: vybe_check_w(1) = [ 15 ]
         stop 1
     end if
 
+if (vybe_check_i /= 1) then
+    print *, "FAIL: ", vybe_check_i, " line(s), wanted 1"
+    stop 1
+end if
 contains
     subroutine array_sum(v, total)
         integer, intent(in) :: v(:)
@@ -28,8 +32,4 @@ contains
             total = total + v(i)
         end do
     end subroutine array_sum
-if (vybe_check_i /= 1) then
-    print *, "FAIL: ", vybe_check_i, " line(s), wanted 1"
-    stop 1
-end if
 end program procedure_quality_array_argument_sum

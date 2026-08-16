@@ -6,8 +6,8 @@ program array_section_shape_and_strides_row_vector_projection
     integer :: projected_sum
     matrix = reshape((/ (i, i = 1, 12) /), (/4,3/))
     projected_sum = sum(matrix(3,:))
-    if ((projected_sum) /= 25) then
-    print *, "FAIL: want [25] got [", projected_sum, "]"
+    if ((projected_sum) /= 21) then
+    print *, "FAIL: want [21] got [", projected_sum, "]"
     stop 1
 end if
     if ((lbound(matrix(3,:),1)) /= 1) then
@@ -18,8 +18,8 @@ end if
     print *, "FAIL: want [3] got [", ubound(matrix(3,:),1), "]"
     stop 1
 end if
-    if ((matrix(3,1)) /= 9) then
-    print *, "FAIL: want [9] got [", matrix(3,1), "]"
+    if ((matrix(3,1)) /= 3) then
+    print *, "FAIL: want [3] got [", matrix(3,1), "]"
     stop 1
 end if
     if ((matrix(3,3)) /= 11) then

@@ -3,13 +3,13 @@
 
 program array_constructor_repetition_counts_repeat_with_reduction_check
     integer, allocatable :: values(:)
-    values = (/ 5 * 1, 3 * 2, 2 * 3 /)
+    values = (/ (1, i = 1, 5), (2, i = 1, 3), (3, i = 1, 2) /)
     if ((size(values)) /= 10) then
     print *, "FAIL: want [10] got [", size(values), "]"
     stop 1
 end if
-    if ((sum(values)) /= 19) then
-    print *, "FAIL: want [19] got [", sum(values), "]"
+    if ((sum(values)) /= 17) then
+    print *, "FAIL: want [17] got [", sum(values), "]"
     stop 1
 end if
     if ((count(values == 2)) /= 3) then

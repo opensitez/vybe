@@ -7,11 +7,11 @@ program t
     real, pointer :: stride(:)
     full => a
     stride => a(1:10:2)
-    if ((is_contiguous(full)) /= 1) then
+    if (.not. (is_contiguous(full))) then
     print *, "FAIL: want [1] got [", is_contiguous(full), "]"
     stop 1
 end if
-    if ((is_contiguous(stride)) /= 0) then
+    if ((is_contiguous(stride))) then
     print *, "FAIL: want [0] got [", is_contiguous(stride), "]"
     stop 1
 end if

@@ -1,13 +1,11 @@
 ! vybe-test: fortran/fortran2003_extended/tbp_pass_binding_alias_print
 ! origin: languages/fortran/tests/fortran/test_fortran2003_extended.rs
-program t
+module m
 type :: Label
 character(len=8) :: text = 'vybe'
 contains
 procedure :: show => emit_label
 end type Label
-type(Label) :: item
-call item%show()
 contains
 subroutine emit_label(self)
 class(Label), intent(in) :: self
@@ -16,4 +14,9 @@ if (trim(trim(self%text)) /= "vybe") then
     stop 1
 end if
 end subroutine emit_label
-end program t
+end module m
+program driver
+use m
+type(Label) :: item
+call item%show()
+end program driver

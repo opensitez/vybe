@@ -3,8 +3,8 @@
 program t
 integer :: m(2,3) = reshape([1,2,3,4,5,6], [2,3])
 associate (cell => m(2,1))
-if ((cell) /= 4) then
-    print *, "FAIL: want [4] got [", cell, "]"
+if ((cell) /= 2) then
+    print *, "FAIL: want [2] got [", cell, "]"
     stop 1
 end if
 end associate

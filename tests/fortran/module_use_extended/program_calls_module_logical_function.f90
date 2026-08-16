@@ -11,7 +11,7 @@ end function is_zero
 end module checks
 program t
 use checks
-if ((is_zero(0)) /= 1) then
+if (.not. (is_zero(0))) then
     print *, "FAIL: want [1] got [", is_zero(0), "]"
     stop 1
 end if

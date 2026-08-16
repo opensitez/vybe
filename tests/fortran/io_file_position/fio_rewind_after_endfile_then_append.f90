@@ -8,7 +8,7 @@ endfile(21)
 rewind(21)
 write(21, '(I0)') 6
 rewind(21)
-read(21, '(I0)') tail
+read(21, *) tail
 close(21)
 print *, tail
 end program t

@@ -3,13 +3,13 @@
 
 program array_constructor_repetition_counts_large_block_explicit
     integer, allocatable :: values(:)
-    values = (/ 8 * 1, 1, 1 * -2, 2 * 2 /)
+    values = (/ (1, i = 1, 8), 1, (-2, i = 1, 1), (2, i = 1, 2) /)
     if ((size(values)) /= 12) then
     print *, "FAIL: want [12] got [", size(values), "]"
     stop 1
 end if
-    if ((sum(values)) /= 6) then
-    print *, "FAIL: want [6] got [", sum(values), "]"
+    if ((sum(values)) /= 11) then
+    print *, "FAIL: want [11] got [", sum(values), "]"
     stop 1
 end if
     if ((values(1)) /= 1) then

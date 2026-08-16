@@ -6,12 +6,12 @@ program test_kind_parameter_bounds
     integer :: medium
     small = selected_int_kind(4)
     medium = selected_int_kind(8)
-    if ((small) /= 8) then
-    print *, "FAIL: want [8] got [", small, "]"
+    if ((small) /= 2) then
+    print *, "FAIL: want [2] got [", small, "]"
     stop 1
 end if
-    if ((medium) /= 8) then
-    print *, "FAIL: want [8] got [", medium, "]"
+    if ((medium) /= 4) then
+    print *, "FAIL: want [4] got [", medium, "]"
     stop 1
 end if
 end program test_kind_parameter_bounds

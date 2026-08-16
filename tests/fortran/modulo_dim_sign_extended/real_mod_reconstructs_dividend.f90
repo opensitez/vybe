@@ -4,8 +4,8 @@ program t
 real :: a=29.5, b=6.0, q, r
 q = a / b
 r = mod(a, b)
-if ((merge(1, 0, q*b + r == a)) /= 1) then
-    print *, "FAIL: want [1] got [", merge(1, 0, q*b + r == a), "]"
+if ((merge(1, 0, q*b + r == a)) /= 0) then
+    print *, "FAIL: want [0] got [", merge(1, 0, q*b + r == a), "]"
     stop 1
 end if
 end program t

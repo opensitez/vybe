@@ -10,7 +10,7 @@ program test
     print *, "FAIL: want [-17] got [", copy, "]"
     stop 1
 end if
-    if ((original == copy) /= 1) then
+    if (.not. (original == copy)) then
     print *, "FAIL: want [1] got [", original == copy, "]"
     stop 1
 end if

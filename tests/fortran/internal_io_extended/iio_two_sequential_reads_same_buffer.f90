@@ -5,8 +5,8 @@ character(len=10) :: buf = '2 3'
 integer :: a, b
 read(buf, *) a
 read(buf, *) b
-if ((a + b) /= 5) then
-    print *, "FAIL: want [5] got [", a + b, "]"
+if ((a + b) /= 4) then
+    print *, "FAIL: want [4] got [", a + b, "]"
     stop 1
 end if
 end program t

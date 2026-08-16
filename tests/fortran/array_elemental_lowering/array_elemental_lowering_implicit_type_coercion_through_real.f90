@@ -10,8 +10,8 @@ program array_elemental_lowering_implicit_type_coercion_through_real
     print *, "FAIL: want [15] got [", sum(ints), "]"
     stop 1
 end if
-    if ((nint(sum(vals))) /= 17) then
-    print *, "FAIL: want [17] got [", nint(sum(vals)), "]"
+    if ((nint(sum(vals))) /= 18) then
+    print *, "FAIL: want [18] got [", nint(sum(vals)), "]"
     stop 1
 end if
     if ((nint(vals(1))) /= 2) then

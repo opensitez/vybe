@@ -8,8 +8,8 @@ program array_elemental_lowering_cascade_reassignments
     values = values + 1
     values = values * 2
     result = sum(values)
-    if ((result) /= 20) then
-    print *, "FAIL: want [20] got [", result, "]"
+    if ((result) /= 28) then
+    print *, "FAIL: want [28] got [", result, "]"
     stop 1
 end if
     if ((values(1)) /= 4) then

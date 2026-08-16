@@ -5,8 +5,8 @@ integer :: n, ios
 open(62, status='scratch')
 write(62, '(I0)') 1
 rewind(62)
-read(62, '(I0)', iostat=ios) n
-read(62, '(I0)', iostat=ios) n
+read(62, *, iostat=ios) n
+read(62, *, iostat=ios) n
 close(62)
 print *, ios
 end program t

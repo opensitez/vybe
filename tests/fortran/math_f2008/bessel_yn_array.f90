@@ -4,5 +4,8 @@
 program test
     real :: values(3)
     values = bessel_yn(0, 2, 1.0)
-    print *, values(1)
+    if (abs((values(1)) - (0.0882569626)) > 1.000000e-06) then
+        print *, "FAIL: want [0.0882569626] got [", values(1), "]"
+        stop 1
+    end if
 end program test

@@ -15,8 +15,8 @@ end if
     print *, "FAIL: want [0] got [", target(1, 2), "]"
     stop 1
 end if
-    if ((target(2, 1)) /= 12) then
-    print *, "FAIL: want [12] got [", target(2, 1), "]"
+    if ((target(2, 1)) /= 11) then
+    print *, "FAIL: want [11] got [", target(2, 1), "]"
     stop 1
 end if
     if ((target(2, 2)) /= 13) then

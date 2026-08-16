@@ -8,12 +8,12 @@ program array_section_shape_and_strides_stride_and_mask_pair
     values = (/ (i, i = 1, 9) /)
     selected_sum = sum(values(1:9:2), values(1:9:2) > 5)
     selected_count = count(values(1:9:2) > 5)
-    if ((selected_sum) /= 7) then
-    print *, "FAIL: want [7] got [", selected_sum, "]"
+    if ((selected_sum) /= 16) then
+    print *, "FAIL: want [16] got [", selected_sum, "]"
     stop 1
 end if
-    if ((selected_count) /= 1) then
-    print *, "FAIL: want [1] got [", selected_count, "]"
+    if ((selected_count) /= 2) then
+    print *, "FAIL: want [2] got [", selected_count, "]"
     stop 1
 end if
     if ((size(values(1:9:2))) /= 5) then

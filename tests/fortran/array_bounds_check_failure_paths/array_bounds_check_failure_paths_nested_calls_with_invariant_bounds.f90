@@ -1,7 +1,7 @@
 ! vybe-test: fortran/array_bounds_check_failure_paths/array_bounds_check_failure_paths_nested_calls_with_invariant_bounds
 ! origin: languages/fortran/tests/fortran/test_array_bounds_check_failure_paths.rs
 
-program array_bounds_check_failure_paths_nested_calls_with_invariant_bounds
+program t
     integer :: values(1:7)
     integer :: found
 
@@ -28,4 +28,4 @@ contains
             out = a(idx)
         end if
     end subroutine check
-end program array_bounds_check_failure_paths_nested_calls_with_invariant_bounds
+end program t

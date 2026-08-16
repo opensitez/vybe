@@ -7,3 +7,20 @@ integer :: x
 end subroutine s
 end interface
 end module m
+program t
+use m
+procedure(s), pointer :: p
+integer :: v
+p => impl
+v = 5
+call p(v)
+if (v /= 15) then
+    print *, "FAIL: want [15] got [", v, "]"
+    stop 1
+end if
+contains
+subroutine impl(x)
+integer :: x
+x = x * 3
+end subroutine impl
+end program t

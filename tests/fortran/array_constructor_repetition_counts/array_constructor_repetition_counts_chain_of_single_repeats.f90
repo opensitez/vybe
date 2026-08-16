@@ -3,7 +3,7 @@
 
 program array_constructor_repetition_counts_chain_of_single_repeats
     integer, allocatable :: values(:)
-    values = (/ 1 * 8, 1 * 1, 1 * 6, 1 * 4 /)
+    values = (/ (8, i = 1, 1), (1, i = 1, 1), (6, i = 1, 1), (4, i = 1, 1) /)
     if ((size(values)) /= 4) then
     print *, "FAIL: want [4] got [", size(values), "]"
     stop 1

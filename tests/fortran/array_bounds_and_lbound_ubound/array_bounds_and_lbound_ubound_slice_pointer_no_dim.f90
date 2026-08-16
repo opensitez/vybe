@@ -8,12 +8,12 @@ program array_bounds_and_lbound_ubound_slice_pointer_no_dim
     alias => source(2:4)
     lb = lbound(alias)
     ub = ubound(alias)
-    if ((lb(1)) /= 2) then
-    print *, "FAIL: want [2] got [", lb(1), "]"
+    if ((lb(1)) /= 1) then
+    print *, "FAIL: want [1] got [", lb(1), "]"
     stop 1
 end if
-    if ((ub(1)) /= 4) then
-    print *, "FAIL: want [4] got [", ub(1), "]"
+    if ((ub(1)) /= 3) then
+    print *, "FAIL: want [3] got [", ub(1), "]"
     stop 1
 end if
 end program array_bounds_and_lbound_ubound_slice_pointer_no_dim

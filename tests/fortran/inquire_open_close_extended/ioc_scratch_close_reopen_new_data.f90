@@ -8,7 +8,7 @@ close(22)
 open(22, status='scratch')
 write(22, '(I0)') 42
 rewind(22)
-read(22, '(I0)') v
+read(22, *) v
 close(22)
 print *, v
 end program t

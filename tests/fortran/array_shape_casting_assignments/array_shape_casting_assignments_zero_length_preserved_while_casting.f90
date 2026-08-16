@@ -1,7 +1,7 @@
 ! vybe-test: fortran/array_shape_casting_assignments/array_shape_casting_assignments_zero_length_preserved_while_casting
 ! origin: languages/fortran/tests/fortran/test_array_shape_casting_assignments.rs
 
-program array_shape_casting_assignments_zero_length_preserved_while_casting
+program t
     integer :: flat(0)
     integer :: matrix(0, 1)
     matrix = reshape(flat, (/0, 1/))
@@ -13,4 +13,4 @@ end if
     print *, "FAIL: want [1] got [", size(matrix, 2), "]"
     stop 1
 end if
-end program array_shape_casting_assignments_zero_length_preserved_while_casting
+end program t

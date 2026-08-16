@@ -3,13 +3,13 @@
 
 program array_constructor_repetition_counts_descending_repeat_pattern
     integer, allocatable :: values(:)
-    values = (/ 3 * 9, 1 * 8, 2 * 7, 1 * 6, 1 /)
+    values = (/ (9, i = 1, 3), (8, i = 1, 1), (7, i = 1, 2), (6, i = 1, 1), 1 /)
     if ((size(values)) /= 8) then
     print *, "FAIL: want [8] got [", size(values), "]"
     stop 1
 end if
-    if ((sum(values)) /= 55) then
-    print *, "FAIL: want [55] got [", sum(values), "]"
+    if ((sum(values)) /= 56) then
+    print *, "FAIL: want [56] got [", sum(values), "]"
     stop 1
 end if
     if ((values(1)) /= 9) then

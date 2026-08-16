@@ -1,7 +1,7 @@
 ! vybe-test: fortran/array_constructor_shape_inference/array_constructor_shape_inference_15_real_constructor_to_real_alloc
 ! origin: languages/fortran/tests/fortran/test_array_constructor_shape_inference.rs
 
-program test_array_constructor_shape_inference_15_real_constructor_to_real_alloc
+program t
     real, allocatable :: values(:)
     integer :: n
     values = (/ 1.5, 2.5, 3.5 /)
@@ -22,4 +22,4 @@ end if
     print *, "FAIL: want [3] got [", values(n), "]"
     stop 1
 end if
-end program test_array_constructor_shape_inference_15_real_constructor_to_real_alloc
+end program t

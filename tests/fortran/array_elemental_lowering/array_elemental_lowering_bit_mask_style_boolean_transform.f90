@@ -6,8 +6,8 @@ program array_elemental_lowering_bit_mask_style_boolean_transform
     integer, allocatable :: flags(:)
     values = (/ 1, 2, 4, 8 /)
     flags = iand(values, 2)
-    if ((sum(flags)) /= 10) then
-    print *, "FAIL: want [10] got [", sum(flags), "]"
+    if ((sum(flags)) /= 2) then
+    print *, "FAIL: want [2] got [", sum(flags), "]"
     stop 1
 end if
     if ((flags(1)) /= 0) then

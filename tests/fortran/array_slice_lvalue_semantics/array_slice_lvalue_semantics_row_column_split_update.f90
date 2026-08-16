@@ -18,8 +18,8 @@ end if
     print *, "FAIL: want [7] got [", values(4, 1), "]"
     stop 1
 end if
-    if ((sum(values)) /= 110) then
-    print *, "FAIL: want [110] got [", sum(values), "]"
+    if ((sum(values)) /= 148) then
+    print *, "FAIL: want [148] got [", sum(values), "]"
     stop 1
 end if
 end program array_slice_lvalue_semantics_row_column_split_update

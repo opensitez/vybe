@@ -12,6 +12,10 @@ if (trim(trim(str_upper('ab'))) /= trim(vybe_check_w(vybe_check_i))) then
     print *, "FAIL at ", vybe_check_i, " got [", trim(str_upper('ab')), "]"
     stop 1
 end if
+if (vybe_check_i /= 1) then
+    print *, "FAIL: ", vybe_check_i, " line(s), wanted 1"
+    stop 1
+end if
 contains
 pure function str_upper(s) result(u)
 character(len=*), intent(in) :: s
@@ -21,8 +25,4 @@ do i = 1, len(s)
     u(i:i) = s(i:i)
 end do
 end function str_upper
-if (vybe_check_i /= 1) then
-    print *, "FAIL: ", vybe_check_i, " line(s), wanted 1"
-    stop 1
-end if
 end program t

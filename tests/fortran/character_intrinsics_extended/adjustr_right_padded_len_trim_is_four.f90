@@ -2,8 +2,8 @@
 ! origin: languages/fortran/tests/fortran/test_character_intrinsics_extended.rs
 program t
 character(len=12) :: s = 'Code'
-if ((len_trim(adjustr(s))) /= 4) then
-    print *, "FAIL: want [4] got [", len_trim(adjustr(s)), "]"
+if ((len_trim(adjustr(s))) /= 12) then
+    print *, "FAIL: want [12] got [", len_trim(adjustr(s)), "]"
     stop 1
 end if
 end program t

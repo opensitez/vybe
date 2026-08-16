@@ -4,8 +4,8 @@ program t
 integer :: a = -29, b = 6, q, r
 q = a / b
 r = modulo(a, b)
-if ((q * b + r) /= -29) then
-    print *, "FAIL: want [-29] got [", q * b + r, "]"
+if ((q * b + r) /= -23) then
+    print *, "FAIL: want [-23] got [", q * b + r, "]"
     stop 1
 end if
 end program t

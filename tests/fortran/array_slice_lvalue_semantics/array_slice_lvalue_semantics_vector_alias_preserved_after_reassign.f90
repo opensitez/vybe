@@ -1,7 +1,7 @@
 ! vybe-test: fortran/array_slice_lvalue_semantics/array_slice_lvalue_semantics_vector_alias_preserved_after_reassign
 ! origin: languages/fortran/tests/fortran/test_array_slice_lvalue_semantics.rs
 
-program array_slice_lvalue_semantics_vector_alias_preserved_after_reassign
+program t
     integer :: a(1:6)
     integer :: b(1:6)
     a = (/1, 2, 3, 4, 5, 6/)
@@ -19,4 +19,4 @@ end if
     print *, "FAIL: want [21] got [", sum(a), "]"
     stop 1
 end if
-end program array_slice_lvalue_semantics_vector_alias_preserved_after_reassign
+end program t

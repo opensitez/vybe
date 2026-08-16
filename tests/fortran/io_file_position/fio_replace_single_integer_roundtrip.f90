@@ -5,7 +5,7 @@ integer :: n
 open(30, file='fio_replace_one.dat', status='replace')
 write(30, '(I0)') 88
 rewind(30)
-read(30, '(I0)') n
+read(30, *) n
 close(30, status='delete')
 print *, n
 end program t

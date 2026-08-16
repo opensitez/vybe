@@ -10,8 +10,8 @@ if ((m(1,2,1)) /= 11) then
     print *, "FAIL: want [11] got [", m(1,2,1), "]"
     stop 1
 end if
-if ((m(2,3,2)) /= 23) then
-    print *, "FAIL: want [23] got [", m(2,3,2), "]"
+if ((m(2,3,2)) /= 22) then
+    print *, "FAIL: want [22] got [", m(2,3,2), "]"
     stop 1
 end if
 if ((m(1,1,2)) /= 12) then

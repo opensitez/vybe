@@ -4,6 +4,6 @@ program t
 character(len=20) :: buf
 integer :: n
 write(buf, '(I0)') 456
-read(buf, '(I0)') n
+read(buf, *) n
 print *, n
 end program t

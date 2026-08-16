@@ -8,8 +8,8 @@ program test_parameter_expression_constant_folding
     print *, "FAIL: want [13] got [", a, "]"
     stop 1
 end if
-    if ((b) /= 1) then
-    print *, "FAIL: want [1] got [", b, "]"
+    if ((b) /= 10) then
+    print *, "FAIL: want [10] got [", b, "]"
     stop 1
 end if
 end program test_parameter_expression_constant_folding

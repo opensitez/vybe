@@ -1,7 +1,7 @@
 ! vybe-test: fortran/array_dope_vector_copying/array_dope_vector_copying_descending_section_to_allocable_target
 ! origin: languages/fortran/tests/fortran/test_array_dope_vector_copying.rs
 
-program array_dope_vector_copying_descending_section_to_allocable_target
+program t
     integer, allocatable :: source(:), target(:)
     source = (/ 1, 2, 3, 4, 5, 6 /)
     target = source(6:3:-1)
@@ -21,4 +21,4 @@ end if
     print *, "FAIL: want [3] got [", target(size(target)), "]"
     stop 1
 end if
-end program array_dope_vector_copying_descending_section_to_allocable_target
+end program t

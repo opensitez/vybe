@@ -1,7 +1,7 @@
 ! vybe-test: fortran/subroutine_argument_default_values/subroutine_argument_default_values_optional_integer_simulated_default
 ! origin: languages/fortran/tests/fortran/test_subroutine_argument_default_values.rs
 
-program subroutine_argument_default_values_optional_integer_simulated_default
+program t
     if ((apply_default(5)) /= 6) then
     print *, "FAIL: want [6] got [", apply_default(5), "]"
     stop 1
@@ -22,4 +22,4 @@ contains
         end if
         apply_default = value + step_value
     end function apply_default
-end program subroutine_argument_default_values_optional_integer_simulated_default
+end program t

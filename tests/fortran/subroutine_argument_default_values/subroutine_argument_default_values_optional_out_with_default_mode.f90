@@ -1,7 +1,7 @@
 ! vybe-test: fortran/subroutine_argument_default_values/subroutine_argument_default_values_optional_out_with_default_mode
 ! origin: languages/fortran/tests/fortran/test_subroutine_argument_default_values.rs
 
-program subroutine_argument_default_values_optional_out_with_default_mode
+program t
     integer :: out_val
     call maybe_set(out_val)
     if ((out_val) /= 99) then
@@ -18,4 +18,4 @@ contains
             result = 99
         end if
     end subroutine maybe_set
-end program subroutine_argument_default_values_optional_out_with_default_mode
+end program t

@@ -3,7 +3,7 @@
 
 program array_constructor_repetition_counts_character_repeat_vector
     character(len=4), allocatable :: values(:)
-    values = (/ 3 * 'a', 2 * 'xy' /)
+    values = (/ character(len=4) :: ('a', i = 1, 3), ('xy', i = 1, 2) /)
     if ((size(values)) /= 5) then
     print *, "FAIL: want [5] got [", size(values), "]"
     stop 1

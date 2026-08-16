@@ -1,7 +1,7 @@
 ! vybe-test: fortran/do_while_progress_guarantees/test_do_while_progress_guarantees_cycle_without_progress_on_counter
 ! origin: languages/fortran/tests/fortran/test_do_while_progress_guarantees.rs
 
-program test_do_while_progress_guarantees_cycle_without_progress_on_counter
+program t
 integer :: vybe_check_i = 0
 integer :: vybe_check_w(2) = [ 3, 4 ]
     integer :: i
@@ -38,4 +38,4 @@ if (vybe_check_i /= 2) then
     print *, "FAIL: ", vybe_check_i, " line(s), wanted 2"
     stop 1
 end if
-end program test_do_while_progress_guarantees_cycle_without_progress_on_counter
+end program t

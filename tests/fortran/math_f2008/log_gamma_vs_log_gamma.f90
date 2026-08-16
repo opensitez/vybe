@@ -3,6 +3,12 @@
 
 program test
     real :: x = 10.0
-    print *, log_gamma(x)
-    print *, log(gamma(x))
+    if (abs((log_gamma(x)) - (12.8018274)) > 1.280183e-04) then
+        print *, "FAIL: want [12.8018274] got [", log_gamma(x), "]"
+        stop 1
+    end if
+    if (abs((log(gamma(x))) - (12.8018274)) > 1.280183e-04) then
+        print *, "FAIL: want [12.8018274] got [", log(gamma(x)), "]"
+        stop 1
+    end if
 end program test

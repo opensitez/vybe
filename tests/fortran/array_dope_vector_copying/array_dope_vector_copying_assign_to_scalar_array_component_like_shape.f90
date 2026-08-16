@@ -1,7 +1,7 @@
 ! vybe-test: fortran/array_dope_vector_copying/array_dope_vector_copying_assign_to_scalar_array_component_like_shape
 ! origin: languages/fortran/tests/fortran/test_array_dope_vector_copying.rs
 
-program array_dope_vector_copying_assign_to_scalar_array_component_like_shape
+program t
     integer, allocatable :: source(:)
     integer :: target(0:3)
     source = (/ 1, 2, 3, 4 /)
@@ -22,4 +22,4 @@ end if
     print *, "FAIL: want [4] got [", target(3), "]"
     stop 1
 end if
-end program array_dope_vector_copying_assign_to_scalar_array_component_like_shape
+end program t

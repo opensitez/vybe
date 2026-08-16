@@ -1,7 +1,6 @@
 ! vybe-test: fortran/derived_type_oop_extended/compile_tbp_polymorphic_child_override_dispatch
 ! origin: languages/fortran/tests/fortran/test_derived_type_oop_extended.rs
-
-program t
+module m
     type :: Animal
     contains
         procedure :: legs
@@ -10,9 +9,6 @@ program t
     contains
         procedure :: legs => spider_legs
     end type Spider
-    class(Animal), allocatable :: a
-    allocate(Spider :: a)
-    print *, a%legs()
 contains
     integer function legs(self) result(n)
         class(Animal), intent(in) :: self
@@ -22,4 +18,10 @@ contains
         class(Spider), intent(in) :: self
         n = 8
     end function spider_legs
-end program t
+end module m
+program driver
+use m
+    class(Animal), allocatable :: a
+    allocate(Spider :: a)
+    print *, a%legs()
+end program driver

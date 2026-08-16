@@ -6,7 +6,7 @@ open(76, file='ioc_ext_plain.dat', status='replace')
 write(76, '(I0)') 17
 close(76)
 open(76, file='ioc_ext_plain.dat', status='old')
-read(76, '(I0)') n
+read(76, *) n
 close(76, status='delete')
 print *, n
 end program t

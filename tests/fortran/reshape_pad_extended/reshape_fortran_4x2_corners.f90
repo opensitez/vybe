@@ -8,8 +8,8 @@ if ((m(1,1)) /= 1) then
     print *, "FAIL: want [1] got [", m(1,1), "]"
     stop 1
 end if
-if ((m(4,1)) /= 7) then
-    print *, "FAIL: want [7] got [", m(4,1), "]"
+if ((m(4,1)) /= 4) then
+    print *, "FAIL: want [4] got [", m(4,1), "]"
     stop 1
 end if
 if ((m(4,2)) /= 8) then

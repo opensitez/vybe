@@ -6,12 +6,12 @@ program array_elemental_lowering_real_vectorized_math
     integer :: total
     values = (/ 0.5, 1.0, 1.5, 2.0 /)
     total = nint(sum(sin(values) + cos(values)))
-    if ((total) /= 3) then
-    print *, "FAIL: want [3] got [", total, "]"
+    if ((total) /= 4) then
+    print *, "FAIL: want [4] got [", total, "]"
     stop 1
 end if
-    if ((nint(sum(values * 2.0))) /= 8) then
-    print *, "FAIL: want [8] got [", nint(sum(values * 2.0)), "]"
+    if ((nint(sum(values * 2.0))) /= 10) then
+    print *, "FAIL: want [10] got [", nint(sum(values * 2.0)), "]"
     stop 1
 end if
 end program array_elemental_lowering_real_vectorized_math

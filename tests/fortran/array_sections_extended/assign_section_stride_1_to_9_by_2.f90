@@ -15,8 +15,8 @@ if ((a(9)) /= 55) then
     print *, "FAIL: want [55] got [", a(9), "]"
     stop 1
 end if
-if ((sum(a)) /= 189) then
-    print *, "FAIL: want [189] got [", sum(a), "]"
+if ((sum(a)) /= 185) then
+    print *, "FAIL: want [185] got [", sum(a), "]"
     stop 1
 end if
 end program t

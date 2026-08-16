@@ -3,7 +3,7 @@
 
 program array_constructor_repetition_counts_fixed_shape_2d_fill
     integer :: values(2, 3)
-    values = (/ 1 * 5, 3 * 2, 2 * 1 /)
+    values = reshape((/ (5, i = 1, 1), (2, i = 1, 3), (1, i = 1, 2) /), (/ 2, 3 /))
     if ((values(1, 1)) /= 5) then
     print *, "FAIL: want [5] got [", values(1, 1), "]"
     stop 1

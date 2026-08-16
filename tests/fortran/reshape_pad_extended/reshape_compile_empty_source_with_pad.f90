@@ -4,6 +4,6 @@
 program t
     integer :: a(0)
     integer :: m(2)
-    m = reshape(a, [2], pad=9)
+    m = reshape(a, [2], pad=[9])
     print *, m(1)
 end program t

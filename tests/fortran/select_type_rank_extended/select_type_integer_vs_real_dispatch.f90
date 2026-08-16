@@ -5,6 +5,10 @@ integer :: vybe_check_i = 0
 integer :: vybe_check_w(2) = [ 6, 6 ]
 call show(3)
 call show(3.0)
+if (vybe_check_i /= 2) then
+    print *, "FAIL: ", vybe_check_i, " line(s), wanted 2"
+    stop 1
+end if
 contains
 subroutine show(val)
 class(*), intent(in) :: val
@@ -41,8 +45,4 @@ if ((0) /= vybe_check_w(vybe_check_i)) then
 end if
 end select
 end subroutine show
-if (vybe_check_i /= 2) then
-    print *, "FAIL: ", vybe_check_i, " line(s), wanted 2"
-    stop 1
-end if
 end program t

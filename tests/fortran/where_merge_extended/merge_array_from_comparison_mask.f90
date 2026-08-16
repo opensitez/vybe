@@ -13,8 +13,8 @@ if ((c(2)) /= 20) then
     print *, "FAIL: want [20] got [", c(2), "]"
     stop 1
 end if
-if ((c(4)) /= 40) then
-    print *, "FAIL: want [40] got [", c(4), "]"
+if ((c(4)) /= 4) then
+    print *, "FAIL: want [4] got [", c(4), "]"
     stop 1
 end if
 end program t

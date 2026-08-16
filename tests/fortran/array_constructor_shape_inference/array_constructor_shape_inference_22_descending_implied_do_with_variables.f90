@@ -1,7 +1,7 @@
 ! vybe-test: fortran/array_constructor_shape_inference/array_constructor_shape_inference_22_descending_implied_do_with_variables
 ! origin: languages/fortran/tests/fortran/test_array_constructor_shape_inference.rs
 
-program test_array_constructor_shape_inference_22_descending_implied_do_with_variables
+program t
     integer :: start_idx
     integer :: stop_idx
     integer :: step
@@ -26,4 +26,4 @@ end if
     print *, "FAIL: want [1] got [", values(size(values)), "]"
     stop 1
 end if
-end program test_array_constructor_shape_inference_22_descending_implied_do_with_variables
+end program t

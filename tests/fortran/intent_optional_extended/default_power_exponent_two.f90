@@ -21,6 +21,10 @@ if ((opt_pow(5, 3)) /= vybe_check_w(vybe_check_i)) then
     print *, "FAIL at ", vybe_check_i, " got [", opt_pow(5, 3), "]"
     stop 1
 end if
+if (vybe_check_i /= 2) then
+    print *, "FAIL: ", vybe_check_i, " line(s), wanted 2"
+    stop 1
+end if
 contains
 integer function opt_pow(base, exp)
 integer, intent(in) :: base
@@ -36,8 +40,4 @@ do i = 1, use_e
 opt_pow = opt_pow * base
 end do
 end function opt_pow
-if (vybe_check_i /= 2) then
-    print *, "FAIL: ", vybe_check_i, " line(s), wanted 2"
-    stop 1
-end if
 end program t

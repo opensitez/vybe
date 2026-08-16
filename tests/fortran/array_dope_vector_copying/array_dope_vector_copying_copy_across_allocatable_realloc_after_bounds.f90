@@ -1,7 +1,7 @@
 ! vybe-test: fortran/array_dope_vector_copying/array_dope_vector_copying_copy_across_allocatable_realloc_after_bounds
 ! origin: languages/fortran/tests/fortran/test_array_dope_vector_copying.rs
 
-program array_dope_vector_copying_copy_across_allocatable_realloc_after_bounds
+program t
     integer, allocatable :: source(:)
     integer, allocatable :: target(:)
     integer :: sum_target
@@ -25,4 +25,4 @@ end if
     print *, "FAIL: want [9] got [", target(size(target)), "]"
     stop 1
 end if
-end program array_dope_vector_copying_copy_across_allocatable_realloc_after_bounds
+end program t

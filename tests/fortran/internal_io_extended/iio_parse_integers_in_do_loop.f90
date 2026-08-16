@@ -7,7 +7,7 @@ character(len=4) :: vals(3) = ['1', '2', '3']
 integer :: i, n, total
  total = 0
 do i = 1, 3
-read(vals(i), '(I0)') n
+read(vals(i), *) n
 total = total + n
 end do
 vybe_check_i = vybe_check_i + 1

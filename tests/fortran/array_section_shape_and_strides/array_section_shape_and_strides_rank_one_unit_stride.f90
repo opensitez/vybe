@@ -4,12 +4,12 @@
 program array_section_shape_and_strides_rank_one_unit_stride
     integer :: values(10)
     values = (/ (i, i = 1, 10) /)
-    if ((lbound(values(2:8),1)) /= 2) then
-    print *, "FAIL: want [2] got [", lbound(values(2:8),1), "]"
+    if ((lbound(values(2:8),1)) /= 1) then
+    print *, "FAIL: want [1] got [", lbound(values(2:8),1), "]"
     stop 1
 end if
-    if ((ubound(values(2:8),1)) /= 8) then
-    print *, "FAIL: want [8] got [", ubound(values(2:8),1), "]"
+    if ((ubound(values(2:8),1)) /= 7) then
+    print *, "FAIL: want [7] got [", ubound(values(2:8),1), "]"
     stop 1
 end if
     if ((size(values(2:8))) /= 7) then

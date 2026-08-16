@@ -1,9 +1,9 @@
 ! vybe-test: fortran/array_constructor_repetition_counts/array_constructor_repetition_counts_repeated_zero_length_while_not_empty
 ! origin: languages/fortran/tests/fortran/test_array_constructor_repetition_counts.rs
 
-program array_constructor_repetition_counts_repeated_zero_length_while_not_empty
+program t
     integer, allocatable :: values(:)
-    values = (/ 4 * 0, 2 * 9 /)
+    values = (/ (0, i = 1, 4), (9, i = 1, 2) /)
     if ((size(values)) /= 6) then
     print *, "FAIL: want [6] got [", size(values), "]"
     stop 1
@@ -20,4 +20,4 @@ end if
     print *, "FAIL: want [9] got [", values(size(values)), "]"
     stop 1
 end if
-end program array_constructor_repetition_counts_repeated_zero_length_while_not_empty
+end program t

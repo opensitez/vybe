@@ -8,7 +8,7 @@ close(12)
 open(12, status='scratch')
 write(12, '(I0)') 4
 rewind(12)
-read(12, '(I0)') v
+read(12, *) v
 close(12)
 print *, v
 end program t

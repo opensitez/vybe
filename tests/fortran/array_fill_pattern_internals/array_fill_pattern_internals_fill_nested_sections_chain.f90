@@ -6,8 +6,8 @@ program array_fill_pattern_internals_fill_nested_sections_chain
     matrix = 1
     matrix(2:3,2:3) = 7
     matrix(3,1) = 9
-    if ((sum(matrix)) /= 34) then
-    print *, "FAIL: want [34] got [", sum(matrix), "]"
+    if ((sum(matrix)) /= 48) then
+    print *, "FAIL: want [48] got [", sum(matrix), "]"
     stop 1
 end if
     if ((matrix(2,2)) /= 7) then

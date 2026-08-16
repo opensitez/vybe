@@ -3,7 +3,7 @@
 program t
 integer :: a(2) = [0, 0]
 integer :: m(2,2)
-m = reshape(a, [2, 2], pad=5)
+m = reshape(a, [2, 2], pad=[5])
 if ((count(m == 0)) /= 2) then
     print *, "FAIL: want [2] got [", count(m == 0), "]"
     stop 1

@@ -4,8 +4,8 @@ program t
 real :: m(2,3) = reshape([1.0, 3.0, 2.0, 6.0, 4.0, 5.0], [2,3])
 real :: row(2)
 row = maxval(m, dim=2)
-if ((int(row(1))) /= 3) then
-    print *, "FAIL: want [3] got [", int(row(1)), "]"
+if ((int(row(1))) /= 4) then
+    print *, "FAIL: want [4] got [", int(row(1)), "]"
     stop 1
 end if
 if ((int(row(2))) /= 6) then

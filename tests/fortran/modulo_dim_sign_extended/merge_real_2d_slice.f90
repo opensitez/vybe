@@ -9,8 +9,8 @@ if ((nint(c(1,1)*10)) /= 10) then
     print *, "FAIL: want [10] got [", nint(c(1,1)*10), "]"
     stop 1
 end if
-if ((nint(c(2,2)*10)) /= 40) then
-    print *, "FAIL: want [40] got [", nint(c(2,2)*10), "]"
+if ((nint(c(2,2)*10)) /= 400) then
+    print *, "FAIL: want [400] got [", nint(c(2,2)*10), "]"
     stop 1
 end if
 end program t

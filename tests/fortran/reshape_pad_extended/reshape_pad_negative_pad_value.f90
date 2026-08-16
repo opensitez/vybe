@@ -3,7 +3,7 @@
 program t
 integer :: a(2) = [5, 10]
 integer :: m(2,2)
-m = reshape(a, [2, 2], pad=-99)
+m = reshape(a, [2, 2], pad=[-99])
 if ((m(1,2)) /= -99) then
     print *, "FAIL: want [-99] got [", m(1,2), "]"
     stop 1

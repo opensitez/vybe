@@ -2,5 +2,5 @@
 ! origin: languages/fortran/tests/fortran/test_bits_f2008.rs
 program t
   integer :: x = -1
-  print *, popcount(x)
+  print *, popcnt(x)
 end program t

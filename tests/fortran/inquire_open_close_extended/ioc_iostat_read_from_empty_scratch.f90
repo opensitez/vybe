@@ -5,7 +5,7 @@ integer :: vybe_check_i = 0
 integer :: vybe_check_w(1) = [ 1 ]
 integer :: n, ios
 open(65, status='scratch')
-read(65, '(I0)', iostat=ios) n
+read(65, *, iostat=ios) n
 close(65)
 if (ios /= 0) then
 vybe_check_i = vybe_check_i + 1

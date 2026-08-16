@@ -3,13 +3,13 @@
 
 program array_constructor_repetition_counts_repeat_with_sign
     integer, allocatable :: values(:)
-    values = (/ 4 * (-1), 1 * 6, 1 * (-3) /)
+    values = (/ (-1, i = 1, 4), (6, i = 1, 1), (-3, i = 1, 1) /)
     if ((size(values)) /= 6) then
     print *, "FAIL: want [6] got [", size(values), "]"
     stop 1
 end if
-    if ((sum(values)) /= 3) then
-    print *, "FAIL: want [3] got [", sum(values), "]"
+    if ((sum(values)) /= -1) then
+    print *, "FAIL: want [-1] got [", sum(values), "]"
     stop 1
 end if
     if ((values(1)) /= -1) then

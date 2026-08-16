@@ -1,7 +1,7 @@
 ! vybe-test: fortran/array_constructor_shape_inference/array_constructor_shape_inference_08_implied_do_square_series
 ! origin: languages/fortran/tests/fortran/test_array_constructor_shape_inference.rs
 
-program test_array_constructor_shape_inference_08_implied_do_square_series
+program t
     integer, allocatable :: values(:)
     values = (/ (i * i, i = 1, 4) /)
     if ((size(values)) /= 4) then
@@ -20,4 +20,4 @@ end if
     print *, "FAIL: want [16] got [", values(size(values)), "]"
     stop 1
 end if
-end program test_array_constructor_shape_inference_08_implied_do_square_series
+end program t

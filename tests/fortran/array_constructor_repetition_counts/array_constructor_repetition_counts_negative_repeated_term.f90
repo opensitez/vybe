@@ -3,7 +3,7 @@
 
 program array_constructor_repetition_counts_negative_repeated_term
     integer, allocatable :: values(:)
-    values = (/ 3 * -4, 2 * 5 /)
+    values = (/ (-4, i = 1, 3), (5, i = 1, 2) /)
     if ((size(values)) /= 5) then
     print *, "FAIL: want [5] got [", size(values), "]"
     stop 1

@@ -8,8 +8,8 @@ program string_intrinsic_chain_interactions_adjustl_adjustr
     print *, "FAIL: want [mix] got [", trim(adjustl(text)), "]"
     stop 1
 end if
-    if ((len_trim(adjustr(text))) /= 4) then
-    print *, "FAIL: want [4] got [", len_trim(adjustr(text)), "]"
+    if ((len_trim(adjustr(text))) /= 10) then
+    print *, "FAIL: want [10] got [", len_trim(adjustr(text)), "]"
     stop 1
 end if
 end program string_intrinsic_chain_interactions_adjustl_adjustr

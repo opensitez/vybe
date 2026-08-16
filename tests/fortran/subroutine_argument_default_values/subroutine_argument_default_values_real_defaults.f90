@@ -6,8 +6,8 @@ program subroutine_argument_default_values_real_defaults
     print *, "FAIL: want [5] got [", ratio(10.0), "]"
     stop 1
 end if
-    if ((ratio(10.0, 4.0)) /= 2) then
-    print *, "FAIL: want [2] got [", ratio(10.0, 4.0), "]"
+    if ((ratio(10.0, 4.0)) /= 2.50000000) then
+    print *, "FAIL: want [2.50000000] got [", ratio(10.0, 4.0), "]"
     stop 1
 end if
 contains

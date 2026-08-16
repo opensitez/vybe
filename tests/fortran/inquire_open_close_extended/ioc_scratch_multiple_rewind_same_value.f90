@@ -5,9 +5,9 @@ integer :: n
 open(34, status='scratch')
 write(34, '(I0)') 55
 rewind(34)
-read(34, '(I0)') n
+read(34, *) n
 rewind(34)
-read(34, '(I0)') n
+read(34, *) n
 close(34)
 print *, n
 end program t

@@ -8,8 +8,8 @@ if ((col(1)) /= 10) then
     print *, "FAIL: want [10] got [", col(1), "]"
     stop 1
 end if
-if ((col(2)) /= 20) then
-    print *, "FAIL: want [20] got [", col(2), "]"
+if ((col(2)) /= 50) then
+    print *, "FAIL: want [50] got [", col(2), "]"
     stop 1
 end if
 end program t

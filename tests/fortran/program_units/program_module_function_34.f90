@@ -6,3 +6,10 @@ integer function f()
 f=1
 end function f
 end module m
+program t
+use m
+if (f() /= 1) then
+    print *, "FAIL: want [1] got [", f(), "]"
+    stop 1
+end if
+end program t

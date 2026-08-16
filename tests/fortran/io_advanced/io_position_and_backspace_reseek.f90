@@ -7,9 +7,9 @@ program test
     write(10, '(I0)') 11
     write(10, '(I0)') 22
     backspace(10)
-    read(10, '(I0)') a
+    read(10, *) a
     rewind(10)
-    read(10, '(I0)') b
+    read(10, *) b
     close(10)
     print *, a + b
 end program test

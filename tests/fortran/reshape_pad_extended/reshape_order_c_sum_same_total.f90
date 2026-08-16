@@ -4,7 +4,7 @@ program t
 integer :: a(6) = [1, 2, 3, 4, 5, 6]
 integer :: mf(2,3), mc(2,3)
 mf = reshape(a, [2, 3])
-mc = reshape(a, [2, 3], order='C')
+mc = reshape(a, [2, 3], order=[2, 1])
 if ((sum(mf)) /= 21) then
     print *, "FAIL: want [21] got [", sum(mf), "]"
     stop 1

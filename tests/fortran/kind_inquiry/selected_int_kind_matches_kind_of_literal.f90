@@ -2,8 +2,8 @@
 ! origin: languages/fortran/tests/fortran/test_kind_inquiry.rs
 program t
 integer, parameter :: k = selected_int_kind(9)
-if ((k) /= 8) then
-    print *, "FAIL: want [8] got [", k, "]"
+if ((k) /= 4) then
+    print *, "FAIL: want [4] got [", k, "]"
     stop 1
 end if
 end program t

@@ -6,5 +6,8 @@ program test
     real :: angle = pi / 4.0
     real :: h
     h = hypot(cos(angle), sin(angle))
-    print *, h
+    if (abs((h) - (1.0)) > 1.000000e-05) then
+        print *, "FAIL: want [1.0] got [", h, "]"
+        stop 1
+    end if
 end program test

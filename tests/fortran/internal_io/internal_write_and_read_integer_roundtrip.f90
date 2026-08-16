@@ -5,6 +5,6 @@ program test
     character(len=10) :: buf
     integer :: n
     write(buf, '(I0)') 87
-    read(buf, '(I0)') n
+    read(buf, *) n
     print *, n
 end program test

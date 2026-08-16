@@ -5,6 +5,10 @@ program t
 integer :: vybe_check_i = 0
 integer :: vybe_check_w(3) = [ 2, 3, 4 ]
     call inspect(reshape([(i, i = 1, 24)], [2, 3, 4]))
+if (vybe_check_i /= 3) then
+    print *, "FAIL: ", vybe_check_i, " line(s), wanted 3"
+    stop 1
+end if
 contains
     subroutine inspect(x)
         integer, intent(in) :: x(..)
@@ -49,8 +53,4 @@ contains
             end if
         end select
     end subroutine inspect
-if (vybe_check_i /= 3) then
-    print *, "FAIL: ", vybe_check_i, " line(s), wanted 3"
-    stop 1
-end if
 end program t

@@ -8,8 +8,8 @@ write(u1, '(I0)') 10
 write(u2, '(I0)') 20
 rewind(u1)
 rewind(u2)
-read(u1, '(I0)') a
-read(u2, '(I0)') b
+read(u1, *) a
+read(u2, *) b
 close(u1, status='delete')
 close(u2, status='delete')
 print *, a + b

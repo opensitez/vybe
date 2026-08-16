@@ -5,7 +5,7 @@ program test
     integer(kind=4) :: parts(2) = [0, 0]
     integer(kind=8) :: big
     big = transfer(parts, 0_8)
-    if ((big == 0) /= 1) then
+    if (.not. (big == 0)) then
     print *, "FAIL: want [1] got [", big == 0, "]"
     stop 1
 end if

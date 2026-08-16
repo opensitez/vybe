@@ -14,6 +14,10 @@ if ((arr_min(v, 4)) /= vybe_check_w(vybe_check_i)) then
     print *, "FAIL at ", vybe_check_i, " got [", arr_min(v, 4), "]"
     stop 1
 end if
+if (vybe_check_i /= 1) then
+    print *, "FAIL: ", vybe_check_i, " line(s), wanted 1"
+    stop 1
+end if
 contains
 function arr_min(a, n) result(m)
 integer, intent(in) :: a(n), n
@@ -23,8 +27,4 @@ do i = 2, n
 if (a(i) < m) m = a(i)
 end do
 end function arr_min
-if (vybe_check_i /= 1) then
-    print *, "FAIL: ", vybe_check_i, " line(s), wanted 1"
-    stop 1
-end if
 end program t

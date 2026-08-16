@@ -6,10 +6,10 @@ open(22, status='scratch')
 write(22, '(I0)') 100
 write(22, '(I0)') 200
 rewind(22)
-read(22, '(I0)') first
+read(22, *) first
 write(22, '(I0)') 300
 rewind(22)
-read(22, '(I0)') first
+read(22, *) first
 close(22)
 print *, first
 end program t

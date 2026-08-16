@@ -10,16 +10,16 @@ program array_masked_array_operations_where_for_section_copy
     elsewhere
         result = 0
     end where
-    if ((sum(result)) /= 32) then
-    print *, "FAIL: want [32] got [", sum(result), "]"
+    if ((sum(result)) /= 24) then
+    print *, "FAIL: want [24] got [", sum(result), "]"
     stop 1
 end if
     if ((result(1)) /= 9) then
     print *, "FAIL: want [9] got [", result(1), "]"
     stop 1
 end if
-    if ((result(4)) /= 6) then
-    print *, "FAIL: want [6] got [", result(4), "]"
+    if ((result(4)) /= 0) then
+    print *, "FAIL: want [0] got [", result(4), "]"
     stop 1
 end if
     if ((result(6)) /= 0) then

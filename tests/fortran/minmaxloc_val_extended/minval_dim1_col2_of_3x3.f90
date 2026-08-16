@@ -12,8 +12,8 @@ if ((col(2)) /= 3) then
     print *, "FAIL: want [3] got [", col(2), "]"
     stop 1
 end if
-if ((col(3)) /= 2) then
-    print *, "FAIL: want [2] got [", col(3), "]"
+if ((col(3)) /= 4) then
+    print *, "FAIL: want [4] got [", col(3), "]"
     stop 1
 end if
 end program t

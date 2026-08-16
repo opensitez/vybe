@@ -1,7 +1,7 @@
 ! vybe-test: fortran/array_transfer_between_kinds/array_transfer_between_kinds_array_shapes_from_transfer_is_size_stable
 ! origin: languages/fortran/tests/fortran/test_array_transfer_between_kinds.rs
 
-program array_transfer_between_kinds_array_shapes_from_transfer_is_size_stable
+program t
     integer :: packed(2)
     integer :: flat(2)
     packed = (/7, 8/)
@@ -22,4 +22,4 @@ end if
     print *, "FAIL: want [8] got [", flat(2), "]"
     stop 1
 end if
-end program array_transfer_between_kinds_array_shapes_from_transfer_is_size_stable
+end program t

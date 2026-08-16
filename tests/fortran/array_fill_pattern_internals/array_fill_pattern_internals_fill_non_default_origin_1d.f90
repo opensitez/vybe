@@ -6,8 +6,8 @@ program array_fill_pattern_internals_fill_non_default_origin_1d
     values = 0
     values(-2:0) = 4
     values(1:2) = -1
-    if ((sum(values)) /= 11) then
-    print *, "FAIL: want [11] got [", sum(values), "]"
+    if ((sum(values)) /= 10) then
+    print *, "FAIL: want [10] got [", sum(values), "]"
     stop 1
 end if
     if ((lbound(values,1)) /= -2) then

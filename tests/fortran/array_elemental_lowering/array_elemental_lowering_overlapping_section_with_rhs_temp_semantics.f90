@@ -1,7 +1,7 @@
 ! vybe-test: fortran/array_elemental_lowering/array_elemental_lowering_overlapping_section_with_rhs_temp_semantics
 ! origin: languages/fortran/tests/fortran/test_array_elemental_lowering.rs
 
-program array_elemental_lowering_overlapping_section_with_rhs_temp_semantics
+program t
     integer, allocatable :: values(:)
     values = (/ 1, 2, 3, 4, 5, 6 /)
     values(2:5) = values(1:4) + values(2:5)
@@ -25,4 +25,4 @@ end if
     print *, "FAIL: want [9] got [", values(5), "]"
     stop 1
 end if
-end program array_elemental_lowering_overlapping_section_with_rhs_temp_semantics
+end program t

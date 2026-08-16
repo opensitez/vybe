@@ -23,11 +23,11 @@ end module cmpmod
 program t
 use cmpmod
 type(Cmp) :: c
-if ((c%eq(4, 4)) /= 1) then
+if (.not. (c%eq(4, 4))) then
     print *, "FAIL: want [1] got [", c%eq(4, 4), "]"
     stop 1
 end if
-if ((c%eq(1.0, 1.0)) /= 1) then
+if (.not. (c%eq(1.0, 1.0))) then
     print *, "FAIL: want [1] got [", c%eq(1.0, 1.0), "]"
     stop 1
 end if

@@ -4,6 +4,10 @@ program t
 integer :: vybe_check_i = 0
 character(len=1) :: vybe_check_w(1) = [ "z" ]
 call tag('z')
+if (vybe_check_i /= 1) then
+    print *, "FAIL: ", vybe_check_i, " line(s), wanted 1"
+    stop 1
+end if
 contains
 subroutine tag(x)
 character(len=*), intent(in) :: x(..)
@@ -30,8 +34,4 @@ if (trim('?') /= trim(vybe_check_w(vybe_check_i))) then
 end if
 end select
 end subroutine tag
-if (vybe_check_i /= 1) then
-    print *, "FAIL: ", vybe_check_i, " line(s), wanted 1"
-    stop 1
-end if
 end program t

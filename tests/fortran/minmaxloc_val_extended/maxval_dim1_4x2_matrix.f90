@@ -4,8 +4,8 @@ program t
 integer :: m(4,2) = reshape([10,20, 30,40, 50,60, 70,80], [4,2])
 integer :: col(2)
 col = maxval(m, dim=1)
-if ((col(1)) /= 70) then
-    print *, "FAIL: want [70] got [", col(1), "]"
+if ((col(1)) /= 40) then
+    print *, "FAIL: want [40] got [", col(1), "]"
     stop 1
 end if
 if ((col(2)) /= 80) then

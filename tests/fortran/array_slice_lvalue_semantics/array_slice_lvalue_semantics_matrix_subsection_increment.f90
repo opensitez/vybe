@@ -13,8 +13,8 @@ end if
     print *, "FAIL: want [10] got [", values(3, 3), "]"
     stop 1
 end if
-    if ((sum(values)) /= 53) then
-    print *, "FAIL: want [53] got [", sum(values), "]"
+    if ((sum(values)) /= 49) then
+    print *, "FAIL: want [49] got [", sum(values), "]"
     stop 1
 end if
 end program array_slice_lvalue_semantics_matrix_subsection_increment

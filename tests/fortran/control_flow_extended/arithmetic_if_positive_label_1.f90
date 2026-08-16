@@ -11,8 +11,8 @@ goto 40
 goto 40
 30 y = 30
 40 continue
-if ((y) /= 10) then
-    print *, "FAIL: want [10] got [", y, "]"
+if ((y) /= 30) then
+    print *, "FAIL: want [30] got [", y, "]"
     stop 1
 end if
 end program t

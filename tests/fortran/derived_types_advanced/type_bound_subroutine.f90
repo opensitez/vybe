@@ -1,20 +1,12 @@
 ! vybe-test: fortran/derived_types_advanced/type_bound_subroutine
 ! origin: languages/fortran/tests/fortran/test_derived_types_advanced.rs
-
-program test
+module m
     type :: Counter
         integer :: n = 0
     contains
         procedure :: inc
         procedure :: get
     end type Counter
-    type(Counter) :: c
-    call c%inc()
-    call c%inc()
-    if ((c%get()) /= 2) then
-    print *, "FAIL: want [2] got [", c%get(), "]"
-    stop 1
-end if
 contains
     subroutine inc(self)
         class(Counter), intent(inout) :: self
@@ -25,4 +17,14 @@ contains
         integer :: v
         v = self%n
     end function get
-end program test
+end module m
+program driver
+use m
+    type(Counter) :: c
+    call c%inc()
+    call c%inc()
+    if ((c%get()) /= 2) then
+    print *, "FAIL: want [2] got [", c%get(), "]"
+    stop 1
+end if
+end program driver

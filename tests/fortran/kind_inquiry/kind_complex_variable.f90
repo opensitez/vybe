@@ -3,8 +3,8 @@
 program t
 complex :: c
 c = (1.0, 2.0)
-if ((kind(c)) /= 8) then
-    print *, "FAIL: want [8] got [", kind(c), "]"
+if ((kind(c)) /= 4) then
+    print *, "FAIL: want [4] got [", kind(c), "]"
     stop 1
 end if
 end program t

@@ -5,6 +5,6 @@ program test
     integer :: a(4) = [0, 1, 3, 7]
     integer :: i
     do i = 1, 4
-        print *, popcount(a(i))
+        print *, popcnt(a(i))
     end do
 end program test

@@ -13,8 +13,8 @@ program array_bounds_check_failure_paths_2d_guarded_default
     if (i == 1 .and. j == 2) hits = hits + 1
     i = 2
     if (i >= 1 .and. i <= 4 .and. j >= 1 .and. j <= 4) hits = hits + 1
-    if ((hits) /= 2) then
-    print *, "FAIL: want [2] got [", hits, "]"
+    if ((hits) /= 1) then
+    print *, "FAIL: want [1] got [", hits, "]"
     stop 1
 end if
 end program array_bounds_check_failure_paths_2d_guarded_default

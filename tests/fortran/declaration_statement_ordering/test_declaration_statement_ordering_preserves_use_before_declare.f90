@@ -17,8 +17,8 @@ end if
     print *, "FAIL: want [1] got [", offset, "]"
     stop 1
 end if
-    if ((nint(ratio)) /= 5) then
-    print *, "FAIL: want [5] got [", nint(ratio), "]"
+    if ((nint(ratio)) /= 6) then
+    print *, "FAIL: want [6] got [", nint(ratio), "]"
     stop 1
 end if
 end program test_declaration_statement_ordering

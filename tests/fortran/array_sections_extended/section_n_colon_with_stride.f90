@@ -4,8 +4,8 @@ program t
 integer :: a(10) = [(i, i = 1, 10)]
 integer :: n
 n = 2
-if ((sum(a(n:10:2))) /= 25) then
-    print *, "FAIL: want [25] got [", sum(a(n:10:2)), "]"
+if ((sum(a(n:10:2))) /= 30) then
+    print *, "FAIL: want [30] got [", sum(a(n:10:2)), "]"
     stop 1
 end if
 end program t

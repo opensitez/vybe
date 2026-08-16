@@ -5,7 +5,7 @@ program character_quality_character_to_int_parse
     character(len=8) :: token
     integer :: value
     token = '007'
-    read (token, '(I0)') value
+    read (token, *) value
     if ((value + 1) /= 8) then
     print *, "FAIL: want [8] got [", value + 1, "]"
     stop 1

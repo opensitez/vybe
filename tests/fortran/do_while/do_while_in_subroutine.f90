@@ -15,6 +15,10 @@ integer :: vybe_check_w(1) = [ 55 ]
         print *, "FAIL at ", vybe_check_i, " got [", result, "]"
         stop 1
     end if
+if (vybe_check_i /= 1) then
+    print *, "FAIL: ", vybe_check_i, " line(s), wanted 1"
+    stop 1
+end if
 contains
     subroutine compute(r)
         integer, intent(out) :: r
@@ -25,8 +29,4 @@ contains
             r = r + n
         end do
     end subroutine compute
-if (vybe_check_i /= 1) then
-    print *, "FAIL: ", vybe_check_i, " line(s), wanted 1"
-    stop 1
-end if
 end program test

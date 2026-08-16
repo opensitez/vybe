@@ -3,7 +3,7 @@
 program t
 integer :: a(5) = [1, 2, 3, 4, 5]
 integer :: m(2,2,2)
-m = reshape(a, [2, 2, 2], pad=0)
+m = reshape(a, [2, 2, 2], pad=[0])
 if ((m(2,2,2)) /= 0) then
     print *, "FAIL: want [0] got [", m(2,2,2), "]"
     stop 1

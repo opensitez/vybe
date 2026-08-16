@@ -3,11 +3,11 @@
 
 program t
     integer(kind=4) :: small = 100
-    if ((out_of_range(small, 0_2)) /= 0) then
+    if ((out_of_range(small, 0_2))) then
     print *, "FAIL: want [0] got [", out_of_range(small, 0_2), "]"
     stop 1
 end if
-    if ((out_of_range(3.14, 0)) /= 0) then
+    if ((out_of_range(3.14, 0))) then
     print *, "FAIL: want [0] got [", out_of_range(3.14, 0), "]"
     stop 1
 end if

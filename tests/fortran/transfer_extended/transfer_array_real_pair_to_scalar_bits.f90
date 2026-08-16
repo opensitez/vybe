@@ -4,7 +4,7 @@ program t
 real :: pair(2) = [1.0, 2.0]
 integer :: n
 n = transfer(pair, 0)
-if ((transfer(n, pair(1)) == 1.0) /= 1) then
+if (.not. (transfer(n, pair(1)) == 1.0)) then
     print *, "FAIL: want [1] got [", transfer(n, pair(1)) == 1.0, "]"
     stop 1
 end if

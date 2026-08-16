@@ -1,7 +1,7 @@
 ! vybe-test: fortran/array_constructor_shape_inference/array_constructor_shape_inference_10_repetition_mixed_blocks
 ! origin: languages/fortran/tests/fortran/test_array_constructor_shape_inference.rs
 
-program test_array_constructor_shape_inference_10_repetition_mixed_blocks
+program t
     integer, allocatable :: values(:)
     values = (/ 2 * 3, 3 * 8 /)
     if ((size(values)) /= 5) then
@@ -20,4 +20,4 @@ end if
     print *, "FAIL: want [8] got [", values(size(values)), "]"
     stop 1
 end if
-end program test_array_constructor_shape_inference_10_repetition_mixed_blocks
+end program t

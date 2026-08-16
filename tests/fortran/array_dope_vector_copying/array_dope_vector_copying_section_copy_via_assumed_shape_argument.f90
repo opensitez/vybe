@@ -1,7 +1,7 @@
 ! vybe-test: fortran/array_dope_vector_copying/array_dope_vector_copying_section_copy_via_assumed_shape_argument
 ! origin: languages/fortran/tests/fortran/test_array_dope_vector_copying.rs
 
-program array_dope_vector_copying_section_copy_via_assumed_shape_argument
+program t
     integer, allocatable :: source(:)
     integer, allocatable :: target(:)
     source = (/ 10, 20, 30, 40, 50 /)
@@ -30,4 +30,4 @@ contains
         integer, allocatable, intent(out) :: out_values(:)
         out_values = values(i_start:i_end)
     end subroutine copy_middle
-end program array_dope_vector_copying_section_copy_via_assumed_shape_argument
+end program t

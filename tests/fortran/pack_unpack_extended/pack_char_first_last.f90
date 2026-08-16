@@ -5,11 +5,11 @@ character(len=1) :: a(5) = ['1', '2', '3', '4', '5']
 logical :: mask(5) = [.true., .false., .false., .false., .true.]
 character(len=1) :: b(2)
 b = pack(a, mask)
-if ((b(1)) /= 1) then
+if ((b(1)) /= '1') then
     print *, "FAIL: want [1] got [", b(1), "]"
     stop 1
 end if
-if ((b(2)) /= 5) then
+if ((b(2)) /= '5') then
     print *, "FAIL: want [5] got [", b(2), "]"
     stop 1
 end if

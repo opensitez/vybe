@@ -6,8 +6,8 @@ open(20, status='scratch')
 write(20, '(I0)') 1
 write(20, '(I0)') 2
 rewind(20)
-read(20, '(I0)') a
-read(20, '(I0)') b
+read(20, *) a
+read(20, *) b
 close(20)
 print *, a
 print *, b

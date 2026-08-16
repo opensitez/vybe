@@ -15,6 +15,10 @@ if ((sum(dst)) /= vybe_check_w(vybe_check_i)) then
     print *, "FAIL at ", vybe_check_i, " got [", sum(dst), "]"
     stop 1
 end if
+if (vybe_check_i /= 1) then
+    print *, "FAIL: ", vybe_check_i, " line(s), wanted 1"
+    stop 1
+end if
 contains
 subroutine maybe_copy(from, to, n, enable)
 integer, intent(in) :: from(n), n
@@ -29,8 +33,4 @@ else
 to = 0
 end if
 end subroutine maybe_copy
-if (vybe_check_i /= 1) then
-    print *, "FAIL: ", vybe_check_i, " line(s), wanted 1"
-    stop 1
-end if
 end program t

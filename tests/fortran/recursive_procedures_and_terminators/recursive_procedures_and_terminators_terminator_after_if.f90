@@ -4,8 +4,8 @@
 program recursive_procedures_and_terminators_terminator_after_if
     integer :: sum
     sum = accumulator(1)
-    if ((sum) /= 21) then
-    print *, "FAIL: want [21] got [", sum, "]"
+    if ((sum) /= 15) then
+    print *, "FAIL: want [15] got [", sum, "]"
     stop 1
 end if
 contains

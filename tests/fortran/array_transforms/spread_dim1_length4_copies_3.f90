@@ -4,8 +4,8 @@ program t
 integer :: a(4)=[1,2,3,4]
 integer :: m(3,4)
 m=spread(a,1,3)
-if ((m(2,3)) /= 2) then
-    print *, "FAIL: want [2] got [", m(2,3), "]"
+if ((m(2,3)) /= 3) then
+    print *, "FAIL: want [3] got [", m(2,3), "]"
     stop 1
 end if
 if ((m(3,4)) /= 4) then

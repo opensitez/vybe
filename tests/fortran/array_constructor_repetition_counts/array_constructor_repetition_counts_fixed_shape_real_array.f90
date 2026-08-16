@@ -4,7 +4,7 @@
 program array_constructor_repetition_counts_fixed_shape_real_array
     real :: values(5)
     integer :: n
-    values = (/ 2 * 1.25, 3 * 0.75 /)
+    values = (/ (1.25, i = 1, 2), (0.75, i = 1, 3) /)
     n = size(values)
     if ((n) /= 5) then
     print *, "FAIL: want [5] got [", n, "]"
@@ -18,8 +18,8 @@ end if
     print *, "FAIL: want [1] got [", nint(values(1)), "]"
     stop 1
 end if
-    if ((nint(values(n))) /= 0) then
-    print *, "FAIL: want [0] got [", nint(values(n)), "]"
+    if ((nint(values(n))) /= 1) then
+    print *, "FAIL: want [1] got [", nint(values(n)), "]"
     stop 1
 end if
 end program array_constructor_repetition_counts_fixed_shape_real_array

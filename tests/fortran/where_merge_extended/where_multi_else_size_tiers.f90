@@ -1,6 +1,6 @@
 ! vybe-test: fortran/where_merge_extended/where_multi_else_size_tiers
 ! origin: languages/fortran/tests/fortran/test_where_merge_extended.rs
-program t
+program driver
 integer :: a(4)=[3,15,50,200]
 integer :: t(4)
 where (a<10)
@@ -22,4 +22,4 @@ if ((t(4)) /= 3) then
     print *, "FAIL: want [3] got [", t(4), "]"
     stop 1
 end if
-end program t
+end program driver

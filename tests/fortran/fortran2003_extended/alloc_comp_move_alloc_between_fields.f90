@@ -12,7 +12,7 @@ if ((p%right(1)) /= 5) then
     print *, "FAIL: want [5] got [", p%right(1), "]"
     stop 1
 end if
-if ((allocated(p%left)) /= 0) then
+if ((allocated(p%left))) then
     print *, "FAIL: want [0] got [", allocated(p%left), "]"
     stop 1
 end if

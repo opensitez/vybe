@@ -4,8 +4,8 @@ program t
 character(len=10) :: s = 'hello'
 character(len=10) :: r
 r = adjustr(s)
-if ((len_trim(r)) /= 5) then
-    print *, "FAIL: want [5] got [", len_trim(r), "]"
+if ((len_trim(r)) /= 10) then
+    print *, "FAIL: want [10] got [", len_trim(r), "]"
     stop 1
 end if
 end program t

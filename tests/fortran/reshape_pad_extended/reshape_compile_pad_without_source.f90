@@ -3,6 +3,6 @@
 
 program t
     integer :: m(3,3)
-    m = reshape([(i, i = 1, 4)], [3, 3], pad=0)
+    m = reshape([(i, i = 1, 4)], [3, 3], pad=[0])
     print *, m(3,3)
 end program t

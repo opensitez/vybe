@@ -10,8 +10,8 @@ if ((a(1,1,2)) /= 13) then
     print *, "FAIL: want [13] got [", a(1,1,2), "]"
     stop 1
 end if
-if ((a(1,2,3)) /= 16) then
-    print *, "FAIL: want [16] got [", a(1,2,3), "]"
+if ((a(1,2,3)) /= 15) then
+    print *, "FAIL: want [15] got [", a(1,2,3), "]"
     stop 1
 end if
 if ((a(2,2,2)) /= 0) then

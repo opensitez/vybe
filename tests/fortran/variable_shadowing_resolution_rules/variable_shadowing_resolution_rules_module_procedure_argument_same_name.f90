@@ -13,11 +13,11 @@ end if
     end subroutine emit
 end module shadow_args_mod
 
-program variable_shadowing_resolution_rules_module_procedure_argument_same_name
+program t
     use shadow_args_mod
     call emit(99)
     if ((value) /= 13) then
     print *, "FAIL: want [13] got [", value, "]"
     stop 1
 end if
-end program variable_shadowing_resolution_rules_module_procedure_argument_same_name
+end program t

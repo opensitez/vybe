@@ -5,7 +5,7 @@ integer :: u, n
 open(newunit=u, file='ioc_ext_new1.dat', status='replace')
 write(u, '(I0)') 314
 rewind(u)
-read(u, '(I0)') n
+read(u, *) n
 close(u, status='delete')
 print *, n
 end program t

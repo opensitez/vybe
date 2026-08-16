@@ -8,8 +8,8 @@ if ((merge(1, 0, ieee_is_nan(x))) /= 0) then
     print *, "FAIL: want [0] got [", merge(1, 0, ieee_is_nan(x)), "]"
     stop 1
 end if
-if ((merge(1, 0, ieee_is_finite(x))) /= 1) then
-    print *, "FAIL: want [1] got [", merge(1, 0, ieee_is_finite(x)), "]"
+if ((merge(1, 0, ieee_is_finite(x))) /= 0) then
+    print *, "FAIL: want [0] got [", merge(1, 0, ieee_is_finite(x)), "]"
     stop 1
 end if
 end program t

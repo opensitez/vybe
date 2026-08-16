@@ -6,8 +6,8 @@ program array_transfer_between_kinds_real_to_int
     integer :: sink
     source = 2.0
     sink = transfer(source, sink)
-    if ((sink) /= 2) then
-    print *, "FAIL: want [2] got [", sink, "]"
+    if ((sink) /= 1073741824) then
+    print *, "FAIL: want [1073741824] got [", sink, "]"
     stop 1
 end if
 end program array_transfer_between_kinds_real_to_int

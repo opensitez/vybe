@@ -1,10 +1,10 @@
 ! vybe-test: fortran/array_constructor_repetition_counts/array_constructor_repetition_counts_logical_repetition_through_merge
 ! origin: languages/fortran/tests/fortran/test_array_constructor_repetition_counts.rs
 
-program array_constructor_repetition_counts_logical_repetition_through_merge
+program t
     logical, allocatable :: flags(:)
     integer :: n
-    flags = (/ 2 * .true., 3 * .false. /)
+    flags = (/ (.true., i = 1, 2), (.false., i = 1, 3) /)
     n = size(flags)
     if ((n) /= 5) then
     print *, "FAIL: want [5] got [", n, "]"
@@ -22,4 +22,4 @@ end if
     print *, "FAIL: want [0] got [", merge(1, 0, flags(n)), "]"
     stop 1
 end if
-end program array_constructor_repetition_counts_logical_repetition_through_merge
+end program t

@@ -1,7 +1,7 @@
 ! vybe-test: fortran/array_constructor_shape_inference/array_constructor_shape_inference_11_repetition_and_implied_do_mix
 ! origin: languages/fortran/tests/fortran/test_array_constructor_shape_inference.rs
 
-program test_array_constructor_shape_inference_11_repetition_and_implied_do_mix
+program t
     integer, allocatable :: values(:)
     values = (/ 2 * 1, (i, i = 2, 4), 3 * 0 /)
     if ((size(values)) /= 8) then
@@ -20,4 +20,4 @@ end if
     print *, "FAIL: want [0] got [", values(size(values)), "]"
     stop 1
 end if
-end program test_array_constructor_shape_inference_11_repetition_and_implied_do_mix
+end program t

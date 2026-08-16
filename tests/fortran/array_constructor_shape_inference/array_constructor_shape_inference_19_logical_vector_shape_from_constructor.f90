@@ -1,7 +1,7 @@
 ! vybe-test: fortran/array_constructor_shape_inference/array_constructor_shape_inference_19_logical_vector_shape_from_constructor
 ! origin: languages/fortran/tests/fortran/test_array_constructor_shape_inference.rs
 
-program test_array_constructor_shape_inference_19_logical_vector_shape_from_constructor
+program t
     logical, allocatable :: values(:)
     values = (/ .true., .false., .true., .true., .false. /)
     if ((size(values)) /= 5) then
@@ -20,4 +20,4 @@ end if
     print *, "FAIL: want [0] got [", merge(1, 0, values(5)), "]"
     stop 1
 end if
-end program test_array_constructor_shape_inference_19_logical_vector_shape_from_constructor
+end program t

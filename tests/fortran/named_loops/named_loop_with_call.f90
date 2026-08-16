@@ -19,14 +19,14 @@ integer :: vybe_check_w(1) = [ 37 ]
         print *, "FAIL at ", vybe_check_i, " got [", total, "]"
         stop 1
     end if
+if (vybe_check_i /= 1) then
+    print *, "FAIL: ", vybe_check_i, " line(s), wanted 1"
+    stop 1
+end if
 contains
     subroutine add(acc, n)
         integer, intent(inout) :: acc
         integer, intent(in)    :: n
         acc = acc + n
 end subroutine add
-if (vybe_check_i /= 1) then
-    print *, "FAIL: ", vybe_check_i, " line(s), wanted 1"
-    stop 1
-end if
 end program test

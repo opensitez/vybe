@@ -10,8 +10,8 @@ program array_masked_array_operations_where_with_array_mask
     where (mask == 1)
         result = values + 1
     end where
-    if ((sum(result)) /= 25) then
-    print *, "FAIL: want [25] got [", sum(result), "]"
+    if ((sum(result)) /= 21) then
+    print *, "FAIL: want [21] got [", sum(result), "]"
     stop 1
 end if
     if ((result(1)) /= 5) then

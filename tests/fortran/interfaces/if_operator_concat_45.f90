@@ -13,3 +13,10 @@ write(sb, '(I0)') b
 concat_i = trim(sa) // trim(sb)
 end function concat_i
 end module m
+program t
+use m
+if (trim(12 // 34) /= "1234") then
+    print *, "FAIL: want [1234] got [", trim(12 // 34), "]"
+    stop 1
+end if
+end program t

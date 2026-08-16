@@ -5,7 +5,7 @@ integer :: n
 open(43, file='ioc_ext_rep4.dat', status='replace', form='formatted')
 write(43, '(I0)') 77
 rewind(43)
-read(43, '(I0)') n
+read(43, *) n
 close(43, status='delete')
 print *, n
 end program t

@@ -6,16 +6,16 @@ program array_section_shape_and_strides_section_of_section
     integer :: subtotal
     matrix = reshape((/ (i, i = 1, 25) /), (/5,5/))
     subtotal = sum(matrix(4:2:-1, 3:5))
-    if ((subtotal) /= 72) then
-    print *, "FAIL: want [72] got [", subtotal, "]"
+    if ((subtotal) /= 162) then
+    print *, "FAIL: want [162] got [", subtotal, "]"
     stop 1
 end if
-    if ((lbound(matrix(4:2:-1,3:5),1)) /= 4) then
-    print *, "FAIL: want [4] got [", lbound(matrix(4:2:-1,3:5),1), "]"
+    if ((lbound(matrix(4:2:-1,3:5),1)) /= 1) then
+    print *, "FAIL: want [1] got [", lbound(matrix(4:2:-1,3:5),1), "]"
     stop 1
 end if
-    if ((ubound(matrix(4:2:-1,3:5),1)) /= 2) then
-    print *, "FAIL: want [2] got [", ubound(matrix(4:2:-1,3:5),1), "]"
+    if ((ubound(matrix(4:2:-1,3:5),1)) /= 3) then
+    print *, "FAIL: want [3] got [", ubound(matrix(4:2:-1,3:5),1), "]"
     stop 1
 end if
 end program array_section_shape_and_strides_section_of_section

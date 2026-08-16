@@ -14,6 +14,10 @@ if ((sum_opt(v, 3, 10)) /= vybe_check_w(vybe_check_i)) then
     print *, "FAIL at ", vybe_check_i, " got [", sum_opt(v, 3, 10), "]"
     stop 1
 end if
+if (vybe_check_i /= 1) then
+    print *, "FAIL: ", vybe_check_i, " line(s), wanted 1"
+    stop 1
+end if
 contains
 integer function sum_opt(a, n, extra)
 integer, intent(in) :: a(n), n
@@ -25,8 +29,4 @@ sum_opt = sum_opt + a(i)
 end do
 if (present(extra)) sum_opt = sum_opt + extra
 end function sum_opt
-if (vybe_check_i /= 1) then
-    print *, "FAIL: ", vybe_check_i, " line(s), wanted 1"
-    stop 1
-end if
 end program t

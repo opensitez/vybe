@@ -25,7 +25,7 @@ real :: a
 a = 0.5 * self%base * self%height
 end function tri_area
 end module geom
-program t
+program driver
 use geom
 type(Tri) :: t
 t%base = 6.0
@@ -34,4 +34,4 @@ if ((int(t%area())) /= 12) then
     print *, "FAIL: want [12] got [", int(t%area()), "]"
     stop 1
 end if
-end program t
+end program driver

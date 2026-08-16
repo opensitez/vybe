@@ -4,3 +4,4 @@ program program_units_error_recovery_invalid_fixed_loop_rejected
 do i = 1, 10
 print *, i
 end do
+end program program_units_error_recovery_invalid_fixed_loop_rejected

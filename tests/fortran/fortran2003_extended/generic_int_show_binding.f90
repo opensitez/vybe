@@ -1,15 +1,12 @@
 ! vybe-test: fortran/fortran2003_extended/generic_int_show_binding
 ! origin: languages/fortran/tests/fortran/test_fortran2003_extended.rs
-program t
+module m
 type :: Printer
 contains
 procedure :: show_i
 procedure :: show_r
 generic :: show => show_i, show_r
 end type Printer
-type(Printer) :: p
-call p%show(7)
-call p%show(2.5)
 contains
 subroutine show_i(self, v)
 class(Printer), intent(in) :: self
@@ -27,4 +24,10 @@ if ((int(v)) /= 2) then
     stop 1
 end if
 end subroutine show_r
-end program t
+end module m
+program driver
+use m
+type(Printer) :: p
+call p%show(7)
+call p%show(2.5)
+end program driver

@@ -6,8 +6,8 @@ program array_fill_pattern_internals_fill_non_default_origin_2d
     matrix = 1
     matrix(0,0) = 5
     matrix(1:2, -2:-1) = 3
-    if ((sum(matrix)) /= 29) then
-    print *, "FAIL: want [29] got [", sum(matrix), "]"
+    if ((sum(matrix)) /= 28) then
+    print *, "FAIL: want [28] got [", sum(matrix), "]"
     stop 1
 end if
     if ((matrix(0,0)) /= 5) then

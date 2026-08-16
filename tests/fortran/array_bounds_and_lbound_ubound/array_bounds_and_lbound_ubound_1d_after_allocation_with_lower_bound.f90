@@ -1,7 +1,7 @@
 ! vybe-test: fortran/array_bounds_and_lbound_ubound/array_bounds_and_lbound_ubound_1d_after_allocation_with_lower_bound
 ! origin: languages/fortran/tests/fortran/test_array_bounds_and_lbound_ubound.rs
 
-program array_bounds_and_lbound_ubound_1d_after_allocation_with_lower_bound
+program t
     integer, allocatable :: values(:)
     allocate(values(-4:1))
     if ((lbound(values, 1)) /= -4) then
@@ -13,4 +13,4 @@ end if
     stop 1
 end if
     deallocate(values)
-end program array_bounds_and_lbound_ubound_1d_after_allocation_with_lower_bound
+end program t

@@ -1,6 +1,6 @@
 ! vybe-test: fortran/subroutines/nested_allocatable_member_index_assignment_writes_back_receiver
 ! origin: languages/fortran/tests/fortran/test_subroutines.rs
-program test
+module m
   type :: field2d
     real, allocatable :: data(:,:)
   contains
@@ -9,6 +9,16 @@ program test
   type :: state_t
     type(field2d) :: h
   end type state_t
+contains
+  subroutine field_init(self, nx, ny)
+    class(field2d), intent(inout) :: self
+    integer, intent(in) :: nx, ny
+    allocate(self%data(nx, ny))
+    self%data = 0.0
+  end subroutine field_init
+end module m
+program driver
+use m
   type(state_t) :: state
   call state%h%init(3, 4)
   state%h%data(2, 3) = 42.0
@@ -21,11 +31,4 @@ end if
     print *, "FAIL: want [-7.5] got [", state%h%data(1, 1), "]"
     stop 1
 end if
-contains
-  subroutine field_init(self, nx, ny)
-    class(field2d), intent(inout) :: self
-    integer, intent(in) :: nx, ny
-    allocate(self%data(nx, ny))
-    self%data = 0.0
-  end subroutine field_init
-end program test
+end program driver

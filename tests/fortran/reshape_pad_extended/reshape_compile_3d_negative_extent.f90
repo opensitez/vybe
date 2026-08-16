@@ -1,5 +1,6 @@
 ! vybe-test: fortran/reshape_pad_extended/reshape_compile_3d_negative_extent
 ! origin: languages/fortran/tests/fortran/test_reshape_pad_extended.rs
+! vybe-test-mode: compile-fail
 
 program t
     integer :: a(8) = [(i, i = 1, 8)]

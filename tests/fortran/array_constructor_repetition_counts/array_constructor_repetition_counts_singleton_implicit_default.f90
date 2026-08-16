@@ -3,13 +3,13 @@
 
 program array_constructor_repetition_counts_singleton_implicit_default
     integer, allocatable :: values(:)
-    values = (/ 6 * 1, 4, 5 * 2 /)
-    if ((size(values)) /= 11) then
-    print *, "FAIL: want [11] got [", size(values), "]"
+    values = (/ (1, i = 1, 6), 4, (2, i = 1, 5) /)
+    if ((size(values)) /= 12) then
+    print *, "FAIL: want [12] got [", size(values), "]"
     stop 1
 end if
-    if ((sum(values)) /= 24) then
-    print *, "FAIL: want [24] got [", sum(values), "]"
+    if ((sum(values)) /= 20) then
+    print *, "FAIL: want [20] got [", sum(values), "]"
     stop 1
 end if
     if ((values(1)) /= 1) then

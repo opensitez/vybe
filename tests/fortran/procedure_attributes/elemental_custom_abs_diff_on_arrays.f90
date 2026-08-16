@@ -9,8 +9,8 @@ if ((c(1)) /= 3) then
     print *, "FAIL: want [3] got [", c(1), "]"
     stop 1
 end if
-if ((sum(c)) /= 10) then
-    print *, "FAIL: want [10] got [", sum(c), "]"
+if ((sum(c)) /= 12) then
+    print *, "FAIL: want [12] got [", sum(c), "]"
     stop 1
 end if
 contains

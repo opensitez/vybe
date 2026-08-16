@@ -2,8 +2,8 @@
 ! origin: languages/fortran/tests/fortran/test_kind_parameter_defaulting.rs
 
 program test_kind_parameter_defaulting
-    if ((selected_real_kind(6)) /= 8) then
-    print *, "FAIL: want [8] got [", selected_real_kind(6), "]"
+    if ((selected_real_kind(6)) /= 4) then
+    print *, "FAIL: want [4] got [", selected_real_kind(6), "]"
     stop 1
 end if
     if ((selected_real_kind(6, 38)) /= 8) then

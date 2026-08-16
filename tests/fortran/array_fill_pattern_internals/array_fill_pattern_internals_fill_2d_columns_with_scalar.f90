@@ -5,8 +5,8 @@ program array_fill_pattern_internals_fill_2d_columns_with_scalar
     integer :: matrix(3,3)
     matrix = 1
     matrix(:,2) = -2
-    if ((sum(matrix)) /= 7) then
-    print *, "FAIL: want [7] got [", sum(matrix), "]"
+    if ((sum(matrix)) /= 0) then
+    print *, "FAIL: want [0] got [", sum(matrix), "]"
     stop 1
 end if
     if ((matrix(1,2)) /= -2) then

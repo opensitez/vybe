@@ -4,7 +4,7 @@ program t
 integer :: a(4) = [1, 2, 3, 4]
 integer :: mf(2,2,1), mc(2,2,1)
 mf = reshape(a, [2, 2, 1])
-mc = reshape(a, [2, 2, 1], order='C')
+mc = reshape(a, [2, 2, 1], order=[3, 2, 1])
 if ((mf(2,1,1)) /= 2) then
     print *, "FAIL: want [2] got [", mf(2,1,1), "]"
     stop 1

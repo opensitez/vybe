@@ -16,8 +16,8 @@ end if
     print *, "FAIL: want [7] got [", values(5), "]"
     stop 1
 end if
-    if ((sum(values)) /= 35) then
-    print *, "FAIL: want [35] got [", sum(values), "]"
+    if ((sum(values)) /= 25) then
+    print *, "FAIL: want [25] got [", sum(values), "]"
     stop 1
 end if
 end program array_implied_do_ordering_expression_with_offset

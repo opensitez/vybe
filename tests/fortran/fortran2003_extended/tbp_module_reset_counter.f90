@@ -13,7 +13,7 @@ class(Tally), intent(inout) :: self
 self%n = 0
 end subroutine reset
 end module tallies
-program t
+program driver
 use tallies
 type(Tally) :: t
 t%n = 9
@@ -22,4 +22,4 @@ if ((t%n) /= 0) then
     print *, "FAIL: want [0] got [", t%n, "]"
     stop 1
 end if
-end program t
+end program driver

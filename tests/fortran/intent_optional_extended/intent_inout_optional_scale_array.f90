@@ -15,6 +15,10 @@ if ((sum(a)) /= vybe_check_w(vybe_check_i)) then
     print *, "FAIL at ", vybe_check_i, " got [", sum(a), "]"
     stop 1
 end if
+if (vybe_check_i /= 1) then
+    print *, "FAIL: ", vybe_check_i, " line(s), wanted 1"
+    stop 1
+end if
 contains
 subroutine scale_if(v, n, k)
 integer, intent(inout) :: v(n)
@@ -27,8 +31,4 @@ v(i) = v(i) * k
 end do
 end if
 end subroutine scale_if
-if (vybe_check_i /= 1) then
-    print *, "FAIL: ", vybe_check_i, " line(s), wanted 1"
-    stop 1
-end if
 end program t

@@ -7,6 +7,6 @@ program test
     integer :: i
     flag = .true.
     write(buf, '(L1, 1X, I0)') flag, 3
-    read(buf, '(L1, 1X, I0)') flag, i
+    read(buf, *) flag, i
     print *, i
 end program test

@@ -5,5 +5,8 @@ program test
     real :: x = 1.5
     real :: total
     total = erf(x) + erfc(x)
-    print *, total
+    if (abs((total) - (1.0)) > 1.000000e-05) then
+        print *, "FAIL: want [1.0] got [", total, "]"
+        stop 1
+    end if
 end program test

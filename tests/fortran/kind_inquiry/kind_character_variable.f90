@@ -3,8 +3,8 @@
 program t
 character(len=12) :: s
 s = 'abc'
-if ((kind(s)) /= 8) then
-    print *, "FAIL: want [8] got [", kind(s), "]"
+if ((kind(s)) /= 1) then
+    print *, "FAIL: want [1] got [", kind(s), "]"
     stop 1
 end if
 end program t

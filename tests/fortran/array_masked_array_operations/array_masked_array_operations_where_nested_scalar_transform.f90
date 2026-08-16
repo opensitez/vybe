@@ -16,20 +16,20 @@ program array_masked_array_operations_where_nested_scalar_transform
     print *, "FAIL: want [4] got [", result(1), "]"
     stop 1
 end if
-    if ((result(2)) /= 6) then
-    print *, "FAIL: want [6] got [", result(2), "]"
+    if ((result(2)) /= 1) then
+    print *, "FAIL: want [1] got [", result(2), "]"
     stop 1
 end if
     if ((result(3)) /= 12) then
     print *, "FAIL: want [12] got [", result(3), "]"
     stop 1
 end if
-    if ((result(4)) /= 15) then
-    print *, "FAIL: want [15] got [", result(4), "]"
+    if ((result(4)) /= 1) then
+    print *, "FAIL: want [1] got [", result(4), "]"
     stop 1
 end if
-    if ((sum(result)) /= 37) then
-    print *, "FAIL: want [37] got [", sum(result), "]"
+    if ((sum(result)) /= 18) then
+    print *, "FAIL: want [18] got [", sum(result), "]"
     stop 1
 end if
 end program array_masked_array_operations_where_nested_scalar_transform

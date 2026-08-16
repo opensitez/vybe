@@ -14,8 +14,8 @@ program array_bounds_check_failure_paths_pointer_slice_outside_guard
     else
         status = -1
     end if
-    if ((status) /= 1) then
-    print *, "FAIL: want [1] got [", status, "]"
+    if ((status) /= -1) then
+    print *, "FAIL: want [-1] got [", status, "]"
     stop 1
 end if
 

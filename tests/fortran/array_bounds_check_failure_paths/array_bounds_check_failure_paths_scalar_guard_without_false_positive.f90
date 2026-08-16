@@ -1,7 +1,7 @@
 ! vybe-test: fortran/array_bounds_check_failure_paths/array_bounds_check_failure_paths_scalar_guard_without_false_positive
 ! origin: languages/fortran/tests/fortran/test_array_bounds_check_failure_paths.rs
 
-program array_bounds_check_failure_paths_scalar_guard_without_false_positive
+program t
 integer :: vybe_check_i = 0
 integer :: vybe_check_w(1) = [ 165 ]
     integer :: a(3:7)
@@ -28,4 +28,4 @@ if (vybe_check_i /= 1) then
     print *, "FAIL: ", vybe_check_i, " line(s), wanted 1"
     stop 1
 end if
-end program array_bounds_check_failure_paths_scalar_guard_without_false_positive
+end program t

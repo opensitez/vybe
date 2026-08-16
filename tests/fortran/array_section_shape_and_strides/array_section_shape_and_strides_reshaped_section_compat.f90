@@ -6,8 +6,8 @@ program array_section_shape_and_strides_reshaped_section_compat
     integer :: section_sum
     matrix = reshape((/ (i, i = 1, 12) /), (/2,6/))
     section_sum = sum(reshape(matrix(1:2,2:5), (/2,2/)))
-    if ((section_sum) /= 30) then
-    print *, "FAIL: want [30] got [", section_sum, "]"
+    if ((section_sum) /= 18) then
+    print *, "FAIL: want [18] got [", section_sum, "]"
     stop 1
 end if
     if ((lbound(matrix(1:2,2:5),1)) /= 1) then

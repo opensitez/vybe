@@ -5,7 +5,7 @@ program test
     real :: x = 3.14
     logical :: same
     call get_bits(x, same)
-    if ((same) /= 1) then
+    if (.not. (same)) then
     print *, "FAIL: want [1] got [", same, "]"
     stop 1
 end if

@@ -3,5 +3,8 @@
 
 program test
     real(kind=8) :: v(4) = [1.0d0, 1.0d0, 1.0d0, 1.0d0]
-    print *, norm2(v)
+    if (abs((norm2(v)) - (2.0)) > 2.000000e-05) then
+        print *, "FAIL: want [2.0] got [", norm2(v), "]"
+        stop 1
+    end if
 end program test

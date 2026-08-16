@@ -16,8 +16,8 @@ end if
     print *, "FAIL: want [1] got [", negative, "]"
     stop 1
 end if
-    if ((sign(-1, values(3))) /= -1) then
-    print *, "FAIL: want [-1] got [", sign(-1, values(3)), "]"
+    if ((sign(-1, values(3))) /= 1) then
+    print *, "FAIL: want [1] got [", sign(-1, values(3)), "]"
     stop 1
 end if
 end program array_elemental_lowering_sign_on_zero_positive_negative

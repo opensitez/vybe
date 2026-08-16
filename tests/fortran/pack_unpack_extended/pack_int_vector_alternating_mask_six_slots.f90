@@ -10,12 +10,12 @@ if ((b(1)) /= 1) then
     print *, "FAIL: want [1] got [", b(1), "]"
     stop 1
 end if
-if ((b(3)) /= 3) then
-    print *, "FAIL: want [3] got [", b(3), "]"
+if ((b(2)) /= 3) then
+    print *, "FAIL: want [3] got [", b(2), "]"
     stop 1
 end if
-if ((b(5)) /= 5) then
-    print *, "FAIL: want [5] got [", b(5), "]"
+if ((b(3)) /= 5) then
+    print *, "FAIL: want [5] got [", b(3), "]"
     stop 1
 end if
 if ((b(6)) /= 99) then

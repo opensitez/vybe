@@ -4,8 +4,8 @@
 program string_intrinsic_chain_interactions_verify_without_space
     character(len=12) :: text
     text = 'abc123def456'
-    if ((verify(text, '0123456789', .true.)) /= 1) then
-    print *, "FAIL: want [1] got [", verify(text, '0123456789', .true.), "]"
+    if ((verify(text, '0123456789', .true.)) /= 9) then
+    print *, "FAIL: want [9] got [", verify(text, '0123456789', .true.), "]"
     stop 1
 end if
     if ((scan(text, '123')) /= 4) then

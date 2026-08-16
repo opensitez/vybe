@@ -1,7 +1,7 @@
 ! vybe-test: fortran/array_bounds_check_failure_paths/array_bounds_check_failure_paths_allocated_vector_misaligned_request
 ! origin: languages/fortran/tests/fortran/test_array_bounds_check_failure_paths.rs
 
-program array_bounds_check_failure_paths_allocated_vector_misaligned_request
+program t
     integer, allocatable :: a(:)
     integer :: result
     allocate(a(-1:1))
@@ -28,4 +28,4 @@ end if
 end if
 
     deallocate(a)
-end program array_bounds_check_failure_paths_allocated_vector_misaligned_request
+end program t

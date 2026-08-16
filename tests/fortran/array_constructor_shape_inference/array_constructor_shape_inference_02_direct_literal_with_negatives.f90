@@ -1,7 +1,7 @@
 ! vybe-test: fortran/array_constructor_shape_inference/array_constructor_shape_inference_02_direct_literal_with_negatives
 ! origin: languages/fortran/tests/fortran/test_array_constructor_shape_inference.rs
 
-program test_array_constructor_shape_inference_02_direct_literal_with_negatives
+program t
     integer, allocatable :: values(:)
     values = (/ -3, 5, -1, 7 /)
     if ((size(values)) /= 4) then
@@ -20,4 +20,4 @@ end if
     print *, "FAIL: want [7] got [", values(size(values)), "]"
     stop 1
 end if
-end program test_array_constructor_shape_inference_02_direct_literal_with_negatives
+end program t

@@ -8,7 +8,7 @@ close(72)
 open(72, file='ioc_ext_pos.dat', status='old', position='append')
 write(72, '(I0)') 200
 rewind(72)
-read(72, '(I0)') n
+read(72, *) n
 close(72, status='delete')
 print *, n
 end program t

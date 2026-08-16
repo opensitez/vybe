@@ -3,5 +3,8 @@
 
 program test
     real :: x = 2.0
-    print *, acosh(cosh(x))
+    if (abs((acosh(cosh(x))) - (2.0)) > 2.000000e-05) then
+        print *, "FAIL: want [2.0] got [", acosh(cosh(x)), "]"
+        stop 1
+    end if
 end program test

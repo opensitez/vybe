@@ -9,8 +9,8 @@ program array_elemental_lowering_where_mask_assignment
     where (values > 3)
         marked = 99
     end where
-    if ((sum(marked)) /= 209) then
-    print *, "FAIL: want [209] got [", sum(marked), "]"
+    if ((sum(marked)) /= 204) then
+    print *, "FAIL: want [204] got [", sum(marked), "]"
     stop 1
 end if
     if ((marked(3)) /= 3) then

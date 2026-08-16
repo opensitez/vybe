@@ -6,7 +6,7 @@ integer :: vybe_check_w(1) = [ 1 ]
 character(len=5) :: buf
 integer :: n, ios
 buf = 'abc'
-read(buf, '(I0)', iostat=ios) n
+read(buf, *, iostat=ios) n
 if (ios /= 0) then
 vybe_check_i = vybe_check_i + 1
 if (vybe_check_i > 1) then

@@ -1,7 +1,7 @@
 ! vybe-test: fortran/recursive_procedures_and_terminators/recursive_procedures_and_terminators_terminator_via_zero_stride_guard
 ! origin: languages/fortran/tests/fortran/test_recursive_procedures_and_terminators.rs
 
-program recursive_procedures_and_terminators_terminator_via_zero_stride_guard
+program t
     if ((countdown(3)) /= 3) then
     print *, "FAIL: want [3] got [", countdown(3), "]"
     stop 1
@@ -15,4 +15,4 @@ contains
             out = 1 + countdown(n - 1)
         end if
     end function countdown
-end program recursive_procedures_and_terminators_terminator_via_zero_stride_guard
+end program t

@@ -10,8 +10,8 @@ program array_subscript_bounds_zero_lowered_indexing
     print *, "FAIL: want [6] got [", i, "]"
     stop 1
 end if
-    if ((values(2)) /= 4) then
-    print *, "FAIL: want [4] got [", values(2), "]"
+    if ((values(2)) /= 5) then
+    print *, "FAIL: want [5] got [", values(2), "]"
     stop 1
 end if
 end program array_subscript_bounds_zero_lowered_indexing

@@ -5,7 +5,7 @@ program io_quality_internal_character_read
     character(len=16) :: text
     integer :: value
     text = '314'
-    read (text, '(I0)') value
+    read (text, *) value
     if ((value) /= 314) then
     print *, "FAIL: want [314] got [", value, "]"
     stop 1

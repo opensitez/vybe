@@ -7,9 +7,9 @@ write(23, '(I0)') 1
 write(23, '(I0)') 2
 write(23, '(I0)') 3
 rewind(23)
-read(23, '(I0)') x
-read(23, '(I0)') y
-read(23, '(I0)') z
+read(23, *) x
+read(23, *) y
+read(23, *) z
 close(23)
 print *, x
 print *, y
