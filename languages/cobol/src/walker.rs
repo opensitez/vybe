@@ -45,6 +45,7 @@ struct CobolRecordField {
     name: String,
     numeric: bool,
     decimal_places: usize,
+    occurs: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -69,10 +70,27 @@ struct CobolWalkerContext {
     // Elementary working-storage fields whose PICTURE gives a fixed display
     // width, so DISPLAY of the field pads to that width.
     field_pics: HashMap<String, CobolPicFmt>,
+    // Elementary fields whose PICTURE is numeric-EDITED. Kept apart from
+    // `field_pics` because the two answer different questions: `field_pics`
+    // says how wide the stored text is (every reader), this says how a value
+    // becomes that text (the store sites only).
+    field_edit_pics: HashMap<String, CobolEditPic>,
+    field_attrs: HashMap<String, CobolFieldAttrs>,
+    global_fields: HashSet<String>,
+    global_decl_spans: HashSet<(u32, u32, u32, u32)>,
+    group_storage_fields: HashMap<String, Vec<String>>,
+    field_order: Vec<String>,
+    rename_aliases: HashMap<String, Vec<String>>,
+    storage_aliases: HashMap<String, Vec<String>>,
+    occurs_dims: Vec<Expression>,
     next_file_number: i32,
     /// While walking the children of a `REDEFINES` group: the redefined
     /// item's storage, which each child aliases a slice of.
     redefining_storage: Option<Expression>,
+    /// How far into `redefining_storage` the children walked so far reach.
+    /// COBOL lays a group's children out end to end, so each one aliases the
+    /// slice starting where the previous child ended.
+    redefining_offset: usize,
 }
 
 /// Fixed-width DISPLAY format implied by an elementary field's PICTURE.
@@ -80,8 +98,28 @@ struct CobolWalkerContext {
 enum CobolPicFmt {
     /// Unsigned integer PIC 9(n): zero-pad to `n` digits.
     Numeric(usize),
+    /// Signed integer PIC S9(n): the sign consumes one display position.
+    SignedNumeric(usize),
+    /// Implied-decimal PIC 9(n)V9(m): render without the decimal point.
+    ImpliedDecimal(usize),
     /// Alphanumeric PIC X(n)/A(n): space-pad (right) to `n` characters.
     Alpha(usize),
+}
+
+#[derive(Clone, Copy, Default)]
+struct CobolFieldAttrs {
+    justified_right: bool,
+    blank_when_zero: bool,
+    sign: Option<CobolSignFmt>,
+    value_explicit_plus: bool,
+}
+
+#[derive(Clone, Copy)]
+enum CobolSignFmt {
+    Leading,
+    Trailing,
+    LeadingSeparate,
+    TrailingSeparate,
 }
 
 impl CobolWalkerContext {
@@ -94,8 +132,18 @@ impl CobolWalkerContext {
             condition_names: HashMap::new(),
             screen_items: HashSet::new(),
             field_pics: HashMap::new(),
+            field_edit_pics: HashMap::new(),
+            field_attrs: HashMap::new(),
+            global_fields: HashSet::new(),
+            global_decl_spans: HashSet::new(),
+            group_storage_fields: HashMap::new(),
+            field_order: Vec::new(),
+            rename_aliases: HashMap::new(),
+            storage_aliases: HashMap::new(),
+            occurs_dims: Vec::new(),
             next_file_number: 1,
             redefining_storage: None,
+            redefining_offset: 0,
         }
     }
 
@@ -111,10 +159,99 @@ impl CobolWalkerContext {
         if let Some(fmt) = cobol_pic_display_fmt(pic) {
             self.field_pics.insert(cobol_name_key(name), fmt);
         }
+        if !self
+            .field_order
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(name))
+        {
+            self.field_order.push(name.to_string());
+        }
+    }
+
+    fn register_group_name(&mut self, name: &str) {
+        if !self
+            .field_order
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(name))
+        {
+            self.field_order.push(name.to_string());
+        }
+    }
+
+    fn register_field_attrs(&mut self, name: &str, attrs: CobolFieldAttrs) {
+        if attrs.justified_right || attrs.blank_when_zero || attrs.sign.is_some() {
+            self.field_attrs.insert(cobol_name_key(name), attrs);
+        }
+    }
+
+    fn register_global_field(&mut self, name: &str, span: Span) {
+        self.global_fields.insert(cobol_name_key(name));
+        self.global_decl_spans.insert((
+            span.start_line,
+            span.start_col,
+            span.end_line,
+            span.end_col,
+        ));
+    }
+
+    fn is_global_decl_span(&self, span: &Span) -> bool {
+        self.global_decl_spans.contains(&(
+            span.start_line,
+            span.start_col,
+            span.end_line,
+            span.end_col,
+        ))
+    }
+
+    fn field_attrs(&self, name: &str) -> CobolFieldAttrs {
+        self.field_attrs
+            .get(&cobol_name_key(name))
+            .copied()
+            .unwrap_or_default()
     }
 
     fn field_pic(&self, name: &str) -> Option<CobolPicFmt> {
         self.field_pics.get(&cobol_name_key(name)).copied()
+    }
+
+    fn register_field_edit_pic(&mut self, name: &str, pic: CobolEditPic) {
+        self.field_edit_pics.insert(cobol_name_key(name), pic);
+    }
+
+    fn field_edit_pic(&self, name: &str) -> Option<&CobolEditPic> {
+        self.field_edit_pics.get(&cobol_name_key(name))
+    }
+
+    /// The edited PICTURE of whatever an expression DENOTES, on the same terms
+    /// as `pic_of` — the PICTURE belongs to the FIELD, not to the qualifier.
+    fn edit_pic_of(&self, expr: &Expression) -> Option<&CobolEditPic> {
+        match &expr.kind {
+            ExprKind::Ident(name) => self.field_edit_pic(name),
+            ExprKind::Member { field, .. } => self.field_edit_pic(field),
+            _ => None,
+        }
+    }
+
+    fn push_occurs_dim(&mut self, dim: Expression) {
+        self.occurs_dims.push(dim);
+    }
+
+    fn pop_occurs_dim(&mut self) {
+        self.occurs_dims.pop();
+    }
+
+    fn wrap_with_parent_occurs(&self, mut init: Expression) -> Expression {
+        for dim in self.occurs_dims.iter().rev() {
+            init = Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("Array")),
+                args: vec![
+                    Argument::positional(dim.clone()),
+                    Argument::positional(init),
+                ],
+                optional: false,
+            });
+        }
+        init
     }
 
     /// The PICTURE of whatever an expression DENOTES.
@@ -130,6 +267,171 @@ impl CobolWalkerContext {
             ExprKind::Member { field, .. } => self.field_pic(field),
             _ => None,
         }
+    }
+
+    fn format_of(&self, expr: &Expression) -> Option<(CobolPicFmt, CobolFieldAttrs)> {
+        match &expr.kind {
+            ExprKind::Ident(name) => self
+                .field_pic(name)
+                .map(|fmt| (fmt, self.field_attrs(name))),
+            ExprKind::Member { field, .. } => self
+                .field_pic(field)
+                .map(|fmt| (fmt, self.field_attrs(field))),
+            _ => None,
+        }
+    }
+
+    fn renamed_range_expr(&self, from: &str, thru: Option<&str>) -> Option<Expression> {
+        let fields = self.renamed_range_fields(from, thru)?;
+        let mut items = fields.iter().map(|name| self.storage_expr_for_name(name));
+        let first = items.next()?;
+        return Some(items.fold(first, |acc, item| binary(BinOp::Concat, acc, item)));
+    }
+
+    fn storage_fields_for_name(&self, name: &str) -> Vec<String> {
+        if let Some(fields) = self.storage_aliases.get(&cobol_name_key(name)) {
+            return fields.clone();
+        }
+        if let Some(fields) = self.group_storage_fields.get(&cobol_name_key(name)) {
+            return fields.clone();
+        }
+        let fields = self.record_fields_for_name(name);
+        if fields.is_empty() {
+            vec![name.to_string()]
+        } else {
+            fields.into_iter().map(|field| field.name).collect()
+        }
+    }
+
+    fn append_storage_fields_for_name(&self, fields: &mut Vec<String>, name: &str) {
+        for field in self.storage_fields_for_name(name) {
+            if !fields
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(&field))
+            {
+                fields.push(field);
+            }
+        }
+    }
+
+    fn renamed_range_fields(&self, from: &str, thru: Option<&str>) -> Option<Vec<String>> {
+        if thru.is_none()
+            && !self
+                .field_order
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(from))
+        {
+            let fields = self.storage_fields_for_name(from);
+            if !fields.is_empty()
+                && !matches!(fields.as_slice(), [only] if only.eq_ignore_ascii_case(from))
+            {
+                return Some(fields);
+            }
+        }
+        let start = self
+            .field_order
+            .iter()
+            .position(|name| name.eq_ignore_ascii_case(from))?;
+        let end = thru
+            .and_then(|target| {
+                self.field_order
+                    .iter()
+                    .position(|name| name.eq_ignore_ascii_case(target))
+            })
+            .unwrap_or(start);
+        let (lo, hi) = if start <= end {
+            (start, end)
+        } else {
+            (end, start)
+        };
+        let mut fields = Vec::new();
+        for name in &self.field_order[lo..=hi] {
+            self.append_storage_fields_for_name(&mut fields, name);
+        }
+        Some(fields)
+    }
+
+    fn register_rename_alias(&mut self, alias: &str, fields: Vec<String>) {
+        if !fields.is_empty() {
+            self.rename_aliases.insert(cobol_name_key(alias), fields);
+        }
+    }
+
+    fn rename_alias_fields(&self, alias: &str) -> Option<&[String]> {
+        self.rename_aliases
+            .get(&cobol_name_key(alias))
+            .map(Vec::as_slice)
+    }
+
+    fn register_storage_alias(&mut self, alias: &str, target: &str, width: Option<usize>) {
+        let mut fields = Vec::new();
+        let mut remaining = width.unwrap_or(usize::MAX);
+        for field in self.storage_fields_for_name(target) {
+            if remaining == 0 {
+                break;
+            }
+            let field_width = self.field_pic(&field).map(cobol_pic_width).unwrap_or(1);
+            fields.push(field);
+            remaining = remaining.saturating_sub(field_width);
+        }
+        if !fields.is_empty() {
+            self.storage_aliases.insert(cobol_name_key(alias), fields);
+        }
+    }
+
+    fn rename_alias_refreshes_for_fields(&self, fields: &[String]) -> Vec<(String, Vec<String>)> {
+        let mut aliases = self
+            .rename_aliases
+            .iter()
+            .filter(|(_, alias_fields)| {
+                alias_fields.iter().any(|alias_field| {
+                    fields
+                        .iter()
+                        .any(|field| field.eq_ignore_ascii_case(alias_field))
+                })
+            })
+            .map(|(alias, alias_fields)| (alias.clone(), alias_fields.clone()))
+            .collect::<Vec<_>>();
+        aliases.sort_by(|a, b| a.0.cmp(&b.0));
+        aliases
+    }
+
+    fn storage_expr_for_name(&self, name: &str) -> Expression {
+        // A REDEFINES item used to READ from the item it redefines, which made
+        // a write to it invisible even to itself: `MOVE 42 TO WS-NUM.` then
+        // `MOVE WS-NUM TO WS-BUF.` moved WS-BUF's own (still blank) storage.
+        // It now reads its own value, initialised from the redefined item's
+        // slice where it is declared — so a read-only REDEFINES still sees the
+        // aliased bytes, and a written one sees what was written.
+        //
+        // What this still does not do is propagate a write BACK to the
+        // redefined item; that needs the two to share one storage object
+        // rather than to be seeded from each other (recordprimitiveplan.md
+        // step 5).
+        let parts = self.group_layout_for_name(name);
+        if !parts.is_empty() {
+            let mut it = parts.into_iter();
+            let first = it.next().unwrap_or_else(|| Expression::ident(name));
+            return it.fold(first, |acc, item| binary(BinOp::Concat, acc, item));
+        }
+
+        let raw = Expression::ident(name);
+        match self.field_pic(name) {
+            Some(fmt) => cobol_data_format_expr(raw, fmt, self.field_attrs(name)),
+            None => raw,
+        }
+    }
+
+    fn storage_expr_for_fields(&self, fields: &[String]) -> Expression {
+        let mut items = fields.iter().map(|field| {
+            let raw = Expression::ident(field);
+            match self.field_pic(field) {
+                Some(fmt) => cobol_data_format_expr(raw, fmt, self.field_attrs(field)),
+                None => raw,
+            }
+        });
+        let first = items.next().unwrap_or_else(|| Expression::string(""));
+        items.fold(first, |acc, item| binary(BinOp::Concat, acc, item))
     }
 
     fn register_file_binding(
@@ -235,6 +537,7 @@ impl CobolWalkerContext {
                     name: field.name.clone(),
                     numeric: field.numeric || previous.numeric,
                     decimal_places: field.decimal_places.max(previous.decimal_places),
+                    occurs: field.occurs.or(previous.occurs),
                 }
             })
             .collect()
@@ -243,6 +546,13 @@ impl CobolWalkerContext {
     fn bind_group_layout_for_name(&mut self, group_name: &str, layout: Vec<Expression>) {
         self.group_layouts
             .insert(cobol_name_key(group_name), layout);
+    }
+
+    fn bind_group_storage_fields_for_name(&mut self, group_name: &str, fields: Vec<String>) {
+        if !fields.is_empty() {
+            self.group_storage_fields
+                .insert(cobol_name_key(group_name), fields);
+        }
     }
 
     fn record_fields_for_name(&self, record_name: &str) -> Vec<CobolRecordField> {
@@ -322,6 +632,7 @@ fn is_kw(r: Rule) -> bool {
             | kw_times
             | kw_depending
             | kw_redefines
+            | kw_renames
             | kw_usage
             | kw_indexed
             | kw_filler
@@ -793,7 +1104,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
                 // PERSISTS across `CALL`s (a counter program called three
                 // times prints 1, 2, 3), so it is static storage, not locals —
                 // putting it inside the function body would reset it per call.
-                walk_data_division(pair, &mut unit_stmts, &mut unit_local_storage, &mut ctx)?;
+                let mut storage = Vec::new();
+                walk_data_division(pair, &mut storage, &mut unit_local_storage, &mut ctx)?;
+                append_cobol_storage(storage, &mut unit_stmts, &mut module.body, &ctx);
             }
             Rule::procedure_division => {
                 // EVERY unit becomes a function, the run unit included: a
@@ -842,12 +1155,31 @@ pub fn parse(source: &str) -> Result<Module, String> {
                     },
                 )))));
             }
-            Rule::nested_program | Rule::EOI => {}
+            Rule::nested_program => {
+                for nested in pair.into_inner() {
+                    if nested.as_rule() != Rule::nested_program_stmt {
+                        continue;
+                    }
+                    if unit_index > 0 {
+                        units.push((current_unit_name.clone(), std::mem::take(&mut unit_stmts)));
+                        unit_local_storage.clear();
+                        current_unit_name.clear();
+                        unit_index = 0;
+                    }
+                    collect_cobol_nested_program_units(
+                        nested,
+                        &mut units,
+                        &mut module,
+                        &mut ctx,
+                    )?;
+                }
+            }
+            Rule::EOI => {}
             _ => {}
         }
     }
 
-    if unit_index > 0 {
+    if unit_index > 0 && !current_unit_name.is_empty() {
         units.push((current_unit_name.clone(), std::mem::take(&mut unit_stmts)));
     }
     // CALLED units first, the run unit LAST. The run unit holds the `CALL`s,
@@ -965,6 +1297,73 @@ fn cobol_procedure_using_params(pair: &Pair<Rule>) -> Vec<Param> {
         .find(|child| child.as_rule() == Rule::using_clause)
         .map(walk_using_params)
         .unwrap_or_default()
+}
+
+fn collect_cobol_nested_program_units(
+    pair: Pair<Rule>,
+    units: &mut Vec<(String, Vec<Statement>)>,
+    module: &mut Module,
+    ctx: &mut CobolWalkerContext,
+) -> Result<(), String> {
+    let mut unit_name = String::new();
+    let mut unit_stmts = Vec::new();
+    let mut unit_local_storage = Vec::new();
+    let mut nested_programs = Vec::new();
+
+    for child in pair.into_inner() {
+        match child.as_rule() {
+            Rule::program_id_paragraph => {
+                if let Some(name_pair) = child
+                    .into_inner()
+                    .find(|p| matches!(p.as_rule(), Rule::ident_name | Rule::ident_or_keyword))
+                {
+                    unit_name = name_pair.as_str().to_string();
+                }
+            }
+            Rule::environment_division => {
+                walk_environment_division(child, module, ctx)?;
+            }
+            Rule::data_division => {
+                let mut storage = Vec::new();
+                walk_data_division(child, &mut storage, &mut unit_local_storage, ctx)?;
+                append_cobol_storage(storage, &mut unit_stmts, &mut module.body, ctx);
+            }
+            Rule::procedure_division => {
+                let params = cobol_procedure_using_params(&child);
+                let mut unit_body = Vec::new();
+                walk_procedure_division(child, &mut unit_body, ctx)?;
+                let (paragraph_decls, entry_statements): (Vec<_>, Vec<_>) = unit_body
+                    .into_iter()
+                    .partition(|stmt| matches!(stmt.kind, StmtKind::FunctionDecl { .. }));
+                unit_stmts.extend(paragraph_decls);
+                let mut entry_body = std::mem::take(&mut unit_local_storage);
+                entry_body.extend(entry_statements);
+                unit_stmts.push(Statement::new(StmtKind::Return(Some(Expression::new(
+                    ExprKind::Lambda {
+                        params,
+                        body: LambdaBody::Block(entry_body),
+                        is_async: false,
+                        captures: Vec::new(),
+                    },
+                )))));
+            }
+            Rule::nested_program => nested_programs.push(child),
+            _ => {}
+        }
+    }
+
+    for nested in nested_programs {
+        for stmt in nested.into_inner() {
+            if stmt.as_rule() == Rule::nested_program_stmt {
+                collect_cobol_nested_program_units(stmt, units, module, ctx)?;
+            }
+        }
+    }
+
+    if !unit_name.is_empty() {
+        units.push((unit_name, unit_stmts));
+    }
+    Ok(())
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1268,6 +1667,7 @@ fn collect_cobol_record_fields(pair: Pair<Rule>, fields: &mut Vec<CobolRecordFie
             let mut nested_items = Vec::new();
             let mut pic_str: Option<String> = None;
             let mut usage_str: Option<String> = None;
+            let mut occurs_count: Option<Expression> = None;
 
             for child in pair.into_inner() {
                 match child.as_rule() {
@@ -1285,13 +1685,12 @@ fn collect_cobol_record_fields(pair: Pair<Rule>, fields: &mut Vec<CobolRecordFie
                     | Rule::value_clause
                     | Rule::occurs_clause => {
                         let mut ignored_init = None;
-                        let mut ignored_occurs = None;
                         let _ = walk_data_clause(
                             child,
                             &mut pic_str,
                             &mut usage_str,
                             &mut ignored_init,
-                            &mut ignored_occurs,
+                            &mut occurs_count,
                         );
                     }
                     Rule::data_item => nested_items.push(child),
@@ -1301,19 +1700,23 @@ fn collect_cobol_record_fields(pair: Pair<Rule>, fields: &mut Vec<CobolRecordFie
 
             let (true_children, leaked_siblings): (Vec<_>, Vec<_>) = nested_items
                 .into_iter()
-                .partition(|item| cobol_data_item_level(item) > level);
+                .partition(|item| {
+                    cobol_is_subordinate_level(cobol_data_item_level(item), level)
+                });
 
             if !true_children.is_empty() {
                 for nested in true_children {
                     collect_cobol_record_fields(nested, fields);
                 }
             } else if !name.is_empty() && name != "FILLER" {
+                let occurs = occurs_count.as_ref().and_then(cobol_literal_usize);
                 fields.push(CobolRecordField {
                     name,
                     numeric: cobol_type_hint(pic_str.as_deref(), usage_str.as_deref())
                         .as_deref()
                         .is_some_and(|hint| hint != "String" && hint != "Boolean"),
                     decimal_places: pic_fractional_digits(pic_str.as_deref().unwrap_or_default()),
+                    occurs,
                 });
             }
 
@@ -1402,6 +1805,25 @@ fn walk_data_division(
         }
     }
     Ok(())
+}
+
+fn append_cobol_storage(
+    storage: Vec<Statement>,
+    unit_stmts: &mut Vec<Statement>,
+    module_stmts: &mut Vec<Statement>,
+    ctx: &CobolWalkerContext,
+) {
+    for stmt in storage {
+        if cobol_stmt_declares_global_storage(&stmt, ctx) {
+            module_stmts.push(stmt);
+        } else {
+            unit_stmts.push(stmt);
+        }
+    }
+}
+
+fn cobol_stmt_declares_global_storage(stmt: &Statement, ctx: &CobolWalkerContext) -> bool {
+    matches!(stmt.kind, StmtKind::VarDecl { .. }) && ctx.is_global_decl_span(&stmt.span)
 }
 
 fn walk_file_section(
@@ -1708,6 +2130,10 @@ fn walk_regular_data_item(
     let mut occurs_count: Option<Expression> = None;
     let mut is_filler = false;
     let mut nested_items: Vec<Pair<Rule>> = Vec::new();
+    let mut field_attrs = CobolFieldAttrs::default();
+    let mut is_global = false;
+    let mut renames_from: Option<String> = None;
+    let mut renames_thru: Option<String> = None;
     // `REDEFINES <name>` — captured HERE rather than in `walk_data_clause` so
     // its signature (and every call site) stays as it is. The clause used to be
     // discarded as "storage layout, not AST structure"; for REDEFINES the
@@ -1718,6 +2144,10 @@ fn walk_regular_data_item(
     for child in children {
         if let Some(name) = redefines_ident(&child) {
             redefines_target = Some(name);
+        }
+        if let Some((from, thru)) = renames_idents(&child) {
+            renames_from = Some(from);
+            renames_thru = thru;
         }
         match child.as_rule() {
             Rule::level_number => {
@@ -1746,6 +2176,10 @@ fn walk_regular_data_item(
             | Rule::usage_clause
             | Rule::value_clause
             | Rule::occurs_clause => {
+                if data_clause_has_rule(&child, Rule::global_clause) {
+                    is_global = true;
+                }
+                merge_cobol_field_attrs(&mut field_attrs, &child);
                 walk_data_clause(
                     child,
                     &mut pic_str,
@@ -1780,21 +2214,48 @@ fn walk_regular_data_item(
 
     let (group_children, sibling_items): (Vec<_>, Vec<_>) = nested_items
         .into_iter()
-        .partition(|item| cobol_data_item_level(item) > level);
+        .partition(|item| cobol_is_subordinate_level(cobol_data_item_level(item), level));
 
     // Determine type hint from PIC
-    let type_hint = cobol_type_hint(pic_str.as_deref(), usage_str.as_deref());
+    let type_hint = if redefines_target.is_some() || field_attrs.justified_right {
+        Some("String".to_string())
+    } else {
+        cobol_type_hint(pic_str.as_deref(), usage_str.as_deref())
+    };
 
     // A plain scalar elementary field (not a group, not an OCCURS table) whose
     // PICTURE gives a fixed display width — record it so DISPLAY of the field pads.
     let is_scalar_elementary = group_children.is_empty() && occurs_count.is_none();
 
+    // A VALUE clause on a numeric-edited item is edited exactly like a MOVE
+    // into it — `01 U PIC ZZ9 VALUE 7.` holds `"  7"` under cobc — so the
+    // picture is compiled before the initialiser is built.
+    let edit_pic = if is_scalar_elementary && redefines_target.is_none() {
+        pic_str
+            .as_deref()
+            .filter(|_| !cobol_usage_is_computational(usage_str.as_deref()))
+            .and_then(cobol_compile_edit_pic)
+            .map(|mut edit| {
+                edit.blank_when_zero = field_attrs.blank_when_zero;
+                edit
+            })
+    } else {
+        None
+    };
+
     // Determine initial value
-    let init = if !group_children.is_empty() {
+    let init = if level == 66 {
+        renames_from
+            .as_deref()
+            .and_then(|from| ctx.renamed_range_expr(from, renames_thru.as_deref()))
+            .or_else(|| init_value.clone())
+            .or_else(|| Some(Expression::null()))
+    } else if !group_children.is_empty() {
         // Group item → Object initialiser with child fields
         let mut props = Vec::new();
         let mut child_stmts = Vec::new();
         let mut layout_parts = Vec::new();
+        let mut storage_fields = Vec::new();
         for nested in group_children.iter().chain(sibling_items.iter()) {
             // Walk nested item and collect as object property
             collect_group_children(nested.clone(), &mut props, &mut child_stmts)?;
@@ -1806,12 +2267,17 @@ fn walk_regular_data_item(
         // (measured: `aabbcc  dd` where cobc gives `aa  bb  `).
         for nested in group_children.iter() {
             collect_group_layout_parts(nested.clone(), &mut layout_parts)?;
+            collect_group_storage_fields(nested.clone(), &mut storage_fields);
         }
         let mut field_names = Vec::new();
-        collect_object_record_fields(&props, &mut field_names);
+        for nested in group_children.iter() {
+            collect_cobol_record_fields(nested.clone(), &mut field_names);
+        }
         if !field_names.is_empty() {
             ctx.bind_record_fields_for_record(&name, field_names);
         }
+        ctx.register_group_name(&name);
+        ctx.bind_group_storage_fields_for_name(&name, storage_fields);
         if !layout_parts.is_empty() {
             ctx.bind_group_layout_for_name(&name, layout_parts);
         }
@@ -1826,17 +2292,32 @@ fn walk_regular_data_item(
         let redefined_storage = redefines_target.as_deref().and_then(|target| {
             let parts = ctx.group_layout_for_name(target);
             let mut it = parts.into_iter();
-            let first = it.next()?;
-            Some(it.fold(first, |acc, part| binary(BinOp::Concat, acc, part)))
+            match it.next() {
+                Some(first) => Some(it.fold(first, |acc, part| binary(BinOp::Concat, acc, part))),
+                // An ELEMENTARY item has no group layout, and redefining one
+                // with a group is ordinary COBOL — `01 A PIC X(4).`
+                // `01 B REDEFINES A. 05 B1 PIC X(2). 05 B2 PIC X(2).` Without
+                // this the children aliased nothing and read back as spaces.
+                None => Some(ctx.storage_expr_for_name(target)),
+            }
         });
         let saved_storage = ctx.redefining_storage.take();
+        let saved_offset = ctx.redefining_offset;
         ctx.redefining_storage = redefined_storage;
+        ctx.redefining_offset = 0;
         // Group children are also directly addressable in COBOL, so emit
         // standalone bindings for them in addition to the parent object.
+        if let Some(dim) = occurs_count.clone() {
+            ctx.push_occurs_dim(dim);
+        }
         for nested in group_children {
             walk_data_item(nested, body, ctx)?;
         }
+        if occurs_count.is_some() {
+            ctx.pop_occurs_dim();
+        }
         ctx.redefining_storage = saved_storage;
+        ctx.redefining_offset = saved_offset;
         if props.is_empty() {
             init_value
         } else {
@@ -1851,7 +2332,11 @@ fn walk_regular_data_item(
             pic_str.as_deref().and_then(cobol_pic_display_fmt),
             cobol_literal_usize(&count_expr),
         ) {
-            (Some(storage), Some(CobolPicFmt::Alpha(w) | CobolPicFmt::Numeric(w)), Some(count)) => {
+            (
+                Some(storage),
+                Some(CobolPicFmt::Alpha(w) | CobolPicFmt::Numeric(w) | CobolPicFmt::SignedNumeric(w)),
+                Some(count),
+            ) => {
                 Some(cobol_array(
                     (0..count)
                         .map(|i| {
@@ -1874,20 +2359,21 @@ fn walk_regular_data_item(
             _ => None,
         };
         if let Some(aliased) = aliased {
-            Some(aliased)
+            Some(ctx.wrap_with_parent_occurs(aliased))
         } else {
             // OCCURS → array initialiser
             let element_init = init_value.clone().unwrap_or_else(|| {
                 default_value_for_cobol_type(pic_str.as_deref(), usage_str.as_deref())
             });
-            Some(Expression::new(ExprKind::Call {
+            let array = Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("Array")),
                 args: vec![
                     Argument::positional(count_expr),
                     Argument::positional(element_init),
                 ],
                 optional: false,
-            }))
+            });
+            Some(ctx.wrap_with_parent_occurs(array))
         }
     } else {
         // `01 N REDEFINES D PIC 9(4).` — an ELEMENTARY item redefining another
@@ -1902,24 +2388,90 @@ fn walk_regular_data_item(
         //
         // A VALUE clause wins if one is somehow present, so this never
         // overrides a stated initial value.
+        // Storage width this item occupies, which is also how far it advances
+        // the enclosing REDEFINES group's cursor.
+        let own_width = pic_str
+            .as_deref()
+            .and_then(cobol_pic_display_fmt)
+            .map(cobol_pic_width);
+        // A child of a REDEFINES group aliases the slice at the running
+        // offset; an elementary REDEFINES aliases the target's first
+        // `own_width` characters rather than all of it.
+        let aliased = match (ctx.redefining_storage.clone(), own_width) {
+            (Some(storage), Some(width)) => {
+                let offset = ctx.redefining_offset;
+                ctx.redefining_offset += width;
+                Some(cobol_storage_slice(storage, offset, width))
+            }
+            _ => redefines_target.as_deref().map(|target| {
+                let storage = ctx.storage_expr_for_name(target);
+                match own_width {
+                    Some(width) => cobol_storage_slice(storage, 0, width),
+                    None => storage,
+                }
+            }),
+        };
+
         init_value
-            .or_else(|| redefines_target.as_deref().map(Expression::ident))
-            .or_else(|| {
-                Some(default_value_for_cobol_type(
-                    pic_str.as_deref(),
-                    usage_str.as_deref(),
-                ))
+            .map(|expr| match &edit_pic {
+                Some(edit) => cobol_edit_expr(expr, edit),
+                None => cobol_truncate_value_to_pic(expr, pic_str.as_deref()),
             })
+            .or(aliased)
+            .or_else(|| {
+                // An edited item with no VALUE starts blank across its whole
+                // width, not at the `0` its digit positions suggest.
+                Some(match &edit_pic {
+                    Some(edit) => Expression::string(&" ".repeat(edit.width)),
+                    None => default_value_for_cobol_type(
+                        pic_str.as_deref(),
+                        usage_str.as_deref(),
+                    ),
+                })
+            })
+            .map(|expr| ctx.wrap_with_parent_occurs(expr))
     };
 
     if name.is_empty() {
         return Ok(());
     }
 
+    if level == 66 {
+        if let Some(from) = renames_from.as_deref()
+            && let Some(fields) = ctx.renamed_range_fields(from, renames_thru.as_deref())
+        {
+            ctx.register_rename_alias(&name, fields);
+        }
+    } else if let Some(target) = redefines_target.as_deref() {
+        let width = pic_str
+            .as_deref()
+            .and_then(cobol_pic_display_fmt)
+            .map(cobol_pic_width);
+        ctx.register_storage_alias(&name, target, width);
+    }
+
     if is_scalar_elementary {
-        if let Some(pic) = pic_str.as_deref() {
+        if let Some(pic) = pic_str.as_deref()
+            && !cobol_usage_is_computational(usage_str.as_deref())
+        {
+            // A REDEFINES item has its OWN width, and it is not the redefined
+            // item's: `01 A PIC X(4) VALUE '1234'. 01 B REDEFINES A PIC X(2).`
+            // means B is the two characters `12`. Registering the picture is
+            // what makes every reader stop at that width.
             ctx.register_field_pic(&name, pic);
         }
+        let mut attrs = field_attrs;
+        if let Some(edit) = edit_pic {
+            // BLANK WHEN ZERO now belongs to the editor, which runs at the
+            // store. Leaving it in `field_attrs` as well would ask
+            // `"   " = 0` of an already-edited field at every DISPLAY.
+            attrs.blank_when_zero = false;
+            ctx.register_field_edit_pic(&name, edit);
+        }
+        ctx.register_field_attrs(&name, attrs);
+    }
+    if is_global {
+        ctx.register_global_field(&name, span.clone());
     }
 
     let stmt = StmtKind::VarDecl {
@@ -1962,6 +2514,14 @@ fn redefines_ident(pair: &Pair<Rule>) -> Option<String> {
         })
 }
 
+fn data_clause_has_rule(pair: &Pair<Rule>, rule: Rule) -> bool {
+    pair.as_rule() == rule
+        || pair
+            .clone()
+            .into_inner()
+            .any(|child| child.as_rule() == rule)
+}
+
 fn walk_data_clause(
     pair: Pair<Rule>,
     pic_str: &mut Option<String>,
@@ -1988,6 +2548,7 @@ fn walk_data_clause(
                 if matches!(
                     p.as_rule(),
                     Rule::literal
+                        | Rule::hex_literal
                         | Rule::string_literal
                         | Rule::number_literal
                         | Rule::figurative_constant
@@ -1995,9 +2556,12 @@ fn walk_data_clause(
                 ) {
                     *init_value = Some(match p.as_rule() {
                         Rule::literal => walk_literal(p)?,
+                        Rule::hex_literal => walk_hex_literal(&p)?,
                         Rule::string_literal => walk_string_literal(&p)?,
                         Rule::number_literal => parse_number_literal(p.as_str()),
-                        Rule::figurative_constant => walk_figurative_constant(p)?,
+                        Rule::figurative_constant => {
+                            cobol_value_figurative_init(p, pic_str.as_deref())?
+                        }
                         Rule::boolean_literal => walk_boolean_literal(p)?,
                         _ => unreachable!(),
                     });
@@ -2015,17 +2579,7 @@ fn walk_data_clause(
             return Ok(());
         }
         Rule::occurs_clause => {
-            let parts = inner_nokw(pair);
-            for p in parts {
-                if p.as_rule() == Rule::number_literal {
-                    *occurs_count = Some(parse_number_literal(p.as_str()));
-                    break;
-                }
-                if p.as_rule() == Rule::level_number {
-                    *occurs_count = Some(parse_number_literal(p.as_str()));
-                    break;
-                }
-            }
+            *occurs_count = occurs_storage_count(pair);
             return Ok(());
         }
         _ => {}
@@ -2038,6 +2592,15 @@ fn walk_data_clause(
         .starts_with("USAGE")
     {
         *usage_str = extract_usage_clause_name(&pair);
+        return Ok(());
+    }
+
+    let upper_text = pair.as_str().trim().to_ascii_uppercase();
+    if matches!(
+        upper_text.as_str(),
+        "BINARY" | "COMP" | "COMP-3" | "COMP-5" | "DISPLAY" | "PACKED-DECIMAL"
+    ) {
+        *usage_str = Some(upper_text);
         return Ok(());
     }
 
@@ -2059,6 +2622,7 @@ fn walk_data_clause(
                     if matches!(
                         p.as_rule(),
                         Rule::literal
+                            | Rule::hex_literal
                             | Rule::string_literal
                             | Rule::number_literal
                             | Rule::figurative_constant
@@ -2066,9 +2630,12 @@ fn walk_data_clause(
                     ) {
                         *init_value = Some(match p.as_rule() {
                             Rule::literal => walk_literal(p)?,
+                            Rule::hex_literal => walk_hex_literal(&p)?,
                             Rule::string_literal => walk_string_literal(&p)?,
                             Rule::number_literal => parse_number_literal(p.as_str()),
-                            Rule::figurative_constant => walk_figurative_constant(p)?,
+                            Rule::figurative_constant => {
+                                cobol_value_figurative_init(p, pic_str.as_deref())?
+                            }
                             Rule::boolean_literal => walk_boolean_literal(p)?,
                             _ => unreachable!(),
                         });
@@ -2085,19 +2652,11 @@ fn walk_data_clause(
                 }
             }
             Rule::occurs_clause => {
-                let parts = inner_nokw(child);
-                for p in parts {
-                    if p.as_rule() == Rule::number_literal {
-                        *occurs_count = Some(parse_number_literal(p.as_str()));
-                        break;
-                    }
-                    if p.as_rule() == Rule::level_number {
-                        *occurs_count = Some(parse_number_literal(p.as_str()));
-                        break;
-                    }
-                }
+                *occurs_count = occurs_storage_count(child);
             }
             Rule::redefines_clause
+            | Rule::renames_clause
+            | Rule::unknown_data_clause
             | Rule::blank_clause
             | Rule::justified_clause
             | Rule::sign_clause
@@ -2111,6 +2670,21 @@ fn walk_data_clause(
         }
     }
     Ok(())
+}
+
+fn occurs_storage_count(pair: Pair<Rule>) -> Option<Expression> {
+    let mut counts = inner_nokw(pair)
+        .into_iter()
+        .filter(|p| matches!(p.as_rule(), Rule::number_literal | Rule::level_number))
+        .map(|p| parse_number_literal(p.as_str()))
+        .collect::<Vec<_>>();
+    if counts.is_empty() {
+        None
+    } else if counts.len() >= 2 {
+        Some(counts.remove(1))
+    } else {
+        Some(counts.remove(0))
+    }
 }
 
 fn extract_usage_clause_name(pair: &Pair<Rule>) -> Option<String> {
@@ -2141,6 +2715,7 @@ fn collect_group_children(
                 let mut field_usage: Option<String> = None;
                 let mut field_init: Option<Expression> = None;
                 let mut field_occurs: Option<Expression> = None;
+                let mut field_attrs = CobolFieldAttrs::default();
                 let mut sub_items: Vec<Pair<Rule>> = Vec::new();
 
                 for c in children {
@@ -2167,6 +2742,7 @@ fn collect_group_children(
                         | Rule::usage_clause
                         | Rule::value_clause
                         | Rule::occurs_clause => {
+                            merge_cobol_field_attrs(&mut field_attrs, &c);
                             walk_data_clause(
                                 c,
                                 &mut field_pic,
@@ -2197,7 +2773,9 @@ fn collect_group_children(
 
                 let (true_children, leaked_siblings): (Vec<_>, Vec<_>) = sub_items
                     .into_iter()
-                    .partition(|item| cobol_data_item_level(item) > field_level);
+                    .partition(|item| {
+                        cobol_is_subordinate_level(cobol_data_item_level(item), field_level)
+                    });
 
                 let value = if !true_children.is_empty() {
                     let mut sub_props = Vec::new();
@@ -2209,9 +2787,6 @@ fn collect_group_children(
                     let element_init = field_init.unwrap_or_else(|| {
                         default_value_for_cobol_type(field_pic.as_deref(), field_usage.as_deref())
                     });
-                    eprintln!(
-                        "[D1 WALKER] nested OCCURS path emitting Array(count, init) for field"
-                    );
                     Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("Array")),
                         args: vec![
@@ -2221,9 +2796,13 @@ fn collect_group_children(
                         optional: false,
                     })
                 } else {
-                    field_init.unwrap_or_else(|| {
+                    let raw = field_init.unwrap_or_else(|| {
                         default_value_for_cobol_type(field_pic.as_deref(), field_usage.as_deref())
-                    })
+                    });
+                    match field_pic.as_deref().and_then(cobol_pic_display_fmt) {
+                        Some(fmt) => cobol_data_format_expr(raw, fmt, field_attrs),
+                        None => raw,
+                    }
                 };
 
                 props.push(ObjectProperty::KeyValue {
@@ -2254,6 +2833,8 @@ fn collect_group_layout_parts(pair: Pair<Rule>, parts: &mut Vec<Expression>) -> 
                 let mut field_pic: Option<String> = None;
                 let mut field_usage: Option<String> = None;
                 let mut field_init: Option<Expression> = None;
+                let mut field_occurs: Option<Expression> = None;
+                let mut field_attrs = CobolFieldAttrs::default();
                 let mut sub_items: Vec<Pair<Rule>> = Vec::new();
 
                 for c in children {
@@ -2274,13 +2855,13 @@ fn collect_group_layout_parts(pair: Pair<Rule>, parts: &mut Vec<Expression>) -> 
                         | Rule::usage_clause
                         | Rule::value_clause
                         | Rule::occurs_clause => {
-                            let mut ignored_occurs = None;
+                            merge_cobol_field_attrs(&mut field_attrs, &c);
                             walk_data_clause(
                                 c,
                                 &mut field_pic,
                                 &mut field_usage,
                                 &mut field_init,
-                                &mut ignored_occurs,
+                                &mut field_occurs,
                             )?;
                         }
                         Rule::data_item => {
@@ -2293,7 +2874,9 @@ fn collect_group_layout_parts(pair: Pair<Rule>, parts: &mut Vec<Expression>) -> 
 
                 let (true_children, leaked_siblings): (Vec<_>, Vec<_>) = sub_items
                     .into_iter()
-                    .partition(|item| cobol_data_item_level(item) > field_level);
+                    .partition(|item| {
+                        cobol_is_subordinate_level(cobol_data_item_level(item), field_level)
+                    });
 
                 if !true_children.is_empty() {
                     for nested in true_children {
@@ -2316,10 +2899,38 @@ fn collect_group_layout_parts(pair: Pair<Rule>, parts: &mut Vec<Expression>) -> 
                     } else {
                         Expression::ident(&field_name)
                     };
-                    parts.push(match field_pic.as_deref().and_then(cobol_pic_display_fmt) {
-                        Some(fmt) => cobol_pic_format_expr(raw, fmt),
-                        None => raw,
-                    });
+                    let storage = if let (Some(count_expr), Some(fmt), false) = (
+                        field_occurs.as_ref(),
+                        field_pic.as_deref().and_then(cobol_pic_display_fmt),
+                        field_name == "FILLER" || field_name.is_empty(),
+                    ) {
+                        if let Some(count) = cobol_literal_usize(count_expr) {
+                            let items = (0..count)
+                                .map(|i| {
+                                    cobol_data_format_expr(
+                                        Expression::new(ExprKind::Index {
+                                            object: Box::new(Expression::ident(&field_name)),
+                                            index: Box::new(Expression::int(i as i64)),
+                                            null_safe: false,
+                                        }),
+                                        fmt,
+                                        field_attrs,
+                                    )
+                                })
+                                .collect::<Vec<_>>();
+                            let mut it = items.into_iter();
+                            let first = it.next().unwrap_or_else(|| Expression::string(""));
+                            it.fold(first, |acc, item| binary(BinOp::Concat, acc, item))
+                        } else {
+                            cobol_call("__array_join", vec![Expression::ident(&field_name), Expression::string("")])
+                        }
+                    } else {
+                        match field_pic.as_deref().and_then(cobol_pic_display_fmt) {
+                            Some(fmt) => cobol_data_format_expr(raw, fmt, field_attrs),
+                            None => raw,
+                        }
+                    };
+                    parts.push(storage);
                 }
 
                 // The parser nests each following entry inside the previous
@@ -2335,7 +2946,8 @@ fn collect_group_layout_parts(pair: Pair<Rule>, parts: &mut Vec<Expression>) -> 
                 // taking neither dropped the group's own second field (`aa  `).
                 // Only the same-or-deeper ones belong here.
                 for sibling in leaked_siblings {
-                    if cobol_data_item_level(&sibling) >= field_level {
+                    if cobol_is_same_group_sibling_level(cobol_data_item_level(&sibling), field_level)
+                    {
                         collect_group_layout_parts(sibling, parts)?;
                     }
                 }
@@ -2349,24 +2961,114 @@ fn collect_group_layout_parts(pair: Pair<Rule>, parts: &mut Vec<Expression>) -> 
     Ok(())
 }
 
-fn collect_object_record_fields(props: &[ObjectProperty], fields: &mut Vec<CobolRecordField>) {
-    for prop in props {
-        if let ObjectProperty::KeyValue { key, value } = prop {
-            let ExprKind::Lit(Literal::Str(name)) = &key.kind else {
-                continue;
-            };
+fn collect_group_storage_fields(pair: Pair<Rule>, fields: &mut Vec<String>) {
+    for child in pair.into_inner() {
+        match child.as_rule() {
+            Rule::regular_data_item => {
+                let children: Vec<Pair<Rule>> = child.into_inner().collect();
+                let mut field_level: u32 = 0;
+                let mut field_name = String::new();
+                let mut sub_items: Vec<Pair<Rule>> = Vec::new();
 
-            if let ExprKind::Object(children) = &value.kind {
-                collect_object_record_fields(children, fields);
-                continue;
+                for c in children {
+                    match c.as_rule() {
+                        Rule::level_number => {
+                            field_level = c.as_str().trim().parse::<u32>().unwrap_or(0);
+                        }
+                        Rule::ident_name | Rule::ident_or_keyword => {
+                            if field_name.is_empty() {
+                                field_name = c.as_str().to_string();
+                            }
+                        }
+                        Rule::kw_filler => {
+                            field_name = "FILLER".to_string();
+                        }
+                        Rule::data_item => {
+                            sub_items.push(c);
+                        }
+                        _ => {}
+                    }
+                }
+
+                let (true_children, leaked_siblings): (Vec<_>, Vec<_>) = sub_items
+                    .into_iter()
+                    .partition(|item| {
+                        cobol_is_subordinate_level(cobol_data_item_level(item), field_level)
+                    });
+
+                if !true_children.is_empty() {
+                    for nested in true_children {
+                        collect_group_storage_fields(nested, fields);
+                    }
+                } else if !field_name.is_empty() && field_name != "FILLER" {
+                    fields.push(field_name);
+                }
+
+                for sibling in leaked_siblings {
+                    if cobol_is_same_group_sibling_level(cobol_data_item_level(&sibling), field_level)
+                    {
+                        collect_group_storage_fields(sibling, fields);
+                    }
+                }
             }
-
-            fields.push(CobolRecordField {
-                name: name.clone(),
-                numeric: !matches!(value.kind, ExprKind::Lit(Literal::Str(_))),
-                decimal_places: 0,
-            });
+            Rule::data_item => {
+                collect_group_storage_fields(child, fields);
+            }
+            _ => {}
         }
+    }
+}
+
+fn cobol_is_subordinate_level(child: u32, parent: u32) -> bool {
+    child > parent && !matches!(child, 66 | 77 | 88)
+}
+
+fn cobol_is_same_group_sibling_level(child: u32, current: u32) -> bool {
+    child >= current && !matches!(child, 66 | 77 | 88)
+}
+
+fn renames_idents(pair: &Pair<Rule>) -> Option<(String, Option<String>)> {
+    let clause = if pair.as_rule() == Rule::renames_clause {
+        Some(pair.clone())
+    } else if pair.as_rule() == Rule::data_clause {
+        pair.clone()
+            .into_inner()
+            .find(|p| p.as_rule() == Rule::renames_clause)
+    } else {
+        None
+    }?;
+
+    let mut names = clause
+        .into_inner()
+        .filter(|p| p.as_rule() == Rule::ident_name)
+        .map(|p| p.as_str().to_string());
+    let from = names.next()?;
+    Some((from, names.next()))
+}
+
+fn merge_cobol_field_attrs(attrs: &mut CobolFieldAttrs, pair: &Pair<Rule>) {
+    let text = pair.as_str().to_ascii_uppercase();
+    if text.contains("JUSTIFIED") || text.contains("JUST ") || text.ends_with("JUST") {
+        attrs.justified_right = true;
+    }
+    if text.contains("BLANK") && text.contains("ZERO") {
+        attrs.blank_when_zero = true;
+    }
+    if text.contains("VALUE +") {
+        attrs.value_explicit_plus = true;
+    }
+    if text.contains("SIGN") {
+        attrs.sign = Some(if text.contains("TRAILING") {
+            if text.contains("SEPARATE") {
+                CobolSignFmt::TrailingSeparate
+            } else {
+                CobolSignFmt::Trailing
+            }
+        } else if text.contains("SEPARATE") {
+            CobolSignFmt::LeadingSeparate
+        } else {
+            CobolSignFmt::Leading
+        });
     }
 }
 
@@ -2405,6 +3107,11 @@ fn cobol_type_hint(pic: Option<&str>, usage: Option<&str>) -> Option<String> {
     if upper.starts_with('B') && !upper.contains('9') {
         return Some("Boolean".to_string());
     }
+    // A numeric-edited item holds the edited characters, so its content is
+    // text however numeric the picture looks.
+    if cobol_compile_edit_pic(&upper).is_some() {
+        return Some("String".to_string());
+    }
     if upper.contains('V') || upper.contains('.') || upper.contains('P') {
         return Some("Decimal".to_string());
     }
@@ -2412,6 +3119,17 @@ fn cobol_type_hint(pic: Option<&str>, usage: Option<&str>) -> Option<String> {
         return Some("Long".to_string());
     }
     Some("Integer".to_string())
+}
+
+fn cobol_usage_is_computational(usage: Option<&str>) -> bool {
+    usage
+        .map(|usage| {
+            matches!(
+                usage.trim().to_ascii_uppercase().as_str(),
+                "BINARY" | "COMP" | "COMP-3" | "COMP-5" | "PACKED-DECIMAL"
+            )
+        })
+        .unwrap_or(false)
 }
 
 fn default_value_for_cobol_type(pic: Option<&str>, usage: Option<&str>) -> Expression {
@@ -2425,23 +3143,114 @@ fn default_value_for_cobol_type(pic: Option<&str>, usage: Option<&str>) -> Expre
     }
 }
 
-/// Fixed-width DISPLAY format for an elementary PICTURE, if it is a plain
-/// unsigned integer (`9(n)`) or alphanumeric (`X(n)`/`A(n)`). Signed, decimal
-/// (`V`/`.`), and numeric-edited pictures (`Z * + - , $ B / CR DB`) return None —
-/// those need the full editing engine and are handled separately.
+/// Fixed-width DISPLAY format for an elementary PICTURE.
 /// Wrap a field value in the pad call implied by its PICTURE for DISPLAY:
 /// numeric 9(n) → `padStart(toFixed(v,0), n, "0")`; alphanumeric X(n) →
 /// `padEnd(v, n, " ")`. Uses the shared ECMA string helpers.
 fn cobol_pic_format_expr(value: Expression, fmt: CobolPicFmt) -> Expression {
+    cobol_data_format_expr(value, fmt, CobolFieldAttrs::default())
+}
+
+fn cobol_call(fname: &str, args: Vec<Expression>) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident(fname)),
+        args: args.into_iter().map(Argument::positional).collect(),
+        optional: false,
+    })
+}
+
+fn cobol_data_format_expr(
+    value: Expression,
+    fmt: CobolPicFmt,
+    attrs: CobolFieldAttrs,
+) -> Expression {
     let call = |fname: &str, args: Vec<Expression>| -> Expression {
-        Expression::new(ExprKind::Call {
-            callee: Box::new(Expression::ident(fname)),
-            args: args.into_iter().map(Argument::positional).collect(),
-            optional: false,
-        })
+        cobol_call(fname, args)
     };
-    match fmt {
-        CobolPicFmt::Numeric(digits) => {
+    let width = match fmt {
+        CobolPicFmt::Numeric(digits)
+        | CobolPicFmt::SignedNumeric(digits)
+        | CobolPicFmt::ImpliedDecimal(digits)
+        | CobolPicFmt::Alpha(digits) => digits,
+    };
+    let original_value = value.clone();
+
+    let mut rendered = match (fmt, attrs.sign) {
+        (CobolPicFmt::Numeric(digits_width) | CobolPicFmt::SignedNumeric(digits_width), Some(sign_fmt)) => {
+            let digits = call(
+                "__to_fixed2",
+                vec![call("ABS", vec![value.clone()]), Expression::int(0)],
+            );
+            let signed = call("__to_fixed2", vec![value.clone(), Expression::int(0)]);
+            let sign = Expression::new(ExprKind::Ternary {
+                cond: Box::new(binary(BinOp::Lt, value.clone(), Expression::int(0))),
+                then: Box::new(Expression::string("-")),
+                else_: Box::new(Expression::string(" ")),
+            });
+            match sign_fmt {
+                CobolSignFmt::LeadingSeparate => binary(BinOp::Concat, sign, digits),
+                CobolSignFmt::TrailingSeparate => binary(BinOp::Concat, digits, sign),
+                CobolSignFmt::Leading | CobolSignFmt::Trailing => {
+                    let digits_len = Expression::new(ExprKind::Member {
+                        object: Box::new(digits.clone()),
+                        field: "length".to_string(),
+                        null_safe: false,
+                    });
+                    let fills_pic = binary(
+                        BinOp::GtEq,
+                        digits_len,
+                        Expression::int(digits_width as i64),
+                    );
+                    let placed = match sign_fmt {
+                        CobolSignFmt::Leading => {
+                            binary(BinOp::Concat, Expression::string("+"), digits)
+                        }
+                        CobolSignFmt::Trailing => {
+                            binary(BinOp::Concat, digits, Expression::string("-"))
+                        }
+                        CobolSignFmt::LeadingSeparate | CobolSignFmt::TrailingSeparate => {
+                            unreachable!()
+                        }
+                    };
+                    let should_place = match sign_fmt {
+                        CobolSignFmt::Leading => binary(
+                            BinOp::And,
+                            Expression::bool(attrs.value_explicit_plus),
+                            fills_pic,
+                        ),
+                        CobolSignFmt::Trailing => binary(
+                            BinOp::And,
+                            binary(BinOp::Lt, value.clone(), Expression::int(0)),
+                            fills_pic,
+                        ),
+                        CobolSignFmt::LeadingSeparate | CobolSignFmt::TrailingSeparate => {
+                            unreachable!()
+                        }
+                    };
+                    let padded_signed = call(
+                        "__pad_end",
+                        vec![
+                            signed,
+                            Expression::int(digits_width as i64),
+                            Expression::string(" "),
+                        ],
+                    );
+                    Expression::new(ExprKind::Ternary {
+                        cond: Box::new(should_place),
+                        then: Box::new(placed),
+                        else_: Box::new(padded_signed),
+                    })
+                }
+            }
+        }
+        (CobolPicFmt::ImpliedDecimal(frac), _) => {
+            let fixed = call("__to_fixed2", vec![value, Expression::int(frac as i64)]);
+            call(
+                "SUBSTITUTE",
+                vec![fixed, Expression::string("."), Expression::string("")],
+            )
+        }
+        (CobolPicFmt::Numeric(digits), _) => {
             let int_str = call("__to_fixed2", vec![value, Expression::int(0)]);
             call(
                 "__pad_start",
@@ -2452,15 +3261,477 @@ fn cobol_pic_format_expr(value: Expression, fmt: CobolPicFmt) -> Expression {
                 ],
             )
         }
-        CobolPicFmt::Alpha(width) => call(
-            "__pad_end",
+        (CobolPicFmt::SignedNumeric(digits), _) => {
+            let digit_width = digits.saturating_sub(1).max(1);
+            let abs_digits = call(
+                "__pad_start",
+                vec![
+                    call(
+                        "__to_fixed2",
+                        vec![call("ABS", vec![value.clone()]), Expression::int(0)],
+                    ),
+                    Expression::int(digit_width as i64),
+                    Expression::string("0"),
+                ],
+            );
+            Expression::new(ExprKind::Ternary {
+                cond: Box::new(binary(BinOp::Lt, value, Expression::int(0))),
+                then: Box::new(binary(BinOp::Concat, Expression::string("-"), abs_digits.clone())),
+                else_: Box::new(abs_digits),
+            })
+        }
+        (CobolPicFmt::Alpha(width), _) if attrs.justified_right => {
+            let len = Expression::new(ExprKind::Member {
+                object: Box::new(value.clone()),
+                field: "length".to_string(),
+                null_safe: false,
+            });
+            let start = Expression::new(ExprKind::Ternary {
+                cond: Box::new(binary(
+                    BinOp::Gt,
+                    len.clone(),
+                    Expression::int(width as i64),
+                )),
+                then: Box::new(binary(
+                    BinOp::Sub,
+                    len.clone(),
+                    Expression::int(width as i64),
+                )),
+                else_: Box::new(Expression::int(0)),
+            });
+            let end = Expression::new(ExprKind::Ternary {
+                cond: Box::new(binary(
+                    BinOp::Gt,
+                    len.clone(),
+                    Expression::int(width as i64),
+                )),
+                then: Box::new(len),
+                else_: Box::new(Expression::int(width as i64)),
+            });
+            call(
+                "__pad_start",
+                vec![
+                    call(
+                        "__refmod",
+                        vec![value, start, end],
+                    ),
+                    Expression::int(width as i64),
+                    Expression::string(" "),
+                ],
+            )
+        }
+        (CobolPicFmt::Alpha(width), _) => {
+            call(
+                "__pad_end",
+                vec![
+                    call(
+                        "__refmod",
+                        vec![value, Expression::int(0), Expression::int(width as i64)],
+                    ),
+                    Expression::int(width as i64),
+                    Expression::string(" "),
+                ],
+            )
+        }
+    };
+
+    if attrs.blank_when_zero {
+        rendered = Expression::new(ExprKind::Ternary {
+            cond: Box::new(binary(BinOp::Eq, original_value, Expression::int(0))),
+            then: Box::new(Expression::string(&" ".repeat(width))),
+            else_: Box::new(rendered),
+        });
+    }
+
+    rendered
+}
+
+/// A numeric-EDITED PICTURE, compiled once at walk time.
+///
+/// COBOL stores the edited CHARACTERS, not the number. Measured against
+/// GnuCOBOL 3.2:
+///
+/// ```cobol
+/// 01 X PIC ZZ9.  01 Z PIC X(5).  01 Y PIC 999 VALUE 0.
+/// MOVE Y TO X.  MOVE X TO Z.  DISPLAY '[' Z ']'   *> [  0  ]
+/// IF X = "  0"                                    *> true
+/// ```
+///
+/// `X` holds the three characters `"  0"`, so the edit belongs where the value
+/// is STORED — a MOVE target or a VALUE clause — and never at a read site.
+/// That is also why an edited item registers as `CobolPicFmt::Alpha`: once
+/// stored, DISPLAY, STRING, comparison and reference modification all want an
+/// ordinary fixed-width text field, and they get one for free.
+#[derive(Clone)]
+struct CobolEditPic {
+    /// Character positions in the edited result — the field's storage width.
+    width: usize,
+    /// Digit positions the value renders into.
+    digits: usize,
+    /// How many LEADING digit positions are zero-suppressed. COBOL requires
+    /// the `Z`/`*` positions to precede every `9`, so this is always a prefix.
+    suppress: usize,
+    /// What a suppressed position shows: space for `Z`, `*` for `*`.
+    fill: char,
+    /// The result's characters, left to right. Empty for a floating-sign
+    /// picture, which is built from `digits`/`width` alone.
+    cells: Vec<CobolEditCell>,
+    /// `PIC ---` / `PIC +++`: the sign floats to just left of the first
+    /// significant digit. Holds the sign character the picture was written
+    /// with, which decides what a non-negative value shows.
+    floating: Option<char>,
+    /// A fixed `+`/`-` before the digits.
+    leader: Option<char>,
+    /// `CR`, `DB`, or a fixed `+`/`-` after the digits.
+    trailer: Option<String>,
+    /// BLANK WHEN ZERO. Folded in here rather than left to the DISPLAY-time
+    /// wrapper: by the time anything reads the field it holds text, and
+    /// `"   " = 0` is not the question COBOL asks.
+    blank_when_zero: bool,
+}
+
+#[derive(Clone, Copy)]
+enum CobolEditCell {
+    /// The digit at this index of the rendered digit string.
+    Digit(usize),
+    /// A literal character, with the count of digit positions to its left —
+    /// an insertion inside the still-suppressed region shows the fill instead.
+    Insert(char, usize),
+}
+
+/// Compile a numeric-edited PICTURE, or `None` for one this does not model.
+///
+/// `None` is the conservative answer: the picture keeps whatever behaviour it
+/// has today rather than getting a half-right edit. Deliberately NOT modelled:
+/// `.`/`V`/`P` (decimal alignment and scaling), `$` (currency), and a floating
+/// sign run followed by more picture characters.
+fn cobol_compile_edit_pic(pic: &str) -> Option<CobolEditPic> {
+    let chars = cobol_expand_pic(pic)?;
+    if chars.is_empty() {
+        return None;
+    }
+    // Scaling, decimal alignment and currency change how the DIGITS are
+    // derived from the value, not just how they are laid out.
+    if chars
+        .iter()
+        .any(|c| matches!(c, '.' | 'V' | 'P' | '$' | 'S' | 'X' | 'A' | 'N'))
+    {
+        return None;
+    }
+
+    // A wholly floating picture — `PIC ---`, `PIC +++` — is decided FIRST.
+    // Its last character is a sign too, so the trailing-sign test below would
+    // otherwise claim it and leave a run that parses as nothing.
+    //
+    // The run's leftmost position is the sign's; the rest are suppressed digit
+    // positions. A floating run followed by further picture characters is real
+    // COBOL but is not modelled here, so it falls through to `None`.
+    if chars.len() >= 2
+        && matches!(chars[0], '+' | '-')
+        && chars.iter().all(|c| *c == chars[0])
+    {
+        return Some(CobolEditPic {
+            width: chars.len(),
+            digits: chars.len() - 1,
+            suppress: chars.len() - 1,
+            fill: ' ',
+            cells: Vec::new(),
+            floating: Some(chars[0]),
+            leader: None,
+            trailer: None,
+            blank_when_zero: false,
+        });
+    }
+
+    let mut body = chars.as_slice();
+    let mut leader = None;
+    let mut trailer = None;
+
+    // Trailing sign: CR / DB / a single + or -.
+    if body.len() >= 2 && matches!(&body[body.len() - 2..], ['C', 'R'] | ['D', 'B']) {
+        trailer = Some(body[body.len() - 2..].iter().collect::<String>());
+        body = &body[..body.len() - 2];
+    } else if body.len() >= 2 && matches!(body[body.len() - 1], '+' | '-') {
+        trailer = Some(body[body.len() - 1].to_string());
+        body = &body[..body.len() - 1];
+    }
+
+    // A single leading `+`/`-` is a fixed sign position. A longer run floats,
+    // which only the wholly-floating case above models.
+    if let Some(&first) = body.first()
+        && matches!(first, '+' | '-')
+    {
+        if body.iter().take_while(|c| **c == first).count() > 1 {
+            return None;
+        }
+        leader = Some(first);
+        body = &body[1..];
+    }
+
+    let mut cells = Vec::new();
+    let mut digits = 0usize;
+    let mut suppress = 0usize;
+    let mut fill = ' ';
+    let mut seen_plain_digit = false;
+    let mut has_edit_marker = leader.is_some() || trailer.is_some();
+
+    for &ch in body {
+        match ch {
+            '9' => {
+                cells.push(CobolEditCell::Digit(digits));
+                digits += 1;
+                seen_plain_digit = true;
+            }
+            'Z' | '*' => {
+                // Suppression must be a prefix of the digit positions.
+                if seen_plain_digit {
+                    return None;
+                }
+                let this_fill = if ch == 'Z' { ' ' } else { '*' };
+                if suppress > 0 && this_fill != fill {
+                    return None;
+                }
+                fill = this_fill;
+                cells.push(CobolEditCell::Digit(digits));
+                digits += 1;
+                suppress += 1;
+                has_edit_marker = true;
+            }
+            '/' | ',' | '0' | 'B' => {
+                let literal = if ch == 'B' { ' ' } else { ch };
+                cells.push(CobolEditCell::Insert(literal, digits));
+                has_edit_marker = true;
+            }
+            _ => return None,
+        }
+    }
+
+    // A plain `999` is not an edited picture; leave it to `Numeric`.
+    if digits == 0 || !has_edit_marker {
+        return None;
+    }
+
+    Some(CobolEditPic {
+        width: cells.len() + leader.map_or(0, |_| 1) + trailer.as_ref().map_or(0, |t| t.len()),
+        digits,
+        suppress,
+        fill,
+        cells,
+        floating: None,
+        leader,
+        trailer,
+        blank_when_zero: false,
+    })
+}
+
+/// A PICTURE with its `(n)` repeats written out, upper-cased.
+fn cobol_expand_pic(pic: &str) -> Option<Vec<char>> {
+    let upper = pic.trim().to_ascii_uppercase();
+    let src: Vec<char> = upper.chars().collect();
+    let mut out = Vec::new();
+    let mut index = 0;
+    while index < src.len() {
+        let ch = src[index];
+        index += 1;
+        let mut repeat = 1usize;
+        if index < src.len() && src[index] == '(' {
+            let mut cursor = index + 1;
+            let mut count = String::new();
+            while cursor < src.len() && src[cursor] != ')' {
+                count.push(src[cursor]);
+                cursor += 1;
+            }
+            if cursor >= src.len() {
+                return None;
+            }
+            repeat = count.trim().parse::<usize>().ok()?;
+            index = cursor + 1;
+        }
+        for _ in 0..repeat {
+            out.push(ch);
+        }
+    }
+    Some(out)
+}
+
+/// Build the edited character string `value` stores into a field with `pic`.
+fn cobol_edit_expr(value: Expression, pic: &CobolEditPic) -> Expression {
+    // A MOVE source reaches here already converted to its OWN PICTURE's
+    // characters by `normalize_cobol_storage_source`, so the value may be a
+    // number or the text of one. `NUMVAL` is the one step that accepts both —
+    // measured: `__to_fixed2` on the string `"-5"` answered neither `-5` nor a
+    // trap, and every sign test built on it silently read as positive.
+    let number = cobol_call("NUMVAL", vec![value]);
+    // The digit string, high-order zeros included. Overflow past the picture's
+    // digit positions is NOT truncated here — fixed-width truncation on store
+    // is its own open item and reaches every numeric verb, not just editing.
+    let dg = cobol_call(
+        "__pad_start",
+        vec![
+            cobol_call(
+                "__to_fixed2",
+                vec![cobol_call("ABS", vec![number.clone()]), Expression::int(0)],
+            ),
+            Expression::int(pic.digits as i64),
+            Expression::string("0"),
+        ],
+    );
+    // "the first `n` digit positions are all zero", the test every suppression
+    // decision is made on.
+    let all_zero = |n: usize| -> Expression {
+        binary(
+            BinOp::Eq,
+            cobol_call(
+                "__refmod",
+                vec![dg.clone(), Expression::int(0), Expression::int(n as i64)],
+            ),
+            Expression::string(&"0".repeat(n)),
+        )
+    };
+    let digit_at = |i: usize| -> Expression {
+        cobol_call(
+            "__refmod",
             vec![
-                value,
-                Expression::int(width as i64),
+                dg.clone(),
+                Expression::int(i as i64),
+                Expression::int((i + 1) as i64),
+            ],
+        )
+    };
+    let is_negative = binary(BinOp::Lt, number.clone(), Expression::int(0));
+
+    let mut rendered = if let Some(sign_char) = pic.floating {
+        // The sign sits immediately left of the first significant digit, so
+        // strip the leading zeros, prepend the sign and right-align.
+        let mut stripped = dg.clone();
+        for keep in (1..pic.digits).rev() {
+            stripped = Expression::new(ExprKind::Ternary {
+                cond: Box::new(all_zero(pic.digits - keep)),
+                then: Box::new(cobol_call(
+                    "__refmod",
+                    vec![
+                        dg.clone(),
+                        Expression::int((pic.digits - keep) as i64),
+                        Expression::int(pic.digits as i64),
+                    ],
+                )),
+                else_: Box::new(stripped),
+            });
+        }
+        let sign = Expression::new(ExprKind::Ternary {
+            cond: Box::new(is_negative.clone()),
+            then: Box::new(Expression::string("-")),
+            else_: Box::new(Expression::string(if sign_char == '+' { "+" } else { " " })),
+        });
+        let placed = cobol_call(
+            "__pad_start",
+            vec![
+                binary(BinOp::Concat, sign, stripped),
+                Expression::int(pic.width as i64),
                 Expression::string(" "),
             ],
-        ),
+        );
+        // A wholly floating picture holding zero is blank, sign included —
+        // `MOVE 0 TO X` on `PIC ---` gives three spaces under cobc, not `  0`.
+        Expression::new(ExprKind::Ternary {
+            cond: Box::new(all_zero(pic.digits)),
+            then: Box::new(Expression::string(&" ".repeat(pic.width))),
+            else_: Box::new(placed),
+        })
+    } else {
+        let mut parts: Vec<Expression> = Vec::new();
+        for cell in &pic.cells {
+            parts.push(match *cell {
+                CobolEditCell::Digit(i) if i < pic.suppress => Expression::new(ExprKind::Ternary {
+                    cond: Box::new(all_zero(i + 1)),
+                    then: Box::new(Expression::string(&pic.fill.to_string())),
+                    else_: Box::new(digit_at(i)),
+                }),
+                CobolEditCell::Digit(i) => digit_at(i),
+                // An insertion still inside the suppressed region shows the
+                // fill: `MOVE 0 TO X` on `PIC ZZ,ZZ9` gives `     0` under
+                // cobc, with the comma blanked out too.
+                CobolEditCell::Insert(ch, left) if left > 0 && left <= pic.suppress => {
+                    Expression::new(ExprKind::Ternary {
+                        cond: Box::new(all_zero(left)),
+                        then: Box::new(Expression::string(&pic.fill.to_string())),
+                        else_: Box::new(Expression::string(&ch.to_string())),
+                    })
+                }
+                CobolEditCell::Insert(ch, _) => Expression::string(&ch.to_string()),
+            });
+        }
+        let mut body = parts
+            .into_iter()
+            .reduce(|acc, part| binary(BinOp::Concat, acc, part))
+            .unwrap_or_else(|| Expression::string(""));
+        if let Some(sign_char) = pic.leader {
+            let sign = Expression::new(ExprKind::Ternary {
+                cond: Box::new(is_negative.clone()),
+                then: Box::new(Expression::string("-")),
+                else_: Box::new(Expression::string(if sign_char == '+' { "+" } else { " " })),
+            });
+            body = binary(BinOp::Concat, sign, body);
+        }
+        if let Some(trailer) = &pic.trailer {
+            let positive = match trailer.as_str() {
+                "+" => "+".to_string(),
+                "-" => " ".to_string(),
+                other => " ".repeat(other.len()),
+            };
+            let negative = match trailer.as_str() {
+                "+" | "-" => "-".to_string(),
+                other => other.to_string(),
+            };
+            body = binary(
+                BinOp::Concat,
+                body,
+                Expression::new(ExprKind::Ternary {
+                    cond: Box::new(is_negative),
+                    then: Box::new(Expression::string(&negative)),
+                    else_: Box::new(Expression::string(&positive)),
+                }),
+            );
+        }
+        body
+    };
+
+    if pic.blank_when_zero {
+        rendered = Expression::new(ExprKind::Ternary {
+            cond: Box::new(binary(BinOp::Eq, number, Expression::int(0))),
+            then: Box::new(Expression::string(&" ".repeat(pic.width))),
+            else_: Box::new(rendered),
+        });
     }
+    rendered
+}
+
+/// COBOL storage is fixed width, so a VALUE too big for its PICTURE keeps the
+/// digits that fit — the LOW-order ones. Measured: `01 R PIC 9(2) VALUE 123.`
+/// displays `23` under cobc, which warns "value size exceeds data size" rather
+/// than rejecting the program.
+///
+/// The VALUE clause only. A RUNTIME store that overflows — `ADD 1 TO` a
+/// `PIC 9` holding 9 — truncates the same way and is deliberately not handled
+/// here: that reaches MOVE, ADD, SUBTRACT, MULTIPLY, DIVIDE and COMPUTE alike
+/// and is its own piece of work.
+fn cobol_truncate_value_to_pic(init: Expression, pic: Option<&str>) -> Expression {
+    let Some(fmt) = pic.and_then(cobol_pic_display_fmt) else {
+        return init;
+    };
+    let digits = match fmt {
+        CobolPicFmt::Numeric(digits) | CobolPicFmt::SignedNumeric(digits) => digits,
+        // Alphanumeric truncation is on the RIGHT and already happens where
+        // the field is read, through its PICTURE width.
+        CobolPicFmt::Alpha(_) | CobolPicFmt::ImpliedDecimal(_) => return init,
+    };
+    let ExprKind::Lit(Literal::Int(value)) = init.kind else {
+        return init;
+    };
+    let Some(modulus) = 10i64.checked_pow(digits as u32) else {
+        return Expression::int(value);
+    };
+    Expression::int(value % modulus)
 }
 
 fn cobol_pic_display_fmt(pic: &str) -> Option<CobolPicFmt> {
@@ -2473,17 +3744,32 @@ fn cobol_pic_display_fmt(pic: &str) -> Option<CobolPicFmt> {
         let width = count_pic_markers_before_decimal(&upper, &['X', 'A', 'N']);
         return (width > 0).then_some(CobolPicFmt::Alpha(width));
     }
-    // Reject signed / decimal / edited pictures.
-    if upper.contains(['S', 'V', '.', 'Z', '*', '+', '-', ',', '$', 'B', '/', 'P']) {
+    // A numeric-EDITED picture stores the edited CHARACTERS, so from every
+    // reader's point of view it is a fixed-width text field. See
+    // `CobolEditPic` — the editing itself happens where the value is stored.
+    if let Some(edit) = cobol_compile_edit_pic(&upper) {
+        return Some(CobolPicFmt::Alpha(edit.width));
+    }
+    // Reject decimal / edited pictures. Plain signed integers (`S9(n)`) still
+    // have a fixed digit width; SIGN clauses decide where the sign renders.
+    if upper.contains(['.', 'Z', '*', '+', '-', ',', '$', 'B', '/', 'P']) {
         return None;
+    }
+    if upper.contains('V') {
+        let frac = pic_fractional_digits(&upper);
+        return Some(CobolPicFmt::ImpliedDecimal(frac));
     }
     // Only 9 digit positions (with optional `(n)` repeat) qualify as plain numeric.
     if upper
         .chars()
-        .all(|c| matches!(c, '9' | '(' | ')') || c.is_ascii_digit())
+        .all(|c| matches!(c, 'S' | '9' | '(' | ')') || c.is_ascii_digit())
     {
         let digits = count_pic_markers_before_decimal(&upper, &['9']);
-        return (digits > 0).then_some(CobolPicFmt::Numeric(digits));
+        return (digits > 0).then_some(if upper.starts_with('S') {
+            CobolPicFmt::SignedNumeric(digits)
+        } else {
+            CobolPicFmt::Numeric(digits)
+        });
     }
     None
 }
@@ -2799,6 +4085,13 @@ fn walk_statement(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Option<S
                     Rule::expression => {
                         exprs.push(walk_expression(child)?);
                     }
+                    Rule::display_operand => {
+                        for part in child.into_inner() {
+                            if part.as_rule() == Rule::expression {
+                                exprs.push(walk_expression(part)?);
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -2826,9 +4119,11 @@ fn walk_statement(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Option<S
                 }
                 let padded: Vec<Expression> = items
                     .into_iter()
-                    .map(|item| match &item.kind {
-                        ExprKind::Ident(child) => match ctx.field_pic(child) {
-                            Some(fmt) => cobol_pic_format_expr(item, fmt),
+                    .map(|item| match item.kind.clone() {
+                        ExprKind::Ident(child) => match ctx.field_pic(&child) {
+                            Some(fmt) => {
+                                cobol_data_format_expr(item, fmt, ctx.field_attrs(&child))
+                            }
                             None => item,
                         },
                         _ => item,
@@ -2845,8 +4140,9 @@ fn walk_statement(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Option<S
             // (numeric 9(n) → zero-pad, alphanumeric X(n) → space-pad). Literals
             // and computed expressions (e.g. FUNCTION results) are left untouched.
             for e in exprs.iter_mut() {
-                if let Some(fmt) = ctx.pic_of(e) {
-                    *e = cobol_pic_format_expr(std::mem::replace(e, Expression::null()), fmt);
+                if let Some((fmt, attrs)) = ctx.format_of(e) {
+                    *e =
+                        cobol_data_format_expr(std::mem::replace(e, Expression::null()), fmt, attrs);
                 }
             }
             cobol_display_stmt(exprs)
@@ -2901,7 +4197,7 @@ fn walk_statement(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Option<S
         Rule::return_stmt => walk_return_stmt(pair, ctx)?,
 
         // ── INITIALIZE ──────────────────────────────────────────────────
-        Rule::initialize_stmt => walk_initialize_stmt(pair)?,
+        Rule::initialize_stmt => walk_initialize_stmt(pair, ctx)?,
 
         // ── SET ─────────────────────────────────────────────────────────
         Rule::set_stmt => walk_set_stmt(pair)?,
@@ -3998,12 +5294,222 @@ fn walk_move_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind
             }
         }
 
-        let value = src_expr.ok_or("MOVE missing source expression")?;
+        let value = normalize_cobol_storage_source(
+            src_expr.ok_or("MOVE missing source expression")?,
+            ctx,
+        );
+        if targets.len() == 1 {
+            if let ExprKind::Ident(alias) = &targets[0].kind
+                && let Some(fields) = ctx.rename_alias_fields(alias)
+            {
+                return Ok(build_cobol_rename_move(fields, value, ctx));
+            }
+            if let ExprKind::Ident(group_name) = &targets[0].kind {
+                let fields = ctx.record_fields_for_name(group_name);
+                if !fields.is_empty() {
+                    return Ok(build_cobol_group_move(&fields, value, ctx));
+                }
+            }
+        }
         Ok(StmtKind::Assign {
+            value: if targets.len() == 1 {
+                cobol_move_value_for_target(&targets[0], value, ctx)
+            } else {
+                value
+            },
             targets,
-            value,
             by_ref: false,
         })
+    }
+}
+
+fn build_cobol_rename_move(
+    fields: &[String],
+    value: Expression,
+    ctx: &CobolWalkerContext,
+) -> StmtKind {
+    let mut stmts = Vec::new();
+    let total_width = fields
+        .iter()
+        .map(|field| ctx.field_pic(field).map(cobol_pic_width).unwrap_or(1))
+        .sum();
+    let value = cobol_storage_text_for_move(value, total_width, ctx);
+    let mut offset = 0usize;
+    for field in fields {
+        let width = ctx.field_pic(field).map(cobol_pic_width).unwrap_or(1);
+        let slice = cobol_storage_slice(value.clone(), offset, width);
+        stmts.push(Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(field)],
+            value: cobol_slice_for_target(field, slice, ctx),
+            by_ref: false,
+        }));
+        offset += width;
+    }
+    for (alias_name, alias_fields) in ctx.rename_alias_refreshes_for_fields(fields) {
+        let alias_value = ctx.storage_expr_for_fields(&alias_fields);
+        stmts.push(Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(&alias_name)],
+            value: alias_value,
+            by_ref: false,
+        }));
+    }
+    StmtKind::Block(stmts)
+}
+
+fn build_cobol_group_move(
+    fields: &[CobolRecordField],
+    value: Expression,
+    ctx: &CobolWalkerContext,
+) -> StmtKind {
+    let mut stmts = Vec::new();
+    let total_width = fields
+        .iter()
+        .map(|field| {
+            let width = ctx.field_pic(&field.name).map(cobol_pic_width).unwrap_or(1);
+            width * field.occurs.unwrap_or(1)
+        })
+        .sum();
+    let value = cobol_storage_text_for_move(value, total_width, ctx);
+    let mut offset = 0usize;
+    for field in fields {
+        let width = ctx.field_pic(&field.name).map(cobol_pic_width).unwrap_or(1);
+        if let Some(count) = field.occurs {
+            for i in 0..count {
+                let slice = cobol_storage_slice(value.clone(), offset + (i * width), width);
+                stmts.push(Statement::new(StmtKind::Assign {
+                    targets: vec![Expression::new(ExprKind::Index {
+                        object: Box::new(Expression::ident(&field.name)),
+                        index: Box::new(Expression::int(i as i64)),
+                        null_safe: false,
+                    })],
+                    value: cobol_slice_for_target(&field.name, slice, ctx),
+                    by_ref: false,
+                }));
+            }
+            offset += width * count;
+        } else {
+            let slice = cobol_storage_slice(value.clone(), offset, width);
+            stmts.push(Statement::new(StmtKind::Assign {
+                targets: vec![Expression::ident(&field.name)],
+                value: cobol_slice_for_target(&field.name, slice, ctx),
+                by_ref: false,
+            }));
+            offset += width;
+        }
+    }
+    if stmts.len() == 1 {
+        stmts.remove(0).kind
+    } else {
+        StmtKind::Block(stmts)
+    }
+}
+
+fn cobol_storage_slice(value: Expression, offset: usize, width: usize) -> Expression {
+    cobol_call(
+        "__refmod",
+        vec![
+            value,
+            Expression::int(offset as i64),
+            Expression::int((offset + width) as i64),
+        ],
+    )
+}
+
+fn cobol_slice_for_target(
+    field: &str,
+    slice: Expression,
+    ctx: &CobolWalkerContext,
+) -> Expression {
+    match ctx.field_pic(field) {
+        Some(CobolPicFmt::Numeric(_))
+        | Some(CobolPicFmt::SignedNumeric(_))
+        | Some(CobolPicFmt::ImpliedDecimal(_)) => {
+            cobol_call("NUMVAL", vec![slice])
+        }
+        Some(CobolPicFmt::Alpha(_)) | None => slice,
+    }
+}
+
+fn cobol_display_default_for_field(field: &str, ctx: &CobolWalkerContext) -> Expression {
+    match ctx.field_pic(field) {
+        Some(CobolPicFmt::Numeric(_))
+        | Some(CobolPicFmt::SignedNumeric(_))
+        | Some(CobolPicFmt::ImpliedDecimal(_)) => Expression::int(0),
+        Some(CobolPicFmt::Alpha(_)) => Expression::string(" "),
+        None => Expression::string(""),
+    }
+}
+
+fn cobol_storage_text_for_move(
+    value: Expression,
+    total_width: usize,
+    ctx: &CobolWalkerContext,
+) -> Expression {
+    match &value.kind {
+        ExprKind::Ident(name) => ctx.storage_expr_for_name(name),
+        _ if total_width > 1 => cobol_call(
+            "__pad_end",
+            vec![
+                value,
+                Expression::int(total_width as i64),
+                Expression::string(" "),
+            ],
+        ),
+        _ => value,
+    }
+}
+
+fn cobol_move_value_for_target(
+    target: &Expression,
+    value: Expression,
+    ctx: &CobolWalkerContext,
+) -> Expression {
+    // A numeric-edited target stores the EDITED characters, so the edit is
+    // part of the store rather than of any later read.
+    if let Some(edit) = ctx.edit_pic_of(target) {
+        return cobol_edit_expr(value, edit);
+    }
+    match &target.kind {
+        ExprKind::Ident(name) => {
+            let attrs = ctx.field_attrs(name);
+            if attrs.justified_right {
+                if let Some(fmt) = ctx.field_pic(name) {
+                    return match fmt {
+                        CobolPicFmt::Numeric(width)
+                        | CobolPicFmt::SignedNumeric(width)
+                        | CobolPicFmt::ImpliedDecimal(width) => {
+                            cobol_call(
+                                "__pad_start",
+                                vec![
+                                    cobol_call("__to_fixed2", vec![value, Expression::int(0)]),
+                                    Expression::int(width as i64),
+                                    Expression::string(" "),
+                                ],
+                            )
+                        }
+                        CobolPicFmt::Alpha(_) => cobol_data_format_expr(value, fmt, attrs),
+                    };
+                }
+            }
+            value
+        }
+        _ => value,
+    }
+}
+
+fn cobol_pic_width(fmt: CobolPicFmt) -> usize {
+    match fmt {
+        CobolPicFmt::Numeric(width)
+        | CobolPicFmt::SignedNumeric(width)
+        | CobolPicFmt::ImpliedDecimal(width)
+        | CobolPicFmt::Alpha(width) => width,
+    }
+}
+
+fn normalize_cobol_storage_source(expr: Expression, ctx: &CobolWalkerContext) -> Expression {
+    match &expr.kind {
+        ExprKind::Ident(name) => ctx.storage_expr_for_name(name),
+        _ => expr,
     }
 }
 
@@ -5094,10 +6600,14 @@ fn walk_string_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKi
     let mut overflow_body: Option<Vec<Statement>> = None;
     let mut not_overflow_body: Option<Vec<Statement>> = None;
     let mut ptr_name: Option<String> = None;
+    let mut stop_sources = false;
 
     for child in children {
         match child.as_rule() {
             Rule::string_source => {
+                if stop_sources {
+                    continue;
+                }
                 // A source is `expr DELIMITED BY (SIZE | delim)`.
                 //  • DELIMITED BY SIZE  → the whole sending field, i.e. padded to
                 //    its PICTURE width.
@@ -5109,10 +6619,44 @@ fn walk_string_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKi
                     match sc.as_rule() {
                         Rule::kw_size => by_size = true,
                         Rule::expression => {
+                            let text = sc.as_str().trim();
+                            if text.is_empty() || text.eq_ignore_ascii_case("DISPLAY") {
+                                if text.eq_ignore_ascii_case("DISPLAY") {
+                                    stop_sources = true;
+                                }
+                                continue;
+                            }
                             if src_expr.is_none() {
-                                src_expr = Some(walk_expression(sc)?);
+                                let expr = walk_expression(sc)?;
+                                if matches!(&expr.kind, ExprKind::Ident(name) if name.is_empty()) {
+                                    continue;
+                                }
+                                src_expr = Some(expr);
                             } else {
-                                delim_expr = Some(walk_expression(sc)?);
+                                let expr = walk_expression(sc)?;
+                                if matches!(&expr.kind, ExprKind::Ident(name) if name.is_empty()) {
+                                    continue;
+                                }
+                                delim_expr = Some(expr);
+                            }
+                        }
+                        Rule::string_data_ref => {
+                            if src_expr.is_none() {
+                                src_expr = Some(walk_data_target_expr(sc)?);
+                            }
+                        }
+                        Rule::keyword_data_name => {
+                            let text = sc.as_str().trim();
+                            if text.is_empty() || text.eq_ignore_ascii_case("DISPLAY") {
+                                if text.eq_ignore_ascii_case("DISPLAY") {
+                                    stop_sources = true;
+                                }
+                                continue;
+                            }
+                            if src_expr.is_none() {
+                                src_expr = Some(Expression::ident(text));
+                            } else {
+                                delim_expr = Some(Expression::ident(text));
                             }
                         }
                         _ => {}
@@ -5126,8 +6670,18 @@ fn walk_string_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKi
                     // numeric field arrived as its bare value: cobc produced
                     // `lit 005 abcd` where Vybe gave `lit 5 abcd`.
                     // `cobol_pic_format_expr` is exactly what DISPLAY applies.
-                    if let Some(fmt) = ctx.pic_of(&e) {
-                        e = cobol_pic_format_expr(e, fmt);
+                    if let ExprKind::Ident(name) = &e.kind {
+                        let items = ctx.group_layout_for_name(name);
+                        if !items.is_empty() {
+                            let mut it = items.into_iter();
+                            if let Some(first) = it.next() {
+                                e = it.fold(first, |acc, item| binary(BinOp::Concat, acc, item));
+                            }
+                        } else if let Some((fmt, attrs)) = ctx.format_of(&e) {
+                            e = cobol_data_format_expr(e, fmt, attrs);
+                        }
+                    } else if let Some((fmt, attrs)) = ctx.format_of(&e) {
+                        e = cobol_data_format_expr(e, fmt, attrs);
                     }
                 } else if let Some(d) = delim_expr {
                     // take chars up to the first delimiter: split(d)[0]
@@ -5605,7 +7159,10 @@ fn walk_inspect_replacing(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<
                     None => Expression::string(" "),
                 };
                 let width = match ctx.field_pic(&var) {
-                    Some(CobolPicFmt::Alpha(w)) | Some(CobolPicFmt::Numeric(w)) => w as i64,
+                    Some(CobolPicFmt::Alpha(w))
+                    | Some(CobolPicFmt::Numeric(w))
+                    | Some(CobolPicFmt::SignedNumeric(w))
+                    | Some(CobolPicFmt::ImpliedDecimal(w)) => w as i64,
                     None => 0,
                 };
                 let filled = Expression::new(ExprKind::Call {
@@ -5768,12 +7325,12 @@ fn walk_call_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 if callee_name.is_empty() {
                     // Strip quotes
                     let s = child.as_str();
-                    callee_name = s[1..s.len() - 1].to_string();
+                    callee_name = cobol_program_binding_name(&s[1..s.len() - 1]);
                 }
             }
             Rule::ident_name => {
                 if callee_name.is_empty() {
-                    callee_name = child.as_str().to_string();
+                    callee_name = cobol_program_binding_name(child.as_str());
                 }
             }
             Rule::call_arg => {
@@ -5862,7 +7419,7 @@ fn walk_call_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
 // ── INITIALIZE ──────────────────────────────────────────────────────────────
 
-fn walk_initialize_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_initialize_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind, String> {
     let parts = inner_nokw(pair);
     let names: Vec<String> = parts
         .into_iter()
@@ -5874,11 +7431,36 @@ fn walk_initialize_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
     // Without knowing the PIC at walk time, default to empty string
     let mut stmts = Vec::new();
     for name in names {
-        stmts.push(Statement::new(StmtKind::Assign {
-            targets: vec![Expression::ident(&name)],
-            value: Expression::string(""),
-            by_ref: false,
-        }));
+        let fields = ctx.record_fields_for_name(&name);
+        if !fields.is_empty() {
+            for field in fields {
+                if let Some(count) = field.occurs {
+                    for i in 0..count {
+                        stmts.push(Statement::new(StmtKind::Assign {
+                            targets: vec![Expression::new(ExprKind::Index {
+                                object: Box::new(Expression::ident(&field.name)),
+                                index: Box::new(Expression::int(i as i64)),
+                                null_safe: false,
+                            })],
+                            value: cobol_display_default_for_field(&field.name, ctx),
+                            by_ref: false,
+                        }));
+                    }
+                } else {
+                    stmts.push(Statement::new(StmtKind::Assign {
+                        targets: vec![Expression::ident(&field.name)],
+                        value: cobol_display_default_for_field(&field.name, ctx),
+                        by_ref: false,
+                    }));
+                }
+            }
+        } else {
+            stmts.push(Statement::new(StmtKind::Assign {
+                targets: vec![Expression::ident(&name)],
+                value: cobol_display_default_for_field(&name, ctx),
+                by_ref: false,
+            }));
+        }
     }
 
     Ok(if stmts.len() == 1 {
@@ -6762,7 +8344,7 @@ fn walk_class_id(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), Stri
 
     for child in children {
         match child.as_rule() {
-            Rule::ident_name => {
+            Rule::ident_name | Rule::ident_or_keyword => {
                 if name.is_empty() {
                     name = child.as_str().to_string();
                 }
@@ -6929,7 +8511,7 @@ fn walk_method_def(pair: Pair<Rule>) -> Result<Statement, String> {
 
     for child in children {
         match child.as_rule() {
-            Rule::ident_name => {
+            Rule::ident_name | Rule::ident_or_keyword => {
                 if name.is_empty() {
                     name = child.as_str().to_string();
                 }
@@ -7064,7 +8646,7 @@ fn walk_interface_id(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), 
 
     for child in children {
         match child.as_rule() {
-            Rule::ident_name => {
+            Rule::ident_name | Rule::keyword_data_name => {
                 if name.is_empty() {
                     name = child.as_str().to_string();
                 }
@@ -7151,9 +8733,8 @@ fn walk_condition(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Expressi
 /// the condition is false, where `cobc` says true — measured, and it silently
 /// inverted every such test.
 ///
-/// Only NUMERIC pictures are realigned. An alphanumeric field already compares
-/// correctly (`PIC X(10)` holding "hi" equals `"hi"`, because COBOL pads the
-/// shorter operand), and padding it here would break that.
+/// Numeric pictures compare through their character representation; alphanumeric
+/// fields compare after padding the shorter operand with spaces.
 fn cobol_align_pic_comparison(
     op: BinOp,
     left: Expression,
@@ -7165,10 +8746,21 @@ fn cobol_align_pic_comparison(
     }
     let numeric_pic = |e: &Expression| -> Option<CobolPicFmt> {
         match ctx.pic_of(e) {
-            Some(fmt @ CobolPicFmt::Numeric(_)) => Some(fmt),
+            Some(
+                fmt @ (CobolPicFmt::Numeric(_)
+                | CobolPicFmt::SignedNumeric(_)
+                | CobolPicFmt::ImpliedDecimal(_)),
+            ) => Some(fmt),
             _ => None,
         }
     };
+    let alpha_field = |e: &Expression| -> bool {
+        match ctx.pic_of(e) {
+            Some(CobolPicFmt::Alpha(_)) => true,
+            _ => false,
+        }
+    };
+    let trim_text = |e: Expression| cobol_call("__trim_end", vec![e]);
     let is_text = |e: &Expression| matches!(&e.kind, ExprKind::Lit(Literal::Str(_)));
 
     if is_text(&right)
@@ -7180,6 +8772,12 @@ fn cobol_align_pic_comparison(
         && let Some(fmt) = numeric_pic(&right)
     {
         return (left, cobol_pic_format_expr(right, fmt));
+    }
+    if is_text(&right) && alpha_field(&left) {
+        return (trim_text(left), trim_text(right));
+    }
+    if is_text(&left) && alpha_field(&right) {
+        return (trim_text(left), trim_text(right));
     }
     (left, right)
 }
@@ -7742,6 +9340,12 @@ fn desugar_cobol_math_intrinsic(name: &str, args: &[Argument]) -> Option<Express
             vec![binary(BinOp::Sub, xs[0].clone(), Expression::int(1))],
         )),
         "INTEGER-PART" if n == 1 => Some(call("f64_trunc", vec![xs[0].clone()])),
+        // NATIONAL-OF converts an alphanumeric item to the national encoding
+        // and DISPLAY-OF converts one back. Vybe strings are UTF-16 already
+        // and a `PIC N(n)` item is an ordinary string of n character
+        // positions, so both conversions are the identity here rather than
+        // unimplemented. (GnuCOBOL 3.2 rejects both outright.)
+        "NATIONAL-OF" | "DISPLAY-OF" if n >= 1 => Some(xs[0].clone()),
         "EXP10" if n == 1 => Some(call("POWER", vec![Expression::int(10), xs[0].clone()])),
         "VARIANCE" if n >= 1 => Some(pop_variance(&xs)),
         "STANDARD-DEVIATION" if n >= 1 => Some(call("SQRT", vec![pop_variance(&xs)])),
@@ -8010,7 +9614,7 @@ fn walk_function_call(pair: Pair<Rule>) -> Result<Expression, String> {
 
     let mut func_name = String::new();
     let mut args: Vec<Argument> = Vec::new();
-    let mut subscript_or_refmod: Option<Pair<Rule>> = None;
+    let mut subscript_or_refmods: Vec<Pair<Rule>> = Vec::new();
     // Set when an argument is `ALL table-name` — the whole OCCURS array.
     let mut all_table: Option<Expression> = None;
 
@@ -8071,7 +9675,7 @@ fn walk_function_call(pair: Pair<Rule>) -> Result<Expression, String> {
                 args.push(Argument::positional(walk_atom(child)?));
             }
             Rule::subscript_or_refmod => {
-                subscript_or_refmod = Some(child);
+                subscript_or_refmods.push(child);
             }
             _ => {}
         }
@@ -8107,7 +9711,7 @@ fn walk_function_call(pair: Pair<Rule>) -> Result<Expression, String> {
         }
     }
 
-    if subscript_or_refmod.is_none() {
+    if subscript_or_refmods.is_empty() {
         if let Some(desugared) = desugar_cobol_date_intrinsic(&func_name, &args) {
             return Ok(desugared);
         }
@@ -8122,7 +9726,7 @@ fn walk_function_call(pair: Pair<Rule>) -> Result<Expression, String> {
         optional: false,
     });
 
-    if let Some(sub_pair) = subscript_or_refmod {
+    for sub_pair in subscript_or_refmods {
         expr = apply_cobol_subscript_or_refmod(expr, sub_pair)?;
     }
 
@@ -8171,7 +9775,7 @@ fn walk_qualified_ident(pair: Pair<Rule>) -> Result<Expression, String> {
     }
 
     let mut name = String::new();
-    let mut subscript: Option<Pair<Rule>> = None;
+    let mut subscripts: Vec<Pair<Rule>> = Vec::new();
     let mut qualification: Vec<String> = Vec::new();
 
     for child in &children {
@@ -8182,11 +9786,11 @@ fn walk_qualified_ident(pair: Pair<Rule>) -> Result<Expression, String> {
                 }
             }
             Rule::subscript_or_refmod => {
-                subscript = Some(child.clone());
+                subscripts.push(child.clone());
             }
             Rule::qualification => {
                 for q in child.clone().into_inner() {
-                    if q.as_rule() == Rule::ident_name {
+                    if matches!(q.as_rule(), Rule::ident_name | Rule::keyword_data_name) {
                         qualification.push(q.as_str().to_string());
                     }
                 }
@@ -8198,7 +9802,7 @@ fn walk_qualified_ident(pair: Pair<Rule>) -> Result<Expression, String> {
     let mut expr = Expression::ident(&name);
 
     // Handle subscript or reference modification
-    if let Some(sub_pair) = subscript {
+    for sub_pair in subscripts {
         expr = apply_cobol_subscript_or_refmod(expr, sub_pair)?;
     }
 
@@ -8243,22 +9847,22 @@ fn walk_data_target_expr(pair: Pair<Rule>) -> Result<Expression, String> {
             let children: Vec<Pair<Rule>> = pair.into_inner().collect();
 
             let mut name = String::new();
-            let mut subscript: Option<Pair<Rule>> = None;
+            let mut subscripts: Vec<Pair<Rule>> = Vec::new();
             let mut qualification: Vec<String> = Vec::new();
 
             for child in &children {
                 match child.as_rule() {
-                    Rule::ident_name | Rule::kw_sd => {
+                    Rule::ident_name | Rule::ident_or_keyword | Rule::keyword_data_name | Rule::kw_sd => {
                         if name.is_empty() {
                             name = child.as_str().to_string();
                         }
                     }
                     Rule::subscript_or_refmod => {
-                        subscript = Some(child.clone());
+                        subscripts.push(child.clone());
                     }
                     Rule::qualification => {
                         for q in child.clone().into_inner() {
-                            if q.as_rule() == Rule::ident_name {
+                            if matches!(q.as_rule(), Rule::ident_name | Rule::keyword_data_name) {
                                 qualification.push(q.as_str().to_string());
                             }
                         }
@@ -8269,7 +9873,7 @@ fn walk_data_target_expr(pair: Pair<Rule>) -> Result<Expression, String> {
 
             let mut expr = Expression::ident(&name);
 
-            if let Some(sub_pair) = subscript {
+            for sub_pair in subscripts {
                 expr = apply_cobol_subscript_or_refmod(expr, sub_pair)?;
             }
 
@@ -8279,7 +9883,45 @@ fn walk_data_target_expr(pair: Pair<Rule>) -> Result<Expression, String> {
 
             Ok(expr)
         }
-        Rule::ident_name | Rule::kw_sd => Ok(Expression::ident(pair.as_str())),
+        Rule::string_data_ref => {
+            let children: Vec<Pair<Rule>> = pair.into_inner().collect();
+            let mut name = String::new();
+            let mut suffixes: Vec<Pair<Rule>> = Vec::new();
+            let mut qualification: Vec<String> = Vec::new();
+
+            for child in &children {
+                match child.as_rule() {
+                    Rule::ident_name | Rule::keyword_data_name | Rule::kw_sd => {
+                        if name.is_empty() {
+                            name = child.as_str().to_string();
+                        }
+                    }
+                    Rule::subscript_or_refmod | Rule::string_harness_subscript => {
+                        suffixes.push(child.clone());
+                    }
+                    Rule::qualification => {
+                        for q in child.clone().into_inner() {
+                            if matches!(q.as_rule(), Rule::ident_name | Rule::keyword_data_name) {
+                                qualification.push(q.as_str().to_string());
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            let mut expr = Expression::ident(&name);
+            for suffix in suffixes {
+                expr = apply_cobol_subscript_or_refmod(expr, suffix)?;
+            }
+            if !qualification.is_empty() {
+                expr = qualified_member(&name, &qualification);
+            }
+            Ok(expr)
+        }
+        Rule::ident_name | Rule::ident_or_keyword | Rule::keyword_data_name | Rule::kw_sd => {
+            Ok(Expression::ident(pair.as_str()))
+        }
         Rule::qualified_ident => walk_qualified_ident(pair),
         _ => Err(format!(
             "COBOL walker: expected data_target, got {:?}",
@@ -8296,14 +9938,23 @@ fn apply_cobol_subscript_or_refmod(
     // `subscript` = name(idx[, idx]...). The `:`/`,` separators are literals
     // consumed by the grammar, so the alternative is only recoverable from the
     // rule tag — never from scanning the child expressions' text.
-    let inner = sub_pair
-        .into_inner()
-        .next()
-        .ok_or("empty subscript_or_refmod")?;
+    let inner = if sub_pair.as_rule() == Rule::string_harness_subscript {
+        sub_pair
+    } else {
+        sub_pair
+            .into_inner()
+            .next()
+            .ok_or("empty subscript_or_refmod")?
+    };
     let is_refmod = inner.as_rule() == Rule::refmod;
     let expr_children: Vec<Pair<Rule>> = inner
         .into_inner()
-        .filter(|c| c.as_rule() == Rule::expression)
+        .filter(|c| {
+            matches!(
+                c.as_rule(),
+                Rule::expression | Rule::number_literal | Rule::level_number
+            )
+        })
         .collect();
 
     if is_refmod {
@@ -8319,20 +9970,21 @@ fn apply_cobol_subscript_or_refmod(
         };
 
         let adjusted_start = normalize_array_index_operand(start_expr, COBOL_ARRAY_INDEXING);
+        let end_expr = binary(BinOp::Add, adjusted_start.clone(), length_expr);
 
         return Ok(Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__refmod")),
             args: vec![
                 Argument::positional(expr),
                 Argument::positional(adjusted_start),
-                Argument::positional(length_expr),
+                Argument::positional(end_expr),
             ],
             optional: false,
         }));
     }
 
     if !expr_children.is_empty() {
-        let index_expr = walk_expression(expr_children[0].clone())?;
+        let index_expr = walk_subscript_operand(expr_children[0].clone())?;
         let adjusted_index = normalize_array_index_operand(index_expr, COBOL_ARRAY_INDEXING);
         expr = Expression::new(ExprKind::Index {
             object: Box::new(expr),
@@ -8341,7 +9993,7 @@ fn apply_cobol_subscript_or_refmod(
         });
 
         for extra in expr_children.iter().skip(1) {
-            let extra_idx = walk_expression((*extra).clone())?;
+            let extra_idx = walk_subscript_operand((*extra).clone())?;
             let adjusted = normalize_array_index_operand(extra_idx, COBOL_ARRAY_INDEXING);
             expr = Expression::new(ExprKind::Index {
                 object: Box::new(expr),
@@ -8354,6 +10006,17 @@ fn apply_cobol_subscript_or_refmod(
     Ok(expr)
 }
 
+fn walk_subscript_operand(pair: Pair<Rule>) -> Result<Expression, String> {
+    match pair.as_rule() {
+        Rule::number_literal | Rule::level_number => Ok(parse_number_literal(pair.as_str())),
+        Rule::expression => walk_expression(pair),
+        _ => Err(format!(
+            "COBOL walker: expected subscript operand, got {:?}",
+            pair.as_rule()
+        )),
+    }
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // Literals
 // ════════════════════════════════════════════════════════════════════════════
@@ -8364,6 +10027,7 @@ fn walk_literal(pair: Pair<Rule>) -> Result<Expression, String> {
     match inner.as_rule() {
         Rule::figurative_constant => walk_figurative_constant(inner),
         Rule::boolean_literal => walk_boolean_literal(inner),
+        Rule::hex_literal => walk_hex_literal(&inner),
         Rule::number_literal => Ok(parse_number_literal(inner.as_str())),
         Rule::string_literal => walk_string_literal(&inner),
         _ => Err(format!(
@@ -8371,6 +10035,27 @@ fn walk_literal(pair: Pair<Rule>) -> Result<Expression, String> {
             inner.as_rule()
         )),
     }
+}
+
+fn walk_hex_literal(pair: &Pair<Rule>) -> Result<Expression, String> {
+    let raw = pair.as_str();
+    let Some(start) = raw.find('"') else {
+        return Ok(Expression::string(""));
+    };
+    let Some(end) = raw.rfind('"') else {
+        return Ok(Expression::string(""));
+    };
+    if end <= start {
+        return Ok(Expression::string(""));
+    }
+    let hex = &raw[start + 1..end];
+    let mut out = String::new();
+    let mut chars = hex.chars();
+    while let (Some(hi), Some(lo)) = (chars.next(), chars.next()) {
+        let byte = u8::from_str_radix(&format!("{hi}{lo}"), 16).unwrap_or(b'?');
+        out.push(byte as char);
+    }
+    Ok(Expression::string(&out))
 }
 
 fn walk_figurative_constant(pair: Pair<Rule>) -> Result<Expression, String> {
@@ -8417,6 +10102,44 @@ fn walk_figurative_constant(pair: Pair<Rule>) -> Result<Expression, String> {
     Ok(Expression::null())
 }
 
+fn cobol_value_figurative_init(pair: Pair<Rule>, pic: Option<&str>) -> Result<Expression, String> {
+    let text = pair.as_str().trim().to_ascii_uppercase();
+    let Some(width) = pic
+        .and_then(cobol_pic_display_fmt)
+        .map(cobol_pic_width)
+        .filter(|width| *width > 1)
+    else {
+        return walk_figurative_constant(pair);
+    };
+
+    if text.contains("ALL") {
+        let unit = walk_figurative_constant(pair)?;
+        if let ExprKind::Lit(Literal::Str(s)) = unit.kind {
+            let mut out = String::new();
+            while out.chars().count() < width {
+                out.push_str(&s);
+            }
+            return Ok(Expression::string(&out.chars().take(width).collect::<String>()));
+        }
+        return Ok(unit);
+    }
+
+    if text.contains("QUOTE") {
+        return Ok(Expression::string(&"\"".repeat(width)));
+    }
+    if text.contains("SPACE") {
+        return Ok(Expression::string(&" ".repeat(width)));
+    }
+    if text.contains("HIGH-VALUE") || text.contains("HIGH-VALUES") {
+        return Ok(Expression::string(&"\u{FFFF}".repeat(width)));
+    }
+    if text.contains("LOW-VALUE") || text.contains("LOW-VALUES") {
+        return Ok(Expression::string(""));
+    }
+
+    walk_figurative_constant(pair)
+}
+
 fn walk_boolean_literal(pair: Pair<Rule>) -> Result<Expression, String> {
     let inner = pair.into_inner().next().ok_or("empty boolean")?;
     match inner.as_rule() {
@@ -8427,7 +10150,7 @@ fn walk_boolean_literal(pair: Pair<Rule>) -> Result<Expression, String> {
 }
 
 fn parse_number_literal(s: &str) -> Expression {
-    let trimmed = s.trim();
+    let trimmed = s.trim().trim_start_matches('+');
     let normalized = if trimmed.contains(',') && !trimmed.contains('.') {
         trimmed.replace(',', ".")
     } else {
@@ -8448,18 +10171,18 @@ fn parse_number_literal(s: &str) -> Expression {
 }
 
 fn walk_string_literal(pair: &Pair<Rule>) -> Result<Expression, String> {
-    let raw = pair.as_str();
-    // Strip surrounding quotes (either " or ')
-    if raw.len() >= 2 {
-        let inner = &raw[1..raw.len() - 1];
-        Ok(Expression::string(inner))
-    } else {
-        Ok(Expression::string(""))
-    }
+    Ok(Expression::string(&string_literal_value(pair)))
 }
 
+/// The characters between the quotes, with a NATIONAL `N` prefix dropped —
+/// `N"CAFE"` and `"CAFE"` are the same characters here.
 fn string_literal_value(pair: &Pair<Rule>) -> String {
     let raw = pair.as_str();
+    let raw = raw
+        .strip_prefix('N')
+        .or_else(|| raw.strip_prefix('n'))
+        .filter(|rest| rest.starts_with(['"', '\'']))
+        .unwrap_or(raw);
     if raw.len() >= 2 {
         raw[1..raw.len() - 1].to_string()
     } else {
@@ -8474,6 +10197,10 @@ fn string_literal_value(pair: &Pair<Rule>) -> String {
 /// Create a binary expression.
 fn cobol_name_key(name: &str) -> String {
     name.trim().to_ascii_uppercase()
+}
+
+fn cobol_program_binding_name(name: &str) -> String {
+    name.trim().to_string()
 }
 
 fn cobol_data_item_level(pair: &Pair<Rule>) -> u32 {

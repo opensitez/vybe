@@ -424,7 +424,7 @@ data_item = {
 level_88_item = {
     level_88 ~ ident_name
     ~ kw_value ~ kw_is? ~ literal ~ (kw_thru ~ literal)?
-    ~ ("," ~ literal ~ (kw_thru ~ literal)?)*
+    ~ (","? ~ literal ~ (kw_thru ~ literal)?)*
     ~ period
 }
 
@@ -440,6 +440,7 @@ data_clause = {
   | value_clause
   | occurs_clause
   | redefines_clause
+  | renames_clause
   | usage_clause
   | blank_clause
   | justified_clause
@@ -471,7 +472,7 @@ pic_char   = _{ ASCII_ALPHANUMERIC | "(" | ")" | "+" | "-" | "*" | "/" | "$" | "
 
 value_clause = {
     kw_value ~ kw_is?
-    ~ (string_literal | number_literal | figurative_constant | ident_or_keyword | boolean_literal)
+    ~ (hex_literal | string_literal | number_literal | figurative_constant | ident_or_keyword | boolean_literal)
 }
 
 occurs_clause = {
@@ -488,6 +489,7 @@ depending_clause = { kw_depending ~ kw_on? ~ ident_name }
 indexed_clause   = { kw_indexed ~ kw_by ~ ident_name ~ ("," ~ ident_name)* }
 
 redefines_clause = { kw_redefines ~ ident_name }
+renames_clause   = { kw_renames ~ ident_name ~ ((kw_thru | kw_through) ~ ident_name)? }
 usage_clause     = { kw_usage ~ kw_is? ~ usage_type }
 usage_type       = {
         kw_binary | kw_comp_3 | kw_comp_5 | kw_comp | kw_display_usage
@@ -640,15 +642,26 @@ statement = _{
   | exec_sql_stmt
   | exec_cics_stmt
   | exec_dli_stmt
-  | nested_program_stmt
 }
 
 // ── DISPLAY ─────────────────────────────────────────────────────────────────
 
 display_stmt = {
-    kw_display ~ expression+
+    kw_display ~ display_operand+
     ~ (kw_upon ~ ident_name)?
     ~ (kw_with? ~ kw_no ~ kw_advancing)?
+}
+
+display_operand = { !statement_start_keyword ~ expression }
+
+statement_start_keyword = _{
+    kw_display | kw_accept | kw_move | kw_add | kw_subtract | kw_multiply | kw_divide
+  | kw_compute | kw_if | kw_evaluate | kw_perform | kw_string | kw_unstring
+  | kw_inspect | kw_call | kw_cancel | kw_initialize | kw_set | kw_go | kw_stop
+  | kw_goback | kw_continue | kw_raise | kw_open | kw_close | kw_read | kw_write
+  | kw_rewrite | kw_delete | kw_start | kw_sort | kw_merge | kw_search | kw_copy
+  | kw_invoke | kw_validate | kw_free | kw_allocate | kw_exit | kw_wait | kw_run
+  | kw_lock | kw_unlock | kw_yield | kw_suspend | kw_exec
 }
 
 // ── ACCEPT ──────────────────────────────────────────────────────────────────
@@ -689,7 +702,7 @@ move_stmt = {
   | kw_move ~ expression ~ kw_to ~ move_target+
 }
 
-data_target = { (ident_name | kw_sd) ~ subscript_or_refmod? ~ qualification* }
+data_target = { (ident_name | kw_sd) ~ subscript_or_refmod* ~ qualification* }
 
 move_target = { data_target }
 
@@ -707,7 +720,7 @@ add_stmt = {
 
 // Simple operand for arithmetic verbs — stops at keywords like TO, GIVING, FROM.
 // COBOL arithmetic operands are literals, identifiers, or subscripted names.
-arith_operand = { atom ~ (subscript_or_refmod | qualification)? }
+arith_operand = { atom ~ subscript_or_refmod* ~ qualification* }
 
 giving_clause  = { kw_giving ~ data_target }
 rounded_clause = { kw_rounded ~ (kw_mode ~ rounded_mode_spec)? }
@@ -861,9 +874,18 @@ string_stmt = {
 }
 
 string_source = {
-        expression ~ kw_delimited ~ (kw_size | kw_by ~ (kw_size | expression))
+        (string_data_ref | expression | keyword_data_name) ~ kw_delimited ~ (kw_size | kw_by ~ (kw_size | expression | keyword_data_name))
   | expression
+  | keyword_data_name
 }
+
+string_data_ref = { (ident_name | kw_sd) ~ (string_harness_subscript | subscript_or_refmod)+ ~ qualification* }
+
+string_harness_subscript = {
+    "(" ~ expression ~ (kw_delimited ~ kw_size ~ expression)+ ~ ")"
+}
+
+keyword_data_name = { kw_display | kw_left | kw_right | kw_key }
 
 pointer_clause = { kw_with? ~ kw_pointer ~ ident_name }
 
@@ -1171,7 +1193,7 @@ search_stmt = {
     ~ kw_end_search?
 }
 
-search_subject = { ident_name ~ subscript_or_refmod? }
+search_subject = { ident_name ~ subscript_or_refmod* }
 
 // ── COPY ────────────────────────────────────────────────────────────────────
 
@@ -1245,7 +1267,16 @@ exec_body = @{ (!(^"END-EXEC" | ^"end-exec") ~ ANY)* }
 
 // ── Nested Program ──────────────────────────────────────────────────────────
 
-nested_program_stmt = { kw_identification ~ kw_division ~ period ~ program_id_paragraph ~ id_optional_paragraph* ~ environment_division? ~ data_division? ~ procedure_division? ~ end_program? }
+nested_program_stmt = {
+    kw_identification ~ kw_division ~ period
+    ~ program_id_paragraph
+    ~ id_optional_paragraph*
+    ~ environment_division?
+    ~ data_division?
+    ~ procedure_division?
+    ~ nested_program*
+    ~ end_program?
+}
 
 nested_program = { nested_program_stmt }
 
@@ -1345,20 +1376,21 @@ qualified_ident = {
     // `NAME OF L3 OF L2 OF L1`. With one optional level the parser took
     // `NAME OF L3` and then started a SECOND operand at `L2 OF L1`, so a
     // three-level DISPLAY printed two values.
-    ident_name ~ subscript_or_refmod? ~ qualification*
+    (ident_name | keyword_data_name) ~ subscript_or_refmod* ~ qualification*
   | kw_self
 }
 
-subscript_or_refmod = { refmod | subscript }
+subscript_or_refmod = { refmod | space_subscript | subscript }
 refmod    = { "(" ~ expression ~ ":" ~ expression? ~ ")" }   // reference modification name(start:length)
 subscript = { "(" ~ expression ~ ("," ~ expression)* ~ ")" }  // subscript name(idx) or name(idx1, idx2)
+space_subscript = { "(" ~ expression ~ (number_literal | level_number)+ ~ ")" }
 
-qualification = { (kw_of | kw_in) ~ ident_name }
+qualification = { (kw_of | kw_in) ~ (ident_name | keyword_data_name) }
 
 // ── Function calls ──────────────────────────────────────────────────────────
 
 function_call = {
-    kw_function ~ function_name ~ function_call_args? ~ subscript_or_refmod?
+    kw_function ~ function_name ~ function_call_args? ~ subscript_or_refmod*
 }
 
 // COBOL function args are space-separated (not comma-separated)
@@ -1402,6 +1434,7 @@ function_name = {
 literal = {
     figurative_constant
   | boolean_literal
+  | hex_literal
   | number_literal
   | string_literal
 }
@@ -1419,13 +1452,20 @@ figurative_constant = {
 boolean_literal = { kw_true | kw_false }
 
 number_literal = @{
-    "-"? ~ (ASCII_DIGIT+ ~ (("." | ",") ~ ASCII_DIGIT+)? | ("." | ",") ~ ASCII_DIGIT+)
+    ("+" | "-")? ~ (ASCII_DIGIT+ ~ (("." | ",") ~ ASCII_DIGIT+)? | ("." | ",") ~ ASCII_DIGIT+)
 }
 
+// The optional `N` is a NATIONAL literal (`MOVE N"CAFE" TO N1`). The rule is
+// atomic, so the prefix only counts when it is glued to the opening quote —
+// an identifier `N` followed by a separate literal still parses as two tokens.
+// Its characters are the same characters; `PIC N(n)` is the width in national
+// positions, which is what the string already is.
 string_literal = @{
-    "\"" ~ (!"\"" ~ ANY)* ~ "\""
-  | "'" ~ (!"'" ~ ANY)* ~ "'"
+    ("N" | "n")? ~ "\"" ~ (!"\"" ~ ANY)* ~ "\""
+  | ("N" | "n")? ~ "'" ~ (!"'" ~ ANY)* ~ "'"
 }
+
+hex_literal = @{ ("X" | "x") ~ "\"" ~ ASCII_HEX_DIGIT* ~ "\"" }
 
 // ── Identifiers ─────────────────────────────────────────────────────────────
 // COBOL identifiers may contain hyphens but cannot start or end with them.
@@ -1444,7 +1484,7 @@ strict_keyword = _{
     | ^"working-storage" | ^"local-storage" | ^"linkage" | ^"screen"
     | ^"file" | ^"fd" | ^"sd"
     | ^"pic" | ^"picture" | ^"value" | ^"occurs" | ^"times"
-    | ^"redefines" | ^"indexed" | ^"usage" | ^"filler"
+    | ^"redefines" | ^"renames" | ^"indexed" | ^"usage" | ^"filler"
     | ^"display" | ^"accept" | ^"move" | ^"to" | ^"corresponding" | ^"corr"
     | ^"alter" | ^"proceed"
     | ^"add" | ^"subtract" | ^"from" | ^"giving" | ^"multiply" | ^"by"
@@ -1543,6 +1583,7 @@ kw_occurs          = @{ ^"occurs"          ~ !ident_cont }
 kw_times           = @{ ^"times"           ~ !ident_cont }
 kw_depending       = @{ ^"depending"       ~ !ident_cont }
 kw_redefines       = @{ ^"redefines"       ~ !ident_cont }
+kw_renames         = @{ ^"renames"         ~ !ident_cont }
 kw_usage           = @{ ^"usage"           ~ !ident_cont }
 kw_indexed         = @{ ^"indexed"         ~ !ident_cont }
 kw_filler          = @{ ^"filler"          ~ !ident_cont }
@@ -1956,4 +1997,3 @@ kw_annuity         = @{ ^"annuity"         ~ !ident_cont }
 kw_present_value   = @{ ^"present-value"   ~ !ident_cont }
 kw_formatted_date  = @{ ^"formatted-date"  ~ !ident_cont }
 kw_formatted_time  = @{ ^"formatted-time"  ~ !ident_cont }
-

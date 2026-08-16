@@ -131,6 +131,7 @@ __stop_run          = { emit = "host:wasi:cli/exit:exit",    min_args = 0, max_a
 __is_numeric        = { emit = "host:ecma:number:isNaN",    min_args = 1, max_args = 1 }
 __is_alphabetic     = { emit = "noop",                        min_args = 1, max_args = 1 }
 __refmod            = { emit = "common:str_substring",       min_args = 3, max_args = 3 }
+__array_join        = { emit = "common:collections.join",    min_args = 2, max_args = 2 }
 f64_floor           = { emit = "opcode:f64_floor",           min_args = 1, max_args = 1 }
 f64_ceil            = { emit = "opcode:f64_ceil",            min_args = 1, max_args = 1 }
 f64_trunc           = { emit = "opcode:f64_trunc",           min_args = 1, max_args = 1 }
