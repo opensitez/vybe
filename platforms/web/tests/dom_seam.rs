@@ -307,3 +307,72 @@ fn only_a_modal_dialog_is_positioned_against_the_viewport() {
         "a non-modal dialog stays in flow"
     );
 }
+
+/// **`removeEventListener` unsubscribes the callback it was given, and only
+/// that one.**
+///
+/// The interesting half is identity. `Value`'s `==` compares two
+/// `ObjectKind::Function`s by `chunk_index`, so every closure a factory
+/// produces is "equal" to its siblings — `makeHandler(d)` in a loop, which is
+/// how the calculator builds its keypad. Matching by equality would remove
+/// whichever sibling happened to be first, invisibly. This pins the pointer
+/// identity the spec actually means.
+#[test]
+fn remove_event_listener_takes_the_listener_it_was_given() {
+    use std::sync::{Arc, Mutex};
+    use vybe_runtime::value::{Object, ObjectKind, Value};
+    use vybe_platform_web::html;
+
+    let doc = setup();
+    let button = create(doc, "button", "");
+    apply(
+        doc,
+        DomOp::AppendChild {
+            parent: DOCUMENT,
+            child: button,
+        },
+    );
+    let node = button;
+
+    // Two DISTINCT callback objects that `==` cannot tell apart: same kind,
+    // same host-function index. This is the sibling-closure shape.
+    let make = || {
+        let mut o = Object::new();
+        o.kind = ObjectKind::HostFunction(7);
+        Value::Object(Arc::new(Mutex::new(o)))
+    };
+    let (first, second) = (make(), make());
+    // `Value::eq` is the language's own equality — the one any "find the
+    // matching listener" code would reach for — and it answers TRUE here:
+    // `kind_eq` compares two `HostFunction`s by index and two `Function`s by
+    // `chunk_index`, so distinct closures off one factory are equal. (Rust's
+    // `PartialEq` is stricter, which is why this must be asserted explicitly
+    // rather than with `assert_eq!`.)
+    assert!(
+        first.eq(&second),
+        "the two callbacks compare EQUAL — that is the trap this guards"
+    );
+
+    html::add_event_listener(doc, node, "click", first.clone());
+    html::add_event_listener(doc, node, "click", second.clone());
+    assert_eq!(html::listeners_for(doc, node, "click").len(), 2);
+
+    html::remove_event_listener(doc, node, "click", &second);
+    let left = html::listeners_for(doc, node, "click");
+    assert_eq!(left.len(), 1, "exactly one listener should have gone");
+    match (&left[0], &first) {
+        (Value::Object(a), Value::Object(b)) => assert!(
+            Arc::ptr_eq(a, b),
+            "the WRONG listener was removed — equality matched a sibling"
+        ),
+        _ => panic!("listener is not an object"),
+    }
+
+    // Removing something never added removes nothing.
+    html::remove_event_listener(doc, node, "click", &make());
+    assert_eq!(html::listeners_for(doc, node, "click").len(), 1);
+
+    // And the type is part of the key.
+    html::remove_event_listener(doc, node, "input", &first);
+    assert_eq!(html::listeners_for(doc, node, "click").len(), 1);
+}
