@@ -2684,6 +2684,7 @@ fn insert_java_net_url_uri(root: &mut Subtree) {
                     .map(|s| (*s).to_string())
                     .collect(),
                 control_fn: None,
+                nest_coerce: None,
                 field_gui: Vec::new(),
                 value_equality: false,
             }),
@@ -2796,6 +2797,7 @@ fn insert_java_net_url_uri(root: &mut Subtree) {
                     .map(|s| (*s).to_string())
                     .collect(),
                 control_fn: None,
+                nest_coerce: None,
                 field_gui: Vec::new(),
                 value_equality: false,
             }),
@@ -3563,6 +3565,7 @@ pub fn register_namespace_tree() {
                         fields: Vec::new(),
                         ancestry: ty.ancestry.iter().map(|s| (*s).to_string()).collect(),
                         control_fn: None,
+                        nest_coerce: None,
                         field_gui: Vec::new(),
                         value_equality: false,
                     }),

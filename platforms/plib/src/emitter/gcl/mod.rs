@@ -103,13 +103,37 @@ const FORM_PROPERTIES: &[&str] = &[
     "OnCreate",
     "OnClose",
 ];
-const TEXT_PROPERTIES: &[&str] = &["PasswordChar", "ReadOnly", "MaxLength"];
+const TEXT_PROPERTIES: &[&str] = &["PasswordChar", "ReadOnly", "MaxLength", "Alignment"];
+
+/// The classes VCL gives an `Alignment` to **and whose text we draw**.
+///
+/// It is NOT a `TControl` property — a `TButton` has no `Alignment` — so
+/// declaring it on the common list would answer a question Delphi itself
+/// rejects. `TLabel` has no property list of its own and gets this one;
+/// `TEdit` and `TMemo` fold it into theirs.
+///
+/// `TPanel` is deliberately absent even though VCL declares `Alignment` on it.
+/// A panel's alignment positions its CAPTION, and a `div` draws no text at all
+/// — so declaring it would put a value in the store that answers through
+/// `style_properties` and paints nothing. A declared property with no effect is
+/// worse than an undeclared one: it reads back correctly and lies.
+const ALIGNED_PROPERTIES: &[&str] = &["Alignment"];
 /// A memo is an edit that also answers questions about its LINES.
 ///
 /// `Count` is written `Lines.Count`, and `Lines` yields the receiver (see
 /// `SELF_MEMBERS`), so the count is asked of the memo itself — which is why it
 /// is declared here rather than on some separate strings object.
-const MEMO_PROPERTIES: &[&str] = &["PasswordChar", "ReadOnly", "MaxLength", "Count"];
+const MEMO_PROPERTIES: &[&str] = &[
+    "PasswordChar",
+    "ReadOnly",
+    "MaxLength",
+    "Count",
+    // `ScrollBars` IS CSS `overflow` — the constants it takes are declared in
+    // the Pascal profile as the CSS keywords, so the value arrives ready to
+    // use. Undeclared, the whole assignment was invisible.
+    "ScrollBars",
+    "Alignment",
+];
 const CHECK_PROPERTIES: &[&str] = &["Checked", "State"];
 const LIST_PROPERTIES: &[&str] = &["Items", "ItemIndex", "Sorted"];
 const GRID_PROPERTIES: &[&str] = &["ColCount", "RowCount", "FixedCols", "FixedRows", "Cells"];
@@ -355,7 +379,7 @@ static CLASSES: &[GclClass] = &[
         SHOW_METHODS
     ),
     widget_class!("TButton", "TWinControl", "button", &[], EMPTY_METHODS),
-    widget_class!("TLabel", "TControl", "label", &[], EMPTY_METHODS),
+    widget_class!("TLabel", "TControl", "label", ALIGNED_PROPERTIES, EMPTY_METHODS),
     widget_class!(
         "TEdit",
         "TWinControl",

@@ -91,6 +91,9 @@ fn ctor_spec(class: &super::gcl::GclClass) -> CtorSpec {
             fields,
             ancestry: ancestry(class),
             control_fn: None,
+            // A VCL control IS its element from the moment it is constructed —
+            // there is no configuration/element split to bridge.
+            nest_coerce: None,
             value_equality: false,
         };
     };
@@ -100,6 +103,7 @@ fn ctor_spec(class: &super::gcl::GclClass) -> CtorSpec {
         field_gui: Vec::new(),
         ancestry: ancestry(class),
         control_fn: Some(control_fn.to_string()),
+        nest_coerce: None,
         value_equality: false,
     }
 }
@@ -142,10 +146,27 @@ fn gui_property_role(owner: &str, prop: &str) -> &'static str {
         "readonly" => "readonly",
         "maxlength" => "maxlength",
         "hint" => "tooltip",
+        "tag" => "tag",
+        "scrollbars" => "overflow",
+        // A spin edit's range and step. HTML already has all three on
+        // `<input type=number>`, spelled `min` / `max` / `step`, and a track
+        // bar declares them under those very names — so this is a SPELLING
+        // difference and nothing more. Left unmapped they wrote
+        // `minvalue="0"`, an attribute no element has ever read.
+        "minvalue" => "min",
+        "maxvalue" => "max",
+        "increment" => "step",
         // VCL's `Color` is the control's BACKGROUND — `Font.Color` is the text.
         // WinForms spells the same two `BackColor`/`ForeColor`, which is what
         // the roles are named after.
         "color" => "backcolor",
+        // VCL's `Alignment` IS CSS `text-align` — how the caption sits inside
+        // the control's own box, which is what every framework means by it
+        // (WinForms spells it `TextAlign`). The `ta*` constants are declared in
+        // the Pascal profile as the CSS keywords, the same treatment `TAlign`
+        // and `TScrollStyle` already get, so nothing downstream translates a
+        // VCL enum.
+        "alignment" | "textalign" => "textalign",
         // VCL's `Align` IS WinForms' `Dock` — the control gives up its own
         // rect and takes an edge of the container. The constants it is
         // assigned are declared below as the role's own vocabulary.
