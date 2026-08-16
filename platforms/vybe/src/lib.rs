@@ -11,13 +11,14 @@
 //! `gui_state` (the live widget bridge) exists only under the feature.
 
 pub mod builtin_types; // TypeRegistry vtables for the vybe:gui control surface; run in Plugin::finalize
-// Canvas is NOT here. `CanvasRenderingContext2D` is WHATWG HTML and lives in
-// `platforms/web` (`web:canvas`); this crate only installs the engine that
-// paints for it — see `canvas_backend_impl`.
+// Canvas is NOT here, and this crate no longer paints for it either.
+// `CanvasRenderingContext2D` is WHATWG HTML and lives in `platforms/web`
+// (`web:canvas`); the engine behind it is now installed there too, resolving
+// through the real `Document`. `canvas_backend_impl` — which resolved through
+// `GuiState.form.controls` and so painted only into the capture-only overlay —
+// is deleted.
 // The control descriptions moved to `vybe_widgets::html`: the tag/CSS of a
 // control is what a web engine consumes, so it belongs beside the DOM.
-#[cfg(feature = "gui")]
-pub mod canvas_backend_impl;
 pub mod drawing;
 pub mod gui;
 #[cfg(feature = "gui")]

@@ -22,6 +22,63 @@ use std::sync::Arc;
 use vybe_runtime::value::Object;
 use vybe_runtime::{HostContext, VM, Value};
 
+/// The named colours, `(Name, R, G, B)` — alpha is 255 for every entry except
+/// `Transparent`. Values match the .NET `KnownColor` enum where applicable.
+///
+/// **The only copy.** `Color.Red` resolves through the namespace tree to
+/// `colorFromName("Red")` (`platforms/dotnet`'s `COLOR_STATICS`), which reads
+/// this table, and the `color` VM global is built from it too. The dotnet side
+/// binds colour NAMES only and never restates a channel value, so there is one
+/// place to edit and nothing that can drift.
+const PALETTE: &[(&str, u8, u8, u8)] = &[
+    ("Red", 220, 20, 60),
+    ("Blue", 30, 144, 255),
+    ("Green", 34, 139, 34),
+    ("Black", 0, 0, 0),
+    ("White", 255, 255, 255),
+    ("Yellow", 255, 215, 0),
+    ("Orange", 255, 140, 0),
+    ("Purple", 128, 0, 128),
+    ("Cyan", 0, 255, 255),
+    ("Magenta", 255, 0, 255),
+    ("Gray", 128, 128, 128),
+    ("Brown", 139, 69, 19),
+    ("Pink", 255, 192, 203),
+    ("LightGray", 211, 211, 211),
+    ("DarkGray", 169, 169, 169),
+    ("Transparent", 0, 0, 0),
+];
+
+/// Build a `Color` object with the four channels the drawing bodies read.
+///
+/// Every colour that reaches a canvas call goes through here. The dotnet
+/// `Graphics` bodies read the channels positionally
+/// (`MethodOp::PushArgFieldField(1, "color", "r")` → `setFillStyle(ctx, r, g,
+/// b, a)`), so a `Color` missing any of `r`/`g`/`b`/`a` reads as `undefined`,
+/// paints `#00000000`, and raises nothing.
+fn color_object(name: &str, r: u8, g: u8, b: u8, a: u8) -> Value {
+    let mut c = Object::new();
+    c.properties
+        .insert("__type".into(), Value::String(Arc::from("Color")));
+    c.properties
+        .insert("name".into(), Value::String(Arc::from(name)));
+    c.properties.insert("r".into(), Value::F64(r as f64));
+    c.properties.insert("g".into(), Value::F64(g as f64));
+    c.properties.insert("b".into(), Value::F64(b as f64));
+    c.properties.insert("a".into(), Value::F64(a as f64));
+    Value::Object(vybe_runtime::heap::alloc(c))
+}
+
+/// Look a name up in [`PALETTE`], case-insensitively.
+fn palette_lookup(name: &str) -> Option<Value> {
+    PALETTE.iter().find(|(n, ..)| n.eq_ignore_ascii_case(name)).map(
+        |(n, r, g, b)| {
+            let alpha: u8 = if *n == "Transparent" { 0 } else { 255 };
+            color_object(n, *r, *g, *b, alpha)
+        },
+    )
+}
+
 pub fn register(vm: &mut VM) {
     // Register Color as a global namespace with named colour constants.
     //
@@ -29,49 +86,16 @@ pub fn register(vm: &mut VM) {
     // numeric fields (0-255). The dotnet `Graphics` body sequences
     // read these via `MethodOp::PushArgField(N, "r")` etc. when
     // building canvas calls — that's how `g.DrawLine(p, ...)` ends up
-    // calling `vybe:gui::canvasSetStrokeColor(this, p.color.r,
-    // p.color.g, p.color.b, p.color.a)` with real numeric args.
+    // calling `web:canvas::setStrokeStyle(this, p.color.r, p.color.g,
+    // p.color.b, p.color.a)` with real numeric args.
     {
-        // (Name, R, G, B) — alpha is always 255 for the named constants.
-        // Values match the .NET `KnownColor` enum where applicable.
-        let palette: &[(&str, u8, u8, u8)] = &[
-            ("Red", 220, 20, 60),
-            ("Blue", 30, 144, 255),
-            ("Green", 34, 139, 34),
-            ("Black", 0, 0, 0),
-            ("White", 255, 255, 255),
-            ("Yellow", 255, 215, 0),
-            ("Orange", 255, 140, 0),
-            ("Purple", 128, 0, 128),
-            ("Cyan", 0, 255, 255),
-            ("Magenta", 255, 0, 255),
-            ("Gray", 128, 128, 128),
-            ("Brown", 139, 69, 19),
-            ("Pink", 255, 192, 203),
-            ("LightGray", 211, 211, 211),
-            ("DarkGray", 169, 169, 169),
-            ("Transparent", 0, 0, 0),
-        ];
-
         let mut color_obj = Object::new();
         color_obj
             .properties
             .insert("__type".into(), Value::String(Arc::from("Color")));
-        for (name, r, g, b) in palette {
-            let alpha: u8 = if *name == "Transparent" { 0 } else { 255 };
-            let mut c = Object::new();
-            c.properties
-                .insert("__type".into(), Value::String(Arc::from("Color")));
-            c.properties
-                .insert("name".into(), Value::String(Arc::from(*name)));
-            c.properties.insert("r".into(), Value::F64(*r as f64));
-            c.properties.insert("g".into(), Value::F64(*g as f64));
-            c.properties.insert("b".into(), Value::F64(*b as f64));
-            c.properties.insert("a".into(), Value::F64(alpha as f64));
-            color_obj.properties.insert(
-                name.to_lowercase(),
-                Value::Object(vybe_runtime::heap::alloc(c)),
-            );
+        for (name, ..) in PALETTE {
+            let color = palette_lookup(name).expect("name came from PALETTE");
+            color_obj.properties.insert(name.to_lowercase(), color);
         }
         vm.globals.insert(
             "color".into(),
@@ -291,7 +315,16 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    // Color constants (Color.Red, Color.Blue, etc.) — stub as named objects
+    // `Color.Red`, `Color.Blue`, … — the named colour statics.
+    //
+    // Resolved through the namespace tree: `platforms/dotnet` registers
+    // `dotnet.system.drawing.color.<name>` as a leaf that lowers to this call
+    // with the colour NAME bound, so the channels are looked up here and
+    // exist in exactly one place.
+    //
+    // An unrecognised name answers ARGB 0 carrying the name it was given,
+    // which is `Color.FromName`'s documented behaviour for a name that is not
+    // a known colour — not a fallback standing in for a lookup that failed.
     vm.register_host_fn(
         "vybe:gui",
         "colorFromName",
@@ -300,12 +333,7 @@ pub fn register(vm: &mut VM) {
                 .first()
                 .map(|v| format!("{}", v))
                 .unwrap_or_else(|| "Black".into());
-            let mut obj = Object::new();
-            obj.properties
-                .insert("__type".into(), Value::String(Arc::from("Color")));
-            obj.properties
-                .insert("name".into(), Value::String(Arc::from(name.as_str())));
-            Value::Object(vybe_runtime::heap::alloc(obj))
+            palette_lookup(&name).unwrap_or_else(|| color_object(&name, 0, 0, 0, 0))
         }),
     );
 
@@ -342,12 +370,14 @@ pub fn register(vm: &mut VM) {
 
     // NOTE: per-primitive `drawLine`/`fillRectangle`/etc. host fns
     // used to live here as no-op stubs. They were a placeholder for the
-    // old "host knows how to draw" model. The new model routes
-    // `Graphics.DrawLine(...)` through the `vybe:gui::canvas*` host
-    // bridge (via dotnet `MethodTarget::Body` sequences), which calls
-    // into the actual `vybe_widgets::canvas::Canvas` trait. This file
-    // no longer registers any drawing primitives — only value-type
-    // constructors (Pen, SolidBrush, Color, …).
+    // old "host knows how to draw" model. `Graphics.DrawLine(...)` now
+    // routes through `web:canvas` (via dotnet `MethodTarget::Body`
+    // sequences) to the `vybe_widgets::canvas::Canvas` trait. The
+    // `vybe:gui::canvas*` bridge that stood between them is deleted —
+    // it was 44 no-ops, so every GDI+ call resolved, returned, and drew
+    // nothing QUIETLY. This file no longer registers any drawing
+    // primitives — only value-type constructors (Pen, SolidBrush,
+    // Color, …).
     //
     // `Dispose` host fns also live in `vybe:gui::__ctrl_dispose` and
     // friends — see `modules/gui.rs`.

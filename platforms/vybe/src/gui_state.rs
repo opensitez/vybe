@@ -6,10 +6,11 @@
 
 use std::collections::HashMap;
 use vybe_runtime::Value;
-use vybe_widgets::canvas::RecordingCanvas;
 // The individual control types are no longer named here: construction moved
 // to `vybe_widgets::controls::make_widget`, shared with the `web:html` DOM.
-use vybe_widgets::{Canvas as CanvasWidget, CommandValue, Form as WidgetForm, WidgetCommand};
+// Nothing in this file touches a canvas any more either — the `web:canvas`
+// engine lives in `platforms/web` and resolves through the `Document`.
+use vybe_widgets::{CommandValue, Form as WidgetForm, WidgetCommand};
 
 /// Holds the live widget form + event callbacks.
 /// Created before VM runs, shared with host fns via `Arc<Mutex<>>`.
@@ -51,35 +52,18 @@ pub struct GuiState {
     /// Set by `Form.Activate()`. The CLI window driver checks this on
     /// each frame and brings the OS window to the foreground.
     pub front_requested: bool,
-    /// Per-control overlay recordings — keyed by control
-    /// name. Populated by the `vybe:gui::canvas*` host fns when user
-    /// code calls `Graphics.DrawLine` etc. against a `Graphics` handle
-    /// created from a non-Canvas-widget control (e.g.
-    /// `Me.CreateGraphics()` on a Form, or `btn.CreateGraphics()` on a
-    /// Button). The form's render loop replays each entry through the
-    /// matching widget's `paint_overlay` hook each frame.
-    ///
-    /// Canvas WIDGETS (`vybe_widgets::Canvas`) carry their own
-    /// `RecordingCanvas` inside the widget itself — those don't need an
-    /// entry here. The host bridge looks at the form's child widgets
-    /// FIRST, falls back to this overlay map only when no Canvas widget
-    /// matches the requested control name.
-    pub overlay_canvases: HashMap<String, RecordingCanvas>,
-    /// Canvases whose NEXT draw op starts a fresh frame.
-    ///
-    /// A `RecordingCanvas` is retained-mode: it keeps every command until
-    /// someone clears it. SDL is immediate-mode and never clears — its frame
-    /// boundary is `SDL_UpdateWindowSurface`. Without this, an animated SDL
-    /// program appends a whole frame's commands per frame forever: the replay
-    /// cost grows without bound and every frame is drawn on top of the last.
-    ///
-    /// Marked at present, applied at the next DRAW (not at `getContext`, which
-    /// only fetches a handle) so the presented frame stays on screen until
-    /// something replaces it — i.e. double buffering.
-    ///
-    /// Only the SDL present path ever populates this, so every other canvas
-    /// consumer (.NET, Flutter, JS) is unaffected by construction.
-    pub pending_clear: std::collections::HashSet<String>,
+    // `overlay_canvases` and `pending_clear` were here.
+    //
+    // The overlay map claimed its entries were replayed "through the matching
+    // widget's `paint_overlay` hook each frame". **There is no `paint_overlay`
+    // hook** — no such method exists anywhere in the tree — and the only thing
+    // that ever painted the map was `gui_capture.rs`. So a `CreateGraphics`
+    // drawing appeared in `--capture` and never in a window.
+    //
+    // `pending_clear` named an SDL frame boundary and was only ever REMOVED
+    // from, never inserted into, so the reset it described never happened. SDL
+    // now draws into a `<canvas>` element whose bitmap clears on a `width`/
+    // `height` write, which is HTML's own frame reset.
     /// Raw input events awaiting `SDL_PollEvent` (sdlplan.md Tier 1).
     ///
     /// The window layer pushes BOTH key edges and all mouse activity here;
@@ -153,8 +137,6 @@ impl GuiState {
             properties: Default::default(),
             needs_repaint: false,
             front_requested: false,
-            overlay_canvases: HashMap::new(),
-            pending_clear: std::collections::HashSet::new(),
             input_events: std::collections::VecDeque::new(),
             mouse_x: 0,
             mouse_y: 0,
@@ -324,76 +306,21 @@ impl GuiState {
         }
     }
 
-    /// Find a `RecordingCanvas` for `control`. Resolution order:
-    ///
-    /// 1. **Canvas widget on the form** — if a `vybe_widgets::Canvas`
-    ///    widget with the requested name exists, return its own
-    ///    recording. This is the canonical case for explicit Canvas
-    ///    widgets the user added to the form.
-    ///
-    /// 2. **Overlay recording** — for any other control (Button, Label,
-    ///    Form, …), an entry is created in `overlay_canvases` on first
-    ///    access. The form's render loop replays this overlay through
-    ///    the widget's `paint_overlay` hook each frame, drawing on top
-    ///    of the standard widget chrome.
-    ///
-    /// Returns a `&mut RecordingCanvas` borrowed from one of the two
-    /// sources. Always succeeds — for an unknown control name, the
-    /// overlay map gains a new entry.
-    /// `find_canvas_mut` for a DRAW operation: applies a pending frame
-    /// boundary first (see [`GuiState::pending_clear`]).
-    ///
-    /// Use this from anything that RECORDS a command. `getContext` and other
-    /// handle lookups must keep using `find_canvas_mut`, or the frame would
-    /// reset halfway through when a caller re-fetches its context mid-frame.
-    pub fn find_canvas_for_draw(&mut self, control: &str) -> &mut RecordingCanvas {
-        let name = self.resolve_control_name(control);
-        let cleared = self.pending_clear.remove(&name);
-        if cleared {
-            self.find_canvas_mut(control).clear();
-        }
-        if vybe_widgets::canvas::trace_enabled() {
-            eprintln!("[canvas] draw ctrl={control:?} resolved={name:?} cleared={cleared}");
-        }
-        self.find_canvas_mut(control)
-    }
-
-    pub fn find_canvas_mut(&mut self, control: &str) -> &mut RecordingCanvas {
-        let name = self.resolve_control_name(control);
-        // Step 1: search child widgets for a Canvas widget with this name.
-        // We use a raw-pointer trick to avoid the borrow-checker complaining
-        // about returning a borrow that depends on a temporary closure
-        // result. The lifetimes are sound — the &mut comes from
-        // `self.form.controls`, which `self` owns, and we hand it back to
-        // the caller as `&mut self.???`-flavoured.
-        //
-        // Walk the form's controls and downcast each one. If we find a
-        // matching Canvas widget, return its inner recording.
-        let canvas_ptr: Option<*mut RecordingCanvas> = {
-            let widgets = self.form.controls_mut();
-            let mut found: Option<*mut RecordingCanvas> = None;
-            for w in widgets.iter_mut() {
-                if w.name() == name {
-                    if let Some(any) = w.as_any_mut() {
-                        if let Some(c) = any.downcast_mut::<CanvasWidget>() {
-                            let p: *mut RecordingCanvas = c.canvas_mut();
-                            found = Some(p);
-                            break;
-                        }
-                    }
-                }
-            }
-            found
-        };
-        if let Some(p) = canvas_ptr {
-            // Safety: the pointer borrows from `self.form.controls`. The
-            // borrow is valid for as long as `self` lives because no
-            // subsequent code in this function modifies the controls vec.
-            return unsafe { &mut *p };
-        }
-        // Step 2: fall through to the overlay map.
-        self.overlay_canvases.entry(name).or_default()
-    }
+    // `find_canvas_for_draw` / `find_canvas_mut` lived here and are deleted.
+    //
+    // They resolved a `web:canvas` target by NAME against
+    // `GuiState.form.controls` — a second, empty form once a document exists —
+    // and fell through to `overlay_canvases` when the name matched nothing.
+    // That fallback was composited by `gui_capture` alone, so drawing showed up
+    // in `--capture` and never in a window.
+    //
+    // Neither is a WHATWG API and neither has a counterpart in one: a page
+    // reaches a surface with `getElementById(...).getContext('2d')`, an element
+    // and a context type. `platforms/web` now installs a backend that resolves
+    // exactly that way, through the real `Document`.
+    //
+    // `pending_clear` went with them — it was only ever REMOVED from, never
+    // inserted into, so the frame-boundary reset it named never happened.
 
     /// Register an event handler: key = "controlname.eventname".
     /// Control name is stored as-is — the language compiler is responsible for

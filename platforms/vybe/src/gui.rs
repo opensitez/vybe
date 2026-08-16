@@ -742,15 +742,10 @@ mod gui_impl {
             })
         });
 
-        // Drop all controls so the Flutter `setState` rebuild can re-realize
-        // the widget tree from scratch (State persists in the Dart runtime).
-        vm.register_host_fn("vybe:gui", "clearControls", {
-            let gui = gui.clone();
-            Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
-                gui.lock().unwrap().form.clear_controls();
-                Value::Null
-            })
-        });
+        // `clearControls` was registered here for the Flutter `setState`
+        // rebuild and never called — `runtime.dart` uses `hasControl` to
+        // create-or-update in place instead, which is why the wholesale drop
+        // was never needed.
 
         // True when a control with this name already exists — lets the Flutter
         // realizer create-or-update by stable name (the control's name is its
@@ -958,21 +953,15 @@ mod gui_impl {
             })
         });
 
-        vm.register_host_fn("vybe:gui", "addHandler", {
-            let gui = gui.clone();
-            Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-                let ctrl = str_arg(args, 0, "");
-                let event = str_arg(args, 1, "");
-                if let Some(callback) = args.get(2) {
-                    gui.lock()
-                        .unwrap()
-                        .register_event(&ctrl, &event, callback.clone());
-                }
-                Value::Null
-            })
-        });
-
-        vm.register_host_fn("vybe:gui", "removeHandler", Box::new(|_ctx, _| Value::Null));
+        // `addHandler` / `removeHandler` were registered here and had NO caller
+        // — no emitter, no guest, in Rust or Dart. Event subscription reaches
+        // the DOM instead: `StmtKind::AddHandler` lowers to `addEventListener`
+        // through `primitives/events.rs`, which is what every frontend's
+        // spelling (`Handles`, `+=`, `OnClick :=`) normalizes to.
+        //
+        // `addHandler` was also registered THREE times — here with a real
+        // body, then twice more as a no-op stub — so whichever ran last
+        // decided whether it did anything.
 
         // Form lifecycle
         vm.register_host_fn("vybe:gui", "showForm", {
@@ -1306,8 +1295,9 @@ mod gui_impl {
                     // Drop any event handlers keyed under "<name>.*"
                     let prefix = format!("{}.", name);
                     g.event_handlers.retain(|k, _| !k.starts_with(&prefix));
-                    // Drop any overlay canvas recording for this control
-                    g.overlay_canvases.remove(&name);
+                    // No overlay recording to drop any more: a control's
+                    // drawing lives in its own `<canvas>` element and goes with
+                    // the element.
                     g.needs_repaint = true;
                 }
                 Value::Null
@@ -1727,8 +1717,6 @@ pub fn register(vm: &mut vybe_runtime::VM) {
         "__collection_clear",
         "__collection_contains",
         "noop",
-        "addHandler",
-        "removeHandler",
         "__ctrl_show",
         "__ctrl_close",
         "__ctrl_focus",

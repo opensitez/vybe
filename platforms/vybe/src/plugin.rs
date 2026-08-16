@@ -76,7 +76,19 @@ impl vybe_runtime::Plugin for Plugin {
                 if let Some(g) = GUI.lock().unwrap().as_ref() {
                     widgets_registered = true;
                     crate::gui::register(vm, g.clone());
-                    crate::canvas_backend_impl::install(g.clone());
+                    // The `web:canvas` painter is NOT installed here any more.
+                    //
+                    // It resolved a target through `GuiState.form.controls` —
+                    // a second, empty form once a document exists — so every
+                    // op missed and fell through to `overlay_canvases`, which
+                    // only `gui_capture.rs` composites. Drawing therefore
+                    // appeared in `--capture` and never in a window, and the
+                    // screenshot said otherwise.
+                    //
+                    // `platforms/web` installs a backend that resolves through
+                    // the real `Document` instead. Two installs would race on
+                    // plugin order (`inventory`, i.e. link order, unspecified),
+                    // so there is exactly one now.
                 }
             }
 

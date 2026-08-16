@@ -210,8 +210,6 @@ pub fn register_gui_stubs(vm: &mut VM) {
             Value::Object(vybe_runtime::heap::alloc(obj))
         }),
     );
-    vm.register_host_fn("vybe:gui", "addHandler", Box::new(|_ctx, _| Value::Null));
-
     // ── Control / Form method stubs for the dotnet class wrappers ──
     // These are bound by `compiler_common::dotnet::classes::control::CONTROL_METHODS`
     // and `form::FORM_METHODS` as method thunks. Without the host
@@ -232,99 +230,6 @@ pub fn register_gui_stubs(vm: &mut VM) {
         "__form_center_to_screen",
         "__dlg_showdialog",
         "__dlg_show",
-    ] {
-        vm.register_host_fn("vybe:gui", fn_name, Box::new(|_ctx, _| Value::Null));
-    }
-
-    // ── Canvas host fn stubs for the dotnet drawing wrappers ────────
-    // The dotnet `Graphics` class compiles `DrawLine` etc. into
-    // method thunks that call `vybe:gui::canvas*`. Tests run
-    // through `register_all` (without `register_with_gui`), so the
-    // real canvas impls in `modules::canvas` aren't installed —
-    // these stubs let imports resolve and let drawing code run
-    // without trapping. Tests that actually want to verify drawing
-    // happened use `register_all_with_gui` which installs the real
-    // impls that record into `GuiState.overlay_canvases`.
-    //
-    // The constructor `vybe:gui::getContext` returns a real canvas
-    // context handle (a small Object stamped with __control_name)
-    // so framework wrapper ctors can identity-copy off it.
-    vm.register_host_fn(
-        "vybe:gui",
-        "getContext",
-        Box::new(|_ctx, args| {
-            use vybe_runtime::value::Object;
-            let ctrl_name = args.first().map(|v| format!("{}", v)).unwrap_or_default();
-            let mut o = Object::new();
-            o.properties
-                .insert("__type".into(), Value::String(Arc::from("CanvasContext")));
-            o.properties.insert(
-                "__control_type".into(),
-                Value::String(Arc::from("CanvasContext")),
-            );
-            o.properties.insert(
-                "__control_name".into(),
-                Value::String(Arc::from(ctrl_name.to_lowercase().as_str())),
-            );
-            Value::Object(vybe_runtime::heap::alloc(o))
-        }),
-    );
-    for fn_name in &[
-        // Paint state
-        "canvasSetFillColor",
-        "canvasSetStrokeColor",
-        "canvasSetLineWidth",
-        "canvasSetMiterLimit",
-        "canvasSetGlobalAlpha",
-        "canvasSetLineCap",
-        "canvasSetLineJoin",
-        "canvasSetFont",
-        // Path building
-        "canvasBeginPath",
-        "canvasClosePath",
-        "canvasMoveTo",
-        "canvasLineTo",
-        "canvasQuadTo",
-        "canvasBezierTo",
-        "canvasArc",
-        "canvasRect",
-        "canvasEllipse",
-        // Drawing
-        "canvasFill",
-        "canvasStroke",
-        "canvasFillRect",
-        "canvasStrokeRect",
-        "canvasClearRect",
-        "canvasFillText",
-        "canvasStrokeText",
-        "canvasDrawImage",
-        // State stack
-        "canvasSave",
-        "canvasRestore",
-        // Transforms
-        "canvasTranslate",
-        "canvasRotate",
-        "canvasRotateDegrees",
-        "canvasScale",
-        "canvasTransform",
-        "canvasResetTransform",
-        // Convenience composites
-        "canvasFillEllipseInRect",
-        "canvasStrokeEllipseInRect",
-        "canvasClearAll",
-        "canvasStrokeArcInRect",
-        "canvasFillPieInRect",
-        "canvasStrokePieInRect",
-        // Dashed strokes (fixed-arity setters)
-        "canvasSetLineDashSolid",
-        "canvasSetLineDash2",
-        "canvasSetLineDash4",
-        "canvasSetLineDash6",
-        "canvasSetLineDashOffset",
-        "canvasApplyPenDashStyle",
-        // Clipping
-        "canvasClip",
-        "canvasResetClip",
     ] {
         vm.register_host_fn("vybe:gui", fn_name, Box::new(|_ctx, _| Value::Null));
     }
