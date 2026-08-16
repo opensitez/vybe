@@ -723,7 +723,18 @@ generic_constraint_item = { ^"Class" | ^"Structure" | ^"New" | type_name }
 // Identifiers
 identifier = @{ "[" ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* ~ "]" | !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 // Member identifier: allows keywords like Next, Close, Open, etc. as method/property names after a dot
-member_identifier = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+// The bracketed form is VB's ESCAPED IDENTIFIER: `[Error]` names a member
+// called `Error` even though `Error` is a keyword, and real VB REQUIRES the
+// brackets there (`Public Enum L : Error = 3` does not compile). `identifier`
+// above already carries the same alternative; this rule did not, so an escaped
+// name was a parse error in every member position — enum members, `.Member`
+// access, sub/function names.
+//
+// Purely additive: the rule is atomic and the plain alternative still starts at
+// `ASCII_ALPHA | "_"`, so any source that parses today parses identically. The
+// walker strips the brackets with `normalize_vb_identifier`, which already
+// existed for `identifier`.
+member_identifier = @{ "[" ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* ~ "]" | (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 
 // Keywords
 keyword = _{

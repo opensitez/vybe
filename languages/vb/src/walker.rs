@@ -22,11 +22,6 @@ fn vb_decl_starts_with_partial(raw: &str) -> bool {
         && trimmed[7..].chars().next().is_some_and(char::is_whitespace)
 }
 
-thread_local! {
-    static VB_CUSTOM_EVENTS: std::cell::RefCell<HashMap<String, String>> =
-        std::cell::RefCell::new(HashMap::new());
-}
-
 pub fn parse(source: &str) -> Result<Module, String> {
     let source = source.trim_start_matches('\u{feff}');
     let option_compare_text = vb_source_uses_option_compare_text(source);
@@ -34,7 +29,6 @@ pub fn parse(source: &str) -> Result<Module, String> {
         &normalize_vb_option_directive_lines(source),
     ));
     let xml_namespaces = parse_vb_xml_namespace_imports(&normalized_source);
-    VB_CUSTOM_EVENTS.with(|events| events.borrow_mut().clear());
     let pairs = VbParser::parse(Rule::program, &normalized_source)
         .map_err(|e| format!("Parse error: {}", e))?;
     let mut body = Vec::new();
@@ -5960,6 +5954,24 @@ fn normalize_vb_implicit_method_self_classes(body: &mut [Statement]) {
 
 const VB_USER_NAME_MEMBER: &str = "vb_user_Name";
 
+/// Does `ty` name one of the classes that declared a `Name` member?
+///
+/// The set is collected from `ClassDecl`, which inside `Namespace MyApp.Models`
+/// carries the DECLARED name `customer`. A variable may name the same class
+/// qualified — `Dim c As MyApp.Models.Customer` — and the two spellings are one
+/// type. Matching the raw spelling missed the qualified one, so the member
+/// rewrite was skipped: the write landed on `Name` while the class itself
+/// stored `vb_user_Name`, giving one property two storages. The class's own
+/// methods kept working (they resolve through `current_class`), which is why
+/// this only ever showed up from the outside.
+fn vb_type_declares_name_member(name_member_types: &HashSet<String>, ty: &str) -> bool {
+    name_member_types.contains(ty)
+        || ty
+            .rsplit('.')
+            .next()
+            .is_some_and(|declared| name_member_types.contains(declared))
+}
+
 fn normalize_vb_user_name_members(body: &mut [Statement]) {
     let mut name_member_types = HashSet::new();
     let mut parents = HashMap::new();
@@ -5971,7 +5983,7 @@ fn normalize_vb_user_name_members(body: &mut [Statement]) {
             if !name_member_types.contains(ty)
                 && ty_parents
                     .iter()
-                    .any(|parent| name_member_types.contains(parent))
+                    .any(|parent| vb_type_declares_name_member(&name_member_types, parent))
             {
                 name_member_types.insert(ty.clone());
                 changed = true;
@@ -6737,7 +6749,7 @@ fn rewrite_vb_user_name_member_expr(
             rewrite_vb_user_name_member_expr(object, name_member_types, current_class, locals);
             if field.eq_ignore_ascii_case("Name")
                 && vb_user_name_receiver_type(object, current_class, locals)
-                    .is_some_and(|ty| name_member_types.contains(&ty))
+                    .is_some_and(|ty| vb_type_declares_name_member(name_member_types, &ty))
             {
                 *field = VB_USER_NAME_MEMBER.to_string();
             }
@@ -11603,6 +11615,15 @@ fn normalize_vb_convert_change_type_reflection_expr(
             for item in iterables {
                 normalize_vb_convert_change_type_reflection_expr(item, locals);
             }
+        }
+        ExprKind::ArrayTransform { args, .. } => {
+            for item in args {
+                normalize_vb_convert_change_type_reflection_expr(item, locals);
+            }
+        }
+        ExprKind::ArrayMap { array, body, .. } => {
+            normalize_vb_convert_change_type_reflection_expr(array, locals);
+            normalize_vb_convert_change_type_reflection_expr(body, locals);
         }
         ExprKind::NamedTuple { fields, .. } => {
             for (_, value) in fields {
@@ -18764,10 +18785,17 @@ fn rewrite_vb_aliases_in_expr(expr: &mut Expression, aliases: &HashMap<String, S
         | ExprKind::Sequence(items)
         | ExprKind::Zip {
             iterables: items, ..
+        }
+        | ExprKind::ArrayTransform {
+            args: items, ..
         } => {
             for item in items {
                 rewrite_vb_aliases_in_expr(item, aliases);
             }
+        }
+        ExprKind::ArrayMap { array, body, .. } => {
+            rewrite_vb_aliases_in_expr(array, aliases);
+            rewrite_vb_aliases_in_expr(body, aliases);
         }
         ExprKind::NamedTuple { fields, .. } => {
             for (_, value) in fields {
@@ -19500,10 +19528,17 @@ fn normalize_vb_date_literal_expr(expr: &mut Expression, dates: &HashMap<String,
         | ExprKind::Sequence(items)
         | ExprKind::Zip {
             iterables: items, ..
+        }
+        | ExprKind::ArrayTransform {
+            args: items, ..
         } => {
             for item in items {
                 normalize_vb_date_literal_expr(item, dates);
             }
+        }
+        ExprKind::ArrayMap { array, body, .. } => {
+            normalize_vb_date_literal_expr(array, dates);
+            normalize_vb_date_literal_expr(body, dates);
         }
         ExprKind::NamedTuple { fields, .. } => {
             for (_, value) in fields {
@@ -21259,6 +21294,15 @@ fn normalize_vb_delegate_binding_expr(
             for item in iterables {
                 normalize_vb_delegate_binding_expr(item, delegates, locals, bindings);
             }
+        }
+        ExprKind::ArrayTransform { args, .. } => {
+            for item in args {
+                normalize_vb_delegate_binding_expr(item, delegates, locals, bindings);
+            }
+        }
+        ExprKind::ArrayMap { array, body, .. } => {
+            normalize_vb_delegate_binding_expr(array, delegates, locals, bindings);
+            normalize_vb_delegate_binding_expr(body, delegates, locals, bindings);
         }
         ExprKind::StaticAccess { class, member } => {
             normalize_vb_delegate_binding_expr(class, delegates, locals, bindings);
@@ -30801,23 +30845,20 @@ fn normalize_vb_local_type_expr(expr: &mut Expression, locals: &HashMap<String, 
                         return;
                     }
                 }
-                if field.eq_ignore_ascii_case("Equals")
-                    && args.len() == 1
-                    && !matches!(
-                        vb_infer_expr_type(object, locals).as_deref(),
-                        Some("Version" | "DateTimeOffset")
-                    )
-                {
-                    *expr = Expression::new(ExprKind::Call {
-                        callee: Box::new(Expression::ident("__vb_object_equals")),
-                        args: vec![
-                            Argument::positional((**object).clone()),
-                            Argument::positional(args[0].value.clone()),
-                        ],
-                        optional: false,
-                    });
-                    return;
-                }
+                // `x.Equals(y)` stays a MEMBER call. Folding it to
+                // `__vb_object_equals(x, y)` turned a call on a receiver into a
+                // free call, which discards the receiver's type — and with it
+                // the only thing that could route the call to a user class's
+                // own `Equals` override. The opt-out list this replaces named
+                // two types (`Version`, `DateTimeOffset`) that had been noticed;
+                // every other type, user classes included, silently lost its
+                // override.
+                //
+                // Left as a member call, the ordinary path asks the receiver's
+                // class first and falls through to `[value_methods] equals`,
+                // which this language already declares. That is the same shape
+                // as the operator side, where `a = b` asks the class rather
+                // than matching a name (see `expressions.rs`, §2c-bis).
                 if args.len() == 1 {
                     if let Some(path) = dotted_expr_name(object) {
                         if matches!(
@@ -31354,6 +31395,9 @@ fn rewrite_vb_err_expr(expr: &mut Expression) -> bool {
         | ExprKind::Sequence(items)
         | ExprKind::Zip {
             iterables: items, ..
+        }
+        | ExprKind::ArrayTransform {
+            args: items, ..
         } => {
             let mut used = false;
             for item in items {
@@ -31361,6 +31405,7 @@ fn rewrite_vb_err_expr(expr: &mut Expression) -> bool {
             }
             used
         }
+        ExprKind::ArrayMap { array, body, .. } => rewrite_vb_err_expr(array) | rewrite_vb_err_expr(body),
         ExprKind::NamedTuple { fields, .. } => {
             let mut used = false;
             for (_, value) in fields {
@@ -32729,7 +32774,22 @@ fn parse_imports_statement(pair: Pair<Rule>) -> Result<Import, String> {
                 }
             }
             Rule::dotted_identifier | Rule::type_name => {
-                path = p.as_str().to_string();
+                // `Imports N1 ' comment` — `type_name` runs to end of line and
+                // takes the trailing comment with it, so the path arrived as
+                // `N1 ' Required to use extension methods in Mod1` and matched
+                // no namespace. A `'` cannot occur in a namespace path, so
+                // cutting at the first one is exact.
+                //
+                // Stripped HERE because it is a syntax gap: the walker owns
+                // spelling, and a grammar shortfall must not reach the shared
+                // resolver as a malformed path it then has to tolerate.
+                path = p
+                    .as_str()
+                    .split('\'')
+                    .next()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
             }
             Rule::NEWLINE => {}
             _ => {}
@@ -37593,10 +37653,6 @@ fn parse_block(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
     Ok(statements)
 }
 
-/// Monotonic sequence for VB `For` loop-local temp names (`__vb_for_limit_N`,
-/// `__vb_for_step_N`), keeping nested/sequential loops' hoisted temps distinct.
-static FOR_TEMP_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
 fn parse_for_statement(pair: Pair<Rule>) -> Result<Statement, String> {
     let span = to_span(&pair);
     let mut inner = pair.into_inner();
@@ -37640,8 +37696,20 @@ fn parse_for_statement(pair: Pair<Rule>) -> Result<Statement, String> {
     // non-literal step — into loop-local temps evaluated once in the init.
     // A literal step is inlined (no side effects, and it drives the direction
     // choice above).
-    let seq = FOR_TEMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let limit_name = format!("__vb_for_limit_{seq}");
+    // Named from the loop's own SOURCE POSITION, not from a counter.
+    //
+    // This was a process-lifetime `AtomicUsize` that was never reset, so the
+    // temp's name depended on how many programs the process had already
+    // compiled — the same source compiled second in a warm worker got
+    // different names than compiled first, and a warm build was not
+    // byte-identical to a cold one. Worse than non-reproducible: whether a
+    // generated name collides with a user name became a function of run order.
+    //
+    // A position is unique per `For` by construction (no two start at the same
+    // line and column) and is stable across runs, which is what a generated
+    // name needs. Bundled sources are joined into one text before parsing, so
+    // positions stay unique across every file in a project too.
+    let limit_name = format!("__vb_for_limit_{}_{}", span.start_line, span.start_col);
     let mut declarations = vec![
         VarDeclarator {
             pattern: BindingPattern::Ident(variable.clone()),
@@ -37670,7 +37738,7 @@ fn parse_for_statement(pair: Pair<Rule>) -> Result<Statement, String> {
     ) {
         step_val
     } else {
-        let step_name = format!("__vb_for_step_{seq}");
+        let step_name = format!("__vb_for_step_{}_{}", span.start_line, span.start_col);
         declarations.push(VarDeclarator {
             pattern: BindingPattern::Ident(step_name.clone()),
             type_hint: None,
@@ -40145,7 +40213,9 @@ fn parse_enum_decl(pair: Pair<Rule>) -> Result<Statement, String> {
             }
             Rule::enum_member | Rule::enum_member_inline => {
                 let mut member_inner = p.into_inner();
-                let member_name = member_inner.next().unwrap().as_str().to_string();
+                // `[Error] = 3` — an escaped identifier names the member
+                // `Error`; the brackets are spelling, not part of the name.
+                let member_name = normalize_vb_identifier(member_inner.next().unwrap().as_str());
                 let value = member_inner
                     .find(|e| e.as_rule() == Rule::expression)
                     .map(|e| parse_expression(e))
@@ -41160,11 +41230,9 @@ fn parse_event_decl_to_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, Str
     }
 
     if !accessors.is_empty() {
-        VB_CUSTOM_EVENTS.with(|events| {
-            events
-                .borrow_mut()
-                .insert(name.to_ascii_lowercase(), name.clone());
-        });
+        // No registration here: `collect_vb_custom_events` reads this fact back
+        // off the members produced just below (`add_<name>` / `remove_<name>`),
+        // so the declaration IS the record.
         for accessor in accessors {
             if let Some(member) =
                 parse_custom_event_accessor_to_method(&name, accessor, modifiers.clone())?
@@ -41243,8 +41311,69 @@ fn parse_custom_event_accessor_to_method(
     )))))
 }
 
+/// The `Custom Event`s a module declares, recovered from the TREE.
+///
+/// This used to be a process-lifetime `thread_local` that `parse_event_decl_to_members`
+/// wrote into and this pass read back — a side channel carrying a fact the AST
+/// already states, and one that survived the compile and stayed visible to
+/// every later program in a warm worker.
+///
+/// No channel is needed, because the two forms lower differently and the
+/// difference IS the evidence:
+///
+///   Event Foo(...)          -> `ClassMember::Event` alone
+///   Custom Event Foo(...)   -> `ClassMember::Event` PLUS generated
+///                              `add_Foo` / `remove_Foo` methods
+///
+/// So an event is custom exactly when its declaring class also declares the
+/// accessor pair — asked of the member set, where it has always been true.
+fn collect_vb_custom_events(module: &Module) -> HashMap<String, String> {
+    fn scan_members(members: &[ClassMember], out: &mut HashMap<String, String>) {
+        let has_adder = |event: &str| {
+            members.iter().any(|m| match m {
+                ClassMember::Method(stmt) => matches!(
+                    &stmt.kind,
+                    StmtKind::FunctionDecl { name, .. }
+                        if name.eq_ignore_ascii_case(&format!("add_{event}"))
+                ),
+                _ => false,
+            })
+        };
+        for member in members {
+            match member {
+                ClassMember::Event { name, .. } if has_adder(name) => {
+                    out.insert(name.to_ascii_lowercase(), name.clone());
+                }
+                // A nested type declares its own events; the accessor pair that
+                // proves one custom lives in ITS member set, not the outer one.
+                ClassMember::NestedType(stmt) => scan_stmt(stmt, out),
+                _ => {}
+            }
+        }
+    }
+
+    fn scan_stmt(stmt: &Statement, out: &mut HashMap<String, String>) {
+        match &stmt.kind {
+            StmtKind::ClassDecl { members, .. } => scan_members(members, out),
+            StmtKind::ModuleDecl { members, .. } => scan_members(members, out),
+            StmtKind::NamespaceDecl { body, .. } => {
+                for s in body {
+                    scan_stmt(s, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut out = HashMap::new();
+    for stmt in &module.body {
+        scan_stmt(stmt, &mut out);
+    }
+    out
+}
+
 fn normalize_vb_custom_event_calls(module: &mut Module) {
-    let custom_events = VB_CUSTOM_EVENTS.with(|events| events.borrow().clone());
+    let custom_events = collect_vb_custom_events(module);
     if custom_events.is_empty() {
         return;
     }

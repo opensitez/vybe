@@ -483,6 +483,12 @@ contains      = [
     { emit = "common:str_contains",                min_args = 1, max_args = 1 },
     { emit = "common:dotnet.string_contains",      min_args = 2, max_args = 2 },
 ]
+# `x.Equals(y)` reaches here only when the RECEIVER's class did not declare its
+# own `Equals` — a user override is found first, by the ordinary member path.
+# KNOWN GAP: a PLATFORM receiver (`Encoding`, `Guid`) does not reach this table
+# at all and answers with a raw number instead of a Boolean. Setting the 1-arg
+# entry to `common:dotnet.object_equals` was measured and changed nothing, so
+# the gate is upstream of here, not in this declaration.
 equals        = [
     { emit = "common:dyn_eq",                      min_args = 1, max_args = 1 },
     { emit = "common:dotnet.string_equals",        min_args = 2, max_args = 2 },
@@ -761,4 +767,7 @@ char = "common:strings.from_char_code"
 to_string = "host:ecma:string:String"
 
 [builtin_slots.bool]
-to_string = "host:ecma:string:String"
+# VB renders a bool `True`/`False`, ECMA `String()` renders `true`/`false` —
+# a property of the TYPE in this language, declared here rather than decided
+# by a language check in shared code. Mirrors csharp; see the note there.
+to_string = "common:dotnet.tostring_runtime"

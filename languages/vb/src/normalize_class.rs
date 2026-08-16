@@ -23,11 +23,14 @@
 //!     methods.
 //!   - Carry visibility + is_override / is_virtual / is_abstract.
 //!   - Detect `InitializeComponent` (if the class defines a method by
-//!     that name, the compiler's legacy path auto-invokes it in every
-//!     ctor). We populate `auto_init_methods` so the shim preserves
-//!     that semantic when the direct `emit_class` path lands.
+//!     that name, every ctor implicitly calls it). We populate
+//!     `auto_init_methods`, which `compile_class` reads off the
+//!     `NormalClass` and emits.
 
-use vybe_ast::class_normalize::{NormalMembers, build_normal_method, from_method_stmt, types::*};
+use vybe_ast::class_normalize::{
+    NormalMembers, build_normal_method, declared_protocol_slots, from_constructor_member,
+    from_method_stmt, resolve_special_kind, types::*,
+};
 use vybe_ast::{ClassMember, ClassModifiers, ExprKind, Literal, PropertySetter, Span, StmtKind};
 
 pub fn normalize_class(
@@ -36,9 +39,16 @@ pub fn normalize_class(
     parents: &[String],
     _interfaces: &[String],
     members: &[ClassMember],
-    modifiers: &ClassModifiers,
+    _modifiers: &ClassModifiers,
 ) -> NormalClass {
     let mut out = NormalMembers::default();
+
+    // VB spells the `Eq` slot two ways and means different things by them:
+    // `Operator =` defines `a = b`, while `Equals` is the overridable
+    // object-equality method. Both reach `Eq` through the name table, so
+    // without this the second one declared silently overwrote the first and
+    // `a.Equals(b)` stopped running its own body.
+    let declared_slots = declared_protocol_slots(members);
 
     for member in members {
         match member {
@@ -74,11 +84,9 @@ pub fn normalize_class(
 
                 // InitializeComponent auto-call detection: VB / C# WinForms
                 // convention is that ctors implicitly call this method if
-                // defined. Flag it here; the direct-emit path in
-                // `emit_class` (Phase 2b.2) will emit the call. Today the
-                // legacy `compile_class` handles it via the
-                // `auto_init_methods` profile flag, so populating here is
-                // redundant but forward-compatible.
+                // defined. `compile_class` reads `auto_init_methods` off the
+                // NormalClass and emits the call in every constructor, so this
+                // list IS the mechanism — not a forward-compatible spare.
                 if src_name.eq_ignore_ascii_case("InitializeComponent")
                     && !out
                         .auto_init_methods
@@ -89,7 +97,7 @@ pub fn normalize_class(
                 }
 
                 let (canonical, name_kind) = crate::protocol::canonical_method(src_name);
-                let special_kind = m.protocol_slot.or(name_kind);
+                let special_kind = resolve_special_kind(m.protocol_slot, name_kind, &declared_slots);
                 let access = Access::from(m.visibility);
                 let Some(method) = from_method_stmt(span.clone(), stmt, &canonical, access) else {
                     continue;
@@ -114,53 +122,19 @@ pub fn normalize_class(
                 // `is_static` via the walker.
                 out.push_method(m.is_static || m.is_shared, method);
             }
-            ClassMember::Constructor {
-                params,
-                body,
-                base_args,
-                initializer_target,
-                ..
-            } => {
-                let normalized = NormalConstructor {
-                    span: span.clone(),
-                    params: params.clone(),
-                    body: body.clone(),
-                    base_call: match base_args {
-                        Some(args) => match initializer_target {
-                            vybe_ast::ConstructorInitializerTarget::Base => BaseCall::Explicit(
-                                args.iter()
-                                    .map(|e| vybe_ast::Argument::positional(e.clone()))
-                                    .collect(),
-                            ),
-                            vybe_ast::ConstructorInitializerTarget::This => BaseCall::This(
-                                args.iter()
-                                    .map(|e| vybe_ast::Argument::positional(e.clone()))
-                                    .collect(),
-                            ),
-                        },
-                        // The VB walker injects `MyBase.New()` at the start
-                        // of the body when the class DECLARATION itself
-                        // has an `Inherits` clause. For partial classes,
-                        // the walker runs per-file — the declaration that
-                        // owns `Sub New` may not be the one that carries
-                        // `Inherits`, so the body arrives here without an
-                        // explicit super call even though the merged
-                        // class has a parent. Emit `BaseCall::Auto` so
-                        // `compile_class` auto-injects when needed.
-                        // `body_has_super_call` is consulted downstream,
-                        // so this is a no-op when the body already starts
-                        // with `MyBase.New(...)`.
-                        None => {
-                            if parents.is_empty() {
-                                BaseCall::None
-                            } else {
-                                BaseCall::Auto
-                            }
-                        }
-                    },
-                    named_name: None,
-                };
-                out.push_constructor(normalized);
+            // The VB walker injects `MyBase.New()` at the start of the body
+            // when the class DECLARATION itself has an `Inherits` clause. For
+            // partial classes the walker runs per-file, so the declaration that
+            // owns `Sub New` may not be the one carrying `Inherits` and the
+            // body arrives here without an explicit super call even though the
+            // merged class has a parent — which is why "has a parent, said
+            // nothing" must still request the auto-injection.
+            ClassMember::Constructor { .. } => {
+                if let Some(normalized) =
+                    from_constructor_member(span.clone(), member, !parents.is_empty())
+                {
+                    out.push_constructor(normalized);
+                }
             }
             ClassMember::Property {
                 name: pname,
@@ -224,9 +198,11 @@ pub fn normalize_class(
     }
 
     NormalClass {
-        is_partial: modifiers.is_partial, // informational; merging already done
-        explicit_self_param: false,       // VB: Me is implicit
-        implicit_self_fields: true,       // VB: bare field names resolve to Me.field
+        // `is_partial` is not set here: `normalize_class_from_ast` copies it
+        // from the same `modifiers` for every language, so writing it again
+        // was dead.
+        explicit_self_param: false, // VB: Me is implicit
+        implicit_self_fields: true, // VB: bare field names resolve to Me.field
         // No first-class destructor: VB `Finalize` is a regular override. No
         // event bindings: the walker already turned `Handles` into AddHandler
         // statements. Both stay at their neutral default.
