@@ -51,11 +51,13 @@ const F_RECOGNIZER: &[FlutterField] = &[
 const F_POINTER: &[FlutterField] = &[FlutterField::named("pointer")];
 
 pub(crate) const CLASSES: &[FlutterClass] = &[
-    FlutterClass::widget("GestureDetector", "StatelessWidget", "Panel", F_GESTURE),
-    FlutterClass::widget("InkWell", "StatelessWidget", "Panel", F_INKWELL),
-    FlutterClass::widget("Draggable", "StatefulWidget", "Panel", F_DRAGGABLE),
-    FlutterClass::widget("DragTarget", "StatefulWidget", "Panel", F_DRAGTARGET),
-    FlutterClass::widget("Dismissible", "StatefulWidget", "Panel", F_DISMISSIBLE),
+    // A gesture wrapper is a plain box that listens. The listening is the
+    // `on*` fields; the box is a `div`.
+    FlutterClass::widget("GestureDetector", "StatelessWidget", "div", F_GESTURE),
+    FlutterClass::widget("InkWell", "StatelessWidget", "div", F_INKWELL),
+    FlutterClass::widget("Draggable", "StatefulWidget", "div", F_DRAGGABLE),
+    FlutterClass::widget("DragTarget", "StatefulWidget", "div", F_DRAGTARGET),
+    FlutterClass::widget("Dismissible", "StatefulWidget", "div", F_DISMISSIBLE),
     FlutterClass::data("TapGestureRecognizer", None, F_RECOGNIZER),
     FlutterClass::data("DoubleTapGestureRecognizer", None, F_RECOGNIZER),
     FlutterClass::data("LongPressGestureRecognizer", None, F_RECOGNIZER),

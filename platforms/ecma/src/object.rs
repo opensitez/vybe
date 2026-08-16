@@ -17,7 +17,43 @@
 use crate::function::invoke_with_explicit_this;
 use std::sync::{Arc, Mutex, OnceLock};
 use vybe_runtime::value::{Object, ObjectKind, Value};
-use vybe_runtime::{HostContext, VM};
+use vybe_runtime::vm::HostFnDecl;
+use vybe_runtime::{FuncSig, HostContext, VM, ValType};
+
+/// Declare an `ecma:object` function — same closure, plus the signature.
+///
+/// No resource binding: a JS object is an ordinary reference, not a handle the
+/// host mints and drops, so `own`/`borrow` would claim a lifetime that does not
+/// exist here.
+fn object_fn(
+    vm: &mut VM,
+    name: &str,
+    params: Vec<ValType>,
+    results: Vec<ValType>,
+    call: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>,
+) {
+    vm.register_host(HostFnDecl::new("ecma:object", name, call).with_sig(FuncSig {
+        name: name.to_string(),
+        params,
+        results,
+    }));
+}
+
+/// Any JS value — the Component Model has no `any`-of-object type and these
+/// handlers accept whatever `obj_of` can unwrap.
+fn obj_t() -> ValType {
+    ValType::Any
+}
+
+/// `Object.isFrozen(o)`, `Object.values(o)`, … — one operand, no optional tail.
+fn object_unary(
+    vm: &mut VM,
+    name: &str,
+    results: Vec<ValType>,
+    call: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>,
+) {
+    object_fn(vm, name, vec![obj_t()], results, call);
+}
 
 /// Magic property name used to mark an object as frozen / sealed /
 /// non-extensible.
@@ -1166,9 +1202,11 @@ pub fn register(vm: &mut VM) {
 // ── Construction ──────────────────────────────────────────────────────
 
 fn register_construction(vm: &mut VM) {
-    vm.register_host_fn(
-        "ecma:object",
+    object_fn(
+        vm,
         "new",
+        vec![],
+        vec![obj_t()],
         Box::new(|_ctx, _args| new_ordinary_object_with_proto()),
     );
 
@@ -1396,9 +1434,10 @@ fn register_construction(vm: &mut VM) {
     );
 
     // fromEntries(iterable) -> new obj
-    vm.register_host_fn(
-        "ecma:object",
+    object_unary(
+        vm,
         "fromEntries",
+        vec![obj_t()],
         Box::new(|ctx, args| {
             let mut obj = Object::new();
             // ECMA-262 §7.3.22: the resulting object's property order is the
@@ -2235,9 +2274,10 @@ fn register_enumeration(vm: &mut VM) {
             .collect()
     }
 
-    vm.register_host_fn(
-        "ecma:object",
+    object_unary(
+        vm,
         "keys",
+        vec![obj_t()],
         Box::new(|ctx, args| {
             let Some(raw_value) = args.first() else {
                 return throw_type_error(ctx, "Cannot convert undefined or null to object");
@@ -2303,9 +2343,10 @@ fn register_enumeration(vm: &mut VM) {
     // — the `EnumerableOwnPropertyNames` operation runs at every level
     // of the chain). Distinct from `Object.keys` (own + enumerable
     // only). The compiler emits this for `for (k in obj)` loops.
-    vm.register_host_fn(
-        "ecma:object",
+    object_unary(
+        vm,
         "iterForIn",
+        vec![obj_t()],
         Box::new(|ctx, args| {
             if let Some(value) = args.first() {
                 if let Some(keys) = crate::proxy::own_keys_dispatch(ctx, value) {
@@ -2387,9 +2428,10 @@ fn register_enumeration(vm: &mut VM) {
     // ECMA-262 §24.1.3.12 / §24.2.3.11). The compiler emits this for
     // for-of loops; `Object.values` keeps the spec-strict "values only"
     // behaviour for `Object.values(map)` user calls.
-    vm.register_host_fn(
-        "ecma:object",
+    object_unary(
+        vm,
         "iterForOf",
+        vec![obj_t()],
         Box::new(|ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let o = obj.lock().unwrap();
@@ -2482,9 +2524,10 @@ fn register_enumeration(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:object",
+    object_unary(
+        vm,
         "values",
+        vec![obj_t()],
         Box::new(|ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let o = obj.lock().unwrap();
@@ -2523,9 +2566,10 @@ fn register_enumeration(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:object",
+    object_unary(
+        vm,
         "entries",
+        vec![obj_t()],
         Box::new(|ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let o = obj.lock().unwrap();
@@ -2592,9 +2636,10 @@ fn register_enumeration(vm: &mut VM) {
     // same as `keys`. Use the insertion-order tracker (`__keys`) per
     // ECMA-262 §7.3.21 ordering requirements; HashMap iteration alone
     // is non-deterministic.
-    vm.register_host_fn(
-        "ecma:object",
+    object_unary(
+        vm,
         "getOwnPropertyNames",
+        vec![obj_t()],
         Box::new(|ctx, args| {
             // §20.1.2.10 routes through [[OwnPropertyKeys]] — the ownKeys
             // trap for proxy exotic objects.
@@ -2659,9 +2704,10 @@ fn register_enumeration(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:object",
+    object_unary(
+        vm,
         "length",
+        vec![ValType::I32],
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let o = obj.lock().unwrap();
@@ -3464,9 +3510,10 @@ pub fn set_prototype_of(ctx: &mut HostContext, value: &Value, proto: &Value) -> 
 }
 
 fn register_prototype(vm: &mut VM) {
-    vm.register_host_fn(
-        "ecma:object",
+    object_unary(
+        vm,
         "getPrototypeOf",
+        vec![obj_t()],
         Box::new(|ctx, args| {
             // Primitives are coerced (§20.1.2.12 ToObject), not rejected —
             // only `Reflect.getPrototypeOf` throws on a non-object.
@@ -3528,9 +3575,10 @@ fn register_locking(vm: &mut VM) {
         .expect("__noop_setter just registered");
     NOOP_SETTER_IDX.store(idx, std::sync::atomic::Ordering::Relaxed);
 
-    vm.register_host_fn(
-        "ecma:object",
+    object_unary(
+        vm,
         "freeze",
+        vec![obj_t()],
         Box::new(|ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 if let Some((target, handler)) = proxy_target_and_handler(&obj) {
@@ -3618,9 +3666,10 @@ fn register_locking(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:object",
+    object_unary(
+        vm,
         "isFrozen",
+        vec![ValType::Bool],
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let o = obj.lock().unwrap();
@@ -3630,9 +3679,10 @@ fn register_locking(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:object",
+    object_unary(
+        vm,
         "seal",
+        vec![obj_t()],
         Box::new(|ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 if let Some((target, handler)) = proxy_target_and_handler(&obj) {
@@ -3680,9 +3730,10 @@ fn register_locking(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:object",
+    object_unary(
+        vm,
         "isSealed",
+        vec![ValType::Bool],
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let o = obj.lock().unwrap();
@@ -3692,9 +3743,10 @@ fn register_locking(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:object",
+    object_unary(
+        vm,
         "preventExtensions",
+        vec![obj_t()],
         Box::new(|ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 // §10.5.4: trap when present, otherwise the TARGET
@@ -3744,9 +3796,10 @@ fn register_locking(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:object",
+    object_unary(
+        vm,
         "isExtensible",
+        vec![ValType::Bool],
         Box::new(|ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 // §10.5.3: trap when present, otherwise the TARGET's
@@ -3894,9 +3947,12 @@ fn register_prototype_methods(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:object",
+    // Receiver first (`__vybe_method_receiver`), then the object being tested.
+    object_fn(
+        vm,
         "isPrototypeOf",
+        vec![obj_t(), obj_t()],
+        vec![ValType::Bool],
         Box::new(|_ctx, args| {
             // isPrototypeOf: is `self` in `other`'s prototype chain?
             // Resolve each link via `js_prototype_of` (the same resolver
@@ -3977,9 +4033,10 @@ fn register_prototype_methods(vm: &mut VM) {
 
     // toString(): ECMA-262 §20.1.3.6 — returns "[object <Tag>]" for any value
     // (including primitives). Called via Object.prototype.toString.call(value).
-    vm.register_host_fn(
-        "ecma:object",
+    object_unary(
+        vm,
         "toString",
+        vec![ValType::String],
         Box::new(|ctx, args| {
             let tag = match args.first() {
                 None | Some(Value::Undefined) => "Undefined".to_string(),
@@ -3998,9 +4055,10 @@ fn register_prototype_methods(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:object",
+    object_unary(
+        vm,
         "toLocaleString",
+        vec![ValType::String],
         Box::new(|_ctx, args| {
             if is_object(args.first().unwrap_or(&Value::Null)) {
                 return Value::String(Arc::from("[object Object]"));
@@ -4010,9 +4068,10 @@ fn register_prototype_methods(vm: &mut VM) {
     );
 
     // valueOf: spec default returns the object itself
-    vm.register_host_fn(
-        "ecma:object",
+    object_unary(
+        vm,
         "valueOf",
+        vec![obj_t()],
         Box::new(|_ctx, args| {
             if let Some(Value::Object(obj)) = args.first() {
                 let primitive = {
@@ -4029,9 +4088,10 @@ fn register_prototype_methods(vm: &mut VM) {
 
     // Object.prototype[Symbol.toStringTag] — returns the tag string used by
     // Object.prototype.toString. ECMA-262 §20.1.3.6.
-    vm.register_host_fn(
-        "ecma:object",
+    object_unary(
+        vm,
         "toStringTag",
+        vec![ValType::String],
         Box::new(|ctx, args| {
             let tag = match args.first() {
                 None | Some(Value::Undefined) => "Undefined".to_string(),

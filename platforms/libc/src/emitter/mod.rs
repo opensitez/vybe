@@ -9,14 +9,17 @@
 //! `Statement` nodes) so walkers stay language-specific while runtime
 //! semantics are centralised here.
 
+pub mod bessel;
 pub mod build;
 pub mod c_runtime;
 pub mod dispatch;
 pub mod math_adapter;
 pub mod math_runtime;
+pub mod mysql_adapter;
 pub mod posix_adapter;
 pub mod regex_adapter;
 pub mod sdl;
+pub mod sqlite_adapter;
 pub mod stdio_adapter;
 pub mod stdio_format;
 pub mod stdlib_adapter;

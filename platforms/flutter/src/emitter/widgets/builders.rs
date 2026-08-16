@@ -86,16 +86,16 @@ const F_ANIMOPACITY: &[FlutterField] = &[
 ];
 
 pub(crate) const CLASSES: &[FlutterClass] = &[
-    FlutterClass::widget("FutureBuilder", "StatefulWidget", "Panel", F_FUTUREB),
-    FlutterClass::widget("StreamBuilder", "StatefulWidget", "Panel", F_STREAMB),
-    FlutterClass::widget("StatefulBuilder", "StatefulWidget", "Panel", F_STATEFULB),
+    FlutterClass::widget("FutureBuilder", "StatefulWidget", "div", F_FUTUREB),
+    FlutterClass::widget("StreamBuilder", "StatefulWidget", "div", F_STREAMB),
+    FlutterClass::widget("StatefulBuilder", "StatefulWidget", "div", F_STATEFULB),
     FlutterClass::widget(
         "ValueListenableBuilder",
         "StatefulWidget",
-        "Panel",
+        "div",
         F_VLBUILDER,
     ),
-    FlutterClass::widget("AnimatedBuilder", "AnimatedWidget", "Panel", F_ANIMBUILDER),
+    FlutterClass::widget("AnimatedBuilder", "AnimatedWidget", "div", F_ANIMBUILDER),
     // Scope/transition wrappers contribute no visual of their own — they carry
     // a theme, a notifier or an animation over the child, so the child realizes
     // in their place.
@@ -111,7 +111,7 @@ pub(crate) const CLASSES: &[FlutterClass] = &[
     FlutterClass::widget(
         "InteractiveViewer",
         "StatefulWidget",
-        "Panel",
+        "div",
         F_INTERACTIVE,
     ),
 ];

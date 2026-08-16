@@ -4,24 +4,28 @@
 //! ## Architecture
 //!
 //! `Graphics` looks and acts exactly like .NET's `System.Drawing.Graphics`,
-//! but every drawing call routes through the generic `vybe:gui::canvas*`
-//! host bridge — which talks to the `vybe_widgets::canvas::Canvas` trait.
-//! That trait is HTML5-canvas-shaped, so the .NET method bodies translate
-//! the .NET API ("DrawLine takes a Pen with a Color + Width") into the
-//! canvas API ("set stroke style, set line width, begin path, move to,
-//! line to, stroke").
+//! and every drawing call is an ADAPTER over **`web:canvas`** — the WHATWG
+//! `CanvasRenderingContext2D` surface, resolving through the document. The
+//! .NET API is translated here and nothing downstream knows GDI+ exists:
+//! "DrawLine takes a Pen with a Color and a Width" becomes "set stroke style,
+//! set line width, begin path, move to, line to, stroke". Same contract SDL
+//! states on its side.
 //!
 //! Each `Graphics` method is a [`MethodTarget::Body`] sequence — a small
-//! declarative slice of [`MethodOp`]s the builder compiles to bytecode.
-//! The body reads `pen.color.r/g/b/a` and `pen.width` from the user's
-//! arguments via `PushArgField` and forwards them to the canvas host fns.
+//! declarative slice of [`MethodOp`]s the builder compiles to bytecode. The
+//! body reads `pen.color.r/g/b/a` and `pen.width` from the user's arguments
+//! via `PushArgField` and forwards them to the spec'd ops.
 //!
-//! `Control.CreateGraphics()` is also a `Body` — it calls
-//! `vybe:gui::createGraphics(this.__control_name)` which returns a
-//! Graphics-shaped Object stamped with the source control's name. The
-//! drawing host fns then use that name to find the target
-//! `RecordingCanvas` (either a Canvas widget's own recording or an
-//! overlay recording on `GuiState`).
+//! Where the two APIs describe a shape differently, the difference is
+//! ARITHMETIC and it lives here: a .NET bounding box becomes a centre and
+//! radii, degrees become radians. It belongs on this side of the seam — a
+//! bespoke host function per .NET shape is not something a browser engine
+//! could be asked to implement.
+//!
+//! `Control.CreateGraphics()` is `element.getContext("2d")` — see
+//! `classes/control.rs::CONTROL_CREATE_GRAPHICS` and its twin in
+//! `dispatch.rs`. The control IS the element, so the context binds to it and
+//! the surface is the `<canvas>`'s own recording.
 //!
 //! ## Pen / Brush
 //!
@@ -44,6 +48,13 @@
 //! that read `pen.color.r` work uniformly.
 
 use super::{DotnetClass, DotnetMethod, MethodOp, MethodTarget};
+
+/// Degrees → radians.
+///
+/// GDI+ states its angles in degrees; the canvas 2D context takes radians
+/// (HTML §4.12.5). Both measure clockwise from the positive x-axis, so this
+/// factor is the whole of the difference between them.
+const DEG_TO_RAD: f64 = std::f64::consts::PI / 180.0;
 
 // ─── Body templates ────────────────────────────────────────────────────────
 //
@@ -88,23 +99,23 @@ const GRAPHICS_DRAW_LINE: &[MethodOp] = &[
     MethodOp::PushArgFieldField(1, "color", "b"),
     MethodOp::PushArgFieldField(1, "color", "a"),
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasSetStrokeColor",
+        module: "web:canvas",
+        fn_name: "setStrokeStyle",
         argc: 5,
     },
     MethodOp::Drop,
     MethodOp::PushThis,
     MethodOp::PushArgField(1, "width"),
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasSetLineWidth",
+        module: "web:canvas",
+        fn_name: "setLineWidth",
         argc: 2,
     },
     MethodOp::Drop,
     MethodOp::PushThis,
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasBeginPath",
+        module: "web:canvas",
+        fn_name: "beginPath",
         argc: 1,
     },
     MethodOp::Drop,
@@ -112,8 +123,8 @@ const GRAPHICS_DRAW_LINE: &[MethodOp] = &[
     MethodOp::PushArg(2),
     MethodOp::PushArg(3),
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasMoveTo",
+        module: "web:canvas",
+        fn_name: "moveTo",
         argc: 3,
     },
     MethodOp::Drop,
@@ -121,15 +132,78 @@ const GRAPHICS_DRAW_LINE: &[MethodOp] = &[
     MethodOp::PushArg(4),
     MethodOp::PushArg(5),
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasLineTo",
+        module: "web:canvas",
+        fn_name: "lineTo",
         argc: 3,
     },
     MethodOp::Drop,
     MethodOp::PushThis,
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasStroke",
+        module: "web:canvas",
+        fn_name: "stroke",
+        argc: 1,
+    },
+    MethodOp::Return,
+];
+
+/// `Graphics.DrawLine(pen, Point p1, Point p2)` — GDI+'s two-`Point` overload.
+///
+/// The canvas has one `moveTo`/`lineTo` shape and it takes numbers, so the only
+/// difference from the four-coordinate body is where the numbers come FROM:
+/// `p1.x` instead of arg 2. `pointNew` stores lowercase `x`/`y`, which is what
+/// `PushArgField` reads — the property spelling `Point.X` is a separate axis.
+///
+/// Without this entry the call landed on the five-argument body and its
+/// `PushArg(4)` ran off a four-slot frame, which is a PANIC rather than a miss.
+const GRAPHICS_DRAW_LINE_POINTS: &[MethodOp] = &[
+    MethodOp::PushThis,
+    MethodOp::PushArgFieldField(1, "color", "r"),
+    MethodOp::PushArgFieldField(1, "color", "g"),
+    MethodOp::PushArgFieldField(1, "color", "b"),
+    MethodOp::PushArgFieldField(1, "color", "a"),
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "setStrokeStyle",
+        argc: 5,
+    },
+    MethodOp::Drop,
+    MethodOp::PushThis,
+    MethodOp::PushArgField(1, "width"),
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "setLineWidth",
+        argc: 2,
+    },
+    MethodOp::Drop,
+    MethodOp::PushThis,
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "beginPath",
+        argc: 1,
+    },
+    MethodOp::Drop,
+    MethodOp::PushThis,
+    MethodOp::PushArgField(2, "x"),
+    MethodOp::PushArgField(2, "y"),
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "moveTo",
+        argc: 3,
+    },
+    MethodOp::Drop,
+    MethodOp::PushThis,
+    MethodOp::PushArgField(3, "x"),
+    MethodOp::PushArgField(3, "y"),
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "lineTo",
+        argc: 3,
+    },
+    MethodOp::Drop,
+    MethodOp::PushThis,
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "stroke",
         argc: 1,
     },
     MethodOp::Return,
@@ -143,16 +217,16 @@ const GRAPHICS_DRAW_RECTANGLE: &[MethodOp] = &[
     MethodOp::PushArgFieldField(1, "color", "b"),
     MethodOp::PushArgFieldField(1, "color", "a"),
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasSetStrokeColor",
+        module: "web:canvas",
+        fn_name: "setStrokeStyle",
         argc: 5,
     },
     MethodOp::Drop,
     MethodOp::PushThis,
     MethodOp::PushArgField(1, "width"),
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasSetLineWidth",
+        module: "web:canvas",
+        fn_name: "setLineWidth",
         argc: 2,
     },
     MethodOp::Drop,
@@ -162,8 +236,8 @@ const GRAPHICS_DRAW_RECTANGLE: &[MethodOp] = &[
     MethodOp::PushArg(4),
     MethodOp::PushArg(5),
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasStrokeRect",
+        module: "web:canvas",
+        fn_name: "strokeRect",
         argc: 5,
     },
     MethodOp::Return,
@@ -177,8 +251,8 @@ const GRAPHICS_FILL_RECTANGLE: &[MethodOp] = &[
     MethodOp::PushArgFieldField(1, "color", "b"),
     MethodOp::PushArgFieldField(1, "color", "a"),
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasSetFillColor",
+        module: "web:canvas",
+        fn_name: "setFillStyle",
         argc: 5,
     },
     MethodOp::Drop,
@@ -188,26 +262,19 @@ const GRAPHICS_FILL_RECTANGLE: &[MethodOp] = &[
     MethodOp::PushArg(4),
     MethodOp::PushArg(5),
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasFillRect",
+        module: "web:canvas",
+        fn_name: "fillRect",
         argc: 5,
     },
     MethodOp::Return,
 ];
 
-/// `Graphics.DrawEllipse(pen, x, y, w, h)`
+/// `Graphics.DrawEllipse(pen, x, y, w, h)` — `beginPath` + `ellipse` +
+/// `stroke`, WHATWG's own three steps.
 ///
-/// Translates the .NET "bounding box" form to the canvas "centre + radii"
-/// form: `cx = x + w/2`, `cy = y + h/2`, `rx = w/2`, `ry = h/2`. We
-/// can't do arithmetic in the body DSL (yet), so we instead use the
-/// canvas's `rect` op to build a stroked rectangle that approximates the
-/// ellipse's bounding box. A future extension can add an arithmetic op
-/// or expose `canvasEllipseFromBounds(x, y, w, h)` as a host shortcut.
-///
-/// For now: stroke the bounding rectangle. Visually approximate but
-/// matches the API shape.
-///
-/// TODO: add `canvasEllipseFromBounds` host fn or arithmetic ops.
+/// .NET states an ellipse as a BOUNDING BOX and the canvas wants a CENTRE and
+/// RADII, so the body converts: `cx = x + w/2`, `cy = y + h/2`, `rx = w/2`,
+/// `ry = h/2`.
 const GRAPHICS_DRAW_ELLIPSE: &[MethodOp] = &[
     MethodOp::PushThis,
     MethodOp::PushArgFieldField(1, "color", "r"),
@@ -215,36 +282,64 @@ const GRAPHICS_DRAW_ELLIPSE: &[MethodOp] = &[
     MethodOp::PushArgFieldField(1, "color", "b"),
     MethodOp::PushArgFieldField(1, "color", "a"),
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasSetStrokeColor",
+        module: "web:canvas",
+        fn_name: "setStrokeStyle",
         argc: 5,
     },
     MethodOp::Drop,
     MethodOp::PushThis,
     MethodOp::PushArgField(1, "width"),
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasSetLineWidth",
+        module: "web:canvas",
+        fn_name: "setLineWidth",
         argc: 2,
     },
     MethodOp::Drop,
-    // Use `canvasEllipseFromBounds` — a host helper that does the
-    // x+w/2, y+h/2, w/2, h/2 conversion + begin_path + ellipse +
-    // stroke in one call. See `vybe_host::modules::canvas`.
     MethodOp::PushThis,
-    MethodOp::PushArg(2),
-    MethodOp::PushArg(3),
-    MethodOp::PushArg(4),
-    MethodOp::PushArg(5),
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasStrokeEllipseInRect",
+        module: "web:canvas",
+        fn_name: "beginPath",
+        argc: 1,
+    },
+    MethodOp::Drop,
+    MethodOp::PushThis,
+    // cx = x + w/2
+    MethodOp::PushArg(2),
+    MethodOp::PushArg(4),
+    MethodOp::PushConstFloat(2.0),
+    MethodOp::Div,
+    MethodOp::Add,
+    // cy = y + h/2
+    MethodOp::PushArg(3),
+    MethodOp::PushArg(5),
+    MethodOp::PushConstFloat(2.0),
+    MethodOp::Div,
+    MethodOp::Add,
+    // rx = w/2
+    MethodOp::PushArg(4),
+    MethodOp::PushConstFloat(2.0),
+    MethodOp::Div,
+    // ry = h/2
+    MethodOp::PushArg(5),
+    MethodOp::PushConstFloat(2.0),
+    MethodOp::Div,
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "ellipse",
         argc: 5,
+    },
+    MethodOp::Drop,
+    MethodOp::PushThis,
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "stroke",
+        argc: 1,
     },
     MethodOp::Return,
 ];
 
-/// `Graphics.FillEllipse(brush, x, y, w, h)`
+/// `Graphics.FillEllipse(brush, x, y, w, h)` — the same conversion as
+/// `GRAPHICS_DRAW_ELLIPSE`, filled instead of stroked.
 const GRAPHICS_FILL_ELLIPSE: &[MethodOp] = &[
     MethodOp::PushThis,
     MethodOp::PushArgFieldField(1, "color", "r"),
@@ -252,35 +347,323 @@ const GRAPHICS_FILL_ELLIPSE: &[MethodOp] = &[
     MethodOp::PushArgFieldField(1, "color", "b"),
     MethodOp::PushArgFieldField(1, "color", "a"),
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasSetFillColor",
+        module: "web:canvas",
+        fn_name: "setFillStyle",
         argc: 5,
     },
     MethodOp::Drop,
     MethodOp::PushThis,
-    MethodOp::PushArg(2),
-    MethodOp::PushArg(3),
-    MethodOp::PushArg(4),
-    MethodOp::PushArg(5),
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasFillEllipseInRect",
+        module: "web:canvas",
+        fn_name: "beginPath",
+        argc: 1,
+    },
+    MethodOp::Drop,
+    MethodOp::PushThis,
+    // cx = x + w/2
+    MethodOp::PushArg(2),
+    MethodOp::PushArg(4),
+    MethodOp::PushConstFloat(2.0),
+    MethodOp::Div,
+    MethodOp::Add,
+    // cy = y + h/2
+    MethodOp::PushArg(3),
+    MethodOp::PushArg(5),
+    MethodOp::PushConstFloat(2.0),
+    MethodOp::Div,
+    MethodOp::Add,
+    // rx = w/2
+    MethodOp::PushArg(4),
+    MethodOp::PushConstFloat(2.0),
+    MethodOp::Div,
+    // ry = h/2
+    MethodOp::PushArg(5),
+    MethodOp::PushConstFloat(2.0),
+    MethodOp::Div,
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "ellipse",
+        argc: 5,
+    },
+    MethodOp::Drop,
+    MethodOp::PushThis,
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "fill",
+        argc: 1,
+    },
+    MethodOp::Return,
+];
+
+// ── The `Rectangle` overloads ────────────────────────────────────────────────
+//
+// GDI+ states half its drawing surface twice: once as four loose coordinates
+// and once as a `Rectangle`. The canvas has ONE shape for each and it takes
+// numbers, so these bodies differ from the coordinate forms only in where the
+// numbers come from — `rect.width` instead of arg 4. `dotnet.rectangle_new`
+// stores lowercase `x`/`y`/`width`/`height`, which is what `PushArgField`
+// reads.
+//
+// Arity 3 (`this` + pen/brush + rect) against the coordinate forms' 6, which is
+// what lets `drawing_method_body` tell them apart.
+
+/// `Graphics.DrawRectangle(pen, Rectangle rect)`
+const GRAPHICS_DRAW_RECTANGLE_RECT: &[MethodOp] = &[
+    MethodOp::PushThis,
+    MethodOp::PushArgFieldField(1, "color", "r"),
+    MethodOp::PushArgFieldField(1, "color", "g"),
+    MethodOp::PushArgFieldField(1, "color", "b"),
+    MethodOp::PushArgFieldField(1, "color", "a"),
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "setStrokeStyle",
+        argc: 5,
+    },
+    MethodOp::Drop,
+    MethodOp::PushThis,
+    MethodOp::PushArgField(1, "width"),
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "setLineWidth",
+        argc: 2,
+    },
+    MethodOp::Drop,
+    MethodOp::PushThis,
+    MethodOp::PushArgField(2, "x"),
+    MethodOp::PushArgField(2, "y"),
+    MethodOp::PushArgField(2, "width"),
+    MethodOp::PushArgField(2, "height"),
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "strokeRect",
         argc: 5,
     },
     MethodOp::Return,
 ];
 
-/// `Graphics.Clear(color)` — clears the entire canvas to a colour.
+/// `Graphics.FillRectangle(brush, Rectangle rect)`
+const GRAPHICS_FILL_RECTANGLE_RECT: &[MethodOp] = &[
+    MethodOp::PushThis,
+    MethodOp::PushArgFieldField(1, "color", "r"),
+    MethodOp::PushArgFieldField(1, "color", "g"),
+    MethodOp::PushArgFieldField(1, "color", "b"),
+    MethodOp::PushArgFieldField(1, "color", "a"),
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "setFillStyle",
+        argc: 5,
+    },
+    MethodOp::Drop,
+    MethodOp::PushThis,
+    MethodOp::PushArgField(2, "x"),
+    MethodOp::PushArgField(2, "y"),
+    MethodOp::PushArgField(2, "width"),
+    MethodOp::PushArgField(2, "height"),
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "fillRect",
+        argc: 5,
+    },
+    MethodOp::Return,
+];
+
+/// `Graphics.DrawEllipse(pen, Rectangle rect)` — the same bounding-box-to-
+/// centre-and-radii conversion as the coordinate form, read off the rect.
+const GRAPHICS_DRAW_ELLIPSE_RECT: &[MethodOp] = &[
+    MethodOp::PushThis,
+    MethodOp::PushArgFieldField(1, "color", "r"),
+    MethodOp::PushArgFieldField(1, "color", "g"),
+    MethodOp::PushArgFieldField(1, "color", "b"),
+    MethodOp::PushArgFieldField(1, "color", "a"),
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "setStrokeStyle",
+        argc: 5,
+    },
+    MethodOp::Drop,
+    MethodOp::PushThis,
+    MethodOp::PushArgField(1, "width"),
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "setLineWidth",
+        argc: 2,
+    },
+    MethodOp::Drop,
+    MethodOp::PushThis,
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "beginPath",
+        argc: 1,
+    },
+    MethodOp::Drop,
+    MethodOp::PushThis,
+    // cx = rect.x + rect.width/2
+    MethodOp::PushArgField(2, "x"),
+    MethodOp::PushArgField(2, "width"),
+    MethodOp::PushConstFloat(2.0),
+    MethodOp::Div,
+    MethodOp::Add,
+    // cy = rect.y + rect.height/2
+    MethodOp::PushArgField(2, "y"),
+    MethodOp::PushArgField(2, "height"),
+    MethodOp::PushConstFloat(2.0),
+    MethodOp::Div,
+    MethodOp::Add,
+    // rx = rect.width/2
+    MethodOp::PushArgField(2, "width"),
+    MethodOp::PushConstFloat(2.0),
+    MethodOp::Div,
+    // ry = rect.height/2
+    MethodOp::PushArgField(2, "height"),
+    MethodOp::PushConstFloat(2.0),
+    MethodOp::Div,
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "ellipse",
+        argc: 5,
+    },
+    MethodOp::Drop,
+    MethodOp::PushThis,
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "stroke",
+        argc: 1,
+    },
+    MethodOp::Return,
+];
+
+/// `Graphics.FillEllipse(brush, Rectangle rect)`
+const GRAPHICS_FILL_ELLIPSE_RECT: &[MethodOp] = &[
+    MethodOp::PushThis,
+    MethodOp::PushArgFieldField(1, "color", "r"),
+    MethodOp::PushArgFieldField(1, "color", "g"),
+    MethodOp::PushArgFieldField(1, "color", "b"),
+    MethodOp::PushArgFieldField(1, "color", "a"),
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "setFillStyle",
+        argc: 5,
+    },
+    MethodOp::Drop,
+    MethodOp::PushThis,
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "beginPath",
+        argc: 1,
+    },
+    MethodOp::Drop,
+    MethodOp::PushThis,
+    MethodOp::PushArgField(2, "x"),
+    MethodOp::PushArgField(2, "width"),
+    MethodOp::PushConstFloat(2.0),
+    MethodOp::Div,
+    MethodOp::Add,
+    MethodOp::PushArgField(2, "y"),
+    MethodOp::PushArgField(2, "height"),
+    MethodOp::PushConstFloat(2.0),
+    MethodOp::Div,
+    MethodOp::Add,
+    MethodOp::PushArgField(2, "width"),
+    MethodOp::PushConstFloat(2.0),
+    MethodOp::Div,
+    MethodOp::PushArgField(2, "height"),
+    MethodOp::PushConstFloat(2.0),
+    MethodOp::Div,
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "ellipse",
+        argc: 5,
+    },
+    MethodOp::Drop,
+    MethodOp::PushThis,
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "fill",
+        argc: 1,
+    },
+    MethodOp::Return,
+];
+
+/// `Graphics.Clear(color)` — fill the whole surface with `color`.
+///
+/// The canvas has no clear-to-colour operation and does not need one: this IS
+/// the idiom, and it is what a browser would run —
+/// `setFillStyle` + a `fillRect` over the bitmap's full extent.
+///
+/// Three details make it correct rather than approximately correct:
+/// - `resetTransform`, because `Clear` covers the surface whatever transform
+///   the caller left in place. Inside the `save`/`restore` pair, so their
+///   transform survives.
+/// - `canvasWidth`/`canvasHeight` (`web:html`), which are HTMLCanvasElement's
+///   IDL attributes — the BITMAP's size, not the box's. A 640×480 buffer in a
+///   320×240 box is the ordinary way to draw at double density, and filling
+///   the box would leave three quarters of the surface untouched. `PushThis`
+///   serves as the node argument because the context carries `__node`.
+/// - The `save`/`restore` pair is balanced, so it leaves the clip baseline
+///   (see `GRAPHICS_SET_CLIP`) exactly where it found it.
 const GRAPHICS_CLEAR: &[MethodOp] = &[
+    MethodOp::PushThis,
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "save",
+        argc: 1,
+    },
+    MethodOp::Drop,
+    MethodOp::PushThis,
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "resetTransform",
+        argc: 1,
+    },
+    MethodOp::Drop,
     MethodOp::PushThis,
     MethodOp::PushArgField(1, "r"),
     MethodOp::PushArgField(1, "g"),
     MethodOp::PushArgField(1, "b"),
     MethodOp::PushArgField(1, "a"),
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasClearAll",
+        module: "web:canvas",
+        fn_name: "setFillStyle",
         argc: 5,
+    },
+    MethodOp::Drop,
+    // fillRect(0, 0, canvasWidth(doc, this), canvasHeight(doc, this))
+    MethodOp::PushThis,
+    MethodOp::PushConstFloat(0.0),
+    MethodOp::PushConstFloat(0.0),
+    MethodOp::CallHost {
+        module: "web:html",
+        fn_name: "activeDocument",
+        argc: 0,
+    },
+    MethodOp::PushThis,
+    MethodOp::CallHost {
+        module: "web:html",
+        fn_name: "canvasWidth",
+        argc: 2,
+    },
+    MethodOp::CallHost {
+        module: "web:html",
+        fn_name: "activeDocument",
+        argc: 0,
+    },
+    MethodOp::PushThis,
+    MethodOp::CallHost {
+        module: "web:html",
+        fn_name: "canvasHeight",
+        argc: 2,
+    },
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "fillRect",
+        argc: 5,
+    },
+    MethodOp::Drop,
+    MethodOp::PushThis,
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "restore",
+        argc: 1,
     },
     MethodOp::Return,
 ];
@@ -288,7 +671,26 @@ const GRAPHICS_CLEAR: &[MethodOp] = &[
 /// `Graphics.Dispose()` — no-op (no GDI handle to free).
 const GRAPHICS_DISPOSE: &[MethodOp] = &[MethodOp::PushConstNull, MethodOp::Return];
 
-/// `Graphics.DrawArc(pen, x, y, w, h, startAngle, sweepAngle)`
+/// `Graphics.DrawArc(pen, x, y, w, h, startAngle, sweepAngle)` —
+/// `beginPath` + `arc` + `stroke`.
+///
+/// Two conversions. The box becomes a centre and radius the same way
+/// `GRAPHICS_DRAW_ELLIPSE` converts one, and the ANGLES become radians:
+/// GDI+ states degrees, the canvas takes radians (HTML §4.12.5), and both
+/// measure clockwise from the positive x-axis, so a scale factor is the whole
+/// of the difference. `sweep` is relative where the canvas's second angle is
+/// absolute, hence `end = (start + sweep) * k`.
+///
+/// ⚠ `radius = w/2` ignores `h`: GDI+ sweeps an ELLIPTICAL arc inside the box
+/// and the canvas has no elliptical-arc op that reaches the painter —
+/// `web:canvas::ellipse` accepts start/end angles and documents that it drops
+/// them. A non-square box therefore draws a circular arc of its width — an
+/// approximation, stated rather than hidden.
+///
+/// A negative `sweep` puts `end` before `start`. The canvas resolves that by
+/// going clockwise the long way round rather than counter-clockwise, because
+/// the `counterclockwise` argument is not passed — the sign would have to be
+/// tested, and the DSL has no branch.
 const GRAPHICS_DRAW_ARC: &[MethodOp] = &[
     MethodOp::PushThis,
     MethodOp::PushArgFieldField(1, "color", "r"),
@@ -296,35 +698,74 @@ const GRAPHICS_DRAW_ARC: &[MethodOp] = &[
     MethodOp::PushArgFieldField(1, "color", "b"),
     MethodOp::PushArgFieldField(1, "color", "a"),
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasSetStrokeColor",
+        module: "web:canvas",
+        fn_name: "setStrokeStyle",
         argc: 5,
     },
     MethodOp::Drop,
     MethodOp::PushThis,
     MethodOp::PushArgField(1, "width"),
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasSetLineWidth",
+        module: "web:canvas",
+        fn_name: "setLineWidth",
         argc: 2,
     },
     MethodOp::Drop,
     MethodOp::PushThis,
-    MethodOp::PushArg(2), // x
-    MethodOp::PushArg(3), // y
-    MethodOp::PushArg(4), // w
-    MethodOp::PushArg(5), // h
-    MethodOp::PushArg(6), // startAngle (deg)
-    MethodOp::PushArg(7), // sweepAngle (deg)
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasStrokeArcInRect",
-        argc: 7,
+        module: "web:canvas",
+        fn_name: "beginPath",
+        argc: 1,
+    },
+    MethodOp::Drop,
+    MethodOp::PushThis,
+    // cx = x + w/2
+    MethodOp::PushArg(2),
+    MethodOp::PushArg(4),
+    MethodOp::PushConstFloat(2.0),
+    MethodOp::Div,
+    MethodOp::Add,
+    // cy = y + h/2
+    MethodOp::PushArg(3),
+    MethodOp::PushArg(5),
+    MethodOp::PushConstFloat(2.0),
+    MethodOp::Div,
+    MethodOp::Add,
+    // r = w/2
+    MethodOp::PushArg(4),
+    MethodOp::PushConstFloat(2.0),
+    MethodOp::Div,
+    // startAngle = start * π/180
+    MethodOp::PushArg(6),
+    MethodOp::PushConstFloat(DEG_TO_RAD),
+    MethodOp::Mul,
+    // endAngle = (start + sweep) * π/180
+    MethodOp::PushArg(6),
+    MethodOp::PushArg(7),
+    MethodOp::Add,
+    MethodOp::PushConstFloat(DEG_TO_RAD),
+    MethodOp::Mul,
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "arc",
+        argc: 6,
+    },
+    MethodOp::Drop,
+    MethodOp::PushThis,
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "stroke",
+        argc: 1,
     },
     MethodOp::Return,
 ];
 
 /// `Graphics.DrawPie(pen, x, y, w, h, startAngle, sweepAngle)`
+///
+/// A pie is an arc CLOSED THROUGH ITS CENTRE, which is exactly what the path
+/// API says: move to the centre, sweep the arc, close the path. The same box
+/// and angle conversions as `GRAPHICS_DRAW_ARC`, and the same ⚠ about a
+/// non-square box drawing a circular sweep.
 const GRAPHICS_DRAW_PIE: &[MethodOp] = &[
     MethodOp::PushThis,
     MethodOp::PushArgFieldField(1, "color", "r"),
@@ -332,35 +773,94 @@ const GRAPHICS_DRAW_PIE: &[MethodOp] = &[
     MethodOp::PushArgFieldField(1, "color", "b"),
     MethodOp::PushArgFieldField(1, "color", "a"),
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasSetStrokeColor",
+        module: "web:canvas",
+        fn_name: "setStrokeStyle",
         argc: 5,
     },
     MethodOp::Drop,
     MethodOp::PushThis,
     MethodOp::PushArgField(1, "width"),
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasSetLineWidth",
+        module: "web:canvas",
+        fn_name: "setLineWidth",
         argc: 2,
     },
     MethodOp::Drop,
     MethodOp::PushThis,
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "beginPath",
+        argc: 1,
+    },
+    MethodOp::Drop,
+    // moveTo(cx, cy) — the pie's apex.
+    MethodOp::PushThis,
     MethodOp::PushArg(2),
-    MethodOp::PushArg(3),
     MethodOp::PushArg(4),
+    MethodOp::PushConstFloat(2.0),
+    MethodOp::Div,
+    MethodOp::Add,
+    MethodOp::PushArg(3),
     MethodOp::PushArg(5),
+    MethodOp::PushConstFloat(2.0),
+    MethodOp::Div,
+    MethodOp::Add,
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "moveTo",
+        argc: 3,
+    },
+    MethodOp::Drop,
+    MethodOp::PushThis,
+    // cx = x + w/2
+    MethodOp::PushArg(2),
+    MethodOp::PushArg(4),
+    MethodOp::PushConstFloat(2.0),
+    MethodOp::Div,
+    MethodOp::Add,
+    // cy = y + h/2
+    MethodOp::PushArg(3),
+    MethodOp::PushArg(5),
+    MethodOp::PushConstFloat(2.0),
+    MethodOp::Div,
+    MethodOp::Add,
+    // r = w/2
+    MethodOp::PushArg(4),
+    MethodOp::PushConstFloat(2.0),
+    MethodOp::Div,
+    // startAngle / endAngle, degrees → radians
+    MethodOp::PushArg(6),
+    MethodOp::PushConstFloat(DEG_TO_RAD),
+    MethodOp::Mul,
     MethodOp::PushArg(6),
     MethodOp::PushArg(7),
+    MethodOp::Add,
+    MethodOp::PushConstFloat(DEG_TO_RAD),
+    MethodOp::Mul,
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasStrokePieInRect",
-        argc: 7,
+        module: "web:canvas",
+        fn_name: "arc",
+        argc: 6,
+    },
+    MethodOp::Drop,
+    MethodOp::PushThis,
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "closePath",
+        argc: 1,
+    },
+    MethodOp::Drop,
+    MethodOp::PushThis,
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "stroke",
+        argc: 1,
     },
     MethodOp::Return,
 ];
 
-/// `Graphics.FillPie(brush, x, y, w, h, startAngle, sweepAngle)`
+/// `Graphics.FillPie(brush, x, y, w, h, startAngle, sweepAngle)` — the same
+/// path as `GRAPHICS_DRAW_PIE`, filled instead of stroked.
 const GRAPHICS_FILL_PIE: &[MethodOp] = &[
     MethodOp::PushThis,
     MethodOp::PushArgFieldField(1, "color", "r"),
@@ -368,22 +868,80 @@ const GRAPHICS_FILL_PIE: &[MethodOp] = &[
     MethodOp::PushArgFieldField(1, "color", "b"),
     MethodOp::PushArgFieldField(1, "color", "a"),
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasSetFillColor",
+        module: "web:canvas",
+        fn_name: "setFillStyle",
         argc: 5,
     },
     MethodOp::Drop,
     MethodOp::PushThis,
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "beginPath",
+        argc: 1,
+    },
+    MethodOp::Drop,
+    // moveTo(cx, cy) — the pie's apex.
+    MethodOp::PushThis,
     MethodOp::PushArg(2),
-    MethodOp::PushArg(3),
     MethodOp::PushArg(4),
+    MethodOp::PushConstFloat(2.0),
+    MethodOp::Div,
+    MethodOp::Add,
+    MethodOp::PushArg(3),
     MethodOp::PushArg(5),
+    MethodOp::PushConstFloat(2.0),
+    MethodOp::Div,
+    MethodOp::Add,
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "moveTo",
+        argc: 3,
+    },
+    MethodOp::Drop,
+    MethodOp::PushThis,
+    // cx = x + w/2
+    MethodOp::PushArg(2),
+    MethodOp::PushArg(4),
+    MethodOp::PushConstFloat(2.0),
+    MethodOp::Div,
+    MethodOp::Add,
+    // cy = y + h/2
+    MethodOp::PushArg(3),
+    MethodOp::PushArg(5),
+    MethodOp::PushConstFloat(2.0),
+    MethodOp::Div,
+    MethodOp::Add,
+    // r = w/2
+    MethodOp::PushArg(4),
+    MethodOp::PushConstFloat(2.0),
+    MethodOp::Div,
+    // startAngle / endAngle, degrees → radians
+    MethodOp::PushArg(6),
+    MethodOp::PushConstFloat(DEG_TO_RAD),
+    MethodOp::Mul,
     MethodOp::PushArg(6),
     MethodOp::PushArg(7),
+    MethodOp::Add,
+    MethodOp::PushConstFloat(DEG_TO_RAD),
+    MethodOp::Mul,
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasFillPieInRect",
-        argc: 7,
+        module: "web:canvas",
+        fn_name: "arc",
+        argc: 6,
+    },
+    MethodOp::Drop,
+    MethodOp::PushThis,
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "closePath",
+        argc: 1,
+    },
+    MethodOp::Drop,
+    MethodOp::PushThis,
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "fill",
+        argc: 1,
     },
     MethodOp::Return,
 ];
@@ -396,23 +954,23 @@ const GRAPHICS_DRAW_BEZIER: &[MethodOp] = &[
     MethodOp::PushArgFieldField(1, "color", "b"),
     MethodOp::PushArgFieldField(1, "color", "a"),
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasSetStrokeColor",
+        module: "web:canvas",
+        fn_name: "setStrokeStyle",
         argc: 5,
     },
     MethodOp::Drop,
     MethodOp::PushThis,
     MethodOp::PushArgField(1, "width"),
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasSetLineWidth",
+        module: "web:canvas",
+        fn_name: "setLineWidth",
         argc: 2,
     },
     MethodOp::Drop,
     MethodOp::PushThis,
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasBeginPath",
+        module: "web:canvas",
+        fn_name: "beginPath",
         argc: 1,
     },
     MethodOp::Drop,
@@ -420,8 +978,8 @@ const GRAPHICS_DRAW_BEZIER: &[MethodOp] = &[
     MethodOp::PushArg(2), // x1
     MethodOp::PushArg(3), // y1
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasMoveTo",
+        module: "web:canvas",
+        fn_name: "moveTo",
         argc: 3,
     },
     MethodOp::Drop,
@@ -433,15 +991,15 @@ const GRAPHICS_DRAW_BEZIER: &[MethodOp] = &[
     MethodOp::PushArg(8), // x4
     MethodOp::PushArg(9), // y4
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasBezierTo",
+        module: "web:canvas",
+        fn_name: "bezierCurveTo",
         argc: 7,
     },
     MethodOp::Drop,
     MethodOp::PushThis,
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasStroke",
+        module: "web:canvas",
+        fn_name: "stroke",
         argc: 1,
     },
     MethodOp::Return,
@@ -456,8 +1014,8 @@ const GRAPHICS_DRAW_STRING: &[MethodOp] = &[
     MethodOp::PushArgFieldField(3, "color", "b"),
     MethodOp::PushArgFieldField(3, "color", "a"),
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasSetFillColor",
+        module: "web:canvas",
+        fn_name: "setFillStyle",
         argc: 5,
     },
     MethodOp::Drop,
@@ -468,9 +1026,26 @@ const GRAPHICS_DRAW_STRING: &[MethodOp] = &[
     MethodOp::PushArgField(2, "bold"),
     MethodOp::PushArgField(2, "italic"),
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasSetFont",
+        module: "web:canvas",
+        fn_name: "setFont",
         argc: 5,
+    },
+    MethodOp::Drop,
+    // `fillText`'s `y` is the BASELINE — `textBaseline` defaults to
+    // `alphabetic` (HTML §4.12.5) — while GDI+ `DrawString(s, font, brush, x,
+    // y)` positions the text's TOP-LEFT. Passing `y` straight through drew
+    // every string about one ascent too high.
+    //
+    // `textBaseline = "top"` says exactly that in the canvas's own vocabulary,
+    // so `y` then means what .NET means by it. The alternative — adding an
+    // ascent to `y` — would need `measureText`, which `web:canvas` does not
+    // have, and would only ever approximate what this states outright.
+    MethodOp::PushThis,
+    MethodOp::PushConstStr("top"),
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "setTextBaseline",
+        argc: 2,
     },
     MethodOp::Drop,
     // FillText(text, x, y).
@@ -479,8 +1054,8 @@ const GRAPHICS_DRAW_STRING: &[MethodOp] = &[
     MethodOp::PushArg(4), // x
     MethodOp::PushArg(5), // y
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasFillText",
+        module: "web:canvas",
+        fn_name: "fillText",
         argc: 4,
     },
     MethodOp::Return,
@@ -491,8 +1066,8 @@ const GRAPHICS_DRAW_STRING: &[MethodOp] = &[
 const GRAPHICS_SAVE: &[MethodOp] = &[
     MethodOp::PushThis,
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasSave",
+        module: "web:canvas",
+        fn_name: "save",
         argc: 1,
     },
     MethodOp::Return,
@@ -503,8 +1078,8 @@ const GRAPHICS_SAVE: &[MethodOp] = &[
 const GRAPHICS_RESTORE: &[MethodOp] = &[
     MethodOp::PushThis,
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasRestore",
+        module: "web:canvas",
+        fn_name: "restore",
         argc: 1,
     },
     MethodOp::Return,
@@ -516,20 +1091,26 @@ const GRAPHICS_TRANSLATE_TRANSFORM: &[MethodOp] = &[
     MethodOp::PushArg(1),
     MethodOp::PushArg(2),
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasTranslate",
+        module: "web:canvas",
+        fn_name: "translate",
         argc: 3,
     },
     MethodOp::Return,
 ];
 
-/// `Graphics.RotateTransform(angleDegrees)`
+/// `Graphics.RotateTransform(angleDegrees)` — `rotate(angle)`, HTML §4.12.5.
+///
+/// The canvas takes RADIANS, .NET states degrees, so the caller converts. A
+/// host function whose whole job is one multiplication is a host function a
+/// browser engine could not be asked for.
 const GRAPHICS_ROTATE_TRANSFORM: &[MethodOp] = &[
     MethodOp::PushThis,
     MethodOp::PushArg(1),
+    MethodOp::PushConstFloat(DEG_TO_RAD),
+    MethodOp::Mul,
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasRotateDegrees",
+        module: "web:canvas",
+        fn_name: "rotate",
         argc: 2,
     },
     MethodOp::Return,
@@ -541,8 +1122,8 @@ const GRAPHICS_SCALE_TRANSFORM: &[MethodOp] = &[
     MethodOp::PushArg(1),
     MethodOp::PushArg(2),
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasScale",
+        module: "web:canvas",
+        fn_name: "scale",
         argc: 3,
     },
     MethodOp::Return,
@@ -552,19 +1133,53 @@ const GRAPHICS_SCALE_TRANSFORM: &[MethodOp] = &[
 const GRAPHICS_RESET_TRANSFORM: &[MethodOp] = &[
     MethodOp::PushThis,
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasResetTransform",
+        module: "web:canvas",
+        fn_name: "resetTransform",
         argc: 1,
     },
     MethodOp::Return,
 ];
 
 /// `Graphics.SetClip(x, y, w, h)` — rect form (the most common overload).
+///
+/// **The clip baseline.** A canvas clip only ever INTERSECTS — `clip()` has no
+/// inverse — while .NET's `SetClip` REPLACES the region and `ResetClip` removes
+/// it. `save`/`restore` are what bridge the two, because they push and pop the
+/// clip along with the rest of the paint state (`vybe_widgets::canvas::Canvas`
+/// says so on `clip()`), so a region is undone by returning to a state saved
+/// before it was applied.
+///
+/// So a `Graphics` holds exactly one baseline entry on the canvas state stack
+/// for its whole life: `CreateGraphics` pushes it right after `getContext`, and
+/// every clip operation pops back to it and re-pushes it. Depth is invariant —
+/// `restore` here can never underflow, because the baseline is always there.
+///
+/// ⚠ `Graphics.Save()`/`Restore()` push and pop that same stack, so a `SetClip`
+/// between a Save and its Restore pops the Save's entry instead of the clip
+/// baseline. Matching .NET exactly there needs a clip region per saved state,
+/// which the canvas cannot express and a stateless `Body` cannot track. Flat
+/// use — the shape essentially every WinForms program has — is exact.
 const GRAPHICS_SET_CLIP: &[MethodOp] = &[
+    // Back to the baseline: drops whatever region a previous SetClip applied.
     MethodOp::PushThis,
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasBeginPath",
+        module: "web:canvas",
+        fn_name: "restore",
+        argc: 1,
+    },
+    MethodOp::Drop,
+    // Re-establish it, so the next SetClip/ResetClip has one to return to.
+    MethodOp::PushThis,
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "save",
+        argc: 1,
+    },
+    MethodOp::Drop,
+    MethodOp::PushThis,
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "beginPath",
         argc: 1,
     },
     MethodOp::Drop,
@@ -574,26 +1189,38 @@ const GRAPHICS_SET_CLIP: &[MethodOp] = &[
     MethodOp::PushArg(3),
     MethodOp::PushArg(4),
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasRect",
+        module: "web:canvas",
+        fn_name: "rect",
         argc: 5,
     },
     MethodOp::Drop,
     MethodOp::PushThis,
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasClip",
+        module: "web:canvas",
+        fn_name: "clip",
         argc: 1,
     },
     MethodOp::Return,
 ];
 
-/// `Graphics.ResetClip()`
+/// `Graphics.ResetClip()` — return to the clip baseline and re-establish it.
+///
+/// WHATWG has no reset-clip operation and does not need one: a clip is undone
+/// by returning to a state saved before it was applied. See
+/// `GRAPHICS_SET_CLIP` for the baseline this pops back to and the one case it
+/// does not model.
 const GRAPHICS_RESET_CLIP: &[MethodOp] = &[
     MethodOp::PushThis,
     MethodOp::CallHost {
-        module: "vybe:gui",
-        fn_name: "canvasResetClip",
+        module: "web:canvas",
+        fn_name: "restore",
+        argc: 1,
+    },
+    MethodOp::Drop,
+    MethodOp::PushThis,
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "save",
         argc: 1,
     },
     MethodOp::Return,
@@ -605,15 +1232,33 @@ const GRAPHICS_METHODS: &[DotnetMethod] = &[
         arity: 6,
         target: MethodTarget::body(GRAPHICS_DRAW_LINE),
     },
+    // The two-`Point` overload — `this` + pen + 2 points = 4. Listed beside the
+    // coordinate form rather than replacing it: `drawing_method_body` picks by
+    // arity, so both spellings resolve.
+    DotnetMethod {
+        name: "DrawLine",
+        arity: 4,
+        target: MethodTarget::body(GRAPHICS_DRAW_LINE_POINTS),
+    },
     DotnetMethod {
         name: "DrawRectangle",
         arity: 6,
         target: MethodTarget::body(GRAPHICS_DRAW_RECTANGLE),
     },
     DotnetMethod {
+        name: "DrawRectangle",
+        arity: 3,
+        target: MethodTarget::body(GRAPHICS_DRAW_RECTANGLE_RECT),
+    },
+    DotnetMethod {
         name: "DrawEllipse",
         arity: 6,
         target: MethodTarget::body(GRAPHICS_DRAW_ELLIPSE),
+    },
+    DotnetMethod {
+        name: "DrawEllipse",
+        arity: 3,
+        target: MethodTarget::body(GRAPHICS_DRAW_ELLIPSE_RECT),
     },
     DotnetMethod {
         name: "DrawArc",
@@ -646,9 +1291,19 @@ const GRAPHICS_METHODS: &[DotnetMethod] = &[
         target: MethodTarget::body(GRAPHICS_FILL_RECTANGLE),
     },
     DotnetMethod {
+        name: "FillRectangle",
+        arity: 3,
+        target: MethodTarget::body(GRAPHICS_FILL_RECTANGLE_RECT),
+    },
+    DotnetMethod {
         name: "FillEllipse",
         arity: 6,
         target: MethodTarget::body(GRAPHICS_FILL_ELLIPSE),
+    },
+    DotnetMethod {
+        name: "FillEllipse",
+        arity: 3,
+        target: MethodTarget::body(GRAPHICS_FILL_ELLIPSE_RECT),
     },
     DotnetMethod {
         name: "Clear",
@@ -714,22 +1369,135 @@ const BRUSH_METHODS: &[DotnetMethod] = &[DotnetMethod {
     target: MethodTarget::body(GRAPHICS_DISPOSE),
 }];
 
-/// Look up a drawing method's `Body` ops by name across the Graphics/Pen/Brush
-/// tables. The `dotnet.drawing.*` call-site dispatch uses this to lower the
-/// method inline (`builder::emit_body_inline`) — the drawing objects resolve
-/// their methods through the component descriptor (`MethodBody::Common`) with
-/// no ctor-bound thunk, the same way controls resolve theirs.
-pub fn drawing_method_body(name: &str) -> Option<&'static [MethodOp]> {
+/// A named `Color` static — `Color.Red` is `colorFromName("Red")`.
+///
+/// The colour NAME is the whole of the binding; the channel values live in
+/// exactly one place (`platforms/vybe/src/drawing.rs`'s palette) and are never
+/// restated here. Writing the RGB triples into this table would make it a
+/// second copy that drifts silently the first time either side is edited.
+///
+/// Reached as a two-op body rather than a `Fn` leaf because
+/// `ResolutionTarget::HostCall` carries no bound argument — `terminal()`
+/// discards `NamespaceNode::Fn`'s `bound_arg`, so a `Fn` leaf would emit
+/// `colorFromName()` with no arguments and silently answer black. A
+/// `CommonEmit` survives the walk intact and lowers through the same
+/// `dotnet.drawing.*` inline path every `Graphics` method already uses.
+macro_rules! color_static {
+    ($konst:ident, $name:literal) => {
+        const $konst: &[MethodOp] = &[
+            MethodOp::PushConstStr($name),
+            MethodOp::CallHost {
+                module: "vybe:gui",
+                fn_name: "colorFromName",
+                argc: 1,
+            },
+            MethodOp::Return,
+        ];
+    };
+}
+
+color_static!(COLOR_RED, "Red");
+color_static!(COLOR_BLUE, "Blue");
+color_static!(COLOR_GREEN, "Green");
+color_static!(COLOR_BLACK, "Black");
+color_static!(COLOR_WHITE, "White");
+color_static!(COLOR_YELLOW, "Yellow");
+color_static!(COLOR_ORANGE, "Orange");
+color_static!(COLOR_PURPLE, "Purple");
+color_static!(COLOR_CYAN, "Cyan");
+color_static!(COLOR_MAGENTA, "Magenta");
+color_static!(COLOR_GRAY, "Gray");
+color_static!(COLOR_BROWN, "Brown");
+color_static!(COLOR_PINK, "Pink");
+color_static!(COLOR_LIGHT_GRAY, "LightGray");
+color_static!(COLOR_DARK_GRAY, "DarkGray");
+color_static!(COLOR_TRANSPARENT, "Transparent");
+
+/// The `Color` statics, as (member name, body). `tree_register` registers each
+/// one at `dotnet.system.drawing.color.<lowercased>` — a real path segment, so
+/// `merge_into`'s `Type{statics} × Namespace` arm folds it into the already
+/// registered `Color` type's statics. A static IS a longer path.
+pub const COLOR_STATICS: &[(&str, &[MethodOp])] = &[
+    ("Red", COLOR_RED),
+    ("Blue", COLOR_BLUE),
+    ("Green", COLOR_GREEN),
+    ("Black", COLOR_BLACK),
+    ("White", COLOR_WHITE),
+    ("Yellow", COLOR_YELLOW),
+    ("Orange", COLOR_ORANGE),
+    ("Purple", COLOR_PURPLE),
+    ("Cyan", COLOR_CYAN),
+    ("Magenta", COLOR_MAGENTA),
+    ("Gray", COLOR_GRAY),
+    ("Brown", COLOR_BROWN),
+    ("Pink", COLOR_PINK),
+    ("LightGray", COLOR_LIGHT_GRAY),
+    ("DarkGray", COLOR_DARK_GRAY),
+    ("Transparent", COLOR_TRANSPARENT),
+];
+
+/// The `dotnet.drawing.*` emit key for a `Color` static, as registered in the
+/// tree and as matched by [`drawing_method_body`]. One function so the
+/// registrar and the dispatcher cannot disagree about the spelling.
+pub fn color_static_emit_key(member: &str) -> String {
+    format!("dotnet.drawing.color.{}", member.to_lowercase())
+}
+
+/// Look up a drawing method's `Body` ops by name AND arity across the
+/// Graphics/Pen/Brush tables. The `dotnet.drawing.*` call-site dispatch uses
+/// this to lower the method inline (`builder::emit_body_inline`) — the drawing
+/// objects resolve their methods through the component descriptor
+/// (`MethodBody::Common`) with no ctor-bound thunk, the same way controls
+/// resolve theirs.
+///
+/// **`argc` is what makes overloads expressible, and it is not optional.** The
+/// dispatch key is `dotnet.drawing.<method>` — a name with no arity in it — so
+/// keying the tables by name alone gave a method ONE body, whichever entry came
+/// first. GDI+ overloads heavily: `DrawLine` is both `(pen, x1, y1, x2, y2)` and
+/// `(pen, Point, Point)`, `DrawEllipse` is both `(pen, x, y, w, h)` and
+/// `(pen, Rectangle)`. A narrower call then reached the wider body and its
+/// `PushArg(n)` ran off the end of the frame — `builder.rs` PANICS on that, so
+/// `g.DrawLine(Pens.Black, p1, p2)` killed the whole compile rather than missing
+/// (`examples/vb/paint_demo`).
+///
+/// `arity` counts `this`, so the two `DrawLine`s are 6 and 4. An exact match
+/// wins; failing that a narrower body is accepted for a wider call, which is
+/// how a method with trailing optional arguments still resolves. A body WIDER
+/// than the call is never returned — that is the panic, and answering `None`
+/// makes it an ordinary unresolved method instead.
+pub fn drawing_method_body(name: &str, argc: u8) -> Option<&'static [MethodOp]> {
+    // `Color` statics are keyed `color.<lowercased>` — a member READ, argc 0,
+    // not an instance method, so it cannot collide with the method tables
+    // below (none of which contain a dot).
+    if let Some(member) = name.strip_prefix("color.") {
+        for (candidate, ops) in COLOR_STATICS {
+            if candidate.to_lowercase() == member {
+                return Some(ops);
+            }
+        }
+        return None;
+    }
+    let mut widest_narrower: Option<(u8, &'static [MethodOp])> = None;
     for table in [GRAPHICS_METHODS, PEN_METHODS, BRUSH_METHODS] {
         for m in table {
-            if m.name == name {
-                if let MethodTarget::Body(ops) = m.target {
-                    return Some(ops);
-                }
+            if m.name != name {
+                continue;
+            }
+            let MethodTarget::Body(ops) = m.target else {
+                continue;
+            };
+            if m.arity == argc {
+                return Some(ops);
+            }
+            // Narrower than the call: reachable, because every `PushArg` it
+            // names is inside the frame. Keep the widest such body so a
+            // trailing-optional call still lands on the closest overload.
+            if m.arity < argc && widest_narrower.is_none_or(|(best, _)| m.arity > best) {
+                widest_narrower = Some((m.arity, ops));
             }
         }
     }
-    None
+    widest_narrower.map(|(_, ops)| ops)
 }
 
 pub fn classes() -> &'static [DotnetClass] {
@@ -758,13 +1526,16 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: GRAPHICS_METHODS,
             ctor_arity: 0,
-            // `Graphics` instances are normally created via
-            // `Control.CreateGraphics()` which is a Body that calls
-            // `vybe:gui::createGraphics(name)` directly — bypassing this
-            // ctor. The `widget_host_fn` here is a fallback for direct
-            // `New Graphics()` use, which produces a Graphics object
-            // stamped with `__control_name = "graphics"` (a default
-            // global canvas, useful for ad-hoc drawing in tests).
+            // A `Graphics` is normally created by `Control.CreateGraphics()`,
+            // which is `element.getContext("2d")` and bypasses this ctor
+            // entirely — the surface belongs to the control it came from.
+            //
+            // ⚠ This `widget_host_fn` backs bare `New Graphics()`, which has no
+            // element and therefore no surface: its drawing calls resolve
+            // nothing and paint nothing. .NET has no such constructor either
+            // (`Graphics` is obtained `FromImage`/`FromHwnd`/`CreateGraphics`),
+            // so the honest answer is a `Graphics` over an offscreen canvas —
+            // which needs an element this descriptor has no way to make.
             widget_host_fn: Some("graphicsNew"),
             widget_host_module: "vybe:gui",
         },
@@ -860,6 +1631,38 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 2,
             widget_host_fn: Some("sizeNew"),
+            widget_host_module: "vybe:gui",
+        },
+        // System.Drawing.Rectangle — position AND extent in one value, and the
+        // argument GDI+ overloads half its drawing surface on
+        // (`DrawEllipse(pen, rect)`, `DrawRectangle(pen, rect)`).
+        //
+        // It was never declared, so `New Rectangle(x, y, w, h)` answered
+        // `undefined is not callable` and `examples/vb/paint_demo` could not
+        // draw a circle or a rectangle at all.
+        //
+        // ⚠ NO `widget_host_fn`. `Point` and `Size` still construct through
+        // `vybe:gui::pointNew`/`sizeNew`, but adding a third such host function
+        // would be growing the surface this conversion exists to remove — a
+        // rectangle is four numbers in an object and needs nothing from a host.
+        // Its constructor is `dotnet.rectangle_new`, composed from primitives
+        // (`common_ctor_for` in `winforms/component_classes.rs`), which is the
+        // route `pointNew`/`sizeNew` should follow next.
+        //
+        // `Left`/`Top`/`Right`/`Bottom` are DERIVED in .NET (`Right = X +
+        // Width`) and are not stored; they are listed so the property axis
+        // knows the names, and read back through the same keyed getter that
+        // answers `Point.X`.
+        DotnetClass {
+            name: "Rectangle",
+            parent: None,
+            properties: &[
+                "X", "Y", "Width", "Height", "Left", "Top", "Right", "Bottom", "Location", "Size",
+                "IsEmpty",
+            ],
+            methods: &[],
+            ctor_arity: 4,
+            widget_host_fn: None,
             widget_host_module: "vybe:gui",
         },
     ]

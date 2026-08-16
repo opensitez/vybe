@@ -16,7 +16,33 @@
 
 use std::sync::{Arc, Mutex, OnceLock};
 use vybe_runtime::value::Object;
-use vybe_runtime::{HostContext, VM, Value};
+use vybe_runtime::vm::HostFnDecl;
+use vybe_runtime::{FuncSig, HostContext, VM, ValType, Value};
+
+/// Declare an `ecma:number` function — same closure, plus the signature.
+fn number_fn(
+    vm: &mut VM,
+    name: &str,
+    params: Vec<ValType>,
+    results: Vec<ValType>,
+    call: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>,
+) {
+    vm.register_host(HostFnDecl::new("ecma:number", name, call).with_sig(FuncSig {
+        name: name.to_string(),
+        params,
+        results,
+    }));
+}
+
+/// `Number.MAX_VALUE`, `Number.NaN`, … — the callable form of a constant,
+/// registered alongside the `register_host_value` form below. Takes nothing.
+fn number_const(
+    vm: &mut VM,
+    name: &str,
+    call: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>,
+) {
+    number_fn(vm, name, vec![], vec![ValType::F64], call);
+}
 
 static NUMBER_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
 
@@ -214,46 +240,38 @@ fn register_constants(vm: &mut VM) {
     // Duplicate as 0-arg host fns first (so CALL_IMPORT via function index works),
     // then register_host_value to overwrite the module record with ExportEntry::Value
     // so flatten_module_value_exports sees them and the compiler can inline them.
-    vm.register_host_fn(
-        "ecma:number",
+    number_const(
+        vm,
         "MAX_SAFE_INTEGER",
         Box::new(|_ctx, _args| Value::F64(9007199254740991.0)),
     );
-    vm.register_host_fn(
-        "ecma:number",
+    number_const(
+        vm,
         "MIN_SAFE_INTEGER",
         Box::new(|_ctx, _args| Value::F64(-9007199254740991.0)),
     );
-    vm.register_host_fn(
-        "ecma:number",
-        "MAX_VALUE",
-        Box::new(|_ctx, _args| Value::F64(f64::MAX)),
-    );
-    vm.register_host_fn(
-        "ecma:number",
+    number_const(vm, "MAX_VALUE", Box::new(|_ctx, _args| Value::F64(f64::MAX)));
+    number_const(
+        vm,
         "MIN_VALUE",
         Box::new(|_ctx, _args| Value::F64(f64::from_bits(1))),
     );
-    vm.register_host_fn(
-        "ecma:number",
+    number_const(
+        vm,
         "EPSILON",
         Box::new(|_ctx, _args| Value::F64(f64::EPSILON)),
     );
-    vm.register_host_fn(
-        "ecma:number",
+    number_const(
+        vm,
         "POSITIVE_INFINITY",
         Box::new(|_ctx, _args| Value::F64(f64::INFINITY)),
     );
-    vm.register_host_fn(
-        "ecma:number",
+    number_const(
+        vm,
         "NEGATIVE_INFINITY",
         Box::new(|_ctx, _args| Value::F64(f64::NEG_INFINITY)),
     );
-    vm.register_host_fn(
-        "ecma:number",
-        "NaN",
-        Box::new(|_ctx, _args| Value::F64(f64::NAN)),
-    );
+    number_const(vm, "NaN", Box::new(|_ctx, _args| Value::F64(f64::NAN)));
     // Number.MAX_SAFE_INTEGER = 2^53 − 1.
     vm.register_host_value(
         "ecma:number",
@@ -318,9 +336,11 @@ fn to_f64_coerce(v: &Value) -> f64 {
 
 fn register_predicates(vm: &mut VM) {
     // ecma:number:isFinite — STRICT, no coercion (Number.isFinite).
-    vm.register_host_fn(
-        "ecma:number",
+    number_fn(
+        vm,
         "isFinite",
+        vec![ValType::Any],
+        vec![ValType::Bool],
         Box::new(|_ctx, args| match args.first() {
             Some(Value::F64(n)) => Value::Bool(n.is_finite()),
             Some(Value::I32(_)) => Value::Bool(true),
@@ -329,9 +349,11 @@ fn register_predicates(vm: &mut VM) {
     );
 
     // ecma:number:isNaN — STRICT, no coercion (Number.isNaN).
-    vm.register_host_fn(
-        "ecma:number",
+    number_fn(
+        vm,
         "isNaN",
+        vec![ValType::Any],
+        vec![ValType::Bool],
         Box::new(|_ctx, args| match args.first() {
             Some(Value::F64(n)) => Value::Bool(n.is_nan()),
             _ => Value::Bool(false),
@@ -339,9 +361,11 @@ fn register_predicates(vm: &mut VM) {
     );
 
     // ecma:number:globalIsFinite — coerces (global isFinite).
-    vm.register_host_fn(
-        "ecma:number",
+    number_fn(
+        vm,
         "globalIsFinite",
+        vec![ValType::Any],
+        vec![ValType::Bool],
         Box::new(|_ctx, args| {
             let n = args.first().map(to_f64_coerce).unwrap_or(f64::NAN);
             Value::Bool(n.is_finite())
@@ -349,18 +373,22 @@ fn register_predicates(vm: &mut VM) {
     );
 
     // ecma:number:globalIsNaN — coerces (global isNaN).
-    vm.register_host_fn(
-        "ecma:number",
+    number_fn(
+        vm,
         "globalIsNaN",
+        vec![ValType::Any],
+        vec![ValType::Bool],
         Box::new(|_ctx, args| {
             let n = args.first().map(to_f64_coerce).unwrap_or(f64::NAN);
             Value::Bool(n.is_nan())
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:number",
+    number_fn(
+        vm,
         "isInteger",
+        vec![ValType::Any],
+        vec![ValType::Bool],
         Box::new(|_ctx, args| match args.first() {
             Some(Value::F64(n)) => Value::Bool(n.is_finite() && n.fract() == 0.0),
             Some(Value::I32(_)) => Value::Bool(true),
@@ -368,9 +396,11 @@ fn register_predicates(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:number",
+    number_fn(
+        vm,
         "isSafeInteger",
+        vec![ValType::Any],
+        vec![ValType::Bool],
         Box::new(|_ctx, args| {
             let n = match args.first() {
                 Some(Value::F64(n)) => *n,
@@ -402,9 +432,11 @@ fn register_parsers(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:number",
+    number_fn(
+        vm,
         "parseFloat",
+        vec![ValType::String],
+        vec![ValType::F64],
         Box::new(|_ctx, args| {
             let input = s_arg(args, 0);
             Value::F64(parse_float_ecma(&input))
@@ -589,9 +621,12 @@ fn register_prototype(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:number",
+    // Receiver only — `Number.prototype.valueOf()` takes no argument.
+    number_fn(
+        vm,
         "valueOf",
+        vec![ValType::F64],
+        vec![ValType::F64],
         Box::new(|_ctx, args| Value::F64(f_arg(args, 0).unwrap_or(0.0))),
     );
     vm.register_host_fn(

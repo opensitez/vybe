@@ -1,28 +1,11 @@
 use vybe_runtime::Chunk;
 
-fn call_import(
-    chunks: &mut [Chunk],
-    current: usize,
-    module: &str,
-    name: &str,
-    argc: u8,
-    line: u32,
-) {
-    let idx = chunks[current].add_import(module, name);
-    chunks[current].emit_call(idx, argc, line);
-}
+use crate::emitter::core::sqlclient_adapter;
 
 pub fn emit_oledb_connection_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    call_import(
-        chunks,
-        current,
-        "wasi:sql/types",
-        "connection.new",
-        argc,
-        line,
-    );
+    sqlclient_adapter::emit_connection_new(chunks, current, argc, line);
 }
 
 pub fn emit_oledb_command_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    call_import(chunks, current, "wasi:sql/types", "command.new", argc, line);
+    sqlclient_adapter::emit_command_new(chunks, current, argc, line);
 }

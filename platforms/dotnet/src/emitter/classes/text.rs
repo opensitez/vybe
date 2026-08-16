@@ -50,7 +50,8 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: Some("new_TextBox"),
+            // `<input type="text">` — created by the element mapping.
+            widget_host_fn: None,
             widget_host_module: "vybe:gui",
         },
         DotnetClass {
@@ -75,7 +76,8 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: Some("new_RichTextBox"),
+            // `<textarea>` — the multiline text surface.
+            widget_host_fn: None,
             widget_host_module: "vybe:gui",
         },
         DotnetClass {
@@ -103,7 +105,8 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: Some("new_MaskedTextBox"),
+            // `<input type="text">`
+            widget_host_fn: None,
             widget_host_module: "vybe:gui",
         },
     ]

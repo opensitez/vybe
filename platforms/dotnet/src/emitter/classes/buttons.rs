@@ -42,7 +42,11 @@ pub fn classes() -> &'static [DotnetClass] {
             properties: &["DialogResult", "AutoSizeMode"],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: Some("new_Button"),
+            // `<button>` — materialized by the element mapping in
+            // `tree_register::html_element_for_control`. A `widget_host_fn`
+            // here would win over that mapping and pin the control to
+            // `vybe:gui`; see `winforms::component_classes`.
+            widget_host_fn: None,
             widget_host_module: "vybe:gui",
         },
         DotnetClass {
@@ -58,7 +62,8 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: Some("new_CheckBox"),
+            // `<input type="checkbox">`
+            widget_host_fn: None,
             widget_host_module: "vybe:gui",
         },
         DotnetClass {
@@ -67,7 +72,8 @@ pub fn classes() -> &'static [DotnetClass] {
             properties: &["Appearance", "AutoCheck", "CheckAlign", "Checked"],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: Some("new_RadioButton"),
+            // `<input type="radio">`
+            widget_host_fn: None,
             widget_host_module: "vybe:gui",
         },
     ]

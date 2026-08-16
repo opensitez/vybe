@@ -7,31 +7,47 @@ use vybe_runtime::{Chunk, Value};
 
 use vybe_runtime::opcode::Op;
 
-/// `Control.CreateGraphics()` — construct a `Graphics` (via its registered
-/// class global) stamped with the receiver control's `__control_name`, so
-/// drawings route to the control's canvas. This mirrors the former
-/// `CONTROL_CREATE_GRAPHICS` method Body, but is emitted at the call site
-/// through the component descriptor (`MethodBody::Common`) rather than a
-/// ctor-bound thunk: control leaves no longer emit a per-class ctor chunk,
-/// so a host-constructed control must resolve `CreateGraphics` here.
+/// `Control.CreateGraphics()` — **`element.getContext("2d")`**, HTML §4.12.5.
+///
+/// A .NET control IS an element: `emit_control_element` builds it with
+/// `document.createElement` and the value that reaches here carries `__node`.
+/// A context belongs to the element it came from, so asking that element for
+/// its 2D context is both the whole of what `CreateGraphics` means and the
+/// only form a real browser engine can answer.
+///
+/// The context type is passed explicitly and is NOT optional: `getContext`
+/// answers `null` for a type it does not support, per spec, and an omitted
+/// argument reads as `""`. That would hand back a null `Graphics` whose every
+/// draw is a silent no-op, because a canvas op on an unresolved target paints
+/// nothing rather than raising.
+///
+/// `__type` is re-stamped to `Graphics` because guest code downcasts on it
+/// (`emit_get_type` below reads the same field); the raw context introduces
+/// itself as `CanvasRenderingContext2D`, which is true of the handle and wrong
+/// for the .NET object wrapping it.
 ///
 /// Stack on entry: `[control]`; on exit: `[graphics]`.
 fn emit_control_create_graphics(chunk: &mut Chunk, line: u32) {
-    let name_key = chunk.add_constant(Value::String(Arc::from("__control_name")));
-    // Construct Graphics via its host factory (its descriptor constructor
-    // backing) rather than a class global — Graphics no longer emits a ctor
-    // global now that its methods resolve through the descriptor.
-    let graphics_new = chunk.add_import("vybe:gui", "graphicsNew");
-    let name_slot = chunk.alloc_scratch(1);
-    // Stash the control's name (consuming the control), then build a fresh
-    // Graphics and copy the name onto it.
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, name_key, line); // [name]
-    chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line); // []
-    chunk.emit_call(graphics_new, 0, line); // [graphics]
+    let type_key = chunk.add_constant(Value::String(Arc::from("__type")));
+    let get_context = chunk.add_import("web:canvas", "getContext");
+    let save = chunk.add_import("web:canvas", "save");
+    chunk.emit_string_const("2d", line); // [control, "2d"]
+    chunk.emit_call(get_context, 2, line); // [graphics]
+    // The clip baseline. A canvas clip has no inverse, so `SetClip` /
+    // `ResetClip` undo a region by returning to a state saved before it was
+    // applied — this is the entry they pop back to, pushed once so neither can
+    // underflow the state stack. See `drawing.rs::GRAPHICS_SET_CLIP`.
     core_wasm::dup(chunk, line); // [graphics, graphics]
-    chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line); // [graphics, graphics, name]
-    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, name_key, line); // [graphics, graphics]
+    chunk.emit_call(save, 1, line); // [graphics, null]
     chunk.emit_op(Op::DROP, line); // [graphics]
+    // `STRUCT_SET` consumes the object AND the value, so the `dup` above is
+    // what keeps the context on the stack — there is nothing left to drop
+    // afterwards. Dropping here emptied the stack and `Dim g As Graphics`
+    // bound `null`, which is why every later `g.DrawX()` was a call on null:
+    // it painted nothing and raised nothing.
+    core_wasm::dup(chunk, line); // [graphics, graphics]
+    chunk.emit_string_const("Graphics", line); // [graphics, graphics, "Graphics"]
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line); // [graphics]
 }
 
 /// VB `Choose(idx, v1, v2, ..., vN)` — variadic 1-indexed selector.
@@ -163,6 +179,51 @@ fn emit_to_byte(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::I32_FROM_F64, line);
 }
 
+/// `New Rectangle(x, y, width, height)` — a value type built from primitives,
+/// with no host function behind it.
+///
+/// `Point` and `Size` construct through `vybe:gui::pointNew`/`sizeNew`, and a
+/// `rectangleNew` beside them would have been a third host function for four
+/// numbers in an object — growth in exactly the direction this platform is
+/// being converted away from. So the constructor is composed here instead,
+/// the way `StringBuilder`'s is.
+///
+/// Field names are LOWERCASE to match `pointNew`'s `{x, y}`: the property axis
+/// reads `rect.X` through the same keyed getter that answers `Point.X`, and it
+/// is the storage spelling that has to agree, not the property spelling.
+///
+/// `Left`/`Top`/`Right`/`Bottom` are not stored — they are derived in .NET
+/// (`Right = X + Width`) and storing a snapshot of a derived value is how it
+/// goes stale the first time `Width` is written.
+///
+/// Stack on entry: `[x, y, width, height]`; on exit: `[rectangle]`.
+fn emit_rectangle_new(chunk: &mut Chunk, line: u32) {
+    // Taken into scratch slots so the object can be built UNDERNEATH them —
+    // `struct.new` pushes a fresh object and the arguments are already on the
+    // stack above where it needs to go. Popped last-first, which is the order
+    // they were pushed.
+    let height = chunk.alloc_scratch(1);
+    let width = chunk.alloc_scratch(1);
+    let y = chunk.alloc_scratch(1);
+    let x = chunk.alloc_scratch(1);
+    for slot in [height, width, y, x] {
+        chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
+    }
+    chunk.emit_struct_new(0, 0, line);
+    for (field, slot) in [("x", x), ("y", y), ("width", width), ("height", height)] {
+        let key = chunk.add_constant(Value::String(Arc::from(field)));
+        core_wasm::dup(chunk, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+        // `struct.set` pops [obj, val] and pushes nothing, so the `dup` above
+        // is what leaves the object on the stack for the next field.
+        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+    }
+    let type_key = chunk.add_constant(Value::String(Arc::from("__type")));
+    core_wasm::dup(chunk, line);
+    chunk.emit_string_const("Rectangle", line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
+}
+
 pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
     if crate::emitter::core::runtime_adapter::emit_helper(name, chunks, current, argc, line) {
         return true;
@@ -187,6 +248,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.winforms_message_box_show" => {
             crate::emitter::winforms::adapter::emit_message_box_show(chunks, current, argc, line);
         }
+        // Only the four-number form. `Rectangle(Point, Size)` exists in GDI+
+        // and is NOT handled: falling through to `false` makes it an
+        // "Unknown common emit" the moment it is used, which is the loud
+        // answer — building an empty rectangle from the wrong argument count
+        // would be the silent one.
+        "dotnet.rectangle_new" if argc == 4 => emit_rectangle_new(&mut chunks[current], line),
         "dotnet.get_type" => emit_get_type(&mut chunks[current], line),
         "dotnet.to_byte" => emit_to_byte(&mut chunks[current], line),
         "dotnet.winforms_control_show" => {
@@ -212,7 +279,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // a thunk chunk — no per-class ctor chunk binds a thunk anymore.
         drawing if drawing.starts_with("dotnet.drawing.") => {
             let method = &drawing["dotnet.drawing.".len()..];
-            match crate::emitter::classes::drawing::drawing_method_body(method) {
+            match crate::emitter::classes::drawing::drawing_method_body(method, argc) {
                 Some(ops) => crate::emitter::classes::builder::emit_body_inline(
                     &mut chunks[current],
                     ops,
@@ -2232,6 +2299,105 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.adodb_recordset_close" => {
             crate::emitter::core::adodb_adapter::emit_adodb_recordset_close(chunks, current, line)
+        }
+
+        // ── ADO surface — SqlDataReader / SqlParameterCollection / SqlTransaction ─
+        // Bytecode over `wasi:sql`'s four real WIT functions; nothing here is a
+        // host call. See `core/sqlclient_adapter.rs`.
+        "dotnet.sql_connection_new" => {
+            crate::emitter::core::sqlclient_adapter::emit_connection_new(chunks, current, argc, line)
+        }
+        "dotnet.sql_connection_open" => {
+            crate::emitter::core::sqlclient_adapter::emit_connection_open(chunks, current, line)
+        }
+        "dotnet.sql_connection_close" => {
+            crate::emitter::core::sqlclient_adapter::emit_connection_close(chunks, current, line)
+        }
+        "dotnet.sql_connection_create_command" => {
+            crate::emitter::core::sqlclient_adapter::emit_connection_create_command(
+                chunks, current, line,
+            )
+        }
+        "dotnet.sql_connection_begin_transaction" => {
+            crate::emitter::core::sqlclient_adapter::emit_connection_begin_transaction(
+                chunks, current, line,
+            )
+        }
+        "dotnet.sql_command_new" => {
+            crate::emitter::core::sqlclient_adapter::emit_command_new(chunks, current, argc, line)
+        }
+        "dotnet.sql_connection_get_schema" => {
+            crate::emitter::core::sqlclient_adapter::emit_connection_get_schema(
+                chunks, current, line,
+            )
+        }
+        "dotnet.sql_command_execute_non_query" => {
+            crate::emitter::core::sqlclient_adapter::emit_command_execute_non_query(
+                chunks, current, line,
+            )
+        }
+        "dotnet.sql_command_execute_scalar" => {
+            crate::emitter::core::sqlclient_adapter::emit_command_execute_scalar(
+                chunks, current, line,
+            )
+        }
+        "dotnet.sql_command_execute_reader" => {
+            crate::emitter::core::sqlclient_adapter::emit_command_execute_reader(
+                chunks, current, line,
+            )
+        }
+        "dotnet.sql_adapter_fill" => {
+            crate::emitter::core::sqlclient_adapter::emit_adapter_fill(chunks, current, line)
+        }
+        "dotnet.sql_command_create_parameter" => {
+            crate::emitter::core::sqlclient_adapter::emit_command_create_parameter(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.sql_data_adapter_new" => {
+            crate::emitter::core::sqlclient_adapter::emit_data_adapter_new(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.sql_reader_read" => {
+            crate::emitter::core::sqlclient_adapter::emit_reader_read(chunks, current, line)
+        }
+        "dotnet.sql_reader_get_name" => {
+            crate::emitter::core::sqlclient_adapter::emit_reader_get_name(chunks, current, line)
+        }
+        "dotnet.sql_reader_get_value" => {
+            crate::emitter::core::sqlclient_adapter::emit_reader_get_value(chunks, current, line)
+        }
+        "dotnet.sql_reader_get_string" => {
+            crate::emitter::core::sqlclient_adapter::emit_reader_get_string(chunks, current, line)
+        }
+        "dotnet.sql_reader_is_dbnull" => {
+            crate::emitter::core::sqlclient_adapter::emit_reader_is_dbnull(chunks, current, line)
+        }
+        "dotnet.sql_reader_close" => {
+            crate::emitter::core::sqlclient_adapter::emit_reader_close(chunks, current, line)
+        }
+        "dotnet.sql_reader_get_schema_table" => {
+            crate::emitter::core::sqlclient_adapter::emit_reader_get_schema_table(
+                chunks, current, line,
+            )
+        }
+        "dotnet.sql_params_add_with_value" => {
+            crate::emitter::core::sqlclient_adapter::emit_params_add_with_value(
+                chunks, current, line,
+            )
+        }
+        "dotnet.sql_params_clear" => {
+            crate::emitter::core::sqlclient_adapter::emit_params_clear(chunks, current, line)
+        }
+        "dotnet.sql_params_count" => {
+            crate::emitter::core::sqlclient_adapter::emit_params_count(chunks, current, line)
+        }
+        "dotnet.sql_transaction_commit" => {
+            crate::emitter::core::sqlclient_adapter::emit_transaction_commit(chunks, current, line)
+        }
+        "dotnet.sql_transaction_rollback" => {
+            crate::emitter::core::sqlclient_adapter::emit_transaction_rollback(chunks, current, line)
         }
 
         // ── LINQ surface — composed bytecode shared by every .NET-shape language ──

@@ -21,6 +21,15 @@ pub fn register_namespace_tree() {
             ("tgamma", "libc.math.tgamma"),
             ("gamma", "libc.math.tgamma"),
             ("lgamma", "libc.math.lgamma"),
+            // libm declares all six in <math.h>; registering them here is what
+            // makes them reachable from every language, not just C.
+            ("j0", "libc.math.j0"),
+            ("j1", "libc.math.j1"),
+            ("y0", "libc.math.y0"),
+            ("y1", "libc.math.y1"),
+            ("jn", "libc.math.jn"),
+            ("yn", "libc.math.yn"),
+            ("erfcx", "libc.math.erfcx"),
         ] {
             math.insert(
                 name.to_string(),
@@ -59,10 +68,59 @@ pub fn register_namespace_tree() {
             );
         }
 
+        // C ABI database surfaces. Registered like `sdl`: under `libc.*` for a
+        // qualified reach, and as a bare root so the plain C symbol resolves —
+        // which is what a Fortran `bind(c, name="sqlite3_open")` emits.
+        let mut sqlite = Subtree::new();
+        for name in [
+            "sqlite3_open",
+            "sqlite3_open_v2",
+            "sqlite3_close",
+            "sqlite3_close_v2",
+            "sqlite3_exec",
+            "sqlite3_prepare",
+            "sqlite3_prepare_v2",
+            "sqlite3_finalize",
+            "sqlite3_reset",
+            "sqlite3_errmsg",
+            "sqlite3_errcode",
+            "sqlite3_extended_errcode",
+        ] {
+            sqlite.insert(
+                name.to_string(),
+                NamespaceNode::CommonEmit(format!("libc.sqlite3.{name}")),
+            );
+        }
+
+        let mut mysql = Subtree::new();
+        for name in [
+            "mysql_init",
+            "mysql_real_connect",
+            "mysql_close",
+            "mysql_select_db",
+            "mysql_query",
+            "mysql_real_query",
+            "mysql_store_result",
+            "mysql_use_result",
+            "mysql_free_result",
+        ] {
+            mysql.insert(
+                name.to_string(),
+                NamespaceNode::CommonEmit(format!("libc.mysql.{name}")),
+            );
+        }
+
         let mut root = Subtree::new();
         root.insert("math".to_string(), NamespaceNode::Namespace(math));
         root.insert("sdl".to_string(), NamespaceNode::Namespace(sdl.clone()));
+        root.insert(
+            "sqlite3".to_string(),
+            NamespaceNode::Namespace(sqlite.clone()),
+        );
+        root.insert("mysql".to_string(), NamespaceNode::Namespace(mysql.clone()));
         namespaces::register_namespace_tree("libc", NamespaceNode::Namespace(root));
+        namespaces::register_namespace_tree("sqlite3", NamespaceNode::Namespace(sqlite));
+        namespaces::register_namespace_tree("mysql", NamespaceNode::Namespace(mysql));
 
         // Keep compatibility with existing C profile entries that emit
         // `common:sdl.*` without a libc prefix.

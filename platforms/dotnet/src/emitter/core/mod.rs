@@ -33,6 +33,7 @@ pub mod regex_adapter;
 pub mod runtime_adapter;
 pub mod sockets_adapter;
 pub mod span_adapter;
+pub mod sqlclient_adapter;
 pub mod stopwatch_adapter;
 pub mod stream_io_adapter;
 pub mod string_adapter;

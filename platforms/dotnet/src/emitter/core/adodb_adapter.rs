@@ -6,6 +6,8 @@ use vybe_runtime::{Chunk, Value};
 
 use vybe_compiler::primitives::collections;
 
+use crate::emitter::core::sqlclient_adapter;
+
 const COL_NAMES_KEY: &str = "__col_names";
 const COMMAND_TYPE_KEY: &str = "commandtype";
 const EOF_KEY: &str = "eof";
@@ -34,18 +36,6 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
 
 fn reserve_slot(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
-}
-
-fn call_import(
-    chunks: &mut [Chunk],
-    current: usize,
-    module: &str,
-    name: &str,
-    argc: u8,
-    line: u32,
-) {
-    let idx = chunks[current].add_import(module, name);
-    chunks[current].emit_call(idx, argc, line);
 }
 
 fn set_const_prop(chunk: &mut Chunk, key: &str, value: Value, line: u32) {
@@ -157,14 +147,7 @@ fn emit_reader_to_adodb_recordset(
 // ── ADODB.Connection ──────────────────────────────────────────────────────────
 
 pub fn emit_adodb_connection_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    call_import(
-        chunks,
-        current,
-        "wasi:sql/types",
-        "connection.new",
-        argc,
-        line,
-    );
+    sqlclient_adapter::emit_connection_new(chunks, current, argc, line);
 }
 
 /// `Connection.Execute(sql)` — creates a command, runs it, returns a Recordset.
@@ -181,15 +164,8 @@ pub fn emit_adodb_connection_execute(chunks: &mut [Chunk], current: usize, _argc
         chunk.emit_op_u16(Op::LOCAL_GET, sql_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, conn_slot, line);
     }
-    call_import(chunks, current, "wasi:sql/types", "command.new", 2, line);
-    call_import(
-        chunks,
-        current,
-        "wasi:sql/types",
-        "[method]command.execute-reader",
-        1,
-        line,
-    );
+    sqlclient_adapter::emit_command_new(chunks, current, 2, line);
+    sqlclient_adapter::emit_command_execute_reader(chunks, current, line);
     let reader_slot = {
         let chunk = &mut chunks[current];
         let slot = reserve_slot(chunk);
@@ -203,14 +179,7 @@ pub fn emit_adodb_connection_execute(chunks: &mut [Chunk], current: usize, _argc
 /// returned by the host is discarded (ADODB tracks state implicitly).
 pub fn emit_adodb_conn_begin_trans(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     // Stack: [conn]
-    call_import(
-        chunks,
-        current,
-        "wasi:sql/types",
-        "[method]connection.begin-transaction",
-        1,
-        line,
-    );
+    sqlclient_adapter::emit_connection_begin_transaction(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
@@ -223,15 +192,8 @@ pub fn emit_adodb_conn_commit_trans(chunks: &mut [Chunk], current: usize, _argc:
     chunk.emit_op_u16(Op::LOCAL_SET, conn_slot, line);
     push_const(chunk, Value::String(Arc::from("COMMIT")), line);
     chunk.emit_op_u16(Op::LOCAL_GET, conn_slot, line);
-    call_import(chunks, current, "wasi:sql/types", "command.new", 2, line);
-    call_import(
-        chunks,
-        current,
-        "wasi:sql/types",
-        "[method]command.execute-non-query",
-        1,
-        line,
-    );
+    sqlclient_adapter::emit_command_new(chunks, current, 2, line);
+    sqlclient_adapter::emit_command_execute_non_query(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
@@ -244,15 +206,8 @@ pub fn emit_adodb_conn_rollback_trans(chunks: &mut [Chunk], current: usize, _arg
     chunk.emit_op_u16(Op::LOCAL_SET, conn_slot, line);
     push_const(chunk, Value::String(Arc::from("ROLLBACK")), line);
     chunk.emit_op_u16(Op::LOCAL_GET, conn_slot, line);
-    call_import(chunks, current, "wasi:sql/types", "command.new", 2, line);
-    call_import(
-        chunks,
-        current,
-        "wasi:sql/types",
-        "[method]command.execute-non-query",
-        1,
-        line,
-    );
+    sqlclient_adapter::emit_command_new(chunks, current, 2, line);
+    sqlclient_adapter::emit_command_execute_non_query(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
@@ -260,7 +215,7 @@ pub fn emit_adodb_conn_rollback_trans(chunks: &mut [Chunk], current: usize, _arg
 // ── ADODB.Command ─────────────────────────────────────────────────────────────
 
 pub fn emit_adodb_command_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    call_import(chunks, current, "wasi:sql/types", "command.new", argc, line);
+    sqlclient_adapter::emit_command_new(chunks, current, argc, line);
     let chunk = &mut chunks[current];
     set_const_prop(chunk, COMMAND_TYPE_KEY, Value::F64(1.0), line);
 }
@@ -269,14 +224,7 @@ pub fn emit_adodb_command_new(chunks: &mut [Chunk], current: usize, argc: u8, li
 /// calls execute-reader and wraps the result as an ADODB Recordset.
 pub fn emit_adodb_command_execute(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     // Stack: [cmd]
-    call_import(
-        chunks,
-        current,
-        "wasi:sql/types",
-        "[method]command.execute-reader",
-        1,
-        line,
-    );
+    sqlclient_adapter::emit_command_execute_reader(chunks, current, line);
     let reader_slot = {
         let chunk = &mut chunks[current];
         let slot = reserve_slot(chunk);
@@ -372,7 +320,7 @@ pub fn emit_adodb_recordset_open(chunks: &mut [Chunk], current: usize, _argc: u8
         chunk.emit_op_u16(Op::LOCAL_GET, sql_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, conn_slot, line);
     }
-    call_import(chunks, current, "wasi:sql/types", "command.new", 2, line);
+    sqlclient_adapter::emit_command_new(chunks, current, 2, line);
     let cmd_slot = {
         let chunk = &mut chunks[current];
         let slot = reserve_slot(chunk);
@@ -380,14 +328,7 @@ pub fn emit_adodb_recordset_open(chunks: &mut [Chunk], current: usize, _argc: u8
         chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
         slot
     };
-    call_import(
-        chunks,
-        current,
-        "wasi:sql/types",
-        "[method]command.execute-reader",
-        1,
-        line,
-    );
+    sqlclient_adapter::emit_command_execute_reader(chunks, current, line);
     let reader_slot = {
         let chunk = &mut chunks[current];
         let slot = reserve_slot(chunk);

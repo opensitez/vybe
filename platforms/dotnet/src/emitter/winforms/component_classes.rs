@@ -71,6 +71,27 @@ pub fn component_class_exports() -> &'static [(&'static str, ClassType)] {
     EXPORTS.as_slice()
 }
 
+/// A descriptor class whose CONSTRUCTOR is composed from primitives rather than
+/// called on a host.
+///
+/// The third arm of `class_to_component_class`'s constructor gate, and it goes
+/// FIRST because it is the direction the other two are being converted toward:
+/// `widget_host_fn` calls `vybe:gui`, the element mapping materialises a node,
+/// and this builds the value in bytecode with no host at all.
+///
+/// A value type is four numbers in an object — nothing a host is needed for —
+/// so `Rectangle` is built by `dotnet.rectangle_new` (`dispatch.rs`) the way
+/// `StringBuilder` is built by `dotnet.string_builder_new`. `Point` and `Size`
+/// still go through `vybe:gui::pointNew`/`sizeNew` and belong here next; adding
+/// a `rectangleNew` beside them would have grown the surface this conversion
+/// exists to remove.
+fn common_ctor_for(class: &str) -> Option<&'static str> {
+    match class {
+        "Rectangle" => Some("dotnet.rectangle_new"),
+        _ => None,
+    }
+}
+
 fn class_to_export(class: &DotnetClass) -> DotnetClassExport {
     DotnetClassExport::with_wrapper(
         dotnet_interface_for_class(class),
@@ -176,7 +197,10 @@ fn class_to_component_class(class: &DotnetClass) -> ClassType {
         }
     }
 
-    if let Some(host_fn) = class.widget_host_fn {
+    if let Some(emit) = common_ctor_for(class.name) {
+        out = out
+            .with_constructor(ConstructorDef::new(class.ctor_arity).with_common_backing(emit));
+    } else if let Some(host_fn) = class.widget_host_fn {
         out = out.with_constructor(
             ConstructorDef::new(class.ctor_arity)
                 .with_backing(HostTarget::new(class.widget_host_module, host_fn)),

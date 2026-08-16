@@ -22,6 +22,29 @@ use super::catalog::{self, FlutterClass};
 fn ctor_spec(class: &FlutterClass) -> CtorSpec {
     let names: Vec<String> = class.fields.iter().map(|f| f.name.to_string()).collect();
     let mut ancestry: Vec<String> = catalog::ancestry(class);
+    // **A widget IS an element** — so the identity chain says so, and stops
+    // being two mechanisms.
+    //
+    // `Widget` is the catalog's root (`abstracts.rs`), and continuing it into
+    // the live DOM type is what earns a real rtt: the shared ctor path allocates
+    // with this chain, `reserve_platform_type` links each pair by
+    // `parent_index`, and `ref.test` then answers `is StatelessWidget` /
+    // `is Widget` / `is HTMLElement` natively instead of a `__types` string
+    // scan. Method dispatch walks the same chain, so the DOM vtable stays
+    // reachable from a widget.
+    //
+    // Only for a class with a backing control: `EdgeInsets` and `Color` are
+    // data, they are not in the document, and nothing may make them elements.
+    // The tail is also what the shared path GATES on, so declaring it here is
+    // this platform opting in — dotnet and plib are untouched until they do the
+    // same.
+    if class.widget_host_fn.is_some() {
+        ancestry.push(namespaces::DOM_ELEMENT_TYPE.to_string());
+    }
+    // ⚠ Interfaces come AFTER the DOM tail, and must: the chain is linked by
+    // consecutive pairs, so a name inserted mid-ancestry would re-parent the
+    // link it lands between. Every class carrying interfaces is a `data` type
+    // (`data_with_interfaces`), which has no control and so no tail.
     for iface in class.interfaces {
         ancestry.push((*iface).to_string());
     }
@@ -73,6 +96,15 @@ fn ctor_spec(class: &FlutterClass) -> CtorSpec {
         fields: names,
         ancestry,
         control_fn: class.widget_host_fn.map(str::to_string),
+        // A Flutter widget argument may be a COMPOSITE — `home: CalculatorPage()`
+        // is a `StatefulWidget`, a description with no element until `build()`
+        // has run. `_vfConcrete` is that build, and it is the identity for
+        // anything already concrete, so declaring it here costs a call and
+        // decides nothing at compile time.
+        nest_coerce: class
+            .widget_host_fn
+            .is_some()
+            .then(|| "_vfConcrete".to_string()),
         field_gui,
         value_equality: is_value_equality_type(class.name),
     }

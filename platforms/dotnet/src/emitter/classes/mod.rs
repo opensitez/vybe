@@ -332,6 +332,24 @@ pub enum MethodOp {
     Dup,
     /// Return top of stack. If the stack is empty, returns null.
     Return,
+
+    // ─── Arithmetic ────────────────────────────────────────────────────
+    //
+    // Every one pops two f64 operands and pushes the result, left operand
+    // pushed first: `a b Sub` is `a - b`.
+    //
+    // These exist because GDI+ and WHATWG canvas describe the same shapes in
+    // different coordinates, and the difference is arithmetic: .NET gives an
+    // ellipse as a BOUNDING BOX (`x, y, w, h`) where the canvas wants a CENTRE
+    // and RADII (`x + w/2`, `y + h/2`, `w/2`, `h/2`), and .NET angles are
+    // degrees where the canvas takes radians. Without them every such shape
+    // needs a bespoke host function to hide the conversion — and a host
+    // function shaped around a .NET call is one no browser engine could be
+    // asked to implement.
+    Add,
+    Sub,
+    Mul,
+    Div,
 }
 
 impl DotnetClass {

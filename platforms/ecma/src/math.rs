@@ -1,32 +1,88 @@
 use std::sync::Arc;
 
-use vybe_runtime::{HostContext, VM, Value};
+use vybe_runtime::vm::HostFnDecl;
+use vybe_runtime::{FuncSig, HostContext, VM, ValType, Value};
+
+/// Declare an `ecma:math` function — same closure, plus the signature.
+///
+/// §21.3 is the one ECMA namespace that is almost entirely fixed-arity: the
+/// operations take one or two numbers and answer one. The exceptions are the
+/// variadic four — `max`, `min`, `hypot`, and the `maxOf`/`minOf`/`sumPrecise`
+/// trio built on `collect_nums` — plus `log`, which reads an optional base.
+/// Those stay undeclared, since a Component Model signature cannot say "rest".
+fn math_fn(
+    vm: &mut VM,
+    name: &str,
+    params: Vec<ValType>,
+    results: Vec<ValType>,
+    call: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>,
+) {
+    vm.register_host(HostFnDecl::new("ecma:math", name, call).with_sig(FuncSig {
+        name: name.to_string(),
+        params,
+        results,
+    }));
+}
+
+/// A double. Every §21.3 operand and result is one — the spec's `Number`.
+fn num() -> ValType {
+    ValType::F64
+}
+
+/// A one-number operation: `sqrt`, `floor`, `sin`, …
+fn unary(
+    vm: &mut VM,
+    name: &str,
+    call: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>,
+) {
+    math_fn(vm, name, vec![num()], vec![num()], call);
+}
+
+/// A two-number operation: `pow`, `atan2`, `imul`.
+fn binary(
+    vm: &mut VM,
+    name: &str,
+    call: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>,
+) {
+    math_fn(vm, name, vec![num(), num()], vec![num()], call);
+}
+
+/// A spec CONSTANT (`Math.PI`). Registered as a host fn taking nothing —
+/// `func() -> f64` is the honest signature, and it is why a caller that pushes
+/// an operand is worth hearing about.
+fn constant(
+    vm: &mut VM,
+    name: &str,
+    call: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>,
+) {
+    math_fn(vm, name, vec![], vec![num()], call);
+}
 
 pub fn register(vm: &mut VM) {
     // Core math — callable ops stay as host functions, while spec
     // constants are registered as immutable value exports.
-    vm.register_host_fn(
-        "ecma:math",
+    unary(
+        vm,
         "floor",
         Box::new(|_ctx, a| Value::F64(f(a, 0).floor())),
     );
-    vm.register_host_fn(
-        "ecma:math",
+    unary(
+        vm,
         "ceil",
         Box::new(|_ctx, a| Value::F64(f(a, 0).ceil())),
     );
-    vm.register_host_fn(
-        "ecma:math",
+    unary(
+        vm,
         "abs",
         Box::new(|_ctx, a| Value::F64(f(a, 0).abs())),
     );
-    vm.register_host_fn(
-        "ecma:math",
+    unary(
+        vm,
         "sqrt",
         Box::new(|_ctx, a| Value::F64(f(a, 0).sqrt())),
     );
-    vm.register_host_fn(
-        "ecma:math",
+    unary(
+        vm,
         "trunc",
         Box::new(|ctx, a| {
             let n = match number_arg(ctx, a, 0) {
@@ -44,8 +100,8 @@ pub fn register(vm: &mut VM) {
     // ECMA-262 §21.3.2.28: Math.round ties toward +Infinity (not symmetric).
     // Rust's f64::round() uses round-half-away-from-zero, which breaks for
     // negative halves: Math.round(-0.5) must be 0, not -1.
-    vm.register_host_fn(
-        "ecma:math",
+    unary(
+        vm,
         "round",
         Box::new(|_ctx, a| {
             let x = f(a, 0);
@@ -77,14 +133,16 @@ pub fn register(vm: &mut VM) {
             )
         }),
     );
-    vm.register_host_fn(
-        "ecma:math",
+    binary(
+        vm,
         "pow",
         Box::new(|_ctx, a| Value::F64(f(a, 0).powf(f(a, 1)))),
     );
-    vm.register_host_fn(
-        "ecma:math",
+    math_fn(
+        vm,
         "random",
+        vec![],
+        vec![num()],
         Box::new(|_ctx, _| {
             let t = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -93,13 +151,13 @@ pub fn register(vm: &mut VM) {
             Value::F64((t as f64 % 1_000_000.0) / 1_000_000.0)
         }),
     );
-    vm.register_host_fn(
-        "ecma:math",
+    unary(
+        vm,
         "sin",
         Box::new(|_ctx, a| Value::F64(f(a, 0).sin())),
     );
-    vm.register_host_fn(
-        "ecma:math",
+    unary(
+        vm,
         "cos",
         Box::new(|_ctx, a| Value::F64(f(a, 0).cos())),
     );
@@ -119,43 +177,43 @@ pub fn register(vm: &mut VM) {
     // function index works at runtime), then register_host_value to overwrite
     // the module record ExportEntry with Value — so flatten_module_value_exports
     // sees them as constants and the compiler can inline them directly.
-    vm.register_host_fn(
-        "ecma:math",
+    constant(
+        vm,
         "PI",
         Box::new(|_ctx, _| Value::F64(std::f64::consts::PI)),
     );
-    vm.register_host_fn(
-        "ecma:math",
+    constant(
+        vm,
         "E",
         Box::new(|_ctx, _| Value::F64(std::f64::consts::E)),
     );
-    vm.register_host_fn(
-        "ecma:math",
+    constant(
+        vm,
         "LN2",
         Box::new(|_ctx, _| Value::F64(std::f64::consts::LN_2)),
     );
-    vm.register_host_fn(
-        "ecma:math",
+    constant(
+        vm,
         "LN10",
         Box::new(|_ctx, _| Value::F64(std::f64::consts::LN_10)),
     );
-    vm.register_host_fn(
-        "ecma:math",
+    constant(
+        vm,
         "LOG2E",
         Box::new(|_ctx, _| Value::F64(std::f64::consts::LOG2_E)),
     );
-    vm.register_host_fn(
-        "ecma:math",
+    constant(
+        vm,
         "LOG10E",
         Box::new(|_ctx, _| Value::F64(std::f64::consts::LOG10_E)),
     );
-    vm.register_host_fn(
-        "ecma:math",
+    constant(
+        vm,
         "SQRT2",
         Box::new(|_ctx, _| Value::F64(std::f64::consts::SQRT_2)),
     );
-    vm.register_host_fn(
-        "ecma:math",
+    constant(
+        vm,
         "SQRT1_2",
         Box::new(|_ctx, _| Value::F64(std::f64::consts::FRAC_1_SQRT_2)),
     );
@@ -164,8 +222,8 @@ pub fn register(vm: &mut VM) {
     vm.register_host_value("ecma:math", "PI", Value::F64(std::f64::consts::PI));
     vm.register_host_value("ecma:math", "E", Value::F64(std::f64::consts::E));
 
-    vm.register_host_fn(
-        "ecma:math",
+    unary(
+        vm,
         "sign",
         Box::new(|_ctx, a| {
             let n = f(a, 0);
@@ -180,18 +238,18 @@ pub fn register(vm: &mut VM) {
             }
         }),
     );
-    vm.register_host_fn(
-        "ecma:math",
+    unary(
+        vm,
         "log2",
         Box::new(|_ctx, a| Value::F64(f(a, 0).log2())),
     );
-    vm.register_host_fn(
-        "ecma:math",
+    unary(
+        vm,
         "log10",
         Box::new(|_ctx, a| Value::F64(f(a, 0).log10())),
     );
-    vm.register_host_fn(
-        "ecma:math",
+    unary(
+        vm,
         "cbrt",
         Box::new(|_ctx, a| Value::F64(f(a, 0).cbrt())),
     );
@@ -210,69 +268,69 @@ pub fn register(vm: &mut VM) {
             Value::F64(sum.sqrt())
         }),
     );
-    vm.register_host_fn(
-        "ecma:math",
+    binary(
+        vm,
         "atan2",
         Box::new(|_ctx, a| Value::F64(f(a, 0).atan2(f(a, 1)))),
     );
-    vm.register_host_fn(
-        "ecma:math",
+    unary(
+        vm,
         "tan",
         Box::new(|_ctx, a| Value::F64(f(a, 0).tan())),
     );
-    vm.register_host_fn(
-        "ecma:math",
+    unary(
+        vm,
         "asin",
         Box::new(|_ctx, a| Value::F64(f(a, 0).asin())),
     );
-    vm.register_host_fn(
-        "ecma:math",
+    unary(
+        vm,
         "acos",
         Box::new(|_ctx, a| Value::F64(f(a, 0).acos())),
     );
-    vm.register_host_fn(
-        "ecma:math",
+    unary(
+        vm,
         "atan",
         Box::new(|_ctx, a| Value::F64(f(a, 0).atan())),
     );
-    vm.register_host_fn(
-        "ecma:math",
+    unary(
+        vm,
         "asinh",
         Box::new(|_ctx, a| Value::F64(f(a, 0).asinh())),
     );
-    vm.register_host_fn(
-        "ecma:math",
+    unary(
+        vm,
         "acosh",
         Box::new(|_ctx, a| Value::F64(f(a, 0).acosh())),
     );
-    vm.register_host_fn(
-        "ecma:math",
+    unary(
+        vm,
         "atanh",
         Box::new(|_ctx, a| Value::F64(f(a, 0).atanh())),
     );
-    vm.register_host_fn(
-        "ecma:math",
+    unary(
+        vm,
         "exp",
         Box::new(|_ctx, a| Value::F64(f(a, 0).exp())),
     );
-    vm.register_host_fn(
-        "ecma:math",
+    unary(
+        vm,
         "sinh",
         Box::new(|_ctx, a| Value::F64(f(a, 0).sinh())),
     );
-    vm.register_host_fn(
-        "ecma:math",
+    unary(
+        vm,
         "cosh",
         Box::new(|_ctx, a| Value::F64(f(a, 0).cosh())),
     );
-    vm.register_host_fn(
-        "ecma:math",
+    unary(
+        vm,
         "tanh",
         Box::new(|_ctx, a| Value::F64(f(a, 0).tanh())),
     );
     // clamp(x, min, max) → emit_clamp (pure WASM F64_MAX + F64_MIN, no host fn).
-    vm.register_host_fn(
-        "ecma:math",
+    unary(
+        vm,
         "clz32",
         Box::new(|ctx, a| {
             let n = match number_arg(ctx, a, 0) {
@@ -282,8 +340,8 @@ pub fn register(vm: &mut VM) {
             Value::F64(to_uint32(n).leading_zeros() as f64)
         }),
     );
-    vm.register_host_fn(
-        "ecma:math",
+    unary(
+        vm,
         "fround",
         Box::new(|ctx, a| {
             let n = match number_arg(ctx, a, 0) {
@@ -299,8 +357,8 @@ pub fn register(vm: &mut VM) {
         }),
     );
     // Math.f16round — ES2025: round to nearest IEEE 754 float16 value.
-    vm.register_host_fn(
-        "ecma:math",
+    unary(
+        vm,
         "f16round",
         Box::new(|_ctx, a| {
             let x = f(a, 0) as f32;
@@ -315,8 +373,8 @@ pub fn register(vm: &mut VM) {
             Value::F64(f32::from_bits(f16_approx_bits) as f64)
         }),
     );
-    vm.register_host_fn(
-        "ecma:math",
+    binary(
+        vm,
         "imul",
         Box::new(|ctx, a| {
             let x = match number_arg(ctx, a, 0) {
@@ -330,13 +388,13 @@ pub fn register(vm: &mut VM) {
             Value::F64(x.wrapping_mul(y) as f64)
         }),
     );
-    vm.register_host_fn(
-        "ecma:math",
+    unary(
+        vm,
         "expm1",
         Box::new(|_ctx, a| Value::F64(f(a, 0).exp_m1())),
     );
-    vm.register_host_fn(
-        "ecma:math",
+    unary(
+        vm,
         "log1p",
         Box::new(|_ctx, a| Value::F64(f(a, 0).ln_1p())),
     );

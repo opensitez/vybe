@@ -195,6 +195,13 @@ fn compile_body_offset(
                 returned = true;
                 break;
             }
+            // Every coordinate in this DSL is already an f64 — `PushConstInt`
+            // widens, and the drawing arguments arrive as numbers — so these
+            // are the plain f64 opcodes with no coercion ladder in front.
+            MethodOp::Add => chunk.emit_op(Op::F64_ADD, line),
+            MethodOp::Sub => chunk.emit_op(Op::F64_SUB, line),
+            MethodOp::Mul => chunk.emit_op(Op::F64_MUL, line),
+            MethodOp::Div => chunk.emit_op(Op::F64_DIV, line),
         }
     }
 

@@ -21,7 +21,8 @@ use crate::typedarray::{new_typed_array, read_element, ta_live_length, write_ele
 use std::collections::{BTreeSet, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
 use vybe_runtime::value::{Object, ObjectKind, TypedElemKind, Value};
-use vybe_runtime::{HostContext, VM};
+use vybe_runtime::vm::HostFnDecl;
+use vybe_runtime::{FuncSig, HostContext, VM, ValType};
 
 fn invoke_callback(ctx: &mut HostContext, callback: &Value, args: &[Value]) -> Value {
     if let Some(v) = crate::function::invoke_bound_callback_if_needed(ctx, callback, args) {
@@ -552,6 +553,69 @@ fn sync_length(obj: &mut Object) {
     }
 }
 
+/// Declare an `ecma:array` function — same closure, plus the signature.
+///
+/// No resource binding: a JS array is an ordinary object reference, not a
+/// handle the host mints and drops, so `own`/`borrow` would claim a lifetime
+/// that does not exist here.
+fn array_fn(
+    vm: &mut VM,
+    name: &str,
+    params: Vec<ValType>,
+    results: Vec<ValType>,
+    call: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>,
+) {
+    vm.register_host(HostFnDecl::new("ecma:array", name, call).with_sig(FuncSig {
+        name: name.to_string(),
+        params,
+        results,
+    }));
+}
+
+/// The array operand. §23.1.3 methods are generic over array-likes and several
+/// handlers below accept a plain object carrying `length`, so the honest type
+/// is `Any` — `list<T>` is homogeneous and copied, which an array reference is
+/// not.
+fn arr() -> ValType {
+    ValType::Any
+}
+
+/// An arbitrary element. ECMA arrays are heterogeneous by definition.
+fn elem() -> ValType {
+    ValType::Any
+}
+
+/// A callback operand. The Component Model has no function type; a callable
+/// marshals as an opaque value here.
+fn callback() -> ValType {
+    ValType::Any
+}
+
+/// An index. Negative values are meaningful (`at(-1)`), hence signed.
+fn index() -> ValType {
+    ValType::I32
+}
+
+/// An Array Iterator (§23.1.5) or an iterator result object. Both are ordinary
+/// objects, so they type as `Any` for the same reason `arr()` does.
+fn iterator() -> ValType {
+    ValType::Any
+}
+
+/// WHY MOST OF §23.1.3 STAYS UNDECLARED.
+///
+/// A Component Model signature is a fixed parameter list: `declared_host_arity`
+/// is `sig.params.len()`, and there is no spelling for an optional or a rest
+/// parameter (`option<T>` is still positional). ECMA-262 array methods are
+/// built on both — `slice([start[, end]])`, `filter(cb[, thisArg])`,
+/// `push(...items)` — and every one of those call shapes is CORRECT, so a fixed
+/// declaration would report correct callers as mismatches.
+///
+/// So the rule applied here is: declare a function only when the handler reads
+/// no argument beyond its required ones. `None` keeps meaning UNKNOWN, never
+/// zero, so leaving the rest undeclared costs nothing and claims nothing.
+/// Widening `HostFnDecl` to express optionality is a runtime change and is not
+/// in scope.
 pub fn register(vm: &mut VM) {
     register_constructors(vm);
     register_property_access(vm);
@@ -666,9 +730,11 @@ fn populate_array_prototype(vm: &VM) {
 
 fn register_adapters(vm: &mut VM) {
     // clear(arr) — `arr.length = 0`. Mutates in place.
-    vm.register_host_fn(
-        "ecma:array",
+    array_fn(
+        vm,
         "clear",
+        vec![arr()],
+        vec![],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             if let Some(arr) = array_of(args, 0) {
                 if !is_frozen(&arr) {
@@ -683,9 +749,11 @@ fn register_adapters(vm: &mut VM) {
     );
 
     // first(arr) — `arr.at(0)`. Convenience for Queue.Peek.
-    vm.register_host_fn(
-        "ecma:array",
+    array_fn(
+        vm,
         "first",
+        vec![arr()],
+        vec![elem()],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             if let Some(arr) = array_of(args, 0) {
                 let o = arr.lock().unwrap();
@@ -698,9 +766,11 @@ fn register_adapters(vm: &mut VM) {
     );
 
     // last(arr) — `arr.at(-1)`. Convenience for Stack.Peek.
-    vm.register_host_fn(
-        "ecma:array",
+    array_fn(
+        vm,
         "last",
+        vec![arr()],
+        vec![elem()],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             if let Some(arr) = array_of(args, 0) {
                 let o = arr.lock().unwrap();
@@ -713,9 +783,11 @@ fn register_adapters(vm: &mut VM) {
     );
 
     // removeAt(arr, idx) — `arr.splice(idx, 1)`, returns removed value.
-    vm.register_host_fn(
-        "ecma:array",
+    array_fn(
+        vm,
         "removeAt",
+        vec![arr(), index()],
+        vec![elem()],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let idx = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
             if let Some(arr) = array_of(args, 0) {
@@ -735,9 +807,11 @@ fn register_adapters(vm: &mut VM) {
     );
 
     // insertAt(arr, idx, v) — `arr.splice(idx, 0, v)`. Mutates in place.
-    vm.register_host_fn(
-        "ecma:array",
+    array_fn(
+        vm,
         "insertAt",
+        vec![arr(), index(), elem()],
+        vec![],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let idx = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
             let val = args.get(2).cloned().unwrap_or(Value::Undefined);
@@ -761,9 +835,11 @@ fn register_adapters(vm: &mut VM) {
 
     // removeValue(arr, v) — `arr.splice(arr.indexOf(v), 1)` if found.
     // Returns true if removed, false otherwise (matches .NET List.Remove).
-    vm.register_host_fn(
-        "ecma:array",
+    array_fn(
+        vm,
         "removeValue",
+        vec![arr(), elem()],
+        vec![ValType::Bool],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let needle = args.get(1).cloned().unwrap_or(Value::Undefined);
             if let Some(arr) = array_of(args, 0) {
@@ -817,9 +893,11 @@ fn register_constructors(vm: &mut VM) {
     // Used by language-specific allocations (VB `ReDim`, .NET `new T[n]`)
     // that expect default-value semantics (null/0). JS callers go through
     // `new` above which materializes `undefined` slots per spec.
-    vm.register_host_fn(
-        "ecma:array",
+    array_fn(
+        vm,
         "newWithLength",
+        vec![index()],
+        vec![arr()],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let n = args
                 .first()
@@ -828,15 +906,25 @@ fn register_constructors(vm: &mut VM) {
             make_array(vec![Value::Null; n])
         }),
     );
-    vm.register_host_fn(
-        "vybe:js-array",
-        "newWithLength",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let n = args
-                .first()
-                .map(|v| v.as_i32().max(0) as usize)
-                .unwrap_or(0);
-            make_array(vec![Value::Null; n])
+    // Same handler under the Vybe-specific namespace — the emitters that
+    // allocate a default-filled array (VB `ReDim`, .NET `new T[n]`) import it
+    // from here, not from `ecma:array`.
+    vm.register_host(
+        HostFnDecl::new(
+            "vybe:js-array",
+            "newWithLength",
+            Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+                let n = args
+                    .first()
+                    .map(|v| v.as_i32().max(0) as usize)
+                    .unwrap_or(0);
+                make_array(vec![Value::Null; n])
+            }),
+        )
+        .with_sig(FuncSig {
+            name: "newWithLength".to_string(),
+            params: vec![index()],
+            results: vec![arr()],
         }),
     );
 
@@ -923,9 +1011,11 @@ fn register_constructors(vm: &mut VM) {
     );
 
     // fromWithMap(arrayLike, mapFn) — Array.from with mandatory mapper.
-    vm.register_host_fn(
-        "ecma:array",
+    array_fn(
+        vm,
         "fromWithMap",
+        vec![elem(), callback()],
+        vec![arr()],
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let mut out = Vec::new();
             if let Some(Value::Object(src)) = args.first() {
@@ -1003,9 +1093,11 @@ fn register_constructors(vm: &mut VM) {
     );
 
     // isArray(v) -> bool
-    vm.register_host_fn(
-        "ecma:array",
+    array_fn(
+        vm,
         "isArray",
+        vec![elem()],
+        vec![ValType::Bool],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             // §7.2.2 IsArray: a proxy is an Array when its target is.
             let mut v = args.first().cloned().unwrap_or(Value::Undefined);
@@ -1030,9 +1122,11 @@ fn register_property_access(vm: &mut VM) {
     // import is also the landing pad for `dict.has` / `hasOwnProperty`
     // / `in` compiled through compiler_common. Accepts plain objects to
     // satisfy those callers without requiring a second import.
-    vm.register_host_fn(
-        "ecma:array",
+    array_fn(
+        vm,
         "get",
+        vec![arr(), index()],
+        vec![elem()],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let key = args.get(1).cloned().unwrap_or(Value::Undefined);
             if let Some(Value::Object(obj)) = args.first() {
@@ -1102,9 +1196,11 @@ fn register_property_access(vm: &mut VM) {
     // set(arr_or_obj, key, v) -> () — extends arrays with null-fill when
     // key >= length; stores into plain objects by string key; updates Maps
     // using the canonical Value-keyed IndexMap.
-    vm.register_host_fn(
-        "ecma:array",
+    array_fn(
+        vm,
         "set",
+        vec![arr(), index(), elem()],
+        vec![],
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let key = args.get(1).cloned().unwrap_or(Value::Undefined);
             let val = args.get(2).cloned().unwrap_or(Value::Null);
@@ -1185,9 +1281,11 @@ fn register_property_access(vm: &mut VM) {
     // only; strings use `wasm:js-string.length` per the js-string-builtins
     // proposal. Polymorphic callers (e.g. our `__len__` canonical) must
     // type-dispatch before selecting the import.
-    vm.register_host_fn(
-        "ecma:array",
+    array_fn(
+        vm,
         "length",
+        vec![arr()],
+        vec![index()],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             if let Some(Value::Object(o)) = args.first() {
                 let lock = o.lock().unwrap();
@@ -1208,9 +1306,11 @@ fn register_property_access(vm: &mut VM) {
     );
 
     // setLength(arr, n) -> () — truncate or null-fill extend
-    vm.register_host_fn(
-        "ecma:array",
+    array_fn(
+        vm,
         "setLength",
+        vec![arr(), index()],
+        vec![],
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             if let Some(arr) = array_of(args, 0) {
                 let mut o = arr.lock().unwrap();
@@ -1226,9 +1326,11 @@ fn register_property_access(vm: &mut VM) {
     //
     // `Array.prototype.at` — negative indices relative to length, undefined
     // when OOB. String `.at()` routes through `ecma:value.invokeMethod`.
-    vm.register_host_fn(
-        "ecma:array",
+    array_fn(
+        vm,
         "at",
+        vec![arr(), index()],
+        vec![elem()],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let i = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
             if let Some(arr) = array_of(args, 0) {
@@ -1312,9 +1414,11 @@ fn register_mutators(vm: &mut VM) {
     );
 
     // pop(arr) -> popped_value (undefined if empty or frozen)
-    vm.register_host_fn(
-        "ecma:array",
+    array_fn(
+        vm,
         "pop",
+        vec![arr()],
+        vec![elem()],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             if let Some(arr) = array_of(args, 0) {
                 if is_frozen(&arr) {
@@ -1346,9 +1450,11 @@ fn register_mutators(vm: &mut VM) {
     );
 
     // shift(arr) -> first_value (undefined if empty or frozen)
-    vm.register_host_fn(
-        "ecma:array",
+    array_fn(
+        vm,
         "shift",
+        vec![arr()],
+        vec![elem()],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             if let Some(arr) = array_of(args, 0) {
                 if is_frozen(&arr) {
@@ -1492,9 +1598,11 @@ fn register_mutators(vm: &mut VM) {
     );
 
     // reverse(arr) -> self (in-place)
-    vm.register_host_fn(
-        "ecma:array",
+    array_fn(
+        vm,
         "reverse",
+        vec![arr()],
+        vec![arr()],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             if let Some(Value::Object(obj)) = args.first() {
                 let mut o = obj.lock().unwrap();
@@ -1759,9 +1867,13 @@ fn register_non_mutators(vm: &mut VM) {
     // Map/Set/String aren't ECMA-262 §23.1.3.2 concatable, but JS
     // engines spread them in practice when the literal-spread path
     // routes here. We handle both in one place.
-    vm.register_host_fn(
-        "ecma:array",
+    // Spec `concat` is variadic; this handler reads exactly one other operand,
+    // so the declaration states what it implements, not what §23.1.3.1 allows.
+    array_fn(
+        vm,
         "concat",
+        vec![arr(), arr()],
+        vec![arr()],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let mut out = Vec::new();
             if let Some(arr) = array_of(args, 0) {
@@ -2020,9 +2132,11 @@ fn register_non_mutators(vm: &mut VM) {
     );
 
     // toString(arr) -> string (same as join with default ",")
-    vm.register_host_fn(
-        "ecma:array",
+    array_fn(
+        vm,
         "toString",
+        vec![arr()],
+        vec![ValType::String],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             if let Some(arr) = array_of(args, 0) {
                 let o = arr.lock().unwrap();
@@ -2049,9 +2163,11 @@ fn register_non_mutators(vm: &mut VM) {
     );
 
     // toLocaleString — same as toString for MVP
-    vm.register_host_fn(
-        "ecma:array",
+    array_fn(
+        vm,
         "toLocaleString",
+        vec![arr()],
+        vec![ValType::String],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             // Same as toString — real locale-aware conversion lives in
             // Phase F (intl integration).
@@ -2137,9 +2253,11 @@ fn register_non_mutators(vm: &mut VM) {
     // ── ES2023 non-mutating variants ────────────────────────────────
 
     // toReversed(arr) -> new_arr
-    vm.register_host_fn(
-        "ecma:array",
+    array_fn(
+        vm,
         "toReversed",
+        vec![arr()],
+        vec![arr()],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let receiver = args.first().cloned().unwrap_or(Value::Undefined);
             let mut out = array_like_dense_values(&receiver);
@@ -2180,9 +2298,11 @@ fn register_non_mutators(vm: &mut VM) {
     );
 
     // with(arr, i, v) -> new_arr
-    vm.register_host_fn(
-        "ecma:array",
+    array_fn(
+        vm,
         "with",
+        vec![arr(), index(), elem()],
+        vec![arr()],
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let i = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
             let val = args.get(2).cloned().unwrap_or(Value::Null);
@@ -2246,9 +2366,11 @@ pub fn make_array_iterator(materialized: Vec<Value>) -> Value {
 fn register_iteration(vm: &mut VM) {
     // `iterNext(this)` — implements §23.1.5.2.1 Array Iterator next().
     // Reads `__index`, returns `{value, done}`, advances the cursor.
-    vm.register_host_fn(
-        "ecma:array",
+    array_fn(
+        vm,
         "iterNext",
+        vec![iterator()],
+        vec![iterator()],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let Some(Value::Object(it)) = args.first() else {
                 return iter_result(Value::Undefined, true);
@@ -2277,9 +2399,11 @@ fn register_iteration(vm: &mut VM) {
     // Return a §23.1.5 Array Iterator with `next()` driving the cursor.
     // The iterator's underlying Array kind keeps spread / for-of working
     // through plain-array iteration paths.
-    vm.register_host_fn(
-        "ecma:array",
+    array_fn(
+        vm,
         "keys",
+        vec![arr()],
+        vec![iterator()],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             if let Some(arr) = array_of(args, 0) {
                 let o = arr.lock().unwrap();
@@ -2292,9 +2416,11 @@ fn register_iteration(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:array",
+    array_fn(
+        vm,
         "values",
+        vec![arr()],
+        vec![iterator()],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             if let Some(arr) = array_of(args, 0) {
                 let o = arr.lock().unwrap();
@@ -2306,9 +2432,11 @@ fn register_iteration(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:array",
+    array_fn(
+        vm,
         "entries",
+        vec![arr()],
+        vec![iterator()],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             if let Some(Value::Object(obj)) = args.first() {
                 let o = obj.lock().unwrap();
@@ -2354,9 +2482,11 @@ fn register_iteration(vm: &mut VM) {
     //   - findIndex, findLastIndex: §23.1.3.12 — index of first/last match
     //   - flatMap: §23.1.3.15 — map + flatten one level
 
-    vm.register_host_fn(
-        "ecma:array",
+    array_fn(
+        vm,
         "forEach",
+        vec![arr(), callback()],
+        vec![],
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             if let Some(arr) = array_of(args, 0) {
@@ -2594,9 +2724,11 @@ fn register_iteration(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:array",
+    array_fn(
+        vm,
         "some",
+        vec![arr(), callback()],
+        vec![ValType::Bool],
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             if let Some(arr) = array_of(args, 0) {
@@ -2615,9 +2747,11 @@ fn register_iteration(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:array",
+    array_fn(
+        vm,
         "every",
+        vec![arr(), callback()],
+        vec![ValType::Bool],
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             if let Some(arr) = array_of(args, 0) {
@@ -2879,9 +3013,11 @@ fn register_iteration(vm: &mut VM) {
     // null-prototype Object with string keys; `groupToMap` returns a
     // Map keyed by any value.
 
-    vm.register_host_fn(
-        "ecma:array",
+    array_fn(
+        vm,
         "group",
+        vec![arr(), callback()],
+        vec![ValType::Any],
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             use indexmap::IndexMap;
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
@@ -2917,9 +3053,11 @@ fn register_iteration(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:array",
+    array_fn(
+        vm,
         "groupToMap",
+        vec![arr(), callback()],
+        vec![ValType::Any],
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             use indexmap::IndexMap;
             let callback = args.get(1).cloned().unwrap_or(Value::Null);

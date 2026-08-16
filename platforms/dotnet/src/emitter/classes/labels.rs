@@ -29,7 +29,8 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: Some("new_Label"),
+            // `<label>` — created by the element mapping, not a factory.
+            widget_host_fn: None,
             widget_host_module: "vybe:gui",
         },
         DotnetClass {
@@ -48,7 +49,8 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: Some("new_LinkLabel"),
+            // `<a>`
+            widget_host_fn: None,
             widget_host_module: "vybe:gui",
         },
     ]

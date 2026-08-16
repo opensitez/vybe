@@ -323,120 +323,131 @@ const F_ROUNDEDBORDER: &[FlutterField] = &[
 ];
 
 pub(crate) const CLASSES: &[FlutterClass] = &[
+    // The app shell stacks its slots vertically: app bar, body, bottom bar.
     FlutterClass::widget(
         "Scaffold",
         "StatefulWidget",
-        "FlowLayoutPanel",
+        "div;display:flex;flex-direction:column",
         SCAFFOLD_FIELDS,
     ),
-    FlutterClass::widget("AppBar", "StatefulWidget", "FlowLayoutPanel", APPBAR_FIELDS),
+    // An app bar IS the page header, and `<header>` already has a container
+    // `control_kind` arm. `flex:0` keeps it a thin fixed bar while the body
+    // takes the remaining height — the rule the old realizer applied by
+    // special-casing the type name at realize time.
+    FlutterClass::widget(
+        "AppBar",
+        "StatefulWidget",
+        "header;display:flex;align-items:center;flex:0",
+        APPBAR_FIELDS,
+    ),
     FlutterClass::widget(
         "MaterialApp",
         "StatefulWidget",
-        "FlowLayoutPanel",
+        "div;display:flex;flex-direction:column",
         MATERIALAPP_FIELDS,
     ),
     FlutterClass::widget(
         "ElevatedButton",
         "StatefulWidget",
-        "Button",
+        "button",
         ELEVATEDBUTTON_FIELDS,
     ),
-    FlutterClass::widget("Card", "StatelessWidget", "groupbox", F_CARD),
-    FlutterClass::widget("Drawer", "StatelessWidget", "Panel", F_DRAWER),
-    FlutterClass::widget("DrawerHeader", "StatelessWidget", "Panel", F_DRAWERHEADER),
-    FlutterClass::widget("Divider", "StatelessWidget", "Panel", F_DIVIDER),
-    FlutterClass::widget("VerticalDivider", "StatelessWidget", "Panel", F_VDIVIDER),
-    // A tile lays leading/title/subtitle/trailing out in a row, so it needs a
-    // flow panel — a bare Panel gave its children no layout at all.
+    // A card is a grouped surface — `<fieldset>` is what plib and dotnet both
+    // map their group boxes to, so the three frontends stay one control.
+    FlutterClass::widget("Card", "StatelessWidget", "fieldset", F_CARD),
+    FlutterClass::widget("Drawer", "StatelessWidget", "aside", F_DRAWER),
+    FlutterClass::widget("DrawerHeader", "StatelessWidget", "header", F_DRAWERHEADER),
+    // A divider is a thematic break, which is what `<hr>` IS.
+    FlutterClass::widget("Divider", "StatelessWidget", "hr", F_DIVIDER),
+    FlutterClass::widget("VerticalDivider", "StatelessWidget", "hr", F_VDIVIDER),
+    // A tile lays leading/title/subtitle/trailing out in a row.
     FlutterClass::widget(
         "ListTile",
         "StatelessWidget",
-        "HFlowLayoutPanel",
+        "div;display:flex;flex-direction:row;align-items:center",
         F_LISTTILE,
     ),
-    // Chips are labelled, tappable pills — Button is the control that both
-    // shows the label as its face and delivers the tap.
-    FlutterClass::widget("Chip", "StatelessWidget", "Button", F_CHIP),
-    FlutterClass::widget("ActionChip", "StatelessWidget", "Button", F_ACTIONCHIP),
+    // Chips are labelled, tappable pills — a button both shows the label as
+    // its face and delivers the tap.
+    FlutterClass::widget("Chip", "StatelessWidget", "button", F_CHIP),
+    FlutterClass::widget("ActionChip", "StatelessWidget", "button", F_ACTIONCHIP),
     // Filter/Choice chips are selectable — a checkbox carries the toggle state
-    // the plain Button cannot.
-    FlutterClass::widget("FilterChip", "StatelessWidget", "CheckBox", F_SELCHIP),
-    FlutterClass::widget("ChoiceChip", "StatelessWidget", "CheckBox", F_SELCHIP),
+    // a plain button cannot.
+    FlutterClass::widget("FilterChip", "StatelessWidget", "input:checkbox", F_SELCHIP),
+    FlutterClass::widget("ChoiceChip", "StatelessWidget", "input:checkbox", F_SELCHIP),
+    // An avatar is an image, not a drawing surface.
+    FlutterClass::widget("CircleAvatar", "StatelessWidget", "img", F_CIRCLEAVATAR),
+    FlutterClass::widget("GridTile", "StatelessWidget", "div", F_GRIDTILE),
+    FlutterClass::widget("GridTileBar", "StatelessWidget", "div", F_GRIDTILEBAR),
     FlutterClass::widget(
-        "CircleAvatar",
-        "StatelessWidget",
-        "picturebox",
-        F_CIRCLEAVATAR,
+        "Stepper",
+        "StatefulWidget",
+        "div;display:flex;flex-direction:column",
+        F_STEPPER,
     ),
-    FlutterClass::widget("GridTile", "StatelessWidget", "Panel", F_GRIDTILE),
-    FlutterClass::widget("GridTileBar", "StatelessWidget", "Panel", F_GRIDTILEBAR),
-    FlutterClass::widget("Stepper", "StatefulWidget", "Panel", F_STEPPER),
-    FlutterClass::widget("DataTable", "StatelessWidget", "datagrid", F_DATATABLE),
+    // HTML has tables outright, and `control_kind` maps `<table>` to the data
+    // grid — the same control dotnet's `DataGridView` reaches.
+    FlutterClass::widget("DataTable", "StatelessWidget", "table", F_DATATABLE),
+    // A navigation bar IS `<nav>`, laid out as a row.
     FlutterClass::widget(
         "BottomNavigationBar",
         "StatefulWidget",
-        "HFlowLayoutPanel",
+        "nav;display:flex;flex-direction:row",
         F_BOTTOMNAV,
     ),
-    FlutterClass::widget("BottomAppBar", "StatefulWidget", "Panel", F_BOTTOMAPPBAR),
-    FlutterClass::widget("BottomSheet", "StatefulWidget", "Panel", F_BOTTOMSHEET),
-    FlutterClass::widget("TabBar", "StatefulWidget", "tabcontrol", F_TABBAR),
-    FlutterClass::widget(
-        "TabBarView",
-        "StatefulWidget",
-        "FlowLayoutPanel",
-        F_TABBARVIEW,
-    ),
+    FlutterClass::widget("BottomAppBar", "StatefulWidget", "footer", F_BOTTOMAPPBAR),
+    // A bottom sheet is a modal surface — `<dialog>` is the element with the
+    // top-layer behaviour already landed.
+    FlutterClass::widget("BottomSheet", "StatefulWidget", "dialog", F_BOTTOMSHEET),
+    // ⚠ No HTML counterpart: a DECLARED custom element. `control_kind` strips
+    // `vybe-` and looks the remainder up against the widget list, and
+    // `tabcontrol` is a real kind — so the tag carries it.
+    FlutterClass::widget("TabBar", "StatefulWidget", "vybe-tabcontrol", F_TABBAR),
+    FlutterClass::widget("TabBarView", "StatefulWidget", "div", F_TABBARVIEW),
     // `Tab` contributes a LABEL to the tabcontrol's own header — it must not
     // realize a widget of its own, or each tab renders a second time on top of
     // the strip the tabcontrol already drew. Same idiom as `DropdownMenuItem`,
     // which maps to `Panel` so its text becomes an item rather than a control.
-    FlutterClass::widget("Tab", "StatelessWidget", "Panel", F_TAB),
-    FlutterClass::widget(
-        "FlexibleSpaceBar",
-        "StatefulWidget",
-        "Panel",
-        F_FLEXSPACEBAR,
-    ),
+    FlutterClass::widget("Tab", "StatelessWidget", "vybe-tabpage", F_TAB),
+    FlutterClass::widget("FlexibleSpaceBar", "StatefulWidget", "div", F_FLEXSPACEBAR),
+    // HTML announces progress natively.
     FlutterClass::widget(
         "LinearProgressIndicator",
         "StatefulWidget",
-        "progressbar",
+        "progress",
         F_LINEARPROG,
     ),
     FlutterClass::widget(
         "CircularProgressIndicator",
         "StatefulWidget",
-        "progressbar",
+        "progress",
         F_CIRCPROG,
     ),
+    // A picker dialog is a dialog holding a date input.
     FlutterClass::widget(
         "DatePickerDialog",
         "StatefulWidget",
-        "datetimepicker",
+        "input:date",
         F_DATEPICKERDIALOG,
     ),
     FlutterClass::widget(
         "TimePickerDialog",
         "StatefulWidget",
-        "datetimepicker",
+        "input:time",
         F_TIMEPICKERDIALOG,
     ),
     // A tooltip is a hover affordance around its child, not a box of its own.
     FlutterClass::wrapper("Tooltip", "StatefulWidget", F_TOOLTIP),
-    FlutterClass::widget("BackButton", "StatelessWidget", "Button", &[]),
-    FlutterClass::widget("IconButton", "StatelessWidget", "Button", F_ICONBUTTON),
-    FlutterClass::widget("OutlinedButton", "StatefulWidget", "Button", F_OUTLINEDBTN),
-    FlutterClass::widget("TextButton", "StatefulWidget", "Button", F_TEXTBUTTON),
-    FlutterClass::widget("FloatingActionButton", "StatelessWidget", "Button", F_FAB),
-    FlutterClass::widget(
-        "PopupMenuButton",
-        "StatefulWidget",
-        "Button",
-        F_POPUPMENUBTN,
-    ),
-    FlutterClass::widget("PopupMenuItem", "Widget", "Panel", F_POPUPMENUITEM),
+    FlutterClass::widget("BackButton", "StatelessWidget", "button", &[]),
+    FlutterClass::widget("IconButton", "StatelessWidget", "button", F_ICONBUTTON),
+    FlutterClass::widget("OutlinedButton", "StatefulWidget", "button", F_OUTLINEDBTN),
+    FlutterClass::widget("TextButton", "StatefulWidget", "button", F_TEXTBUTTON),
+    FlutterClass::widget("FloatingActionButton", "StatelessWidget", "button", F_FAB),
+    FlutterClass::widget("PopupMenuButton", "StatefulWidget", "button", F_POPUPMENUBTN),
+    // A menu ITEM is the same `<menu>` element as the strip that opens it —
+    // the spelling plib and dotnet both use for `TMenuItem` /
+    // `ToolStripMenuItem`.
+    FlutterClass::widget("PopupMenuItem", "Widget", "menu", F_POPUPMENUITEM),
     FlutterClass::data("Step", None, F_STEP),
     FlutterClass::data("DataColumn", None, F_DATACOLUMN),
     FlutterClass::data("DataRow", None, F_DATAROW),

@@ -23,91 +23,69 @@ use super::{DotnetClass, DotnetMethod, MethodOp, MethodTarget};
 
 const CONTROL_NOOP: &[MethodOp] = &[MethodOp::PushConstNull, MethodOp::Return];
 
-/// `Control.CreateGraphics()` body.
-///
-/// Translation:
-///
-/// ```text
-/// vybe:gui::createGraphics(this.__control_name) → Graphics handle
-/// ```
-///
-/// The handle is a small Object stamped with `__type = "Graphics"` and
-/// `__control_name = <this control's name>`. Subsequent canvas calls
-/// (issued by Graphics method bodies) read the name out of the handle
-/// to find the target `RecordingCanvas` on `GuiState`.
-///
-/// Note: the returned handle is NOT a fully-bound dotnet `Graphics`
-/// instance — it doesn't have the `DrawLine`/`FillRectangle` method
-/// thunks bound on it. That's intentional and correct: the dotnet
-/// method dispatch path looks up `Graphics` methods on the inheritance
-/// chain via type registry / __tid_, not via per-instance struct field
-/// reads. The handle just needs to carry the canvas's identity.
-///
-/// (Wait, that's wrong — methods ARE bound per-instance via struct_set
-/// in the ctor. We need to either go through the Graphics dotnet ctor
-/// OR bind the methods on the handle here. Going through the dotnet
-/// ctor IS the cleanest solution, and we already have a `NewDotnet`
-/// op... but it discards args. Need to think again.)
-///
-/// Resolution: emit `NewDotnet { class: "Graphics", argc: 0 }` to
-/// produce a fully-bound Graphics instance, THEN stamp its
-/// `__control_name` field with `this.__control_name`. This way the
-/// returned instance has all the method thunks (DrawLine etc.) AND
-/// carries the source control's identity for canvas routing.
-///
-/// Stack trace:
-/// ```text
-///   PushThis
-///   PushThisField "__control_name"     ; [this, name]
-///   NewDotnet Graphics 0               ; [this, name, graphics]
-///   ; need to swap graphics and name to do struct_set graphics.__control_name = name
-///   ; ... but the DSL doesn't have swap.
-/// ```
-///
-/// Workaround: stash `name` in a host-side intermediate via
-/// `createGraphics`. The `vybe:gui::createGraphics` host fn returns a
-/// pre-stamped Graphics-shaped Object. Then copy its `__control_name`
-/// onto a fresh `NewDotnet Graphics` instance via struct_set.
-///
-/// Actually simpler: just emit `NewDotnet Graphics 0` then `SetField
-/// __control_name` with `this.__control_name` on the stack ABOVE the
-/// graphics instance. struct_set takes [obj, val] — so we need
-/// graphics on the bottom, name on top. Build it as:
+/// `Control.CreateGraphics()` body — **`element.getContext("2d")`**,
+/// HTML §4.12.5.
 ///
 /// ```text
-///   NewDotnet Graphics 0          ; [graphics]
-///   PushThisField "__control_name" ; [graphics, name]
-///   SetField "__control_name"      ; [name]   (struct_set leaves the val)
-///   Drop                           ; []
-///   NewDotnet Graphics 0           ; ... wait, we need to return the stamped graphics
-/// ```
-///
-/// The struct_set leaves `val` on the stack, not `obj`. To return the
-/// graphics with its stamped name, we need to dup it before
-/// stamping:
-///
-/// ```text
-///   NewDotnet Graphics 0          ; [graphics]
+///   PushThis                      ; [control]      — the control IS an element
+///   PushConstStr "2d"             ; [control, "2d"]
+///   CallHost web:canvas getContext 2  ; [graphics]
+///   Dup / CallHost save 1 / Drop  ; [graphics]     — the clip baseline
 ///   Dup                           ; [graphics, graphics]
-///   PushThisField "__control_name" ; [graphics, graphics, name]
-///   SetField "__control_name"      ; [graphics, name]
-///   Drop                           ; [graphics]
-///   Return                        ; returns graphics
+///   PushConstStr "Graphics"       ; [graphics, graphics, "Graphics"]
+///   SetField "__type"             ; [graphics, "Graphics"]  (struct_set leaves the val)
+///   Drop                          ; [graphics]
+///   Return
 /// ```
 ///
-/// This works.
+/// The `save` is the clip baseline `SetClip`/`ResetClip` pop back to — a
+/// canvas clip has no inverse, so the region is undone by returning to a state
+/// saved before it was applied. Pushing it once here is what makes those two
+/// unable to underflow the state stack. See `drawing.rs::GRAPHICS_SET_CLIP`.
+///
+/// A control is built by `emit_control_element` with
+/// `document.createElement`, so the receiver already carries `__node` and a
+/// context can be asked for directly. That is the only form of the call a
+/// real browser engine can answer: there is no control name to resolve on the
+/// other side of the seam.
+///
+/// The `"2d"` is not decoration: `getContext` answers `null` for a context
+/// type it does not support, per spec, and an absent argument reads as `""`.
+/// A null context still accepts every drawing call and paints nothing, so the
+/// argument is what stands between a working surface and a silent one.
+///
+/// `__type` is re-stamped because guest code downcasts on it; the handle
+/// introduces itself as `CanvasRenderingContext2D`, which is what it is and
+/// not what the .NET object wrapping it is called. `Graphics` methods resolve
+/// through the class descriptor by static type, not off the instance, so the
+/// returned handle needs no bound thunks — only its identity.
+///
+/// Kept in step with `dispatch.rs::emit_control_create_graphics`, which is
+/// the same lowering in raw bytecode for the descriptor route
+/// (`dotnet.control_create_graphics`). Both must agree or a control's
+/// `Graphics` depends on which route compiled it.
 const CONTROL_CREATE_GRAPHICS: &[MethodOp] = &[
-    // graphics = New Graphics()
-    MethodOp::NewDotnet {
-        class: "Graphics",
-        argc: 0,
+    MethodOp::PushThis,
+    MethodOp::PushConstStr("2d"),
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "getContext",
+        argc: 2,
     },
-    // Stamp graphics.__control_name = this.__control_name so subsequent
-    // canvas calls route to this control's RecordingCanvas.
     MethodOp::Dup,
-    MethodOp::PushThisField("__control_name"),
-    MethodOp::SetField("__control_name"),
+    MethodOp::CallHost {
+        module: "web:canvas",
+        fn_name: "save",
+        argc: 1,
+    },
     MethodOp::Drop,
+    // `SetField` lowers to `STRUCT_SET`, which consumes the object AND the
+    // value — the `Dup` above is what leaves the context behind, so there is
+    // nothing to `Drop`. A `Drop` here empties the stack and the method
+    // returns `null`.
+    MethodOp::Dup,
+    MethodOp::PushConstStr("Graphics"),
+    MethodOp::SetField("__type"),
     MethodOp::Return,
 ];
 

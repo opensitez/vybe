@@ -22,7 +22,8 @@
 use std::sync::{Arc, Mutex, OnceLock};
 use unicode_normalization::UnicodeNormalization;
 use vybe_runtime::value::{Object, ObjectKind};
-use vybe_runtime::{HostContext, VM, Value};
+use vybe_runtime::vm::HostFnDecl;
+use vybe_runtime::{FuncSig, HostContext, VM, ValType, Value};
 
 static STRING_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
 
@@ -199,6 +200,35 @@ fn clamp_signed(index: i32, len: usize) -> usize {
     resolved.max(0) as usize
 }
 
+/// Declare an `ecma:string` function — same closure, plus the signature.
+///
+/// Like `ecma:array`, no resource binding: a string is a value, not a handle.
+///
+/// Only the handlers with a fixed parameter list are declared. §22.1.3 is full
+/// of optional positions — `indexOf(search[, pos])`, `padStart(len[, filler])`,
+/// `slice([start[, end]])` — and a Component Model signature cannot express
+/// one, so declaring those would flag correct callers. `None` still means
+/// UNKNOWN, so leaving them undeclared claims nothing. The same reasoning is
+/// spelled out at length over `register` in `array.rs`.
+fn string_fn(
+    vm: &mut VM,
+    name: &str,
+    params: Vec<ValType>,
+    results: Vec<ValType>,
+    call: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>,
+) {
+    vm.register_host(HostFnDecl::new("ecma:string", name, call).with_sig(FuncSig {
+        name: name.to_string(),
+        params,
+        results,
+    }));
+}
+
+/// The string operand — every §22.1.3 method takes its receiver first.
+fn str_t() -> ValType {
+    ValType::String
+}
+
 pub fn register(vm: &mut VM) {
     register_query_ops(vm);
     register_extract_ops(vm);
@@ -230,41 +260,51 @@ pub fn register(vm: &mut VM) {
 fn register_adapters(vm: &mut VM) {
     // Python str.isdigit() — true iff non-empty and every char is
     // a Unicode decimal digit.
-    vm.register_host_fn(
-        "ecma:string",
+    string_fn(
+        vm,
         "isdigit",
+        vec![str_t()],
+        vec![ValType::Bool],
         Box::new(|_ctx, args| {
             let s = s_arg(args, 0);
             Value::Bool(!s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
         }),
     );
-    vm.register_host_fn(
-        "ecma:string",
+    string_fn(
+        vm,
         "isalpha",
+        vec![str_t()],
+        vec![ValType::Bool],
         Box::new(|_ctx, args| {
             let s = s_arg(args, 0);
             Value::Bool(!s.is_empty() && s.chars().all(|c| c.is_alphabetic()))
         }),
     );
-    vm.register_host_fn(
-        "ecma:string",
+    string_fn(
+        vm,
         "isalnum",
+        vec![str_t()],
+        vec![ValType::Bool],
         Box::new(|_ctx, args| {
             let s = s_arg(args, 0);
             Value::Bool(!s.is_empty() && s.chars().all(|c| c.is_alphanumeric()))
         }),
     );
-    vm.register_host_fn(
-        "ecma:string",
+    string_fn(
+        vm,
         "isspace",
+        vec![str_t()],
+        vec![ValType::Bool],
         Box::new(|_ctx, args| {
             let s = s_arg(args, 0);
             Value::Bool(!s.is_empty() && s.chars().all(|c| c.is_whitespace()))
         }),
     );
-    vm.register_host_fn(
-        "ecma:string",
+    string_fn(
+        vm,
         "isupper",
+        vec![str_t()],
+        vec![ValType::Bool],
         Box::new(|_ctx, args| {
             let s = s_arg(args, 0);
             let mut has_cased = false;
@@ -278,9 +318,11 @@ fn register_adapters(vm: &mut VM) {
             Value::Bool(has_cased)
         }),
     );
-    vm.register_host_fn(
-        "ecma:string",
+    string_fn(
+        vm,
         "islower",
+        vec![str_t()],
+        vec![ValType::Bool],
         Box::new(|_ctx, args| {
             let s = s_arg(args, 0);
             let mut has_cased = false;
@@ -297,9 +339,11 @@ fn register_adapters(vm: &mut VM) {
 
     // Python str.title() / Ruby capitalize-each-word — uppercase the
     // first letter of each word, lowercase the rest.
-    vm.register_host_fn(
-        "ecma:string",
+    string_fn(
+        vm,
         "title",
+        vec![str_t()],
+        vec![str_t()],
         Box::new(|_ctx, args| {
             let s = s_arg(args, 0);
             let mut out = String::with_capacity(s.len());
@@ -327,9 +371,11 @@ fn register_adapters(vm: &mut VM) {
 
     // Python str.swapcase() — uppercase chars become lowercase and vice
     // versa; non-cased chars unchanged.
-    vm.register_host_fn(
-        "ecma:string",
+    string_fn(
+        vm,
         "swapcase",
+        vec![str_t()],
+        vec![str_t()],
         Box::new(|_ctx, args| {
             let s = s_arg(args, 0);
             let mut out = String::with_capacity(s.len());
@@ -354,9 +400,11 @@ fn register_adapters(vm: &mut VM) {
     // char in `to`. Chars in `from` not in `to` are left unchanged.
     // Simplified: doesn't handle ranges (`a-z`) or negation (`^abc`) —
     // those need Ruby-specific intrinsics.
-    vm.register_host_fn(
-        "ecma:string",
+    string_fn(
+        vm,
         "tr",
+        vec![str_t(), str_t(), str_t()],
+        vec![str_t()],
         Box::new(|_ctx, args| {
             let s = s_arg(args, 0);
             let from: Vec<char> = s_arg(args, 1).chars().collect();
@@ -411,9 +459,13 @@ fn register_query_ops(vm: &mut VM) {
     // String.prototype.length — wasm:js-string already covers this
     // via a host fn. Re-register under ecma:string for callers that
     // want the canonical JS-runtime name.
-    vm.register_host_fn(
-        "ecma:string",
+    // §22.1.4.1 `length` counts UTF-16 CODE UNITS; the handler answers F64, so
+    // the declaration says F64 rather than rounding the contract to i32.
+    string_fn(
+        vm,
         "length",
+        vec![str_t()],
+        vec![ValType::F64],
         Box::new(|_ctx, args| Value::F64(s_arg(args, 0).encode_utf16().count() as f64)),
     );
 
@@ -487,9 +539,11 @@ fn register_query_ops(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:string",
+    string_fn(
+        vm,
         "toString",
+        vec![str_t()],
+        vec![ValType::String],
         Box::new(|ctx, args| {
             let value = args
                 .first()
@@ -500,9 +554,11 @@ fn register_query_ops(vm: &mut VM) {
     );
 
     // String.prototype.valueOf — returns the primitive string itself.
-    vm.register_host_fn(
-        "ecma:string",
+    string_fn(
+        vm,
         "valueOf",
+        vec![str_t()],
+        vec![ValType::String],
         Box::new(|ctx, args| {
             let value = args
                 .first()
@@ -611,27 +667,35 @@ fn register_extract_ops(vm: &mut VM) {
 // ── Casing ops ────────────────────────────────────────────────────
 
 fn register_casing_ops(vm: &mut VM) {
-    vm.register_host_fn(
-        "ecma:string",
+    string_fn(
+        vm,
         "toUpperCase",
+        vec![str_t()],
+        vec![str_t()],
         Box::new(|_ctx, args| s_val(&s_arg(args, 0).to_uppercase())),
     );
-    vm.register_host_fn(
-        "ecma:string",
+    string_fn(
+        vm,
         "toLowerCase",
+        vec![str_t()],
+        vec![str_t()],
         Box::new(|_ctx, args| s_val(&s_arg(args, 0).to_lowercase())),
     );
     // The locale-aware variants use the same Rust impl until
     // locale data is wired in; spec says the result is implementation
     // defined for non-locale data anyway.
-    vm.register_host_fn(
-        "ecma:string",
+    string_fn(
+        vm,
         "toLocaleUpperCase",
+        vec![str_t()],
+        vec![str_t()],
         Box::new(|_ctx, args| s_val(&s_arg(args, 0).to_uppercase())),
     );
-    vm.register_host_fn(
-        "ecma:string",
+    string_fn(
+        vm,
         "toLocaleLowerCase",
+        vec![str_t()],
+        vec![str_t()],
         Box::new(|_ctx, args| s_val(&s_arg(args, 0).to_lowercase())),
     );
 }
@@ -639,19 +703,25 @@ fn register_casing_ops(vm: &mut VM) {
 // ── Trim ops ──────────────────────────────────────────────────────
 
 fn register_trim_ops(vm: &mut VM) {
-    vm.register_host_fn(
-        "ecma:string",
+    string_fn(
+        vm,
         "trim",
+        vec![str_t()],
+        vec![str_t()],
         Box::new(|_ctx, args| s_val(s_arg(args, 0).trim())),
     );
-    vm.register_host_fn(
-        "ecma:string",
+    string_fn(
+        vm,
         "trimStart",
+        vec![str_t()],
+        vec![str_t()],
         Box::new(|_ctx, args| s_val(s_arg(args, 0).trim_start())),
     );
-    vm.register_host_fn(
-        "ecma:string",
+    string_fn(
+        vm,
         "trimEnd",
+        vec![str_t()],
+        vec![str_t()],
         Box::new(|_ctx, args| s_val(s_arg(args, 0).trim_end())),
     );
 }
@@ -868,9 +938,11 @@ fn register_modify_ops(vm: &mut VM) {
     // ECMA-262 §22.1.3.18: replace with a string searchValue
     // replaces only the FIRST match. Rust's `str::replacen(.., 1)`
     // matches that.
-    vm.register_host_fn(
-        "ecma:string",
+    string_fn(
+        vm,
         "replace",
+        vec![str_t(), str_t(), str_t()],
+        vec![str_t()],
         Box::new(|_ctx, args| {
             let s = s_arg(args, 0);
             let search = s_arg(args, 1);
@@ -880,9 +952,11 @@ fn register_modify_ops(vm: &mut VM) {
     );
 
     // ECMA-262 §22.1.3.19: replaceAll replaces every occurrence.
-    vm.register_host_fn(
-        "ecma:string",
+    string_fn(
+        vm,
         "replaceAll",
+        vec![str_t(), str_t(), str_t()],
+        vec![str_t()],
         Box::new(|_ctx, args| {
             let s = s_arg(args, 0);
             let search = s_arg(args, 1);
@@ -979,9 +1053,13 @@ fn register_constructor_statics(vm: &mut VM) {
 // default behaviour when Intl isn't available.
 
 fn register_locale_compare(vm: &mut VM) {
-    vm.register_host_fn(
-        "ecma:string",
+    // §22.1.3.12 allows `locales` and `options`; this handler implements
+    // neither, so the declaration is the binary comparison it actually is.
+    string_fn(
+        vm,
         "localeCompare",
+        vec![str_t(), str_t()],
+        vec![ValType::I32],
         Box::new(|_ctx, args| {
             let a = s_arg(args, 0);
             let b = s_arg(args, 1);
@@ -1076,9 +1154,11 @@ fn register_uri(vm: &mut VM) {
     // encodeURIComponent — encodes everything except the unreserved set
     // (ALPHA / DIGIT / `-` / `_` / `.` / `~` / `!` / `*` / `'` / `(` / `)`).
     // ECMA-262 §19.2.6.5.
-    vm.register_host_fn(
-        "ecma:string",
+    string_fn(
+        vm,
         "encodeURIComponent",
+        vec![str_t()],
+        vec![str_t()],
         Box::new(|_ctx, args| {
             let s = s_arg(args, 0);
             let encoded: String = s
@@ -1101,9 +1181,11 @@ fn register_uri(vm: &mut VM) {
     );
 
     // decodeURIComponent — reverses encodeURIComponent.
-    vm.register_host_fn(
-        "ecma:string",
+    string_fn(
+        vm,
         "decodeURIComponent",
+        vec![str_t()],
+        vec![str_t()],
         Box::new(|ctx, args| {
             let s = s_arg(args, 0);
             match decode_uri_string(&s) {
@@ -1119,9 +1201,11 @@ fn register_uri(vm: &mut VM) {
     // encodeURI — like encodeURIComponent but ALSO leaves URI-syntax
     // chars unencoded: `;` `,` `/` `?` `:` `@` `&` `=` `+` `$` `#`.
     // ECMA-262 §19.2.6.4.
-    vm.register_host_fn(
-        "ecma:string",
+    string_fn(
+        vm,
         "encodeURI",
+        vec![str_t()],
+        vec![str_t()],
         Box::new(|_ctx, args| {
             let s = s_arg(args, 0);
             let encoded: String = s
@@ -1147,9 +1231,11 @@ fn register_uri(vm: &mut VM) {
     // reserved set than decodeURIComponent (it preserves URI-syntax
     // chars even if they were percent-encoded), but for our MVP we
     // simply unescape every `%XX` — same behaviour as decodeURIComponent.
-    vm.register_host_fn(
-        "ecma:string",
+    string_fn(
+        vm,
         "decodeURI",
+        vec![str_t()],
+        vec![str_t()],
         Box::new(|ctx, args| {
             let s = s_arg(args, 0);
             match decode_uri_string(&s) {
@@ -1165,9 +1251,11 @@ fn register_uri(vm: &mut VM) {
     // Annex B `escape` — legacy percent encoder used by older JS code.
     // Leaves `A-Z a-z 0-9 @*_+-./` unescaped, encodes Latin-1 bytes as
     // `%XX`, and wider code points as `%uXXXX`.
-    vm.register_host_fn(
-        "ecma:string",
+    string_fn(
+        vm,
         "escape",
+        vec![str_t()],
+        vec![str_t()],
         Box::new(|_ctx, args| {
             let s = s_arg(args, 0);
             let mut encoded = String::new();
@@ -1188,9 +1276,11 @@ fn register_uri(vm: &mut VM) {
     );
 
     // Annex B `unescape` — reverses `%XX` and `%uXXXX` escapes.
-    vm.register_host_fn(
-        "ecma:string",
+    string_fn(
+        vm,
         "unescape",
+        vec![str_t()],
+        vec![str_t()],
         Box::new(|_ctx, args| {
             let s = s_arg(args, 0);
             let bytes = s.as_bytes();
@@ -1349,9 +1439,11 @@ fn throw_type_error(ctx: &mut HostContext, message: &str) {
 fn register_base64(vm: &mut VM) {
     // btoa — base64-encode the input string's BYTES (treating it as
     // Latin-1 per HTML spec).
-    vm.register_host_fn(
-        "ecma:string",
+    string_fn(
+        vm,
         "btoa",
+        vec![str_t()],
+        vec![str_t()],
         Box::new(|ctx, args| {
             let s = s_arg(args, 0);
             let mut bytes = Vec::with_capacity(s.chars().count());
@@ -1371,9 +1463,11 @@ fn register_base64(vm: &mut VM) {
     );
 
     // atob — base64-decode and interpret bytes as a Latin-1 string.
-    vm.register_host_fn(
-        "ecma:string",
+    string_fn(
+        vm,
         "atob",
+        vec![str_t()],
+        vec![str_t()],
         Box::new(|ctx, args| {
             let s = s_arg(args, 0);
             match base64_decode(&s) {
@@ -1387,9 +1481,11 @@ fn register_base64(vm: &mut VM) {
     );
 
     // match(string, pattern) — §22.1.3.12. Returns first-match array or Null.
-    vm.register_host_fn(
-        "ecma:string",
+    string_fn(
+        vm,
         "match",
+        vec![str_t(), str_t()],
+        vec![ValType::Any],
         Box::new(|_ctx, args| {
             let s = s_arg(args, 0);
             let pattern = s_arg(args, 1);
@@ -1412,9 +1508,11 @@ fn register_base64(vm: &mut VM) {
     );
 
     // search(string, pattern) — §22.1.3.21. Returns index of first match or -1.
-    vm.register_host_fn(
-        "ecma:string",
+    string_fn(
+        vm,
         "search",
+        vec![str_t(), str_t()],
+        vec![ValType::F64],
         Box::new(|_ctx, args| {
             let s = s_arg(args, 0);
             let pattern = s_arg(args, 1);
@@ -1428,16 +1526,22 @@ fn register_base64(vm: &mut VM) {
     );
 
     // isWellFormed — §22.1.3.10 (ES2024). Rust strings are always UTF-8.
-    vm.register_host_fn(
-        "ecma:string",
+    // The handler ignores its operand — every string IS well-formed here — but
+    // the receiver is still a parameter, and callers pass it.
+    string_fn(
+        vm,
         "isWellFormed",
+        vec![str_t()],
+        vec![ValType::Bool],
         Box::new(|_ctx, _args| Value::Bool(true)),
     );
 
     // toWellFormed — §22.1.3.31 (ES2024). Returns the string unchanged.
-    vm.register_host_fn(
-        "ecma:string",
+    string_fn(
+        vm,
         "toWellFormed",
+        vec![str_t()],
+        vec![ValType::String],
         Box::new(|_ctx, args| args.first().cloned().unwrap_or(Value::Undefined)),
     );
 
@@ -1501,9 +1605,11 @@ fn register_base64(vm: &mut VM) {
     );
 
     // toLocaleString — same as toString for basic strings.
-    vm.register_host_fn(
-        "ecma:string",
+    string_fn(
+        vm,
         "toLocaleString",
+        vec![str_t()],
+        vec![ValType::String],
         Box::new(|_ctx, args| args.first().cloned().unwrap_or(Value::Undefined)),
     );
 }
@@ -1512,9 +1618,11 @@ fn register_base64(vm: &mut VM) {
 /// Strings are opaque in WASM (wasm:js-string spec); iteration
 /// requires a host function, same as charCodeAt/codePointAt.
 fn register_iterator(vm: &mut VM) {
-    vm.register_host_fn(
-        "ecma:string",
+    string_fn(
+        vm,
         "iterator",
+        vec![str_t()],
+        vec![ValType::Any],
         Box::new(|_ctx, args| {
             let s = s_arg(args, 0);
             let chars: Vec<Value> = s

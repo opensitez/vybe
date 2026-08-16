@@ -1,6 +1,6 @@
 use super::super::super::class_exports::DotnetClassExport;
 use super::component_classes_common::constructor_class;
-use vybe_runtime::component_model::{ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef};
+use vybe_runtime::component_model::{ClassType, ConstructorDef, MethodBody, MethodDef};
 
 pub(super) fn exports() -> Vec<DotnetClassExport> {
     vec![
@@ -115,12 +115,12 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
             ClassType::new("DataAdapter")
                 .with_constructor(
                     ConstructorDef::new(0)
-                        .with_backing(HostTarget::new("wasi:sql/types", "data-adapter.new")),
+                        .with_common_backing("dotnet.sql_data_adapter_new"),
                 )
                 .with_method(MethodDef::new(
                     "Fill",
                     1,
-                    MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]adapter.fill")),
+                    MethodBody::Common("dotnet.sql_adapter_fill".into()),
                 )),
         ),
         constructor_class("dotnet.System.Drawing", "Point", "vybe:gui", "pointNew"),
@@ -152,58 +152,42 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
             "vybe:gui",
             "colorFromName",
         ),
-        constructor_class(
-            "dotnet.System.Drawing",
-            "Graphics",
-            "vybe:gui",
-            "graphicsNew",
-        ),
+        // No `Graphics` entry here: `winforms::component_classes` already
+        // declares `dotnet.System.Drawing::Graphics` from the `DotnetClass`
+        // table, WITH every drawing method and with `graphicsNew` as its
+        // constructor backing, so a second `constructor_class` declaration of
+        // the same name in the same namespace is redundant.
         DotnetClassExport::new(
             "dotnet.System.Data.SqlClient",
             ClassType::new("SqlConnection")
                 .with_constructor(
                     ConstructorDef::new(1)
-                        .with_backing(HostTarget::new("wasi:sql/types", "connection.new")),
+                        .with_common_backing("dotnet.sql_connection_new"),
                 )
                 .with_method(MethodDef::new(
                     "Open",
                     0,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]connection.open",
-                    )),
+                    MethodBody::Common("dotnet.sql_connection_open".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Close",
                     0,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]connection.close",
-                    )),
+                    MethodBody::Common("dotnet.sql_connection_close".into()),
                 ))
                 .with_method(MethodDef::new(
                     "CreateCommand",
                     0,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]connection.create-command",
-                    )),
+                    MethodBody::Common("dotnet.sql_connection_create_command".into()),
                 ))
                 .with_method(MethodDef::new(
                     "BeginTransaction",
                     0,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]connection.begin-transaction",
-                    )),
+                    MethodBody::Common("dotnet.sql_connection_begin_transaction".into()),
                 ))
                 .with_method(MethodDef::new(
                     "GetSchema",
                     1,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]connection.get-schema",
-                    )),
+                    MethodBody::Common("dotnet.sql_connection_get_schema".into()),
                 )),
         ),
         DotnetClassExport::new(
@@ -211,63 +195,42 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
             ClassType::new("SqlCommand")
                 .with_constructor(
                     ConstructorDef::new(2)
-                        .with_backing(HostTarget::new("wasi:sql/types", "command.new")),
+                        .with_common_backing("dotnet.sql_command_new"),
                 )
                 .with_method(MethodDef::new(
                     "ExecuteNonQuery",
                     0,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]command.execute-non-query",
-                    )),
+                    MethodBody::Common("dotnet.sql_command_execute_non_query".into()),
                 ))
                 .with_method(MethodDef::new(
                     "ExecuteScalar",
                     0,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]command.execute-scalar",
-                    )),
+                    MethodBody::Common("dotnet.sql_command_execute_scalar".into()),
                 ))
                 .with_method(MethodDef::new(
                     "ExecuteReader",
                     0,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]command.execute-reader",
-                    )),
+                    MethodBody::Common("dotnet.sql_command_execute_reader".into()),
                 ))
                 .with_method(MethodDef::new(
                     "ExecuteNonQueryAsync",
                     0,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]command.execute-non-query",
-                    )),
+                    MethodBody::Common("dotnet.sql_command_execute_non_query".into()),
                 ))
                 .with_method(MethodDef::new(
                     "ExecuteScalarAsync",
                     0,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]command.execute-scalar",
-                    )),
+                    MethodBody::Common("dotnet.sql_command_execute_scalar".into()),
                 ))
                 .with_method(MethodDef::new(
                     "ExecuteReaderAsync",
                     0,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]command.execute-reader",
-                    )),
+                    MethodBody::Common("dotnet.sql_command_execute_reader".into()),
                 ))
                 .with_method(MethodDef::new(
                     "CreateParameter",
                     5,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]command.create-parameter",
-                    )),
+                    MethodBody::Common("dotnet.sql_command_create_parameter".into()),
                 )),
         ),
         DotnetClassExport::new(
@@ -275,12 +238,12 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
             ClassType::new("SqlDataAdapter")
                 .with_constructor(
                     ConstructorDef::new(2)
-                        .with_backing(HostTarget::new("wasi:sql/types", "data-adapter.new")),
+                        .with_common_backing("dotnet.sql_data_adapter_new"),
                 )
                 .with_method(MethodDef::new(
                     "Fill",
                     1,
-                    MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]adapter.fill")),
+                    MethodBody::Common("dotnet.sql_adapter_fill".into()),
                 )),
         ),
         DotnetClassExport::new(
@@ -289,52 +252,37 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new(
                     "Read",
                     0,
-                    MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]reader.read")),
+                    MethodBody::Common("dotnet.sql_reader_read".into()),
                 ))
                 .with_method(MethodDef::new(
                     "GetString",
                     1,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]reader.get-string",
-                    )),
+                    MethodBody::Common("dotnet.sql_reader_get_string".into()),
                 ))
                 .with_method(MethodDef::new(
                     "GetValue",
                     1,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]reader.get-value",
-                    )),
+                    MethodBody::Common("dotnet.sql_reader_get_value".into()),
                 ))
                 .with_method(MethodDef::new(
                     "GetName",
                     1,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]reader.get-name",
-                    )),
+                    MethodBody::Common("dotnet.sql_reader_get_name".into()),
                 ))
                 .with_method(MethodDef::new(
                     "IsDBNull",
                     1,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]reader.is-dbnull",
-                    )),
+                    MethodBody::Common("dotnet.sql_reader_is_dbnull".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Close",
                     0,
-                    MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]reader.close")),
+                    MethodBody::Common("dotnet.sql_reader_close".into()),
                 ))
                 .with_method(MethodDef::new(
                     "GetSchemaTable",
                     0,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]reader.get-schema-table",
-                    )),
+                    MethodBody::Common("dotnet.sql_reader_get_schema_table".into()),
                 )),
         ),
         DotnetClassExport::new(
@@ -343,18 +291,12 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new(
                     "Commit",
                     0,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]transaction.commit",
-                    )),
+                    MethodBody::Common("dotnet.sql_transaction_commit".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Rollback",
                     0,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]transaction.rollback",
-                    )),
+                    MethodBody::Common("dotnet.sql_transaction_rollback".into()),
                 )),
         ),
         DotnetClassExport::new(
@@ -366,42 +308,27 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new(
                     "Open",
                     0,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]connection.open",
-                    )),
+                    MethodBody::Common("dotnet.sql_connection_open".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Close",
                     0,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]connection.close",
-                    )),
+                    MethodBody::Common("dotnet.sql_connection_close".into()),
                 ))
                 .with_method(MethodDef::new(
                     "CreateCommand",
                     0,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]connection.create-command",
-                    )),
+                    MethodBody::Common("dotnet.sql_connection_create_command".into()),
                 ))
                 .with_method(MethodDef::new(
                     "BeginTransaction",
                     0,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]connection.begin-transaction",
-                    )),
+                    MethodBody::Common("dotnet.sql_connection_begin_transaction".into()),
                 ))
                 .with_method(MethodDef::new(
                     "GetSchema",
                     1,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]connection.get-schema",
-                    )),
+                    MethodBody::Common("dotnet.sql_connection_get_schema".into()),
                 )),
         ),
         DotnetClassExport::new(
@@ -413,58 +340,37 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new(
                     "ExecuteNonQuery",
                     0,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]command.execute-non-query",
-                    )),
+                    MethodBody::Common("dotnet.sql_command_execute_non_query".into()),
                 ))
                 .with_method(MethodDef::new(
                     "ExecuteScalar",
                     0,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]command.execute-scalar",
-                    )),
+                    MethodBody::Common("dotnet.sql_command_execute_scalar".into()),
                 ))
                 .with_method(MethodDef::new(
                     "ExecuteReader",
                     0,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]command.execute-reader",
-                    )),
+                    MethodBody::Common("dotnet.sql_command_execute_reader".into()),
                 ))
                 .with_method(MethodDef::new(
                     "ExecuteNonQueryAsync",
                     0,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]command.execute-non-query",
-                    )),
+                    MethodBody::Common("dotnet.sql_command_execute_non_query".into()),
                 ))
                 .with_method(MethodDef::new(
                     "ExecuteScalarAsync",
                     0,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]command.execute-scalar",
-                    )),
+                    MethodBody::Common("dotnet.sql_command_execute_scalar".into()),
                 ))
                 .with_method(MethodDef::new(
                     "ExecuteReaderAsync",
                     0,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]command.execute-reader",
-                    )),
+                    MethodBody::Common("dotnet.sql_command_execute_reader".into()),
                 ))
                 .with_method(MethodDef::new(
                     "CreateParameter",
                     5,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]command.create-parameter",
-                    )),
+                    MethodBody::Common("dotnet.sql_command_create_parameter".into()),
                 )),
         ),
         DotnetClassExport::new(
@@ -473,52 +379,37 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new(
                     "Read",
                     0,
-                    MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]reader.read")),
+                    MethodBody::Common("dotnet.sql_reader_read".into()),
                 ))
                 .with_method(MethodDef::new(
                     "GetString",
                     1,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]reader.get-string",
-                    )),
+                    MethodBody::Common("dotnet.sql_reader_get_string".into()),
                 ))
                 .with_method(MethodDef::new(
                     "GetValue",
                     1,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]reader.get-value",
-                    )),
+                    MethodBody::Common("dotnet.sql_reader_get_value".into()),
                 ))
                 .with_method(MethodDef::new(
                     "GetName",
                     1,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]reader.get-name",
-                    )),
+                    MethodBody::Common("dotnet.sql_reader_get_name".into()),
                 ))
                 .with_method(MethodDef::new(
                     "IsDBNull",
                     1,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]reader.is-dbnull",
-                    )),
+                    MethodBody::Common("dotnet.sql_reader_is_dbnull".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Close",
                     0,
-                    MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]reader.close")),
+                    MethodBody::Common("dotnet.sql_reader_close".into()),
                 ))
                 .with_method(MethodDef::new(
                     "GetSchemaTable",
                     0,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]reader.get-schema-table",
-                    )),
+                    MethodBody::Common("dotnet.sql_reader_get_schema_table".into()),
                 )),
         ),
         DotnetClassExport::new(
@@ -526,12 +417,12 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
             ClassType::new("OleDbDataAdapter")
                 .with_constructor(
                     ConstructorDef::new(2)
-                        .with_backing(HostTarget::new("wasi:sql/types", "data-adapter.new")),
+                        .with_common_backing("dotnet.sql_data_adapter_new"),
                 )
                 .with_method(MethodDef::new(
                     "Fill",
                     1,
-                    MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]adapter.fill")),
+                    MethodBody::Common("dotnet.sql_adapter_fill".into()),
                 )),
         ),
         DotnetClassExport::new(
@@ -540,18 +431,12 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new(
                     "Commit",
                     0,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]transaction.commit",
-                    )),
+                    MethodBody::Common("dotnet.sql_transaction_commit".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Rollback",
                     0,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]transaction.rollback",
-                    )),
+                    MethodBody::Common("dotnet.sql_transaction_rollback".into()),
                 )),
         ),
         DotnetClassExport::new(
@@ -563,18 +448,12 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new(
                     "Open",
                     0,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]connection.open",
-                    )),
+                    MethodBody::Common("dotnet.sql_connection_open".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Close",
                     0,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]connection.close",
-                    )),
+                    MethodBody::Common("dotnet.sql_connection_close".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Execute",
@@ -628,34 +507,22 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new(
                     "AddWithValue",
                     2,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]params.add-with-value",
-                    )),
+                    MethodBody::Common("dotnet.sql_params_add_with_value".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Add",
                     2,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]params.add-with-value",
-                    )),
+                    MethodBody::Common("dotnet.sql_params_add_with_value".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Clear",
                     0,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]params.clear",
-                    )),
+                    MethodBody::Common("dotnet.sql_params_clear".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Count",
                     0,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:sql/types",
-                        "[method]params.count",
-                    )),
+                    MethodBody::Common("dotnet.sql_params_count".into()),
                 )),
         ),
         DotnetClassExport::new(

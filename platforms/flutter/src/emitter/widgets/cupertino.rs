@@ -29,7 +29,19 @@ const F_CUPSWITCH: &[FlutterField] = &[
 ];
 
 pub(crate) const CLASSES: &[FlutterClass] = &[
-    FlutterClass::widget("CupertinoButton", "StatefulWidget", "Button", F_CUPBUTTON),
-    FlutterClass::widget("CupertinoSlider", "StatefulWidget", "trackbar", F_CUPSLIDER),
-    FlutterClass::widget("CupertinoSwitch", "StatefulWidget", "CheckBox", F_CUPSWITCH),
+    // A Cupertino control differs from its Material twin in APPEARANCE, which
+    // is CSS. The element it is stays the same one.
+    FlutterClass::widget("CupertinoButton", "StatefulWidget", "button", F_CUPBUTTON),
+    FlutterClass::widget(
+        "CupertinoSlider",
+        "StatefulWidget",
+        "input:range",
+        F_CUPSLIDER,
+    ),
+    FlutterClass::widget(
+        "CupertinoSwitch",
+        "StatefulWidget",
+        "input:checkbox",
+        F_CUPSWITCH,
+    ),
 ];

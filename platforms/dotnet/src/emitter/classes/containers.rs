@@ -17,7 +17,8 @@ pub fn classes() -> &'static [DotnetClass] {
             properties: &["BorderStyle"],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: Some("new_Panel"),
+            // `<div>` — created by the element mapping.
+            widget_host_fn: None,
             widget_host_module: "vybe:gui",
         },
         DotnetClass {
@@ -26,7 +27,14 @@ pub fn classes() -> &'static [DotnetClass] {
             properties: &["FlatStyle", "UseCompatibleTextRendering"],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: Some("new_GroupBox"),
+            // `<fieldset>` — created by the element mapping. The remaining
+            // containers in this file keep their factory for now:
+            // `FlowLayoutPanel` and `TableLayoutPanel` need a `display` mode
+            // declared and have no selector to declare it on, and
+            // `TabControl`/`TabPage`/`SplitContainer` map to `<vybe-*>` custom
+            // elements whose behaviour still lives in the `vybe:gui` factory
+            // and has to move first. See `tree_register::html_element_for_control`.
+            widget_host_fn: None,
             widget_host_module: "vybe:gui",
         },
         DotnetClass {

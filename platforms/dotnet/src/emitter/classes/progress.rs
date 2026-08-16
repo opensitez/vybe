@@ -23,7 +23,8 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: Some("new_ProgressBar"),
+            // `<progress>` — created by the element mapping.
+            widget_host_fn: None,
             widget_host_module: "vybe:gui",
         },
         DotnetClass {
@@ -42,7 +43,8 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: Some("new_TrackBar"),
+            // `<input type="range">`
+            widget_host_fn: None,
             widget_host_module: "vybe:gui",
         },
         DotnetClass {
@@ -62,7 +64,8 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: Some("new_NumericUpDown"),
+            // `<input type="number">`
+            widget_host_fn: None,
             widget_host_module: "vybe:gui",
         },
     ]

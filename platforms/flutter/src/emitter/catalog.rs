@@ -73,7 +73,15 @@ impl FlutterClass {
             parent: Some(parent),
             interfaces: NO_INTERFACES,
             fields,
-            widget_host_fn: Some("Panel"),
+            // ⚠ `"Panel"` here was a `vybe:gui` control name, and once
+            // `control_fn` became the ELEMENT declaration it parsed as the tag
+            // `<panel>` — which no `control_kind` arm knows, so every wrapper
+            // rendered as a 120x20 label instead of wrapping anything.
+            //
+            // A wrapper is a plain box: `Opacity`, `ClipRRect` and `Transform`
+            // are all CSS on a `div`, which is the point of going through the
+            // cascade rather than asking a control to express them.
+            widget_host_fn: Some("div"),
             transparent: true,
         }
     }

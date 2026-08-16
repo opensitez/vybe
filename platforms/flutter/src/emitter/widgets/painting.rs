@@ -124,12 +124,14 @@ pub(crate) const CLASSES: &[FlutterClass] = &[
         "SingleChildRenderObjectWidget",
         F_CHILD_ONLY,
     ),
-    // CustomPaint owns a painter callback rather than a child effect — it keeps
-    // a real Panel so the painted surface has somewhere to live.
+    // CustomPaint owns a painter callback rather than a child effect, so it is
+    // the one widget here that IS a drawing surface — and HTML spells that
+    // `<canvas>`. Only a canvas node owns a recording, so any other tag would
+    // drop every draw silently.
     FlutterClass::widget(
         "CustomPaint",
         "SingleChildRenderObjectWidget",
-        "Panel",
+        "canvas",
         F_CUSTOMPAINT,
     ),
 ];

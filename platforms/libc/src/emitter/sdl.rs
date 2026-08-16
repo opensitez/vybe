@@ -51,9 +51,43 @@ pub fn create_rgb_surface(
     ]))
 }
 
-fn emit_gui_call(chunks: &mut [Chunk], current: usize, func: &str, argc: u8, line: u32) {
-    let idx = chunks[current].add_import("vybe:gui", func);
+/// Call a `web:dom` host function — the document side of the adapter.
+fn emit_dom_call(chunks: &mut [Chunk], current: usize, func: &str, argc: u8, line: u32) {
+    let idx = chunks[current].add_import("web:dom", func);
     chunks[current].emit_call(idx, argc, line);
+}
+
+/// Call a `web:html` host function — the HTML element IDL, as opposed to the
+/// DOM core members that live in `web:dom`. The split is the spec's own:
+/// `document.body` and `document.title` are HTML members, `appendChild` and
+/// `setAttribute` are Node ones. Naming the wrong module is an
+/// `Unresolved import` at run time, not a silent miss.
+fn emit_html_call(chunks: &mut [Chunk], current: usize, func: &str, argc: u8, line: u32) {
+    let idx = chunks[current].add_import("web:html", func);
+    chunks[current].emit_call(idx, argc, line);
+}
+
+/// Call a `web:cssom` host function — `CSSStyleDeclaration`.
+fn emit_cssom_call(chunks: &mut [Chunk], current: usize, func: &str, argc: u8, line: u32) {
+    let idx = chunks[current].add_import("web:cssom", func);
+    chunks[current].emit_call(idx, argc, line);
+}
+
+/// Push the document handle every `web:dom` / `web:html` call takes first —
+/// `window.document`, via `web:html:activeDocument()`.
+///
+/// NOT a literal 0. Document ids start at 1 (`dom::new_document` increments
+/// before it hands one out), so 0 names no open document and
+/// `dom::with_document` answers `None` — every call silently did nothing, the
+/// canvas was never inserted, and the page had no content to present.
+fn emit_document(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_html_call(chunks, current, "activeDocument", 0, line);
+}
+
+/// Push `document.body` — the SDL window's parent element.
+fn emit_body(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_document(chunks, current, line);
+    emit_html_call(chunks, current, "body", 1, line);
 }
 
 /// Call a `web:canvas` op. SDL's drawing is an ADAPTER over WHATWG
@@ -62,6 +96,16 @@ fn emit_gui_call(chunks: &mut [Chunk], current: usize, func: &str, argc: u8, lin
 /// our own — a browser host serves these imports with a real canvas element.
 fn emit_canvas_call(chunks: &mut [Chunk], current: usize, func: &str, argc: u8, line: u32) {
     let idx = chunks[current].add_import("web:canvas", func);
+    chunks[current].emit_call(idx, argc, line);
+}
+
+/// Call a `web:window` host function. SDL's dialogs are an ADAPTER over the
+/// browsing context: `SDL_ShowSimpleMessageBox` IS `window.alert`. The web has
+/// no titled message box — a browser dialog shows one string — so the title
+/// and the text are folded together here, on the adapter's side, the same way
+/// the event vocabulary is resolved below.
+fn emit_window_call(chunks: &mut [Chunk], current: usize, func: &str, argc: u8, line: u32) {
+    let idx = chunks[current].add_import("web:window", func);
     chunks[current].emit_call(idx, argc, line);
 }
 
@@ -157,34 +201,39 @@ fn emit_string_concat(chunks: &mut [Chunk], current: usize, left: u16, right: u1
     chunks[current].emit_call(concat_idx, 2u8, line);
 }
 
-#[allow(dead_code)]
-fn emit_number_from_property(
+/// `element.setAttribute(name, value)` — the CONTENT attribute, which is what
+/// a canvas's `width` and `height` are (HTML §4.12.5: unitless CSS pixels that
+/// size the drawing buffer, not a style declaration).
+fn emit_set_attribute(
     chunks: &mut [Chunk],
     current: usize,
-    slot: u16,
-    property: &str,
-    line: u32,
-) {
-    emit_get_local(chunks, current, slot, line);
-    chunks[current].emit_string_const(property, line);
-    emit_gui_call(chunks, current, "getProperty", 2, line);
-
-    let num_idx = chunks[current].add_import("ecma:number", "Number");
-    chunks[current].emit_call(num_idx, 1, line);
-}
-
-fn emit_set_control_property(
-    chunks: &mut [Chunk],
-    current: usize,
-    control_slot: u16,
-    property: &str,
+    node_slot: u16,
+    name: &str,
     value_slot: u16,
     line: u32,
 ) {
-    emit_get_local(chunks, current, control_slot, line);
-    chunks[current].emit_string_const(property, line);
+    emit_document(chunks, current, line);
+    emit_get_local(chunks, current, node_slot, line);
+    chunks[current].emit_string_const(name, line);
     emit_get_local(chunks, current, value_slot, line);
-    emit_gui_call(chunks, current, "setProperty", 3, line);
+    emit_dom_call(chunks, current, "setAttribute", 4, line);
+    chunks[current].emit_op(Op::DROP, line);
+}
+
+/// `element.style.setProperty(name, value)` — a literal CSS declaration.
+fn emit_set_style(
+    chunks: &mut [Chunk],
+    current: usize,
+    node_slot: u16,
+    name: &str,
+    value: &str,
+    line: u32,
+) {
+    emit_document(chunks, current, line);
+    emit_get_local(chunks, current, node_slot, line);
+    chunks[current].emit_string_const(name, line);
+    chunks[current].emit_string_const(value, line);
+    emit_cssom_call(chunks, current, "setStyleProperty", 4, line);
     chunks[current].emit_op(Op::DROP, line);
 }
 
@@ -215,19 +264,18 @@ fn emit_cstring_to_text(
     emit_set_local(chunks, current, out_slot, line);
 }
 
-fn emit_set_control_property_bool_string(
-    chunks: &mut [Chunk],
-    current: usize,
-    control_slot: u16,
-    property: &str,
-    value: &str,
-    line: u32,
-) {
-    emit_get_local(chunks, current, control_slot, line);
-    chunks[current].emit_string_const(property, line);
-    chunks[current].emit_string_const(value, line);
-    emit_gui_call(chunks, current, "setProperty", 3, line);
-    chunks[current].emit_op(Op::DROP, line);
+/// `SDL_ShowWindow` / `SDL_HideWindow`. A page has no window to raise — what
+/// SDL means by hidden is that the surface is not rendered, and the CSS
+/// property for that is `display`.
+fn emit_set_visible(chunks: &mut [Chunk], current: usize, node_slot: u16, shown: bool, line: u32) {
+    emit_set_style(
+        chunks,
+        current,
+        node_slot,
+        "display",
+        if shown { "block" } else { "none" },
+        line,
+    );
 }
 
 fn emit_u8_from_u32_slot(chunks: &mut [Chunk], current: usize, slot: u16, shift: u8, line: u32) {
@@ -301,98 +349,94 @@ pub fn emit_sdl_quit(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_zero_i32(chunks, current, line);
 }
 
+/// `SDL_CreateWindow(title, x, y, w, h, flags)` — a page with one canvas.
+///
+/// There is no window to create: the document already exists, and an SDL
+/// program is `<html><body><canvas></canvas></body></html>`. So the title
+/// becomes the document's, the window IS the `<canvas>` element, and the
+/// handle SDL hands back is that element — which is also what `getContext`
+/// wants, so no name, id or lookup is needed anywhere downstream.
+///
+/// `x` / `y` are dropped on purpose: they position an OS window on a screen,
+/// and a page cannot move itself. `w` / `h` are the canvas's CONTENT
+/// attributes (HTML §4.12.5 — they size the drawing buffer in CSS pixels and
+/// are unitless), not a style declaration.
 pub fn emit_sdl_create_window(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    let window = chunks[current].alloc_scratch(1);
+    let canvas = chunks[current].alloc_scratch(1);
     let title = chunks[current].alloc_scratch(1);
-    let x = chunks[current].alloc_scratch(1);
-    let y = chunks[current].alloc_scratch(1);
+    let _x = chunks[current].alloc_scratch(1);
+    let _y = chunks[current].alloc_scratch(1);
     let w = chunks[current].alloc_scratch(1);
     let h = chunks[current].alloc_scratch(1);
     let _flags = chunks[current].alloc_scratch(1);
-    let surface_name = chunks[current].alloc_scratch(1);
-    let suffix = chunks[current].alloc_scratch(1);
 
-    // SDL_CreateWindow(title, x, y, w, h, flags)
     emit_set_local(chunks, current, _flags, line);
     emit_set_local(chunks, current, h, line);
     emit_set_local(chunks, current, w, line);
-    emit_set_local(chunks, current, y, line);
-    emit_set_local(chunks, current, x, line);
+    emit_set_local(chunks, current, _y, line);
+    emit_set_local(chunks, current, _x, line);
     emit_set_local(chunks, current, title, line);
 
+    // document.title = title
+    emit_document(chunks, current, line);
     emit_get_local(chunks, current, title, line);
-    emit_gui_call(chunks, current, "createForm", 1, line);
-    emit_set_local(chunks, current, window, line);
-
-    emit_set_control_property(chunks, current, window, "left", x, line);
-    emit_set_control_property(chunks, current, window, "top", y, line);
-    emit_set_control_property(chunks, current, window, "width", w, line);
-    emit_set_control_property(chunks, current, window, "height", h, line);
-
-    // SDL window owns a dedicated Canvas control so SDL surface calls render to a
-    // real canvas widget (not the form-overlay path).
-    emit_get_local(chunks, current, window, line);
-    chunks[current].emit_string_const("_surface", line);
-    emit_set_local(chunks, current, suffix, line);
-    emit_string_concat(chunks, current, window, suffix, line);
-    emit_set_local(chunks, current, surface_name, line);
-
-    emit_get_local(chunks, current, window, line);
-    chunks[current].emit_string_const("Canvas", line);
-    emit_get_local(chunks, current, surface_name, line);
-    chunks[current].emit_i32_const(0, line);
-    chunks[current].emit_i32_const(0, line);
-    emit_get_local(chunks, current, w, line);
-    emit_get_local(chunks, current, h, line);
-    emit_gui_call(chunks, current, "addControl", 7, line);
+    emit_html_call(chunks, current, "setTitle", 2, line);
     chunks[current].emit_op(Op::DROP, line);
 
-    emit_get_local(chunks, current, window, line);
-    chunks[current].emit_string_const("sdl_surface", line);
-    emit_get_local(chunks, current, surface_name, line);
-    emit_gui_call(chunks, current, "setProperty", 3, line);
+    // document.createElement("canvas")
+    emit_document(chunks, current, line);
+    chunks[current].emit_string_const("canvas", line);
+    chunks[current].emit_string_const("", line);
+    emit_dom_call(chunks, current, "createElement", 3, line);
+    emit_set_local(chunks, current, canvas, line);
+
+    emit_set_attribute(chunks, current, canvas, "width", w, line);
+    emit_set_attribute(chunks, current, canvas, "height", h, line);
+
+    // document.body.appendChild(canvas) — the page now HAS content, which is
+    // the same test the window runner starts on (`gui_document::with_live`).
+    // Nothing tells the page to run; a document with content is a running one.
+    emit_document(chunks, current, line);
+    emit_body(chunks, current, line);
+    emit_get_local(chunks, current, canvas, line);
+    emit_dom_call(chunks, current, "appendChild", 3, line);
     chunks[current].emit_op(Op::DROP, line);
 
-    emit_set_control_property(chunks, current, surface_name, "width", w, line);
-    emit_set_control_property(chunks, current, surface_name, "height", h, line);
-    emit_set_control_property(chunks, current, surface_name, "left", x, line);
-    emit_set_control_property(chunks, current, surface_name, "top", y, line);
-
-    emit_get_local(chunks, current, window, line);
+    emit_get_local(chunks, current, canvas, line);
 }
 
+/// `SDL_DestroyWindow(window)` — remove the canvas from the document.
+///
+/// `body.removeChild(canvas)` is the whole operation: a page cannot close
+/// itself, and what SDL destroys here is the surface, which IS the element.
 pub fn emit_sdl_destroy_window(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let window = chunks[current].alloc_scratch(1);
     emit_set_local(chunks, current, window, line);
+    emit_deref_cell(chunks, current, window, line);
+
+    emit_document(chunks, current, line);
+    emit_body(chunks, current, line);
     emit_get_local(chunks, current, window, line);
-    emit_gui_call(chunks, current, "closeForm", 1, line);
+    emit_dom_call(chunks, current, "removeChild", 3, line);
     chunks[current].emit_op(Op::DROP, line);
     emit_zero_i32(chunks, current, line);
 }
 
+/// `SDL_GetWindowSurface(window)` — the window IS the surface.
+///
+/// `emit_sdl_create_window` hands back the `<canvas>` element, and that element
+/// is what every drawing call needs (`getContext(element, "2d")`). There is no
+/// second object to derive and no name to build: the previous version
+/// concatenated `<window>_surface` because the surface was a separate widget
+/// found by control name, which is exactly the lookup the element removes.
 pub fn emit_sdl_get_window_surface(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    // DERIVE the surface control's name (`<window>_surface`) the same way
-    // `emit_sdl_create_window` builds it, rather than reading back an
-    // `sdl_surface` property.
-    //
-    // The property round-trip returned EMPTY: `setProperty`/`getProperty` are
-    // control-oriented and the window is a FORM, so nothing was stored. Every
-    // draw then arrived at the host with an empty control name and was recorded
-    // into a canvas belonging to no widget — the window came up blank while
-    // every drawing call reported success.
     let window = chunks[current].alloc_scratch(1);
-    let suffix = chunks[current].alloc_scratch(1);
     emit_set_local(chunks, current, window, line);
-    // `SDL_Window *win` reaches us as a `{__ref_kind:"cell", __value}` box,
-    // not as the form name. Concatenating the BOX yields the box back, so
-    // `getContext` stored an object where a control name belongs and every
-    // draw landed on a canvas called "[object]" while the real surface got
-    // nothing. Unwrap first — the same step `SDL_PollEvent`/`SDL_PushEvent`
-    // already take for their event pointers.
+    // `SDL_Window *win` reaches us as a `{__ref_kind:"cell", __value}` box
+    // rather than the handle itself — the same step `SDL_PollEvent` /
+    // `SDL_PushEvent` already take for their event pointers.
     emit_deref_cell(chunks, current, window, line);
-    chunks[current].emit_string_const("_surface", line);
-    emit_set_local(chunks, current, suffix, line);
-    emit_string_concat(chunks, current, window, suffix, line);
+    emit_get_local(chunks, current, window, line);
 }
 
 /// `SDL_BlitPaletted(surface, pixels, w, h, palette [, dstW, dstH])`
@@ -439,8 +483,12 @@ pub fn emit_sdl_fill_rect(chunks: &mut [Chunk], current: usize, _argc: u8, line:
     // STRUCT (x/y/w/h, or NULL meaning "the whole surface") and a PACKED
     // 0xAARRGGBB colour where the canvas takes channels. Both are unpacked
     // here, on the adapter's side of the standard surface.
+    // `canvas.getContext("2d")` — HTML §4.12.5. The surface IS the element
+    // `SDL_CreateWindow` made, so the context binds to a node and no control
+    // name is resolved anywhere.
     emit_get_local(chunks, current, surface, line);
-    emit_canvas_call(chunks, current, "getContext", 1, line);
+    chunks[current].emit_string_const("2d", line);
+    emit_canvas_call(chunks, current, "getContext", 2, line);
     emit_set_local(chunks, current, ctx, line);
 
     emit_get_local(chunks, current, ctx, line);
@@ -492,8 +540,12 @@ pub fn emit_sdl_draw_line(chunks: &mut [Chunk], current: usize, _argc: u8, line:
     // A line is a path in canvas terms: beginPath → moveTo → lineTo →
     // stroke. SDL has no path model, which is exactly the kind of
     // difference an adapter absorbs.
+    // `canvas.getContext("2d")` — HTML §4.12.5. The surface IS the element
+    // `SDL_CreateWindow` made, so the context binds to a node and no control
+    // name is resolved anywhere.
     emit_get_local(chunks, current, surface, line);
-    emit_canvas_call(chunks, current, "getContext", 1, line);
+    chunks[current].emit_string_const("2d", line);
+    emit_canvas_call(chunks, current, "getContext", 2, line);
     emit_set_local(chunks, current, ctx, line);
 
     emit_get_local(chunks, current, ctx, line);
@@ -550,8 +602,12 @@ pub fn emit_sdl_draw_text(chunks: &mut [Chunk], current: usize, _argc: u8, line:
     // belonging to no widget while the real surface got nothing.
     emit_deref_cell(chunks, current, surface, line);
 
+    // `canvas.getContext("2d")` — HTML §4.12.5. The surface IS the element
+    // `SDL_CreateWindow` made, so the context binds to a node and no control
+    // name is resolved anywhere.
     emit_get_local(chunks, current, surface, line);
-    emit_canvas_call(chunks, current, "getContext", 1, line);
+    chunks[current].emit_string_const("2d", line);
+    emit_canvas_call(chunks, current, "getContext", 2, line);
     emit_set_local(chunks, current, context, line);
 
     // Text had NO colour of its own: it inherited whatever fill colour the
@@ -576,20 +632,18 @@ pub fn emit_sdl_draw_text(chunks: &mut [Chunk], current: usize, _argc: u8, line:
     emit_zero_i32(chunks, current, line);
 }
 
+/// `SDL_UpdateWindowSurface(window)` — nothing to do.
+///
+/// There is no `present` on the web: a page does not push frames, it draws and
+/// the compositor shows them. This used to call `vybe:gui.runApplication`,
+/// whose only effect on this path was setting `should_run` — and a document
+/// does not need to be told to run. It runs because it HAS content, which is
+/// the same condition `gui_document::with_live` starts the window runner on,
+/// and `load` fires from `gui_launch::fire_load_event` once it does.
+///
+/// The window argument is still consumed so the stack stays balanced, and the
+/// SDL contract's `0` is returned.
 pub fn emit_sdl_update_window_surface(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    let window = chunks[current].alloc_scratch(1);
-    emit_set_local(chunks, current, window, line);
-    // Same pointer unwrap as `SDL_GetWindowSurface`: the window arrives boxed.
-    emit_deref_cell(chunks, current, window, line);
-
-    // There is no `present` in the web platform — a page does not push
-    // frames, it draws and the compositor shows them, and the frame
-    // BOUNDARY is `requestAnimationFrame`. So this call has no canvas
-    // counterpart to move to: it collapses to the existing run/show step,
-    // and the per-frame reset it used to carry belongs to `web:animation`
-    // (rAF), which is the next surface to land.
-    emit_get_local(chunks, current, window, line);
-    emit_gui_call(chunks, current, "runApplication", 1, line);
     chunks[current].emit_op(Op::DROP, line);
     emit_zero_i32(chunks, current, line);
 }
@@ -1064,14 +1118,16 @@ pub fn emit_sdl_peep_events(chunks: &mut [Chunk], current: usize, argc: u8, line
 pub fn emit_sdl_show_window(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let window = chunks[current].alloc_scratch(1);
     emit_set_local(chunks, current, window, line);
-    emit_set_control_property_bool_string(chunks, current, window, "visible", "true", line);
+    emit_deref_cell(chunks, current, window, line);
+    emit_set_visible(chunks, current, window, true, line);
     emit_zero_i32(chunks, current, line);
 }
 
 pub fn emit_sdl_hide_window(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let window = chunks[current].alloc_scratch(1);
     emit_set_local(chunks, current, window, line);
-    emit_set_control_property_bool_string(chunks, current, window, "visible", "false", line);
+    emit_deref_cell(chunks, current, window, line);
+    emit_set_visible(chunks, current, window, false, line);
     emit_zero_i32(chunks, current, line);
 }
 
@@ -1091,9 +1147,18 @@ pub fn emit_sdl_show_simple_message_box(
     emit_set_local(chunks, current, title, line);
     emit_set_local(chunks, current, _flags, line);
 
-    emit_get_local(chunks, current, title, line);
-    emit_get_local(chunks, current, text, line);
-    emit_gui_call(chunks, current, "msgBox", 2, line);
+    // `window.alert` takes ONE string — the browser dialog has no title bar of
+    // its own. SDL's two fields become the two paragraphs of that one message,
+    // which is the adapter resolving a vocabulary difference rather than the
+    // host growing a titled-dialog function the web does not have.
+    let sep = chunks[current].alloc_scratch(1);
+    let head = chunks[current].alloc_scratch(1);
+    chunks[current].emit_string_const("\n\n", line);
+    emit_set_local(chunks, current, sep, line);
+    emit_string_concat(chunks, current, title, sep, line);
+    emit_set_local(chunks, current, head, line);
+    emit_string_concat(chunks, current, head, text, line);
+    emit_window_call(chunks, current, "alert", 1, line);
     chunks[current].emit_op(Op::DROP, line);
     emit_zero_i32(chunks, current, line);
 }

@@ -216,69 +216,113 @@ const F_DEFTEXTSTYLE: &[FlutterField] =
 
 use crate::emitter::catalog::F_CHILD_ONLY;
 
+// ── The element each layout widget IS ───────────────────────────────────────
+//
+// **Flutter's layout model IS flexbox**, which is why this table is nearly
+// mechanical where the WinForms one was not: `Row`/`Column` are flex containers
+// in Flutter's own documentation, `Expanded` is `flex-grow`, `Padding` is
+// `padding`, `SizedBox` is `width`/`height`. Naming a `vybe:gui` control here
+// threw all of that away twice over — `FlowLayoutPanel` is not an HTML tag, so
+// `control_kind` matched nothing and every container rendered as a 120x20
+// label.
+//
+// A `div` with a declared display mode is the whole implementation
+// (guiplan, "the flow containers are DIVS, not custom elements"), and it means
+// the ENGINE lays these out: `flex-direction`, `flex-wrap` and `flex` are
+// parsed, cascaded and consumed by `vybe_widgets`, so nothing here computes a
+// coordinate.
 pub(crate) const CLASSES: &[FlutterClass] = &[
-    FlutterClass::widget("Text", "StatelessWidget", "Label", TEXT_FIELDS),
-    FlutterClass::widget("Placeholder", "StatelessWidget", "Panel", &[]),
-    FlutterClass::widget(
-        "Container",
-        "StatelessWidget",
-        "FlowLayoutPanel",
-        CONTAINER_FIELDS,
-    ),
+    // Text is phrasing content, not a box — `<span>` is what it is, and a leaf
+    // that carries its own caption.
+    FlutterClass::widget("Text", "StatelessWidget", "span", TEXT_FIELDS),
+    FlutterClass::widget("Placeholder", "StatelessWidget", "div", &[]),
+    FlutterClass::widget("Container", "StatelessWidget", "div", CONTAINER_FIELDS),
+    // `Flex` is the base both directions derive from; its own default is the
+    // one CSS has, `row`.
     FlutterClass::widget(
         "Flex",
         "MultiChildRenderObjectWidget",
-        "FlowLayoutPanel",
+        "div;display:flex",
         FLEX_FIELDS,
     ),
-    FlutterClass::widget("Column", "Flex", "FlowLayoutPanel", COLUMN_FIELDS),
-    FlutterClass::widget("Row", "Flex", "HFlowLayoutPanel", ROW_FIELDS),
+    FlutterClass::widget(
+        "Column",
+        "Flex",
+        "div;display:flex;flex-direction:column",
+        COLUMN_FIELDS,
+    ),
+    FlutterClass::widget(
+        "Row",
+        "Flex",
+        "div;display:flex;flex-direction:row",
+        ROW_FIELDS,
+    ),
+    // A Stack paints its children on top of one another: that is a positioned
+    // container, and `Positioned` children below are `position: absolute`
+    // against it. `establishes_containing_block()` already makes a `div` the
+    // anchor, so the pair works with no stacking machinery of its own.
     FlutterClass::widget(
         "Stack",
         "MultiChildRenderObjectWidget",
-        "FlowLayoutPanel",
+        "div;position:relative",
         STACK_FIELDS,
     ),
     FlutterClass::widget(
         "Align",
         "SingleChildRenderObjectWidget",
-        "FlowLayoutPanel",
+        "div;display:flex",
         ALIGN_FIELDS,
     ),
-    FlutterClass::widget("Center", "Align", "FlowLayoutPanel", CENTER_FIELDS),
+    // `Center` is `Align` with both axes centred, which is exactly what these
+    // two declarations say. Flutter's own definition, spelled in CSS.
+    FlutterClass::widget(
+        "Center",
+        "Align",
+        "div;display:flex;justify-content:center;align-items:center",
+        CENTER_FIELDS,
+    ),
     FlutterClass::widget(
         "Padding",
         "SingleChildRenderObjectWidget",
-        "FlowLayoutPanel",
+        "div",
         PADDING_FIELDS,
     ),
     FlutterClass::widget(
         "SizedBox",
         "SingleChildRenderObjectWidget",
-        "FlowLayoutPanel",
+        "div",
         SIZEDBOX_FIELDS,
     ),
-    FlutterClass::widget("Icon", "StatelessWidget", "Label", ICON_FIELDS),
+    FlutterClass::widget("Icon", "StatelessWidget", "span", ICON_FIELDS),
+    // `Flexible`/`Expanded` are the child's share of the parent's main axis —
+    // `flex-grow`. `Expanded` is `Flexible(fit: tight)`, i.e. `flex: 1`.
     FlutterClass::widget(
         "Flexible",
         "ParentDataWidget",
-        "FlowLayoutPanel",
+        "div",
         FLEXIBLE_FIELDS,
     ),
-    FlutterClass::widget("Expanded", "Flexible", "FlowLayoutPanel", EXPANDED_FIELDS),
-    FlutterClass::widget("Positioned", "ParentDataWidget", "Panel", POSITIONED_FIELDS),
+    FlutterClass::widget("Expanded", "Flexible", "div;flex:1", EXPANDED_FIELDS),
+    FlutterClass::widget(
+        "Positioned",
+        "ParentDataWidget",
+        "div;position:absolute",
+        POSITIONED_FIELDS,
+    ),
     FlutterClass::widget(
         "PositionedDirectional",
         "ParentDataWidget",
-        "Panel",
+        "div;position:absolute",
         F_POSDIR,
     ),
-    FlutterClass::widget("Spacer", "StatelessWidget", "Panel", F_SPACER),
-    FlutterClass::widget("IndexedStack", "Stack", "FlowLayoutPanel", F_INDEXEDSTACK),
+    // A Spacer takes the free space and draws nothing.
+    FlutterClass::widget("Spacer", "StatelessWidget", "div;flex:1", F_SPACER),
+    FlutterClass::widget("IndexedStack", "Stack", "div;position:relative", F_INDEXEDSTACK),
+    // `Wrap` is the one whose name CSS shares outright.
     FlutterClass::widget(
         "Wrap",
         "MultiChildRenderObjectWidget",
-        "FlowLayoutPanel",
+        "div;display:flex;flex-wrap:wrap",
         F_WRAP,
     ),
     // Sizing/transform wrappers: the effect (fit, fraction, rotation, matrix)
@@ -317,7 +361,7 @@ pub(crate) const CLASSES: &[FlutterClass] = &[
     FlutterClass::widget(
         "RichText",
         "MultiChildRenderObjectWidget",
-        "Label",
+        "span",
         F_RICHTEXT,
     ),
 ];

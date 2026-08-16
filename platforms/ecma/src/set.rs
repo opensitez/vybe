@@ -12,8 +12,9 @@
 //! `crates/vybe_runtime/src/wasm/JS_BUILTIN_CONVENTIONS.md`.
 
 use std::sync::{Arc, Mutex, OnceLock};
-use vybe_runtime::VM;
 use vybe_runtime::value::{Object, ObjectKind, Value};
+use vybe_runtime::vm::HostFnDecl;
+use vybe_runtime::{FuncSig, HostContext, VM, ValType};
 
 static SET_ITERATOR_IDX: OnceLock<usize> = OnceLock::new();
 static SET_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
@@ -162,6 +163,42 @@ fn with_two_sets<R>(
     }
 }
 
+/// Declare an `ecma:set` function — same closure, plus the signature.
+///
+/// The §24.2.4 set-operation family is the fixed-arity part of this module:
+/// each takes the receiver and exactly one other set. `add`/`delete`/`has`
+/// tolerate a missing operand (real JS adds `undefined`), and `forEach` carries
+/// an optional `thisArg`, so those stay undeclared for the reason spelled out
+/// over `register` in `array.rs`.
+fn set_fn(
+    vm: &mut VM,
+    name: &str,
+    params: Vec<ValType>,
+    results: Vec<ValType>,
+    call: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>,
+) {
+    vm.register_host(HostFnDecl::new("ecma:set", name, call).with_sig(FuncSig {
+        name: name.to_string(),
+        params,
+        results,
+    }));
+}
+
+/// A Set — an object reference, so `Any` rather than a resource handle.
+fn set_t() -> ValType {
+    ValType::Any
+}
+
+/// The receiver and one other set: `a.union(b)`, `a.isSubsetOf(b)`, …
+fn set_pair(
+    vm: &mut VM,
+    name: &str,
+    results: Vec<ValType>,
+    call: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>,
+) {
+    set_fn(vm, name, vec![set_t(), set_t()], results, call);
+}
+
 pub fn register(vm: &mut VM) {
     // `new Set(iterable?)` — per ECMA-262 §24.2.1.1 the constructor optionally
     // takes an iterable whose elements become Set members.
@@ -171,9 +208,11 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx, args| new_set_from_iterable(args)),
     );
 
-    vm.register_host_fn(
-        "ecma:set",
+    set_fn(
+        vm,
         "fromIterable",
+        vec![ValType::Any],
+        vec![set_t()],
         Box::new(|_ctx, args| {
             let s = new_set();
             if let Value::Object(setobj) = &s {
@@ -255,9 +294,11 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:set",
+    set_fn(
+        vm,
         "clear",
+        vec![set_t()],
+        vec![],
         Box::new(|_ctx, args| {
             if let Some(setobj) = is_set(args, 0) {
                 let mut so = setobj.lock().unwrap();
@@ -269,9 +310,11 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:set",
+    set_fn(
+        vm,
         "size",
+        vec![set_t()],
+        vec![ValType::I32],
         Box::new(|_ctx, args| {
             if let Some(setobj) = is_set(args, 0) {
                 let so = setobj.lock().unwrap();
@@ -307,9 +350,11 @@ pub fn register(vm: &mut VM) {
         let _ = SET_ITERATOR_IDX.set(idx);
     }
 
-    vm.register_host_fn(
-        "ecma:set",
+    set_fn(
+        vm,
         "entries",
+        vec![set_t()],
+        vec![ValType::Any],
         Box::new(|_ctx, args| {
             if let Some(setobj) = is_set(args, 0) {
                 let so = setobj.lock().unwrap();
@@ -371,9 +416,10 @@ pub fn register(vm: &mut VM) {
     // members that aren't in a" for `union`; "iterate a, keep those
     // also in b" for `intersection`; etc.
 
-    vm.register_host_fn(
-        "ecma:set",
+    set_pair(
+        vm,
         "union",
+        vec![set_t()],
         Box::new(|_ctx, args| {
             let out = new_set();
             if let Value::Object(outobj) = &out {
@@ -395,9 +441,10 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:set",
+    set_pair(
+        vm,
         "intersection",
+        vec![set_t()],
         Box::new(|_ctx, args| {
             let out = new_set();
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
@@ -418,9 +465,10 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:set",
+    set_pair(
+        vm,
         "difference",
+        vec![set_t()],
         Box::new(|_ctx, args| {
             let out = new_set();
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
@@ -441,9 +489,10 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:set",
+    set_pair(
+        vm,
         "symmetricDifference",
+        vec![set_t()],
         Box::new(|_ctx, args| {
             let out = new_set();
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
@@ -469,9 +518,10 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:set",
+    set_pair(
+        vm,
         "isSubsetOf",
+        vec![ValType::I32],
         Box::new(|_ctx, args| {
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
                 if let Some(is_sub) =
@@ -484,9 +534,10 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:set",
+    set_pair(
+        vm,
         "isSupersetOf",
+        vec![ValType::I32],
         Box::new(|_ctx, args| {
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
                 if let Some(is_super) =
@@ -499,9 +550,10 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:set",
+    set_pair(
+        vm,
         "isDisjointFrom",
+        vec![ValType::I32],
         Box::new(|_ctx, args| {
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
                 if let Some(disjoint) =
@@ -519,9 +571,10 @@ pub fn register(vm: &mut VM) {
     // Distinct from the immutable ES2025 `union` / `intersection` / etc.
     // which return a fresh Set. The ES variants are still registered above;
     // these mutate variants are the .NET-shape entry points.
-    vm.register_host_fn(
-        "ecma:set",
+    set_pair(
+        vm,
         "unionWith",
+        vec![],
         Box::new(|_ctx, args| {
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
                 if Arc::ptr_eq(&a, &b) {
@@ -546,9 +599,10 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:set",
+    set_pair(
+        vm,
         "intersectWith",
+        vec![],
         Box::new(|_ctx, args| {
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
                 if Arc::ptr_eq(&a, &b) {
@@ -571,9 +625,10 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:set",
+    set_pair(
+        vm,
         "exceptWith",
+        vec![],
         Box::new(|_ctx, args| {
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
                 let b_snapshot: Vec<Value> = if Arc::ptr_eq(&a, &b) {
@@ -600,9 +655,10 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:set",
+    set_pair(
+        vm,
         "symmetricExceptWith",
+        vec![],
         Box::new(|_ctx, args| {
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
                 let b_snapshot: Vec<Value> = if Arc::ptr_eq(&a, &b) {
@@ -641,9 +697,10 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:set",
+    set_pair(
+        vm,
         "overlaps",
+        vec![ValType::Bool],
         Box::new(|_ctx, args| {
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
                 if let Some(overlap) =

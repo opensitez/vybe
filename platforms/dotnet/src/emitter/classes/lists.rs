@@ -53,7 +53,8 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: Some("new_ComboBox"),
+            // `<select>` — created by the element mapping.
+            widget_host_fn: None,
             widget_host_module: "vybe:gui",
         },
         DotnetClass {
@@ -83,7 +84,8 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: Some("new_ListBox"),
+            // `<ul>`
+            widget_host_fn: None,
             widget_host_module: "vybe:gui",
         },
         DotnetClass {
@@ -168,7 +170,8 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: Some("new_TreeView"),
+            // `<ul>` — nesting is what makes it a tree.
+            widget_host_fn: None,
             widget_host_module: "vybe:gui",
         },
         // A CheckedListBox IS a ListBox with per-item checkboxes, so it

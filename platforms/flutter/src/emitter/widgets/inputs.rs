@@ -98,26 +98,22 @@ const F_INPUTDECORATION: &[FlutterField] = &[
 const F_TEXTEDITCTRL: &[FlutterField] = &[FlutterField::named("text")];
 
 pub(crate) const CLASSES: &[FlutterClass] = &[
-    FlutterClass::widget("TextField", "StatefulWidget", "TextBox", F_TEXTFIELD),
-    FlutterClass::widget("TextFormField", "FormField", "TextBox", F_TEXTFORMFIELD),
-    FlutterClass::widget("Form", "StatefulWidget", "Panel", F_FORM),
-    FlutterClass::widget("Checkbox", "StatefulWidget", "CheckBox", F_CHECKBOX),
-    FlutterClass::widget("Radio", "StatefulWidget", "RadioButton", RADIO_FIELDS),
-    FlutterClass::widget("Switch", "StatefulWidget", "CheckBox", F_SWITCH),
-    FlutterClass::widget("Slider", "StatefulWidget", "trackbar", F_SLIDER),
-    FlutterClass::widget(
-        "DropdownButton",
-        "StatefulWidget",
-        "combobox",
-        F_DROPDOWNBTN,
-    ),
-    FlutterClass::widget("DropdownMenuItem", "Widget", "Panel", F_DROPDOWNITEM),
-    FlutterClass::widget(
-        "InputDecorator",
-        "StatefulWidget",
-        "Panel",
-        F_INPUTDECORATOR,
-    ),
+    // Every one of these has a real HTML counterpart, and taking it buys form
+    // association, native keyboard semantics and a real `value` — none of
+    // which a `<vybe-*>` stand-in has.
+    FlutterClass::widget("TextField", "StatefulWidget", "input:text", F_TEXTFIELD),
+    FlutterClass::widget("TextFormField", "FormField", "input:text", F_TEXTFORMFIELD),
+    FlutterClass::widget("Form", "StatefulWidget", "form", F_FORM),
+    FlutterClass::widget("Checkbox", "StatefulWidget", "input:checkbox", F_CHECKBOX),
+    FlutterClass::widget("Radio", "StatefulWidget", "input:radio", RADIO_FIELDS),
+    // A Switch is a checkbox that draws as a toggle; the state it carries is
+    // the same one.
+    FlutterClass::widget("Switch", "StatefulWidget", "input:checkbox", F_SWITCH),
+    FlutterClass::widget("Slider", "StatefulWidget", "input:range", F_SLIDER),
+    FlutterClass::widget("DropdownButton", "StatefulWidget", "select", F_DROPDOWNBTN),
+    // An item is the select's CONTENT, not a control beside it.
+    FlutterClass::widget("DropdownMenuItem", "Widget", "option", F_DROPDOWNITEM),
+    FlutterClass::widget("InputDecorator", "StatefulWidget", "div", F_INPUTDECORATOR),
     FlutterClass::data("InputDecoration", None, F_INPUTDECORATION),
     FlutterClass::data("TextEditingController", None, F_TEXTEDITCTRL),
 ];

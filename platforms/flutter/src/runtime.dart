@@ -25,8 +25,16 @@ bool _vfIsWidget(dynamic v) {
 
 // Expand a user composite (StatelessWidget/StatefulWidget) to its concrete
 // catalog widget by running build(); State persists per widget type.
+//
+// ⚠ The test is POSITIVE — "is this still a composite" — not "does it lack a
+// control fn". The negative spelling over-ran by one: a widget IS an element
+// now, and `__controlfn` on an element is read late-bound, through the element
+// attribute path, where it answers null. So the loop called `build` on a
+// `MaterialApp` that has none, got back `undefined`, and `runApp` appended
+// nothing — a blank form, no error. Asking what a thing HAS cannot fail that
+// way.
 dynamic _vfConcrete(dynamic w) {
-  while (w != null && w.__controlfn == null) {
+  while (w != null && (w.createState != null || w.build != null)) {
     if (w.createState != null) {
       var st = _vfStates[w.__type];
       if (st == null) {
@@ -268,22 +276,36 @@ void _vfRealizeRoot() {
   _vfRealize(_vfRoot, "r", null);
 }
 
+// `runApp` attaches the root widget to the document, and that is all it does.
+//
+// Constructing a widget ALREADY builds its element and applies its declared
+// arguments — the compiler does that at the construction site, where a field's
+// role is still known (`primitives/expressions.rs`, `emit_gui_field`). So by
+// the time `runApp` is called the whole tree exists, nested, configured; what
+// it lacks is a parent. Appending the root is the only step left.
+//
+// There is no form to create and no application to run. A page is not told to
+// start — it runs because it HAS a document, which is also what opens the
+// window (`gui_document::has_content`). `createForm`/`runApplication` were the
+// `vybe:gui` shape and had no web meaning: a browser has no "run this app".
 void runApp(dynamic app) {
   _vfRoot = app;
-  _vfForm = vybe.gui.createForm("App");
-  vybe.gui.setProperty(_vfForm, "Width", 360);
-  vybe.gui.setProperty(_vfForm, "Height", 560);
-  _vfRealizeRoot();
-  vybe.gui.runApplication(_vfForm);
+  var doc = web.html.activeDocument();
+  var root = _vfConcrete(app);
+  if (root != null) {
+    web.dom.appendChild(doc, web.html.body(doc), root);
+  }
 }
 
-// Flutter's `State.setState`: run the mutation, then re-walk the tree pushing
-// changed values onto the existing (same-named) controls — no rebuild.
+// Flutter's `State.setState`: run the mutation, then re-apply.
+//
+// The old body re-walked the widget tree pushing values onto controls it found
+// BY NAME. It cannot work that way here and does not need to: a widget IS its
+// element, so a mutation that reaches the element has already reached the
+// document. What remains is Flutter's contract that `setState` runs the
+// closure.
 void setState(dynamic fn) {
   fn();
-  if (_vfForm != null) {
-    _vfRealizeRoot();
-  }
 }
 
 // Minimal layout value types the samples reference.

@@ -12,8 +12,28 @@
 
 use indexmap::IndexMap;
 use std::sync::{Arc, Mutex, OnceLock};
-use vybe_runtime::VM;
 use vybe_runtime::value::{Object, ObjectKind, Value};
+use vybe_runtime::vm::HostFnDecl;
+use vybe_runtime::{FuncSig, HostContext, VM, ValType};
+
+/// Declare an `ecma:map` member that takes the RECEIVER and nothing else —
+/// `m.size`, `m.keys()`, `m.clear()`. Prototype dispatch prepends the map
+/// (`__vybe_method_receiver`), so the declared arity is 1, not the spec's 0.
+///
+/// No resource binding: a Map is an ordinary object reference, not a handle
+/// the host mints and drops.
+fn map_unary(
+    vm: &mut VM,
+    name: &str,
+    results: Vec<ValType>,
+    call: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>,
+) {
+    vm.register_host(HostFnDecl::new("ecma:map", name, call).with_sig(FuncSig {
+        name: name.to_string(),
+        params: vec![ValType::Any],
+        results,
+    }));
+}
 
 static MAP_ITERATOR_IDX: OnceLock<usize> = OnceLock::new();
 static MAP_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
@@ -230,9 +250,10 @@ pub fn register(vm: &mut VM) {
     );
 
     // fromEntries(iterable) — iterable is an Array of [k, v] pairs.
-    vm.register_host_fn(
-        "ecma:map",
+    map_unary(
+        vm,
         "fromEntries",
+        vec![ValType::Any],
         Box::new(|_ctx, args| {
             let m = new_map_value();
             if let Value::Object(mapobj) = &m {
@@ -330,9 +351,10 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:map",
+    map_unary(
+        vm,
         "clear",
+        vec![],
         Box::new(|_ctx, args| {
             if let Some(mapobj) = is_map(args, 0) {
                 let mut m = mapobj.lock().unwrap();
@@ -344,9 +366,10 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:map",
+    map_unary(
+        vm,
         "size",
+        vec![ValType::I32],
         Box::new(|_ctx, args| {
             if let Some(mapobj) = is_map(args, 0) {
                 let m = mapobj.lock().unwrap();
@@ -359,9 +382,10 @@ pub fn register(vm: &mut VM) {
     );
 
     // keys / values / entries — Array Iterators over insertion-order snapshots
-    vm.register_host_fn(
-        "ecma:map",
+    map_unary(
+        vm,
         "keys",
+        vec![ValType::Any],
         Box::new(|_ctx, args| {
             if let Some(mapobj) = is_map(args, 0) {
                 let m = mapobj.lock().unwrap();
@@ -374,9 +398,10 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:map",
+    map_unary(
+        vm,
         "values",
+        vec![ValType::Any],
         Box::new(|_ctx, args| {
             if let Some(mapobj) = is_map(args, 0) {
                 let m = mapobj.lock().unwrap();
@@ -408,9 +433,10 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:map",
+    map_unary(
+        vm,
         "entries",
+        vec![ValType::Any],
         Box::new(|_ctx, args| {
             if let Some(mapobj) = is_map(args, 0) {
                 let m = mapobj.lock().unwrap();

@@ -141,32 +141,53 @@ const F_SGRIDDELEGATE: &[FlutterField] = &[
 ];
 
 pub(crate) const CLASSES: &[FlutterClass] = &[
-    FlutterClass::widget("ListView", "BoxScrollView", "listbox", F_LISTVIEW),
-    FlutterClass::widget("GridView", "BoxScrollView", "FlowLayoutPanel", F_GRIDVIEW),
+    // A scroll view is a column that overflows — `overflow: auto` is the whole
+    // difference, and it is CSS, not a control kind.
+    FlutterClass::widget(
+        "ListView",
+        "BoxScrollView",
+        "div;display:flex;flex-direction:column;overflow:auto",
+        F_LISTVIEW,
+    ),
+    // ⚠ NOT `display: grid` — grid parses and cascades in `vybe_widgets` with
+    // no grid layout behind it, so naming it would be a silent no-op. Wrapping
+    // flex is the honest approximation, and it is stated rather than implied.
+    FlutterClass::widget(
+        "GridView",
+        "BoxScrollView",
+        "div;display:flex;flex-wrap:wrap;overflow:auto",
+        F_GRIDVIEW,
+    ),
     FlutterClass::widget(
         "CustomScrollView",
         "ScrollView",
-        "FlowLayoutPanel",
+        "div;display:flex;flex-direction:column;overflow:auto",
         F_CUSTOMSCROLL,
     ),
     FlutterClass::widget(
         "SingleChildScrollView",
         "StatelessWidget",
-        "FlowLayoutPanel",
+        "div;overflow:auto",
         F_SINGLESCROLL,
     ),
-    FlutterClass::widget("PageView", "StatefulWidget", "FlowLayoutPanel", F_PAGEVIEW),
-    FlutterClass::widget("Scrollbar", "StatelessWidget", "vscrollbar", F_SCROLLBAR),
+    FlutterClass::widget(
+        "PageView",
+        "StatefulWidget",
+        "div;display:flex;flex-direction:row;overflow:auto",
+        F_PAGEVIEW,
+    ),
+    // No HTML counterpart; the tag names the widget kind that exists.
+    FlutterClass::widget("Scrollbar", "StatelessWidget", "vybe-vscrollbar", F_SCROLLBAR),
     FlutterClass::widget(
         "SliverGrid",
         "StatelessWidget",
-        "FlowLayoutPanel",
+        "div;display:flex;flex-wrap:wrap",
         F_SLIVERGRID,
     ),
     FlutterClass::widget(
         "SliverList",
         "StatelessWidget",
-        "FlowLayoutPanel",
+        "div;display:flex;flex-direction:column",
         F_SLIVERLIST,
     ),
     // Inset/adapter slivers only pad or re-box their sliver — no visual of
@@ -183,7 +204,12 @@ pub(crate) const CLASSES: &[FlutterClass] = &[
     ),
     FlutterClass::wrapper("SafeArea", "StatelessWidget", F_SAFEAREA),
     FlutterClass::wrapper("SliverSafeArea", "StatelessWidget", F_SLIVERSAFEAREA),
-    FlutterClass::widget("SliverAppBar", "StatefulWidget", "Panel", F_SLIVERAPPBAR),
+    FlutterClass::widget(
+        "SliverAppBar",
+        "StatefulWidget",
+        "header;display:flex;align-items:center",
+        F_SLIVERAPPBAR,
+    ),
     FlutterClass::data("ScrollController", None, F_SCROLLCONTROLLER),
     FlutterClass::data(
         "TrackingScrollController",

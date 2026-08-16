@@ -36,7 +36,9 @@ const F_RESIZEIMAGE: &[FlutterField] = &[
 ];
 
 pub(crate) const CLASSES: &[FlutterClass] = &[
-    FlutterClass::widget("Image", "StatefulWidget", "picturebox", F_IMAGE),
+    // An Image displays a picture; it is not a drawing surface. `<img>` is the
+    // element, and `<canvas>` would claim a recording it has no use for.
+    FlutterClass::widget("Image", "StatefulWidget", "img", F_IMAGE),
     FlutterClass::data("NetworkImage", None, F_NETIMAGE),
     FlutterClass::data("AssetImage", None, F_ASSETIMAGE),
     FlutterClass::data("ExactAssetImage", None, F_ASSETIMAGE),

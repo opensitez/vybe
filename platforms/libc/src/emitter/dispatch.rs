@@ -101,6 +101,10 @@ fn emit_erf(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_end(line);
 }
 
+pub(crate) fn emit_erfc_public(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_erfc(chunks, current, line)
+}
+
 fn emit_erfc(chunks: &mut [Chunk], current: usize, line: u32) {
     let erf = chunks[current].alloc_scratch(1);
     emit_erf(chunks, current, line);
@@ -244,12 +248,21 @@ pub fn emit_math(name: &str, chunks: &mut [Chunk], current: usize, line: u32) ->
             emit_lgamma(chunks, current, line);
             true
         }
-        _ => false,
+        _ => super::bessel::emit_bessel(name, chunks, current, line),
     }
 }
 
 pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
     if super::sdl::emit_sdl(name, chunks, current, argc, line) {
+        return true;
+    }
+    // C ABI database surfaces. Reached by C through `#include <sqlite3.h>` /
+    // `<mysql.h>` and by Fortran through `bind(c)` — both arrive here as the
+    // bare C symbol, which is why these match on the leaf name.
+    if super::sqlite_adapter::emit_sqlite(name, chunks, current, argc, line) {
+        return true;
+    }
+    if super::mysql_adapter::emit_mysql(name, chunks, current, argc, line) {
         return true;
     }
     if emit_math(name, chunks, current, line) {

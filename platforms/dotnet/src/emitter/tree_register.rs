@@ -259,13 +259,24 @@ pub fn register_namespace_tree() {
             };
 
             // "dotnet.System" + "Math" → dotnet.system.math
+            //
+            // A name with N segments becomes N nodes and nothing else. A class
+            // is NEVER also registered under its own bare name as a top-level
+            // root: `Math`, `Console` and `Object` used to be registered
+            // alongside `dotnet` itself, which put every `System` type in the
+            // same flat space as the user's own declarations and let a user
+            // class named `Point` or `Component` collide with a platform type.
+            //
+            // Bare `Console.WriteLine` still resolves — through the profile,
+            // which is where that decision belongs: `csharp`, `vb` and
+            // `powershell` each declare `[[esm_default]] kind = "tree-ambient"
+            // path = "dotnet.system"`, so an unqualified name is looked up
+            // under that namespace by the common resolver. A language that
+            // wants the short spelling says so in its profile instead of
+            // inheriting it from a registration side effect.
             let mut segments: Vec<String> =
                 interface.split('.').map(|s| s.to_lowercase()).collect();
             segments.push(class.name.to_lowercase());
-
-            if interface.eq_ignore_ascii_case("dotnet.System") {
-                namespaces::register_namespace_tree(&class.name.to_lowercase(), ty.clone());
-            }
 
             let mut node = ty;
             while segments.len() > 1 {
@@ -276,7 +287,41 @@ pub fn register_namespace_tree() {
             }
             namespaces::register_namespace_tree(&segments.pop().expect("root"), node);
         }
+        register_color_statics();
     });
+}
+
+/// `Color.Red`, `Color.White`, … — the named colour statics.
+///
+/// `Color` reaches the tree through `constructor_class(…, "Color", …)`, which
+/// declares a CONSTRUCTOR and no properties, so its `statics` arrived empty and
+/// `Red` was not a leaf at all. `Color.White` then resolved to nothing and the
+/// chain fell back to a runtime read of the bare root name — `global.get
+/// system`, a global that does not exist — so every colour came out `null` and
+/// painted `#00000000`. Silent, because a missed leaf under a registered root
+/// reads as null rather than failing.
+///
+/// Registered as PATH, one node per segment: `dotnet` → `system` → `drawing` →
+/// `color` → `red`. `merge_into` creates the levels that are missing and reuses
+/// the ones that exist, and because `color` is already a `Type`, its
+/// `Type{statics} × Namespace` arm folds these in as that type's statics.
+/// Registration order does not matter — the mirror arm handles the reverse.
+fn register_color_statics() {
+    let mut colors = Subtree::new();
+    for (member, _) in super::classes::drawing::COLOR_STATICS {
+        colors.insert(
+            member.to_lowercase(),
+            NamespaceNode::CommonEmit(super::classes::drawing::color_static_emit_key(member)),
+        );
+    }
+
+    let mut node = NamespaceNode::Namespace(colors);
+    for segment in ["color", "drawing", "system"] {
+        let mut parent = Subtree::new();
+        parent.insert(segment.to_string(), node);
+        node = NamespaceNode::Namespace(parent);
+    }
+    namespaces::register_namespace_tree("dotnet", node);
 }
 
 /// A WinForms property spelling → the shared GUI ROLE it fills.
@@ -484,6 +529,26 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         "progressbar" => "progress",
         "trackbar" => "input:range",
         "numericupdown" => "input:number",
+        // A PictureBox IS a drawing surface, and HTML spells that `<canvas>`.
+        // `classes/media.rs` says the same thing from the other side: that
+        // surface "is exactly what the `vybe_widgets::Canvas` widget provides".
+        //
+        // Only a `<canvas>` node owns a recording — `Document::canvas_mut`
+        // gates on `control_kind == "canvas"` — so a control that is any other
+        // tag has nothing for `getContext` to bind to and every `Graphics` call
+        // is dropped by the backend, silently. A custom element cannot stand in:
+        // the drawing surface is what the element IS, not a property it carries.
+        //
+        // ⚠ This is the DRAWING half only. `pb.Image = …` has no entry in
+        // `gui_property_role`, so it lands on an attribute named `image` —
+        // where an unmapped property belongs, and not something any element
+        // renders. Displaying an assigned image means giving `image` a role
+        // that reaches `drawImage` on this surface.
+        //
+        // ⚠ `<canvas>` has a UA default size of 300x150 where a custom element
+        // takes the generic control default, so a PictureBox that never sets
+        // `Size` changes size. Designer-generated forms always set it.
+        "picturebox" => "canvas",
 
         // ── No HTML counterpart: a DECLARED custom element ─────────────────
         // Declaring `vybe-*` explicitly is better than letting it fall through
@@ -491,7 +556,6 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         // instead of being implied by absence — and it keeps these names in
         // step with plib, which spells the same controls the same way
         // (`TImage`, `TSplitter`, `TPageControl`, `TTabSheet`, `TTimer`).
-        "picturebox" => "vybe-picturebox",
         // The scrollbars and the navigator. `vybe_widgets` has had all three
         // kinds and their default sizes the whole time; what was missing was
         // the DECLARATION, without which they had no `CtorSpec` and every
@@ -534,14 +598,30 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         "tabpage" => "vybe-tabpage",
         "timer" => "vybe-timer",
 
+        // A `Panel` IS a `<div>` — a block container that draws a background
+        // and holds children, which is the whole of what the control is. plib
+        // has mapped `TPanel` this way all along; the two now agree.
+        //
+        // It was held back because `<div>` containers laid out wrong in the
+        // shared engine: every container ran the flexbox algorithm regardless
+        // of `display`, so a `<div>` behaved as `display: flex; flex-direction:
+        // column; align-items: stretch` and a row of children came out as a
+        // column of full-width bars. `vybe_widgets` grew real CSS normal flow
+        // on 2026-08-15 (`Formatting::{Flex,Normal}` on `FlowLayoutPanel`, set
+        // from the computed `display`), which is the defect that gate was
+        // waiting on.
+        "panel" => "div",
+
         // ── Deliberately NOT converted yet ─────────────────────────────────
-        // `Panel`/`FlowLayoutPanel`/`TableLayoutPanel` are `<div>` and plib
-        // already maps `TPanel` that way — but `<div>` containers currently
-        // lay out wrong in the shared `vybe_widgets` engine (children carry
-        // scaled CSS and never get a laid-out rect, while body-parented
-        // siblings do). That is a shared layout defect, not a mapping
-        // question, so importing the mapping now would import the bug.
-        // Convert these once it is fixed.
+        // `FlowLayoutPanel` and `TableLayoutPanel` are `<div>` too — the
+        // difference between them and `Panel` is a `display` mode (`flex`,
+        // `grid`), not an element. Mapping them without declaring the mode
+        // would make all three the same control and silently lose the layout,
+        // and there is currently no way to declare it: a rule needs a selector,
+        // and the control's role is stamped as `__control_type`, a struct FIELD
+        // written by `Op::STRUCT_SET` — not an attribute a selector can match.
+        // Promoting it to `data-control-type` is a shared `primitives/gui.rs`
+        // change. Convert these together with that.
         //
         // `ListView`/`DataGridView`/`WebBrowser` have no counterpart at all;
         // forcing them onto `<table>` would claim semantics they do not have.
@@ -590,6 +670,8 @@ fn control_ctor_spec(class_name: &str, element: &str) -> vybe_runtime::namespace
         field_gui: Vec::new(),
         ancestry: control_ancestry(class_name),
         control_fn: Some(element.to_string()),
+        // A WinForms control IS its element at construction; nothing to inflate.
+        nest_coerce: None,
         value_equality: false,
     }
 }
