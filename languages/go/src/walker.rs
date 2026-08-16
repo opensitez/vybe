@@ -31,7 +31,6 @@ use pest::Parser;
 use pest::iterators::Pair;
 use regex::{Captures, Regex};
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use vybe_ast::*;
 // Channels are normalized into COMMON AST shapes — the walker builds AST,
 // not bytecode. The emit side lives in the compiler.
@@ -20717,7 +20716,10 @@ fn walk_type_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut elifs = Vec::new();
     let mut default_body: Option<Vec<Statement>> = None;
     let mut pre_stmt: Option<Box<Statement>> = None;
-    let switch_temp_name = fresh_go_parse_temp("__go_type_switch");
+    // Position-derived, not a process counter: two type switches in one file
+    // start at different byte offsets, so the name is unique within the program
+    // AND identical every time this source is compiled.
+    let switch_temp_name = format!("__go_type_switch{}", pair.as_span().start());
     let switch_temp_expr = Expression::ident(&switch_temp_name);
 
     for inner in pair.into_inner() {
@@ -20832,11 +20834,6 @@ fn walk_type_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
             Statement::new(type_switch_stmt),
         ]))
     }
-}
-
-fn fresh_go_parse_temp(prefix: &str) -> String {
-    static NEXT: AtomicUsize = AtomicUsize::new(0);
-    format!("{prefix}{}", NEXT.fetch_add(1, Ordering::Relaxed))
 }
 
 fn walk_select(pair: Pair<Rule>) -> Result<StmtKind, String> {

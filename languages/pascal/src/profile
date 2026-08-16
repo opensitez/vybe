@@ -97,6 +97,11 @@ IntToHex      = { emit = "common:pascal.int_to_hex",      min_args = 1, max_args
 # the same host every other language's path functions go through — there is no
 # second path parser. Only `ExtractFileExt` needs an adapter, because Delphi
 # includes the dot and a path component does not.
+# `ShowMessage` IS `window.alert` — a modal one-button box that suspends the
+# program until dismissed. Not an approximation: the blocking is the spec's own
+# behaviour for `alert`, and it is what Delphi's dialog does too.
+ShowMessage     = { emit = "host:web:window:alert",                    min_args = 1, max_args = 1 }
+
 ExtractFileName = { emit = "host:wasi:filesystem:pathGetFileName",     min_args = 1, max_args = 1 }
 ExtractFileDir  = { emit = "host:wasi:filesystem:pathGetDirectory",    min_args = 1, max_args = 1 }
 ChangeFileExt   = { emit = "host:wasi:filesystem:pathChangeExtension", min_args = 2, max_args = 2 }
@@ -421,6 +426,36 @@ count         = { emit = "common:collections.length", min_args = 0, max_args = 0
 "alleft"      = "left"
 "alright"     = "right"
 "alclient"    = "fill"
+
+# TScrollStyle — what `Memo.ScrollBars` takes. Declared as CSS `overflow`
+# keywords for the same reason `TAlign` is declared as dock words: the role IS
+# the CSS property, so the constant carries the value the property wants and
+# nothing downstream translates a VCL enum. Undeclared, `ScrollBars := ssBoth`
+# resolved to nothing and wrote `scrollbars="undefined"`.
+"ssnone"       = "hidden"
+"ssvertical"   = "auto"
+"sshorizontal" = "auto"
+"ssboth"       = "auto"
+
+# TAlignment — what `Alignment` takes. CSS `text-align` keywords, for the third
+# time and the same reason: the role IS the CSS property, so the constant
+# carries the value the property wants. Delphi's `taLeftJustify`/`taCenter`/
+# `taRightJustify` are the only three, and CSS spells the outer two without the
+# `Justify` (which in CSS means something else entirely — full justification).
+"taleftjustify"  = "left"
+"tacenter"       = "center"
+"tarightjustify" = "right"
+
+# TPosition — where a form opens. The page does NOT choose where its window
+# goes, so `TForm.Position` deliberately has no role (see `gui_property_role`)
+# and these stay plain words. Declared so the SPELLING resolves: without them
+# `Position := poScreenCenter` assigned an undefined identifier.
+"podesigned"     = "designed"
+"poscreencenter" = "screen-center"
+"podesktopcenter" = "desktop-center"
+"pomainformcenter" = "main-form-center"
+"poowneformcenter" = "owner-form-center"
+"podefault"      = "default"
 
 # ────────────────────────────────────────────────────────────────────────────
 # ESM DEFAULTS — Pascal has no ambient host module imports.

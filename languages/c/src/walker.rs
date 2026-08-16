@@ -136,12 +136,30 @@ pub fn parse(source: &str) -> Result<Module, String> {
             span: vybe_ast::Span::default(),
         })
         .collect();
+    // C is not a GUI language — a C program becomes one by including SDL, and
+    // that inclusion is the declaration. Stating it here, where the include is
+    // known, is the whole point of `app_shell`: the runtime then knows to
+    // present a window without having to guess from whatever the document
+    // happens to contain when `main` returns.
+    //
+    // The include, not a call, because a program that includes SDL and builds
+    // its window from a callback or a later frame is still an SDL program, and
+    // no scan of `main` can see that.
+    let app_shell = w
+        .included_namespaces
+        .iter()
+        .any(|path| path == "sdl" || path.ends_with(".sdl"))
+        .then_some(vybe_ast::AppShell::Windowed);
+
     Ok(Module {
         name: "main".to_string(),
         language: Lang::Unknown,
         body: full_body,
         imports,
-        directives: Default::default(),
+        directives: vybe_ast::Directives {
+            app_shell,
+            ..Default::default()
+        },
     })
 }
 

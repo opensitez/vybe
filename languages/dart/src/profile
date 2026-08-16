@@ -633,6 +633,19 @@ kind = "package-root"
 prefix = "wasm"
 module_root = "wasm:"
 
+# The web platform — `web:dom`, `web:html`, `web:cssom`, `web:canvas`,
+# `web:window`, `web:url`, `web:encoding`, `web:fetch`. A Component Model
+# package like any other, so it is a package root like `wasi` and `vybe`.
+#
+# Its absence is why `web.dom.createElement(doc, "button", "")` answered null
+# from Dart while the identical call renders from a `.wat`: the chain never
+# resolved to a host call at all, and an unresolved chain is not an error here —
+# it is a null.
+[[esm_default]]
+kind = "package-root"
+prefix = "web"
+module_root = "web:"
+
 [[esm_default]]
 kind = "namespace"
 alias = "math"

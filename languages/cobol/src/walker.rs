@@ -222,6 +222,13 @@ impl CobolWalkerContext {
         self.field_edit_pics.get(&cobol_name_key(name))
     }
 
+    /// Whether this item's storage is CHARACTERS, so a `REDEFINES` of it can
+    /// be taken apart by offset. `USAGE POINTER` and the COMP family hold a
+    /// number and register no PICTURE — slicing one traps in `substring`.
+    fn has_character_storage(&self, name: &str) -> bool {
+        self.field_pic(name).is_some() || !self.group_layout_for_name(name).is_empty()
+    }
+
     /// The edited PICTURE of whatever an expression DENOTES, on the same terms
     /// as `pic_of` — the PICTURE belongs to the FIELD, not to the qualifier.
     fn edit_pic_of(&self, expr: &Expression) -> Option<&CobolEditPic> {
@@ -2298,7 +2305,12 @@ fn walk_regular_data_item(
                 // with a group is ordinary COBOL — `01 A PIC X(4).`
                 // `01 B REDEFINES A. 05 B1 PIC X(2). 05 B2 PIC X(2).` Without
                 // this the children aliased nothing and read back as spaces.
-                None => Some(ctx.storage_expr_for_name(target)),
+                // Only when its storage IS characters: a POINTER or COMP item
+                // holds a number, and there is nothing to slice.
+                None if ctx.has_character_storage(target) => {
+                    Some(ctx.storage_expr_for_name(target))
+                }
+                None => None,
             }
         });
         let saved_storage = ctx.redefining_storage.take();
@@ -2390,10 +2402,8 @@ fn walk_regular_data_item(
         // overrides a stated initial value.
         // Storage width this item occupies, which is also how far it advances
         // the enclosing REDEFINES group's cursor.
-        let own_width = pic_str
-            .as_deref()
-            .and_then(cobol_pic_display_fmt)
-            .map(cobol_pic_width);
+        let own_fmt = pic_str.as_deref().and_then(cobol_pic_display_fmt);
+        let own_width = own_fmt.map(cobol_pic_width);
         // A child of a REDEFINES group aliases the slice at the running
         // offset; an elementary REDEFINES aliases the target's first
         // `own_width` characters rather than all of it.
@@ -2406,11 +2416,25 @@ fn walk_regular_data_item(
             _ => redefines_target.as_deref().map(|target| {
                 let storage = ctx.storage_expr_for_name(target);
                 match own_width {
-                    Some(width) => cobol_storage_slice(storage, 0, width),
-                    None => storage,
+                    Some(width) if ctx.has_character_storage(target) => {
+                        cobol_storage_slice(storage, 0, width)
+                    }
+                    _ => storage,
                 }
             }),
         };
+        // The slice is CHARACTERS. A numeric item redefining an alphanumeric
+        // one — `01 A PIC X(4) VALUE "1234". 01 B REDEFINES A PIC 9(4).` — is
+        // the classic reinterpretation, and B holds the NUMBER those
+        // characters spell, so that its own PICTURE can render it back.
+        let aliased = aliased.map(|slice| match own_fmt {
+            Some(
+                CobolPicFmt::Numeric(_)
+                | CobolPicFmt::SignedNumeric(_)
+                | CobolPicFmt::ImpliedDecimal(_),
+            ) => cobol_call("NUMVAL", vec![slice]),
+            Some(CobolPicFmt::Alpha(_)) | None => slice,
+        });
 
         init_value
             .map(|expr| match &edit_pic {

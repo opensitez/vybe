@@ -12,6 +12,10 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 
 pub fn parse(source: &str) -> Result<Module, String> {
+    // Every registry this walk keeps, created here and dropped when `parse`
+    // returns — including on the `?` paths below.
+    let mut __w_owned = PsWalker::default();
+    let __w = &mut __w_owned;
     let source = normalize_source(source);
     let mut pairs = super::PowerShellParser::parse(Rule::program, &source)
         .map_err(|e| format!("Parse error: {e}"))?;
@@ -22,12 +26,12 @@ pub fn parse(source: &str) -> Result<Module, String> {
 
     // Which method names this script's own classes declare, collected BEFORE
     // the walk so a rewrite never captures a call meant for a user method.
-    collect_declared_methods(pair.clone());
+    collect_declared_methods(__w, pair.clone());
 
     let mut body = Vec::new();
 
     for child in pair.into_inner() {
-        if let Some(stmt) = parse_statement(child)? {
+        if let Some(stmt) = parse_statement(__w, child)? {
             body.push(stmt);
         }
     }
@@ -64,7 +68,7 @@ fn normalize_source(source: &str) -> String {
     out
 }
 
-fn parse_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
+fn parse_statement(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Option<Statement>, String> {
     let mut queue = VecDeque::new();
     queue.push_back(pair);
 
@@ -73,7 +77,7 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
             Rule::statement => {
                 let text = pair.as_str().trim();
                 if looks_like_command_invocation(text) && text.contains(' ') {
-                    if let Some(expr) = parse_command_line(text) {
+                    if let Some(expr) = parse_command_line(__w, text) {
                         return Ok(Some(Statement::new(StmtKind::Expr(expr))));
                     }
                 }
@@ -84,7 +88,7 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
                     collect_command_tokens(child, &mut tokens);
                 }
 
-                if let Some(expr) = parse_command_tokens_as_expr(&tokens) {
+                if let Some(expr) = parse_command_tokens_as_expr(__w, &tokens) {
                     return Ok(Some(Statement::new(StmtKind::Expr(expr))));
                 }
 
@@ -93,29 +97,29 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
                 }
             }
             Rule::COMMENT => return Ok(None),
-            Rule::namespace_decl => return Ok(Some(parse_namespace_decl(pair)?)),
-            Rule::class_decl => return Ok(Some(parse_class_decl(pair)?)),
-            Rule::enum_decl => return Ok(Some(parse_enum_decl(pair)?)),
-            Rule::function_decl => return Ok(Some(parse_function_decl(pair)?)),
-            Rule::if_stmt => return Ok(Some(parse_if_stmt(pair)?)),
-            Rule::switch_stmt => return Ok(Some(parse_switch_stmt(pair)?)),
-            Rule::foreach_stmt => return Ok(Some(parse_foreach_stmt(pair)?)),
-            Rule::for_stmt => return Ok(Some(parse_for_stmt(pair)?)),
-            Rule::while_stmt => return Ok(Some(parse_while_stmt(pair)?)),
-            Rule::do_while_stmt => return Ok(Some(parse_do_while_stmt(pair)?)),
-            Rule::try_stmt => return Ok(Some(parse_try_stmt(pair)?)),
-            Rule::return_stmt => return Ok(Some(parse_return_stmt(pair))),
-            Rule::throw_stmt => return Ok(Some(parse_throw_stmt(pair))),
+            Rule::namespace_decl => return Ok(Some(parse_namespace_decl(__w, pair)?)),
+            Rule::class_decl => return Ok(Some(parse_class_decl(__w, pair)?)),
+            Rule::enum_decl => return Ok(Some(parse_enum_decl(__w, pair)?)),
+            Rule::function_decl => return Ok(Some(parse_function_decl(__w, pair)?)),
+            Rule::if_stmt => return Ok(Some(parse_if_stmt(__w, pair)?)),
+            Rule::switch_stmt => return Ok(Some(parse_switch_stmt(__w, pair)?)),
+            Rule::foreach_stmt => return Ok(Some(parse_foreach_stmt(__w, pair)?)),
+            Rule::for_stmt => return Ok(Some(parse_for_stmt(__w, pair)?)),
+            Rule::while_stmt => return Ok(Some(parse_while_stmt(__w, pair)?)),
+            Rule::do_while_stmt => return Ok(Some(parse_do_while_stmt(__w, pair)?)),
+            Rule::try_stmt => return Ok(Some(parse_try_stmt(__w, pair)?)),
+            Rule::return_stmt => return Ok(Some(parse_return_stmt(__w, pair))),
+            Rule::throw_stmt => return Ok(Some(parse_throw_stmt(__w, pair))),
             Rule::break_stmt => return Ok(Some(parse_break_stmt(pair))),
             Rule::continue_stmt => return Ok(Some(parse_continue_stmt(pair))),
             Rule::param_stmt => return Ok(None),
             // A bare label carries no runtime behaviour of its own.
             Rule::label_decl => return Ok(None),
-            Rule::labeled_stmt => return parse_labeled_stmt(pair),
-            Rule::trap_stmt => return parse_trap_stmt(pair).map(Some),
+            Rule::labeled_stmt => return parse_labeled_stmt(__w, pair),
+            Rule::trap_stmt => return parse_trap_stmt(__w, pair).map(Some),
             Rule::named_block => {
                 // `begin`/`process`/`end` bodies run in declaration order.
-                let stmts = parse_block_statements(
+                let stmts = parse_block_statements(__w, 
                     pair.into_inner()
                         .find(|c| c.as_rule() == Rule::block)
                         .ok_or_else(|| "named block without body".to_string())?,
@@ -126,19 +130,19 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
             // carries no runtime behaviour.
             Rule::attribute_stmt => return Ok(None),
             Rule::using_stmt => return Ok(None),
-            Rule::assignment_stmt => return Ok(Some(parse_assignment_statement(pair))),
-            Rule::increment_stmt => return Ok(Some(parse_increment_statement(pair))),
+            Rule::assignment_stmt => return Ok(Some(parse_assignment_statement(__w, pair))),
+            Rule::increment_stmt => return Ok(Some(parse_increment_statement(__w, pair))),
             Rule::expr_stmt => {
                 let expr = pair
                     .into_inner()
                     .next()
-                    .map(walk_expr)
+                    .map(|__x| walk_expr(__w, __x))
                     .unwrap_or_else(Expression::null);
                 return Ok(Some(Statement::new(StmtKind::Expr(expr))));
             }
-            Rule::command_stmt => return Ok(Some(parse_command_statement(pair))),
+            Rule::command_stmt => return Ok(Some(parse_command_statement(__w, pair))),
             _ => {
-                if let Some(stmt) = parse_statement_fallback(pair)? {
+                if let Some(stmt) = parse_statement_fallback(__w, pair)? {
                     return Ok(Some(stmt));
                 }
             }
@@ -148,20 +152,20 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
     Ok(None)
 }
 
-fn parse_statement_fallback(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
+fn parse_statement_fallback(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Option<Statement>, String> {
     let body = pair.as_str().trim();
     if body.is_empty() {
         return Ok(None);
     }
     if pair.as_rule() == Rule::expression {
-        return Ok(Some(Statement::new(StmtKind::Expr(walk_expr(pair)))));
+        return Ok(Some(Statement::new(StmtKind::Expr(walk_expr(__w, pair)))));
     }
     let _ = body;
     Ok(None)
 }
 
 /// `:outer while (…) { … }` — attach the label to the loop it introduces.
-fn parse_labeled_stmt(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
+fn parse_labeled_stmt(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Option<Statement>, String> {
     let mut label = None;
     for child in pair.into_inner() {
         match child.as_rule() {
@@ -169,7 +173,7 @@ fn parse_labeled_stmt(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
                 label = Some(child.as_str().trim_start_matches(':').to_string());
             }
             _ => {
-                let stmt = match parse_statement(child)? {
+                let stmt = match parse_statement(__w, child)? {
                     Some(stmt) => stmt,
                     None => continue,
                 };
@@ -194,11 +198,11 @@ fn parse_labeled_stmt(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
 /// `trap` before [`apply_traps`] turns it into real handlers.
 const TRAP_VAR: &str = "__trap";
 
-fn parse_trap_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
+fn parse_trap_stmt(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Statement, String> {
     let mut body = Vec::new();
     for child in pair.into_inner() {
         if child.as_rule() == Rule::block {
-            body = parse_block_statements(child)?;
+            body = parse_block_statements(__w, child)?;
         }
     }
 
@@ -484,7 +488,7 @@ fn collect_aliases(stmt: &Statement, out: &mut HashMap<String, String>) {
 /// `enum Color { Red; Green = 5; Blue }`. A member without an explicit value
 /// takes the previous member's value plus one, starting at 0 — the same rule
 /// .NET uses, filled in here so the shared `EnumDecl` sees every value.
-fn parse_enum_decl(pair: Pair<Rule>) -> Result<Statement, String> {
+fn parse_enum_decl(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Statement, String> {
     let mut name = String::new();
     let mut members: Vec<EnumMember> = Vec::new();
     let mut next_value: i64 = 0;
@@ -501,7 +505,7 @@ fn parse_enum_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                             member_name = part.as_str().trim().to_string();
                         }
                         Rule::expression | Rule::ternary_expr => {
-                            value = Some(walk_expr(part));
+                            value = Some(walk_expr(__w, part));
                         }
                         _ => {}
                     }
@@ -536,7 +540,7 @@ fn parse_enum_decl(pair: Pair<Rule>) -> Result<Statement, String> {
     }))
 }
 
-fn parse_namespace_decl(pair: Pair<Rule>) -> Result<Statement, String> {
+fn parse_namespace_decl(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Statement, String> {
     let mut name = String::new();
     let mut body = Vec::new();
 
@@ -545,7 +549,7 @@ fn parse_namespace_decl(pair: Pair<Rule>) -> Result<Statement, String> {
             Rule::namespace_name | Rule::DOTTED_NAME => {
                 name = child.as_str().trim().to_string();
             }
-            Rule::block => body = parse_block_statements(child)?,
+            Rule::block => body = parse_block_statements(__w, child)?,
             _ => {}
         }
     }
@@ -553,17 +557,17 @@ fn parse_namespace_decl(pair: Pair<Rule>) -> Result<Statement, String> {
     Ok(Statement::new(StmtKind::NamespaceDecl { name, body }))
 }
 
-fn parse_block_statements(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
+fn parse_block_statements(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
     let mut body = Vec::new();
     for child in pair.into_inner() {
-        if let Some(stmt) = parse_statement(child)? {
+        if let Some(stmt) = parse_statement(__w, child)? {
             body.push(stmt);
         }
     }
     Ok(apply_traps(body))
 }
 
-fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
+fn parse_class_decl(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Statement, String> {
     let mut name = String::new();
     let mut parents = Vec::new();
     let interfaces = Vec::new();
@@ -586,7 +590,7 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                 }
             }
             Rule::class_body => {
-                members = parse_class_body(child)?;
+                members = parse_class_body(__w, child)?;
             }
             _ => {}
         }
@@ -602,10 +606,10 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
     }))
 }
 
-fn parse_class_body(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
+fn parse_class_body(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
     let mut members = Vec::new();
     for child in pair.into_inner() {
-        if let Some(member) = parse_class_member(child)? {
+        if let Some(member) = parse_class_member(__w, child)? {
             members.push(member);
         }
     }
@@ -613,7 +617,7 @@ fn parse_class_body(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
 }
 
 /// `[string] Speak() { … }` — a method, identified by its declared return type.
-fn parse_ps_method(pair: Pair<Rule>) -> Result<ClassMember, String> {
+fn parse_ps_method(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<ClassMember, String> {
     let mut is_static = false;
     let mut name = String::new();
     let mut params = Vec::new();
@@ -627,9 +631,9 @@ fn parse_ps_method(pair: Pair<Rule>) -> Result<ClassMember, String> {
                 }
             }
             Rule::member_name => name = child.as_str().to_string(),
-            Rule::function_params => params = parse_function_params(child),
+            Rule::function_params => params = parse_function_params(__w, child),
             Rule::block => {
-                body = implicit_return(parse_block_with_function_params(child, &mut params)?)
+                body = implicit_return(parse_block_with_function_params(__w, child, &mut params)?)
             }
             _ => {}
         }
@@ -654,7 +658,7 @@ fn parse_ps_method(pair: Pair<Rule>) -> Result<ClassMember, String> {
 }
 
 /// `Animal([string]$name) { … }` — a constructor: class-named, no return type.
-fn parse_ps_constructor(pair: Pair<Rule>) -> Result<ClassMember, String> {
+fn parse_ps_constructor(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<ClassMember, String> {
     let mut name = None;
     let mut params = Vec::new();
     let mut body = Vec::new();
@@ -663,16 +667,16 @@ fn parse_ps_constructor(pair: Pair<Rule>) -> Result<ClassMember, String> {
     for child in pair.into_inner() {
         match child.as_rule() {
             Rule::IDENT => name = Some(child.as_str().to_string()),
-            Rule::function_params => params = parse_function_params(child),
+            Rule::function_params => params = parse_function_params(__w, child),
             Rule::ctor_base => {
                 let args = child
                     .into_inner()
                     .find(|c| c.as_rule() == Rule::arg_list)
-                    .map(walk_arg_list)
+                    .map(|__x| walk_arg_list(__w, __x))
                     .unwrap_or_default();
                 base_args = Some(args);
             }
-            Rule::block => body = parse_block_with_function_params(child, &mut params)?,
+            Rule::block => body = parse_block_with_function_params(__w, child, &mut params)?,
             _ => {}
         }
     }
@@ -688,7 +692,7 @@ fn parse_ps_constructor(pair: Pair<Rule>) -> Result<ClassMember, String> {
 }
 
 /// `[string]$Name = 'x'` — a field, with an optional type and initialiser.
-fn parse_ps_property(pair: Pair<Rule>) -> Result<ClassMember, String> {
+fn parse_ps_property(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<ClassMember, String> {
     let mut is_static = false;
     let mut type_hint = None;
     let mut name = String::new();
@@ -710,7 +714,7 @@ fn parse_ps_property(pair: Pair<Rule>) -> Result<ClassMember, String> {
             Rule::var_ref => {
                 name = scope_qualified_name(child.as_str().trim_start_matches('$')).to_string();
             }
-            _ => init = Some(walk_expr(child)),
+            _ => init = Some(walk_expr(__w, child)),
         }
     }
 
@@ -727,28 +731,28 @@ fn parse_ps_property(pair: Pair<Rule>) -> Result<ClassMember, String> {
     })
 }
 
-fn parse_class_member(pair: Pair<Rule>) -> Result<Option<ClassMember>, String> {
+fn parse_class_member(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Option<ClassMember>, String> {
     match pair.as_rule() {
-        Rule::ps_method => parse_ps_method(pair).map(Some),
-        Rule::ps_constructor => parse_ps_constructor(pair).map(Some),
-        Rule::ps_property => parse_ps_property(pair).map(Some),
+        Rule::ps_method => parse_ps_method(__w, pair).map(Some),
+        Rule::ps_constructor => parse_ps_constructor(__w, pair).map(Some),
+        Rule::ps_property => parse_ps_property(__w, pair).map(Some),
         Rule::class_function_decl => {
-            let statement = parse_function_decl(pair)?;
+            let statement = parse_function_decl(__w, pair)?;
             Ok(Some(ClassMember::Method(Box::new(statement))))
         }
-        Rule::constructor_decl => parse_constructor_decl(pair).map(Some),
+        Rule::constructor_decl => parse_constructor_decl(__w, pair).map(Some),
         _ => Ok(None),
     }
 }
 
-fn parse_constructor_decl(pair: Pair<Rule>) -> Result<ClassMember, String> {
+fn parse_constructor_decl(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<ClassMember, String> {
     let mut params = Vec::new();
     let mut body = Vec::new();
 
     for child in pair.into_inner() {
         match child.as_rule() {
-            Rule::function_params => params = parse_function_params(child),
-            Rule::block => body = parse_block_with_function_params(child, &mut params)?,
+            Rule::function_params => params = parse_function_params(__w, child),
+            Rule::block => body = parse_block_with_function_params(__w, child, &mut params)?,
             _ => {}
         }
     }
@@ -763,7 +767,7 @@ fn parse_constructor_decl(pair: Pair<Rule>) -> Result<ClassMember, String> {
     })
 }
 
-fn parse_function_decl(pair: Pair<Rule>) -> Result<Statement, String> {
+fn parse_function_decl(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Statement, String> {
     let mut name = String::new();
     let mut params = Vec::new();
     let mut body = Vec::new();
@@ -773,7 +777,7 @@ fn parse_function_decl(pair: Pair<Rule>) -> Result<Statement, String> {
             Rule::function_name => {
                 name = child.as_str().trim().to_string();
             }
-            Rule::function_params => params = parse_function_params(child),
+            Rule::function_params => params = parse_function_params(__w, child),
             Rule::block => {
                 let locals = function_local_names(&child);
                 let wants_args = mentions_args(child.as_str());
@@ -781,7 +785,7 @@ fn parse_function_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                 // ending in `if ($x) { 'yes' }` outputs `'yes'`, so the trailing
                 // expression of each BRANCH is the return value, not just a
                 // trailing expression statement.
-                let parsed = parse_block_with_function_params(child, &mut params)?;
+                let parsed = parse_block_with_function_params(__w, child, &mut params)?;
                 body = match accumulate_outputs(parsed.clone()) {
                     Some(accumulated) => accumulated,
                     None => return_last_of_branches(parsed),
@@ -903,7 +907,7 @@ fn declare_function_locals(
     out
 }
 
-fn parse_function_params(pair: Pair<Rule>) -> Vec<Param> {
+fn parse_function_params(__w: &mut PsWalker, pair: Pair<Rule>) -> Vec<Param> {
     let mut out = Vec::new();
     let mut param_nodes = Vec::new();
     for child in pair.into_inner() {
@@ -940,7 +944,7 @@ fn parse_function_params(pair: Pair<Rule>) -> Vec<Param> {
                 // `expression` — matching only the latter dropped every
                 // `param($name = "World")` default on the floor.
                 Rule::expression | Rule::ternary_expr => {
-                    default = Some(walk_expr(piece));
+                    default = Some(walk_expr(__w, piece));
                 }
                 _ => {}
             }
@@ -964,14 +968,14 @@ fn parse_function_params(pair: Pair<Rule>) -> Vec<Param> {
     out
 }
 
-fn parse_param_stmt(pair: Pair<Rule>, out: &mut Vec<Param>) {
+fn parse_param_stmt(__w: &mut PsWalker, pair: Pair<Rule>, out: &mut Vec<Param>) {
     // Hand `parse_function_params` the ENCLOSING pair, not the
     // `function_param_list` itself: it descends two levels, so passing the list
     // skipped straight past every `function_param`.
-    out.extend(parse_function_params(pair));
+    out.extend(parse_function_params(__w, pair));
 }
 
-fn parse_block_with_function_params(
+fn parse_block_with_function_params(__w: &mut PsWalker, 
     pair: Pair<Rule>,
     params: &mut Vec<Param>,
 ) -> Result<Vec<Statement>, String> {
@@ -983,11 +987,11 @@ fn parse_block_with_function_params(
     // statement and left function and constructor bodies empty.
     for child in pair.into_inner() {
         if child.as_rule() == Rule::param_stmt {
-            parse_param_stmt(child, params);
+            parse_param_stmt(__w, child, params);
             continue;
         }
 
-        if let Some(stmt) = parse_statement(child)? {
+        if let Some(stmt) = parse_statement(__w, child)? {
             body.push(stmt);
         }
     }
@@ -995,7 +999,7 @@ fn parse_block_with_function_params(
     Ok(body)
 }
 
-fn parse_if_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
+fn parse_if_stmt(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Statement, String> {
     let mut cond = None;
     let mut then_body = Vec::new();
     let mut elifs = Vec::new();
@@ -1003,16 +1007,16 @@ fn parse_if_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
 
     for child in pair.into_inner() {
         match child.as_rule() {
-            Rule::condition_expr => cond = Some(walk_condition(child)),
-            Rule::block => then_body = parse_block_statements(child)?,
+            Rule::condition_expr => cond = Some(walk_condition(__w, child)),
+            Rule::block => then_body = parse_block_statements(__w, child)?,
             Rule::elseif_stmt => {
                 let mut branch_cond = None;
                 let mut branch_body = Vec::new();
                 for part in child.into_inner() {
                     if part.as_rule() == Rule::condition_expr {
-                        branch_cond = Some(walk_condition(part));
+                        branch_cond = Some(walk_condition(__w, part));
                     } else if part.as_rule() == Rule::block {
-                        branch_body = parse_block_statements(part)?;
+                        branch_body = parse_block_statements(__w, part)?;
                     }
                 }
                 if let Some(branch_cond) = branch_cond {
@@ -1021,7 +1025,7 @@ fn parse_if_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
             }
             Rule::else_stmt => {
                 if let Some(block) = child.into_inner().find(|c| c.as_rule() == Rule::block) {
-                    else_body = Some(parse_block_statements(block)?);
+                    else_body = Some(parse_block_statements(__w, block)?);
                 }
             }
             _ => {}
@@ -1038,14 +1042,14 @@ fn parse_if_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
 
 /// `condition_expr` wraps a parenthesised expression — unwrap to the inner
 /// `expression` pair rather than re-parsing the text.
-fn walk_condition(pair: Pair<Rule>) -> Expression {
+fn walk_condition(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
     pair.into_inner()
         .find(|c| matches!(c.as_rule(), Rule::expression | Rule::command_pipeline))
-        .map(walk_expr)
+        .map(|__x| walk_expr(__w, __x))
         .unwrap_or_else(Expression::null)
 }
 
-fn parse_foreach_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
+fn parse_foreach_stmt(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Statement, String> {
     let mut iter_var = String::new();
     let mut iter = None;
     let mut body = Vec::new();
@@ -1055,8 +1059,8 @@ fn parse_foreach_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
             Rule::var_ref => {
                 iter_var = scope_qualified_name(child.as_str().trim_start_matches('$')).to_string()
             }
-            Rule::expression | Rule::command_pipeline => iter = Some(walk_expr(child)),
-            Rule::block => body = parse_block_statements(child)?,
+            Rule::expression | Rule::command_pipeline => iter = Some(walk_expr(__w, child)),
+            Rule::block => body = parse_block_statements(__w, child)?,
             _ => {}
         }
     }
@@ -1072,7 +1076,7 @@ fn parse_foreach_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
     }))
 }
 
-fn parse_switch_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
+fn parse_switch_stmt(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Statement, String> {
     let mut expr = None;
     let mut cases = Vec::new();
     let mut default = None;
@@ -1096,7 +1100,7 @@ fn parse_switch_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
                 };
             }
             Rule::expression => {
-                expr = Some(walk_expr(child));
+                expr = Some(walk_expr(__w, child));
             }
             Rule::switch_case => {
                 let mut branch_body = None;
@@ -1110,12 +1114,12 @@ fn parse_switch_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
                 for part in child.into_inner() {
                     match part.as_rule() {
                         Rule::switch_case_body => {
-                            branch_body = Some(parse_block_statements(part)?);
+                            branch_body = Some(parse_block_statements(__w, part)?);
                         }
                         Rule::switch_default_case => {
                             for inner in part.into_inner() {
                                 if inner.as_rule() == Rule::switch_case_body {
-                                    branch_body = Some(parse_block_statements(inner)?);
+                                    branch_body = Some(parse_block_statements(__w, inner)?);
                                     break;
                                 }
                             }
@@ -1125,10 +1129,10 @@ fn parse_switch_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
                                 match inner.as_rule() {
                                     Rule::expression => {
                                         branch_conditions
-                                            .push(CaseCondition::Value(walk_expr(inner)));
+                                            .push(CaseCondition::Value(walk_expr(__w, inner)));
                                     }
                                     Rule::switch_case_body => {
-                                        branch_body = Some(parse_block_statements(inner)?);
+                                        branch_body = Some(parse_block_statements(__w, inner)?);
                                     }
                                     _ => {}
                                 }
@@ -1220,7 +1224,7 @@ fn pattern_switch(
     })
 }
 
-fn parse_for_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
+fn parse_for_stmt(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Statement, String> {
     let mut init = None;
     let mut cond = None;
     let mut update = None;
@@ -1230,16 +1234,16 @@ fn parse_for_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
         match child.as_rule() {
             Rule::for_init => {
                 if let Some(inner) = child.into_inner().next() {
-                    init = parse_statement(inner)?;
+                    init = parse_statement(__w, inner)?;
                 }
             }
-            Rule::for_cond => cond = Some(walk_expr(child)),
+            Rule::for_cond => cond = Some(walk_expr(__w, child)),
             Rule::for_update => {
                 if let Some(inner) = child.into_inner().next() {
-                    update = parse_statement(inner)?;
+                    update = parse_statement(__w, inner)?;
                 }
             }
-            Rule::block => body = parse_block_statements(child)?,
+            Rule::block => body = parse_block_statements(__w, child)?,
             _ => {}
         }
     }
@@ -1397,14 +1401,14 @@ fn binary_assign(target: Expression, op: BinOp, value: Expression) -> Expression
     })
 }
 
-fn parse_while_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
+fn parse_while_stmt(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Statement, String> {
     let mut cond = None;
     let mut body = Vec::new();
 
     for child in pair.into_inner() {
         match child.as_rule() {
-            Rule::condition_expr => cond = Some(walk_condition(child)),
-            Rule::block => body = parse_block_statements(child)?,
+            Rule::condition_expr => cond = Some(walk_condition(__w, child)),
+            Rule::block => body = parse_block_statements(__w, child)?,
             _ => {}
         }
     }
@@ -1416,19 +1420,19 @@ fn parse_while_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
     }))
 }
 
-fn parse_do_while_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
+fn parse_do_while_stmt(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Statement, String> {
     let mut body = Vec::new();
     let mut cond = None;
     let mut until = false;
 
     for child in pair.into_inner() {
         match child.as_rule() {
-            Rule::block => body = parse_block_statements(child)?,
+            Rule::block => body = parse_block_statements(__w, child)?,
             Rule::do_while_while | Rule::do_while_until => {
                 until = child.as_rule() == Rule::do_while_until;
                 for inner in child.into_inner() {
                     if inner.as_rule() == Rule::condition_expr {
-                        cond = Some(walk_condition(inner));
+                        cond = Some(walk_condition(__w, inner));
                     }
                 }
             }
@@ -1443,15 +1447,15 @@ fn parse_do_while_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
     }))
 }
 
-fn parse_try_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
+fn parse_try_stmt(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Statement, String> {
     let mut body = Vec::new();
     let mut catches = Vec::new();
     let mut finally = None;
 
     for child in pair.into_inner() {
         match child.as_rule() {
-            Rule::block => body = parse_block_statements(child)?,
-            Rule::catch_clause => catches.push(parse_catch_clause(child)?),
+            Rule::block => body = parse_block_statements(__w, child)?,
+            Rule::catch_clause => catches.push(parse_catch_clause(__w, child)?),
             // The `block` INSIDE the clause, not the clause. `parse_block_statements`
             // walks its argument's children as statements, and a `finally_clause`'s
             // children are `kw_finally` and `block` — neither is a statement, so
@@ -1459,7 +1463,7 @@ fn parse_try_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
             Rule::finally_clause => {
                 finally = Some(
                     match child.into_inner().find(|p| p.as_rule() == Rule::block) {
-                        Some(block) => parse_block_statements(block)?,
+                        Some(block) => parse_block_statements(__w, block)?,
                         None => Vec::new(),
                     },
                 );
@@ -1476,7 +1480,7 @@ fn parse_try_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
     }))
 }
 
-fn parse_catch_clause(pair: Pair<Rule>) -> Result<CatchClause, String> {
+fn parse_catch_clause(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<CatchClause, String> {
     let mut var_name = None;
     let mut body = Vec::new();
 
@@ -1488,7 +1492,7 @@ fn parse_catch_clause(pair: Pair<Rule>) -> Result<CatchClause, String> {
             }
         }
         if child.as_rule() == Rule::block {
-            body = parse_block_statements(child)?;
+            body = parse_block_statements(__w, child)?;
         }
     }
 
@@ -1501,19 +1505,19 @@ fn parse_catch_clause(pair: Pair<Rule>) -> Result<CatchClause, String> {
     })
 }
 
-fn parse_return_stmt(pair: Pair<Rule>) -> Statement {
+fn parse_return_stmt(__w: &mut PsWalker, pair: Pair<Rule>) -> Statement {
     let expr = pair
         .into_inner()
         .find(|c| matches!(c.as_rule(), Rule::expression | Rule::command_pipeline))
-        .map(walk_expr);
+        .map(|__x| walk_expr(__w, __x));
     Statement::new(StmtKind::Return(expr))
 }
 
-fn parse_throw_stmt(pair: Pair<Rule>) -> Statement {
+fn parse_throw_stmt(__w: &mut PsWalker, pair: Pair<Rule>) -> Statement {
     let expr = pair
         .into_inner()
         .find(|c| c.as_rule() == Rule::expression)
-        .map(walk_expr);
+        .map(|__x| walk_expr(__w, __x));
     Statement::new(StmtKind::Throw { expr, cause: None })
 }
 
@@ -1539,34 +1543,34 @@ fn parse_continue_stmt(pair: Pair<Rule>) -> Statement {
     }))
 }
 
-fn parse_command_statement(pair: Pair<Rule>) -> Statement {
+fn parse_command_statement(__w: &mut PsWalker, pair: Pair<Rule>) -> Statement {
     let text = pair.as_str().trim().to_string();
-    if let Some(stmt) = parse_exit_command_statement(&text) {
+    if let Some(stmt) = parse_exit_command_statement(__w, &text) {
         return stmt;
     }
     // Prefer the PEST TREE over the text tokenizer. The text path splits on
     // spaces without tracking parens, so `Write-Host (I 5)` came apart into
     // `(I` and `5)`; the grammar already groups that correctly.
-    let expr = parse_pipeline(pair.clone())
-        .or_else(|| parse_command_line(&text))
-        .unwrap_or_else(|| expr_from_text(&text));
+    let expr = parse_pipeline(__w, pair.clone())
+        .or_else(|| parse_command_line(__w, &text))
+        .unwrap_or_else(|| expr_from_text(__w, &text));
     Statement::new(StmtKind::Expr(expr))
 }
 
-fn parse_exit_command_statement(text: &str) -> Option<Statement> {
+fn parse_exit_command_statement(__w: &mut PsWalker, text: &str) -> Option<Statement> {
     let tokens = split_command_tokens(text);
     if tokens.is_empty() || !tokens[0].eq_ignore_ascii_case("exit") {
         return None;
     }
     let status = if tokens.len() > 1 {
-        Some(expr_from_text(&tokens[1..].join(" ")))
+        Some(expr_from_text(__w, &tokens[1..].join(" ")))
     } else {
         None
     };
     Some(Statement::new(StmtKind::Exit { status }))
 }
 
-fn parse_assignment_statement(pair: Pair<Rule>) -> Statement {
+fn parse_assignment_statement(__w: &mut PsWalker, pair: Pair<Rule>) -> Statement {
     let mut targets: Vec<Expression> = Vec::new();
     let mut op = "=".to_string();
     let mut rhs = None;
@@ -1575,7 +1579,7 @@ fn parse_assignment_statement(pair: Pair<Rule>) -> Statement {
         match child.as_rule() {
             // Several when the source destructures: `$a, $b = 1, 2`.
             Rule::lvalue => {
-                targets.push(walk_lvalue(child));
+                targets.push(walk_lvalue(__w, child));
             }
             Rule::assignment_op => {
                 op = child.as_str().to_string();
@@ -1594,7 +1598,7 @@ fn parse_assignment_statement(pair: Pair<Rule>) -> Statement {
                         args: Vec::new(),
                         optional: false,
                     }),
-                    _ => walk_expr(child),
+                    _ => walk_expr(__w, child),
                 });
             }
             // `$r = switch (…) { … }` — the RHS is a statement used as a value.
@@ -1602,7 +1606,7 @@ fn parse_assignment_statement(pair: Pair<Rule>) -> Statement {
                 rhs = child
                     .into_inner()
                     .next()
-                    .and_then(|s| parse_statement(s).ok().flatten())
+                    .and_then(|s| parse_statement(__w, s).ok().flatten())
                     .map(statement_value_expr);
             }
             _ => {}
@@ -1728,13 +1732,13 @@ fn parse_assignment_statement(pair: Pair<Rule>) -> Statement {
     Statement::new(kind)
 }
 
-fn parse_increment_statement(pair: Pair<Rule>) -> Statement {
+fn parse_increment_statement(__w: &mut PsWalker, pair: Pair<Rule>) -> Statement {
     let mut target = None;
     let mut is_inc = true;
 
     for child in pair.into_inner() {
         match child.as_rule() {
-            Rule::lvalue => target = Some(walk_lvalue(child)),
+            Rule::lvalue => target = Some(walk_lvalue(__w, child)),
             Rule::increment_op => is_inc = child.as_str() == "++",
             _ => {}
         }
@@ -1757,7 +1761,7 @@ fn parse_increment_statement(pair: Pair<Rule>) -> Statement {
 
 /// An assignment target: a variable, optionally followed by `.member` /
 /// `[index]` steps. Same node shapes the expression walker produces.
-fn walk_lvalue(pair: Pair<Rule>) -> Expression {
+fn walk_lvalue(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
     // A leading `[int]` is a type constraint on the target, not part of its
     // identity — the shared compiler infers from the assigned value.
     let mut inner = pair.into_inner().peekable();
@@ -1767,7 +1771,7 @@ fn walk_lvalue(pair: Pair<Rule>) -> Expression {
 
     let mut expr = match inner.next() {
         Some(p) if p.as_rule() == Rule::var_ref => walk_var_ref(p.as_str()),
-        Some(p) => walk_expr(p),
+        Some(p) => walk_expr(__w, p),
         None => return Expression::null(),
     };
 
@@ -1789,7 +1793,7 @@ fn walk_lvalue(pair: Pair<Rule>) -> Expression {
                 let index = step
                     .into_inner()
                     .next()
-                    .map(walk_expr)
+                    .map(|__x| walk_expr(__w, __x))
                     .unwrap_or_else(Expression::null);
                 expr = Expression::new(ExprKind::Index {
                     object: Box::new(expr),
@@ -1804,7 +1808,7 @@ fn walk_lvalue(pair: Pair<Rule>) -> Expression {
     expr
 }
 
-fn parse_command_line(text: &str) -> Option<Expression> {
+fn parse_command_line(__w: &mut PsWalker, text: &str) -> Option<Expression> {
     let mut segment_iter = split_command_segments(text).into_iter();
     let first_segment = segment_iter.next()?;
     let first_tokens = split_command_tokens(&first_segment);
@@ -1812,7 +1816,7 @@ fn parse_command_line(text: &str) -> Option<Expression> {
         return None;
     }
 
-    let (head, args) = parse_command_parts(&first_tokens)?;
+    let (head, args) = parse_command_parts(__w, &first_tokens)?;
     let mut expr = Expression::new(ExprKind::Call {
         callee: Box::new(head),
         args,
@@ -1824,7 +1828,7 @@ fn parse_command_line(text: &str) -> Option<Expression> {
         if segment_tokens.is_empty() {
             continue;
         }
-        let (next, mut next_args) = parse_command_parts(&segment_tokens)?;
+        let (next, mut next_args) = parse_command_parts(__w, &segment_tokens)?;
         let mut chained = vec![Argument::positional(expr)];
         chained.append(&mut next_args);
         expr = Expression::new(ExprKind::Call {
@@ -1837,7 +1841,7 @@ fn parse_command_line(text: &str) -> Option<Expression> {
     Some(expr)
 }
 
-fn parse_pipeline(pair: Pair<Rule>) -> Option<Expression> {
+fn parse_pipeline(__w: &mut PsWalker, pair: Pair<Rule>) -> Option<Expression> {
     let mut work = std::collections::VecDeque::new();
     work.push_back(pair);
     let mut segments: Vec<Pair<Rule>> = Vec::new();
@@ -1857,7 +1861,7 @@ fn parse_pipeline(pair: Pair<Rule>) -> Option<Expression> {
     let mut segments = segments.into_iter();
     let first = segments.next()?;
     let head_text = first.as_str().trim().to_string();
-    let (head, args) = parse_command_segment(first)?;
+    let (head, args) = parse_command_segment(__w, first)?;
     // A pipeline can START with a value: `$o | Add-Member …` feeds `$o` in, it
     // does not invoke it. Everything else goes through `build_command_call`,
     // not a bare `Call` — a cmdlet reached as a STATEMENT must get the same
@@ -1870,7 +1874,7 @@ fn parse_pipeline(pair: Pair<Rule>) -> Option<Expression> {
     };
 
     for segment in segments {
-        let (next, mut next_args) = parse_command_segment(segment)?;
+        let (next, mut next_args) = parse_command_segment(__w, segment)?;
         // The same collection-cmdlet rewrite the value-position builder does.
         if let Some(folded) = pipeline_stage_as_method(&expr, &next, &next_args) {
             expr = folded;
@@ -1910,8 +1914,8 @@ fn pipeline_head_is_value(text: &str) -> bool {
     }
 }
 
-fn parse_command_tokens_as_expr(tokens: &[String]) -> Option<Expression> {
-    let (callee, args) = parse_command_parts(tokens)?;
+fn parse_command_tokens_as_expr(__w: &mut PsWalker, tokens: &[String]) -> Option<Expression> {
+    let (callee, args) = parse_command_parts(__w, tokens)?;
     Some(build_command_call_in(callee, args, true))
 }
 
@@ -1947,7 +1951,7 @@ fn build_command_call_in(
     })
 }
 
-fn parse_command_segment(pair: Pair<Rule>) -> Option<(Expression, Vec<Argument>)> {
+fn parse_command_segment(__w: &mut PsWalker, pair: Pair<Rule>) -> Option<(Expression, Vec<Argument>)> {
     let mut tokens = Vec::new();
     for child in pair.into_inner() {
         match child.as_rule() {
@@ -1961,11 +1965,11 @@ fn parse_command_segment(pair: Pair<Rule>) -> Option<(Expression, Vec<Argument>)
         return None;
     }
 
-    parse_command_parts(&tokens)
+    parse_command_parts(__w, &tokens)
 }
 
-fn parse_command_parts(tokens: &[String]) -> Option<(Expression, Vec<Argument>)> {
-    let callee = parse_command_head(&tokens[0]);
+fn parse_command_parts(__w: &mut PsWalker, tokens: &[String]) -> Option<(Expression, Vec<Argument>)> {
+    let callee = parse_command_head(__w, &tokens[0]);
     let mut args = Vec::new();
     let mut i = 1;
     while i < tokens.len() {
@@ -1974,7 +1978,7 @@ fn parse_command_parts(tokens: &[String]) -> Option<(Expression, Vec<Argument>)>
             let flag = &token[1..];
             if let Some((key, value)) = flag.split_once(':') {
                 args.push(Argument {
-                    value: parse_atom(value),
+                    value: parse_atom(__w, value),
                     name: Some(key.to_string()),
                     by_ref: false,
                     spread: false,
@@ -1984,7 +1988,7 @@ fn parse_command_parts(tokens: &[String]) -> Option<(Expression, Vec<Argument>)>
             }
             if let Some((key, value)) = flag.split_once('=') {
                 args.push(Argument {
-                    value: parse_atom(value),
+                    value: parse_atom(__w, value),
                     name: Some(key.to_string()),
                     by_ref: false,
                     spread: false,
@@ -2006,7 +2010,7 @@ fn parse_command_parts(tokens: &[String]) -> Option<(Expression, Vec<Argument>)>
                     continue;
                 }
                 args.push(Argument {
-                    value: parse_atom(next),
+                    value: parse_atom(__w, next),
                     name: Some(flag.to_string()),
                     by_ref: false,
                     spread: false,
@@ -2038,7 +2042,7 @@ fn parse_command_parts(tokens: &[String]) -> Option<(Expression, Vec<Argument>)>
             continue;
         }
         args.push(Argument {
-            value: parse_atom(token),
+            value: parse_atom(__w, token),
             name: None,
             by_ref: false,
             spread: false,
@@ -2080,7 +2084,7 @@ fn splat_token_name(token: &str) -> Option<&str> {
     ok.then_some(rest)
 }
 
-fn parse_command_head(raw: &str) -> Expression {
+fn parse_command_head(__w: &mut PsWalker, raw: &str) -> Expression {
     let text = raw.trim();
     if text.is_empty() {
         return Expression::null();
@@ -2093,7 +2097,7 @@ fn parse_command_head(raw: &str) -> Expression {
     if is_bare_command_word(text) {
         return Expression::ident(text);
     }
-    parse_atom(text)
+    parse_atom(__w, text)
 }
 
 fn is_path_like_command(text: &str) -> bool {
@@ -2206,17 +2210,17 @@ fn collect_command_tokens(pair: &Pair<Rule>, out: &mut Vec<String>) {
 // ────────────────────────────────────────────────────────────────────────────
 
 /// Parse a text fragment in **expression mode** — a bare word is an identifier.
-fn expr_from_text(raw: &str) -> Expression {
+fn expr_from_text(__w: &mut PsWalker, raw: &str) -> Expression {
     let text = raw.trim();
     if text.is_empty() {
         return Expression::null();
     }
-    parse_expr_fragment(text).unwrap_or_else(|| Expression::ident(text))
+    parse_expr_fragment(__w, text).unwrap_or_else(|| Expression::ident(text))
 }
 
 /// Parse a token in **command mode** — a bare word is a string argument, the
 /// way PowerShell treats `Write-Host FAIL`.
-fn parse_atom(raw: &str) -> Expression {
+fn parse_atom(__w: &mut PsWalker, raw: &str) -> Expression {
     let text = raw.trim();
     if text.is_empty() {
         return Expression::null();
@@ -2224,7 +2228,7 @@ fn parse_atom(raw: &str) -> Expression {
     if is_bare_command_word(text) {
         return Expression::string(text);
     }
-    parse_expr_fragment(text).unwrap_or_else(|| Expression::string(text))
+    parse_expr_fragment(__w, text).unwrap_or_else(|| Expression::string(text))
 }
 
 /// A token that carries no expression syntax at all — in command mode this is
@@ -2245,17 +2249,17 @@ fn is_bare_command_word(text: &str) -> bool {
         && text.chars().any(|c| c.is_alphabetic())
 }
 
-fn parse_expr_fragment(text: &str) -> Option<Expression> {
+fn parse_expr_fragment(__w: &mut PsWalker, text: &str) -> Option<Expression> {
     let pairs = super::PowerShellParser::parse(Rule::expr_entry, text).ok()?;
     let root = pairs.into_iter().next()?;
     let expr = root
         .into_inner()
         .find(|c| c.as_rule() == Rule::expression)?;
-    Some(walk_expr(expr))
+    Some(walk_expr(__w, expr))
 }
 
 /// Walk one expression pair into the shared AST.
-fn walk_expr(pair: Pair<Rule>) -> Expression {
+fn walk_expr(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
     match pair.as_rule() {
         // `(Get-Date)` is a command INVOCATION, not a read of a name. Only a
         // lone bare word qualifies — `($x)` and `(1 + 2)` stay expressions.
@@ -2265,48 +2269,48 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                 args: Vec::new(),
                 optional: false,
             }),
-            None => first_inner_expr(pair),
+            None => first_inner_expr(__w, pair),
         },
 
         Rule::expression | Rule::expr_statement | Rule::for_cond | Rule::condition_expr => {
-            first_inner_expr(pair)
+            first_inner_expr(__w, pair)
         }
 
-        Rule::comma_expr => walk_comma_expr(pair),
-        Rule::coalesce => walk_binary_chain(pair),
-        Rule::ternary_expr => walk_ternary(pair),
+        Rule::comma_expr => walk_comma_expr(__w, pair),
+        Rule::coalesce => walk_binary_chain(__w, pair),
+        Rule::ternary_expr => walk_ternary(__w, pair),
 
         Rule::logical_or
         | Rule::logical_and
         | Rule::comparison
         | Rule::additive
         | Rule::multiplicative
-        | Rule::power => walk_binary_chain(pair),
+        | Rule::power => walk_binary_chain(__w, pair),
 
         // The argument list of `-replace` / `-split` / `-join`. Reuses the comma
         // walk so a single operand stays scalar and several become an `Array`
         // that `spread_operands` unpacks back into arguments.
-        Rule::here_string_double => walk_here_string(pair.as_str(), true),
-        Rule::here_string_single => walk_here_string(pair.as_str(), false),
+        Rule::here_string_double => walk_here_string(__w, pair.as_str(), true),
+        Rule::here_string_single => walk_here_string(__w, pair.as_str(), false),
 
-        Rule::cmp_list => walk_comma_expr(pair),
-        Rule::format_expr => walk_format(pair),
-        Rule::range_expr => walk_range(pair),
-        Rule::unary => walk_unary(pair),
-        Rule::cast_expr => walk_cast(pair),
-        Rule::postfix => walk_postfix(pair),
+        Rule::cmp_list => walk_comma_expr(__w, pair),
+        Rule::format_expr => walk_format(__w, pair),
+        Rule::range_expr => walk_range(__w, pair),
+        Rule::unary => walk_unary(__w, pair),
+        Rule::cast_expr => walk_cast(__w, pair),
+        Rule::postfix => walk_postfix(__w, pair),
 
-        Rule::command_pipeline => walk_command_pipeline(pair),
-        Rule::command_segment => walk_command_segment_expr(pair),
-        Rule::array_expr => walk_array_expr(pair),
-        Rule::hash_literal => walk_hash_literal(pair),
-        Rule::sub_expr => walk_sub_expr(pair),
-        Rule::script_block_expr => walk_script_block_expr(pair),
+        Rule::command_pipeline => walk_command_pipeline(__w, pair),
+        Rule::command_segment => walk_command_segment_expr(__w, pair),
+        Rule::array_expr => walk_array_expr(__w, pair),
+        Rule::hash_literal => walk_hash_literal(__w, pair),
+        Rule::sub_expr => walk_sub_expr(__w, pair),
+        Rule::script_block_expr => walk_script_block_expr(__w, pair),
 
         Rule::number => walk_number(pair.as_str()),
         Rule::quoted_string => {
             let raw = pair.as_str();
-            parse_double_quoted_string(raw.get(1..raw.len().saturating_sub(1)).unwrap_or(""))
+            parse_double_quoted_string(__w, raw.get(1..raw.len().saturating_sub(1)).unwrap_or(""))
         }
         Rule::single_quoted_string => {
             let raw = pair.as_str();
@@ -2319,7 +2323,7 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
         // `@args` reads the variable; the SPREAD is applied by the call site.
         Rule::splat_ref => Expression::ident(pair.as_str().trim_start_matches('@')),
 
-        _ => first_inner_expr(pair),
+        _ => first_inner_expr(__w, pair),
     }
 }
 
@@ -2366,16 +2370,16 @@ fn is_literal_word(word: &str) -> bool {
     matches!(word.to_lowercase().as_str(), "true" | "false" | "null")
 }
 
-fn first_inner_expr(pair: Pair<Rule>) -> Expression {
+fn first_inner_expr(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
     pair.into_inner()
         .next()
-        .map(walk_expr)
+        .map(|__x| walk_expr(__w, __x))
         .unwrap_or_else(Expression::null)
 }
 
 /// `1,2,3` builds an array; a single element passes straight through.
-fn walk_comma_expr(pair: Pair<Rule>) -> Expression {
-    let mut items: Vec<Expression> = pair.into_inner().map(walk_expr).collect();
+fn walk_comma_expr(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
+    let mut items: Vec<Expression> = pair.into_inner().map(|__x| walk_expr(__w, __x)).collect();
     match items.len() {
         0 => Expression::null(),
         1 => items.remove(0),
@@ -2393,17 +2397,17 @@ fn walk_comma_expr(pair: Pair<Rule>) -> Expression {
     }
 }
 
-fn walk_ternary(pair: Pair<Rule>) -> Expression {
+fn walk_ternary(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
     let mut inner = pair.into_inner();
     let cond = match inner.next() {
-        Some(p) => walk_expr(p),
+        Some(p) => walk_expr(__w, p),
         None => return Expression::null(),
     };
     let Some(then_pair) = inner.next() else {
         return cond;
     };
-    let then_expr = walk_expr(then_pair);
-    let else_expr = inner.next().map(walk_expr).unwrap_or_else(Expression::null);
+    let then_expr = walk_expr(__w, then_pair);
+    let else_expr = inner.next().map(|__x| walk_expr(__w, __x)).unwrap_or_else(Expression::null);
     Expression::new(ExprKind::Ternary {
         cond: Box::new(cond),
         then: Box::new(then_expr),
@@ -2421,15 +2425,15 @@ fn spread_operands(right: Expression) -> Vec<Expression> {
     }
 }
 
-fn walk_binary_chain(pair: Pair<Rule>) -> Expression {
+fn walk_binary_chain(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
     let mut inner = pair.into_inner();
     let mut left = match inner.next() {
-        Some(p) => walk_expr(p),
+        Some(p) => walk_expr(__w, p),
         None => return Expression::null(),
     };
     while let Some(op_pair) = inner.next() {
         let Some(rhs_pair) = inner.next() else { break };
-        let right = walk_expr(rhs_pair);
+        let right = walk_expr(__w, rhs_pair);
         left = build_binary(op_pair.as_str(), left, right);
     }
     left
@@ -2438,12 +2442,12 @@ fn walk_binary_chain(pair: Pair<Rule>) -> Expression {
 /// `"{0} {1}" -f $a, $b` — .NET composite formatting. Lowered to
 /// `String.Format(fmt, …)` so the shared dotnet surface owns the format
 /// pictures (`{0:N2}`, `{0,-8}`) rather than this walker.
-fn walk_format(pair: Pair<Rule>) -> Expression {
+fn walk_format(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
     let mut inner = pair.into_inner();
     let Some(head) = inner.next() else {
         return Expression::null();
     };
-    let fmt = walk_expr(head);
+    let fmt = walk_expr(__w, head);
 
     let mut args = vec![Argument::positional(fmt)];
     let mut saw_op = false;
@@ -2454,7 +2458,7 @@ fn walk_format(pair: Pair<Rule>) -> Expression {
                 args.extend(
                     child
                         .into_inner()
-                        .map(|a| Argument::positional(walk_expr(a))),
+                        .map(|a| Argument::positional(walk_expr(__w, a))),
                 );
             }
             _ => {}
@@ -2476,32 +2480,32 @@ fn walk_format(pair: Pair<Rule>) -> Expression {
     })
 }
 
-fn walk_range(pair: Pair<Rule>) -> Expression {
+fn walk_range(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
     let mut inner = pair.into_inner();
     let start = match inner.next() {
-        Some(p) => walk_expr(p),
+        Some(p) => walk_expr(__w, p),
         None => return Expression::null(),
     };
     match inner.next() {
         Some(end) => Expression::new(ExprKind::Range {
             start: Box::new(start),
-            end: Box::new(walk_expr(end)),
+            end: Box::new(walk_expr(__w, end)),
             inclusive: true,
         }),
         None => start,
     }
 }
 
-fn walk_unary(pair: Pair<Rule>) -> Expression {
+fn walk_unary(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
     let mut inner = pair.into_inner();
     let Some(first) = inner.next() else {
         return Expression::null();
     };
     if first.as_rule() != Rule::unary_op {
-        return walk_expr(first);
+        return walk_expr(__w, first);
     }
     let op_text = first.as_str().trim().to_lowercase();
-    let operand = inner.next().map(walk_expr).unwrap_or_else(Expression::null);
+    let operand = inner.next().map(|__x| walk_expr(__w, __x)).unwrap_or_else(Expression::null);
 
     // `-join` / `-split` in unary position are PowerShell's collection forms;
     // keep them as ordinary method calls so shared dispatch owns them.
@@ -2536,13 +2540,13 @@ fn walk_unary(pair: Pair<Rule>) -> Expression {
     })
 }
 
-fn walk_cast(pair: Pair<Rule>) -> Expression {
+fn walk_cast(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
     let mut inner = pair.into_inner();
     let type_name = inner
         .next()
         .map(|p| type_literal_name(p.as_str()).to_string())
         .unwrap_or_default();
-    let expr = inner.next().map(walk_expr).unwrap_or_else(Expression::null);
+    let expr = inner.next().map(|__x| walk_expr(__w, __x)).unwrap_or_else(Expression::null);
 
     // `[bool]$x` is a TRUTHINESS conversion, and the shared `Cast` lowering has
     // no bool arm — it would hand the value straight back, so `[bool]0` stayed
@@ -2572,10 +2576,10 @@ fn walk_cast(pair: Pair<Rule>) -> Expression {
     })
 }
 
-fn walk_postfix(pair: Pair<Rule>) -> Expression {
+fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
     let mut inner = pair.into_inner();
     let mut expr = match inner.next() {
-        Some(p) => walk_expr(p),
+        Some(p) => walk_expr(__w, p),
         None => return Expression::null(),
     };
 
@@ -2598,7 +2602,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Expression {
                 // applies. An object carrying its own literal `Keys` property
                 // loses to this, which is the right trade: a PowerShell
                 // hashtable is overwhelmingly the receiver that spells it.
-                if let Some(private) = hashtable_only_property(&name) {
+                if let Some(private) = hashtable_only_property(__w, &name) {
                     expr = method_call_expr(expr, private, Vec::new());
                     continue;
                 }
@@ -2627,7 +2631,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Expression {
                     .next()
                     .map(|p| p.as_str().to_string())
                     .unwrap_or_default();
-                let args = parts.next().map(walk_arg_list).unwrap_or_default();
+                let args = parts.next().map(|__x| walk_arg_list(__w, __x)).unwrap_or_default();
 
                 // Rename the dictionary-only methods the runtime collection
                 // registry would otherwise claim. `runtime_collection_scope`
@@ -2660,7 +2664,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Expression {
                     continue;
                 }
 
-                let name = match hashtable_only_method(&name, is_static, args.len()) {
+                let name = match hashtable_only_method(__w, &name, is_static, args.len()) {
                     Some(private) => private.to_string(),
                     None => name,
                 };
@@ -2706,7 +2710,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Expression {
                 let index = op
                     .into_inner()
                     .next()
-                    .map(walk_expr)
+                    .map(|__x| walk_expr(__w, __x))
                     .unwrap_or_else(Expression::null);
                 expr = Expression::new(ExprKind::Index {
                     object: Box::new(expr),
@@ -2721,8 +2725,8 @@ fn walk_postfix(pair: Pair<Rule>) -> Expression {
     expr
 }
 
-fn walk_arg_list(pair: Pair<Rule>) -> Vec<Expression> {
-    pair.into_inner().map(walk_expr).collect()
+fn walk_arg_list(__w: &mut PsWalker, pair: Pair<Rule>) -> Vec<Expression> {
+    pair.into_inner().map(|__x| walk_expr(__w, __x)).collect()
 }
 
 // The PowerShell-private spelling for a method the runtime collection registry
@@ -2731,10 +2735,15 @@ fn walk_arg_list(pair: Pair<Rule>) -> Vec<Expression> {
 // same way, so the rewrite cannot capture a call meant for another type.
 // Method names declared by classes in the script being walked, folded to
 // lowercase. Read by the hashtable rewrites so a user method always wins.
-thread_local! {
-    static DECLARED_METHODS: std::cell::RefCell<std::collections::HashSet<String>> =
-        std::cell::RefCell::new(std::collections::HashSet::new());
+/// Every registry the powershell walk keeps, owned by one `parse` call.
+///
+/// Was a process-global static: the method names one script declared stayed
+/// visible to the next program compiled on this thread.
+#[derive(Default)]
+pub(crate) struct PsWalker {
+    declared_methods: std::collections::HashSet<String>,
 }
+
 
 /// Record every method name the script's classes declare.
 ///
@@ -2743,7 +2752,7 @@ thread_local! {
 /// Calculator { [int]Add([int]$a, [int]$b) }` made `$calc.Add(6, 7)` return
 /// null. Measured as a regression in `classes/class_method`, which is why the
 /// rewrite table asks this first.
-fn collect_declared_methods(root: Pair<Rule>) {
+fn collect_declared_methods(__w: &mut PsWalker, root: Pair<Rule>) {
     let mut names = std::collections::HashSet::new();
     let mut work = VecDeque::new();
     work.push_back(root);
@@ -2773,18 +2782,18 @@ fn collect_declared_methods(root: Pair<Rule>) {
             work.push_back(child);
         }
     }
-    DECLARED_METHODS.with(|d| *d.borrow_mut() = names);
+    __w.declared_methods = names;
 }
 
 /// True when a class in this script declares `name` as a method.
-fn is_declared_method(name: &str) -> bool {
+fn is_declared_method(__w: &mut PsWalker, name: &str) -> bool {
     let folded = name.to_lowercase();
-    DECLARED_METHODS.with(|d| d.borrow().contains(&folded))
+    __w.declared_methods.contains(&folded)
 }
 
 /// The PowerShell-private call that replaces a hashtable PROPERTY read.
-fn hashtable_only_property(name: &str) -> Option<&'static str> {
-    if is_declared_method(name) {
+fn hashtable_only_property(__w: &mut PsWalker, name: &str) -> Option<&'static str> {
+    if is_declared_method(__w, name) {
         return None;
     }
     match name.to_lowercase().as_str() {
@@ -2794,8 +2803,8 @@ fn hashtable_only_property(name: &str) -> Option<&'static str> {
     }
 }
 
-fn hashtable_only_method(name: &str, is_static: bool, argc: usize) -> Option<&'static str> {
-    if is_static || is_declared_method(name) {
+fn hashtable_only_method(__w: &mut PsWalker, name: &str, is_static: bool, argc: usize) -> Option<&'static str> {
+    if is_static || is_declared_method(__w, name) {
         return None;
     }
     match (name.to_lowercase().as_str(), argc) {
@@ -2837,20 +2846,20 @@ fn method_call_expr(receiver: Expression, name: &str, args: Vec<Expression>) -> 
 
 /// `a | b | c` — each stage's value becomes argument 0 of the next callee, so
 /// the shared call resolution in `primitives/calls.rs` keeps full control.
-fn walk_command_pipeline(pair: Pair<Rule>) -> Expression {
+fn walk_command_pipeline(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
     let mut stages = pair.into_inner();
     let mut expr = match stages.next() {
-        Some(p) => walk_expr(p),
+        Some(p) => walk_expr(__w, p),
         None => return Expression::null(),
     };
 
     for stage in stages {
         let (callee, mut args) = match stage.as_rule() {
-            Rule::command_segment => match parse_command_segment(stage) {
+            Rule::command_segment => match parse_command_segment(__w, stage) {
                 Some(parts) => parts,
                 None => continue,
             },
-            _ => (walk_expr(stage), Vec::new()),
+            _ => (walk_expr(__w, stage), Vec::new()),
         };
 
         if let Some(folded) = pipeline_stage_as_method(&expr, &callee, &args) {
@@ -3116,8 +3125,8 @@ fn literal_text(expr: &Expression) -> Option<String> {
 }
 
 /// A bare command invocation used where an expression is expected: `(hi 'PASS')`.
-fn walk_command_segment_expr(pair: Pair<Rule>) -> Expression {
-    match parse_command_segment(pair) {
+fn walk_command_segment_expr(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
+    match parse_command_segment(__w, pair) {
         Some((callee, args)) => build_command_call_in(callee, args, true),
         None => Expression::null(),
     }
@@ -3127,13 +3136,13 @@ fn walk_command_segment_expr(pair: Pair<Rule>) -> Expression {
 /// flattens one level, so `@(1..5)` is five elements and `@($arr)` is `$arr`'s
 /// elements — not one element holding a collection. Each element is therefore
 /// spread rather than nested; a scalar element spreads to itself.
-fn walk_array_expr(pair: Pair<Rule>) -> Expression {
+fn walk_array_expr(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
     // ONE argument, not one per element. `@( … )` collects the output of the
     // whole body — it does not flatten each comma-separated element in turn.
     // `@(1, @(2,3))` is TWO elements whose second is an array, because the
     // commas build one array and `@()` guarantees that array; flattening
     // per-element would splice the inner one and give four.
-    let elements: Vec<Expression> = pair.into_inner().map(walk_expr).collect();
+    let elements: Vec<Expression> = pair.into_inner().map(|__x| walk_expr(__w, __x)).collect();
     let body = match <[Expression; 1]>::try_from(elements) {
         Ok([only]) => only,
         Err(many) => Expression::new(ExprKind::Array(
@@ -3158,7 +3167,7 @@ fn walk_array_expr(pair: Pair<Rule>) -> Expression {
     })
 }
 
-fn walk_hash_literal(pair: Pair<Rule>) -> Expression {
+fn walk_hash_literal(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
     let mut props = Vec::new();
     for entry in pair.into_inner() {
         if entry.as_rule() != Rule::hash_entry {
@@ -3169,7 +3178,7 @@ fn walk_hash_literal(pair: Pair<Rule>) -> Expression {
             continue;
         };
         let key = hash_key_text(key_pair);
-        let value = parts.next().map(walk_expr).unwrap_or_else(Expression::null);
+        let value = parts.next().map(|__x| walk_expr(__w, __x)).unwrap_or_else(Expression::null);
         props.push(ObjectProperty::KeyValue {
             key: Expression::string(&key),
             value,
@@ -3196,16 +3205,16 @@ fn hash_key_text(pair: Pair<Rule>) -> String {
 }
 
 /// `$( … )` — a statement list whose value is the last expression.
-fn walk_sub_expr(pair: Pair<Rule>) -> Expression {
+fn walk_sub_expr(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
     // `sub_body` is silent, so a lone-expression `$( … )` arrives as a single
     // `expression` child and the statement path never sees it.
     let mut inner = pair.clone().into_inner();
     if let (Some(only), None) = (inner.next(), inner.next()) {
         if only.as_rule() == Rule::expression {
-            return walk_expr(only);
+            return walk_expr(__w, only);
         }
     }
-    let stmts = collect_statements(pair);
+    let stmts = collect_statements(__w, pair);
     last_expression_of(stmts)
 }
 
@@ -3213,7 +3222,7 @@ fn walk_sub_expr(pair: Pair<Rule>) -> Expression {
 /// `$_`, so unless the block declares its own `param(…)` the walker gives it a
 /// single implicit `_` parameter — that is what makes `{ $_ -gt 2 }` receive the
 /// element the shared HOF dispatch passes in.
-fn walk_script_block_expr(pair: Pair<Rule>) -> Expression {
+fn walk_script_block_expr(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
     let mut params = Vec::new();
     let mut body = Vec::new();
     // A script block scopes exactly like a function: `& { $x = 3 }` leaves the
@@ -3222,10 +3231,10 @@ fn walk_script_block_expr(pair: Pair<Rule>) -> Expression {
 
     for child in pair.into_inner() {
         if child.as_rule() == Rule::param_stmt {
-            parse_param_stmt(child, &mut params);
+            parse_param_stmt(__w, child, &mut params);
             continue;
         }
-        if let Ok(Some(stmt)) = parse_statement(child) {
+        if let Ok(Some(stmt)) = parse_statement(__w, child) {
             body.push(stmt);
         }
     }
@@ -3268,10 +3277,10 @@ fn implicit_return(mut body: Vec<Statement>) -> Vec<Statement> {
     body
 }
 
-fn collect_statements(pair: Pair<Rule>) -> Vec<Statement> {
+fn collect_statements(__w: &mut PsWalker, pair: Pair<Rule>) -> Vec<Statement> {
     let mut out = Vec::new();
     for child in pair.into_inner() {
-        if let Ok(Some(stmt)) = parse_statement(child) {
+        if let Ok(Some(stmt)) = parse_statement(__w, child) {
             out.push(stmt);
         }
     }
@@ -3707,7 +3716,7 @@ fn is_comparison_word(word: &str) -> bool {
 /// double-quoted form interpolates; the single-quoted form is literal, and
 /// neither treats its own quote character as a delimiter — that is the whole
 /// point of a here-string.
-fn walk_here_string(raw: &str, interpolating: bool) -> Expression {
+fn walk_here_string(__w: &mut PsWalker, raw: &str, interpolating: bool) -> Expression {
     // Past `@"` / `@'` and its line, up to the newline before `"@` / `'@`.
     let body = raw
         .get(2..raw.len().saturating_sub(2))
@@ -3723,13 +3732,13 @@ fn walk_here_string(raw: &str, interpolating: bool) -> Expression {
     let body = body.strip_suffix('\n').unwrap_or(body);
 
     if interpolating {
-        parse_double_quoted_string(body)
+        parse_double_quoted_string(__w, body)
     } else {
         Expression::string(body)
     }
 }
 
-fn parse_double_quoted_string(text: &str) -> Expression {
+fn parse_double_quoted_string(__w: &mut PsWalker, text: &str) -> Expression {
     let chars: Vec<char> = text.chars().collect();
     let mut parts: Vec<InterpolPart> = Vec::new();
     let mut literal = String::new();
@@ -3788,7 +3797,7 @@ fn parse_double_quoted_string(text: &str) -> Expression {
             '{' => {
                 if let Some(close) = find_matching_in_chars(&chars, i + 1, '{', '}') {
                     let inner = chars[(i + 2)..close].iter().collect::<String>();
-                    parts.push(InterpolPart::Expr(parse_script_expression(&inner)));
+                    parts.push(InterpolPart::Expr(parse_script_expression(__w, &inner)));
                     i = close + 1;
                 } else {
                     literal.push('$');
@@ -3800,7 +3809,7 @@ fn parse_double_quoted_string(text: &str) -> Expression {
             '(' => {
                 if let Some(close) = find_matching_in_chars(&chars, i + 1, '(', ')') {
                     let inner = chars[(i + 2)..close].iter().collect::<String>();
-                    parts.push(InterpolPart::Expr(parse_script_expression(&inner)));
+                    parts.push(InterpolPart::Expr(parse_script_expression(__w, &inner)));
                     i = close + 1;
                 } else {
                     literal.push('$');
@@ -3815,7 +3824,7 @@ fn parse_double_quoted_string(text: &str) -> Expression {
                 }
 
                 let name = chars[(i + 1)..end].iter().collect::<String>();
-                parts.push(InterpolPart::Expr(parse_script_expression(&format!(
+                parts.push(InterpolPart::Expr(parse_script_expression(__w, &format!(
                     "${}",
                     name
                 ))));
@@ -3847,19 +3856,19 @@ fn parse_double_quoted_string(text: &str) -> Expression {
 /// The body of a `$( … )` / `${ … }` interpolation. PowerShell allows a whole
 /// statement list here, so fall back to parsing statements and taking the last
 /// expression when it is not a single expression.
-fn parse_script_expression(raw: &str) -> Expression {
+fn parse_script_expression(__w: &mut PsWalker, raw: &str) -> Expression {
     let text = raw.trim();
     if text.is_empty() {
         return Expression::null();
     }
 
-    if let Some(expr) = parse_expr_fragment(text) {
+    if let Some(expr) = parse_expr_fragment(__w, text) {
         return expr;
     }
 
     match super::PowerShellParser::parse(Rule::program, text) {
         Ok(mut pairs) => match pairs.next() {
-            Some(root) => statements_as_value(collect_statements(root)),
+            Some(root) => statements_as_value(collect_statements(__w, root)),
             None => Expression::null(),
         },
         Err(_) => Expression::string(text),

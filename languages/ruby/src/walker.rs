@@ -1,7 +1,6 @@
 use super::{RubyParser, Rule};
 use pest::Parser;
 use pest::iterators::Pair;
-use std::cell::RefCell;
 use std::collections::HashMap;
 use vybe_ast::*;
 use vybe_compiler::primitives::complex;
@@ -12,20 +11,30 @@ struct RubyMethodInfo {
     param_count: i64,
 }
 
-thread_local! {
-    static RUBY_METHODS: RefCell<HashMap<String, RubyMethodInfo>> = RefCell::new(HashMap::new());
-    static RUBY_ALIASES: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
-    static RUBY_MODULE_MEMBERS: RefCell<HashMap<String, Vec<ClassMember>>> = RefCell::new(HashMap::new());
+/// Every registry the ruby walk keeps, owned by one `parse` call.
+///
+/// Were process-global statics: one program`s methods, aliases and module
+/// members stayed visible to the next compiled on this thread.
+#[derive(Default)]
+pub(crate) struct RubyWalker {
+    ruby_methods: HashMap<String, RubyMethodInfo>,
+    ruby_aliases: HashMap<String, String>,
+    ruby_module_members: HashMap<String, Vec<ClassMember>>,
 }
+
 
 // ════════════════════════════════════════════════════════════════════════════
 // Entry point
 // ════════════════════════════════════════════════════════════════════════════
 
 pub fn parse(source: &str) -> Result<Module, String> {
-    RUBY_METHODS.with(|methods| methods.borrow_mut().clear());
-    RUBY_ALIASES.with(|aliases| aliases.borrow_mut().clear());
-    RUBY_MODULE_MEMBERS.with(|modules| modules.borrow_mut().clear());
+    // Every registry this walk keeps, created here and dropped when `parse`
+    // returns — including on the `?` paths below.
+    let mut __w_owned = RubyWalker::default();
+    let __w = &mut __w_owned;
+    __w.ruby_methods.clear();
+    __w.ruby_aliases.clear();
+    __w.ruby_module_members.clear();
     let source = source.replace("2>/dev/null", "");
     let source = source.replace(
         "o = Object.new.freeze; begin; def o.foo; end; rescue FrozenError; puts 'err'; end",
@@ -2347,14 +2356,14 @@ a = [1].freeze; begin; a.delete_at(0); rescue FrozenError; puts 'err'; end"#, r#
             Rule::program => top.into_inner(),
             Rule::EOI => continue,
             _ => {
-                walk_stmt_into(top, &mut body, &mut imports)?;
+                walk_stmt_into(__w, top, &mut body, &mut imports)?;
                 continue;
             }
         };
         for pair in inner {
             match pair.as_rule() {
                 Rule::EOI | Rule::NEWLINE => continue,
-                _ => walk_stmt_into(pair, &mut body, &mut imports)?,
+                _ => walk_stmt_into(__w, pair, &mut body, &mut imports)?,
             }
         }
     }
@@ -4499,7 +4508,7 @@ fn normalize_ruby_const_reads(source: &str) -> String {
 
     out
 }
-fn walk_stmt_into(
+fn walk_stmt_into(__w: &mut RubyWalker, 
     pair: Pair<Rule>,
     body: &mut Vec<Statement>,
     imports: &mut Vec<Import>,
@@ -4507,7 +4516,7 @@ fn walk_stmt_into(
     match pair.as_rule() {
         Rule::require_stmt => imports.push(walk_require(pair)?),
         _ => {
-            let stmt = walk_statement(pair)?;
+            let stmt = walk_statement(__w, pair)?;
             if !matches!(stmt.kind, StmtKind::Empty) {
                 body.push(stmt);
             }
@@ -4520,26 +4529,26 @@ fn walk_stmt_into(
 // Statements
 // ════════════════════════════════════════════════════════════════════════════
 
-fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
+fn walk_statement(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<Statement, String> {
     let span = to_span(&pair);
     let kind = match pair.as_rule() {
-        Rule::method_def => walk_method_def(pair)?,
-        Rule::class_def => walk_class_def(pair)?,
-        Rule::module_def => walk_module_def(pair)?,
+        Rule::method_def => walk_method_def(__w, pair)?,
+        Rule::class_def => walk_class_def(__w, pair)?,
+        Rule::module_def => walk_module_def(__w, pair)?,
 
-        Rule::if_stmt => walk_if(pair)?,
-        Rule::unless_stmt => walk_unless(pair)?,
-        Rule::while_stmt => walk_while(pair)?,
-        Rule::until_stmt => walk_until(pair)?,
-        Rule::for_stmt => walk_for(pair)?,
-        Rule::case_stmt => walk_case(pair)?,
-        Rule::begin_stmt => walk_begin(pair)?,
-        Rule::loop_stmt => walk_loop(pair)?,
+        Rule::if_stmt => walk_if(__w, pair)?,
+        Rule::unless_stmt => walk_unless(__w, pair)?,
+        Rule::while_stmt => walk_while(__w, pair)?,
+        Rule::until_stmt => walk_until(__w, pair)?,
+        Rule::for_stmt => walk_for(__w, pair)?,
+        Rule::case_stmt => walk_case(__w, pair)?,
+        Rule::begin_stmt => walk_begin(__w, pair)?,
+        Rule::loop_stmt => walk_loop(__w, pair)?,
 
-        Rule::return_stmt => walk_return(pair)?,
-        Rule::break_stmt => walk_break_or_next(pair, true)?,
-        Rule::next_stmt => walk_break_or_next(pair, false)?,
-        Rule::raise_stmt => walk_raise(pair)?,
+        Rule::return_stmt => walk_return(__w, pair)?,
+        Rule::break_stmt => walk_break_or_next(__w, pair, true)?,
+        Rule::next_stmt => walk_break_or_next(__w, pair, false)?,
+        Rule::raise_stmt => walk_raise(__w, pair)?,
         Rule::retry_stmt => StmtKind::Continue(ContinueTarget::Implicit),
         Rule::redo_stmt => StmtKind::Continue(ContinueTarget::Implicit),
 
@@ -4547,11 +4556,11 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         Rule::at_exit_stmt => StmtKind::Empty,                            // no runtime equivalent
         Rule::catch_throw_stmt => StmtKind::Empty,                        // simplified
         Rule::access_modifier_stmt => StmtKind::Empty,                    // metadata only
-        Rule::alias_stmt => walk_alias_stmt(pair)?,
+        Rule::alias_stmt => walk_alias_stmt(__w, pair)?,
         Rule::undef_stmt => StmtKind::Empty, // not directly representable
 
-        Rule::multi_assign_stmt => walk_multi_assign(pair)?,
-        Rule::expr_or_assign_stmt => walk_expr_or_assign(pair)?,
+        Rule::multi_assign_stmt => walk_multi_assign(__w, pair)?,
+        Rule::expr_or_assign_stmt => walk_expr_or_assign(__w, pair)?,
 
         Rule::NEWLINE => StmtKind::Empty,
 
@@ -4606,7 +4615,7 @@ fn normalize_ruby_raise_stmt_kind(kind: StmtKind) -> StmtKind {
 
 // ── Method def ──────────────────────────────────────────────────────────────
 
-fn walk_method_def(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_method_def(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut name = String::new();
     let mut is_self_method = false;
     let mut params = Vec::new();
@@ -4625,8 +4634,8 @@ fn walk_method_def(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     name = text.to_string();
                 }
             }
-            Rule::method_params => params = walk_method_params(p)?,
-            Rule::body => body = walk_body(p)?,
+            Rule::method_params => params = walk_method_params(__w, p)?,
+            Rule::body => body = walk_body(__w, p)?,
             _ => {}
         }
     }
@@ -4642,7 +4651,7 @@ fn walk_method_def(pair: Pair<Rule>) -> Result<StmtKind, String> {
     }
 
     let is_generator = body_has_yield(&body);
-    register_ruby_method("Object", &name, &params);
+    register_ruby_method(__w, "Object", &name, &params);
 
     Ok(StmtKind::FunctionDecl {
         name,
@@ -4657,18 +4666,17 @@ fn walk_method_def(pair: Pair<Rule>) -> Result<StmtKind, String> {
     })
 }
 
-fn walk_alias_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_alias_stmt(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let names = pair
         .into_inner()
         .filter(|p| p.as_rule() == Rule::method_name_id)
         .map(|p| p.as_str().to_string())
         .collect::<Vec<_>>();
     if names.len() >= 2 {
-        RUBY_ALIASES.with(|aliases| {
-            aliases
-                .borrow_mut()
+        {
+            __w.ruby_aliases
                 .insert(names[0].clone(), names[1].clone());
-        });
+        };
     }
     Ok(StmtKind::Empty)
 }
@@ -4677,77 +4685,75 @@ fn method_key(owner: &str, name: &str) -> String {
     format!("{}::{}", owner, name)
 }
 
-fn register_ruby_method(owner: &str, name: &str, params: &[Param]) {
+fn register_ruby_method(__w: &mut RubyWalker, owner: &str, name: &str, params: &[Param]) {
     let arity = params
         .iter()
         .filter(|p| !p.is_optional && !p.is_rest && !p.is_kwargs)
         .count() as i64;
     let param_count = params.len() as i64;
-    RUBY_METHODS.with(|methods| {
-        methods.borrow_mut().insert(
+    {
+        __w.ruby_methods.insert(
             method_key(owner, name),
             RubyMethodInfo { arity, param_count },
         );
-    });
+    };
 }
 
-fn register_ruby_module_members(name: &str, members: &[ClassMember]) {
-    RUBY_MODULE_MEMBERS.with(|modules| {
-        modules
-            .borrow_mut()
+fn register_ruby_module_members(__w: &mut RubyWalker, name: &str, members: &[ClassMember]) {
+    {
+        __w.ruby_module_members
             .insert(name.to_string(), members.to_vec());
-    });
+    };
 }
 
-fn ruby_module_members(name: &str) -> Vec<ClassMember> {
-    RUBY_MODULE_MEMBERS.with(|modules| modules.borrow().get(name).cloned().unwrap_or_default())
+fn ruby_module_members(__w: &mut RubyWalker, name: &str) -> Vec<ClassMember> {
+    __w.ruby_module_members.get(name).cloned().unwrap_or_default()
 }
 
-fn register_ruby_member_methods(owner: &str, members: &[ClassMember]) {
+fn register_ruby_member_methods(__w: &mut RubyWalker, owner: &str, members: &[ClassMember]) {
     for member in members {
         if let ClassMember::Method(method) = member {
             if let StmtKind::FunctionDecl { name, params, .. } = &method.kind {
-                register_ruby_method(owner, name, params);
+                register_ruby_method(__w, owner, name, params);
             }
         }
     }
 }
 
-fn ruby_alias_original(name: &str) -> String {
-    RUBY_ALIASES.with(|aliases| {
-        aliases
-            .borrow()
+fn ruby_alias_original(__w: &mut RubyWalker, name: &str) -> String {
+    {
+        __w.ruby_aliases
             .get(name)
             .cloned()
             .unwrap_or_else(|| name.to_string())
-    })
+    }
 }
 
-fn ruby_method_info(owner: &str, name: &str) -> RubyMethodInfo {
-    let original = ruby_alias_original(name);
-    RUBY_METHODS.with(|methods| {
-        let methods = methods.borrow();
-        methods
+fn ruby_method_info(__w: &mut RubyWalker, owner: &str, name: &str) -> RubyMethodInfo {
+    let original = ruby_alias_original(__w, name);
+    {
+        let methods_b = &__w.ruby_methods;
+        methods_b
             .get(&method_key(owner, name))
-            .or_else(|| methods.get(&method_key(owner, &original)))
-            .or_else(|| methods.get(&method_key("Object", name)))
-            .or_else(|| methods.get(&method_key("Object", &original)))
+            .or_else(|| methods_b.get(&method_key(owner, &original)))
+            .or_else(|| methods_b.get(&method_key("Object", name)))
+            .or_else(|| methods_b.get(&method_key("Object", &original)))
             .cloned()
             .unwrap_or_default()
-    })
+    }
 }
 
-fn walk_method_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
+fn walk_method_params(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<Vec<Param>, String> {
     let mut params = Vec::new();
     for p in pair.into_inner() {
         if p.as_rule() == Rule::param_list {
-            params = walk_param_list(p)?;
+            params = walk_param_list(__w, p)?;
         }
     }
     Ok(params)
 }
 
-fn walk_param_list(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
+fn walk_param_list(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<Vec<Param>, String> {
     let mut params = Vec::new();
     for p in pair.into_inner() {
         if p.as_rule() == Rule::param_item {
@@ -4772,7 +4778,7 @@ fn walk_param_list(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                         for c in item.into_inner() {
                             match c.as_rule() {
                                 Rule::identifier => name = c.as_str().to_string(),
-                                _ => default = Some(walk_expression(c)?),
+                                _ => default = Some(walk_expression(__w, c)?),
                             }
                         }
                         params.push(Param {
@@ -4830,7 +4836,7 @@ fn walk_param_list(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                             match c.as_rule() {
                                 Rule::identifier => name = c.as_str().to_string(),
                                 _ if is_expression_rule(c.as_rule()) => {
-                                    default = Some(walk_expression(c)?);
+                                    default = Some(walk_expression(__w, c)?);
                                 }
                                 _ => {}
                             }
@@ -4857,7 +4863,7 @@ fn walk_param_list(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
 
 // ── Class def ───────────────────────────────────────────────────────────────
 
-fn walk_class_def(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_class_def(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut name = String::new();
     let mut parents = Vec::new();
     let mut members = Vec::new();
@@ -4873,7 +4879,7 @@ fn walk_class_def(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 parents.push(p.as_str().to_string());
             }
             Rule::class_body => {
-                members = walk_class_body(p, &name)?;
+                members = walk_class_body(__w, p, &name)?;
             }
             _ => {}
         }
@@ -4889,7 +4895,7 @@ fn walk_class_def(pair: Pair<Rule>) -> Result<StmtKind, String> {
     })
 }
 
-fn walk_class_body(pair: Pair<Rule>, class_name: &str) -> Result<Vec<ClassMember>, String> {
+fn walk_class_body(__w: &mut RubyWalker, pair: Pair<Rule>, class_name: &str) -> Result<Vec<ClassMember>, String> {
     let mut members = Vec::new();
     let mut current_visibility = Visibility::Public;
 
@@ -4909,7 +4915,7 @@ fn walk_class_body(pair: Pair<Rule>, class_name: &str) -> Result<Vec<ClassMember
                 members.extend(walk_attr_decl(p)?);
             }
             Rule::method_def => {
-                let stmt_kind = walk_method_def(p)?;
+                let stmt_kind = walk_method_def(__w, p)?;
                 if let StmtKind::FunctionDecl {
                     name,
                     params,
@@ -4918,7 +4924,7 @@ fn walk_class_body(pair: Pair<Rule>, class_name: &str) -> Result<Vec<ClassMember
                     ..
                 } = &stmt_kind
                 {
-                    register_ruby_method(class_name, name, params);
+                    register_ruby_method(__w, class_name, name, params);
                     if name == "initialize" {
                         // Extract instance variable assignments from constructor body
                         members.push(ClassMember::Constructor {
@@ -4943,25 +4949,25 @@ fn walk_class_body(pair: Pair<Rule>, class_name: &str) -> Result<Vec<ClassMember
                     .find(|inner| matches!(inner.as_rule(), Rule::constant_path | Rule::constant))
                     .map(|inner| inner.as_str().to_string());
                 if let Some(module_name) = included {
-                    let module_members = ruby_module_members(&module_name);
-                    register_ruby_member_methods(class_name, &module_members);
+                    let module_members = ruby_module_members(__w, &module_name);
+                    register_ruby_member_methods(__w, class_name, &module_members);
                     members.extend(module_members);
                 }
             }
             Rule::alias_stmt => {}
             Rule::class_def => {
                 // Nested class
-                let nested = walk_class_def(p)?;
+                let nested = walk_class_def(__w, p)?;
                 members.push(ClassMember::NestedType(Box::new(Statement::new(nested))));
             }
             Rule::module_def => {
-                let nested = walk_module_def(p)?;
+                let nested = walk_module_def(__w, p)?;
                 members.push(ClassMember::NestedType(Box::new(Statement::new(nested))));
             }
             Rule::NEWLINE => {}
             _ => {
                 // Other statements in class body → treat as static initializer
-                let stmt = walk_statement(p)?;
+                let stmt = walk_statement(__w, p)?;
                 if !matches!(stmt.kind, StmtKind::Empty) {
                     if let Some((alias, original)) = ruby_alias_method_stmt(&stmt) {
                         if let Some(alias_stmt) = members.iter().find_map(|member| {
@@ -5161,7 +5167,7 @@ fn walk_attr_decl(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
 
 // ── Module def ──────────────────────────────────────────────────────────────
 
-fn walk_module_def(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_module_def(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut name = String::new();
     let mut members = Vec::new();
 
@@ -5173,13 +5179,13 @@ fn walk_module_def(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 }
             }
             Rule::class_body => {
-                members = walk_class_body(p, &name)?;
+                members = walk_class_body(__w, p, &name)?;
             }
             _ => {}
         }
     }
 
-    register_ruby_module_members(&name, &members);
+    register_ruby_module_members(__w, &name, &members);
 
     Ok(StmtKind::ModuleDecl {
         name,
@@ -5190,16 +5196,16 @@ fn walk_module_def(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
 // ── If ──────────────────────────────────────────────────────────────────────
 
-fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_if(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let children: Vec<Pair<Rule>> = pair.into_inner().collect();
 
     // Check for modifier form: expression if_kw expression
     if children.iter().any(|p| p.as_rule() == Rule::if_kw) {
         let mut iter = children.into_iter();
-        let body_expr = walk_expression(iter.next().ok_or("Missing modifier if body")?)?;
+        let body_expr = walk_expression(__w, iter.next().ok_or("Missing modifier if body")?)?;
         // skip if_kw
         iter.find(|p| p.as_rule() == Rule::if_kw);
-        let cond = walk_expression(iter.next().ok_or("Missing modifier if condition")?)?;
+        let cond = walk_expression(__w, iter.next().ok_or("Missing modifier if condition")?)?;
         return Ok(StmtKind::If {
             cond,
             then_body: vec![Statement::new(StmtKind::Expr(body_expr))],
@@ -5210,8 +5216,8 @@ fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
     // Block form: if cond then_kw? body elsif* else? end
     let mut iter = children.into_iter();
-    let cond = walk_expression(next_meaningful(&mut iter)?)?;
-    let then_body = walk_body(next_rule(&mut iter, Rule::body)?)?;
+    let cond = walk_expression(__w, next_meaningful(&mut iter)?)?;
+    let then_body = walk_body(__w, next_rule(&mut iter, Rule::body)?)?;
 
     let mut elifs = Vec::new();
     let mut else_body = None;
@@ -5220,13 +5226,13 @@ fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
         match p.as_rule() {
             Rule::elsif_clause => {
                 let mut ei = p.into_inner();
-                let econd = walk_expression(next_meaningful(&mut ei)?)?;
-                let ebody = walk_body(find_rule(ei, Rule::body)?)?;
+                let econd = walk_expression(__w, next_meaningful(&mut ei)?)?;
+                let ebody = walk_body(__w, find_rule(ei, Rule::body)?)?;
                 elifs.push((econd, ebody));
             }
             Rule::else_clause => {
                 let ei = p.into_inner();
-                else_body = Some(walk_body(find_rule(ei, Rule::body)?)?);
+                else_body = Some(walk_body(__w, find_rule(ei, Rule::body)?)?);
             }
             _ => {}
         }
@@ -5242,15 +5248,15 @@ fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
 // ── Unless ──────────────────────────────────────────────────────────────────
 
-fn walk_unless(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_unless(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let children: Vec<Pair<Rule>> = pair.into_inner().collect();
 
     // Check for modifier form: expression unless_kw expression
     if children.iter().any(|p| p.as_rule() == Rule::unless_kw) {
         let mut iter = children.into_iter();
-        let body_expr = walk_expression(iter.next().ok_or("Missing modifier unless body")?)?;
+        let body_expr = walk_expression(__w, iter.next().ok_or("Missing modifier unless body")?)?;
         iter.find(|p| p.as_rule() == Rule::unless_kw);
-        let cond = walk_expression(iter.next().ok_or("Missing modifier unless condition")?)?;
+        let cond = walk_expression(__w, iter.next().ok_or("Missing modifier unless condition")?)?;
         // unless → if !cond
         return Ok(StmtKind::If {
             cond: negate(cond),
@@ -5262,14 +5268,14 @@ fn walk_unless(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
     // Block form
     let mut iter = children.into_iter();
-    let cond = walk_expression(next_meaningful(&mut iter)?)?;
-    let then_body = walk_body(find_rule_from_iter(&mut iter, Rule::body)?)?;
+    let cond = walk_expression(__w, next_meaningful(&mut iter)?)?;
+    let then_body = walk_body(__w, find_rule_from_iter(&mut iter, Rule::body)?)?;
 
     let mut else_body = None;
     for p in iter {
         if p.as_rule() == Rule::else_clause {
             let ei = p.into_inner();
-            else_body = Some(walk_body(find_rule(ei, Rule::body)?)?);
+            else_body = Some(walk_body(__w, find_rule(ei, Rule::body)?)?);
         }
     }
 
@@ -5284,15 +5290,15 @@ fn walk_unless(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
 // ── While ───────────────────────────────────────────────────────────────────
 
-fn walk_while(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_while(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let children: Vec<Pair<Rule>> = pair.into_inner().collect();
 
     // Modifier form: expression while_kw expression
     if children.iter().any(|p| p.as_rule() == Rule::while_kw) {
         let mut iter = children.into_iter();
-        let body_expr = walk_expression(iter.next().ok_or("Missing modifier while body")?)?;
+        let body_expr = walk_expression(__w, iter.next().ok_or("Missing modifier while body")?)?;
         iter.find(|p| p.as_rule() == Rule::while_kw);
-        let cond = walk_expression(iter.next().ok_or("Missing modifier while condition")?)?;
+        let cond = walk_expression(__w, iter.next().ok_or("Missing modifier while condition")?)?;
         return Ok(StmtKind::While {
             cond,
             body: vec![Statement::new(StmtKind::Expr(body_expr))],
@@ -5302,8 +5308,8 @@ fn walk_while(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
     // Block form
     let mut iter = children.into_iter();
-    let cond = walk_expression(next_meaningful(&mut iter)?)?;
-    let body = walk_body(find_rule_from_iter(&mut iter, Rule::body)?)?;
+    let cond = walk_expression(__w, next_meaningful(&mut iter)?)?;
+    let body = walk_body(__w, find_rule_from_iter(&mut iter, Rule::body)?)?;
     Ok(StmtKind::While {
         cond,
         body,
@@ -5313,15 +5319,15 @@ fn walk_while(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
 // ── Until ───────────────────────────────────────────────────────────────────
 
-fn walk_until(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_until(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let children: Vec<Pair<Rule>> = pair.into_inner().collect();
 
     // Modifier form
     if children.iter().any(|p| p.as_rule() == Rule::until_kw) {
         let mut iter = children.into_iter();
-        let body_expr = walk_expression(iter.next().ok_or("Missing modifier until body")?)?;
+        let body_expr = walk_expression(__w, iter.next().ok_or("Missing modifier until body")?)?;
         iter.find(|p| p.as_rule() == Rule::until_kw);
-        let cond = walk_expression(iter.next().ok_or("Missing modifier until condition")?)?;
+        let cond = walk_expression(__w, iter.next().ok_or("Missing modifier until condition")?)?;
         // until cond → while !cond
         return Ok(StmtKind::While {
             cond: negate(cond),
@@ -5332,8 +5338,8 @@ fn walk_until(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
     // Block form: until cond → while !cond
     let mut iter = children.into_iter();
-    let cond = walk_expression(next_meaningful(&mut iter)?)?;
-    let body = walk_body(find_rule_from_iter(&mut iter, Rule::body)?)?;
+    let cond = walk_expression(__w, next_meaningful(&mut iter)?)?;
+    let body = walk_body(__w, find_rule_from_iter(&mut iter, Rule::body)?)?;
     Ok(StmtKind::While {
         cond: negate(cond),
         body,
@@ -5343,7 +5349,7 @@ fn walk_until(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
 // ── For ─────────────────────────────────────────────────────────────────────
 
-fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_for(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut vars = Vec::new();
     let mut iter_expr = None;
     let mut body = Vec::new();
@@ -5352,10 +5358,10 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
         match p.as_rule() {
             Rule::identifier => vars.push(p.as_str().to_string()),
             Rule::in_kw | Rule::do_kw => {}
-            Rule::body => body = walk_body(p)?,
+            Rule::body => body = walk_body(__w, p)?,
             _ if is_expression_rule(p.as_rule()) => {
                 if iter_expr.is_none() {
-                    iter_expr = Some(walk_expression(p)?);
+                    iter_expr = Some(walk_expression(__w, p)?);
                 }
             }
             _ => {}
@@ -5397,7 +5403,7 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
 // ── Case / When ─────────────────────────────────────────────────────────────
 
-fn walk_case(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_case(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut subject = None;
     let mut cases = Vec::new();
     let mut default = None;
@@ -5412,15 +5418,15 @@ fn walk_case(pair: Pair<Rule>) -> Result<StmtKind, String> {
                         Rule::expression_list => {
                             for ep in wp.into_inner() {
                                 if is_expression_rule(ep.as_rule()) {
-                                    let expr = walk_expression(ep)?;
+                                    let expr = walk_expression(__w, ep)?;
                                     conditions.push(CaseCondition::Value(expr));
                                 }
                             }
                         }
-                        Rule::body => body = walk_body(wp)?,
+                        Rule::body => body = walk_body(__w, wp)?,
                         Rule::then_kw => {}
                         _ if is_expression_rule(wp.as_rule()) => {
-                            let expr = walk_expression(wp)?;
+                            let expr = walk_expression(__w, wp)?;
                             conditions.push(CaseCondition::Value(expr));
                         }
                         _ => {}
@@ -5430,11 +5436,11 @@ fn walk_case(pair: Pair<Rule>) -> Result<StmtKind, String> {
             }
             Rule::else_clause => {
                 let ei = p.into_inner();
-                default = Some(walk_body(find_rule(ei, Rule::body)?)?);
+                default = Some(walk_body(__w, find_rule(ei, Rule::body)?)?);
             }
             _ if is_expression_rule(p.as_rule()) => {
                 if subject.is_none() {
-                    subject = Some(walk_expression(p)?);
+                    subject = Some(walk_expression(__w, p)?);
                 }
             }
             _ => {}
@@ -5450,7 +5456,7 @@ fn walk_case(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
 // ── Begin / Rescue / Ensure ─────────────────────────────────────────────────
 
-fn walk_begin(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_begin(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut body = Vec::new();
     let mut catches = Vec::new();
     let mut else_body = None;
@@ -5460,7 +5466,7 @@ fn walk_begin(pair: Pair<Rule>) -> Result<StmtKind, String> {
         match p.as_rule() {
             Rule::body => {
                 if body.is_empty() {
-                    body = walk_body(p)?;
+                    body = walk_body(__w, p)?;
                 }
             }
             Rule::rescue_clause => {
@@ -5472,7 +5478,7 @@ fn walk_begin(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     match cp.as_rule() {
                         Rule::constant | Rule::constant_path => types.push(cp.as_str().to_string()),
                         Rule::identifier => var_name = Some(cp.as_str().to_string()),
-                        Rule::body => catch_body = walk_body(cp)?,
+                        Rule::body => catch_body = walk_body(__w, cp)?,
                         _ => {}
                     }
                 }
@@ -5499,12 +5505,12 @@ fn walk_begin(pair: Pair<Rule>) -> Result<StmtKind, String> {
             }
             Rule::else_clause => {
                 let ei = p.into_inner();
-                else_body = Some(walk_body(find_rule(ei, Rule::body)?)?);
+                else_body = Some(walk_body(__w, find_rule(ei, Rule::body)?)?);
             }
             Rule::ensure_clause => {
                 for ep in p.into_inner() {
                     if ep.as_rule() == Rule::body {
-                        finally = Some(walk_body(ep)?);
+                        finally = Some(walk_body(__w, ep)?);
                     }
                 }
             }
@@ -5522,14 +5528,14 @@ fn walk_begin(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
 // ── Loop ────────────────────────────────────────────────────────────────────
 
-fn walk_loop(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_loop(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut body = Vec::new();
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::do_block => {
                 for dp in p.into_inner() {
                     if dp.as_rule() == Rule::body {
-                        body = walk_body(dp)?;
+                        body = walk_body(__w, dp)?;
                     }
                 }
             }
@@ -5546,15 +5552,15 @@ fn walk_loop(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
 // ── Return ──────────────────────────────────────────────────────────────────
 
-fn walk_return(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_return(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut exprs = Vec::new();
     for p in pair.into_inner() {
         if is_expression_rule(p.as_rule()) {
-            exprs.push(walk_expression(p)?);
+            exprs.push(walk_expression(__w, p)?);
         } else if p.as_rule() == Rule::expression_list {
             for ep in p.into_inner() {
                 if is_expression_rule(ep.as_rule()) {
-                    exprs.push(walk_expression(ep)?);
+                    exprs.push(walk_expression(__w, ep)?);
                 }
             }
         }
@@ -5574,19 +5580,19 @@ fn walk_return(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
 // ── Raise ───────────────────────────────────────────────────────────────────
 
-fn walk_raise(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_raise(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut exprs = Vec::new();
     let mut modifiers = Vec::new();
     for p in pair.into_inner() {
         if p.as_rule() == Rule::modifier_suffix {
             modifiers.push(p);
         } else if is_expression_rule(p.as_rule()) {
-            exprs.push(walk_expression(p)?);
+            exprs.push(walk_expression(__w, p)?);
         }
     }
     let expr = Some(normalize_ruby_raise_args(exprs));
     let stmt = StmtKind::Throw { expr, cause: None };
-    maybe_wrap_modifier(stmt, &mut modifiers)
+    maybe_wrap_modifier(__w, stmt, &mut modifiers)
 }
 
 fn normalize_ruby_raise_args(mut exprs: Vec<Expression>) -> Expression {
@@ -5741,7 +5747,7 @@ fn is_ruby_exception_name(name: &str) -> bool {
 
 // ── Break / Next with optional modifier ─────────────────────────────────────
 
-fn walk_break_or_next(pair: Pair<Rule>, is_break: bool) -> Result<StmtKind, String> {
+fn walk_break_or_next(__w: &mut RubyWalker, pair: Pair<Rule>, is_break: bool) -> Result<StmtKind, String> {
     let mut modifiers = Vec::new();
     for p in pair.into_inner() {
         if p.as_rule() == Rule::modifier_suffix {
@@ -5753,12 +5759,12 @@ fn walk_break_or_next(pair: Pair<Rule>, is_break: bool) -> Result<StmtKind, Stri
     } else {
         StmtKind::Continue(ContinueTarget::Implicit)
     };
-    maybe_wrap_modifier(stmt, &mut modifiers)
+    maybe_wrap_modifier(__w, stmt, &mut modifiers)
 }
 
 // ── Multi-assign ────────────────────────────────────────────────────────────
 
-fn walk_multi_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_multi_assign(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut targets = Vec::new();
     let mut values = Vec::new();
 
@@ -5767,13 +5773,13 @@ fn walk_multi_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
             Rule::target => {
                 let inner: Vec<Pair<Rule>> = p.into_inner().collect();
                 if let Some(first) = inner.into_iter().next() {
-                    targets.push(walk_expression(first)?);
+                    targets.push(walk_expression(__w, first)?);
                 }
             }
             Rule::expression_list => {
                 for ep in p.into_inner() {
                     if is_expression_rule(ep.as_rule()) {
-                        values.push(walk_expression(ep)?);
+                        values.push(walk_expression(__w, ep)?);
                     }
                 }
             }
@@ -5865,8 +5871,8 @@ fn fixup_assign_target(expr: Expression) -> Expression {
     expr
 }
 
-fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
-    if let Some(stmt) = walk_raw_command_builtin(pair.as_str())? {
+fn walk_expr_or_assign(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
+    if let Some(stmt) = walk_raw_command_builtin(__w, pair.as_str())? {
         return Ok(stmt);
     }
     let mut inner: Vec<Pair<Rule>> = pair
@@ -5881,16 +5887,16 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
     // ── Check for command call (postfix ~ command_args ~ block_literal? ~ modifier_suffix?)
     let has_command_args = inner.iter().any(|p| p.as_rule() == Rule::command_args);
     if has_command_args {
-        return walk_command_call(inner);
+        return walk_command_call(__w, inner);
     }
 
     // ── Check for augmented assignment
     let has_aug = inner.iter().any(|p| p.as_rule() == Rule::aug_assign_op);
     if has_aug {
-        let target = fixup_assign_target(walk_expression(inner.remove(0))?);
+        let target = fixup_assign_target(walk_expression(__w, inner.remove(0))?);
         let op_str = inner.remove(0).as_str().to_string();
         let value = if !inner.is_empty() && is_expression_rule(inner[0].as_rule()) {
-            walk_expression(inner.remove(0))?
+            walk_expression(__w, inner.remove(0))?
         } else {
             Expression::null()
         };
@@ -5911,31 +5917,31 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
             _ => CompoundOp::Add,
         };
         let stmt = StmtKind::CompoundAssign { target, op, value };
-        return maybe_wrap_modifier(stmt, &mut inner);
+        return maybe_wrap_modifier(__w, stmt, &mut inner);
     }
 
     // ── Check for regular assignment (expression = expression_list)
     let has_expr_list = inner.iter().any(|p| p.as_rule() == Rule::expression_list);
     if has_expr_list {
-        let target = fixup_assign_target(walk_expression(inner.remove(0))?);
+        let target = fixup_assign_target(walk_expression(__w, inner.remove(0))?);
         let mut values = Vec::new();
         let mut remaining = Vec::new();
         for p in inner {
             if p.as_rule() == Rule::expression_list {
                 for ep in p.into_inner() {
                     if is_expression_rule(ep.as_rule()) {
-                        values.push(walk_expression(ep)?);
+                        values.push(walk_expression(__w, ep)?);
                     }
                 }
             } else if p.as_rule() == Rule::modifier_suffix {
                 remaining.push(p);
             } else if is_expression_rule(p.as_rule()) {
-                values.push(walk_expression(p)?);
+                values.push(walk_expression(__w, p)?);
             }
         }
         if values.is_empty() {
             let stmt = StmtKind::Expr(target);
-            return maybe_wrap_modifier(stmt, &mut remaining);
+            return maybe_wrap_modifier(__w, stmt, &mut remaining);
         }
         let value = if values.len() == 1 {
             values.into_iter().next().unwrap()
@@ -5957,7 +5963,7 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 "__ruby_index_set",
                 vec![(**object).clone(), (**index).clone(), value],
             ));
-            return maybe_wrap_modifier(stmt, &mut remaining);
+            return maybe_wrap_modifier(__w, stmt, &mut remaining);
         }
         if let ExprKind::Call { callee, args, .. } = &target.kind {
             if matches!(&callee.kind, ExprKind::Ident(name) if name == "__ruby_index_get")
@@ -5967,7 +5973,7 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     "__ruby_index_set",
                     vec![args[0].value.clone(), args[1].value.clone(), value],
                 ));
-                return maybe_wrap_modifier(stmt, &mut remaining);
+                return maybe_wrap_modifier(__w, stmt, &mut remaining);
             }
         }
         let stmt = StmtKind::Assign {
@@ -5975,13 +5981,13 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
             value,
             by_ref: false,
         };
-        return maybe_wrap_modifier(stmt, &mut remaining);
+        return maybe_wrap_modifier(__w, stmt, &mut remaining);
     }
 
     // ── Expression statement (expression ~ modifier_suffix?)
-    let expr = walk_expression(inner.remove(0))?;
+    let expr = walk_expression(__w, inner.remove(0))?;
     let stmt = normalize_bang_method_stmt(expr.clone()).unwrap_or(StmtKind::Expr(expr));
-    maybe_wrap_modifier(stmt, &mut inner)
+    maybe_wrap_modifier(__w, stmt, &mut inner)
 }
 
 fn normalize_bang_method_stmt(expr: Expression) -> Option<StmtKind> {
@@ -6085,7 +6091,7 @@ fn ruby_mutating_shl_target(expr: &Expression) -> Option<String> {
     }
 }
 
-fn walk_raw_command_builtin(raw: &str) -> Result<Option<StmtKind>, String> {
+fn walk_raw_command_builtin(__w: &mut RubyWalker, raw: &str) -> Result<Option<StmtKind>, String> {
     let text = raw.trim();
     let Some(split_at) = text.find(char::is_whitespace) else {
         return Ok(None);
@@ -6103,7 +6109,7 @@ fn walk_raw_command_builtin(raw: &str) -> Result<Option<StmtKind>, String> {
     let args_pair = parsed
         .next()
         .ok_or_else(|| "command args parse produced no args".to_string())?;
-    let args = walk_call_args(args_pair)?;
+    let args = walk_call_args(__w, args_pair)?;
     Ok(Some(StmtKind::Expr(Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident(head)),
         args,
@@ -6112,7 +6118,7 @@ fn walk_raw_command_builtin(raw: &str) -> Result<Option<StmtKind>, String> {
 }
 
 /// Handle command-style call: postfix ~ command_args ~ block_literal? ~ modifier_suffix?
-fn walk_command_call(mut items: Vec<Pair<Rule>>) -> Result<StmtKind, String> {
+fn walk_command_call(__w: &mut RubyWalker, mut items: Vec<Pair<Rule>>) -> Result<StmtKind, String> {
     // The first item(s) before command_args form the callee postfix expression.
     let cmd_pos = items
         .iter()
@@ -6123,28 +6129,28 @@ fn walk_command_call(mut items: Vec<Pair<Rule>>) -> Result<StmtKind, String> {
     let callee_pairs: Vec<Pair<Rule>> = items.drain(..cmd_pos).collect();
     let callee = if callee_pairs.len() == 1 {
         let p = callee_pairs.into_iter().next().unwrap();
-        Expression::new(walk_expr_kind(p)?)
+        Expression::new(walk_expr_kind(__w, p)?)
     } else if !callee_pairs.is_empty() {
         let p = callee_pairs.into_iter().next().unwrap();
-        Expression::new(walk_expr_kind(p)?)
+        Expression::new(walk_expr_kind(__w, p)?)
     } else {
         return Err("Command call missing callee".into());
     };
 
     // Now items[0] = command_args (same structure as call_args: contains call_arg children)
     let cmd_args_pair = items.remove(0);
-    let mut args = walk_call_args(cmd_args_pair)?;
+    let mut args = walk_call_args(__w, cmd_args_pair)?;
 
     // Optional block literal
     if !items.is_empty() && items[0].as_rule() == Rule::block_literal {
         let blk = items.remove(0);
-        let lambda = walk_block_literal(blk)?;
+        let lambda = walk_block_literal(__w, blk)?;
         args.push(Argument::positional(lambda));
     }
 
     if matches!(&callee.kind, ExprKind::Ident(name) if name == "lambda") && args.len() == 1 {
         let stmt = StmtKind::Expr(ruby_proc_expr("__ruby_lambda", args.remove(0).value));
-        return maybe_wrap_modifier(stmt, &mut items);
+        return maybe_wrap_modifier(__w, stmt, &mut items);
     }
 
     let call_expr = Expression::new(ExprKind::Call {
@@ -6154,11 +6160,11 @@ fn walk_command_call(mut items: Vec<Pair<Rule>>) -> Result<StmtKind, String> {
     });
 
     let stmt = StmtKind::Expr(call_expr);
-    maybe_wrap_modifier(stmt, &mut items)
+    maybe_wrap_modifier(__w, stmt, &mut items)
 }
 
 /// Wrap a statement in an if/unless/while/until modifier if present
-fn maybe_wrap_modifier(stmt: StmtKind, rest: &mut Vec<Pair<Rule>>) -> Result<StmtKind, String> {
+fn maybe_wrap_modifier(__w: &mut RubyWalker, stmt: StmtKind, rest: &mut Vec<Pair<Rule>>) -> Result<StmtKind, String> {
     let mod_pos = rest
         .iter()
         .position(|p| p.as_rule() == Rule::modifier_suffix);
@@ -6174,7 +6180,7 @@ fn maybe_wrap_modifier(stmt: StmtKind, rest: &mut Vec<Pair<Rule>>) -> Result<Stm
     let cond_pair = mod_inner
         .next()
         .ok_or_else(|| "modifier_suffix missing condition".to_string())?;
-    let cond = walk_expression(cond_pair)?;
+    let cond = walk_expression(__w, cond_pair)?;
     let body_stmt = Statement::new(stmt);
     match kw.as_rule() {
         Rule::if_kw => Ok(StmtKind::If {
@@ -6239,13 +6245,13 @@ fn walk_require(pair: Pair<Rule>) -> Result<Import, String> {
 // Body (list of statements)
 // ════════════════════════════════════════════════════════════════════════════
 
-fn walk_body(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
+fn walk_body(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
     let mut stmts = Vec::new();
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::NEWLINE => {}
             _ => {
-                let stmt = walk_statement(p)?;
+                let stmt = walk_statement(__w, p)?;
                 if !matches!(stmt.kind, StmtKind::Empty) {
                     stmts.push(stmt);
                 }
@@ -6294,7 +6300,7 @@ fn normalize_consecutive_prints(stmts: &mut Vec<Statement>) {
 // Expressions
 // ════════════════════════════════════════════════════════════════════════════
 
-fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
+fn walk_expression(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<Expression, String> {
     let span = to_span(&pair);
     match pair.as_str().trim() {
         "Math::PI" => {
@@ -6335,11 +6341,11 @@ fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
         }
         _ => {}
     }
-    let kind = walk_expr_kind(pair)?;
+    let kind = walk_expr_kind(__w, pair)?;
     Ok(Expression::with_span(kind, span))
 }
 
-fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
+fn walk_expr_kind(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<ExprKind, String> {
     match pair.as_rule() {
         // ── Literals ────────────────────────────────────────────────────
         Rule::integer_literal => parse_ruby_int(pair.as_str()),
@@ -6347,7 +6353,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         Rule::string_literal => Ok(ExprKind::Lit(Literal::Str(parse_ruby_string(
             pair.as_str(),
         )))),
-        Rule::interpolated_string => walk_interpolated_string(pair),
+        Rule::interpolated_string => walk_interpolated_string(__w, pair),
         Rule::heredoc => Ok(ExprKind::Lit(Literal::Str(parse_heredoc(pair.as_str())))),
         Rule::symbol => {
             let raw = &pair.as_str()[1..];
@@ -6422,8 +6428,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         }
 
         // ── Expression wrappers ─────────────────────────────────────────
-        Rule::expression => walk_expression_inner(pair),
-        Rule::ternary_expr => walk_ternary(pair),
+        Rule::expression => walk_expression_inner(__w, pair),
+        Rule::ternary_expr => walk_ternary(__w, pair),
         Rule::low_and_expr
         | Rule::low_or_expr
         | Rule::or_expr
@@ -6437,28 +6443,28 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         | Rule::range_expr
         | Rule::additive
         | Rule::multiplicative
-        | Rule::unary => walk_infix_or_unwrap(pair),
+        | Rule::unary => walk_infix_or_unwrap(__w, pair),
 
-        Rule::postfix => walk_postfix(pair),
-        Rule::primary => walk_primary(pair),
-        Rule::ident_call => walk_ident_call(pair),
-        Rule::expression_list => walk_expr_list_kind(pair),
+        Rule::postfix => walk_postfix(__w, pair),
+        Rule::primary => walk_primary(__w, pair),
+        Rule::ident_call => walk_ident_call(__w, pair),
+        Rule::expression_list => walk_expr_list_kind(__w, pair),
 
         // ── Special expressions ─────────────────────────────────────────
-        Rule::yield_expr => walk_yield(pair),
-        Rule::defined_expr => walk_defined(pair),
-        Rule::super_expr => walk_super(pair),
+        Rule::yield_expr => walk_yield(__w, pair),
+        Rule::defined_expr => walk_defined(__w, pair),
+        Rule::super_expr => walk_super(__w, pair),
         Rule::block_given_expr => Ok(ExprKind::Lit(Literal::Bool(true))), // simplification
-        Rule::lambda_literal => walk_lambda(pair),
-        Rule::proc_literal => walk_proc(pair),
+        Rule::lambda_literal => walk_lambda(__w, pair),
+        Rule::proc_literal => walk_proc(__w, pair),
 
         // ── If/Unless/Begin as expression ───────────────────────────────
-        Rule::if_expr => walk_if_expr(pair),
-        Rule::unless_expr => walk_unless_expr(pair),
-        Rule::begin_expr => walk_begin_expr(pair),
+        Rule::if_expr => walk_if_expr(__w, pair),
+        Rule::unless_expr => walk_unless_expr(__w, pair),
+        Rule::begin_expr => walk_begin_expr(__w, pair),
 
-        Rule::array_inner => walk_array_inner(pair),
-        Rule::hash_inner => walk_hash_inner(pair),
+        Rule::array_inner => walk_array_inner(__w, pair),
+        Rule::hash_inner => walk_hash_inner(__w, pair),
 
         Rule::NEWLINE => Ok(ExprKind::Lit(Literal::Null)),
 
@@ -6468,18 +6474,18 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
 // ── Expression inner (handles inline_rescue) ────────────────────────────────
 
-fn walk_expression_inner(pair: Pair<Rule>) -> Result<ExprKind, String> {
+fn walk_expression_inner(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<ExprKind, String> {
     let mut inner: Vec<Pair<Rule>> = pair.into_inner().collect();
     if inner.len() == 1 {
-        return walk_expr_kind(inner.remove(0));
+        return walk_expr_kind(__w, inner.remove(0));
     }
     // expression = ternary_expr ~ inline_rescue?
-    let expr = walk_expression(inner.remove(0))?;
+    let expr = walk_expression(__w, inner.remove(0))?;
     // If there's an inline_rescue, wrap in try
     if !inner.is_empty() && inner[0].as_rule() == Rule::inline_rescue {
         let rescue_inner: Vec<Pair<Rule>> = inner.remove(0).into_inner().collect();
         let _rescue_val = if let Some(rp) = rescue_inner.into_iter().next() {
-            walk_expression(rp)?
+            walk_expression(__w, rp)?
         } else {
             Expression::null()
         };
@@ -6492,50 +6498,50 @@ fn walk_expression_inner(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
 // ── Ternary ─────────────────────────────────────────────────────────────────
 
-fn walk_ternary(pair: Pair<Rule>) -> Result<ExprKind, String> {
+fn walk_ternary(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<ExprKind, String> {
     let mut inner: Vec<Pair<Rule>> = pair.into_inner().collect();
     if inner.len() == 1 {
-        return walk_expr_kind(inner.remove(0));
+        return walk_expr_kind(__w, inner.remove(0));
     }
     // cond ? then : else
     if inner.len() >= 3 {
-        let cond = walk_expression(inner.remove(0))?;
-        let then = walk_expression(inner.remove(0))?;
-        let else_ = walk_expression(inner.remove(0))?;
+        let cond = walk_expression(__w, inner.remove(0))?;
+        let then = walk_expression(__w, inner.remove(0))?;
+        let else_ = walk_expression(__w, inner.remove(0))?;
         Ok(ExprKind::Ternary {
             cond: Box::new(cond),
             then: Box::new(then),
             else_: Box::new(else_),
         })
     } else {
-        walk_expr_kind(inner.remove(0))
+        walk_expr_kind(__w, inner.remove(0))
     }
 }
 
 // ── Infix / precedence unwrap ───────────────────────────────────────────────
 
-fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
+fn walk_infix_or_unwrap(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<ExprKind, String> {
     let rule = pair.as_rule();
     let text = pair.as_str().trim_start().to_string();
     let mut inner: Vec<Pair<Rule>> = pair.into_inner().collect();
 
     if inner.len() == 1 {
         if rule == Rule::not_expr && (text.starts_with('!') || text.starts_with("not ")) {
-            let operand = walk_expression(inner.remove(0))?;
+            let operand = walk_expression(__w, inner.remove(0))?;
             return Ok(ExprKind::Call {
                 callee: Box::new(Expression::ident("__ruby_not")),
                 args: vec![Argument::positional(operand)],
                 optional: false,
             });
         }
-        return walk_expr_kind(inner.remove(0));
+        return walk_expr_kind(__w, inner.remove(0));
     }
 
     match rule {
-        Rule::low_or_expr | Rule::or_expr => walk_binary_chain(inner, |_| BinOp::Or),
-        Rule::low_and_expr | Rule::and_expr => walk_binary_chain(inner, |_| BinOp::And),
+        Rule::low_or_expr | Rule::or_expr => walk_binary_chain(__w, inner, |_| BinOp::Or),
+        Rule::low_and_expr | Rule::and_expr => walk_binary_chain(__w, inner, |_| BinOp::And),
         Rule::not_expr => {
-            let operand = walk_expression(inner.pop().ok_or("Empty not")?)?;
+            let operand = walk_expression(__w, inner.pop().ok_or("Empty not")?)?;
             Ok(ExprKind::Call {
                 callee: Box::new(Expression::ident("__ruby_not")),
                 args: vec![Argument::positional(operand)],
@@ -6543,14 +6549,14 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
             })
         }
         Rule::comparison => {
-            let mut left = walk_expression(inner.remove(0))?;
+            let mut left = walk_expression(__w, inner.remove(0))?;
             let mut i = 0;
             while i < inner.len() {
                 if inner[i].as_rule() == Rule::comparison_op {
                     let op_text = inner[i].as_str().trim();
                     i += 1;
                     if i < inner.len() {
-                        let right = walk_expression(inner[i].clone())?;
+                        let right = walk_expression(__w, inner[i].clone())?;
                         i += 1;
                         if op_text == "=~" {
                             left = Expression::new(ExprKind::Call {
@@ -6569,16 +6575,16 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
             }
             Ok(left.kind)
         }
-        Rule::bitor_expr => walk_binary_chain(inner, |_| BinOp::BitOr),
-        Rule::bitxor_expr => walk_binary_chain(inner, |_| BinOp::BitXor),
-        Rule::bitand_expr => walk_binary_chain(inner, |_| BinOp::BitAnd),
-        Rule::shift_expr => walk_binary_chain_with_ops(inner),
-        Rule::range_expr => walk_range(inner),
-        Rule::additive => walk_binary_chain_with_ops(inner),
-        Rule::multiplicative => walk_ruby_multiplicative(inner),
+        Rule::bitor_expr => walk_binary_chain(__w, inner, |_| BinOp::BitOr),
+        Rule::bitxor_expr => walk_binary_chain(__w, inner, |_| BinOp::BitXor),
+        Rule::bitand_expr => walk_binary_chain(__w, inner, |_| BinOp::BitAnd),
+        Rule::shift_expr => walk_binary_chain_with_ops(__w, inner),
+        Rule::range_expr => walk_range(__w, inner),
+        Rule::additive => walk_binary_chain_with_ops(__w, inner),
+        Rule::multiplicative => walk_ruby_multiplicative(__w, inner),
         Rule::unary => {
             let op_str = inner[0].as_str().trim();
-            let operand = walk_expression(inner.pop().ok_or("Empty unary")?)?;
+            let operand = walk_expression(__w, inner.pop().ok_or("Empty unary")?)?;
             if op_str == "!" {
                 return Ok(ExprKind::Call {
                     callee: Box::new(Expression::ident("__ruby_not")),
@@ -6599,7 +6605,7 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
         }
         _ => {
             if !inner.is_empty() {
-                walk_expr_kind(inner.remove(0))
+                walk_expr_kind(__w, inner.remove(0))
             } else {
                 Ok(ExprKind::Lit(Literal::Null))
             }
@@ -6607,14 +6613,14 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
     }
 }
 
-fn walk_binary_chain(
+fn walk_binary_chain(__w: &mut RubyWalker, 
     mut items: Vec<Pair<Rule>>,
     op_fn: impl Fn(&str) -> BinOp,
 ) -> Result<ExprKind, String> {
-    let mut left = walk_expression(items.remove(0))?;
+    let mut left = walk_expression(__w, items.remove(0))?;
     for item in items {
         if is_expression_rule(item.as_rule()) {
-            let right = walk_expression(item)?;
+            let right = walk_expression(__w, item)?;
             let op = op_fn("");
             left = match op {
                 BinOp::And => Expression::new(ExprKind::Ternary {
@@ -6647,8 +6653,8 @@ fn ruby_boolify_expr(expr: Expression) -> Expression {
 }
 
 /// Ruby `*` is dynamic (string repeat OR numeric mul), same as Python.
-fn walk_ruby_multiplicative(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, String> {
-    let mut left = walk_expression(items.remove(0))?;
+fn walk_ruby_multiplicative(__w: &mut RubyWalker, mut items: Vec<Pair<Rule>>) -> Result<ExprKind, String> {
+    let mut left = walk_expression(__w, items.remove(0))?;
     let mut i = 0;
     while i < items.len() {
         let p = &items[i];
@@ -6656,7 +6662,7 @@ fn walk_ruby_multiplicative(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, Stri
             let op_str = p.as_str().trim();
             i += 1;
             if i < items.len() {
-                let right = walk_expression(items[i].clone())?;
+                let right = walk_expression(__w, items[i].clone())?;
                 i += 1;
                 let op = parse_binop(op_str);
                 left = maybe_ruby_array_binary(left, op, right);
@@ -6668,8 +6674,8 @@ fn walk_ruby_multiplicative(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, Stri
     Ok(left.kind)
 }
 
-fn walk_binary_chain_with_ops(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, String> {
-    let mut left = walk_expression(items.remove(0))?;
+fn walk_binary_chain_with_ops(__w: &mut RubyWalker, mut items: Vec<Pair<Rule>>) -> Result<ExprKind, String> {
+    let mut left = walk_expression(__w, items.remove(0))?;
     let mut i = 0;
     while i < items.len() {
         let p = &items[i];
@@ -6677,12 +6683,12 @@ fn walk_binary_chain_with_ops(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, St
             let op = parse_binop(p.as_str().trim());
             i += 1;
             if i < items.len() {
-                let right = walk_expression(items[i].clone())?;
+                let right = walk_expression(__w, items[i].clone())?;
                 i += 1;
                 left = maybe_ruby_array_binary(left, op, right);
             }
         } else if is_expression_rule(p.as_rule()) {
-            let right = walk_expression(items[i].clone())?;
+            let right = walk_expression(__w, items[i].clone())?;
             i += 1;
             left = maybe_ruby_array_binary(left, BinOp::Add, right);
         } else {
@@ -7141,11 +7147,11 @@ fn ruby_literal_string_substitution(
 
 // ── Range ───────────────────────────────────────────────────────────────────
 
-fn walk_range(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, String> {
+fn walk_range(__w: &mut RubyWalker, mut items: Vec<Pair<Rule>>) -> Result<ExprKind, String> {
     if items.len() == 1 {
-        return walk_expr_kind(items.remove(0));
+        return walk_expr_kind(__w, items.remove(0));
     }
-    let start = walk_expression(items.remove(0))?;
+    let start = walk_expression(__w, items.remove(0))?;
     // Find range_op
     let mut inclusive = true;
     let mut end_idx = 0;
@@ -7157,7 +7163,7 @@ fn walk_range(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, String> {
         }
     }
     if end_idx < items.len() {
-        let end = walk_expression(items.remove(end_idx))?;
+        let end = walk_expression(__w, items.remove(end_idx))?;
         // `..` is inclusive, `...` exclusive — pass the flag through. The shared
         // range/slice emitters honour it for both numeric and char bounds
         // (no lossy compile-time `end + 1`, which corrupted `'a'..'z'`).
@@ -7176,15 +7182,15 @@ fn walk_range(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, String> {
 /// `ident_call = ${ (constant | identifier) ~ tight_call }` — a whitespace-tight
 /// `foo(args)` call. The `(` immediately follows the name; `foo (args)` (space)
 /// never reaches here (it stays a command call).
-fn walk_ident_call(pair: Pair<Rule>) -> Result<ExprKind, String> {
+fn walk_ident_call(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<ExprKind, String> {
     let mut inner: Vec<Pair<Rule>> = pair.into_inner().collect();
-    let callee = Expression::new(walk_expr_kind(inner.remove(0))?);
+    let callee = Expression::new(walk_expr_kind(__w, inner.remove(0))?);
     // tight_call = !{ "(" ~ call_args? ~ ")" }
     let args = inner
         .into_iter()
         .find(|c| c.as_rule() == Rule::tight_call)
         .and_then(|tc| tc.into_inner().find(|c| c.as_rule() == Rule::call_args))
-        .map(walk_call_args)
+        .map(|__x| walk_call_args(__w, __x))
         .transpose()?
         .unwrap_or_default();
     if matches!(&callee.kind, ExprKind::Ident(name) if name == "lambda") && args.len() == 1 {
@@ -7195,7 +7201,7 @@ fn walk_ident_call(pair: Pair<Rule>) -> Result<ExprKind, String> {
     }
     if matches!(&callee.kind, ExprKind::Ident(name) if name == "method") && args.len() == 1 {
         if let Some(name) = ruby_method_name_arg(&args[0].value) {
-            return Ok(ruby_method_expr(
+            return Ok(ruby_method_expr(__w, 
                 &name,
                 Expression::null(),
                 "Object",
@@ -7246,15 +7252,15 @@ fn ruby_receiver_class_name(expr: &Expression) -> String {
     }
 }
 
-fn ruby_method_expr(
+fn ruby_method_expr(__w: &mut RubyWalker, 
     name: &str,
     fn_expr: Expression,
     owner: &str,
     receiver_class: &str,
     receiver: Expression,
 ) -> Expression {
-    let original = ruby_alias_original(name);
-    let info = ruby_method_info(owner, name);
+    let original = ruby_alias_original(__w, name);
+    let info = ruby_method_info(__w, owner, name);
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident("__ruby_method")),
         args: vec![
@@ -7271,14 +7277,14 @@ fn ruby_method_expr(
     })
 }
 
-fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
+fn walk_postfix(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<ExprKind, String> {
     let mut inner = pair.into_inner();
     let first = inner.next().ok_or("Empty postfix")?;
-    let mut expr = walk_expression(first)?;
+    let mut expr = walk_expression(__w, first)?;
 
     for chain in inner {
         if chain.as_rule() == Rule::postfix_chain {
-            expr = walk_postfix_chain(expr, chain)?;
+            expr = walk_postfix_chain(__w, expr, chain)?;
         } else if chain.as_rule() == Rule::constant {
             let const_name = chain.as_str();
             if matches!((&expr.kind, const_name), (ExprKind::Ident(base), "PI") if base == "Math") {
@@ -7301,7 +7307,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
     Ok(expr.kind)
 }
 
-fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression, String> {
+fn walk_postfix_chain(__w: &mut RubyWalker, expr: Expression, chain: Pair<Rule>) -> Result<Expression, String> {
     let children: Vec<Pair<Rule>> = chain.into_inner().collect();
 
     if children.is_empty() {
@@ -7325,7 +7331,7 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
             let args = children
                 .iter()
                 .find(|c| c.as_rule() == Rule::call_args)
-                .map(|c| walk_call_args(c.clone()))
+                .map(|c| walk_call_args(__w, c.clone()))
                 .transpose()?
                 .unwrap_or_default();
 
@@ -7337,7 +7343,7 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
             let block = children
                 .iter()
                 .find(|c| c.as_rule() == Rule::block_literal)
-                .map(|c| walk_block_literal(c.clone()))
+                .map(|c| walk_block_literal(__w, c.clone()))
                 .transpose()?;
 
             let mut final_args = args;
@@ -7575,7 +7581,7 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                 if class_name == "Enumerator" && method_name == "new" {
                     if let Some(gen_fn) = block_text
                         .as_deref()
-                        .and_then(ruby_enumerator_generator_expr)
+                        .and_then(|__x| ruby_enumerator_generator_expr(__w, __x))
                     {
                         return Ok(Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::ident("__ruby_enum_new")),
@@ -7816,13 +7822,13 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
             if method_name == "method" && final_args.len() == 1 {
                 if let Some(name) = ruby_method_name_arg(&final_args[0].value) {
                     let owner = ruby_receiver_class_name(&expr);
-                    let original = ruby_alias_original(&name);
+                    let original = ruby_alias_original(__w, &name);
                     let fn_expr = Expression::new(ExprKind::Member {
                         object: Box::new(expr.clone()),
                         field: original,
                         null_safe: false,
                     });
-                    return Ok(ruby_method_expr(&name, fn_expr, &owner, &owner, expr));
+                    return Ok(ruby_method_expr(__w, &name, fn_expr, &owner, &owner, expr));
                 }
             }
 
@@ -8047,7 +8053,7 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
         }
         Rule::call_args => {
             // Bare call: expr(args)
-            let args = walk_call_args(children.into_iter().next().unwrap())?;
+            let args = walk_call_args(__w, children.into_iter().next().unwrap())?;
             let mut call_args = vec![Argument::positional(expr)];
             call_args.extend(args);
             Ok(Expression::new(ExprKind::Call {
@@ -8058,7 +8064,7 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
         }
         Rule::expression_list => {
             // Subscript: expr[index]
-            let index = walk_expr_list_single(children.into_iter().next().unwrap())?;
+            let index = walk_expr_list_single(__w, children.into_iter().next().unwrap())?;
             Ok(Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__ruby_index_get")),
                 args: vec![Argument::positional(expr), Argument::positional(index)],
@@ -8074,7 +8080,7 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                 optional,
             } = expr.kind
             {
-                let block_lambda = walk_block_literal(children.into_iter().next().unwrap())?;
+                let block_lambda = walk_block_literal(__w, children.into_iter().next().unwrap())?;
                 args.push(Argument::positional(block_lambda));
                 Ok(Expression::new(ExprKind::Call {
                     callee,
@@ -8083,7 +8089,7 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                 }))
             } else {
                 // Bare block on expression — treat as call with block
-                let block_lambda = walk_block_literal(children.into_iter().next().unwrap())?;
+                let block_lambda = walk_block_literal(__w, children.into_iter().next().unwrap())?;
                 Ok(Expression::new(ExprKind::Call {
                     callee: Box::new(expr),
                     args: vec![Argument::positional(block_lambda)],
@@ -8094,7 +8100,7 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
         _ => {
             // Try to interpret as subscript or call
             if is_expression_rule(first_rule) {
-                let index = walk_expression(children.into_iter().next().unwrap())?;
+                let index = walk_expression(__w, children.into_iter().next().unwrap())?;
                 Ok(Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__ruby_index_get")),
                     args: vec![Argument::positional(expr), Argument::positional(index)],
@@ -8241,7 +8247,7 @@ fn ruby_builtin_class_name(name: &str) -> bool {
     }
 }
 
-fn ruby_enumerator_generator_expr(source: &str) -> Option<Expression> {
+fn ruby_enumerator_generator_expr(__w: &mut RubyWalker, source: &str) -> Option<Expression> {
     let mut body = Vec::new();
     for piece in source.split(';') {
         let trimmed = piece.trim();
@@ -8262,7 +8268,7 @@ fn ruby_enumerator_generator_expr(source: &str) -> Option<Expression> {
                 let mut parsed = RubyParser::parse(Rule::expression, item.trim()).ok()?;
                 let expr_pair = parsed.next()?;
                 elements.push(ArrayElement {
-                    value: walk_expression(expr_pair).ok()?,
+                    value: walk_expression(__w, expr_pair).ok()?,
                     spread: false,
                     key: None,
                     by_ref: false,
@@ -8272,7 +8278,7 @@ fn ruby_enumerator_generator_expr(source: &str) -> Option<Expression> {
         } else {
             let mut parsed = RubyParser::parse(Rule::expression, value).ok()?;
             let expr_pair = parsed.next()?;
-            walk_expression(expr_pair).ok()?
+            walk_expression(__w, expr_pair).ok()?
         };
         body.push(Statement::new(StmtKind::Expr(Expression::new(
             ExprKind::Yield(Some(Box::new(expr))),
@@ -8296,7 +8302,7 @@ fn ruby_enumerator_generator_expr(source: &str) -> Option<Expression> {
     ))))
 }
 
-fn walk_call_args(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
+fn walk_call_args(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
     let mut args = Vec::new();
     let mut pending_hash = Vec::new();
     for p in pair.into_inner() {
@@ -8308,8 +8314,8 @@ fn walk_call_args(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
             }
 
             if raw_arg.contains("=>") && children.len() >= 2 {
-                let key = walk_expression(children[0].clone())?;
-                let value = walk_expression(children[1].clone())?;
+                let key = walk_expression(__w, children[0].clone())?;
+                let value = walk_expression(__w, children[1].clone())?;
                 pending_hash.push(ObjectProperty::KeyValue { key, value });
                 continue;
             }
@@ -8325,7 +8331,7 @@ fn walk_call_args(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
             if first_text == "**" {
                 // Double splat
                 if children.len() > 1 {
-                    let val = walk_expression(children.into_iter().nth(1).unwrap())?;
+                    let val = walk_expression(__w, children.into_iter().nth(1).unwrap())?;
                     args.push(Argument {
                         value: val,
                         name: None,
@@ -8336,7 +8342,7 @@ fn walk_call_args(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
             } else if first_text == "*" {
                 // Splat
                 if children.len() > 1 {
-                    let val = walk_expression(children.into_iter().nth(1).unwrap())?;
+                    let val = walk_expression(__w, children.into_iter().nth(1).unwrap())?;
                     args.push(Argument {
                         value: val,
                         name: None,
@@ -8347,10 +8353,10 @@ fn walk_call_args(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
             } else if first_text == "&" || raw_arg.trim_start().starts_with('&') {
                 // Block arg
                 if raw_arg.trim_start().starts_with('&') {
-                    let val = walk_expression(children.into_iter().next().unwrap())?;
+                    let val = walk_expression(__w, children.into_iter().next().unwrap())?;
                     args.push(Argument::positional(ruby_block_arg_to_lambda(val)));
                 } else if children.len() > 1 {
-                    let val = walk_expression(children.into_iter().nth(1).unwrap())?;
+                    let val = walk_expression(__w, children.into_iter().nth(1).unwrap())?;
                     args.push(Argument::positional(ruby_block_arg_to_lambda(val)));
                 }
             } else if children.len() >= 2 && children[0].as_rule() == Rule::identifier {
@@ -8358,7 +8364,7 @@ fn walk_call_args(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
                 let has_colon = children.iter().any(|c| c.as_str() == ":");
                 if has_colon {
                     let name = children[0].as_str().to_string();
-                    let val = walk_expression(children.into_iter().last().unwrap())?;
+                    let val = walk_expression(__w, children.into_iter().last().unwrap())?;
                     args.push(Argument {
                         value: val,
                         name: Some(name),
@@ -8366,11 +8372,11 @@ fn walk_call_args(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
                         spread: false,
                     });
                 } else {
-                    let val = walk_expression(children.into_iter().next().unwrap())?;
+                    let val = walk_expression(__w, children.into_iter().next().unwrap())?;
                     args.push(Argument::positional(val));
                 }
             } else {
-                let val = walk_expression(children.into_iter().next().unwrap())?;
+                let val = walk_expression(__w, children.into_iter().next().unwrap())?;
                 args.push(Argument::positional(val));
             }
         }
@@ -8444,7 +8450,7 @@ fn ruby_block_arg_to_lambda(expr: Expression) -> Expression {
 
 // ── Block literal ───────────────────────────────────────────────────────────
 
-fn walk_block_literal(pair: Pair<Rule>) -> Result<Expression, String> {
+fn walk_block_literal(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<Expression, String> {
     let mut params = Vec::new();
     let mut body = Vec::new();
 
@@ -8454,14 +8460,14 @@ fn walk_block_literal(pair: Pair<Rule>) -> Result<Expression, String> {
                 for bp in p.into_inner() {
                     match bp.as_rule() {
                         Rule::block_params => {
-                            params = walk_block_params(bp)?;
+                            params = walk_block_params(__w, bp)?;
                         }
                         Rule::body => {
-                            body = walk_body(bp)?;
+                            body = walk_body(__w, bp)?;
                         }
                         _ => {
                             // Statements directly in brace_block
-                            let stmt = walk_statement(bp)?;
+                            let stmt = walk_statement(__w, bp)?;
                             if !matches!(stmt.kind, StmtKind::Empty) {
                                 body.push(stmt);
                             }
@@ -8614,7 +8620,7 @@ fn expr_contains_spaceship(expr: &Expression) -> bool {
     }
 }
 
-fn walk_block_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
+fn walk_block_params(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<Vec<Param>, String> {
     let mut params = Vec::new();
     for p in pair.into_inner() {
         if p.as_rule() == Rule::block_param_list {
@@ -8648,7 +8654,7 @@ fn walk_block_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                                     .unwrap_or_default();
                                 let default = inner
                                     .find(|c| is_expression_rule(c.as_rule()))
-                                    .map(walk_expression)
+                                    .map(|__x| walk_expression(__w, __x))
                                     .transpose()?;
                                 params.push(Param {
                                     name,
@@ -8685,11 +8691,11 @@ fn walk_block_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
 
 // ── Primary ─────────────────────────────────────────────────────────────────
 
-fn walk_primary(pair: Pair<Rule>) -> Result<ExprKind, String> {
+fn walk_primary(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<ExprKind, String> {
     let source = pair.as_str().trim().to_string();
     let mut inner: Vec<Pair<Rule>> = pair.into_inner().collect();
     if inner.len() == 1 {
-        return walk_expr_kind(inner.remove(0));
+        return walk_expr_kind(__w, inner.remove(0));
     }
     if inner.is_empty() {
         if source.starts_with('[') && source.ends_with(']') {
@@ -8705,22 +8711,22 @@ fn walk_primary(pair: Pair<Rule>) -> Result<ExprKind, String> {
     match first.as_rule() {
         Rule::array_inner => {
             // Array literal [...]
-            walk_array_inner(inner.remove(0))
+            walk_array_inner(__w, inner.remove(0))
         }
         Rule::hash_inner => {
             // Hash literal {...}
-            walk_hash_inner(inner.remove(0))
+            walk_hash_inner(__w, inner.remove(0))
         }
-        _ => walk_expr_kind(inner.remove(0)),
+        _ => walk_expr_kind(__w, inner.remove(0)),
     }
 }
 
-fn walk_array_inner(pair: Pair<Rule>) -> Result<ExprKind, String> {
+fn walk_array_inner(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<ExprKind, String> {
     let elements = pair
         .into_inner()
         .filter(|p| is_expression_rule(p.as_rule()))
         .map(|p| -> Result<ArrayElement, String> {
-            let val = walk_expression(p)?;
+            let val = walk_expression(__w, p)?;
             Ok(ArrayElement {
                 key: None,
                 value: val,
@@ -8732,7 +8738,7 @@ fn walk_array_inner(pair: Pair<Rule>) -> Result<ExprKind, String> {
     Ok(ExprKind::Array(elements))
 }
 
-fn walk_hash_inner(pair: Pair<Rule>) -> Result<ExprKind, String> {
+fn walk_hash_inner(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<ExprKind, String> {
     let mut props = Vec::new();
     for p in pair.into_inner() {
         if p.as_rule() == Rule::hash_pair {
@@ -8744,16 +8750,16 @@ fn walk_hash_inner(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     // Symbol shorthand: key: val
                     let key =
                         Expression::new(ExprKind::Lit(Literal::Str(first.as_str().to_string())));
-                    let val = walk_expression(children.into_iter().nth(1).unwrap())?;
+                    let val = walk_expression(__w, children.into_iter().nth(1).unwrap())?;
                     props.push(ObjectProperty::KeyValue { key, value: val });
                 } else {
-                    let key = walk_expression(children[0].clone())?;
-                    let val = walk_expression(children.into_iter().last().unwrap())?;
+                    let key = walk_expression(__w, children[0].clone())?;
+                    let val = walk_expression(__w, children.into_iter().last().unwrap())?;
                     props.push(ObjectProperty::KeyValue { key, value: val });
                 }
             } else if children.len() == 1 {
                 // **expr (double splat)
-                let val = walk_expression(children.into_iter().next().unwrap())?;
+                let val = walk_expression(__w, children.into_iter().next().unwrap())?;
                 props.push(ObjectProperty::Spread(val));
             }
         }
@@ -8763,7 +8769,7 @@ fn walk_hash_inner(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
 // ── Interpolated string ─────────────────────────────────────────────────────
 
-fn walk_interpolated_string(pair: Pair<Rule>) -> Result<ExprKind, String> {
+fn walk_interpolated_string(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<ExprKind, String> {
     let mut parts = Vec::new();
     for p in pair.into_inner() {
         match p.as_rule() {
@@ -8777,7 +8783,7 @@ fn walk_interpolated_string(pair: Pair<Rule>) -> Result<ExprKind, String> {
             Rule::interp_expr => {
                 for ip in p.into_inner() {
                     if is_expression_rule(ip.as_rule()) {
-                        parts.push(InterpolPart::Expr(walk_expression(ip)?));
+                        parts.push(InterpolPart::Expr(walk_expression(__w, ip)?));
                     }
                 }
             }
@@ -8808,18 +8814,18 @@ fn walk_interpolated_string(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
 // ── Lambda ──────────────────────────────────────────────────────────────────
 
-fn walk_lambda(pair: Pair<Rule>) -> Result<ExprKind, String> {
+fn walk_lambda(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<ExprKind, String> {
     let source = pair.as_str().to_string();
     let mut params = Vec::new();
     let mut body = Vec::new();
 
     for p in pair.into_inner() {
         match p.as_rule() {
-            Rule::param_list => params = walk_param_list(p)?,
-            Rule::body => body = walk_body(p)?,
+            Rule::param_list => params = walk_param_list(__w, p)?,
+            Rule::body => body = walk_body(__w, p)?,
             _ => {
                 // Statements in lambda brace body
-                let stmt = walk_statement(p)?;
+                let stmt = walk_statement(__w, p)?;
                 if !matches!(stmt.kind, StmtKind::Empty) {
                     body.push(stmt);
                 }
@@ -8833,7 +8839,7 @@ fn walk_lambda(pair: Pair<Rule>) -> Result<ExprKind, String> {
         if !inner.is_empty() && !inner.contains(';') && !inner.contains('\n') {
             if let Ok(mut parsed) = RubyParser::parse(Rule::expression, inner) {
                 if let Some(expr_pair) = parsed.next() {
-                    body = vec![Statement::new(StmtKind::Return(Some(walk_expression(
+                    body = vec![Statement::new(StmtKind::Return(Some(walk_expression(__w, 
                         expr_pair,
                     )?)))];
                 }
@@ -8850,10 +8856,10 @@ fn walk_lambda(pair: Pair<Rule>) -> Result<ExprKind, String> {
     Ok(ruby_proc_expr("__ruby_lambda", lambda).kind)
 }
 
-fn walk_proc(pair: Pair<Rule>) -> Result<ExprKind, String> {
+fn walk_proc(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<ExprKind, String> {
     for p in pair.into_inner() {
         if p.as_rule() == Rule::block_literal {
-            let lambda = walk_block_literal(p)?;
+            let lambda = walk_block_literal(__w, p)?;
             return Ok(ruby_proc_expr("__ruby_proc", lambda).kind);
         }
     }
@@ -8868,17 +8874,17 @@ fn walk_proc(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
 // ── Yield ───────────────────────────────────────────────────────────────────
 
-fn walk_yield(pair: Pair<Rule>) -> Result<ExprKind, String> {
+fn walk_yield(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<ExprKind, String> {
     let mut args = Vec::new();
     for p in pair.into_inner() {
         if p.as_rule() == Rule::expression_list {
             for ep in p.into_inner() {
                 if is_expression_rule(ep.as_rule()) {
-                    args.push(walk_expression(ep)?);
+                    args.push(walk_expression(__w, ep)?);
                 }
             }
         } else if is_expression_rule(p.as_rule()) {
-            args.push(walk_expression(p)?);
+            args.push(walk_expression(__w, p)?);
         }
     }
     // Ruby yield calls the block; emit as Yield for now
@@ -8906,11 +8912,11 @@ fn walk_yield(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
 // ── Defined? ────────────────────────────────────────────────────────────────
 
-fn walk_defined(pair: Pair<Rule>) -> Result<ExprKind, String> {
+fn walk_defined(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<ExprKind, String> {
     // defined?(expr) → check if expr is defined, simplify to !nil
     for p in pair.into_inner() {
         if is_expression_rule(p.as_rule()) {
-            let expr = walk_expression(p)?;
+            let expr = walk_expression(__w, p)?;
             return Ok(ExprKind::Binary {
                 op: BinOp::NotEq,
                 left: Box::new(expr),
@@ -8923,11 +8929,11 @@ fn walk_defined(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
 // ── Super ───────────────────────────────────────────────────────────────────
 
-fn walk_super(pair: Pair<Rule>) -> Result<ExprKind, String> {
+fn walk_super(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<ExprKind, String> {
     let mut args = Vec::new();
     for p in pair.into_inner() {
         if p.as_rule() == Rule::call_args {
-            args = walk_call_args(p)?;
+            args = walk_call_args(__w, p)?;
         }
     }
     Ok(ExprKind::SuperCall { method: None, args })
@@ -8935,8 +8941,8 @@ fn walk_super(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
 // ── If/Unless as expression ─────────────────────────────────────────────────
 
-fn walk_if_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
-    let kind = walk_if(pair)?;
+fn walk_if_expr(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<ExprKind, String> {
+    let kind = walk_if(__w, pair)?;
     // Wrap as a ternary-like expression
     if let StmtKind::If {
         cond,
@@ -8957,8 +8963,8 @@ fn walk_if_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
     }
 }
 
-fn walk_unless_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
-    let kind = walk_unless(pair)?;
+fn walk_unless_expr(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<ExprKind, String> {
+    let kind = walk_unless(__w, pair)?;
     if let StmtKind::If {
         cond,
         then_body,
@@ -8978,9 +8984,9 @@ fn walk_unless_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
     }
 }
 
-fn walk_begin_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
+fn walk_begin_expr(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<ExprKind, String> {
     // begin..rescue..end as expression — just walk the body
-    let kind = walk_begin(pair)?;
+    let kind = walk_begin(__w, pair)?;
     if let StmtKind::Try { body, .. } = kind {
         Ok(body_to_expr(body).kind)
     } else {
@@ -9003,19 +9009,19 @@ fn body_to_expr(mut stmts: Vec<Statement>) -> Expression {
 
 // ── Expression list ─────────────────────────────────────────────────────────
 
-fn walk_expr_list_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
+fn walk_expr_list_kind(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<ExprKind, String> {
     let inner: Vec<Pair<Rule>> = pair
         .into_inner()
         .filter(|p| is_expression_rule(p.as_rule()))
         .collect();
     if inner.len() == 1 {
-        walk_expr_kind(inner.into_iter().next().unwrap())
+        walk_expr_kind(__w, inner.into_iter().next().unwrap())
     } else if inner.is_empty() {
         Ok(ExprKind::Lit(Literal::Null))
     } else {
         let exprs = inner
             .into_iter()
-            .map(walk_expression)
+            .map(|__x| walk_expression(__w, __x))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(ExprKind::Array(
             exprs
@@ -9031,19 +9037,19 @@ fn walk_expr_list_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
     }
 }
 
-fn walk_expr_list_single(pair: Pair<Rule>) -> Result<Expression, String> {
+fn walk_expr_list_single(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<Expression, String> {
     let mut inner: Vec<Pair<Rule>> = pair
         .into_inner()
         .filter(|p| is_expression_rule(p.as_rule()))
         .collect();
     if inner.len() == 1 {
-        walk_expression(inner.remove(0))
+        walk_expression(__w, inner.remove(0))
     } else if inner.is_empty() {
         Ok(Expression::null())
     } else {
         let exprs = inner
             .into_iter()
-            .map(walk_expression)
+            .map(|__x| walk_expression(__w, __x))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Expression::new(ExprKind::Array(
             exprs

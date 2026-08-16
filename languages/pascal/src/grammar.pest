@@ -501,8 +501,16 @@ else_clause = { ^"else" ~ statement }
 // ── For ────────────────────────────────────────────────────────────────────────
 
 for_statement = {
-    ^"for" ~ for_binding ~ (^"to" | ^"downto") ~ expression ~ ^"do" ~ statement?
+    ^"for" ~ for_binding ~ for_direction ~ expression ~ ^"do" ~ statement?
 }
+
+// The count direction is a TOKEN, so the walker reads it from the parse tree.
+// It used to be recovered by searching the statement's source text for
+// " downto " — and that text includes the loop BODY, so a `downto` loop nested
+// inside a `to` loop silently flipped the OUTER loop's direction.
+// Atomic with a word-boundary guard so `to` cannot match the head of an
+// identifier (the pitfall `add_vybex_language.md` documents for bare strings).
+for_direction = @{ (^"downto" | ^"to") ~ !(ASCII_ALPHANUMERIC | "_") }
 
 for_binding = {
     ^"var" ~ identifier ~ (":" ~ type_ref)? ~ ":=" ~ expression

@@ -2171,6 +2171,98 @@ fn assign_result_expr(value: Expression) -> Statement {
     })
 }
 
+/// Pascal's classic result assignment: inside `function F`, `F := expr` IS the
+/// return value — `Result := expr` is the Delphi spelling of the same thing.
+/// Normalize the name form to `Result` so only ONE shape reaches the compiler.
+///
+/// Only the ASSIGNMENT TARGET is rewritten. `F` on the right-hand side is a
+/// recursive CALL in pascal, not a read of the result, and must stay one.
+/// Nested routine bodies are skipped: they cannot assign an outer routine's
+/// result, and their own name form is normalized when they are built.
+///
+/// This used to be handled only as an emit-time interception in the compiler
+/// (`statements.rs`, `current_func_name`), which is too late for a NESTED
+/// function. The closure-capture prescan runs on the AST, saw `B := …` as a
+/// reference to the enclosing binding `B`, and boxed it into the frame's env —
+/// so the closure's own store went to a raw local while every call read the
+/// never-written env cell: `null is not callable`, with the routine simply
+/// missing. Normalizing here means the name never appears as a variable at all.
+fn rewrite_pascal_result_name_assignments(fn_name: &str, body: &mut [Statement]) {
+    for stmt in body {
+        rewrite_pascal_result_name_assignments_stmt(fn_name, stmt);
+    }
+}
+
+fn rewrite_pascal_result_name_assignments_stmt(fn_name: &str, stmt: &mut Statement) {
+    match &mut stmt.kind {
+        StmtKind::Assign { targets, .. } => {
+            for target in targets {
+                if matches!(&target.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case(fn_name))
+                {
+                    target.kind = ExprKind::Ident("Result".to_string());
+                }
+            }
+        }
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            rewrite_pascal_result_name_assignments(fn_name, body);
+        }
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
+            rewrite_pascal_result_name_assignments(fn_name, then_body);
+            for (_, body) in elifs {
+                rewrite_pascal_result_name_assignments(fn_name, body);
+            }
+            if let Some(body) = else_body {
+                rewrite_pascal_result_name_assignments(fn_name, body);
+            }
+        }
+        StmtKind::While {
+            body, else_body, ..
+        } => {
+            rewrite_pascal_result_name_assignments(fn_name, body);
+            if let Some(body) = else_body {
+                rewrite_pascal_result_name_assignments(fn_name, body);
+            }
+        }
+        StmtKind::DoWhile { body, .. }
+        | StmtKind::For { body, .. }
+        | StmtKind::ForIn { body, .. }
+        | StmtKind::With { body, .. } => {
+            rewrite_pascal_result_name_assignments(fn_name, body);
+        }
+        StmtKind::Switch { cases, default, .. } => {
+            for case in cases {
+                rewrite_pascal_result_name_assignments(fn_name, &mut case.body);
+            }
+            if let Some(body) = default {
+                rewrite_pascal_result_name_assignments(fn_name, body);
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            rewrite_pascal_result_name_assignments(fn_name, body);
+            for catch in catches {
+                rewrite_pascal_result_name_assignments(fn_name, &mut catch.body);
+            }
+            if let Some(body) = else_body {
+                rewrite_pascal_result_name_assignments(fn_name, body);
+            }
+            if let Some(body) = finally {
+                rewrite_pascal_result_name_assignments(fn_name, body);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn rewrite_pascal_array_alias_return_types(
     body: &mut [Statement],
     aliases: &std::collections::HashMap<String, String>,
@@ -37365,6 +37457,12 @@ fn walk_method_impl_func(pair: Pair<Rule>, span: Span) -> Result<Statement, Stri
 
     let is_generator = body_has_yield(&body);
 
+    // `Bar := expr` inside `function TFoo.Bar: Integer` — the same idiom, and
+    // the method's own UNQUALIFIED name is what the body writes.
+    if return_type.is_some() {
+        rewrite_pascal_result_name_assignments(&method_name, &mut body);
+    }
+
     Ok(Statement::with_span(
         StmtKind::FunctionDecl {
             name: format!("{}.{}", class_name, method_name),
@@ -37567,6 +37665,12 @@ fn walk_standalone_function(pair: Pair<Rule>, span: Span) -> Result<Statement, S
     }
 
     let is_generator = body_has_yield(&body);
+
+    // `F := expr` → `Result := expr`. Only a routine WITH a return type has a
+    // result to assign; in a procedure the name form is not legal pascal.
+    if return_type.is_some() {
+        rewrite_pascal_result_name_assignments(&name, &mut body);
+    }
 
     Ok(Statement::with_span(
         StmtKind::FunctionDecl {
@@ -37888,12 +37992,15 @@ fn walk_if_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
 // ── For ────────────────────────────────────────────────────────────────────
 
 fn walk_for_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
-    let src = pair.as_str().to_lowercase();
-    let is_downto = src.contains(" downto ");
-
     let mut parts: Vec<Pair<Rule>> = pair.into_inner().collect();
     let binding = parts.remove(0);
     let (var_name, type_hint, start_expr) = walk_for_binding(binding)?;
+    // From the `for_direction` TOKEN, not from the statement's source text:
+    // `pair.as_str()` spans the loop BODY too, so `for i := 1 to 2 do
+    // for j := 2 downto 1 do …` used to make the OUTER loop count DOWN
+    // (`i := 1; while i >= 2`) and run zero iterations — the whole nest
+    // vanished with no error.
+    let is_downto = parts.remove(0).as_str().eq_ignore_ascii_case("downto");
     let end_expr = walk_expression(parts.remove(0))?; // end expression
     let body_stmt = if parts.is_empty() {
         Statement::new(StmtKind::Empty)
@@ -40244,10 +40351,11 @@ struct PascalFileInfo {
 }
 
 fn lower_pascal_file_io(body: &mut Vec<Statement>) {
-    static NEXT_PASCAL_FILE_HANDLE: std::sync::atomic::AtomicI64 =
-        std::sync::atomic::AtomicI64::new(10_000);
-    let mut next_handle =
-        NEXT_PASCAL_FILE_HANDLE.fetch_add(1_000, std::sync::atomic::Ordering::Relaxed);
+    // Per PROGRAM, not per process. Handles only have to be distinct WITHIN a
+    // program — each one compiles against its own VM — so a fixed base is both
+    // correct and deterministic, where the process counter made the same source
+    // lower to different handles depending on what compiled before it.
+    let mut next_handle: i64 = 10_000;
     let mut scope = std::collections::HashMap::new();
     let mut aliases = std::collections::HashMap::new();
     lower_pascal_file_io_body(body, &mut next_handle, &mut scope, &mut aliases);
