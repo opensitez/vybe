@@ -273,6 +273,32 @@ pub enum CommandValue {
     Runs(Vec<InlineRun>),
 }
 
+/// The toolkit cursor a CSS `cursor` keyword asks for.
+///
+/// Lives here rather than beside the enum so that `css` stays a description of
+/// a stylesheet and takes no dependency on a windowing library — the cascade
+/// has no opinion about winit, and a second backend would map the same keywords
+/// its own way.
+impl crate::css::Cursor {
+    pub fn icon(self) -> CursorIcon {
+        use crate::css::Cursor;
+        match self {
+            // `auto` is "the UA decides", and over text that decision is the
+            // I-beam — but a box is not necessarily text, so the neutral answer
+            // is the default arrow and `text` says the other explicitly.
+            Cursor::Auto | Cursor::Default => CursorIcon::Default,
+            Cursor::Pointer => CursorIcon::Pointer,
+            Cursor::Text => CursorIcon::Text,
+            Cursor::Move => CursorIcon::Move,
+            Cursor::NotAllowed => CursorIcon::NotAllowed,
+            Cursor::Wait => CursorIcon::Wait,
+            Cursor::Help => CursorIcon::Help,
+            Cursor::Crosshair => CursorIcon::Crosshair,
+            Cursor::Grab => CursorIcon::Grab,
+        }
+    }
+}
+
 /// **A styled span of a box's text** — wxhtmledit's `InlineRun`.
 ///
 /// The thing that makes `a <strong>b</strong> c` one line of mixed text rather
@@ -290,6 +316,45 @@ pub struct InlineRun {
     pub text: String,
     pub font: crate::ide_text::FontSpec,
     pub color: (u8, u8, u8, u8),
+    /// **Which element this run came from**, by name — `None` for the box's own
+    /// text, which belongs to nobody but the box.
+    ///
+    /// A run has no rect and no widget, so without this there is nothing for a
+    /// click to land on: an `<a>` dissolved into its parent's line renders
+    /// correctly and stops being clickable, silently. Carrying the source name
+    /// is what lets [`FlowLayoutPanel`](crate::flow_layout::FlowLayoutPanel)
+    /// hit-test a point back to the element and report it — the same name
+    /// `WidgetEvent::LinkClicked` already carries, so the DOM side needs
+    /// nothing new to turn it into a `click`.
+    ///
+    /// Deliberately the source element and not "is a link": a `<span>` with a
+    /// listener is as clickable as an `<a>`, and which of them is interactive
+    /// is the DOM's question, not the painter's.
+    pub source: Option<String>,
+    /// **An ATOMIC inline-level box occupying this slot** — the child widget's
+    /// name, or `None` for an ordinary text run.
+    ///
+    /// wxhtmledit's `InlineRun::atomicBox`. An `<input>` beside a `<label>` is
+    /// inline-level, so it belongs on the same LINE as the label's text — but a
+    /// widget is not text and cannot be shaped. Carrying it as a run with no
+    /// text is what puts it in the sequence: the line walk advances by the
+    /// widget's own width where this is set, and by the shaped advance where it
+    /// is not.
+    ///
+    /// Without it the two are placed by mechanisms that have never heard of
+    /// each other — the text painted at the content origin, the widget laid out
+    /// from the same origin — so a `<label>` renders on top of the field it
+    /// labels.
+    pub atomic: Option<String>,
+    /// `cursor`, resolved — carried for the same reason `color` is.
+    ///
+    /// A run has no widget to answer `cursor_at`, so without this a link in
+    /// flow shows an arrow while the same link positioned by a designer shows a
+    /// hand. Carrying the CASCADED value is what keeps the painter from having
+    /// to know what a link is: hard-coding "runs are hands" would make every
+    /// `<span>` a hand, and `a { cursor: pointer }` in the UA sheet says it
+    /// once, for the one element it is true of.
+    pub cursor: Option<crate::css::Cursor>,
 }
 
 /// Read a `Custom` command payload as a number. Commands cross the host

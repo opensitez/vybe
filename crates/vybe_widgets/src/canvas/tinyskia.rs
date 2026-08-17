@@ -38,15 +38,19 @@
 //! transform.
 
 use tiny_skia::{
-    FillRule, FilterQuality, LineCap as TsLineCap, LineJoin as TsLineJoin, Mask, Paint, Path,
-    PathBuilder, Pixmap, PixmapPaint, PixmapRef, Stroke as TsStroke, Transform,
+    FillRule, FilterQuality, GradientStop, LinearGradient, Mask, Paint, Path, PathBuilder, Pixmap,
+    PixmapPaint, PixmapRef, Point as TsPoint, RadialGradient, SpreadMode, Stroke as TsStroke,
+    Transform, LineCap as TsLineCap, LineJoin as TsLineJoin,
 };
 
 use cosmic_text::{
     Attrs, Buffer, Color as CosmicColor, Family, FontSystem, Metrics, Shaping, SwashCache,
 };
 
-use super::{Canvas, Color, Font, FontStyle, FontWeight, Image, LineCap, LineJoin};
+use super::{
+    Canvas, Color, Font, FontStyle, FontWeight, GradientKind, Image, LineCap, LineJoin,
+    Paint as CanvasPaint, Repetition,
+};
 
 /// `Canvas` impl that paints into a `tiny_skia::Pixmap`.
 ///
@@ -93,8 +97,8 @@ struct TextCtx<'a> {
 
 #[derive(Clone)]
 struct PaintState {
-    fill: Color,
-    stroke: Color,
+    fill: CanvasPaint,
+    stroke: CanvasPaint,
     line_width: f32,
     line_cap: LineCap,
     line_join: LineJoin,
@@ -112,8 +116,8 @@ struct PaintState {
 impl Default for PaintState {
     fn default() -> Self {
         Self {
-            fill: Color::BLACK,
-            stroke: Color::BLACK,
+            fill: CanvasPaint::Color(Color::BLACK),
+            stroke: CanvasPaint::Color(Color::BLACK),
             line_width: 1.0,
             line_cap: LineCap::Butt,
             line_join: LineJoin::Miter,
@@ -197,35 +201,37 @@ impl<'a> TinySkiaCanvas<'a> {
         (max_w, total_h)
     }
 
-    /// Build a `tiny_skia::Paint` from the current fill colour and
-    /// global alpha.
-    fn fill_paint(&self) -> Paint<'static> {
+    /// Build a `tiny_skia::Paint` from the current fill style and global alpha.
+    ///
+    /// A free function over the STATE rather than a method on `self`, and the
+    /// lifetime is why: a pattern's shader borrows the image bytes, so the
+    /// paint cannot be `'static`. Borrowing only `state` lets the call sites
+    /// hold the paint and `&mut self.pixmap` at once — disjoint fields, which
+    /// a method taking `&self` would have merged into one borrow of the whole
+    /// canvas.
+    fn fill_paint(state: &PaintState) -> Paint<'_> {
         let mut p = Paint::default();
-        let c = apply_alpha(self.state.fill, self.state.global_alpha);
-        p.set_color_rgba8(c.r, c.g, c.b, c.a);
+        apply_canvas_paint(&mut p, &state.fill, state.global_alpha);
         p.anti_alias = true;
         p
     }
 
     /// Build a `tiny_skia::Paint` + `Stroke` from the current stroke
-    /// colour, line width, caps, joins, miter limit, dash, and global alpha.
-    fn stroke_paint(&self) -> (Paint<'static>, TsStroke) {
+    /// style, line width, caps, joins, miter limit, dash, and global alpha.
+    fn stroke_paint(state: &PaintState) -> (Paint<'_>, TsStroke) {
         let mut p = Paint::default();
-        let c = apply_alpha(self.state.stroke, self.state.global_alpha);
-        p.set_color_rgba8(c.r, c.g, c.b, c.a);
+        apply_canvas_paint(&mut p, &state.stroke, state.global_alpha);
         p.anti_alias = true;
         let mut stroke = TsStroke {
-            width: self.state.line_width,
-            line_cap: line_cap_to_ts(self.state.line_cap),
-            line_join: line_join_to_ts(self.state.line_join),
-            miter_limit: self.state.miter_limit,
+            width: state.line_width,
+            line_cap: line_cap_to_ts(state.line_cap),
+            line_join: line_join_to_ts(state.line_join),
+            miter_limit: state.miter_limit,
             ..TsStroke::default()
         };
-        if !self.state.dash_intervals.is_empty() {
-            stroke.dash = tiny_skia::StrokeDash::new(
-                self.state.dash_intervals.clone(),
-                self.state.dash_offset,
-            );
+        if !state.dash_intervals.is_empty() {
+            stroke.dash =
+                tiny_skia::StrokeDash::new(state.dash_intervals.clone(), state.dash_offset);
         }
         (p, stroke)
     }
@@ -242,10 +248,16 @@ impl<'a> Canvas for TinySkiaCanvas<'a> {
     // ─── Paint state ────────────────────────────────────────────────────
 
     fn set_fill_color(&mut self, color: Color) {
-        self.state.fill = color;
+        self.state.fill = CanvasPaint::Color(color);
     }
     fn set_stroke_color(&mut self, color: Color) {
-        self.state.stroke = color;
+        self.state.stroke = CanvasPaint::Color(color);
+    }
+    fn set_fill_paint(&mut self, paint: &CanvasPaint) {
+        self.state.fill = paint.clone();
+    }
+    fn set_stroke_paint(&mut self, paint: &CanvasPaint) {
+        self.state.stroke = paint.clone();
     }
     fn set_line_width(&mut self, width: f32) {
         self.state.line_width = width.max(0.0);
@@ -363,20 +375,32 @@ impl<'a> Canvas for TinySkiaCanvas<'a> {
     // ─── Drawing ────────────────────────────────────────────────────────
 
     fn fill(&mut self) {
+        self.fill_with_rule(super::FillRule::NonZero);
+    }
+
+    fn fill_with_rule(&mut self, rule: super::FillRule) {
         if let Some(path) = self.take_path() {
-            let paint = self.fill_paint();
-            let mask = self.clip_mask.as_ref();
-            self.pixmap
-                .fill_path(&path, &paint, FillRule::Winding, self.state.transform, mask);
+            let paint = Self::fill_paint(&self.state);
+            self.pixmap.fill_path(
+                &path,
+                &paint,
+                rule.to_tiny_skia(),
+                self.state.transform,
+                self.clip_mask.as_ref(),
+            );
         }
     }
 
     fn stroke(&mut self) {
         if let Some(path) = self.take_path() {
-            let (paint, stroke) = self.stroke_paint();
-            let mask = self.clip_mask.as_ref();
-            self.pixmap
-                .stroke_path(&path, &paint, &stroke, self.state.transform, mask);
+            let (paint, stroke) = Self::stroke_paint(&self.state);
+            self.pixmap.stroke_path(
+                &path,
+                &paint,
+                &stroke,
+                self.state.transform,
+                self.clip_mask.as_ref(),
+            );
         }
     }
 
@@ -388,10 +412,14 @@ impl<'a> Canvas for TinySkiaCanvas<'a> {
         pb.line_to(x, y + h);
         pb.close();
         if let Some(path) = pb.finish() {
-            let paint = self.fill_paint();
-            let mask = self.clip_mask.as_ref();
-            self.pixmap
-                .fill_path(&path, &paint, FillRule::Winding, self.state.transform, mask);
+            let paint = Self::fill_paint(&self.state);
+            self.pixmap.fill_path(
+                &path,
+                &paint,
+                FillRule::Winding,
+                self.state.transform,
+                self.clip_mask.as_ref(),
+            );
         }
     }
 
@@ -403,10 +431,14 @@ impl<'a> Canvas for TinySkiaCanvas<'a> {
         pb.line_to(x, y + h);
         pb.close();
         if let Some(path) = pb.finish() {
-            let (paint, stroke) = self.stroke_paint();
-            let mask = self.clip_mask.as_ref();
-            self.pixmap
-                .stroke_path(&path, &paint, &stroke, self.state.transform, mask);
+            let (paint, stroke) = Self::stroke_paint(&self.state);
+            self.pixmap.stroke_path(
+                &path,
+                &paint,
+                &stroke,
+                self.state.transform,
+                self.clip_mask.as_ref(),
+            );
         }
     }
 
@@ -451,7 +483,11 @@ impl<'a> Canvas for TinySkiaCanvas<'a> {
         buf.set_text(tc.font_system, text, &attrs, Shaping::Advanced, None);
         buf.shape_until_scroll(tc.font_system, false);
 
-        let fill = apply_alpha(self.state.fill, self.state.global_alpha);
+        // Glyphs are rasterised through cosmic-text, which takes ONE colour —
+        // it has no shader. A gradient-filled string therefore paints in the
+        // gradient's first stop. Visible and wrong in an obvious way, rather
+        // than invisible: painting it transparent would delete the text.
+        let fill = apply_alpha(self.state.fill.as_flat_color(), self.state.global_alpha);
         let cosmic_color = CosmicColor::rgba(fill.r, fill.g, fill.b, fill.a);
 
         // Apply transform to the coordinates
@@ -511,13 +547,18 @@ impl<'a> Canvas for TinySkiaCanvas<'a> {
         // matches what most lightweight canvas libs do; a real
         // implementation would tessellate each glyph's outline and
         // stroke the resulting path.
-        let saved_fill = self.state.fill;
-        self.state.fill = self.state.stroke;
+        let saved_fill = self.state.fill.clone();
+        self.state.fill = self.state.stroke.clone();
         self.fill_text(text, x, y);
         self.state.fill = saved_fill;
     }
 
     fn clip(&mut self) {
+        self.clip_with_rule(super::FillRule::NonZero);
+    }
+
+    fn clip_with_rule(&mut self, rule: super::FillRule) {
+        let ts_rule = rule.to_tiny_skia();
         if let Some(path) = self.take_path() {
             // Rasterise the path into a fresh Mask the size of the
             // pixmap, then store it as the active clip. Subsequent
@@ -528,11 +569,11 @@ impl<'a> Canvas for TinySkiaCanvas<'a> {
                 Some(m) => m,
                 None => return,
             };
-            mask.fill_path(&path, FillRule::Winding, true, self.state.transform);
+            mask.fill_path(&path, ts_rule, true, self.state.transform);
             // If there's already a clip mask, intersect them. tiny-skia's
             // Mask::intersect_path is the natural primitive for this.
             if let Some(existing) = self.clip_mask.as_mut() {
-                existing.intersect_path(&path, FillRule::Winding, true, self.state.transform);
+                existing.intersect_path(&path, ts_rule, true, self.state.transform);
             } else {
                 self.clip_mask = Some(mask);
             }
@@ -655,6 +696,126 @@ impl<'a> Canvas for TinySkiaCanvas<'a> {
 fn apply_alpha(color: Color, alpha: f32) -> Color {
     let a = (color.a as f32 * alpha.clamp(0.0, 1.0)).round() as u8;
     Color { a, ..color }
+}
+
+/// Set a `tiny_skia::Paint`'s shader from a canvas `fillStyle`/`strokeStyle`.
+///
+/// A colour becomes a flat shader; a gradient and a pattern become real
+/// tiny-skia shaders, so this is where `createLinearGradient` stops being a
+/// recorded intent and starts painting pixels.
+///
+/// `global_alpha` multiplies into every stop rather than being applied once at
+/// the end, because tiny-skia has no paint-level opacity for gradients — the
+/// alpha has to travel in the colours.
+fn apply_canvas_paint<'a>(paint: &mut Paint<'a>, style: &'a CanvasPaint, global_alpha: f32) {
+    match style {
+        CanvasPaint::Color(color) => {
+            let c = apply_alpha(*color, global_alpha);
+            paint.set_color_rgba8(c.r, c.g, c.b, c.a);
+        }
+        CanvasPaint::Gradient(gradient) => {
+            let stops: Vec<GradientStop> = gradient
+                .sorted_stops()
+                .iter()
+                .map(|stop| {
+                    let c = apply_alpha(stop.color, global_alpha);
+                    GradientStop::new(stop.offset, c.to_tiny_skia())
+                })
+                .collect();
+
+            // A gradient with no stops paints NOTHING — the spec is explicit
+            // that it is transparent black, not an error and not a default
+            // colour. One stop is a flat fill of that colour, which is also
+            // what tiny-skia would refuse to build a shader for.
+            if stops.is_empty() {
+                paint.set_color_rgba8(0, 0, 0, 0);
+                return;
+            }
+            if stops.len() == 1 {
+                let c = apply_alpha(gradient.stops[0].color, global_alpha);
+                paint.set_color_rgba8(c.r, c.g, c.b, c.a);
+                return;
+            }
+
+            // `SpreadMode::Pad` is the spec's behaviour: outside the 0..1
+            // range the end stops extend, they do not repeat or mirror.
+            let shader = match gradient.kind {
+                GradientKind::Linear { x0, y0, x1, y1 } => LinearGradient::new(
+                    TsPoint::from_xy(x0, y0),
+                    TsPoint::from_xy(x1, y1),
+                    stops,
+                    SpreadMode::Pad,
+                    Transform::identity(),
+                ),
+                // tiny-skia's radial gradient is the TWO-CIRCLE form — start
+                // circle, end circle, a radius each — which is exactly what
+                // `createRadialGradient(x0,y0,r0,x1,y1,r1)` specifies, `r0`
+                // included. So an annular gradient and an off-centre highlight
+                // are both expressible, not approximated.
+                //
+                // It answers `None` for a degenerate pair (equal centres AND
+                // equal radii), which the spec also paints as nothing; the
+                // fallback below keeps the shape visible in that case.
+                GradientKind::Radial {
+                    x0,
+                    y0,
+                    r0,
+                    x1,
+                    y1,
+                    r1,
+                } => RadialGradient::new(
+                    TsPoint::from_xy(x0, y0),
+                    r0,
+                    TsPoint::from_xy(x1, y1),
+                    r1,
+                    stops,
+                    SpreadMode::Pad,
+                    Transform::identity(),
+                ),
+                // ⚠ tiny-skia has NO conic gradient. Falling back to the first
+                // stop keeps the shape visible and the wrongness obvious in a
+                // capture, which is the honest degradation — a transparent
+                // fill would make the shape vanish and look like a layout bug.
+                GradientKind::Conic { .. } => None,
+            };
+
+            match shader {
+                Some(shader) => paint.shader = shader,
+                None => {
+                    let c = apply_alpha(gradient.stops[0].color, global_alpha);
+                    paint.set_color_rgba8(c.r, c.g, c.b, c.a);
+                }
+            }
+        }
+        CanvasPaint::Pattern(pattern) => {
+            let Some(pixmap) = PixmapRef::from_bytes(
+                &pattern.image.pixels,
+                pattern.image.width,
+                pattern.image.height,
+            ) else {
+                paint.set_color_rgba8(0, 0, 0, 0);
+                return;
+            };
+            // ⚠ `repeat-x` / `repeat-y` cannot be expressed: tiny-skia's
+            // spread mode is one setting for both axes, so a one-axis
+            // repetition tiles in both. `no-repeat` is `Pad`, which extends
+            // the edge pixels rather than leaving transparency — visible, and
+            // closer than tiling would be.
+            let spread = match pattern.repetition {
+                Repetition::Repeat | Repetition::RepeatX | Repetition::RepeatY => {
+                    SpreadMode::Repeat
+                }
+                Repetition::NoRepeat => SpreadMode::Pad,
+            };
+            paint.shader = tiny_skia::Pattern::new(
+                pixmap,
+                spread,
+                FilterQuality::Nearest,
+                global_alpha.clamp(0.0, 1.0),
+                Transform::identity(),
+            );
+        }
+    }
 }
 
 fn line_cap_to_ts(cap: LineCap) -> TsLineCap {

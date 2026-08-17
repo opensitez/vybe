@@ -264,6 +264,20 @@ impl crate::selector::Element for ElementRef<'_> {
             .unwrap_or_default()
     }
 
+    fn state(&self, name: &str) -> bool {
+        let Some((hover, checked)) = self.doc.states.get(&self.node) else {
+            return false;
+        };
+        match name {
+            "hover" => *hover,
+            "checked" => *checked,
+            // Only what the parser accepts can reach here; anything else is a
+            // state this tree cannot answer, and `false` is the honest answer
+            // for a condition that was never observed.
+            _ => false,
+        }
+    }
+
     fn attribute(&self, name: &str) -> Option<String> {
         // `style` is not in the attribute map — the declaration store IS its
         // storage, and `get_attribute` serialises it on demand. A selector has
@@ -308,6 +322,22 @@ impl crate::selector::Element for ElementRef<'_> {
         Some(ElementRef {
             doc: self.doc,
             node: previous,
+        })
+    }
+
+    fn next_sibling(&self) -> Option<Self> {
+        let parent = self.doc.node(self.node)?.parent?;
+        let siblings = self.doc.child_nodes(parent);
+        let index = siblings.iter().position(|c| *c == self.node)?;
+        // Elements only — a text node between two boxes is not a sibling any
+        // selector can see, which is the same rule `previous_sibling` applies
+        // going the other way.
+        let next = *siblings[index + 1..]
+            .iter()
+            .find(|id| self.doc.is_element(**id))?;
+        Some(ElementRef {
+            doc: self.doc,
+            node: next,
         })
     }
 }
@@ -368,6 +398,24 @@ pub struct Document {
     /// The document element. A form's controls are the body's children, and
     /// `form.title` is `document.title` — not a copy of it.
     form: Form,
+    /// **Live pseudo-class state, as the cascade last saw it** — `:hover` and
+    /// `:checked` per node.
+    ///
+    /// A cache rather than a live query, for two reasons that happen to agree.
+    /// Matching is `&self` (a selector is matched against an `ElementRef`) and
+    /// asking a widget needs `&mut` — there is no immutable widget traversal,
+    /// only `children_mut`. And a state that changed has to RESTYLE the
+    /// element, which a query at match time could never notice: the cascade
+    /// caches computed values, so `a:hover` would apply only on whatever pass
+    /// happened to run next.
+    ///
+    /// So the state is pulled on a `&mut` sweep, compared against what is here,
+    /// and a difference both updates this map and re-runs that element's
+    /// cascade. One mechanism answers the selector and invalidates it.
+    states: HashMap<NodeId, (bool, bool)>,
+    /// Whether the stylesheet contains a selector that depends on sibling
+    /// position, so a structural change has to restyle the siblings too.
+    positional_rules: bool,
     nodes: HashMap<NodeId, DomNode>,
     /// Creation order, which is tree order for `getElementById`'s "first
     /// match" and for walking the document.
@@ -431,6 +479,8 @@ pub struct Document {
     /// separate paint pass is what makes that true here rather than
     /// approximately true.
     top_layer: Vec<NodeId>,
+    /// `document.body`, as an ELEMENT. See [`Document::body`].
+    body: Option<NodeId>,
 }
 
 impl Document {
@@ -465,8 +515,10 @@ impl Document {
         // percentage layout both need a containing block, and `window.open`
         // overrides it from the `features` string.
         <Form as PanelWidget>::set_rect(&mut form, LayoutRect::new(0.0, 0.0, 800.0, 600.0));
-        Document {
+        let mut document = Document {
             form,
+            states: HashMap::new(),
+            positional_rules: false,
             nodes: HashMap::new(),
             order: Vec::new(),
             next_id: 0,
@@ -479,6 +531,84 @@ impl Document {
             inline_content: HashMap::new(),
             empty_computed: crate::css::CssProperties::default(),
             top_layer: Vec::new(),
+            body: None,
+        };
+        // **`<html>`, `<head>` and `<body>` always exist** — HTML tree
+        // construction inserts all three when the markup omits them, which is
+        // why `<p>hi` is a complete document. A page that never writes them is
+        // the common case, not the degenerate one.
+        //
+        // They are created HERE, rather than only when a parser sees the tags,
+        // because `document.body` answered the DOCUMENT node itself when no
+        // body element existed. That conflation is what made the root a special
+        // case: the document is not a box, so it could not run a formatting
+        // context, and everything appended to `body` had to be laid out by hand
+        // (`relayout_body`) instead of by the flow every other block box uses.
+        // With a real element there, `body` is an ordinary block container and
+        // the root stops being different from a `<div>`.
+        let html = document.create_element("html", "");
+        document.append_child(DOCUMENT, html);
+        let head = document.create_element("head", "");
+        document.append_child(html, head);
+        let body = document.create_element("body", "");
+        document.append_child(html, body);
+        document.body = Some(body);
+        // **The root boxes start at zero inset.** `FlowLayoutPanel` gives
+        // itself 4px of padding as a widget affordance — sensible for a panel
+        // someone drops on a form, wrong for the initial containing block,
+        // where it silently shrinks the content width and every percentage
+        // resolved against it (a block filled 792 of an 800px viewport).
+        //
+        // The browser's own `body { margin: 8px }` is a UA DECLARATION, not a
+        // widget default, and belongs in `ua.rs` where it can be overridden by
+        // a stylesheet the way it is in a browser.
+        for root in [html, head, body] {
+            document.command(
+                root,
+                &WidgetCommand::Custom("SetPadding".into(), CommandValue::Number(0.0)),
+            );
+        }
+        document.fit_body_to_viewport();
+        document
+    }
+
+    /// `document.body` — the element, never the document.
+    ///
+    /// Always `Some` for an HTML document: [`Document::new`] runs the tree
+    /// construction that guarantees it. Returned as an `Option` only because an
+    /// XML document has no body, and answering the root there would recreate
+    /// exactly the conflation this exists to remove.
+    pub fn body(&self) -> Option<NodeId> {
+        self.body
+    }
+
+    /// Where a node addressed to the DOCUMENT actually goes: the **body**.
+    ///
+    /// Tree construction puts content in the body when the markup omits the
+    /// tags, and a browser refuses outright to give a Document a second element
+    /// child — `document.appendChild(<p>)` is a `HierarchyRequestError`. So a
+    /// caller that says "the document" means the body, and this is the one
+    /// place that says so.
+    ///
+    /// `<html>`, `<head>` and `<body>` are the exception: they ARE the
+    /// document's structure, so a parser that spells them out is obeyed.
+    ///
+    /// Shared by every mutation rather than applied at `insert_before` alone —
+    /// `remove_child` and `replace_child` unlink from the parent they are
+    /// GIVEN, so a redirect on the way in and not on the way out would leave a
+    /// node linked into the body and unlinked from the document, which is a
+    /// tree that disagrees with itself.
+    fn content_parent(&self, parent: NodeId, child: NodeId) -> NodeId {
+        if parent != DOCUMENT {
+            return parent;
+        }
+        let structural = self
+            .node(child)
+            .map(|n| matches!(n.tag.as_str(), "html" | "head" | "body"))
+            .unwrap_or(false);
+        match (structural, self.body) {
+            (false, Some(body)) => body,
+            _ => parent,
         }
     }
 
@@ -499,6 +629,31 @@ impl Document {
     pub fn set_viewport(&mut self, width: f32, height: f32) {
         let r = self.form.rect();
         <Form as PanelWidget>::set_rect(&mut self.form, LayoutRect::new(r.x, r.y, width, height));
+        self.fit_body_to_viewport();
+    }
+
+    /// `<html>` and `<body>` FILL the viewport.
+    ///
+    /// The initial containing block is the viewport, and the root boxes take
+    /// their width from it — so every percentage, every `right`/`bottom` anchor
+    /// and every block that fills its container resolves against the window and
+    /// not against a panel's default size. Without this the body kept
+    /// `FlowLayoutPanel`'s own default, and content that used to resolve
+    /// against the viewport (because it hung off the document directly)
+    /// silently started resolving against a 300x200 box.
+    fn fit_body_to_viewport(&mut self) {
+        let viewport = self.form.rect();
+        let roots: Vec<NodeId> = self
+            .body
+            .into_iter()
+            .chain(self.body.and_then(|b| self.node(b).and_then(|n| n.parent)))
+            .filter(|node| *node != DOCUMENT)
+            .collect();
+        for node in roots {
+            if let Some(widget) = self.widget_mut(node) {
+                widget.set_rect(LayoutRect::new(0.0, 0.0, viewport.w, viewport.h));
+            }
+        }
     }
 
     /// Paint the document. This is the whole of what a host needs to show a
@@ -1006,6 +1161,10 @@ impl Document {
             underline: false,
             line_through: false,
             line_height: None,
+            // Canvas text has no CSS box, so no `letter-spacing` reaches it —
+            // `ctx.letterSpacing` is a separate canvas attribute this does not
+            // implement yet.
+            letter_spacing: 0.0,
         };
         // Scale 1.0: the canvas coordinate system is CSS pixels, and the
         // device scale is applied when the recording is replayed onto a
@@ -1222,6 +1381,107 @@ impl Document {
         }
     }
 
+    /// Rebuild a node's control from what the node says it is **now**.
+    ///
+    /// [`Document::create_element`] decides the kind once, from an `input_type`
+    /// only a caller who already knows the type can pass. The DOM's
+    /// `createElement` has no such argument: `document.createElement("input")`
+    /// followed by `setAttribute("type", "checkbox")` is how every script
+    /// builds a control, and nothing here listened — so the element kept the
+    /// text box it was born as and EVERY scripted input was a text field,
+    /// whatever it claimed to be. HTML §4.10.5.3 makes a type change a change
+    /// to the control itself, not to a label on it.
+    ///
+    /// The node, its id and its widget NAME all survive. Lookups go through
+    /// `widget_name(id)`, so keeping the name is what keeps every reference —
+    /// event wiring included — resolving to the control that replaced the old
+    /// one.
+    fn realize_control(&mut self, node: NodeId) {
+        let Some(n) = self.node(node) else {
+            return;
+        };
+        let (tag, input_type) = (n.tag.clone(), n.input_type.clone());
+        let parent = n.parent;
+        // Read across the swap, not after it: the old control is the only
+        // thing holding these and it is about to be dropped.
+        let text = self.text_content(node);
+        let previous = self.rect(node);
+
+        let kind = control_kind(&tag, &input_type);
+        let (w, h) = default_size(kind, &tag);
+        let mut widget = make_widget(kind, &Self::widget_name(node), &text, w, h);
+        let (w, h) = if renders_nothing(&tag, &input_type) {
+            (0.0, 0.0)
+        } else {
+            (w, h)
+        };
+        // The control keeps its POSITION and takes the new kind's size — a
+        // swatch is not a text box's width, and moving it to the origin would
+        // be a layout change nobody asked for. A control that was never laid
+        // out has no position to keep.
+        let origin = previous.unwrap_or(LayoutRect::zero());
+        widget.set_rect(LayoutRect::new(origin.x, origin.y, w, h));
+        drop(self.extract_widget(node));
+        self.detached.insert(node, widget);
+
+        // Put it back where the old one stood. Re-entering `insert_before` is
+        // what makes this one insertion path rather than two: docking,
+        // margins, out-of-flow positioning and the container's own layout are
+        // all decided there, and a second copy of that reasoning would drift.
+        if let Some(parent) = parent {
+            let siblings = self.child_nodes(parent);
+            let next = siblings
+                .iter()
+                .position(|c| *c == node)
+                .and_then(|i| siblings.get(i + 1).copied());
+            self.unlink_child(parent, node);
+            if let Some(n) = self.nodes.get_mut(&node) {
+                n.parent = None;
+            }
+            self.insert_before(parent, node, next);
+        }
+
+        // **`restyle_subtree` would do nothing here.** It applies what CHANGED,
+        // and nothing about the cascade changed — the new control has simply
+        // never been told any of it. Diffing against a blank set is what makes
+        // "everything this element computes to" the change, which is the same
+        // trick a first cascade plays on an element that has just been born.
+        let computed = self.computed_style(node).clone();
+        self.resolve_box_edges(node);
+        for (property, value) in
+            crate::css::changed_declarations(&crate::css::CssProperties::default(), &computed)
+        {
+            self.apply_style_property(node, property, &value);
+        }
+
+        // Everything the NODE says about the control has to be said again: the
+        // widget that heard it the first time is gone. `value`, `checked`,
+        // `disabled`, `placeholder`, `min`/`max` and the rest are all forwarded
+        // to a control by `set_attribute` rather than kept on the node, so a
+        // swap loses every one of them unless they are replayed. This is also
+        // what makes the ORDER not matter: `value` then `type` and `type` then
+        // `value` land the same way, which is the lesson `<progress>` taught
+        // when `max` arriving second clamped a value that was already right.
+        //
+        // `type` is skipped because replaying it would re-enter here, and
+        // `style` because the declaration store is not an attribute — it was
+        // re-applied from the computed values just above, and re-parsing the
+        // string would be a second path to the same place.
+        let attributes: Vec<(String, String)> = self
+            .node(node)
+            .map(|n| {
+                n.attributes
+                    .iter()
+                    .filter(|a| a.name != "type" && a.name != "style")
+                    .map(|a| (a.name.clone(), a.value.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (name, value) in attributes {
+            self.set_attribute(node, &name, &value);
+        }
+    }
+
     /// `parent.appendChild(child)`. Inserting is what makes an element render.
     /// A node has ONE parent, so appending it elsewhere moves it.
     ///
@@ -1245,6 +1505,7 @@ impl Document {
         child: NodeId,
         before: Option<NodeId>,
     ) -> bool {
+        let parent = self.content_parent(parent, child);
         if let Some(reference) = before {
             if reference == child || !self.child_nodes(parent).contains(&reference) {
                 return false;
@@ -1327,6 +1588,45 @@ impl Document {
             return true;
         }
 
+        // **An inline ELEMENT inside a leaf control is its caption too.**
+        //
+        // The text-node branch above already says a leaf's character data is
+        // what it draws. `<button><span>7</span></button>` is the same fact one
+        // level up, and it was refused: a leaf cannot `add_child`, so the span
+        // went to `detached` and the button rendered blank. Flutter spells every
+        // label that way — `ElevatedButton(child: Text('7'))` — so an entire
+        // keypad came out as empty rounded rectangles.
+        //
+        // Only for boxes that cannot hold children AND only for inline content:
+        // a container keeps its real child, and a block-level child of a leaf is
+        // a genuine structural error rather than a caption.
+        if !self.holds_inline_content(parent)
+            && self.node(parent).is_some()
+            && self.is_inline_content(child)
+        {
+            if let Some(previous) = self.nodes.get(&child).and_then(|n| n.parent) {
+                self.unlink_child(previous, child);
+                self.rebuild_inline_content(previous);
+            }
+            if let Some(n) = self.nodes.get_mut(&child) {
+                n.parent = Some(parent);
+            }
+            self.link_child(parent, child, before);
+            // **A node that joined the tree has a computed style, whatever it
+            // joined.** The run path below restyles here and this branch did
+            // not, so anything nested under a leaf — `<strong><em>`, or the
+            // `<span>` in `<button><span>7</span></button>` — was linked with
+            // NO computed style at all: not inherited, not from the UA sheet.
+            // `style_properties` is a stored read, so the answer was `None`
+            // rather than a wrong value, and nothing downstream could tell the
+            // difference between "not styled" and "not visited".
+            self.restyle_subtree(child);
+            self.restyle_positional_siblings(child);
+            let text = self.text_content(parent);
+            self.apply_text(parent, &text);
+            return true;
+        }
+
         let Some(widget) = self.extract_widget(child) else {
             return false;
         };
@@ -1350,6 +1650,7 @@ impl Document {
             }
             self.link_child(parent, child, before);
             self.restyle_subtree(child);
+            self.restyle_positional_siblings(child);
             self.rebuild_inline_content(parent);
             return true;
         }
@@ -1420,16 +1721,21 @@ impl Document {
                 // nothing and inheritance worked only for elements that
                 // happened to be appended first.
                 self.restyle_subtree(child);
+                self.restyle_positional_siblings(child);
                 // And what FORMATTING CONTEXT it lives in is decided the same
                 // way — by where it is. The container has to be told what kind
                 // of box just joined it before it can arrange it, and the box
                 // has to be told what kind of container it is itself.
                 self.apply_formatting(child);
+                // …and joining a TABLE means the table has to look again: its
+                // columns are measured from cell content, so a cell that
+                // arrives after the table last laid out changes every column.
+                self.relayout_enclosing_table(child);
                 // Joining the body means joining its block flow, for the same
                 // reason joining any other container re-runs that container's
                 // layout. Without it a page appending elements with no
                 // coordinates piled them all at the origin.
-                if parent == DOCUMENT {
+                if parent == DOCUMENT || Some(parent) == self.body {
                     self.relayout_body();
                 }
                 true
@@ -1641,6 +1947,7 @@ impl Document {
 
     /// `parent.removeChild(child)` — back out of the document, not destroyed.
     pub fn remove_child(&mut self, parent: NodeId, child: NodeId) -> bool {
+        let parent = self.content_parent(parent, child);
         let Some(widget) = self.extract_widget(child) else {
             return false;
         };
@@ -1718,6 +2025,28 @@ impl Document {
         match name.as_str() {
             "value" => self.set_value(node, value),
             "checked" => self.set_checked(node, !value.eq_ignore_ascii_case("false")),
+            // **`type` REALIZES the control**, it does not describe one.
+            //
+            // See [`Document::realize_control`] for why there was nothing here
+            // and what that cost: every `<input>` a script built rendered as a
+            // text box, because the type always arrived after the element did.
+            "type" => {
+                let now = self.fold_name(value.trim());
+                if let Some((tag, was)) = self.node(node).map(|n| (n.tag.clone(), n.input_type.clone()))
+                {
+                    if was != now {
+                        if let Some(n) = self.nodes.get_mut(&node) {
+                            n.input_type = now.clone();
+                        }
+                        // Only a change of CONTROL is a rebuild. `text` to
+                        // `search` is the same widget, and swapping it would
+                        // throw away a caret and a selection for nothing.
+                        if control_kind(&tag, &was) != control_kind(&tag, &now) {
+                            self.realize_control(node);
+                        }
+                    }
+                }
+            }
             // Boolean content attributes: PRESENCE is truth, so
             // `disabled=""` disables. `removeAttribute` re-enables.
             "disabled" => {
@@ -1812,6 +2141,31 @@ impl Document {
                 }
                 return;
             }
+            // **A span is a LAYOUT input, and layout is in the widget tree.**
+            //
+            // `colspan`/`rowspan` are content attributes, so they are already
+            // stored on the node — but `flow_layout.rs` has no `Document` and
+            // no `NodeId`, and the only channel from here to a widget is a
+            // command. So the cell is told, the same way `min`/`max`/`src` are
+            // told, and the table reads it back off the cell when it builds its
+            // grid.
+            //
+            // A missing or unparseable span is 1, not 0: HTML §4.9.11 clamps to
+            // at least one, and a zero would silently drop the cell out of every
+            // column it should occupy.
+            "colspan" | "rowspan" => {
+                let span = value.trim().parse::<f64>().unwrap_or(1.0).max(1.0);
+                self.command(
+                    node,
+                    &WidgetCommand::Custom(
+                        format!("Set{}", capitalize(&name)),
+                        CommandValue::Number(span),
+                    ),
+                );
+                // A span changes the SHAPE of the grid, not just one cell —
+                // every row after it shifts — so the table rebuilds it.
+                self.relayout_enclosing_table(node);
+            }
             "placeholder" | "alt" | "title" | "src" | "href" => {
                 self.command(
                     node,
@@ -1825,6 +2179,32 @@ impl Document {
         }
         if let Some(n) = self.nodes.get_mut(&node) {
             n.set_attribute(None, &name, value);
+        }
+        // **An attribute write is a RESTYLE.** `id`, `class` and every
+        // `[attr]` selector match on attributes, so changing one changes what
+        // the element — and everything under it, via descendant selectors —
+        // computes to. Nothing re-ran the cascade here, so an element that
+        // received its `class` AFTER being appended kept the style it had with
+        // no class at all.
+        //
+        // Invisible until markup was PARSED: code that builds a tree by hand
+        // tends to set attributes before appending, and the cascade then runs
+        // once, correctly, at insertion. The parser does the opposite, so a
+        // `<div class="side">` from `innerHTML` matched `div` and never
+        // `.side` — a whole stylesheet silently not applying.
+        // Only once the node is IN the tree. A detached element has no
+        // ancestors, so a descendant selector cannot be judged yet — and
+        // restyling early is actively harmful: the cascade would settle here,
+        // and the restyle at insertion would then find NO difference and push
+        // nothing to the container. Measured, by two grid tests: an item whose
+        // `grid-column` was styled before it was appended lost its span.
+        let connected = self
+            .nodes
+            .get(&node)
+            .and_then(|n| n.parent)
+            .is_some();
+        if connected && !self.stylesheet.is_empty() {
+            self.restyle_subtree(node);
         }
     }
 
@@ -1850,6 +2230,50 @@ impl Document {
             _ => {}
         }
         self.nodes.get(&node)?.attribute(&name).map(str::to_string)
+    }
+
+    /// `element.getAttributeNames()` — DOM §4.9.
+    ///
+    /// **The names for which [`Document::get_attribute`] answers**, which is
+    /// the only definition that cannot disagree with itself. It is not the
+    /// stored list: an element's content attributes are SPLIT here. Everything
+    /// a control owns — `value`, `checked`, `disabled` — is forwarded to the
+    /// widget by [`Document::set_attribute`] and never reaches `attributes`,
+    /// so enumerating that list alone would faithfully report `id`, `class` and
+    /// `data-*` while silently omitting exactly the attributes that change.
+    /// A reconciler built on it would look correct in testing and miss the
+    /// live ones.
+    ///
+    /// The reconstructed names are therefore added back, and only when they
+    /// actually answer — an unstyled element has no `style`, an empty field no
+    /// `value` — so this does not put an attribute on every element in the
+    /// document.
+    ///
+    /// ⚠ `disabled`/`hidden`/`min`/`max` are still missing, and not because
+    /// they are skipped here: `get_attribute` has no arm for them either, so
+    /// `setAttribute("disabled", "")` followed by `getAttribute("disabled")`
+    /// already answers `null`. That is one bug in the read path, not two, and
+    /// closing it there is what would make them appear here.
+    pub fn get_attribute_names(&mut self, node: NodeId) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .node(node)
+            .map(|n| n.attributes.iter().map(|a| a.name.clone()).collect())
+            .unwrap_or_default();
+        for reconstructed in ["style", "value", "checked"] {
+            if names.iter().any(|n| n == reconstructed) {
+                continue;
+            }
+            // Empty is absent for these: a control reports `""` for a value
+            // nobody set, and listing that would claim an attribute the element
+            // does not have.
+            if self
+                .get_attribute(node, reconstructed)
+                .is_some_and(|v| !v.is_empty() || reconstructed == "checked")
+            {
+                names.push(reconstructed.to_string());
+            }
+        }
+        names
     }
 
     /// `element.setAttributeNS(namespace, qualifiedName, value)` — DOM §4.9.
@@ -1893,6 +2317,22 @@ impl Document {
                 self.command(node, &WidgetCommand::SetVisible(true));
             }
             "checked" => self.set_checked(node, false),
+            // Removing `type` is not "no type": HTML §4.10.5.1.2 gives the
+            // attribute a MISSING VALUE DEFAULT of `text`, so the element goes
+            // back to being a text field and the control has to follow.
+            "type" => {
+                if let Some((tag, was)) = self.node(node).map(|n| (n.tag.clone(), n.input_type.clone()))
+                {
+                    if !was.is_empty() {
+                        if let Some(n) = self.nodes.get_mut(&node) {
+                            n.input_type.clear();
+                        }
+                        if control_kind(&tag, &was) != control_kind(&tag, "") {
+                            self.realize_control(node);
+                        }
+                    }
+                }
+            }
             _ => {}
         }
         if let Some(n) = self.nodes.get_mut(&node) {
@@ -1926,9 +2366,9 @@ impl Document {
         // is how a toolkit's `ColumnCount` reads back what it wrote. Leave an
         // unparseable value exactly as written: refusing to normalise is not
         // the same as refusing to record.
-        let value = &match (property.as_str(), crate::css::parse_track_list(value)) {
-            ("grid-template-columns" | "grid-template-rows", Some(tracks)) => {
-                crate::css::track_list_css(&tracks)
+        let value = &match (property.as_str(), crate::css::parse_track_template(value)) {
+            ("grid-template-columns" | "grid-template-rows", Some(template)) => {
+                crate::css::track_template_css(&template)
             }
             _ => value.to_string(),
         }[..];
@@ -2006,6 +2446,16 @@ impl Document {
         }
         for child in self.child_nodes(node) {
             self.restyle_subtree(child);
+            self.restyle_positional_siblings(child);
+        }
+        // **A cell's style is a question for the TABLE.** Padding, borders and
+        // font all feed the cell's min- and max-content width, and a column's
+        // width is computed from every cell in it — so restyling one cell can
+        // move every column and every row. Nothing else notices: the widget
+        // took the declaration, but the box that decides its width is several
+        // levels up and was never asked to look again.
+        if moved {
+            self.relayout_enclosing_table(node);
         }
     }
 
@@ -2061,6 +2511,35 @@ impl Document {
                         "SetChildHeightMode"
                     };
                     self.tell_container(node, verb, mode);
+                    // **One fact, both ends.** The container needs it to decide
+                    // whether to stretch this box; the box needs it to decide
+                    // whether its own main size is definite before flexing its
+                    // items. Same answer, sent to both, so they cannot disagree.
+                    if !horizontal {
+                        self.command(
+                            node,
+                            &WidgetCommand::Custom(
+                                "SetHeightMode".into(),
+                                CommandValue::Text(mode.to_string()),
+                            ),
+                        );
+                    }
+                }
+                // **A percentage with nothing to be a percentage OF writes no
+                // pixels.** The declaration is already recorded, and
+                // `size_subtree` re-resolves it once the box has a containing
+                // block; writing a number now would put the viewport's size on
+                // a box that is still detached, and — because a declared height
+                // is not overruled by content — that wrong number would then
+                // survive every later pass. A Flutter button came out the full
+                // height of the window this way, in a `Padding` that never had
+                // a height to give it.
+                if value.trim().ends_with('%')
+                    && matches!(property, "width" | "height")
+                    && node != DOCUMENT
+                    && !self.percentage_resolves(node, property == "width")
+                {
+                    return;
                 }
                 // `left`/`width` measure across, `top`/`height` down — which is
                 // the axis a percentage refers to.
@@ -2318,6 +2797,22 @@ impl Document {
             // one.** All three used to send `SetGap`, which set a single
             // `spacing` scalar — so `row-gap: 20px; column-gap: 4px` gave
             // whichever declaration arrived last on BOTH axes.
+            // `justify-items` is the container's answer for the inline axis;
+            // `justify-self` is one child overruling it. Same split as
+            // `align-items`/`align-self`, on the other axis — grid has two and
+            // flex only ever needed one, which is why these had no route.
+            "justify-items" => {
+                self.command(
+                    node,
+                    &WidgetCommand::Custom(
+                        "SetJustifyItems".into(),
+                        CommandValue::Text(value.trim().to_ascii_lowercase()),
+                    ),
+                );
+            }
+            "justify-self" => {
+                self.tell_container(node, "SetChildJustifySelf", &value.trim().to_ascii_lowercase());
+            }
             "align-content" => {
                 self.command(
                     node,
@@ -2337,6 +2832,31 @@ impl Document {
                 self.command(
                     node,
                     &WidgetCommand::Custom(verb.into(), CommandValue::Number(px as f64)),
+                );
+            }
+            // The table's own three. `border-collapse` and `border-spacing`
+            // INHERIT (§17.6), so they reach every cell too — harmlessly, since
+            // only a box running the table context reads them, and it is what
+            // lets a cell find the border model without walking up to its table.
+            "border-spacing" => {
+                let Some(px) = px else { return };
+                self.command(
+                    node,
+                    &WidgetCommand::Custom(
+                        "SetBorderSpacing".into(),
+                        CommandValue::Number(px as f64),
+                    ),
+                );
+            }
+            "border-collapse" | "table-layout" => {
+                let verb = if property == "border-collapse" {
+                    "SetBorderCollapse"
+                } else {
+                    "SetTableLayout"
+                };
+                self.command(
+                    node,
+                    &WidgetCommand::Custom(verb.into(), CommandValue::Text(value.to_string())),
                 );
             }
             // `z-index` is a PAINT decision, so it goes to whoever paints the
@@ -2383,6 +2903,37 @@ impl Document {
                     node,
                     &WidgetCommand::Custom("SetGridRows".into(), CommandValue::Text(value.into())),
                 );
+            }
+            "grid-auto-flow" => {
+                self.command(
+                    node,
+                    &WidgetCommand::Custom(
+                        "SetGridAutoFlow".into(),
+                        CommandValue::Text(value.trim().to_ascii_lowercase()),
+                    ),
+                );
+            }
+            "grid-auto-rows" | "grid-auto-columns" => {
+                let verb = if property == "grid-auto-rows" {
+                    "SetGridAutoRows"
+                } else {
+                    "SetGridAutoColumns"
+                };
+                self.command(
+                    node,
+                    &WidgetCommand::Custom(verb.into(), CommandValue::Text(value.into())),
+                );
+            }
+            "grid-template-areas" => {
+                self.command(
+                    node,
+                    &WidgetCommand::Custom("SetGridAreas".into(), CommandValue::Text(value.into())),
+                );
+            }
+            // The NAME form of `grid-area`. The four-line form writes the
+            // longhands and arrives through the placement arm above.
+            "grid-area" if !value.contains('/') => {
+                self.tell_container(node, "SetChildGridName", value.trim());
             }
             // **Flex item sizing, which reached no widget at all.** Both parse
             // into `css.rs` and had no arm here, so `flex-basis` and
@@ -2558,6 +3109,18 @@ impl Document {
                     ),
                 );
             }
+            // Whether the box's text may BREAK. The shaper already takes an
+            // optional wrap width and `nowrap` is that width being absent, so
+            // the box only has to be told which it is.
+            "white-space" => {
+                self.command(
+                    node,
+                    &WidgetCommand::Custom(
+                        "SetWhiteSpace".into(),
+                        CommandValue::Text(value.trim().to_ascii_lowercase()),
+                    ),
+                );
+            }
             "text-decoration" | "text-decoration-line" => {
                 self.command(
                     node,
@@ -2691,6 +3254,25 @@ impl Document {
     fn containing_block(&mut self, node: NodeId) -> LayoutRect {
         if self.declared_position(node) == "fixed" {
             return self.form.rect();
+        }
+        // **Only an absolutely positioned box looks for a positioned ancestor**
+        // — CSS 2.1 §10.1. For a `static` or `relative` box the containing
+        // block is simply the nearest block container ancestor's CONTENT edge,
+        // which is its parent, and the walk below would sail straight past it.
+        //
+        // Applying the absolute rule to everything is what made `height: 100%`
+        // on a Flutter button resolve against the VIEWPORT: nothing in the tree
+        // was positioned, so every percentage — on a button four levels down —
+        // answered 800x600 and the button covered the window.
+        if self.declared_position(node) != "absolute" {
+            let parent = self.nodes.get(&node).and_then(|n| n.parent);
+            return match parent {
+                Some(p) if p != DOCUMENT && self.node(p).is_some() => self.content_rect(p),
+                // A child of the document resolves against the viewport, which
+                // is the initial containing block — the same answer a browser
+                // gives for a child of `<body>` with no sized ancestor.
+                _ => self.form.rect(),
+            };
         }
         let mut cursor = self.nodes.get(&node).and_then(|n| n.parent);
         while let Some(parent) = cursor {
@@ -2847,14 +3429,36 @@ impl Document {
         let Some(parent) = self.nodes.get(&node).and_then(|n| n.parent) else {
             return;
         };
-        if parent == DOCUMENT {
-            return;
-        }
         let spec = format!("{}={}", Self::widget_name(node), value);
-        self.command(
+        self.command_container(
             parent,
             &WidgetCommand::Custom(verb.to_string(), CommandValue::Text(spec)),
         );
+    }
+
+    /// Send a container-directed command, INCLUDING when the container is the
+    /// document itself.
+    ///
+    /// `command` addresses a widget by name through `form.send_command`, and the
+    /// root is not in its own child list — so a command aimed at `DOCUMENT`
+    /// found nothing and did nothing. Both callers here used to bail on
+    /// `parent == DOCUMENT` rather than route, which read as a decision and was
+    /// a hole: `document.body` IS the root node, so EVERY per-child layout fact
+    /// about an element appended to the body — `display`, the flex trio,
+    /// `align-self`, `justify-self`, `order`, grid placement, the axis modes —
+    /// was dropped in silence. A page built the web way, by appending to
+    /// `document.body`, could only ever stack its children down the left edge,
+    /// because the root was never told any of them was inline-level.
+    ///
+    /// The routing already existed twice in this file (`set_child_*` sends to
+    /// `form.handle_command`, `relayout_parent` calls `relayout_body`); these
+    /// two just predate it.
+    fn command_container(&mut self, parent: NodeId, cmd: &WidgetCommand) {
+        if parent == DOCUMENT {
+            self.form.handle_command(cmd);
+            return;
+        }
+        self.command(parent, cmd);
     }
 
     /// Record a child's grow weight with its container.
@@ -2886,14 +3490,11 @@ impl Document {
     /// [`Document::tell_container`] asks the child who its parent is, which is
     /// still nobody.
     fn announce_child_display(&mut self, parent: NodeId, child: NodeId) {
-        if parent == DOCUMENT {
-            return;
-        }
         let Some(display) = self.computed_style(child).display else {
             return;
         };
         let spec = format!("{}={}", Self::widget_name(child), display.as_css());
-        self.command(
+        self.command_container(
             parent,
             &WidgetCommand::Custom("SetChildDisplay".into(), CommandValue::Text(spec)),
         );
@@ -2935,7 +3536,148 @@ impl Document {
         } else {
             props.height.is_some()
         };
-        if declared { "declared" } else { "auto" }
+        if declared {
+            // …unless it is a PERCENTAGE of something indefinite, which is
+            // `auto` — §10.5. The declaration exists but resolves to nothing,
+            // so a box under it must not resolve against it either.
+            if !horizontal && !self.percentage_height_resolves(node) {
+                return "auto";
+            }
+            return "declared";
+        }
+        // **A flex item's main size is DEFINITE after flexing** — §9.9. A box
+        // that grew into a share of a container that had a height to share is
+        // as definite as one that declared a length, and its own children may
+        // resolve against it: that is how `Scaffold { flex: 1 }` passes the
+        // window's height down to the `Expanded` rows without every level
+        // repeating `height`.
+        //
+        // Without it the chain broke at the first box whose size came from
+        // flexing rather than from a declaration — the container said `auto`,
+        // the flow sized its children to content, and the space it had just
+        // been given went nowhere.
+        if !horizontal && self.flexed_block_size_is_definite(node) {
+            return "declared";
+        }
+        "auto"
+    }
+
+    /// Whether a declared `height` actually resolves to a length.
+    ///
+    /// True for any non-percentage declaration, and for a percentage only when
+    /// the containing block's own block size is definite. `height: 100%` of a
+    /// parent that is still sizing to its content is `auto`, and a box in that
+    /// state must be measured from its content like any other — otherwise it
+    /// keeps whatever pixel value the percentage happened to resolve to when it
+    /// was first written, which for a detached element is the viewport's.
+    ///
+    /// That is what made a Flutter `Padding` in a plain `Column` — a LOOSE
+    /// constraint, so its child sizes itself — hand the tictactoe "New Game"
+    /// button the full height of the window.
+    fn percentage_height_resolves(&self, node: NodeId) -> bool {
+        let is_percent = self
+            .style(node)
+            .map(|s| s.get("height").trim().ends_with('%'))
+            .unwrap_or(false);
+        if !is_percent {
+            return true;
+        }
+        self.percentage_resolves(node, false)
+    }
+
+    /// Whether a percentage on one axis has a containing block to resolve
+    /// against **right now**. A detached box has none at all; on the block axis
+    /// an attached one still needs its parent's own height to be definite.
+    fn percentage_resolves(&self, node: NodeId, horizontal: bool) -> bool {
+        match self.nodes.get(&node).and_then(|n| n.parent) {
+            // The viewport is the initial containing block, definite on both
+            // axes.
+            Some(p) if p == DOCUMENT => true,
+            // A block container's width always resolves; its height only if it
+            // has one.
+            Some(p) => horizontal || self.axis_mode(p, false) == "declared",
+            None => false,
+        }
+    }
+
+    /// Whether this box lays its children out in tracks it decides itself —
+    /// a flex or grid formatting context, where the item's size comes from the
+    /// container's algorithm rather than from the item filling its parent.
+    fn establishes_independent_track_layout(&self, node: NodeId) -> bool {
+        use crate::css::Display;
+        matches!(
+            self.computed_style(node).display,
+            Some(Display::Flex)
+                | Some(Display::InlineFlex)
+                | Some(Display::Grid)
+                | Some(Display::InlineGrid)
+        )
+    }
+
+    /// Whether this box's block size came from **flexing** a container that had
+    /// a definite one to divide.
+    ///
+    /// Three things have to hold, and the third is recursive: the parent
+    /// establishes a flex context, its main axis is the block axis (a column —
+    /// in a row the block axis is the CROSS one, where stretching is not the
+    /// same guarantee), and the parent's own block size is itself definite.
+    fn flexed_block_size_is_definite(&self, node: NodeId) -> bool {
+        let Some(parent) = self.nodes.get(&node).and_then(|n| n.parent) else {
+            return false;
+        };
+        if parent == DOCUMENT {
+            return false;
+        }
+        let container = self.computed_style(parent);
+        let grid = matches!(
+            container.display,
+            Some(crate::css::Display::Grid) | Some(crate::css::Display::InlineGrid)
+        );
+        if !grid
+            && !matches!(
+                container.display,
+                Some(crate::css::Display::Flex) | Some(crate::css::Display::InlineFlex)
+            )
+        {
+            return false;
+        }
+        let own = self.computed_style(node);
+        // **A grid item is stretched to its ROW**, and both axes stretch by
+        // default — there is no main/cross split to make, so the block axis is
+        // definite whenever the grid's own is. This is what carries a tight
+        // constraint through a Flutter `Expanded`, which IS a single-cell grid.
+        if grid {
+            let align = own
+                .align_self
+                .or(container.align_items)
+                .unwrap_or(crate::css::AlignItems::Stretch);
+            return align == crate::css::AlignItems::Stretch
+                && self.axis_mode(parent, false) == "declared";
+        }
+        let along_block_axis =
+            if container.flex_direction == Some(crate::css::FlexDirection::Column) {
+                // The block axis is the MAIN one: the item's size came from
+                // flexing, so it is definite if it grew.
+                own.flex_grow.unwrap_or(0.0) > 0.0
+            } else {
+                // The block axis is the CROSS one, where `stretch` — the
+                // initial value of `align-items`, and so of `align-self` —
+                // makes the item exactly as tall as the line. That is as
+                // definite as a declared length, and it is what lets a key
+                // inside a Flutter `Row` resolve `height: 100%`.
+                //
+                // Any other alignment sizes the item to its own content
+                // instead, which is precisely NOT definite.
+                let align = own
+                    .align_self
+                    .or(container.align_items)
+                    .unwrap_or(crate::css::AlignItems::Stretch);
+                align == crate::css::AlignItems::Stretch
+            };
+        if !along_block_axis {
+            return false;
+        }
+        self.axis_mode(parent, false) == "declared"
     }
 
     fn apply_formatting(&mut self, node: NodeId) {
@@ -2943,9 +3685,25 @@ impl Document {
             return;
         };
         let spelling = display.as_css().to_string();
+        // The INNER context. `inline-flex`/`inline-grid` establish exactly the
+        // same one as their block-level counterparts — the `inline-` prefix
+        // speaks about the box's OUTER role, which is what `SetChildDisplay`
+        // below carries to the parent.
         let context = match display {
-            crate::css::Display::Flex => "flex",
-            crate::css::Display::Grid => "grid",
+            crate::css::Display::Flex | crate::css::Display::InlineFlex => "flex",
+            crate::css::Display::Grid | crate::css::Display::InlineGrid => "grid",
+            // The table box lays its rows and cells out itself — §17.5. The
+            // ROW and ROW GROUP boxes establish nothing: the table reaches
+            // through them to the cells, because a row's width is the table's
+            // and a column exists across rows that know nothing about it.
+            crate::css::Display::Table | crate::css::Display::InlineTable => "table",
+            // A row and a row GROUP arrange nothing — the table reaches through
+            // them. Left on `normal` they ran block flow over their own cells
+            // and stacked what the table had just placed in columns.
+            crate::css::Display::TableRow
+            | crate::css::Display::TableRowGroup
+            | crate::css::Display::TableHeaderGroup
+            | crate::css::Display::TableFooterGroup => "table-row",
             _ => "normal",
         };
         self.command(
@@ -2954,6 +3712,21 @@ impl Document {
                 "SetFormatting".into(),
                 CommandValue::Text(context.to_string()),
             ),
+        );
+        // **Whether its own block size is definite**, which is the other half
+        // of what a formatting context needs before it can size anything: with
+        // `height: auto` there is no main size for a column to divide, so its
+        // items resolve against their content instead.
+        //
+        // Here rather than in `announce_child_display`, which is the natural
+        // reading and does not work: that runs BEFORE the widget is linked, so
+        // it addresses its container by name and a send to the box itself would
+        // reach nothing. This is the same send as in `apply_style_property`,
+        // for the box that never takes a `height` write at all.
+        let own = self.axis_mode(node, false).to_string();
+        self.command(
+            node,
+            &WidgetCommand::Custom("SetHeightMode".into(), CommandValue::Text(own)),
         );
         self.tell_container(node, "SetChildDisplay", &spelling);
     }
@@ -3067,6 +3840,64 @@ impl Document {
         w.set_rect(rect);
     }
 
+    /// Re-run the layout of the TABLE this node is inside, if any.
+    ///
+    /// **A row and a row group establish no formatting context**, so re-laying
+    /// out a cell's parent does nothing at all — the box that decides where a
+    /// cell goes is the table, several levels up. Every other container
+    /// arranges its own children, which is why `relayout_parent` has been
+    /// enough everywhere else.
+    ///
+    /// Without this, a cell appended to a row that had ALREADY joined its table
+    /// was never placed: the table's last layout ran before the cell existed
+    /// and nothing asked it to look again. The tell was exact — every row laid
+    /// out except the LAST one, in every table, because the last row is the only
+    /// one no later insertion happens to re-trigger.
+    ///
+    /// ⚠ The walk stops at the FIRST enclosing table. A table nested in a cell
+    /// re-lays itself out, but its new size does not propagate to the outer
+    /// table's column widths until something else touches the outer one.
+    fn relayout_enclosing_table(&mut self, node: NodeId) {
+        use crate::css::Display;
+        let mut at = node;
+        // A cell is inside a row inside an optional group inside the table, so
+        // the walk is short — but it is a walk, not a fixed number of steps.
+        while let Some(parent) = self.nodes.get(&at).and_then(|n| n.parent) {
+            if parent == DOCUMENT {
+                return;
+            }
+            if matches!(
+                self.computed_style(parent).display,
+                Some(Display::Table) | Some(Display::InlineTable)
+            ) {
+                // **Re-setting the SAME rect is the invalidation, not a
+                // no-op.** `set_rect` re-runs `relayout()`, which is what
+                // re-reads the rows, rebuilds the cell grid and re-measures
+                // the columns — the table's geometry is unchanged, but what
+                // fills it is not. ⚠ Anyone adding an "unchanged rect → skip"
+                // fast path to `set_rect` silently kills table layout.
+                if let Some(w) = self.widget_mut(parent) {
+                    let unchanged = w.rect();
+                    w.set_rect(unchanged);
+                }
+                // **And the table's own BOX has to follow its rows.** Its
+                // height is its content's — §17.5.3 — so a table that gained a
+                // row is taller and one that lost content is shorter, and the
+                // box it draws is the only thing that says where its border
+                // goes. Without this the internals were re-laid out inside a
+                // rectangle from the previous pass: a table whose last row
+                // arrived after the box was measured had that row CLIPPED by
+                // its own bottom border, and one that was measured while it
+                // still had more content kept the taller box and drew a large
+                // empty area under its last row. Both were visible in a
+                // capture and in neither case was a single cell misplaced.
+                self.size_to_content(parent);
+                return;
+            }
+            at = parent;
+        }
+    }
+
     /// Re-run the container's layout, for a child the container arranges.
     ///
     /// Handing a panel its own rect is what triggers `relayout()`. Needed
@@ -3077,7 +3908,13 @@ impl Document {
         let Some(parent) = self.nodes.get(&node).and_then(|n| n.parent) else {
             return;
         };
-        if parent == DOCUMENT {
+        // The BODY is the root of the flow, so a change under it re-runs the
+        // root pass — the same answer `DOCUMENT` gives, because appending to
+        // the document IS appending to the body. Without this, content moved
+        // into a real body stopped triggering the pass that resolves
+        // percentages and sizes flex rows, and only its widget rect was
+        // re-set: a `width: 100%` button kept its 96px default.
+        if parent == DOCUMENT || Some(parent) == self.body {
             self.relayout_body();
             return;
         }
@@ -3104,8 +3941,13 @@ impl Document {
     /// special case for the body.
     fn relayout_body(&mut self) {
         let origin = self.containing_block(DOCUMENT);
-        let mut y = origin.y;
-        for child in self.child_nodes(DOCUMENT) {
+        // The body's children, not the document's — the document has exactly
+        // one, `<html>`. Walking the document here meant that the moment tree
+        // construction put a real body in the way, this pass stopped reaching
+        // any content at all: percentages never resolved (a `width: 100%`
+        // button kept its 96px default) and nothing was placed.
+        let root = self.body.unwrap_or(DOCUMENT);
+        for child in self.child_nodes(root) {
             // Only elements are boxes. A text node is a run of the body's own
             // line; a comment, a CDATA section and a processing instruction
             // are not even that; and metadata renders nothing and must not
@@ -3120,46 +3962,37 @@ impl Document {
             if skip || self.positions_itself(child) {
                 continue;
             }
-            let margin = self.box_edges(child).margin;
             // **The two halves of sizing, in the only order they work in.** A
             // block's width comes from the container and its height comes from
             // its content, so the width has to be settled before the content is
             // measured — the width is what decides where the text wrapped, and
             // the wrapping is what decides how many line boxes there are.
             //
-            // `apply_content_height` rather than `size_to_content`: this IS the
-            // flow being re-run, and asking it to re-run itself would not
-            // terminate.
-            self.fill_available_width(child, origin.w);
-            self.apply_content_height(child);
-            // **`position: relative` is IN FLOW and then shifted.** Its
-            // `left`/`top` are an offset from where flow put it, not
-            // coordinates — and crucially the offset does NOT change what
-            // comes after it, which is the whole difference between `relative`
-            // and moving the box. Ignoring this discarded the offset entirely
-            // and put every relatively positioned container back at the flow
-            // origin.
-            let props = self.computed_style(child);
-            let (dx, dy) = if props.position == Some(crate::css::Position::Relative) {
-                (
-                    props.offsets.left.and_then(|l| l.px()).unwrap_or(0.0),
-                    props.offsets.top.and_then(|t| t.px()).unwrap_or(0.0),
-                )
-            } else {
-                (0.0, 0.0)
-            };
-            let Some(w) = self.widget_mut(child) else {
-                continue;
-            };
-            let rect = w.rect();
-            w.set_rect(LayoutRect::new(
-                origin.x + margin.left + dx,
-                y + margin.top + dy,
-                rect.w,
-                rect.h,
-            ));
-            // The advance uses the FLOW position, not the shifted one.
-            y += margin.top + rect.h + margin.bottom;
+            // This is ALL that is left of this pass. Placement — margins,
+            // `position: relative` offsets, the running `y` — belonged here
+            // only while the root had no box to do it; `layout_normal_flow`
+            // already handles all three (`relative_offset` in `flow_layout.rs`)
+            // and doing it twice would fight it.
+            self.size_subtree(child, origin.w);
+        }
+        // **The body lays out its own children.** This used to place them by
+        // hand — `x = origin.x`, then `y += height` per child — which is a
+        // block stacker and ONLY a block stacker: it never consulted `display`,
+        // so two inline-level boxes at the root could not share a line however
+        // the cascade described them. Every other container in the document
+        // runs `layout_normal_flow`, which does line boxes, inline-level
+        // sharing and margins; the root was the one box that did not, purely
+        // because it had no element to be.
+        //
+        // Now it has one. Re-setting the rect is how `relayout_parent` re-runs
+        // any other container, and it is the whole of what the root needs — the
+        // sizing pass above still settles widths and percentages first, because
+        // a block's width has to be known before its content can be measured.
+        if let Some(body) = self.body {
+            if let Some(w) = self.widget_mut(body) {
+                let rect = w.rect();
+                w.set_rect(rect);
+            }
         }
     }
 
@@ -3182,7 +4015,40 @@ impl Document {
     /// across the page would be a guess wearing a rule's clothes.
     fn fill_available_width(&mut self, node: NodeId, available: f32) -> bool {
         let props = self.computed_style(node);
-        if props.width.is_some() || props.display != Some(crate::css::Display::Block) {
+        // **Block-LEVEL, not `display: block`.** `display` says two things, and
+        // this is the outer half: a `flex` or `grid` box participates in its
+        // parent's flow exactly as a block does, so `width: auto` fills the
+        // containing block for all three. Testing for `Block` alone starved
+        // every flex and grid container to `default_size`'s 200px guess — and
+        // since Flutter's `Scaffold`, `Column` and `Row` are all
+        // `div;display:flex`, the entire app rendered as a 200px strip.
+        //
+        // The `inline-*` forms are excluded because their outer display really
+        // is inline-level: they are shrink-to-fit, and stretching one would be
+        // the same guess this rule exists to remove.
+        let block_level = matches!(
+            props.display,
+            Some(crate::css::Display::Block)
+                | Some(crate::css::Display::Flex)
+                | Some(crate::css::Display::Grid)
+        );
+        if props.width.is_some() || !block_level {
+            return false;
+        }
+        // **In a flex or grid container the CONTAINER sizes the item** — §7.1
+        // and §11.1. "Fill the containing block" is normal flow's rule for a
+        // block box, and applying it to a flex item overwrote the width the
+        // flex algorithm had just handed out: every cell in a Flutter row was
+        // stretched back to the full row, so a `width: 100%` child of one
+        // resolved against the whole row and painted its label into the next
+        // column.
+        if self
+            .nodes
+            .get(&node)
+            .and_then(|n| n.parent)
+            .map(|p| self.establishes_independent_track_layout(p))
+            .unwrap_or(false)
+        {
             return false;
         }
         let width = available - self.box_edges(node).margin.horizontal();
@@ -3208,7 +4074,7 @@ impl Document {
     /// `position: absolute` — it simply has not said so yet. Reading the
     /// declaration store means this answers from what the program actually set,
     /// not from a guess.
-    fn positions_itself(&self, node: NodeId) -> bool {
+    pub(crate) fn positions_itself(&self, node: NodeId) -> bool {
         // **The CASCADE decides, not the element's own declarations.** This
         // read the declaration store alone, so `position` could only ever be
         // honoured when the program wrote it directly onto the element: a
@@ -3439,9 +4305,39 @@ impl Document {
             }
         }
         rules.sort_by_key(|rule| (rule.specificity, rule.order));
+        // **Does anything here depend on sibling POSITION?** Asked once, of the
+        // sheet, because the answer decides whether inserting a child has to
+        // restyle its siblings — the one invalidation a per-node restyle can
+        // never cover, since the node that stopped matching is not the node
+        // that changed. A document using no `:nth-child()` pays nothing.
+        self.positional_rules = rules.iter().any(|rule| rule.selector.is_positional());
         self.stylesheet = rules;
         // Every element in the document may now compute differently.
         self.restyle_subtree(DOCUMENT);
+    }
+
+    /// **A structural change moves the SIBLINGS, not the node that changed.**
+    ///
+    /// Appending a child makes the previous `:last-child` stop matching, and
+    /// `:nth-child(odd)` re-colours every row after an insertion. Neither is
+    /// reachable by restyling the node that arrived — it is the ones already
+    /// there whose match changed — so the whole sibling list is re-cascaded.
+    ///
+    /// Gated on the sheet actually using a positional selector, because this is
+    /// O(siblings) per insertion and would otherwise make building a long list
+    /// quadratic for no benefit.
+    fn restyle_positional_siblings(&mut self, node: NodeId) {
+        if !self.positional_rules {
+            return;
+        }
+        let Some(parent) = self.nodes.get(&node).and_then(|n| n.parent) else {
+            return;
+        };
+        for sibling in self.child_nodes(parent) {
+            if sibling != node && self.is_element(sibling) {
+                self.restyle_subtree(sibling);
+            }
+        }
     }
 
     /// Re-run the cascade over `root` and everything under it, and tell each
@@ -3501,11 +4397,13 @@ impl Document {
     /// Rust type at creation, so a `<span>` was a leaf label for ever and no
     /// declaration could change it.
     ///
-    /// Restricted to elements whose widget is a plain text leaf. `<a>` is
-    /// inline too and is deliberately excluded — it maps to a link label with
-    /// click behaviour of its own, and dissolving it into a run of its parent's
-    /// text would silently delete that. Runs carrying a URL is how wxhtmledit
-    /// answers the same question, and it needs hit-testing per run first.
+    /// Restricted to elements whose widget is a plain text leaf. `<a>` USED to
+    /// be excluded, because dissolving it into a run of its parent's text
+    /// deleted the click behaviour the link-label widget owned. Runs carry
+    /// their source element now (`InlineRun::source`) and the box that paints
+    /// them hit-tests them (`FlowLayoutPanel::run_rects`), so the click
+    /// survives and the exclusion is gone — a link flows with the sentence
+    /// instead of being a box parked on the line.
     fn is_inline_content(&self, node: NodeId) -> bool {
         let Some(n) = self.node(node) else {
             return false;
@@ -3520,8 +4418,18 @@ impl Document {
         if props.is_out_of_flow() || self.positions_itself(node) {
             return false;
         }
+        // The real question is "does this element's widget contribute anything
+        // a run would lose?" — which for a plain text leaf is nothing.
+        //
+        // `<a>` is named alongside it because that answer CHANGED. Its widget
+        // owned a click, so dissolving it into a run used to delete one; runs
+        // carry their source and are hit-tested now, so the click survives the
+        // dissolve and a link can finally flow inside its sentence. It cannot
+        // be folded into the `control_kind` test: an `<a>` that BLOCKIFIES must
+        // still answer `linklabel` there, because a box gets a widget and a
+        // `Label` would emit nothing.
         props.display == Some(crate::css::Display::Inline)
-            && control_kind(&n.tag, &n.input_type) == "label"
+            && (control_kind(&n.tag, &n.input_type) == "label" || n.tag == "a")
     }
 
     /// Move an element between being a run and being a box, if the cascade
@@ -3582,22 +4490,78 @@ impl Document {
     /// Called wherever one of those children can change — joining the box,
     /// leaving it, its text, or its computed style. One function, called from
     /// each, rather than each site building runs its own way.
+    /// Is this child an **atomic inline-level box** — a widget that belongs on
+    /// its parent's line rather than on a line of its own?
+    ///
+    /// The complement of [`Document::is_inline_content`]: that one is "inline
+    /// and dissolves into a run of text", this one is "inline-LEVEL and keeps
+    /// its own box". `<input>`, `<button>`, `<img>` and `<progress>` are
+    /// `inline-block` in the UA sheet — replaced or form elements, which have a
+    /// width and a height of their own AND sit in a line of prose. That is
+    /// exactly CSS's "atomic inline-level box".
+    ///
+    /// Out-of-flow is excluded for the same reason it is everywhere else: a
+    /// positioned box has left the line, so it is not on it.
+    fn is_atomic_inline(&self, node: NodeId) -> bool {
+        if !self.is_element(node) || self.is_inline_content(node) {
+            return false;
+        }
+        let props = self.computed_style(node);
+        if props.is_out_of_flow() || self.positions_itself(node) {
+            return false;
+        }
+        matches!(
+            props.display,
+            Some(crate::css::Display::InlineBlock)
+                | Some(crate::css::Display::InlineFlex)
+                | Some(crate::css::Display::InlineGrid)
+                // `inline-table` is the table's atomic form and belongs here
+                // for the same reason the other three do: inline-level
+                // OUTSIDE, its own formatting context INSIDE.
+                | Some(crate::css::Display::InlineTable)
+        )
+    }
+
     fn rebuild_inline_content(&mut self, parent: NodeId) {
         // **Document order**, and that is the whole of interleaving. Walking
         // the children in the order they appear puts `a <b>B</b> c` back
         // together as three runs; collecting the inline ELEMENTS first and
         // appending the box's own text before them is what made the trailing
         // ` c` inexpressible.
+        // Inline-LEVEL widgets are in this list too, as atomic slots. An
+        // `<input>` next to a `<label>` shares the label's line in HTML, and it
+        // can only do that if it is IN the sequence — collecting text alone and
+        // laying the widgets out separately is what put a label on top of its
+        // own field.
         let inline: Vec<NodeId> = self
             .child_nodes(parent)
             .into_iter()
-            .filter(|c| self.is_text_node(*c) || self.is_inline_content(*c))
+            .filter(|c| {
+                self.is_text_node(*c) || self.is_inline_content(*c) || self.is_atomic_inline(*c)
+            })
             .collect();
         if inline.is_empty() && !self.has_inline_content(parent) {
             return;
         }
         let mut runs = Vec::with_capacity(inline.len());
         for child in inline {
+            // **An atomic slot carries no text.** Its size is the widget's, so
+            // there is nothing to collapse, transform or shape — the line walk
+            // reads the box instead. Emitted in document order with the text
+            // runs, which is the whole point: order is what interleaving IS.
+            if self.is_atomic_inline(child) {
+                let mut font = crate::ide_text::FontSpec::sans(14.0);
+                font.apply_computed(self.computed_style(child));
+                runs.push(crate::layout::InlineRun {
+                    text: String::new(),
+                    font,
+                    color: (0, 0, 0, 255),
+                    source: Some(Self::widget_name(child)),
+                    atomic: Some(Self::widget_name(child)),
+                    cursor: self.computed_style(child).cursor,
+                });
+                continue;
+            }
             let raw = if self.is_text_node(child) {
                 self.text_data(child)
             } else {
@@ -3640,7 +4604,32 @@ impl Document {
                     (r, g, b, a)
                 })
                 .unwrap_or((0, 0, 0, 255));
-            runs.push(crate::layout::InlineRun { text, font, color });
+            // `text-transform` re-cases what is PAINTED, after collapsing and
+            // after the style is resolved — never the stored `textContent`, so
+            // reading the element back still answers what the author wrote.
+            let text = match props.text_transform {
+                Some(transform) => transform.apply(&text),
+                None => text,
+            };
+            // **Who this run belongs to.** A text node's run is the BOX's own
+            // text and belongs to nobody; an inline element's run carries that
+            // element's name, which is what a click on it can be reported
+            // against. Without it a run is anonymous paint and an `<a>` inside
+            // a sentence has nothing for a hit test to find.
+            let source = if self.is_text_node(child) {
+                None
+            } else {
+                Some(Self::widget_name(child))
+            };
+            runs.push(crate::layout::InlineRun {
+                text,
+                font,
+                color,
+                source,
+                // Text, not a box — the shaped advance is its width.
+                atomic: None,
+                cursor: props.cursor,
+            });
         }
         self.inline_content.insert(parent, !runs.is_empty());
         self.command(
@@ -3648,6 +4637,139 @@ impl Document {
             &WidgetCommand::Custom("SetInlineContent".into(), CommandValue::Runs(runs)),
         );
         self.size_to_content(parent);
+    }
+
+    /// **A percentage is not a length until the box has a containing block.**
+    ///
+    /// `width: 100%` is resolved to pixels when the declaration arrives, and a
+    /// frontend that builds its tree bottom-up declares it while the element is
+    /// still DETACHED — no parent, so `containing_block` falls back to the
+    /// initial one and the percentage freezes against the viewport. A Flutter
+    /// button four levels down came out 800x600 and covered the window.
+    ///
+    /// Re-resolved here, on the way in, because that is where the containing
+    /// block is known: the parent's width was settled before the recursion, and
+    /// a definite height (declared, or flexed per §9.9) is already on the box.
+    /// Against an indefinite parent the percentage resolves to `auto`, which is
+    /// CSS's own answer and leaves the content sizing below to decide.
+    ///
+    /// Only percentages: a length in `px` means the same detached or attached,
+    /// and re-applying every declaration on every pass would be churn.
+    /// Resolved against the CONTAINING BLOCK, read live — the parent's flow has
+    /// just been re-run by the caller, so its rect is current on both axes.
+    /// Passing the extents down instead looks right and is not: a stretched
+    /// flex item has a perfectly definite used height that no declaration
+    /// records, so the caller would offer `0` and the box would keep whatever
+    /// stale pixel value it was created with.
+    fn reresolve_percentages(&mut self, node: NodeId) {
+        for property in ["width", "height"] {
+            let is_percent = self
+                .style(node)
+                .map(|s| s.get(property).trim().ends_with('%'))
+                .unwrap_or(false);
+            if !is_percent {
+                continue;
+            }
+            // **A percentage height against an indefinite containing block is
+            // `auto`** — §10.5. Not "fill the parent's current pixels": the
+            // parent has no answer yet, so the box sizes to its own content and
+            // the content pass below decides.
+            //
+            // The inline axis needs no such guard, because a block container's
+            // width is always definite.
+            if property == "height"
+                && self
+                    .nodes
+                    .get(&node)
+                    .and_then(|n| n.parent)
+                    .map(|p| p != DOCUMENT && self.axis_mode(p, false) != "declared")
+                    .unwrap_or(false)
+            {
+                continue;
+            }
+            self.reapply_constrained_axis(node, property);
+        }
+    }
+
+    /// Settle one box and everything under it — **widths down, heights up**.
+    ///
+    /// The two halves of sizing run in opposite directions, which is why they
+    /// cannot be one walk: a block's width comes from its containing block, so
+    /// it is known before its content is looked at, and its height comes from
+    /// that content, so it is not known until every descendant has one. Width
+    /// on the way in, height on the way out.
+    ///
+    /// **This used to stop after one level**, and the body's children were the
+    /// only boxes that were ever re-measured. A subtree's heights were settled
+    /// once each, as it was built, bottom-up — and then every later layout pass
+    /// overwrote them with sizes derived from the container, with nothing to
+    /// push back. Each ancestor added on top ratcheted the whole subtree
+    /// smaller: a Flutter calculator measured 32.5px per row while it was a
+    /// bare column, 25.2 once a sibling joined it, 14.0 inside a `Scaffold`,
+    /// 12.4 inside a `MaterialApp` — a text line's worth, for a 28px button.
+    fn size_subtree(&mut self, node: NodeId, available: f32) {
+        // **Whether this box's block size is definite can only be known once
+        // its ancestors are.** It is sent at append time, when a bottom-up
+        // frontend is still holding a detached subtree — no parent, so nothing
+        // above it is definite yet and every box answered `auto`. Re-asked here,
+        // where the chain above is settled, so a `Scaffold` that has since been
+        // given the window's height tells its column to divide it.
+        let mode = self.axis_mode(node, false).to_string();
+        self.command(
+            node,
+            &WidgetCommand::Custom("SetHeightMode".into(), CommandValue::Text(mode)),
+        );
+        self.reresolve_percentages(node);
+        self.fill_available_width(node, available);
+        // **Flow it once on the way DOWN too**, now that its own width is
+        // settled. A block child's width comes from `fill_available_width`
+        // below, but a FLEX or GRID child's comes from its container's
+        // layout — and that only runs when the container's rect is set. Doing
+        // it only on the way up left every item still carrying its creation
+        // width while its own children resolved percentages against it: a
+        // Flutter key read `width: 100%` off a cell that had not been narrowed
+        // yet and came out a full viewport wide, painting its label into the
+        // next column.
+        self.reflow(node);
+        // The content box the children resolve their own widths against.
+        let edges = self.box_edges(node);
+        let frame = edges.border.horizontal() + edges.padding.horizontal();
+        let inner = (self.border_rect(node).w - frame).max(0.0);
+        for child in self.child_nodes(node) {
+            if !self.is_element(child) {
+                continue;
+            }
+            // The same boxes the body's own pass skips: a docked or
+            // self-positioning child is not in this flow, and one that renders
+            // nothing has no box to size.
+            let skip = self
+                .node(child)
+                .map(|n| n.dock.is_some() || renders_nothing(&n.tag, &n.input_type))
+                .unwrap_or(true);
+            if skip || self.positions_itself(child) {
+                continue;
+            }
+            self.size_subtree(child, inner);
+        }
+        // **Re-run this box's own flow before reading what it used.**
+        // `ContentHeight` is a READ of the last pass — that is what keeps it
+        // from disagreeing with where the children actually are — so a box
+        // whose children just changed size has to flow them again first, or it
+        // answers with the arrangement they had on the way in.
+        self.reflow(node);
+        self.apply_content_height(node);
+    }
+
+    /// Re-run a box's own layout, without changing its size.
+    ///
+    /// Setting the rect it already has is what asks a panel to arrange its
+    /// children again — the same move [`Document::relayout_parent`] makes one
+    /// level up.
+    fn reflow(&mut self, node: NodeId) {
+        if let Some(w) = self.widget_mut(node) {
+            let rect = w.rect();
+            w.set_rect(rect);
+        }
     }
 
     /// Size a box to its content and re-run the flow it sits in.
@@ -3676,23 +4798,26 @@ impl Document {
     /// asking it for a content height gets its own height back, and setting
     /// that as its height would be a fixed point around whatever guess it
     /// started with.
-    fn apply_flowed_height(&mut self, node: NodeId) -> bool {
-        if self.computed_style(node).display == Some(crate::css::Display::Flex) {
-            return false;
-        }
+    /// Where this box's flow finished — the measuring half, with no write.
+    ///
+    /// `None` when the box flowed nothing, for the same reason an empty text
+    /// box keeps its guess: collapsing every unstyled container to zero is a
+    /// different change from this one.
+    fn flowed_height(&mut self, node: NodeId) -> Option<f32> {
         let height = match self.command(
             node,
             &WidgetCommand::Custom("ContentHeight".into(), CommandValue::None),
         ) {
             CommandValue::Number(h) => h as f32,
-            _ => return false,
+            _ => return None,
         };
-        // A container that flowed nothing keeps its guess, for the same reason
-        // an empty text box does: collapsing every unstyled container to zero
-        // is a different change from this one.
-        if height <= 0.0 {
+        (height > 0.0).then_some(height)
+    }
+
+    fn apply_flowed_height(&mut self, node: NodeId) -> bool {
+        let Some(height) = self.flowed_height(node) else {
             return false;
-        }
+        };
         let Some(w) = self.widget_mut(node) else {
             return false;
         };
@@ -3734,7 +4859,14 @@ impl Document {
         // it. `None` here IS `auto` — the cascade has already folded the UA
         // layer in, so this asks about the used value rather than about one
         // declaration store.
-        if self.computed_style(node).height.is_some() {
+        // **Definite, not merely DECLARED.** A flex or grid item's block size
+        // comes from its container's algorithm and no declaration records it,
+        // so testing for a declaration let content sizing overrule the share a
+        // `Column` had just handed an `Expanded` — every row grew back to its
+        // content and the calculator overflowed the window again. `axis_mode`
+        // is the one place that knows all three ways a block size becomes
+        // definite: declared, flexed, or stretched.
+        if self.axis_mode(node, false) == "declared" {
             return false;
         }
         // A box holding element children as well as text is a block container
@@ -3754,11 +4886,36 @@ impl Document {
             // the height and the children's positions from disagreeing.
             return self.apply_flowed_height(node);
         }
+        // **A line box is at least as tall as the inline-level BOXES on it** —
+        // §10.8. Everything left here is inline content, but inline content is
+        // not only text: an `inline-block` or a replaced element sits on the
+        // line as a box with a height of its own, and measuring the line as if
+        // it were text alone answers one text line for a box three times that.
+        //
+        // That was the whole of the Flutter collapse. A `Padding` wrapping an
+        // `ElevatedButton` is `<div><button>…</button></div>`, the button is
+        // `inline-block`, so the div measured its caption's ONE LINE — about
+        // 17px — for a 28px button. Every ancestor then sized to that: four
+        // rows 17px apart, buttons overlapping at half height. The buttons were
+        // never mispositioned; the boxes around them were measured as text.
+        //
+        // Only when there IS such a box. An empty container's flow reports its
+        // padding, and taking that as a height would collapse every unstyled
+        // `<div>` to nothing — the change this one is deliberately not.
+        let has_boxes = self
+            .child_nodes(node)
+            .into_iter()
+            .any(|c| self.is_element(c));
+        let boxed = if has_boxes {
+            self.flowed_height(node).unwrap_or(0.0)
+        } else {
+            0.0
+        };
         // The runs as the WIDGET holds them — what will actually be painted.
         // Re-deriving them here would let the measurement agree with itself
         // while the renderer drew something else.
         let runs = self.inline_runs(node);
-        if runs.is_empty() {
+        if runs.is_empty() && boxed <= 0.0 {
             return false;
         }
         let edges = self.box_edges(node);
@@ -3780,8 +4937,20 @@ impl Document {
                 )
             })
             .collect();
-        let (_, content_h) = crate::ide_text::measure_rich_text(&spans, Some(content_w));
-        let height = content_h + frame_h;
+        // Measured the way it will be PAINTED. A box that may not wrap is one
+        // line high however narrow it is, and measuring it against the content
+        // width would give it the height of text that breaks — the number the
+        // renderer then contradicts.
+        let wrap = (self.computed_style(node).white_space
+            != Some(crate::css::WhiteSpace::Nowrap)
+            && self.computed_style(node).white_space != Some(crate::css::WhiteSpace::Pre))
+        .then_some(content_w);
+        let (_, content_h) = crate::ide_text::measure_rich_text(&spans, wrap);
+        // The taller of the two, not one or the other: a line carrying text
+        // AND a box is as tall as whichever reaches further. `boxed` already
+        // includes this box's own padding, which is why it is compared against
+        // the framed text height rather than added to it.
+        let height = (content_h + frame_h).max(boxed);
         if (height - rect.h).abs() < 0.5 {
             return false;
         }
@@ -4093,6 +5262,11 @@ impl Document {
                 self.rebuild_inline_content(parent);
             }
         }
+        // **A table's columns are measured from its cells' content**, so
+        // writing text into a cell resizes columns that other rows share. This
+        // is the difference between a table and a grid: nobody declared these
+        // widths, so nothing else can be relied on to recompute them.
+        self.relayout_enclosing_table(node);
     }
 
     pub fn text_content(&mut self, node: NodeId) -> String {
@@ -4133,10 +5307,15 @@ impl Document {
         // still the nodes, and the nodes are what `textContent` answers. Asking
         // the widget instead would answer with whatever it was last told, which
         // is the copy rather than the fact.
+        // Elements count here too, and recursing is what `textContent` means:
+        // a `<button><span>7</span></button>` answers `"7"`. Filtering to
+        // character data alone was right when a leaf could only hold text
+        // nodes, and wrong the moment it could hold an inline element — which
+        // is how Flutter spells every label.
         let runs: Vec<NodeId> = self
             .child_nodes(node)
             .into_iter()
-            .filter(|child| self.is_character_data(*child))
+            .filter(|child| self.is_element(*child) || self.is_character_data(*child))
             .collect();
         let data: String = runs
             .into_iter()
@@ -4266,7 +5445,49 @@ impl Document {
     /// Drain what the user did into DOM events. The widget layer reports in
     /// its own vocabulary (`ButtonClicked`, `TextChanged`); this is the one
     /// place that vocabulary becomes `click` / `input` / `change`.
+    /// **Pull the live pseudo-class state and re-cascade what moved.**
+    ///
+    /// The pointer moves without the document being told: the arranging panel
+    /// maintains `hovered()` on its children directly. So the state is pulled
+    /// here, once, rather than pushed — and an element whose state CHANGED has
+    /// its cascade re-run, because computed values are cached and a `:hover`
+    /// rule that only matched on the next unrelated restyle would apply at
+    /// random.
+    ///
+    /// Called from [`Document::drain_events`], which the host already pumps
+    /// every frame, so `:hover` follows the pointer without a second clock.
+    ///
+    /// Only elements that HAVE a widget are asked — a run has no state of its
+    /// own, and asking for one would allocate a map entry per text node.
+    pub fn refresh_interaction_states(&mut self) -> bool {
+        let mut changed = Vec::new();
+        for node in self.order.clone() {
+            if !self.is_element(node) {
+                continue;
+            }
+            let Some(widget) = self.widget_mut(node) else {
+                self.states.remove(&node);
+                continue;
+            };
+            let hover = widget.hovered();
+            let checked = matches!(
+                self.command(node, &WidgetCommand::GetValue),
+                CommandValue::Bool(true)
+            );
+            let now = (hover, checked);
+            if self.states.get(&node) != Some(&now) {
+                self.states.insert(node, now);
+                changed.push(node);
+            }
+        }
+        for node in &changed {
+            self.restyle_subtree(*node);
+        }
+        !changed.is_empty()
+    }
+
     pub fn drain_events(&mut self) -> Vec<DomEvent> {
+        self.refresh_interaction_states();
         let raw = self.form.drain_events();
         let mut out = Vec::new();
         for event in raw {
@@ -4416,6 +5637,18 @@ fn control_kind(tag: &str, input_type: &str) -> &'static str {
             "date" | "datetime-local" | "time" | "month" | "week" => "datetimepicker",
             "button" | "submit" | "reset" => "button",
             "image" => "picturebox",
+            // The picker was WRITTEN and unreachable: `ColorPicker` implements
+            // `PanelWidget`, emits `ColorChanged`, and `dom.rs` already turned
+            // that into `input`/`change` — nothing named it, so
+            // `<input type="color">` fell to the text arm and rendered a box
+            // you could type in. `value_kind_of` already answers `Text` here,
+            // so the `#rrggbb` value reaches it as `SetText` unchanged.
+            "color" => "colorpicker",
+            // A button plus the chosen file's name, opening the platform
+            // chooser — which is what a browser draws and what VB's
+            // `OpenFileDialog` is. It fell to the text arm before, rendering an
+            // editable field that neither picks a file nor reports one.
+            "file" => "fileinput",
             // A password field masks what it holds, which is exactly what the
             // masked textbox is for — it fell to the plain textbox before and
             // showed the characters.
@@ -4439,6 +5672,15 @@ fn control_kind(tag: &str, input_type: &str) -> &'static str {
         "datalist" => "listbox",
         "textarea" => "richtextbox",
         "progress" | "meter" => "progressbar",
+        // **`<a>` answers here only when it is a BOX.** An `<a>` in flow is
+        // inline content — a run of its parent's sentence — and never reaches
+        // this function; `is_inline_content` names it explicitly.
+        //
+        // What DOES reach here is a blockified one: `position: absolute`, or
+        // the `Left`/`Top` every VCL and WinForms designer writes. That is a
+        // `LinkLabel`, and it must stay one — a `Label` has no `handle_mouse`
+        // and emits nothing, so answering `label` here would silently delete
+        // the click and the pointer cursor from every designer-placed link.
         "a" => "linklabel",
         "img" => "picturebox",
         "canvas" => "canvas",
@@ -4446,17 +5688,35 @@ fn control_kind(tag: &str, input_type: &str) -> &'static str {
         // children, so a nestable container is the only honest mapping — and
         // vertical flow IS what CSS `display:block` does to children.
         "fieldset" => "flowlayoutpanel",
-        "table" => "datagridview",
+        // **A table is a BOX that lays its children out as a table** — the
+        // formatting context comes from `display: table` in the UA sheet, not
+        // from the widget type. This used to answer `datagridview`, which made
+        // an HTML *layout* impersonate a .NET *control*: `<table>` got a
+        // DataGrid with columns and a header of its own, and the `<tr>`s and
+        // `<td>`s inside it became panels beside a grid that had never heard of
+        // them. `DataGridView` is still reachable by the name that means it.
+        "table" => "flowlayoutpanel",
         "ul" | "ol" => "listbox",
         "menu" => "menustrip",
-        // A `<select>`'s options and a table's cells are CONTENT of their
-        // container, not controls beside it. They are text-bearing, so `label`
-        // is right — listed explicitly so it is a decision rather than the
-        // fallback catching them.
-        "option" | "optgroup" | "td" | "th" | "caption" | "legend" | "summary" => "label",
+        // A `<select>`'s options are the CONTROL's content, not boxes beside
+        // it — a browser does not give them a box either, so they stay leaves.
+        "option" | "optgroup" => "label",
+        // **A cell is a BOX.** These were labels on the reasoning that they are
+        // "a container's CONTENT rather than boxes in their own right". That is
+        // the WinForms model, not HTML's: a `<td>` may hold a `<div>`, a
+        // `<form>` or another table, and `<summary>` takes phrasing and heading
+        // content. Mapped to a leaf, `add_child` was REFUSED and every such
+        // child went to `detached` — the same silent-label trap that once
+        // swallowed `<html><body>` whole.
+        //
+        // A cell is now a cell IN A ROW as well as a box: `ua.rs` declares
+        // `display: table-cell` and `Formatting::Table` reads it. The widget
+        // type is unchanged — what a `<td>` needed all along was a container,
+        // and what makes it a table cell is the cascade.
+        "td" | "th" | "caption" | "legend" | "summary" => "flowlayoutpanel",
         // Table structure: rows and sections hold cells, so they are
         // containers rather than text.
-        "tr" | "thead" | "tbody" | "tfoot" | "colgroup" => "flowlayoutpanel",
+        "tr" | "thead" | "tbody" | "tfoot" | "colgroup" | "col" => "flowlayoutpanel",
         "iframe" | "embed" | "object" => "picturebox",
         // A rule is a thematic break: a thin panel, which is what it draws as.
         // Without an arm here it would fall to `_ => "label"` at 120x20 — the
@@ -4472,11 +5732,11 @@ fn control_kind(tag: &str, input_type: &str) -> &'static str {
         // The container draws its own text (`FlowLayoutPanel::caption`, which
         // is wxhtmledit's `Box::ownText`) and arranges its children under it.
         //
-        // Still labels, deliberately: `option`, `td`, `th`, `legend`, `summary`
-        // and `label` itself. Those are a container's CONTENT rather than boxes
-        // in their own right, and `label` in particular is what every VCL
-        // `TLabel` maps to — making it a container would change every form in
-        // the corpus to buy nothing.
+        // Still labels, deliberately: `option`, `optgroup` and `label` itself.
+        // The first two are a CONTROL's content and get no box in a browser
+        // either; `label` is what every VCL `TLabel` maps to, so changing it
+        // would touch every form in the corpus. `td`/`th`/`caption`/`legend`/
+        // `summary` USED to be here and are boxes now — see the arm above.
         "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "blockquote" | "figure" | "figcaption"
         | "address" | "pre" | "center" | "dl" | "dd" | "dt" | "details" => "flowlayoutpanel",
         "dialog" | "div" | "form" | "section" | "article" | "main" | "aside" | "header"
@@ -4529,6 +5789,8 @@ fn vybe_widget_kind(name: &str) -> &'static str {
         "listview" => "listview",
         "monthcalendar" => "monthcalendar",
         "datetimepicker" => "datetimepicker",
+        "colorpicker" => "colorpicker",
+        "fileinput" => "fileinput",
         "picturebox" => "picturebox",
         "richtextbox" => "richtextbox",
         "maskedtextbox" => "maskedtextbox",
@@ -4638,6 +5900,12 @@ fn default_size(kind: &str, tag: &str) -> (f32, f32) {
     }
     match kind {
         "textbox" | "combobox" | "numericupdown" | "datetimepicker" => (160.0, 24.0),
+        // A colour swatch is a BUTTON, not a field — it shows the colour and
+        // opens a picker, so it takes a control's height and none of a text
+        // box's width. Chrome's own is about this size.
+        "colorpicker" => (64.0, 24.0),
+        // Button plus a filename — wider than a field, one line tall.
+        "fileinput" => (240.0, 24.0),
         // Tall, because it holds lines — the same call `RICHTEXTBOX_DEF` makes
         // with its own (100, 96). One line high made an unstyled memo look
         // like a text field.
@@ -4773,6 +6041,54 @@ mod tests {
     }
 
     #[test]
+    fn text_transform_recases_the_painted_run_but_not_text_content() {
+        // The invariant that makes this a RENDERING property: the run the
+        // widget draws is uppercased, and reading the element back still
+        // answers exactly what the author wrote. A transform applied to the
+        // stored text instead would pass the first assertion and fail this.
+        let mut doc = Document::new("t");
+        let p = doc.create_element("p", "");
+        doc.append_child(DOCUMENT, p);
+        doc.set_text_content(p, "hello world");
+        doc.set_style_property(p, "text-transform", "uppercase");
+
+        assert_eq!(doc.inline_runs(p)[0].text, "HELLO WORLD");
+        assert_eq!(doc.text_content(p), "hello world");
+    }
+
+    #[test]
+    fn letter_spacing_cascades_onto_the_run_font() {
+        // The other half of the path: `ide_text` proves the spacing reaches
+        // cosmic-text, this proves the declaration reaches the run's spec —
+        // inherited from the container, so neither end is assumed.
+        let mut doc = Document::new("t");
+        let box_ = doc.create_element("div", "");
+        doc.append_child(DOCUMENT, box_);
+        let p = doc.create_element("p", "");
+        doc.append_child(box_, p);
+        doc.set_text_content(p, "spaced");
+        doc.set_style_property(box_, "letter-spacing", "4px");
+
+        assert_eq!(doc.inline_runs(p)[0].font.letter_spacing, 4.0);
+    }
+
+    #[test]
+    fn text_transform_inherits_and_capitalize_titlecases_each_word() {
+        // Declared on the CONTAINER, applied to a descendant's run — which is
+        // what makes it an inherited property rather than one the element must
+        // declare for itself.
+        let mut doc = Document::new("t");
+        let box_ = doc.create_element("div", "");
+        doc.append_child(DOCUMENT, box_);
+        let p = doc.create_element("p", "");
+        doc.append_child(box_, p);
+        doc.set_text_content(p, "hello wide world");
+        doc.set_style_property(box_, "text-transform", "capitalize");
+
+        assert_eq!(doc.inline_runs(p)[0].text, "Hello Wide World");
+    }
+
+    #[test]
     fn z_index_reorders_positioned_siblings_and_ignores_static_ones() {
         // Two overlapping boxes. Document order decides while both carry the
         // same z-index, and `z-index` overrules it — but ONLY for positioned
@@ -4862,12 +6178,16 @@ mod tests {
     #[test]
     fn created_element_is_not_in_the_document() {
         let mut doc = Document::new("t");
+        // The document is never empty: tree construction has already put
+        // `<html>`, `<head>` and `<body>` in it, so the question is whether
+        // creating adds to that — not whether the count is zero.
+        let before = doc.form().control_count();
         let cb = doc.create_element("input", "checkbox");
         assert!(!doc.connected(cb), "createElement must not insert");
-        assert_eq!(doc.form().control_count(), 0);
+        assert_eq!(doc.form().control_count(), before);
         doc.append_child(DOCUMENT, cb);
         assert!(doc.connected(cb));
-        assert_eq!(doc.form().control_count(), 1);
+        assert_eq!(doc.form().control_count(), before);
     }
 
     #[test]
@@ -4878,7 +6198,11 @@ mod tests {
         doc.set_checked(cb, true);
         assert!(doc.checked(cb));
         // Read it straight off the control to prove there is no second copy.
-        let v = doc.form_mut().send_command("n1", &WidgetCommand::GetValue);
+        // Named from the node rather than spelled `"n1"`: the document already
+        // holds `<html>`, `<head>` and `<body>`, so the first element a test
+        // creates has never been node 1 since tree construction landed.
+        let name = Document::widget_name(cb);
+        let v = doc.form_mut().send_command(&name, &WidgetCommand::GetValue);
         assert!(matches!(v, CommandValue::Bool(true)));
     }
 
@@ -4962,19 +6286,33 @@ mod tests {
     }
 
     #[test]
-    fn appending_to_a_leaf_reports_failure() {
-        // A `<button>` is not a container. The spec throws
-        // HierarchyRequestError; this reports it rather than dropping the
-        // control silently.
+    fn a_leaf_takes_inline_content_and_refuses_a_box() {
+        // Was `appending_to_a_leaf_reports_failure`, asserting a `<button>`
+        // refuses a `<span>`. **That assertion was wrong about HTML.**
+        // `<button><span>7</span></button>` is valid markup, every browser
+        // accepts it, and it is how Flutter spells every label
+        // (`ElevatedButton(child: Text('7'))`) — refusing it rendered a whole
+        // keypad as empty rectangles.
+        //
+        // The rule the original test was reaching for survives, and is now
+        // stated precisely: INLINE content is a leaf's caption; a BOX is a
+        // genuine structural error and is still refused rather than dropped.
         let mut doc = Document::new("t");
         let b = doc.create_element("button", "");
-        let label = doc.create_element("span", "");
         doc.append_child(DOCUMENT, b);
-        assert!(!doc.append_child(b, label), "a leaf cannot take children");
-        assert!(!doc.connected(label));
+
+        let label = doc.create_element("span", "");
+        doc.set_text_content(label, "7");
+        assert!(doc.append_child(b, label), "a leaf takes inline content");
+        assert_eq!(doc.text_content(b), "7", "the span is the button's caption");
+
+        // A block-level child is still not a caption, and still reports.
+        let box_ = doc.create_element("div", "");
+        assert!(!doc.append_child(b, box_), "a leaf cannot take a box");
+        assert!(!doc.connected(box_));
         // Still usable — not lost.
-        doc.set_text_content(label, "still here");
-        assert_eq!(doc.text_content(label), "still here");
+        doc.set_text_content(box_, "still here");
+        assert_eq!(doc.text_content(box_), "still here");
     }
 
     #[test]
@@ -5319,6 +6657,143 @@ mod tests {
     }
 
     #[test]
+    fn a_track_list_mixes_every_unit() {
+        // px, %, fr and auto in ONE template, which is how real grids are
+        // written. 600px container, 8px gaps, 4 tracks → 24px of gap.
+        //   100px  +  10% (60)  +  auto  +  1fr
+        // leaves the `fr` everything the others did not take.
+        let mut doc = Document::new("t");
+        let sheet = doc.create_element("style", "");
+        let css = doc.create_text_node(
+            "#g { display: grid; grid-template-columns: 100px 10% auto 1fr; \
+             width: 600px; padding: 0; column-gap: 8px; row-gap: 0; } \
+             .m { width: 50px; }",
+        );
+        doc.append_child(sheet, css);
+        doc.append_child(DOCUMENT, sheet);
+
+        let grid = doc.create_element("div", "");
+        doc.set_attribute(grid, "id", "g");
+        doc.append_child(DOCUMENT, grid);
+        // Only the `auto` track's item declares a width — that is what `auto`
+        // measures. Declaring one on the others would win over stretch (a
+        // declared size beats the track), which is correct and would make this
+        // test measure the items instead of the tracks.
+        let cells: Vec<NodeId> = (0..4)
+            .map(|i| {
+                let c = doc.create_element("div", "");
+                if i == 2 {
+                    doc.set_attribute(c, "class", "m");
+                }
+                doc.append_child(grid, c);
+                c
+            })
+            .collect();
+
+        let r: Vec<LayoutRect> = cells.iter().map(|c| doc.border_rect(*c)).collect();
+        assert!((r[0].w - 100.0).abs() < 0.5, "px track: {}", r[0].w);
+        assert!((r[1].w - 60.0).abs() < 0.5, "percent track: {}", r[1].w);
+        // The `fr` takes what is left: 600 - 24 gaps - 100 - 60 - auto(50).
+        assert!(
+            (r[3].w - (600.0 - 24.0 - 100.0 - 60.0 - 50.0)).abs() < 1.0,
+            "fr track took {} of the leftover",
+            r[3].w
+        );
+        // Every track sits where the previous one ended, plus the gap.
+        for i in 1..4 {
+            assert!(
+                (r[i].x - (r[i - 1].x + r[i - 1].w + 8.0)).abs() < 0.5,
+                "track {i} is misplaced at {}",
+                r[i].x
+            );
+        }
+    }
+
+    #[test]
+    fn minmax_floors_a_track_and_still_flexes() {
+        // `minmax(200px, 1fr)` — the responsive idiom. The floor holds when
+        // there is not enough room to share, and the track still grows when
+        // there is.
+        let mut doc = Document::new("t");
+        let sheet = doc.create_element("style", "");
+        let css = doc.create_text_node(
+            "#g { display: grid; grid-template-columns: minmax(200px, 1fr) 1fr; \
+             width: 300px; column-gap: 0; row-gap: 0; }",
+        );
+        doc.append_child(sheet, css);
+        doc.append_child(DOCUMENT, sheet);
+        let grid = doc.create_element("div", "");
+        doc.set_attribute(grid, "id", "g");
+        doc.append_child(DOCUMENT, grid);
+        let a = doc.create_element("div", "");
+        let b = doc.create_element("div", "");
+        doc.append_child(grid, a);
+        doc.append_child(grid, b);
+
+        // 300px between a floored track and a plain `1fr`: the floor wins and
+        // the sibling gets the remainder.
+        let ra = doc.border_rect(a);
+        assert!(
+            ra.w >= 199.5,
+            "minmax floor was not honoured: {} < 200",
+            ra.w
+        );
+        // Widen it and the floored track flexes above its floor.
+        doc.set_style_property(grid, "width", "1000px");
+        let wide = doc.border_rect(a).w;
+        assert!(
+            wide > ra.w,
+            "the minmax track did not flex above its floor: {wide} vs {}",
+            ra.w
+        );
+    }
+
+    #[test]
+    fn named_areas_place_items_by_name() {
+        // `grid-template-areas` draws the layout; `grid-area` claims a room.
+        // The template alone also sets the COLUMN COUNT — two names per row is
+        // a two-column grid with no `grid-template-columns` in sight.
+        let mut doc = Document::new("t");
+        let sheet = doc.create_element("style", "");
+        let css = doc.create_text_node(
+            "#g { display: grid; width: 400px; padding: 0; column-gap: 0; row-gap: 0; \
+             grid-template-areas: \"head head\" \"side main\"; } \
+             .h { grid-area: head; } .s { grid-area: side; } .m { grid-area: main; }",
+        );
+        doc.append_child(sheet, css);
+        doc.append_child(DOCUMENT, sheet);
+        let grid = doc.create_element("div", "");
+        doc.set_attribute(grid, "id", "g");
+        doc.append_child(DOCUMENT, grid);
+
+        #[allow(clippy::redundant_closure_call)]
+        let mut cell = |class: &str| {
+            let c = doc.create_element("div", "");
+            doc.set_attribute(c, "class", class);
+            doc.append_child(grid, c);
+            c
+        };
+        let (head, side, main) = (cell("h"), cell("s"), cell("m"));
+
+        let (h, s, m) = (
+            doc.border_rect(head),
+            doc.border_rect(side),
+            doc.border_rect(main),
+        );
+        // `head head` spans both columns of row one.
+        assert!(
+            (h.w - 400.0).abs() < 1.0,
+            "the header did not span both columns: {}",
+            h.w
+        );
+        // `side` and `main` share row two.
+        assert_eq!(s.y, m.y, "side and main are not on the same row");
+        assert!(s.y > h.y, "row two did not start below the header");
+        assert!(m.x > s.x, "main is not to the right of side");
+        assert!((s.w - 200.0).abs() < 1.0, "side is {} of a 2-col grid", s.w);
+    }
+
+    #[test]
     fn a_declared_width_survives_its_container() {
         // A block-level child with `width: 200px` was stretched to the
         // container anyway: the container was told each child's `display` and
@@ -5420,6 +6895,15 @@ mod tests {
         doc.append_child(DOCUMENT, row);
         doc.set_style_property(row, "display", "flex");
         doc.set_style_property(row, "flex-direction", "row");
+        // **A declared height, because that is what stretching is about.** With
+        // `height: auto` the line is as tall as its tallest item and the item
+        // then fills the line — both end up the item's own height, and the
+        // assertion below could not tell stretching from not stretching. A row
+        // with a height of its own is the case where the two differ, and it is
+        // also every panel that reaches this widget by KIND, which is what this
+        // guard is for. The auto-height rule has its own test in
+        // `a_column_of_flex_rows_grows_to_hold_them`.
+        doc.set_style_property(row, "height", "150px");
         let a = doc.create_element("button", "");
         let b = doc.create_element("button", "");
         doc.append_child(row, a);
@@ -6152,15 +7636,23 @@ mod tests {
     #[test]
     fn an_attribute_on_the_document_does_not_orphan_the_body() {
         let mut doc = Document::new("t");
+        let body = doc.body().expect("an HTML document has a body");
         let p = doc.create_element("p", "");
         doc.append_child(DOCUMENT, p);
-        assert_eq!(doc.child_nodes(DOCUMENT), vec![p]);
+        // Appending to the document puts content in the BODY, as tree
+        // construction does — the document's own child is `<html>`.
+        assert_eq!(doc.child_nodes(body), vec![p]);
 
         doc.set_attribute(DOCUMENT, "lang", "en");
         assert_eq!(
-            doc.child_nodes(DOCUMENT),
+            doc.child_nodes(body),
             vec![p],
-            "the document still has its children after an attribute write"
+            "the body still has its children after an attribute write on the document"
+        );
+        assert_eq!(
+            doc.child_nodes(DOCUMENT).len(),
+            1,
+            "and the document keeps its single element child, `<html>`"
         );
     }
 
@@ -6180,7 +7672,10 @@ mod tests {
 
         let middle = doc.create_element("p", "");
         assert!(doc.insert_before(DOCUMENT, middle, Some(last)));
-        assert_eq!(doc.child_nodes(DOCUMENT), vec![first, middle, last]);
+        // The root's content lives in the body — `insertBefore` has to honour
+        // the reference there just as it does in any other container.
+        let body = doc.body().expect("an HTML document has a body");
+        assert_eq!(doc.child_nodes(body), vec![first, middle, last]);
 
         // And inside a container, whose children live in its own `DomNode`.
         let box_ = doc.create_element("div", "");
@@ -6393,7 +7888,8 @@ mod tests {
 
         let fresh = doc.create_element("p", "");
         assert!(doc.replace_child(DOCUMENT, fresh, b));
-        assert_eq!(doc.child_nodes(DOCUMENT), vec![a, fresh, c]);
+        let body = doc.body().expect("an HTML document has a body");
+        assert_eq!(doc.child_nodes(body), vec![a, fresh, c]);
     }
 
     /// `cloneNode(false)` copies the node and NOT its children; `true` copies
@@ -6843,6 +8339,727 @@ mod tests {
             doc.style_properties(strong).font_weight,
             Some(700),
             "the child is in the tree, so the UA sheet still reaches it"
+        );
+    }
+
+    /// A table cell is a BOX, and an `<option>` still is not.
+    ///
+    /// Both halves are the point. `<td>` mapped to a leaf label on the
+    /// reasoning that a cell is "a container's CONTENT" — the WinForms model.
+    /// HTML says a cell holds flow content, so a `<div>` inside one was refused
+    /// by `add_child` and silently went to `detached`. An `<option>` genuinely
+    /// is the control's content and gets no box in a browser either, so it
+    /// stays a leaf: this asserts a DECISION, not just a change.
+    #[test]
+    fn a_table_cell_holds_flow_content_but_an_option_does_not() {
+        let mut doc = Document::new("t");
+        let td = doc.create_element("td", "");
+        doc.append_child(DOCUMENT, td);
+        doc.set_text_content(td, "cell ");
+
+        let div = doc.create_element("div", "");
+        assert!(
+            doc.append_child(td, div),
+            "a cell must accept flow content — it can hold a div, a form, or another table"
+        );
+        assert_eq!(
+            doc.text_content(td),
+            "cell ",
+            "and keep its own text: a box has text AND children"
+        );
+
+        let select = doc.create_element("select", "");
+        doc.append_child(DOCUMENT, select);
+        let option = doc.create_element("option", "");
+        doc.append_child(select, option);
+        let stray = doc.create_element("div", "");
+        assert!(
+            !doc.append_child(option, stray),
+            "an option is the control's content, not a box — it stays a leaf"
+        );
+    }
+
+    /// `<strong>bold <em>and italic</em></strong>` — an inline element inside
+    /// an inline element, which ordinary prose is full of.
+    ///
+    /// Inline elements have no `control_kind` arm and fall to `_ => "label"`,
+    /// so this asks whether the silent-label trap reaches them too, or whether
+    /// inline content escapes it by being RUNS built from the DOM rather than
+    /// widgets built from the tree.
+    #[test]
+    fn an_inline_element_nests_inside_another_inline_element() {
+        let mut doc = Document::new("t");
+        let p = doc.create_element("p", "");
+        doc.append_child(DOCUMENT, p);
+
+        let strong = doc.create_element("strong", "");
+        assert!(doc.append_child(p, strong), "a paragraph takes phrasing content");
+        doc.set_text_content(strong, "bold ");
+
+        let em = doc.create_element("em", "");
+        assert!(
+            doc.append_child(strong, em),
+            "phrasing content nests — `<strong>` must accept an `<em>`"
+        );
+        doc.set_text_content(em, "and italic");
+
+        assert_eq!(
+            doc.style_properties(em).font_weight,
+            Some(700),
+            "the `<em>` is inside the `<strong>`, so bold inherits to it"
+        );
+    }
+
+    /// A link is TEXT, and still clickable.
+    ///
+    /// `<a>` was a link-label widget: a box parked on the line, unable to wrap
+    /// and unable to hold the `<div>` HTML5's transparent content model allows.
+    /// Making it a run fixes the flow — and would have silently deleted the
+    /// click, which is why the exclusion stood. Both halves are asserted here
+    /// because either alone is a regression.
+    #[test]
+    fn a_link_is_a_run_of_its_sentence_and_keeps_its_identity() {
+        let mut doc = Document::new("t");
+        let p = doc.create_element("p", "");
+        doc.append_child(DOCUMENT, p);
+        doc.set_text_content(p, "see ");
+
+        let a = doc.create_element("a", "");
+        doc.set_attribute(a, "href", "#x");
+        assert!(doc.append_child(p, a), "a paragraph takes a link");
+        doc.set_text_content(a, "the docs");
+
+        // The UA sheet already dressed links; the widget was never what made
+        // them blue.
+        let props = doc.style_properties(a);
+        assert_eq!(props.display, Some(crate::css::Display::Inline));
+        assert!(
+            props.color.is_some(),
+            "the UA sheet colours a link — `a {{ color: #0000ee }}`"
+        );
+
+        // The sentence is ONE line: the box's own text plus the link's run,
+        // not a paragraph with a control sitting in it.
+        let runs = doc.inline_runs(p);
+        assert_eq!(runs.len(), 2, "`see ` and `the docs` share the line: {runs:?}");
+        assert_eq!(
+            runs[0].source, None,
+            "the box's own text belongs to no element"
+        );
+        assert!(
+            runs[1].source.is_some(),
+            "the link's run carries its source, which is what a click lands on"
+        );
+    }
+
+    /// A POSITIONED link is still a `LinkLabel`, not a `Label`.
+    ///
+    /// The trap in making `<a>` inline: blockification sends a designer-placed
+    /// link back through `control_kind`, and answering `label` there would have
+    /// given it a widget whose `handle_mouse` returns `false` and which emits
+    /// nothing — silently deleting the click and the pointer cursor from every
+    /// WinForms and VCL LinkLabel. In flow it is a run; out of flow it is the
+    /// control. Both, or neither is right.
+    #[test]
+    fn a_positioned_link_is_still_a_control_but_an_inline_one_is_a_run() {
+        assert_eq!(
+            control_kind("a", ""),
+            "linklabel",
+            "a blockified link needs a widget that can actually be clicked"
+        );
+
+        let mut doc = Document::new("t");
+        let p = doc.create_element("p", "");
+        doc.append_child(DOCUMENT, p);
+
+        let flowing = doc.create_element("a", "");
+        doc.append_child(p, flowing);
+        doc.set_text_content(flowing, "in a sentence");
+        assert!(
+            doc.inline_runs(p).iter().any(|r| r.source.is_some()),
+            "a link in flow is a run of its parent's line"
+        );
+
+        let placed = doc.create_element("a", "");
+        doc.append_child(DOCUMENT, placed);
+        doc.set_style_property(placed, "position", "absolute");
+        doc.set_style_property(placed, "left", "10px");
+        doc.set_style_property(placed, "top", "20px");
+        assert!(
+            !doc.inline_runs(DOCUMENT)
+                .iter()
+                .any(|r| r.source.is_some()),
+            "a positioned link left the flow — it is a box, not a run"
+        );
+    }
+
+    /// A link in flow LOOKS clickable — the third thing after blue and
+    /// underline, and the one a run could not have before.
+    ///
+    /// It arrives as a cascaded declaration, not as widget behaviour, which is
+    /// the whole point: the painter never learns what a link is, so a `<span>`
+    /// beside it keeps the ordinary cursor. Inherited, so an `<em>` inside the
+    /// link is a hand too without a second rule.
+    #[test]
+    fn a_link_run_carries_the_pointer_cursor_and_plain_text_does_not() {
+        let mut doc = Document::new("t");
+        let p = doc.create_element("p", "");
+        doc.append_child(DOCUMENT, p);
+        doc.set_text_content(p, "see ");
+
+        let a = doc.create_element("a", "");
+        doc.append_child(p, a);
+        doc.set_text_content(a, "the docs");
+
+        let span = doc.create_element("span", "");
+        doc.append_child(p, span);
+        doc.set_text_content(span, " and more");
+
+        assert_eq!(
+            doc.style_properties(a).cursor,
+            Some(crate::css::Cursor::Pointer),
+            "the UA sheet declares `a {{ cursor: pointer }}`"
+        );
+        assert_eq!(
+            doc.style_properties(span).cursor,
+            None,
+            "ordinary phrasing content is not a hand"
+        );
+
+        let runs = doc.inline_runs(p);
+        let link = runs
+            .iter()
+            .find(|r| r.text.contains("docs"))
+            .expect("the link is a run");
+        assert_eq!(
+            link.cursor,
+            Some(crate::css::Cursor::Pointer),
+            "the run carries the resolved cursor, which is all the painter gets"
+        );
+    }
+
+    /// The ROOT is a container too, and it was deaf.
+    ///
+    /// `document.body` IS the root node, so appending to it — the way every
+    /// page built on the web platform is assembled — went through the one path
+    /// that bailed instead of routing. The root never learned a child was
+    /// inline-level, so it could only stack, and a form came out as a column
+    /// down the left edge no matter what the cascade said.
+    ///
+    /// Two `<button>`s are the smallest case: `inline-block` in the UA sheet,
+    /// so a browser puts them side by side.
+    #[test]
+    fn the_document_root_is_told_its_children_are_inline_level() {
+        let mut doc = Document::new("t");
+        doc.set_viewport(800.0, 600.0);
+
+        let first = doc.create_element("button", "");
+        doc.append_child(DOCUMENT, first);
+        doc.set_text_content(first, "One");
+
+        let second = doc.create_element("button", "");
+        doc.append_child(DOCUMENT, second);
+        doc.set_text_content(second, "Two");
+
+        let (a, b) = (
+            doc.rect(first).expect("in the document"),
+            doc.rect(second).expect("in the document"),
+        );
+        assert_eq!(
+            a.y, b.y,
+            "inline-level siblings share a line box — they stacked: {a:?} vs {b:?}"
+        );
+        assert!(
+            b.x >= a.x + a.w - 0.5,
+            "the second button must follow the first across, not sit on it: {a:?} vs {b:?}"
+        );
+    }
+
+    /// A field sits BESIDE its label, not underneath it.
+    ///
+    /// `<div><label>Name:</label><input></div>` is most of every form ever
+    /// written. The `<label>` is inline, so it dissolves into a run of the
+    /// div's text; the `<input>` is `inline-block`, so it keeps its box. Those
+    /// are two different mechanisms, and until the widget joined the run
+    /// sequence as an atomic slot they both started at the container's content
+    /// origin — the label painted straight over the field.
+    #[test]
+    fn a_field_is_laid_out_after_its_label_not_on_top_of_it() {
+        let mut doc = Document::new("t");
+        doc.set_viewport(800.0, 600.0);
+        let row = doc.create_element("div", "");
+        doc.append_child(DOCUMENT, row);
+
+        let label = doc.create_element("label", "");
+        doc.append_child(row, label);
+        doc.set_text_content(label, "A fairly long caption:");
+
+        let field = doc.create_element("input", "text");
+        doc.append_child(row, field);
+
+        let row_rect = doc.rect(row).expect("in the document");
+        let field_rect = doc.rect(field).expect("in the document");
+        assert!(
+            field_rect.x > row_rect.x + 40.0,
+            "the field must start after the caption's text, not at the row's \
+             origin — row {row_rect:?}, field {field_rect:?}"
+        );
+    }
+
+    /// `<progress value="60" max="100">` is six tenths full, not full.
+    ///
+    /// The widget stored a fraction and clamped every incoming value to
+    /// `0.0..=1.0`, so the ordinary HTML spelling — a value in the units `max`
+    /// declares — saturated on arrival and drew a complete bar. It looked
+    /// correct for `value="0.6"` with no `max`, which is the one case a widget
+    /// test would have written.
+    #[test]
+    fn a_progress_bar_is_a_fraction_of_its_max_not_of_one() {
+        let mut doc = Document::new("t");
+        let bar = doc.create_element("progress", "");
+        doc.append_child(DOCUMENT, bar);
+        doc.set_attribute(bar, "max", "100");
+        doc.set_attribute(bar, "value", "60");
+
+        assert_eq!(
+            doc.value(bar),
+            "60",
+            "the value reads back in the author's units, not renormalised"
+        );
+
+        // And the order the attributes arrive in must not change the answer —
+        // a `max` after a `value` has to re-clamp rather than strand it.
+        let other = doc.create_element("progress", "");
+        doc.append_child(DOCUMENT, other);
+        doc.set_attribute(other, "value", "60");
+        doc.set_attribute(other, "max", "100");
+        assert_eq!(doc.value(other), "60", "max after value must not clamp it away");
+    }
+
+    /// `<input type="color">` is a picker, not a text field.
+    ///
+    /// `ColorPicker` was written, exported, `PanelWidget`-implementing and
+    /// emitting `ColorChanged` — which `drain_events` already turned into
+    /// `input`/`change`. Nothing named it, so the input fell to the text arm
+    /// and rendered a box you could type prose into. The whole gap was one
+    /// missing arm in each of the two halves of the mapping.
+    ///
+    /// This is also VB's `ColorDialog`, which is why the round-trip matters:
+    /// the value has to read back as the `#rrggbb` HTML defines, not as a
+    /// widget-shaped colour.
+    #[test]
+    fn a_colour_input_is_a_picker_and_round_trips_its_hex() {
+        assert_eq!(control_kind("input", "color"), "colorpicker");
+
+        let mut doc = Document::new("t");
+        let picker = doc.create_element("input", "color");
+        doc.append_child(DOCUMENT, picker);
+        doc.set_attribute(picker, "value", "#3366cc");
+
+        assert_eq!(
+            doc.value(picker),
+            "#3366cc",
+            "the picker holds the colour and answers it in HTML's spelling"
+        );
+    }
+
+    /// Build `<table>` with one `<tr>` per row and the given cell texts.
+    fn table_of(doc: &mut Document, rows: &[&[&str]]) -> (NodeId, Vec<Vec<NodeId>>) {
+        let table = doc.create_element("table", "");
+        doc.append_child(DOCUMENT, table);
+        let mut cells = Vec::new();
+        for texts in rows {
+            let row = doc.create_element("tr", "");
+            doc.append_child(table, row);
+            let mut in_row = Vec::new();
+            for text in *texts {
+                let cell = doc.create_element("td", "");
+                doc.append_child(row, cell);
+                doc.set_text_content(cell, text);
+                in_row.push(cell);
+            }
+            cells.push(in_row);
+        }
+        (table, cells)
+    }
+
+    /// **What shape does the DOM actually build for a table?**
+    ///
+    /// The panel-level test proves a table with two rows sees two rows, and the
+    /// DOM-level tests still place row two's cell nowhere — so the two layers
+    /// disagree about the tree, and this asks the tree directly instead of
+    /// inferring it from coordinates.
+    #[test]
+    fn a_table_widget_holds_rows_which_hold_cells() {
+        let mut doc = Document::new("t");
+        let (table, cells) = table_of(&mut doc, &[&["one", "two"], &["three", "four"]]);
+
+        let name = Document::widget_name(table);
+        let form = doc.form_mut();
+        let table_widget = find_widget_mut(form, &name).expect("the table has a widget");
+        let table_panel = table_widget
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<crate::flow_layout::FlowLayoutPanel>())
+            .expect("a table is a panel");
+
+        let row_names: Vec<String> = table_panel
+            .children_mut()
+            .iter()
+            .map(|c| c.name().to_string())
+            .collect();
+        assert_eq!(
+            row_names.len(),
+            2,
+            "the table holds its two `<tr>`s, not their cells: {row_names:?}"
+        );
+
+        for (index, row) in table_panel.children_mut().iter_mut().enumerate() {
+            let row_panel = row
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<crate::flow_layout::FlowLayoutPanel>())
+                .expect("a row is a panel");
+            let held: Vec<String> = row_panel
+                .children_mut()
+                .iter()
+                .map(|c| c.name().to_string())
+                .collect();
+            assert_eq!(
+                held.len(),
+                2,
+                "row {index} holds its two cells: {held:?}"
+            );
+            for column in 0..2 {
+                assert!(
+                    held.contains(&Document::widget_name(cells[index][column])),
+                    "row {index} holds the cell the DOM says it does: {held:?}"
+                );
+            }
+        }
+    }
+
+    /// **A table lays its cells out in COLUMNS.**
+    ///
+    /// `<table>` used to answer the `datagridview` WIDGET — an HTML *layout*
+    /// impersonating a .NET *control*. The `<tr>`s and `<td>`s inside it became
+    /// generic panels beside a DataGrid that had never heard of them, so a
+    /// table rendered as a grid control with its actual content stacked
+    /// somewhere else.
+    #[test]
+    fn a_table_puts_the_cells_of_a_row_side_by_side() {
+        let mut doc = Document::new("t");
+        let (_, cells) = table_of(&mut doc, &[&["one", "two"]]);
+
+        let a = doc.rect(cells[0][0]).expect("the first cell is laid out");
+        let b = doc.rect(cells[0][1]).expect("the second cell is laid out");
+        assert_eq!(a.y, b.y, "cells of one row share its top edge");
+        assert!(
+            b.x >= a.x + a.w,
+            "the second cell starts after the first ends: {a:?} then {b:?}"
+        );
+    }
+
+    /// Rows stack, and a column is the same x in every one of them — which is
+    /// what makes it a column rather than two rows that happen to line up.
+    #[test]
+    fn a_column_is_the_same_x_in_every_row() {
+        let mut doc = Document::new("t");
+        let (_, cells) = table_of(&mut doc, &[&["one", "two"], &["three", "four"]]);
+
+        let top = doc.rect(cells[0][0]).unwrap();
+        let bottom = doc.rect(cells[1][0]).unwrap();
+        assert!(
+            bottom.y >= top.y + top.h,
+            "the second row is below the first: {top:?} then {bottom:?}"
+        );
+        for column in 0..2 {
+            let first = doc.rect(cells[0][column]).unwrap();
+            let second = doc.rect(cells[1][column]).unwrap();
+            assert_eq!(
+                first.x, second.x,
+                "column {column} is one column, not two coincidences"
+            );
+            assert_eq!(first.w, second.w, "and one width");
+        }
+    }
+
+    /// **The table's BOX covers the rows it drew.**
+    ///
+    /// Every other test here asks where a cell went, and they all passed while
+    /// a table's own border ran straight through its last row: the cells were
+    /// placed correctly inside a rectangle measured before they existed. A
+    /// table's height comes from its content, so the box has to follow the
+    /// rows — nothing about a cell's position says whether it does.
+    ///
+    /// Found in a capture. Both directions were wrong at once: a table that
+    /// gained a row clipped it, and one measured while it had more content
+    /// kept the taller box and drew a large empty area under its last row.
+    #[test]
+    fn a_table_is_as_tall_as_its_rows() {
+        let mut doc = Document::new("t");
+        let (table, cells) = table_of(&mut doc, &[&["one", "two"], &["three", "four"]]);
+
+        let box_of_table = doc.rect(table).unwrap();
+        let last = doc.rect(cells[1][0]).unwrap();
+        assert!(
+            last.y + last.h <= box_of_table.y + box_of_table.h,
+            "the last row is INSIDE the table's box: row {last:?} in {box_of_table:?}"
+        );
+        // And no further than it needs to be: a box much taller than its rows
+        // draws an empty band under the table, which is the same defect from
+        // the other side. One row's slack is spacing and borders, not content.
+        let slack = (box_of_table.y + box_of_table.h) - (last.y + last.h);
+        assert!(
+            slack < last.h,
+            "and the box does not trail an empty row's worth below it: {slack} spare"
+        );
+    }
+
+    /// **A row added AFTER the table was laid out is still laid out.**
+    ///
+    /// Every other test here builds the whole tree and then asserts, which is
+    /// the one order the invalidation already handled — a table whose last
+    /// insertion happens to re-trigger it. This asks the question the other
+    /// way round: the table has already been measured and placed once, and
+    /// then it grows. A browser reflows; so must this.
+    #[test]
+    fn a_row_added_after_the_table_was_laid_out_is_placed() {
+        let mut doc = Document::new("t");
+        let (table, cells) = table_of(&mut doc, &[&["one", "two"]]);
+        let first = doc.rect(cells[0][0]).unwrap();
+
+        let row = doc.create_element("tr", "");
+        doc.append_child(table, row);
+        let mut late = Vec::new();
+        for text in ["three", "four"] {
+            let cell = doc.create_element("td", "");
+            doc.append_child(row, cell);
+            doc.set_text_content(cell, text);
+            late.push(cell);
+        }
+
+        let below = doc.rect(late[0]).unwrap();
+        assert!(
+            below.y >= first.y + first.h,
+            "the late row sits below the first: {first:?} then {below:?}"
+        );
+        assert_eq!(
+            first.x, below.x,
+            "and its cells join the columns that already existed"
+        );
+        let second = doc.rect(late[1]).unwrap();
+        assert!(
+            second.x > below.x,
+            "its own cells are side by side too: {below:?} then {second:?}"
+        );
+    }
+
+    /// **Restyling one cell re-measures the COLUMN.**
+    ///
+    /// A cell's padding is part of its min-content width, and column widths
+    /// are computed from every cell in the column — so a style change on one
+    /// cell is a table-wide question, not a cell-local one. Insertion and text
+    /// changes route to the table; a style change has to as well, or the
+    /// column keeps a width that no longer fits its contents.
+    #[test]
+    fn restyling_a_cell_re_measures_its_column() {
+        let mut doc = Document::new("t");
+        let (_, cells) = table_of(&mut doc, &[&["a", "b"], &["c", "d"]]);
+        let before = doc.rect(cells[0][0]).unwrap();
+
+        doc.set_attribute(cells[0][0], "style", "padding-left: 40px");
+
+        let after = doc.rect(cells[0][0]).unwrap();
+        assert!(
+            after.w > before.w,
+            "the padded cell got wider: {} then {}",
+            before.w,
+            after.w
+        );
+        let neighbour = doc.rect(cells[1][0]).unwrap();
+        assert_eq!(
+            after.w, neighbour.w,
+            "and the cell BELOW it took the same width — a column has one width"
+        );
+        let right = doc.rect(cells[0][1]).unwrap();
+        assert!(
+            right.x >= after.x + after.w - 1.0,
+            "the next column moved out of the way: {after:?} then {right:?}"
+        );
+    }
+
+    /// `colspan` — the cell covers its neighbour's column, and the cell BELOW
+    /// it still starts at column 0.
+    ///
+    /// This is the case a naive table gets wrong: a cell's column is not its
+    /// index among its siblings once anything spans.
+    #[test]
+    fn a_colspan_cell_covers_the_columns_it_claims() {
+        let mut doc = Document::new("t");
+        let (_, cells) = table_of(&mut doc, &[&["wide"], &["a", "b"]]);
+        doc.set_attribute(cells[0][0], "colspan", "2");
+
+        let wide = doc.rect(cells[0][0]).unwrap();
+        let left = doc.rect(cells[1][0]).unwrap();
+        let right = doc.rect(cells[1][1]).unwrap();
+        assert_eq!(wide.x, left.x, "the spanning cell starts at the first column");
+        assert!(
+            wide.w >= (right.x + right.w) - left.x - 1.0,
+            "and reaches the end of the second: spans {} vs {}",
+            wide.w,
+            (right.x + right.w) - left.x
+        );
+    }
+
+    /// `rowspan` — the slot a spanning cell occupies in the row BELOW is not
+    /// available to that row, so its first cell is pushed into column 1.
+    #[test]
+    fn a_rowspan_cell_pushes_the_next_rows_cells_along() {
+        let mut doc = Document::new("t");
+        let (_, cells) = table_of(&mut doc, &[&["tall", "top"], &["bottom"]]);
+        doc.set_attribute(cells[0][0], "rowspan", "2");
+
+        let tall = doc.rect(cells[0][0]).unwrap();
+        let top = doc.rect(cells[0][1]).unwrap();
+        let bottom = doc.rect(cells[1][0]).unwrap();
+        assert_eq!(
+            bottom.x, top.x,
+            "the second row's only cell sits in column 1, because column 0 is still occupied"
+        );
+        assert!(
+            tall.h > top.h,
+            "the spanning cell covers both rows: {} vs {}",
+            tall.h,
+            top.h
+        );
+    }
+
+    /// A `<thead>` is not a row. Its ROWS are the table's rows — a table that
+    /// treated the group as one row would give the whole header one row's
+    /// height and lay its cells out as if they were the header's.
+    #[test]
+    fn a_row_group_contributes_its_rows_not_itself() {
+        let mut doc = Document::new("t");
+        let table = doc.create_element("table", "");
+        doc.append_child(DOCUMENT, table);
+        let head = doc.create_element("thead", "");
+        doc.append_child(table, head);
+        let row = doc.create_element("tr", "");
+        doc.append_child(head, row);
+        let cell = doc.create_element("td", "");
+        doc.append_child(row, cell);
+        doc.set_text_content(cell, "header");
+
+        // A body row too, so the header has something to be a column WITH.
+        let body = doc.create_element("tbody", "");
+        doc.append_child(table, body);
+        let body_row = doc.create_element("tr", "");
+        doc.append_child(body, body_row);
+        let body_cell = doc.create_element("td", "");
+        doc.append_child(body_row, body_cell);
+        doc.set_text_content(body_cell, "value");
+
+        // ⚠ NOT `w > 0 && h > 0` — that is what this test asserted at first,
+        // and it passed while every grouped table rendered COMPLETELY EMPTY.
+        // An unplaced cell keeps its construction size, so a nonzero box is
+        // no evidence of layout at all. Only a POSITION the table chose is.
+        let head_rect = doc.rect(cell).expect("a cell inside a thead is laid out");
+        let body_rect = doc.rect(body_cell).unwrap();
+        let table_rect = doc.rect(table).unwrap();
+        assert!(
+            head_rect.x > table_rect.x && head_rect.y > table_rect.y,
+            "the header cell was placed INSIDE its table: {head_rect:?} in {table_rect:?}"
+        );
+        assert_eq!(
+            head_rect.x, body_rect.x,
+            "and it shares a column with the body's cell, across two groups"
+        );
+        assert!(
+            body_rect.y >= head_rect.y + head_rect.h,
+            "the body's row follows the header's: {head_rect:?} then {body_rect:?}"
+        );
+    }
+
+    /// **The type arrives AFTER the element.**
+    ///
+    /// The DOM's `createElement` takes one argument, so a script has nowhere
+    /// to say what kind of input it is building: `setAttribute("type", …)`
+    /// afterwards is the only spelling there is. Nothing listened, and the
+    /// element kept the text box it was born as — every scripted `<input>` in
+    /// the engine, checkbox and colour and file alike, rendered as a field.
+    ///
+    /// Asserted on the CONTROL, never on `control_kind`: that mapping was
+    /// right the whole time, which is exactly what hid this. Tests that built
+    /// the element WITH its type — the only ones there were — all passed.
+    #[test]
+    fn a_type_set_after_creation_rebuilds_the_control() {
+        let mut doc = Document::new("t");
+        let input = doc.create_element("input", "");
+        doc.append_child(DOCUMENT, input);
+        assert_eq!(
+            doc.rect(input).map(|r| r.w),
+            Some(160.0),
+            "an input with no type is a text field — HTML's missing value default"
+        );
+
+        doc.set_attribute(input, "type", "color");
+        assert_eq!(
+            doc.rect(input).map(|r| r.w),
+            Some(64.0),
+            "the swatch is a different CONTROL, not a text box wearing a label"
+        );
+        doc.set_attribute(input, "value", "#3366cc");
+        assert_eq!(doc.value(input), "#3366cc");
+
+        // Removing the attribute is the missing value default, not "no type".
+        doc.remove_attribute(input, "type");
+        assert_eq!(
+            doc.rect(input).map(|r| r.w),
+            Some(160.0),
+            "back to a text field, because that is what an input with no type is"
+        );
+    }
+
+    /// Order must not matter. `value` then `type` and `type` then `value` are
+    /// the same document, and the control is rebuilt in between — so anything
+    /// the node already carries has to be replayed to the control that
+    /// replaced the old one. This is `<progress>`'s lesson in a second place:
+    /// there, `max` arriving after `value` clamped a value that was correct.
+    #[test]
+    fn attributes_written_before_the_type_survive_the_rebuild() {
+        let mut doc = Document::new("t");
+        let input = doc.create_element("input", "");
+        doc.append_child(DOCUMENT, input);
+
+        doc.set_attribute(input, "value", "#3366cc");
+        doc.set_attribute(input, "id", "swatch");
+        doc.set_attribute(input, "type", "color");
+
+        assert_eq!(
+            doc.value(input),
+            "#3366cc",
+            "the value was written to the control that got replaced; the node still knew it"
+        );
+        assert_eq!(doc.get_attribute(input, "id").as_deref(), Some("swatch"));
+    }
+
+    /// A control the cascade already styled keeps that style across the swap.
+    ///
+    /// `restyle_subtree` cannot do this on its own: it applies what CHANGED,
+    /// and nothing about the cascade changes when a widget is replaced — the
+    /// new one has simply never been told any of it.
+    #[test]
+    fn a_rebuilt_control_is_told_the_style_it_already_had() {
+        let mut doc = Document::new("t");
+        let input = doc.create_element("input", "");
+        doc.append_child(DOCUMENT, input);
+        doc.set_attribute(input, "style", "width: 40px");
+        assert_eq!(doc.rect(input).map(|r| r.w), Some(40.0));
+
+        doc.set_attribute(input, "type", "color");
+        assert_eq!(
+            doc.rect(input).map(|r| r.w),
+            Some(40.0),
+            "the declaration outranks the new kind's starting size, as it did the old one's"
         );
     }
 
@@ -8160,6 +10377,437 @@ mod tests {
             events.iter().any(|e| e.node == b && e.kind == "click"),
             "expected a click on the button, got {:?}",
             events
+        );
+    }
+
+    /// **`:nth-child()` and friends**, including the invalidation — which is
+    /// the half a per-node restyle can never reach.
+    #[test]
+    fn positional_selectors_match_and_survive_an_insertion() {
+        let mut doc = Document::new("t");
+        let sheet = doc.create_element("style", "");
+        let css = doc.create_text_node(
+            "p { color: #000000 } p:nth-child(odd) { color: #ff0000 } \
+             p:last-child { color: #0000ff }",
+        );
+        doc.append_child(sheet, css);
+        doc.append_child(DOCUMENT, sheet);
+
+        let list = doc.create_element("div", "");
+        doc.append_child(DOCUMENT, list);
+        let mut rows = Vec::new();
+        for _ in 0..3 {
+            let row = doc.create_element("p", "");
+            doc.append_child(list, row);
+            rows.push(row);
+        }
+        let colour = |doc: &mut Document, n: NodeId| {
+            doc.computed_style(n).color.map(crate::css::serialize_color)
+        };
+        assert_eq!(colour(&mut doc, rows[0]), Some("#ff0000".to_string()), "1st is odd");
+        assert_eq!(colour(&mut doc, rows[1]), Some("#000000".to_string()), "2nd is even");
+        // The third is both odd AND last; `:last-child` is later at equal
+        // specificity, so it wins.
+        assert_eq!(colour(&mut doc, rows[2]), Some("#0000ff".to_string()), "3rd is last");
+
+        // **Append a fourth.** The third stops being last and becomes plain
+        // odd — a change to an element nobody touched.
+        let fourth = doc.create_element("p", "");
+        doc.append_child(list, fourth);
+        assert_eq!(
+            colour(&mut doc, rows[2]),
+            Some("#ff0000".to_string()),
+            "the old last-child kept a style it no longer matches"
+        );
+        assert_eq!(colour(&mut doc, fourth), Some("#0000ff".to_string()), "the new one is last");
+    }
+
+    /// **`white-space: nowrap` keeps text on one line** — in the measurement
+    /// as well as the paint.
+    ///
+    /// The two have to agree: a box measured as if it wrapped is as tall as
+    /// text that breaks, and then the renderer draws one line inside it.
+    #[test]
+    fn nowrap_keeps_text_on_one_line_and_the_height_agrees() {
+        let mut doc = Document::new("t");
+        let para = doc.create_element("p", "");
+        doc.set_style_property(para, "width", "80px");
+        doc.append_child(DOCUMENT, para);
+        let words = doc.create_text_node(&"wrap ".repeat(40));
+        doc.append_child(para, words);
+
+        let wrapped = doc.border_rect(para).h;
+        doc.set_style_property(para, "white-space", "nowrap");
+        let single = doc.border_rect(para).h;
+        assert!(
+            single < wrapped,
+            "nowrap did not stop the wrapping: {single} vs {wrapped}"
+        );
+
+        // …and back, so the property is read rather than latched.
+        doc.set_style_property(para, "white-space", "normal");
+        assert!(
+            (doc.border_rect(para).h - wrapped).abs() < 0.5,
+            "the box did not wrap again once allowed to"
+        );
+    }
+
+    /// **`:hover` styles the element the pointer is over** — and stops when it
+    /// leaves.
+    ///
+    /// Both halves matter. Matching alone is not enough: computed values are
+    /// cached, so a rule that matched only when some unrelated pass happened to
+    /// re-cascade would apply at random. The state sweep is what re-runs the
+    /// cascade for the element that changed, in both directions.
+    #[test]
+    fn hover_styles_the_element_under_the_pointer_and_releases_it() {
+        let mut doc = Document::new("t");
+        let sheet = doc.create_element("style", "");
+        let css = doc.create_text_node("button { color: #000000 } button:hover { color: #ff0000 }");
+        doc.append_child(sheet, css);
+        doc.append_child(DOCUMENT, sheet);
+
+        let button = doc.create_element("button", "");
+        doc.append_child(DOCUMENT, button);
+        doc.refresh_interaction_states();
+        assert_eq!(
+            doc.computed_style(button).color.map(crate::css::serialize_color),
+            Some("#000000".to_string()),
+            "an unhovered button takes the plain rule"
+        );
+
+        // The pointer arrives. Nothing tells the document — the arranging panel
+        // sets this on the widget directly, which is why the sweep exists.
+        doc.widget_mut(button).expect("the button has a widget").set_hovered(true);
+        assert!(
+            doc.refresh_interaction_states(),
+            "the sweep must report that something moved"
+        );
+        assert_eq!(
+            doc.computed_style(button).color.map(crate::css::serialize_color),
+            Some("#ff0000".to_string()),
+            "`:hover` did not win, though it is more specific and later"
+        );
+
+        // …and leaves. A one-way implementation looks correct until you move
+        // the mouse away.
+        doc.widget_mut(button).expect("still there").set_hovered(false);
+        doc.refresh_interaction_states();
+        assert_eq!(
+            doc.computed_style(button).color.map(crate::css::serialize_color),
+            Some("#000000".to_string()),
+            "the hover style outlived the hover"
+        );
+    }
+
+    /// **Padding insets a box's contents** — boxes AND text, and a declared
+    /// height survives being a flex item.
+    ///
+    /// Three separate questions that a Flutter `AppBar` asks at once: it
+    /// declares `height`, `padding-left` and a `color` its title should
+    /// inherit, and it is a `flex: 0` item of the `Scaffold`.
+    #[test]
+    fn padding_insets_both_boxes_and_text_and_a_declared_height_survives_flex() {
+        let mut doc = Document::new("t");
+        let bar = doc.create_element("div", "");
+        doc.set_style_property(bar, "padding-left", "16px");
+        doc.set_style_property(bar, "height", "56px");
+        doc.set_style_property(bar, "color", "#ffffff");
+        let child = doc.create_element("div", "");
+        doc.append_child(bar, child);
+        doc.append_child(DOCUMENT, bar);
+
+        assert_eq!(
+            doc.border_rect(bar).h,
+            56.0,
+            "a declared height is the author's answer"
+        );
+        let (outer, inner) = (doc.border_rect(bar), doc.border_rect(child));
+        assert!(
+            inner.x >= outer.x + 15.5,
+            "padding did not inset the child box: {} vs {}",
+            inner.x,
+            outer.x
+        );
+
+        // **The box's own TEXT is inset by its padding too**, and takes the
+        // colour the box declares. An `AppBar`'s title is a child `<span>` that
+        // becomes an inline run of the bar, so neither fact reaches it through
+        // the child's own box — the run has to carry them.
+        let title = doc.create_element("span", "");
+        let words = doc.create_text_node("Calculator");
+        doc.append_child(title, words);
+        doc.append_child(bar, title);
+        let runs = doc.inline_runs(bar);
+        assert!(!runs.is_empty(), "the bar has no inline content to paint");
+        assert_eq!(
+            runs[0].color,
+            (255, 255, 255, 255),
+            "the title did not take the colour its bar declares"
+        );
+
+        // …and the same again with the tree built DETACHED and attached last,
+        // which is the order every bottom-up frontend uses. Inheritance has to
+        // survive it: the run is built when the span joins its parent, and at
+        // that moment nothing above is connected.
+        let bar2 = doc.create_element("div", "");
+        doc.set_style_property(bar2, "color", "#ffffff");
+        let title2 = doc.create_element("span", "");
+        let words2 = doc.create_text_node("Calculator");
+        doc.append_child(title2, words2);
+        doc.append_child(bar2, title2);
+        doc.append_child(DOCUMENT, bar2);
+        let runs2 = doc.inline_runs(bar2);
+        assert!(!runs2.is_empty(), "the detached bar has no inline content");
+        assert_eq!(
+            runs2[0].color,
+            (255, 255, 255, 255),
+            "a title built while its bar was DETACHED lost the inherited colour"
+        );
+
+        // …and once more with the CHILD built FIRST. `AppBar(title: Text('x'))`
+        // evaluates its argument before the bar exists, so the span is created,
+        // and gets a computed style, while nothing is above it to inherit from.
+        // The colour only becomes inheritable when it is later nested.
+        let title3 = doc.create_element("span", "");
+        let words3 = doc.create_text_node("Calculator");
+        doc.append_child(title3, words3);
+        // …and on a FLEX bar, which is what an `AppBar` is
+        // (`header;display:flex;align-items:center`).
+        let bar3 = doc.create_element("header", "");
+        doc.set_style_property(bar3, "display", "flex");
+        doc.set_style_property(bar3, "align-items", "center");
+        doc.set_style_property(bar3, "color", "#ffffff");
+        doc.append_child(bar3, title3);
+        doc.append_child(DOCUMENT, bar3);
+        let runs3 = doc.inline_runs(bar3);
+        assert!(!runs3.is_empty(), "the argument-first bar has no content");
+        assert_eq!(
+            runs3[0].color,
+            (255, 255, 255, 255),
+            "a title CONSTRUCTED BEFORE ITS PARENT never inherited the colour"
+        );
+
+        // The same box as a `flex: 0` item of a flex column — the shape an
+        // `AppBar` is in. Its declared height must not be replaced by the
+        // container's guess for a non-growing item.
+        let column = doc.create_element("div", "");
+        doc.set_style_property(column, "display", "flex");
+        doc.set_style_property(column, "flex-direction", "column");
+        doc.set_style_property(column, "height", "600px");
+        let header = doc.create_element("div", "");
+        doc.set_style_property(header, "flex", "0");
+        doc.set_style_property(header, "height", "56px");
+        doc.append_child(column, header);
+        doc.append_child(DOCUMENT, column);
+        assert_eq!(
+            doc.border_rect(header).h,
+            56.0,
+            "a flex item's DECLARED height was replaced by the container's guess"
+        );
+    }
+
+    /// **A percentage size is a percentage of the CONTAINING BLOCK** — §10.1,
+    /// and for a static box that is its parent's content edge, not the
+    /// viewport.
+    ///
+    /// Declared while the box is still detached, which is how every bottom-up
+    /// frontend builds: the value has to survive being resolved before there is
+    /// a parent to resolve it against.
+    #[test]
+    fn a_percentage_size_resolves_against_the_parent_not_the_viewport() {
+        let mut doc = Document::new("t");
+        let box_ = doc.create_element("div", "");
+        doc.set_style_property(box_, "width", "200px");
+        doc.set_style_property(box_, "height", "120px");
+
+        let child = doc.create_element("button", "");
+        doc.set_style_property(child, "width", "100%");
+        doc.set_style_property(child, "height", "100%");
+        doc.append_child(box_, child);
+        doc.append_child(DOCUMENT, box_);
+
+        // …and again through the shape a Flutter row builds, where the parent's
+        // own width is not declared but comes from the flow, and the whole
+        // subtree is attached at the root: `Row > Expanded > Padding > button`.
+        let row = doc.create_element("div", "");
+        doc.set_style_property(row, "display", "flex");
+        doc.set_style_property(row, "flex-direction", "row");
+        doc.set_style_property(row, "height", "100%");
+        let cell = doc.create_element("div", "");
+        doc.set_style_property(cell, "flex", "1");
+        let pad = doc.create_element("div", "");
+        doc.set_style_property(pad, "height", "100%");
+        let key = doc.create_element("button", "");
+        doc.set_style_property(key, "width", "100%");
+        doc.set_style_property(key, "height", "100%");
+        doc.append_child(pad, key);
+        doc.append_child(cell, pad);
+        doc.append_child(row, cell);
+        doc.append_child(DOCUMENT, row);
+        let pad_box = doc.content_rect(pad);
+        let key_box = doc.border_rect(key);
+        // ⚠ 8px of slack, and it is a known discrepancy rather than rounding:
+        // the layout panels carry a built-in 4px padding that `box_edges` does
+        // not report, so the DOM's content box is one panel padding wider than
+        // the slot the panel actually gives its child. Closing it means moving
+        // that default into the UA sheet, where the box model can see it.
+        // Before this test the same measurement was 800 — a whole viewport.
+        assert!(
+            key_box.w <= pad_box.w + 8.5,
+            "the key overflowed its cell: key={key_box:?} padcontent={pad_box:?} \
+             cell={:?}",
+            doc.border_rect(cell),
+        );
+
+        let outer = doc.content_rect(box_);
+        let inner = doc.border_rect(child);
+        assert!(
+            (inner.w - outer.w).abs() < 0.5,
+            "width resolved against the wrong box: {} for a {} content box",
+            inner.w,
+            outer.w
+        );
+        assert!(
+            (inner.h - outer.h).abs() < 0.5,
+            "height resolved against the wrong box: {} for a {} content box",
+            inner.h,
+            outer.h
+        );
+    }
+
+    /// **A column with `height: auto` grows to hold its rows.**
+    ///
+    /// The exact shape every Flutter frontend emits — `Column` of `Expanded`
+    /// rows of `Expanded` `Padding` of `ElevatedButton` — reduced to the boxes
+    /// it becomes. `flex: 1` is `flex: 1 1 0%`, and against a container whose
+    /// main size is not known yet that basis resolves to CONTENT, not to zero.
+    ///
+    /// Get it wrong and the rows divide `default_size`'s 150px guess four ways
+    /// — about 37px each, for buttons nearer 28 plus padding — so the rows
+    /// print on top of one another at half height. Growing cannot rescue it
+    /// either: the content height would be measured FROM the guess, a fixed
+    /// point that reproduces 150 for ever.
+    #[test]
+    fn a_column_of_flex_rows_grows_to_hold_them() {
+        let mut doc = Document::new("t");
+        let column = doc.create_element("div", "");
+        doc.set_style_property(column, "display", "flex");
+        doc.set_style_property(column, "flex-direction", "column");
+
+        let mut rows = Vec::new();
+        let mut inner_rows = Vec::new();
+        let mut buttons = Vec::new();
+        for r in 0..4 {
+            let cell = doc.create_element("div", "");
+            doc.set_style_property(cell, "flex", "1");
+            let row = doc.create_element("div", "");
+            doc.set_style_property(row, "display", "flex");
+            doc.set_style_property(row, "flex-direction", "row");
+            for c in 0..4 {
+                let item = doc.create_element("div", "");
+                doc.set_style_property(item, "flex", "1");
+                let pad = doc.create_element("div", "");
+                let button = doc.create_element("button", "");
+                // A `<span>`, not a text node — Flutter's `Text` widget is an
+                // element, and a button's face being a child ELEMENT is the
+                // case that differs from a bare caption.
+                let span = doc.create_element("span", "");
+                let label = doc.create_text_node(&format!("{}", r * 4 + c));
+                doc.append_child(span, label);
+                doc.append_child(button, span);
+                doc.append_child(pad, button);
+                doc.append_child(item, pad);
+                doc.append_child(row, item);
+                if r == 0 && c == 0 {
+                    buttons.push(button);
+                }
+            }
+            doc.append_child(cell, row);
+            doc.append_child(column, cell);
+            rows.push(cell);
+            inner_rows.push(row);
+        }
+        // The wrappers a real Flutter tree puts above the column: a `Scaffold`
+        // with an `AppBar`, inside a `MaterialApp`, each a flex column of its
+        // own, plus the `Container` whose null width/height the emitter writes
+        // out as the uninterpretable `nullpx`.
+        let panel = doc.create_element("div", "");
+        doc.set_style_property(panel, "height", "nullpx");
+        doc.set_style_property(panel, "width", "nullpx");
+        let display = doc.create_element("span", "");
+        let zero = doc.create_text_node("0");
+        doc.append_child(display, zero);
+        doc.append_child(panel, display);
+        doc.insert_before(column, panel, Some(rows[0]));
+
+        let header = doc.create_element("header", "");
+        doc.set_style_property(header, "display", "flex");
+        doc.set_style_property(header, "align-items", "center");
+        doc.set_style_property(header, "flex", "0");
+        let title = doc.create_element("span", "");
+        let title_text = doc.create_text_node("Calculator");
+        doc.append_child(title, title_text);
+        doc.append_child(header, title);
+
+        let scaffold = doc.create_element("div", "");
+        doc.set_style_property(scaffold, "display", "flex");
+        doc.set_style_property(scaffold, "flex-direction", "column");
+        doc.append_child(scaffold, header);
+        doc.append_child(scaffold, column);
+
+        let app = doc.create_element("div", "");
+        doc.set_style_property(app, "display", "flex");
+        doc.set_style_property(app, "flex-direction", "column");
+        doc.append_child(app, scaffold);
+
+        // **Attached LAST.** A frontend that builds its tree bottom-up — every
+        // Flutter one does — hands the document a finished subtree, so every
+        // style on it was declared while it was detached. Attaching first would
+        // test a different program from the one that runs.
+        doc.append_child(DOCUMENT, app);
+
+        let geometry: Vec<LayoutRect> = rows.iter().map(|&n| doc.border_rect(n)).collect();
+        // Every row taller than the button it holds — the failure that drew
+        // half of each one.
+        for (i, rect) in geometry.iter().enumerate() {
+            assert!(
+                rect.h >= 24.0,
+                "row {i} collapsed to {}: {geometry:?}",
+                rect.h
+            );
+        }
+        // And no row starting before the one above it ended.
+        for pair in geometry.windows(2) {
+            assert!(
+                pair[1].y >= pair[0].y + pair[0].h - 0.5,
+                "rows overlap: {geometry:?}"
+            );
+        }
+        // **Every box within a padding of what it holds.** Non-overlap alone
+        // does not say the sizing is right: a box stuck at `default_size`'s
+        // 150px guess overlaps nothing, it just leaves a hole where a
+        // calculator's rows should be — which is the shape the overlap turned
+        // into once the flex half was fixed. Each of these is one level of the
+        // chain, so a break names the level it happened at.
+        let button_h = doc.border_rect(buttons[0]).h;
+        let inner = doc.border_rect(inner_rows[0]).h;
+        assert!(
+            inner <= button_h + 24.0,
+            "the inner row did not size to its buttons: {inner} for a {button_h} button"
+        );
+        assert!(
+            geometry[0].h <= inner + 12.0,
+            "the cell did not size to its row: {} for a {inner} row",
+            geometry[0].h
+        );
+        // The column is as tall as what it flowed, not as tall as its guess —
+        // so the last row ends inside it.
+        let column_rect = doc.border_rect(column);
+        let last = geometry.last().expect("four rows");
+        assert!(
+            last.y + last.h <= column_rect.y + column_rect.h + 0.5,
+            "the column did not grow to its rows: {column_rect:?} vs {last:?}"
         );
     }
 }

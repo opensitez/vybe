@@ -43,6 +43,284 @@ pub enum Formatting {
     Normal,
     /// `display: grid`. Items are placed into the cells of a track template.
     Grid,
+    /// **`display: table`** — CSS 2.1 §17.
+    ///
+    /// Not a grid with different names. A grid's tracks come from a template
+    /// the author wrote; a table's COLUMNS are measured from what the cells
+    /// contain, and a cell may span several of them in either axis. The table
+    /// box also reaches through boxes that establish nothing of their own —
+    /// rows and row groups — because a column exists ACROSS rows that know
+    /// nothing about each other.
+    Table,
+    /// **A row establishes no formatting context** — CSS 2.1 §17.5.
+    ///
+    /// A `<tr>` holds cells in the tree and positions none of them: a column
+    /// spans rows that know nothing about each other, so only the table can
+    /// place a cell. Without this the row ran normal flow over its own
+    /// children and stacked the cells the table had just laid out side by side,
+    /// each stretched to the row's width — the row's layout ran last and won.
+    ///
+    /// Marking each cell out-of-flow was the first attempt and does not hold:
+    /// the DOM re-asserts `flow` placement for every child that is not
+    /// positioned, so the flag is erased on the next restyle. Doing nothing at
+    /// ALL is not a flag on a child; it is what a row IS.
+    TableRow,
+}
+
+/// **One thing sitting on a line box** — a word, or an atomic inline-level box.
+///
+/// The inline formatting context's output, and the reason it has one. Placement
+/// used to be computed TWICE and independently: `layout_normal_flow` advanced a
+/// scalar cursor to position the widgets, and `render` advanced a second one to
+/// draw the text. Both were right only while nothing wrapped, because neither
+/// measured with a wrap width — so a paragraph in a narrow column painted its
+/// box at the start of the wrong line, on top of the text it should follow, and
+/// shaped everything after that box into a column one character wide.
+///
+/// Deciding it once and drawing what was decided is what makes those two
+/// answers impossible to disagree. `render` reads this; it computes nothing.
+#[derive(Clone, Debug)]
+struct InlineItem {
+    /// The word, with its trailing spaces. Empty for an atomic slot.
+    text: String,
+    font: crate::ide_text::FontSpec,
+    color: (u8, u8, u8, u8),
+    /// The child widget occupying this slot — see [`crate::layout::InlineRun`].
+    /// The box draws itself, so this item only reserves the room.
+    atomic: Option<String>,
+    /// Which element the word came from, for the hit test.
+    source: Option<String>,
+    cursor: Option<crate::css::Cursor>,
+    /// Relative to the content origin, so a box that MOVES does not invalidate
+    /// its own inline layout.
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+}
+
+/// Break `text` into the pieces a line can break BETWEEN.
+///
+/// A word carries its own trailing spaces: the break happens between words, so
+/// the space that separates two of them belongs to the one before it. Splitting
+/// them apart would let a line start with a space, which is the one thing CSS
+/// white-space processing is most insistent it must not do.
+fn split_words(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    let mut spacing = false;
+    for (at, ch) in text.char_indices() {
+        if ch.is_whitespace() {
+            spacing = true;
+        } else if spacing {
+            out.push(&text[start..at]);
+            start = at;
+            spacing = false;
+        }
+    }
+    if start < text.len() {
+        out.push(&text[start..]);
+    }
+    out
+}
+
+/// Where a row IS in the tree — a table's child, or a row group's.
+///
+/// **A row is not always the table's own child**, which is the whole reason
+/// this is a path and not an index. `<tr>` may sit directly under `<table>`,
+/// or under a `<thead>`/`<tbody>`/`<tfoot>` — and the table has to reach both
+/// the same way, because a column spans rows that may be in different groups.
+///
+/// Addressing a row by its index among the table's children treated a whole
+/// `<tbody>` AS a row: `cells_of` then looked for cells among its children,
+/// found `<tr>`s instead, and every grouped table rendered completely empty.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RowPath {
+    /// The row group holding this row, if any — an index into the table's
+    /// children. `None` for a `<tr>` written directly under the table.
+    group: Option<usize>,
+    /// Index into whichever box holds the row: the group's children when
+    /// grouped, the table's own otherwise.
+    row: usize,
+}
+
+/// One cell's place in the table — where it lives in the tree, and which slots
+/// it occupies in the grid.
+///
+/// The two are genuinely different questions. `row`/`index` say where the cell
+/// IS: a child of a row, because that is what the markup nests. `origin` and
+/// the spans say where it SITS: a column is not a sibling index once anything
+/// above it spans rows.
+#[derive(Clone, Copy, Debug)]
+struct TableCell {
+    /// The ROW holding this cell — a path, because it may be inside a group.
+    row: RowPath,
+    /// Index into that row's children.
+    index: usize,
+    colspan: u32,
+    rowspan: u32,
+    /// The (row, column) slot this cell starts at. Every other slot it covers
+    /// holds a copy pointing back here, which is how "is this the cell's own
+    /// slot" is answered without a second list.
+    origin: (usize, usize),
+}
+
+/// **The inline formatting context** — CSS 2.1 §9.4.2.
+///
+/// Fills line boxes with words and atomic inline-level boxes, breaking to a new
+/// line when what comes next no longer fits. One writer serves both readers:
+/// layout asks it where each inline child goes, paint asks it where each word
+/// went, and neither computes a position of its own. That is the whole fix —
+/// the two used to advance separate cursors, agreed only while nothing wrapped,
+/// and diverged completely the moment a line broke.
+struct LineWriter {
+    /// The content width lines break against. **Per line rather than per
+    /// block** is what a float would need — `float` shortens only the lines it
+    /// vertically overlaps — so this is the value that becomes a rectangle
+    /// query when floats land. It is a single width today and stated as such.
+    width: f32,
+    nowrap: bool,
+    align: crate::layout::TextAlign,
+    /// How far along the open line we are, from the content left.
+    x: f32,
+    /// The open line's top, from the content top.
+    y: f32,
+    /// The tallest thing on the open line so far.
+    height: f32,
+    /// Where the open line's items begin, so alignment can shift them.
+    line_start: usize,
+    items: Vec<InlineItem>,
+}
+
+impl LineWriter {
+    fn new(width: f32, nowrap: bool, align: crate::layout::TextAlign) -> Self {
+        Self {
+            width,
+            nowrap,
+            align,
+            x: 0.0,
+            y: 0.0,
+            height: 0.0,
+            line_start: 0,
+            items: Vec::new(),
+        }
+    }
+
+    /// Close the open line and start one below it.
+    fn break_line(&mut self) {
+        self.align_line();
+        self.y += self.height;
+        self.x = 0.0;
+        self.height = 0.0;
+        self.line_start = self.items.len();
+    }
+
+    /// `text-align` for the line just closed.
+    ///
+    /// **A line holding an atomic box is left-aligned**, and that is a real
+    /// limitation rather than an oversight: the box's position has already been
+    /// handed to the child widget by the time the line closes, so shifting the
+    /// items here would move the words and leave the widget behind. Aligning
+    /// both needs the child rects written after the line is complete.
+    fn align_line(&mut self) {
+        let free = (self.width - self.x).max(0.0);
+        let shift = match self.align {
+            crate::layout::TextAlign::Left => 0.0,
+            crate::layout::TextAlign::Center => free / 2.0,
+            _ => free,
+        };
+        if shift <= 0.0 || self.items[self.line_start..].iter().any(|i| i.atomic.is_some()) {
+            return;
+        }
+        for item in &mut self.items[self.line_start..] {
+            item.x += shift;
+        }
+    }
+
+    /// Place one run's words, breaking where they stop fitting.
+    ///
+    /// Measuring the whole run instead — which is what this did, with no wrap
+    /// width at all — yields a single advance wider than the box, so the cursor
+    /// walks off the content edge and never returns. Every position computed
+    /// after it is then wrong, which is why one missing argument put a widget on
+    /// the wrong line AND shaped the text after it into a one-character column.
+    fn text_run(&mut self, run: &crate::layout::InlineRun) {
+        for word in split_words(&run.text) {
+            let (w, h) = crate::ide_text::measure_rich_text(
+                &[(
+                    word.to_string(),
+                    run.font.clone(),
+                    cosmic_text::Color::rgb(0, 0, 0),
+                )],
+                None,
+            );
+            // Never break on an EMPTY line: a word wider than the box overflows
+            // it, and moving it down would not make it fit. Never break before
+            // whitespace either — trailing spaces hang past the content edge
+            // rather than pushing themselves onto the next line.
+            if !self.nowrap
+                && self.x > 0.0
+                && self.x + w > self.width
+                && !word.trim_start().is_empty()
+            {
+                self.break_line();
+            }
+            self.items.push(InlineItem {
+                text: word.to_string(),
+                font: run.font.clone(),
+                color: run.color,
+                atomic: None,
+                source: run.source.clone(),
+                cursor: run.cursor,
+                x: self.x,
+                y: self.y,
+                w,
+                h,
+            });
+            self.x += w;
+            self.height = self.height.max(h);
+        }
+    }
+
+    /// Place an atomic inline-level box and answer where it goes, relative to
+    /// the content origin. `w` is the MARGIN box — the room the line gives up.
+    fn atomic(&mut self, name: &str, w: f32, h: f32) -> (f32, f32) {
+        if self.x > 0.0 && self.x + w > self.width {
+            self.break_line();
+        }
+        let at = (self.x, self.y);
+        self.items.push(InlineItem {
+            text: String::new(),
+            font: crate::ide_text::FontSpec::sans(0.0),
+            color: (0, 0, 0, 0),
+            atomic: Some(name.to_string()),
+            source: None,
+            cursor: None,
+            x: self.x,
+            y: self.y,
+            w,
+            h,
+        });
+        self.x += w;
+        self.height = self.height.max(h);
+        at
+    }
+
+    /// A block-level box closes the open line and takes a band of its own.
+    fn block(&mut self, h: f32) -> f32 {
+        if self.x > 0.0 {
+            self.break_line();
+        }
+        let top = self.y;
+        self.y += h;
+        top
+    }
+
+    /// Close the last line. Answers the height of everything placed.
+    fn finish(&mut self) -> f32 {
+        self.align_line();
+        self.y + self.height
+    }
 }
 
 pub struct FlowLayoutPanel {
@@ -102,8 +380,22 @@ pub struct FlowLayoutPanel {
     /// so items stack. That default lives in `layout_grid`, not here, because
     /// "the author said nothing" and "the author said one column" are different
     /// facts and only one of them survives a round trip.
-    grid_columns: Vec<crate::css::TrackSize>,
-    grid_rows: Vec<crate::css::TrackSize>,
+    grid_columns: crate::css::TrackTemplate,
+    grid_rows: crate::css::TrackTemplate,
+    /// `grid-template-areas`, one row of cell names per entry.
+    grid_areas: Vec<Vec<String>>,
+    /// Per-child `grid-area: <name>` — which named area an item claims.
+    child_grid_name: std::collections::HashMap<String, String>,
+    /// `grid-auto-rows`/`grid-auto-columns` — the size of a track the template
+    /// never named. `Auto` unless declared, which is the CSS initial value.
+    grid_auto_rows: crate::css::TrackSize,
+    grid_auto_columns: crate::css::TrackSize,
+    /// `grid-auto-flow`, as `(fill columns first?, dense?)`.
+    grid_flow_column: bool,
+    grid_flow_dense: bool,
+    /// `justify-items` and per-child `justify-self` — the inline axis.
+    justify_items: String,
+    child_justify_self: std::collections::HashMap<String, String>,
     /// Per-child `flex-basis`, in pixels — the item's size BEFORE any growing
     /// or shrinking. Both this and `child_shrink` parsed into `css.rs` and had
     /// no arm in `dom.rs`, so they were stored and never asked for.
@@ -124,6 +416,28 @@ pub struct FlowLayoutPanel {
     /// then read back as if it were the item's own — lost after one pass, with
     /// the cascade still holding the right value.
     child_declared_height: std::collections::HashSet<String>,
+    /// Whether THIS box's own `height` was declared — the same fact as
+    /// `child_declared_height`, asked at the other end.
+    ///
+    /// It decides whether the main size is DEFINITE, which flexbox §9.2.3 and
+    /// §9.7 both turn on. A `flex: 1` item's basis is `0%`, and a percentage of
+    /// an indefinite size resolves to `content`, not to zero — so a column with
+    /// `height: auto` sizes its items to their content and then sizes itself to
+    /// their sum, instead of dividing a height it does not have yet.
+    ///
+    /// Without it a Flutter `Column` of four `Expanded` rows divided
+    /// `default_size`'s 150px guess four ways, gave each row ~37px, and drew
+    /// four rows of buttons overlapping at half height. Growing could not fix
+    /// it either: the content height was measured FROM the guess, so it was a
+    /// fixed point that reproduced 150 for ever.
+    ///
+    /// Only the block axis. A block-level box's inline size is always definite
+    /// — `width: auto` fills the containing block, and a stretched flex item's
+    /// cross size is definite too — so a row keeps dividing its width.
+    declared_height: bool,
+    /// `white-space: nowrap` (or `pre`) — the box's text stays on ONE line and
+    /// overflows rather than breaking.
+    nowrap: bool,
     /// Whether a background was DECLARED for this box.
     ///
     /// A `<div>`'s initial background is `transparent`, and `colors.background`
@@ -212,6 +526,44 @@ pub struct FlowLayoutPanel {
     /// not have: `set_text_content` replaces the whole of `caption`, so there
     /// is nowhere to put the ` c`. Stated rather than approximated.
     pub inline_content: Vec<crate::layout::InlineRun>,
+    /// Where each named run was actually PAINTED, so a click can find it.
+    ///
+    /// A run is not a widget: it has no rect of its own and nothing in the
+    /// widget tree to hit-test, which is why an `<a>` that becomes a run stops
+    /// being clickable unless something records where it landed. This is that
+    /// record, and it is written by `render` rather than by layout because the
+    /// x of a run is a SHAPING result — it depends on every run before it on
+    /// the line, and only the text pass knows those advances.
+    ///
+    /// Empty until the first paint. A click before anything has been drawn has
+    /// no geometry to consult and correctly finds nothing.
+    run_rects: Vec<(String, LayoutRect, Option<crate::css::Cursor>)>,
+    /// The laid-out line boxes — see [`InlineItem`]. Written by layout, read by
+    /// paint and by the hit test.
+    inline_items: Vec<InlineItem>,
+    /// `colspan` — how many COLUMNS this box occupies when it is a table cell.
+    ///
+    /// On the cell rather than on the table because that is where the attribute
+    /// is written, and read back by the table when it builds its grid. One, not
+    /// zero, for every box that is not a cell — see the `colspan` arm in
+    /// `Document::set_attribute` for why the floor matters.
+    colspan: u32,
+    /// `rowspan` — the same fact on the block axis.
+    rowspan: u32,
+    /// `border-spacing`, in logical pixels — the gap the SEPARATE border model
+    /// leaves between cell borders, and around the outside of the table.
+    border_spacing: f32,
+    /// `border-collapse: collapse`. Adjacent borders become one and the spacing
+    /// goes to zero.
+    border_collapse: bool,
+    /// `table-layout: fixed` — take the column widths from the columns and the
+    /// FIRST ROW alone and never measure the rest.
+    table_layout_fixed: bool,
+    /// Clicks landed on a run, waiting to be drained. A panel had none of its
+    /// own before — every event came from a child widget — because a box with
+    /// only text had nothing clickable in it. A run IS clickable, so the box
+    /// that paints it is the thing that reports it.
+    pending_events: Vec<WidgetEvent>,
     /// Children this panel must NOT arrange — CSS `position: absolute`.
     ///
     /// The inverse of `dock`, and here for the same reason it is: a docked
@@ -293,12 +645,28 @@ impl FlowLayoutPanel {
             reverse: false,
             align_content: "flex-start".to_string(),
             child_grid_area: std::collections::HashMap::new(),
-            grid_columns: Vec::new(),
-            grid_rows: Vec::new(),
+            grid_columns: crate::css::TrackTemplate::default(),
+            grid_rows: crate::css::TrackTemplate::default(),
+            grid_areas: Vec::new(),
+            child_grid_name: std::collections::HashMap::new(),
+            grid_auto_rows: crate::css::TrackSize::Auto,
+            grid_auto_columns: crate::css::TrackSize::Auto,
+            grid_flow_column: false,
+            grid_flow_dense: false,
+            justify_items: "stretch".to_string(),
+            child_justify_self: std::collections::HashMap::new(),
             child_basis: std::collections::HashMap::new(),
             child_shrink: std::collections::HashMap::new(),
             child_declared_width: std::collections::HashSet::new(),
             child_declared_height: std::collections::HashSet::new(),
+            // **Definite until the cascade says otherwise.** A panel built
+            // directly by the widget layer — a WinForms form, a VB designer
+            // panel — was given a real rect by whoever built it, and dividing
+            // it among flex weights is what it has always done. Only a CSS box
+            // can be `height: auto`, and only the DOM knows, so only the DOM
+            // flips this.
+            nowrap: false,
+            declared_height: true,
             background_set: false,
             css_border: Edges::default(),
             css_border_color: [(0, 0, 0, 255); 4],
@@ -318,6 +686,16 @@ impl FlowLayoutPanel {
             font: crate::ide_text::FontSpec::sans(14.0),
             text_align: crate::layout::TextAlign::Left,
             inline_content: Vec::new(),
+            run_rects: Vec::new(),
+            inline_items: Vec::new(),
+            colspan: 1,
+            rowspan: 1,
+            // §17.6.1's initial value, and the reason an unstyled HTML table has
+            // visible gaps between its cells rather than a solid block.
+            border_spacing: 2.0,
+            border_collapse: false,
+            table_layout_fixed: false,
+            pending_events: Vec::new(),
             out_of_flow: std::collections::HashSet::new(),
             relative_offset: std::collections::HashMap::new(),
             child_margin: std::collections::HashMap::new(),
@@ -521,12 +899,27 @@ impl FlowLayoutPanel {
         }
 
         match self.formatting {
-            Formatting::Grid => self.layout_grid(),
+            Formatting::Grid => {
+                self.layout_grid();
+                self.layout_inline_text();
+            }
+            // A table's own text is its caption, which is a BOX (`<caption>`
+            // is `display: table-caption`), not a run — so there is no inline
+            // pass here.
+            Formatting::Table => self.layout_table(),
+            // Deliberately nothing — see [`Formatting::TableRow`]. The row's own
+            // rect is set by its table; its cells are placed by the same pass.
+            Formatting::TableRow => {}
+            // Normal flow lays out the text and the children TOGETHER — they
+            // share line boxes — so it writes `inline_items` itself.
             Formatting::Normal => self.layout_normal_flow(),
-            Formatting::Flex => match self.flow_direction {
-                FlowDirection::LeftToRight => self.layout_left_to_right(),
-                FlowDirection::TopDown => self.layout_top_down(),
-            },
+            Formatting::Flex => {
+                match self.flow_direction {
+                    FlowDirection::LeftToRight => self.layout_left_to_right(),
+                    FlowDirection::TopDown => self.layout_top_down(),
+                }
+                self.layout_inline_text();
+            }
         }
     }
 
@@ -561,10 +954,18 @@ impl FlowLayoutPanel {
             return;
         }
 
-        let columns = if self.grid_columns.is_empty() {
-            vec![crate::css::TrackSize::Fr(1.0)]
+        // **The area template defines the grid's shape when no track list
+        // does.** `grid-template-areas` with two names per row IS a two-column
+        // grid; requiring `grid-template-columns` as well would make the
+        // commonest spelling of a named layout silently one column.
+        // **Auto-repeat resolves HERE**, where the extent is known — that is
+        // the whole reason the template is carried rather than expanded.
+        let columns = if !self.grid_columns.is_empty() {
+            self.grid_columns.resolve(inner_w, self.column_gap.unwrap_or(self.spacing))
+        } else if let Some(row) = self.grid_areas.first() {
+            vec![crate::css::TrackSize::Fr(1.0); row.len()]
         } else {
-            self.grid_columns.clone()
+            vec![crate::css::TrackSize::Fr(1.0)]
         };
         let col_count = columns.len();
         let (col_gap, row_gap) = (self.column_gap.unwrap_or(self.spacing), self.row_gap.unwrap_or(self.spacing));
@@ -577,13 +978,21 @@ impl FlowLayoutPanel {
                 .iter()
                 .map(|&i| self.children[i].name().to_string())
                 .collect();
-            place_grid_items(&names, &self.child_grid_area, col_count)
+            place_grid_items(
+                &names,
+                &self.child_grid_area,
+                &self.child_grid_name,
+                &self.grid_areas,
+                col_count,
+                self.grid_flow_dense,
+            )
         };
         let row_count = areas
             .iter()
             .map(|a| a.row + a.row_span)
             .max()
             .unwrap_or(1)
+            .max(self.grid_areas.len())
             .max(1);
         let margins = self.child_margin.clone();
         let relative = self.relative_offset.clone();
@@ -614,12 +1023,17 @@ impl FlowLayoutPanel {
         // taller than its box scrolls; it does not squeeze. Resolved here
         // rather than after sizing because the spanning pass below needs to
         // know which rows are `auto` and therefore allowed to grow.
+        // An IMPLICIT row — one the template never named — is sized by
+        // `grid-auto-rows`, not by `auto`. That property existed nowhere, so a
+        // grid with more items than cells always grew content-sized rows.
+        let declared_rows = self.grid_rows.resolve(inner_h, row_gap);
         let implicit_rows: Vec<crate::css::TrackSize> = (0..row_count)
             .map(|i| {
-                self.grid_rows
+                declared_rows
                     .get(i)
                     .copied()
-                    .unwrap_or(crate::css::TrackSize::Auto)
+                    .filter(|_| !self.grid_rows.is_empty())
+                    .unwrap_or(self.grid_auto_rows)
             })
             .collect();
         let mut col_auto = vec![0.0f32; col_count];
@@ -721,16 +1135,32 @@ impl FlowLayoutPanel {
             // answer and is kept — the same rule normal flow applies to a
             // block child's width.
             let own = self.children[i].rect();
-            let w = if self.child_declared_width.contains(&name) {
-                own.w
+            // **Both axes align independently in a grid**, which is the
+            // difference from flex: `align-*` places the item in its cell down
+            // the block axis, `justify-*` across the inline one. `stretch` (the
+            // initial value of both) fills the cell, and a DECLARED size wins
+            // over either — the author's answer is not an alignment.
+            let justify = self
+                .child_justify_self
+                .get(&name)
+                .unwrap_or(&self.justify_items)
+                .clone();
+            let align = self.child_align.get(&name).unwrap_or(&self.align_items).clone();
+            let cell_w = (span_w - margin.horizontal()).max(0.0);
+            let cell_h = (span_h - margin.vertical()).max(0.0);
+            let (jx, w) = if self.child_declared_width.contains(&name) {
+                (Self::align_with(&justify, cell_w, own.w).0, own.w)
             } else {
-                (span_w - margin.horizontal()).max(0.0)
+                let (off, size) = Self::align_with(&justify, cell_w, own.w.max(1.0));
+                (off, size)
             };
-            let h = if self.child_declared_height.contains(&name) {
-                own.h
+            let (ay, h) = if self.child_declared_height.contains(&name) {
+                (Self::align_with(&align, cell_h, own.h).0, own.h)
             } else {
-                (span_h - margin.vertical()).max(0.0)
+                let (off, size) = Self::align_with(&align, cell_h, own.h.max(1.0));
+                (off, size)
             };
+            let (x, y) = (x + jx, y + ay);
             self.children[i].set_rect(LayoutRect::new(
                 x + margin.left + dx,
                 y + margin.top + dy,
@@ -785,11 +1215,34 @@ impl FlowLayoutPanel {
         let displays = self.child_display.clone();
         let fixed_widths = self.child_declared_width.clone();
 
-        // The open line box: where it starts, how far along it we are, and how
-        // tall the tallest thing on it has been so far.
-        let mut line_y = content_top;
-        let mut cursor_x = content_x;
-        let mut line_h: f32 = 0.0;
+        // The open line box — see [`LineWriter`]. It holds the line state that
+        // three separate scalars used to, and it is the same object paint reads
+        // back, so the text and the widgets on a line cannot be placed by two
+        // mechanisms that have never heard of each other.
+        let mut line = LineWriter::new(content_w, self.nowrap, self.text_align);
+        // **How far into the box's own text the line has got.** `inline_content`
+        // is the sequence in DOCUMENT order — text runs and atomic slots for
+        // the inline-level children — so walking it alongside `arrangement()`
+        // is what puts a `<label>`'s text and the `<input>` after it on one
+        // line. Before this, the text was painted from the content origin and
+        // the widgets were laid out from the same origin, so a label rendered
+        // on top of the field it labels.
+        let runs = self.inline_content.clone();
+        let mut run_cursor = 0usize;
+        // The box's OWN characters lead its line: a `<p>`'s text comes before
+        // anything nested inside it. A `<fieldset>`'s caption is its legend and
+        // is drawn in the border gap instead, so it takes no part here.
+        let caption = self.caption.clone();
+        if !caption.is_empty() && !self.bordered {
+            line.text_run(&crate::layout::InlineRun {
+                text: caption,
+                font: self.font.clone(),
+                color: self.colors.foreground,
+                source: None,
+                atomic: None,
+                cursor: None,
+            });
+        }
 
         for i in self.arrangement() {
             let name = self.children[i].name().to_string();
@@ -805,7 +1258,13 @@ impl FlowLayoutPanel {
             // a size we cannot get back — `nat_w` is the child's live rect, so
             // a single pass under a wrong guess is permanent.
             let declared = displays.get(&name).map(String::as_str);
-            let inline = matches!(declared, Some("inline") | Some("inline-block"));
+            // `inline-flex`/`inline-grid` are inline-level to their PARENT —
+            // that is the entire meaning of the prefix, and the reason they
+            // belong here rather than beside the formatting contexts.
+            let inline = matches!(
+                declared,
+                Some("inline") | Some("inline-block") | Some("inline-flex") | Some("inline-grid")
+            );
             // …and a block box only fills when its width is `auto`. A declared
             // width is the author's answer and content does not overrule it —
             // the same rule `fill_available_width` applies to the body's own
@@ -827,30 +1286,41 @@ impl FlowLayoutPanel {
             };
 
             if inline {
-                let advance = margin.horizontal() + nat_w;
-                // Wrap — but never on an EMPTY line. A box wider than its
-                // container overflows it; moving it to a line of its own would
-                // not make it fit and would leave a blank line above it.
-                if cursor_x > content_x && cursor_x - content_x + advance > content_w {
-                    line_y += line_h;
-                    cursor_x = content_x;
-                    line_h = 0.0;
+                // The text that comes BEFORE this box on the line. Consumed
+                // here rather than measured up front, because which text
+                // precedes which box is the sequence's answer, not a guess —
+                // and it is the only reason the two can share a line at all.
+                while let Some(run) = runs.get(run_cursor) {
+                    match run.atomic.as_deref() {
+                        // This box's own slot: the walk has caught up.
+                        Some(slot) if slot == name => {
+                            run_cursor += 1;
+                            break;
+                        }
+                        // A DIFFERENT box's slot — that child is placed by its
+                        // own turn in `arrangement()`, so stop rather than
+                        // consume it here.
+                        Some(_) => break,
+                        None => {
+                            line.text_run(run);
+                            run_cursor += 1;
+                        }
+                    }
                 }
+                let (x, y) = line.atomic(
+                    &name,
+                    margin.horizontal() + nat_w,
+                    margin.vertical() + nat_h,
+                );
                 self.children[i].set_rect(LayoutRect::new(
-                    cursor_x + margin.left + dx,
-                    line_y + margin.top + dy,
+                    content_x + x + margin.left + dx,
+                    content_top + y + margin.top + dy,
                     nat_w,
                     nat_h,
                 ));
-                cursor_x += advance;
-                line_h = line_h.max(margin.vertical() + nat_h);
             } else {
                 // A block box closes whatever line is open and starts below it.
-                if cursor_x > content_x {
-                    line_y += line_h;
-                    cursor_x = content_x;
-                    line_h = 0.0;
-                }
+                let top = line.block(margin.vertical() + nat_h);
                 let width = if fills {
                     (content_w - margin.horizontal()).max(0.0)
                 } else {
@@ -858,17 +1328,664 @@ impl FlowLayoutPanel {
                 };
                 self.children[i].set_rect(LayoutRect::new(
                     content_x + margin.left + dx,
-                    line_y + margin.top + dy,
+                    content_top + top + margin.top + dy,
                     width,
                     nat_h,
                 ));
-                line_y += margin.vertical() + nat_h;
             }
+        }
+        // **The text after the last inline child.** The walk above consumes
+        // runs only when it reaches a box, so everything following the final
+        // one was never placed at all — the tail of every sentence that ended
+        // in words rather than in a widget.
+        while let Some(run) = runs.get(run_cursor) {
+            if run.atomic.is_none() {
+                line.text_run(run);
+            }
+            run_cursor += 1;
         }
         // Close the last line, then add the bottom padding the top was already
         // charged for by `top_inset`.
-        line_y += line_h;
-        self.content_height = line_y - r.y + self.padding.bottom;
+        let height = line.finish();
+        self.inline_items = std::mem::take(&mut line.items);
+        self.content_height = (content_top - r.y) + height + self.padding.bottom;
+    }
+
+    /// **The table formatting context** — CSS 2.1 §17.5, ported from
+    /// `wxhtmledit/src/TableLayout.cpp`.
+    ///
+    /// Four passes, in this order, because each needs the one before it:
+    ///
+    /// 1. **Collect the rows**, reaching through `thead`/`tbody`/`tfoot` — the
+    ///    row groups establish no formatting context of their own, they only
+    ///    say where their rows go in visual order (header, body, footer, no
+    ///    matter what order the markup put them in).
+    /// 2. **Build the cell grid**, so `rowspan` from a row above occupies the
+    ///    slot a later row would otherwise fill. Without the grid, spans are
+    ///    guesswork: a cell's column is not its index among its siblings.
+    /// 3. **Size the columns.** `fixed` reads the first row and stops; `auto`
+    ///    measures every cell. This is the pass that makes a table a table
+    ///    rather than a grid — nobody declared these widths.
+    /// 4. **Lay the cells out and take the row heights from them**, then place
+    ///    each cell at its column's x and its row's y.
+    ///
+    /// The ROW boxes are given the table's width and their row's height, so a
+    /// row can still paint a background; the cells are positioned in the
+    /// table's own coordinates rather than the row's, because a spanning cell
+    /// belongs to several rows and can be a child of only one.
+    fn layout_table(&mut self) {
+        let r = self.rect;
+        let content_x = r.x + self.padding.left;
+        let content_top = r.y + self.top_inset();
+        let content_w = (r.w - self.padding.horizontal()).max(0.0);
+        // §17.6.2: collapsing the borders removes the spacing between cells.
+        let spacing = if self.border_collapse {
+            0.0
+        } else {
+            self.border_spacing
+        };
+
+        let rows = self.table_rows();
+        if rows.is_empty() {
+            self.content_height = (content_top - r.y) + self.padding.bottom;
+            return;
+        }
+
+        let grid = self.build_cell_grid(&rows);
+        let columns = grid.first().map(|row| row.len()).unwrap_or(0);
+        if columns == 0 {
+            self.content_height = (content_top - r.y) + self.padding.bottom;
+            return;
+        }
+
+        // The room the cells themselves get: the table less the spacing that
+        // runs between them and around the outside.
+        let cell_area = (content_w - spacing * (columns as f32 + 1.0)).max(0.0);
+        let widths = self.column_widths(&grid, columns, cell_area);
+
+        // ── Lay each cell out at its column width, and take the row heights
+        //    from what the content needed ──
+        let mut heights = vec![0.0f32; rows.len()];
+        for row in 0..rows.len() {
+            for column in 0..columns {
+                let Some(cell) = grid[row][column].filter(|c| c.origin == (row, column)) else {
+                    continue;
+                };
+                let width = Self::span_extent(&widths, column, cell.colspan, spacing);
+                let height = self.measure_cell(cell, width);
+                // A cell that spans rows contributes to none of them directly —
+                // its height is shared out below, once the single-row cells
+                // have set a floor.
+                if cell.rowspan == 1 {
+                    heights[row] = heights[row].max(height);
+                }
+            }
+        }
+        // A spanning cell only grows the rows it covers if they cannot already
+        // hold it, and then evenly — §17.5.3 leaves the distribution to the UA.
+        for row in 0..rows.len() {
+            for column in 0..columns {
+                let Some(cell) = grid[row][column].filter(|c| c.origin == (row, column)) else {
+                    continue;
+                };
+                if cell.rowspan <= 1 {
+                    continue;
+                }
+                let width = Self::span_extent(&widths, column, cell.colspan, spacing);
+                let needed = self.measure_cell(cell, width);
+                let last = (row + cell.rowspan as usize).min(rows.len());
+                let available: f32 = heights[row..last].iter().sum::<f32>()
+                    + spacing * ((last - row) as f32 - 1.0);
+                if needed > available {
+                    let extra = (needed - available) / (last - row) as f32;
+                    for height in &mut heights[row..last] {
+                        *height += extra;
+                    }
+                }
+            }
+        }
+
+        // ── Place ──
+        let mut column_x = Vec::with_capacity(columns);
+        let mut x = spacing;
+        for width in &widths {
+            column_x.push(x);
+            x += width + spacing;
+        }
+        let mut row_y = Vec::with_capacity(rows.len());
+        let mut y = spacing;
+        for height in &heights {
+            row_y.push(y);
+            y += height + spacing;
+        }
+
+        for (row, row_index) in rows.iter().enumerate() {
+            for column in 0..columns {
+                let Some(cell) = grid[row][column].filter(|c| c.origin == (row, column)) else {
+                    continue;
+                };
+                let width = Self::span_extent(&widths, column, cell.colspan, spacing);
+                let last = (row + cell.rowspan as usize).min(rows.len());
+                let height: f32 = heights[row..last].iter().sum::<f32>()
+                    + spacing * ((last - row) as f32 - 1.0);
+                self.place_cell(
+                    cell,
+                    LayoutRect::new(
+                        content_x + column_x[column],
+                        content_top + row_y[row],
+                        width,
+                        height,
+                    ),
+                );
+            }
+            // The row box spans the whole table and its own height. It holds
+            // the cells in the DOM but positions none of them — a cell that
+            // spans rows is in exactly one row's child list and in several
+            // rows' worth of space.
+            let height = heights[row];
+            let rect = LayoutRect::new(
+                content_x + spacing,
+                content_top + row_y[row],
+                (content_w - spacing * 2.0).max(0.0),
+                height,
+            );
+            if let Some(row_box) = self.row_box_mut(*row_index) {
+                row_box.set_rect(rect);
+            }
+        }
+
+        // ── The row GROUPS ────────────────────────────────────────────────
+        // A group establishes no formatting context, but it is still a box in
+        // the tree: it draws a background and a border, and it has to cover
+        // the rows it holds or it draws them nowhere. Its extent is exactly
+        // its own rows — which is why it is derived here, after they are
+        // placed, rather than being laid out itself.
+        //
+        // Sizing the group does NOT disturb the rows inside it, even though
+        // `set_rect` runs the group's own `relayout()`: a group is given
+        // `Formatting::TableRow`, whose relayout does nothing at all. That is
+        // not an optimisation — it is what "establishes no formatting context"
+        // means, and it is why the table may position boxes that are not its
+        // own children without them being re-arranged behind its back.
+        let mut extents: Vec<(usize, f32, f32)> = Vec::new();
+        for (row, path) in rows.iter().enumerate() {
+            let Some(group) = path.group else { continue };
+            let (top, bottom) = (row_y[row], row_y[row] + heights[row]);
+            match extents.iter_mut().find(|(g, _, _)| *g == group) {
+                Some((_, first, last)) => {
+                    *first = first.min(top);
+                    *last = last.max(bottom);
+                }
+                None => extents.push((group, top, bottom)),
+            }
+        }
+        for (group, top, bottom) in extents {
+            let rect = LayoutRect::new(
+                content_x + spacing,
+                content_top + top,
+                (content_w - spacing * 2.0).max(0.0),
+                bottom - top,
+            );
+            if let Some(box_of_group) = self.children.get_mut(group) {
+                box_of_group.set_rect(rect);
+            }
+        }
+
+        // The table is as tall as its rows, plus the spacing between and around
+        // them. Its WIDTH is left alone: `layout_table` is handed a rect and
+        // the containing block decides that.
+        let used: f32 = heights.iter().sum::<f32>() + spacing * (heights.len() as f32 + 1.0);
+        self.content_height = (content_top - r.y) + used + self.padding.bottom;
+    }
+
+    /// The table's rows, in VISUAL order, as indices into `self.children`.
+    ///
+    /// `<tfoot>` renders after `<tbody>` however the markup was written, which
+    /// is the whole reason the groups exist. Rows written directly under the
+    /// table — legal, and what most hand-written HTML does — count as body
+    /// rows.
+    ///
+    /// Row GROUPS are not returned: they establish nothing, and a table that
+    /// treated them as rows would give a whole `<tbody>` one row's height.
+    fn table_rows(&mut self) -> Vec<RowPath> {
+        // The classification is taken FIRST, as owned values: reaching into a
+        // group needs `&mut self` (a `dyn PanelWidget` downcasts only through
+        // `as_any_mut`), which cannot be done while iterating `self.children`.
+        let kinds: Vec<(usize, String)> = self
+            .children
+            .iter()
+            .enumerate()
+            .filter(|(_, child)| !self.out_of_flow.contains(child.name()))
+            .map(|(index, child)| {
+                let display = self
+                    .child_display
+                    .get(child.name())
+                    .cloned()
+                    .unwrap_or_else(|| "table-row".to_string());
+                (index, display)
+            })
+            .collect();
+
+        let (mut header, mut body, mut footer) = (Vec::new(), Vec::new(), Vec::new());
+        for (index, display) in kinds {
+            match display.as_str() {
+                "table-row" => body.push(RowPath {
+                    group: None,
+                    row: index,
+                }),
+                // A group's ROWS are the table's rows. The group box itself is
+                // skipped: it is a parent in the tree and nothing in layout —
+                // so the walk goes THROUGH it and collects what it holds.
+                "table-header-group" => header.extend(self.rows_in_group(index)),
+                "table-footer-group" => footer.extend(self.rows_in_group(index)),
+                "table-row-group" => body.extend(self.rows_in_group(index)),
+                // A caption, a column or a column group. None of them is a row.
+                _ => {}
+            }
+        }
+        header.extend(body);
+        header.extend(footer);
+        header
+    }
+
+    /// The rows a `<thead>`/`<tbody>`/`<tfoot>` holds.
+    ///
+    /// A group's own children are its rows, in tree order — groups do not
+    /// reorder among themselves, only against each other. Anything in there
+    /// that is not a row is skipped for the same reason it is at table level.
+    fn rows_in_group(&mut self, group: usize) -> Vec<RowPath> {
+        let Some(box_of_group) = self.children.get_mut(group) else {
+            return Vec::new();
+        };
+        let Some(panel) = box_of_group
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<FlowLayoutPanel>())
+        else {
+            return Vec::new();
+        };
+        panel
+            .children
+            .iter()
+            .enumerate()
+            .filter(|(_, child)| !panel.out_of_flow.contains(child.name()))
+            .filter(|(_, child)| {
+                // A group holds rows; anything else in it is not one. The
+                // default matches the table-level walk — an unstyled child of a
+                // row group is a row, which is what the markup means.
+                panel
+                    .child_display
+                    .get(child.name())
+                    .map(String::as_str)
+                    .unwrap_or("table-row")
+                    == "table-row"
+            })
+            .map(|(row, _)| RowPath {
+                group: Some(group),
+                row,
+            })
+            .collect()
+    }
+
+    /// The box holding a row's cells, wherever the row lives.
+    ///
+    /// The ONE place the group indirection is resolved — every caller works in
+    /// `RowPath` and none of them repeats this walk.
+    fn row_panel_mut(&mut self, path: RowPath) -> Option<&mut FlowLayoutPanel> {
+        let holder: &mut FlowLayoutPanel = match path.group {
+            Some(group) => self
+                .children
+                .get_mut(group)?
+                .as_any_mut()?
+                .downcast_mut::<FlowLayoutPanel>()?,
+            None => self,
+        };
+        holder
+            .children
+            .get_mut(path.row)?
+            .as_any_mut()?
+            .downcast_mut::<FlowLayoutPanel>()
+    }
+
+    /// The row box itself, to be given its rect.
+    fn row_box_mut(&mut self, path: RowPath) -> Option<&mut Box<dyn PanelWidget>> {
+        match path.group {
+            Some(group) => self
+                .children
+                .get_mut(group)?
+                .as_any_mut()?
+                .downcast_mut::<FlowLayoutPanel>()?
+                .children
+                .get_mut(path.row),
+            None => self.children.get_mut(path.row),
+        }
+    }
+
+    /// Build the occupancy grid — which cell sits in which slot, spans included.
+    ///
+    /// **A cell's column is not its index among its siblings.** A `rowspan` from
+    /// an earlier row already occupies a slot, so a later row's second `<td>`
+    /// may be the third column. Reconstructing that is the whole job here, and
+    /// skipping it is why a naive table renders spans on top of their
+    /// neighbours.
+    fn build_cell_grid(&mut self, rows: &[RowPath]) -> Vec<Vec<Option<TableCell>>> {
+        // Widest row wins, spans counted — a table is as wide as its widest row.
+        let mut columns = 0usize;
+        for row in rows {
+            let width: u32 = self.cells_of(*row).iter().map(|c| c.colspan).sum();
+            columns = columns.max(width as usize);
+        }
+        let mut grid: Vec<Vec<Option<TableCell>>> = vec![vec![None; columns]; rows.len()];
+        for (row, row_index) in rows.iter().enumerate() {
+            let mut column = 0usize;
+            for mut cell in self.cells_of(*row_index) {
+                // Step over whatever a row above already claimed.
+                while column < columns && grid[row][column].is_some() {
+                    column += 1;
+                }
+                if column >= columns {
+                    break;
+                }
+                let colspan = (cell.colspan as usize).min(columns - column);
+                let rowspan = (cell.rowspan as usize).min(rows.len() - row);
+                cell.origin = (row, column);
+                cell.colspan = colspan as u32;
+                cell.rowspan = rowspan as u32;
+                for r in row..row + rowspan {
+                    for c in column..column + colspan {
+                        grid[r][c] = Some(cell);
+                    }
+                }
+                column += colspan;
+            }
+        }
+        grid
+    }
+
+    /// The cells of one row, as paths from this table.
+    ///
+    /// Takes `&mut self` only because the widget trait's child accessor is
+    /// `children_mut` — reading a row's children is not a mutation, but there
+    /// is no immutable way to ask, and adding one to a shared trait to spare
+    /// this signature would be the wrong trade.
+    fn cells_of(&mut self, row: RowPath) -> Vec<TableCell> {
+        let Some(row_box) = self.row_panel_mut(row) else {
+            return Vec::new();
+        };
+        row_box
+            .children
+            .iter_mut()
+            .enumerate()
+            .map(|(index, child)| {
+                // A span lives on the cell, put there by `set_attribute`. A cell
+                // that is not a panel — or one nobody gave a span — occupies one
+                // slot, which is HTML's own default.
+                let (colspan, rowspan) = child
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<FlowLayoutPanel>())
+                    .map(|panel| (panel.colspan, panel.rowspan))
+                    .unwrap_or((1, 1));
+                TableCell {
+                    row,
+                    index,
+                    colspan,
+                    rowspan,
+                    origin: (0, 0),
+                }
+            })
+            .collect()
+    }
+
+    /// The width a cell gets: its own column plus every column it spans, and
+    /// the spacing that would have run between them.
+    fn span_extent(widths: &[f32], column: usize, colspan: u32, spacing: f32) -> f32 {
+        let last = (column + colspan as usize).min(widths.len());
+        widths[column..last].iter().sum::<f32>() + spacing * ((last - column) as f32 - 1.0)
+    }
+
+    /// Reach one cell — a grandchild, through the row that holds it.
+    ///
+    /// The table positions cells but does not own them: they belong to their
+    /// rows, because that is what the markup says and the tree mirrors the
+    /// markup. One borrow at a time, which is also why this is a closure rather
+    /// than a returned reference.
+    fn with_cell<R>(
+        &mut self,
+        cell: TableCell,
+        act: impl FnOnce(&mut Box<dyn PanelWidget>) -> R,
+    ) -> Option<R> {
+        let row = self.row_panel_mut(cell.row)?;
+        Some(act(row.children.get_mut(cell.index)?))
+    }
+
+    /// Lay a cell out at a given width and answer the height it needs.
+    ///
+    /// The cell runs ORDINARY block layout — it is a box like any other, and
+    /// giving it its own layout would mean a `<td>` and a `<div>` disagreed
+    /// about how to stack their children. Only the WIDTH comes from the table.
+    fn measure_cell(&mut self, cell: TableCell, width: f32) -> f32 {
+        self.with_cell(cell, |child| {
+            let previous = child.rect();
+            // A relayout is refused at zero height, so the probe height has to
+            // be non-zero — it is replaced by the answer below either way.
+            child.set_rect(LayoutRect::new(
+                previous.x,
+                previous.y,
+                width,
+                previous.h.max(1.0),
+            ));
+            match child
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<FlowLayoutPanel>())
+            {
+                // What the content came out as, which is the whole question a
+                // row height asks.
+                Some(panel) => panel.content_height,
+                // A leaf — a label, an image — is as tall as it is.
+                None => child.rect().h,
+            }
+        })
+        .unwrap_or(0.0)
+    }
+
+    fn place_cell(&mut self, cell: TableCell, rect: LayoutRect) {
+        self.with_cell(cell, |child| child.set_rect(rect));
+    }
+
+    /// A cell's two intrinsic widths — CSS 2.1 §17.5.2.2 / css-sizing §4.1.
+    ///
+    /// **min-content** is the widest single word: below it the text has nowhere
+    /// left to break. **max-content** is the whole thing on one line. A column
+    /// sized between the two is a column that neither clips its content nor
+    /// takes more room than it can use, which is the entire argument for a
+    /// table over a grid of guessed widths.
+    fn cell_intrinsic_widths(&mut self, cell: TableCell) -> (f32, f32) {
+        self.with_cell(cell, |child| {
+            let Some(panel) = child
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<FlowLayoutPanel>())
+            else {
+                let w = child.rect().w;
+                return (w, w);
+            };
+            let mut runs: Vec<crate::layout::InlineRun> = Vec::new();
+            if !panel.caption.is_empty() {
+                runs.push(crate::layout::InlineRun {
+                    text: panel.caption.clone(),
+                    font: panel.font.clone(),
+                    color: panel.colors.foreground,
+                    source: None,
+                    atomic: None,
+                    cursor: None,
+                });
+            }
+            runs.extend(panel.inline_content.iter().filter(|r| r.atomic.is_none()).cloned());
+
+            let (mut min, mut max) = (0.0f32, 0.0f32);
+            for run in &runs {
+                let (whole, _) = crate::ide_text::measure_rich_text(
+                    &[(
+                        run.text.clone(),
+                        run.font.clone(),
+                        cosmic_text::Color::rgb(0, 0, 0),
+                    )],
+                    None,
+                );
+                max += whole;
+                for word in split_words(&run.text) {
+                    let (w, _) = crate::ide_text::measure_rich_text(
+                        &[(
+                            word.trim_end().to_string(),
+                            run.font.clone(),
+                            cosmic_text::Color::rgb(0, 0, 0),
+                        )],
+                        None,
+                    );
+                    min = min.max(w);
+                }
+            }
+            // A nested box cannot be narrower than it is: it has already been
+            // sized, and a column that ignored it would clip it.
+            for nested in panel.children.iter() {
+                let w = nested.rect().w;
+                min = min.max(w);
+                max = max.max(w);
+            }
+            let edges = panel.padding.horizontal();
+            (min + edges, max.max(min) + edges)
+        })
+        .unwrap_or((0.0, 0.0))
+    }
+
+    /// Size the columns — §17.5.2, both algorithms.
+    ///
+    /// `fixed` reads the first row and stops, which is what makes it the fast
+    /// one and why a `table-layout: fixed` table can start painting before its
+    /// content is known. `auto` measures every cell.
+    ///
+    /// Cells that SPAN columns take no part in sizing here. §17.5.2.2 leaves
+    /// their contribution up to the UA, and the simple readings all distribute
+    /// a span's width over columns that single-cell content has already sized
+    /// better. Stated rather than silently approximated: a table whose only
+    /// content in some column is a spanning cell will size that column from the
+    /// other rows, or evenly if there are none.
+    fn column_widths(
+        &mut self,
+        grid: &[Vec<Option<TableCell>>],
+        columns: usize,
+        cell_area: f32,
+    ) -> Vec<f32> {
+        let mut widths = vec![0.0f32; columns];
+        let even = cell_area / columns as f32;
+
+        if self.table_layout_fixed {
+            // The first row alone decides. A cell with no width of its own
+            // takes an equal share, which is what a fixed table does with the
+            // space nobody claimed.
+            for column in 0..columns {
+                let width = grid
+                    .first()
+                    .and_then(|row| row[column])
+                    .filter(|c| c.origin == (0, column) && c.colspan == 1)
+                    .and_then(|cell| self.with_cell(cell, |child| child.rect().w))
+                    .filter(|w| *w > 0.0)
+                    .unwrap_or(even);
+                widths[column] = width;
+            }
+        } else {
+            let mut maxima = vec![0.0f32; columns];
+            for row in grid {
+                for (column, slot) in row.iter().enumerate().take(columns) {
+                    let Some(cell) = slot.filter(|c| c.colspan == 1) else {
+                        continue;
+                    };
+                    if cell.origin.1 != column {
+                        continue;
+                    }
+                    let (min, max) = self.cell_intrinsic_widths(cell);
+                    widths[column] = widths[column].max(min);
+                    maxima[column] = maxima[column].max(max);
+                }
+            }
+            // Every column starts at min-content, then the slack is shared out
+            // towards max-content — §17.5.2.2's "distribute the difference".
+            // A column already at its maximum takes none of it.
+            let used: f32 = widths.iter().sum();
+            let slack = cell_area - used;
+            if slack > 0.0 {
+                let wanted: f32 = maxima
+                    .iter()
+                    .zip(&widths)
+                    .map(|(max, min)| (max - min).max(0.0))
+                    .sum();
+                if wanted > 0.0 {
+                    let share = (slack / wanted).min(1.0);
+                    for column in 0..columns {
+                        widths[column] += (maxima[column] - widths[column]).max(0.0) * share;
+                    }
+                    // Anything still unclaimed — every column at max-content
+                    // and room to spare — spreads evenly, which is what makes a
+                    // short table fill the width a browser gives it.
+                    let left = cell_area - widths.iter().sum::<f32>();
+                    if left > 0.0 {
+                        for width in &mut widths {
+                            *width += left / columns as f32;
+                        }
+                    }
+                } else {
+                    for width in &mut widths {
+                        *width += slack / columns as f32;
+                    }
+                }
+            } else if used > 0.0 {
+                // Narrower than its own minimum: scale rather than overflow,
+                // because a column below its min-content width clips text and a
+                // proportional squeeze at least keeps the shape.
+                let scale = cell_area / used;
+                for width in &mut widths {
+                    *width = (*width * scale).max(1.0);
+                }
+            }
+        }
+        widths
+    }
+
+    /// Lay out a box's own text when its children are arranged by some other
+    /// formatting context.
+    ///
+    /// Flex and grid place every child themselves, so nothing there is inline
+    /// LEVEL — but the box can still have characters of its own, and they wrap
+    /// against the content width exactly as they do in normal flow. Without
+    /// this, `inline_items` would be written only by `layout_normal_flow` and
+    /// every flex box's caption would vanish the moment paint started reading
+    /// from it.
+    fn layout_inline_text(&mut self) {
+        if self.bordered || (self.caption.is_empty() && self.inline_content.is_empty()) {
+            self.inline_items.clear();
+            return;
+        }
+        let content_w = (self.rect.w - self.padding.horizontal()).max(0.0);
+        let mut line = LineWriter::new(content_w, self.nowrap, self.text_align);
+        let caption = self.caption.clone();
+        if !caption.is_empty() {
+            line.text_run(&crate::layout::InlineRun {
+                text: caption,
+                font: self.font.clone(),
+                color: self.colors.foreground,
+                source: None,
+                atomic: None,
+                cursor: None,
+            });
+        }
+        for run in self.inline_content.clone() {
+            // An atomic slot names a child this formatting context has already
+            // positioned. Reserving room for it here would move the text away
+            // from a box that is not where the line thinks it is.
+            if run.atomic.is_none() {
+                line.text_run(&run);
+            }
+        }
+        line.finish();
+        self.inline_items = std::mem::take(&mut line.items);
     }
 
     // Flutter Row: children side by side. Fixed-flex children keep their
@@ -916,8 +2033,27 @@ impl FlowLayoutPanel {
         // but before any of them is placed. A single line takes the whole cross
         // extent and has nothing to distribute, so this is inert until content
         // actually wraps.
-        let line_heights: Vec<f32> = if single {
+        let line_heights: Vec<f32> = if single && !self.cross_size_indefinite() {
             vec![inner_h]
+        } else if single {
+            // **A row with `height: auto` is as tall as its tallest item** —
+            // §9.4. Taking `inner_h` here is what made `align-items: stretch`
+            // a fixed point: the items were stretched to the row, the row then
+            // measured itself from the items, and it reproduced whatever height
+            // it started with — `default_size`'s 150px guess, for a 28px
+            // button. The live rect, not the `natural` map: the sizing pass has
+            // just settled each item against its own content, and that is the
+            // hypothetical cross size this rule asks for.
+            vec![
+                items
+                    .iter()
+                    .map(|&i| {
+                        let name = self.children[i].name().to_string();
+                        let margin = margins.get(&name).copied().unwrap_or_default();
+                        self.children[i].rect().h.max(1.0) + margin.vertical()
+                    })
+                    .fold(0.0f32, f32::max),
+            ]
         } else {
             lines
                 .iter()
@@ -1058,6 +2194,13 @@ impl FlowLayoutPanel {
             }
             cy += cross_extent + cross_gap + extra_cross;
         }
+        self.content_height = self
+            .children
+            .iter()
+            .map(|c| c.rect().y + c.rect().h)
+            .fold(r.y, f32::max)
+            - r.y
+            + self.padding.bottom;
     }
 
     /// `align` as a free function, so a child loop already holding `&mut self`
@@ -1120,7 +2263,6 @@ impl FlowLayoutPanel {
         let child_align = self.child_align.clone();
         let margins = self.child_margin.clone();
         let align = self.align_items.clone();
-        let child_basis = self.child_basis.clone();
         let child_shrink = self.child_shrink.clone();
 
         let line_widths: Vec<f32> = if single {
@@ -1159,6 +2301,11 @@ impl FlowLayoutPanel {
             let mut fixed = 0.0f32;
             let mut margin_total = 0.0f32;
             let mut shrink_scaled = 0.0f32;
+            // Measured ONCE, here, and read back below. The placement loop used
+            // to re-derive the base from `child_basis`/`flex`, which was a
+            // second copy of `base_main_size` free to disagree with the one the
+            // free space was computed from.
+            let mut bases: Vec<f32> = Vec::with_capacity(n);
             for &i in line {
                 let name = self.children[i].name().to_string();
                 let margin = margins.get(&name).copied().unwrap_or_default();
@@ -1171,13 +2318,20 @@ impl FlowLayoutPanel {
                     total_flex += f;
                 }
                 let base = self.base_main_size(i);
+                bases.push(base);
                 fixed += base;
                 let shrink = child_shrink.get(&name).copied().unwrap_or(0.0);
                 shrink_scaled += shrink.max(0.0) * base;
             }
             let free = inner_h - gaps - fixed - margin_total;
-            let leftover = free.max(0.0);
-            let deficit = if free < 0.0 && shrink_scaled > 0.0 {
+            // **Nothing is distributed against an indefinite main size** —
+            // §9.7. `inner_h` is a guess at this point, so growing into it
+            // would hand out space that does not exist and shrinking would
+            // squeeze items to fit a height that is about to change. The items
+            // stay at their content bases and the container sizes to them.
+            let indefinite = self.main_size_indefinite();
+            let leftover = if indefinite { 0.0 } else { free.max(0.0) };
+            let deficit = if !indefinite && free < 0.0 && shrink_scaled > 0.0 {
                 -free
             } else {
                 0.0
@@ -1190,21 +2344,15 @@ impl FlowLayoutPanel {
             let cross_extent = line_widths[line_index];
 
             let mut cy = r.y + self.top_inset() + lead;
-            for &i in line {
+            for (pos, &i) in line.iter().enumerate() {
                 let name = self.children[i].name().to_string();
                 let margin = margins.get(&name).copied().unwrap_or_default();
+                let base = bases[pos];
                 let child = &mut self.children[i];
                 let f = child_flex
                     .get(&name)
                     .copied()
                     .unwrap_or_else(|| child.layout_flex());
-                let base = if let Some(basis) = child_basis.get(&name) {
-                    basis.max(0.0)
-                } else if f > 0.0 {
-                    0.0
-                } else {
-                    Self::child_fixed(child.as_ref())
-                };
                 let grown = if f > 0.0 && total_flex > 0.0 {
                     leftover * f / total_flex
                 } else {
@@ -1236,6 +2384,17 @@ impl FlowLayoutPanel {
             }
             cx += cross_extent + cross_gap + extra_cross;
         }
+        // **What the flow actually used**, so a container with `height: auto`
+        // can size to it. Neither flex layout recorded this, so a flex box kept
+        // `default_size`'s 150px guess for ever — and every Flutter `Column`
+        // is one.
+        self.content_height = self
+            .children
+            .iter()
+            .map(|c| c.rect().y + c.rect().h)
+            .fold(r.y, f32::max)
+            - r.y
+            + self.padding.bottom;
     }
 
     /// The fixed main-axis size of a flex-0 child (a toolbar-height bar).
@@ -1311,6 +2470,27 @@ impl FlowLayoutPanel {
         lines
     }
 
+    /// Whether the main size this flow distributes is **indefinite** — no
+    /// declared extent, so there is nothing yet to divide.
+    ///
+    /// Block axis only. A block-level box's inline size is always definite:
+    /// `width: auto` fills the containing block, and a flex item stretched by
+    /// its container has a definite cross size. So a row still divides its
+    /// width and only a column defers to content.
+    fn main_size_indefinite(&self) -> bool {
+        matches!(self.flow_direction, FlowDirection::TopDown) && !self.declared_height
+    }
+
+    /// Whether the **cross** size this flow stretches into is indefinite.
+    ///
+    /// The other axis of the same question: laying out left-to-right the cross
+    /// axis is the block one, so an undeclared height means the line's height
+    /// comes from its items rather than the items' from the line. A column
+    /// crosses the inline axis, which is always definite.
+    fn cross_size_indefinite(&self) -> bool {
+        matches!(self.flow_direction, FlowDirection::LeftToRight) && !self.declared_height
+    }
+
     /// An item's base size along the main axis, before growing or shrinking.
     ///
     /// A `flex-grow` item contributes **zero**: `flex: 1` means `flex-basis: 0`,
@@ -1318,12 +2498,82 @@ impl FlowLayoutPanel {
     /// non-growing items carry a base into line-breaking.
     fn base_main_size(&self, i: usize) -> f32 {
         let child = self.children[i].as_ref();
+        // **An indefinite main size resolves a grower's basis to CONTENT** —
+        // §9.2.3. `flex: 1` is `flex: 1 1 0%`, and a percentage of a size that
+        // is not known yet is not zero, it is the item's own content. So a
+        // column with `height: auto` measures its items and then sizes to their
+        // sum; zero here would divide a guess and then re-measure the division.
+        //
+        // **Every item, growing or not.** `flex-basis: auto` on a non-growing
+        // item also means content, and `child_fixed`'s 44px guess is not it: an
+        // `AppBar` sibling is `flex: 0`, so a `Scaffold` handed its body 44px
+        // and the whole calculator collapsed four levels down from a bar that
+        // was not even in the same subtree.
+        if self.main_size_indefinite() {
+            // Its content, as the last pass left it. **Its live rect, never a
+            // maximum with the `natural` map** — that map holds the size the
+            // child had when it ARRIVED, which for a container is
+            // `default_size`'s 150px guess, and taking the larger of the two
+            // pins the item to that guess for ever. The whole point of this
+            // branch is that the item has since been measured against its own
+            // content, so the remembered size is precisely the number not to
+            // trust. `natural` is a fallback for a child not laid out yet, and
+            // a child that answers neither keeps the fixed guess rather than
+            // collapsing out of view.
+            let live = child.rect().h;
+            if live > 0.0 {
+                return live;
+            }
+            let natural = self
+                .natural
+                .get(child.name())
+                .map(|(_, h)| *h)
+                .unwrap_or(0.0);
+            if natural > 0.0 {
+                return natural;
+            }
+            return Self::child_fixed(child);
+        }
         // A declared `flex-basis` IS the base, growing or not — that is the
         // difference between "share the space" and "share what is left after
         // my content".
         if let Some(basis) = self.child_basis.get(child.name()) {
             return basis.max(0.0);
         }
+        // **A DECLARED main size is the author's answer**, and `child_fixed`'s
+        // guess below is not allowed to replace it. A Flutter `AppBar` is
+        // `flex: 0` with `height: 56px` and came out 44 — the guess — so the
+        // Material bar was the wrong height in every app.
+        //
+        // Narrow on purpose: only a child whose size the cascade DECLARED,
+        // which the container is already told about. Reading the live rect for
+        // every non-growing item is the fuller rule and moves margin
+        // arithmetic — see the note above `child_fixed`.
+        let declared_main = match self.flow_direction {
+            FlowDirection::LeftToRight => self.child_declared_width.contains(child.name()),
+            FlowDirection::TopDown => self.child_declared_height.contains(child.name()),
+        };
+        if declared_main {
+            let live = match self.flow_direction {
+                FlowDirection::LeftToRight => child.rect().w,
+                FlowDirection::TopDown => child.rect().h,
+            };
+            if live > 0.0 {
+                return live;
+            }
+        }
+        // ⚠ A non-growing item's base should be `flex-basis: auto` — its
+        // CONTENT — and `child_fixed`'s 44px below is a guess instead. It
+        // over-charges: a Flutter `Column` reserves 44px each for a status line
+        // and a button that measure 30 and 36, and hands the difference to the
+        // `Expanded` rows, which then overflow the bottom of the window by
+        // about a row.
+        //
+        // Using the live rect here is the right rule and changes MARGIN
+        // arithmetic — `a_margin_pushes_the_element_and_everything_after_it` and
+        // `adjacent_margins_do_not_collapse_and_that_is_a_known_divergence` both
+        // move — so it is not a one-line swap. Left as the known cause of the
+        // remaining overflow rather than taken blind.
         if self.flex_of(child) > 0.0 {
             return 0.0;
         }
@@ -1441,6 +2691,17 @@ impl PanelWidget for FlowLayoutPanel {
 
     /// The document tree's children — what `find_widget_mut` / `take_widget`
     /// walk, and what makes a node reachable by name however deeply nested.
+    /// **A table reaches its cells through the rows that hold them.**
+    ///
+    /// The trait's child accessor hands back `dyn PanelWidget`, which cannot
+    /// answer a `colspan` or a content height — those are this type's own. So
+    /// the table downcasts, and this is what makes that possible. The doc on
+    /// the trait method says widgets override it "as needed"; a formatting
+    /// context that spans two levels of the tree is exactly that need.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn children_mut(&mut self) -> Vec<&mut Box<dyn PanelWidget>> {
         self.children.iter_mut().collect()
     }
@@ -1520,72 +2781,56 @@ impl PanelWidget for FlowLayoutPanel {
             // A `<legend>`: in the gap the border left across the top edge,
             // OUTSIDE the content box, which is why it ignores padding.
             ctx.draw_text(&self.caption, r.x + 12.0, r.y + 2.0, tr, tg, tb, ta);
-        } else if !self.caption.is_empty() || !self.inline_content.is_empty() {
-            // The inline formatting context: the box's own text first, then
-            // each inline child's run, shaped TOGETHER so they share a line and
-            // each advance follows the last. Drawing them separately would
-            // stack every run at the same x.
-            let mut spans: Vec<(String, crate::ide_text::FontSpec, cosmic_text::Color)> =
-                Vec::with_capacity(self.inline_content.len() + 1);
-            if !self.caption.is_empty() {
-                spans.push((
-                    self.caption.clone(),
-                    self.font.clone(),
-                    cosmic_text::Color::rgba(tr, tg, tb, ta),
-                ));
-            }
-            for run in &self.inline_content {
-                let (rr, rg, rb, ra) = run.color;
-                spans.push((
-                    run.text.clone(),
-                    run.font.clone(),
-                    cosmic_text::Color::rgba(rr, rg, rb, ra),
-                ));
-            }
-            // Alignment needs the laid-out width, and the width needs shaping —
-            // so the line is measured by drawing it off-origin first only when
-            // it is not left-aligned. Left is the overwhelmingly common case
-            // and pays nothing.
+        } else if !self.inline_items.is_empty() {
+            // **Draw what layout decided.** Every word already has a position —
+            // see [`LineWriter`] — so this walks the line boxes and paints
+            // them; it computes no geometry of its own and cannot disagree with
+            // the pass that placed the widgets between them.
+            //
+            // Positions are relative to the CONTENT origin, so a box that moved
+            // without relayout still paints its text inside itself.
             let content_x = r.x + self.padding.left;
-            let content_w = (r.w - self.padding.horizontal()).max(0.0);
-            let y = r.y + self.padding.top;
-            let x = match self.text_align {
-                crate::layout::TextAlign::Left => content_x,
-                _ => {
-                    let advance: f32 = spans
-                        .iter()
-                        .map(|(text, spec, _)| {
-                            crate::ide_text::measure_text_spec(
-                                ctx.font_system,
-                                text,
-                                spec,
-                                ctx.scale,
-                            )
-                        })
-                        .sum();
-                    match self.text_align {
-                        crate::layout::TextAlign::Center => {
-                            content_x + (content_w - advance) / 2.0
-                        }
-                        _ => content_x + content_w - advance,
-                    }
+            let content_y = r.y + self.top_inset();
+            let mut rects: Vec<(String, LayoutRect, Option<crate::css::Cursor>)> = Vec::new();
+            for item in &self.inline_items {
+                // An atomic slot is a CHILD. It draws itself below, in paint
+                // order; the line only ever reserved the room for it.
+                if item.atomic.is_some() {
+                    continue;
                 }
-            };
-            crate::ide_text::draw_rich_text(
-                ctx.pixmap,
-                ctx.font_system,
-                ctx.swash_cache,
-                &spans,
-                x.max(r.x),
-                y,
-                // **The line breaks at the content edge.** A block box is as
-                // wide as its containing block gave it and its text wraps
-                // inside; without a width the whole paragraph shaped as one
-                // line and ran off the right of the box, which is also the
-                // layout the box was sized against.
-                Some(content_w),
-                ctx.scale,
-            );
+                let (x, y) = (content_x + item.x, content_y + item.y);
+                let (cr, cg, cb, ca) = item.color;
+                crate::ide_text::draw_rich_text(
+                    ctx.pixmap,
+                    ctx.font_system,
+                    ctx.swash_cache,
+                    &[(
+                        item.text.clone(),
+                        item.font.clone(),
+                        cosmic_text::Color::rgba(cr, cg, cb, ca),
+                    )],
+                    x,
+                    y,
+                    // No wrap width: the break decisions are already made and
+                    // each item is one word on one line. Passing one here would
+                    // let the shaper break a word that layout placed whole.
+                    None,
+                    ctx.scale,
+                );
+                // **Where each named run landed**, so a click can find it. A run
+                // has no widget and no rect, so this is the only geometry an
+                // `<a>` dissolved into a line ever gets — and because an item is
+                // one word on one line, a link that wraps contributes a rect per
+                // line without anyone having to reconstruct where it broke.
+                if let Some(source) = &item.source {
+                    rects.push((
+                        source.clone(),
+                        LayoutRect::new(x, y, item.w, item.h),
+                        item.cursor,
+                    ));
+                }
+            }
+            self.run_rects = rects;
         }
         for i in self.paint_order() {
             self.children[i].render(ctx);
@@ -1595,6 +2840,30 @@ impl PanelWidget for FlowLayoutPanel {
     fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
         for child in self.children.iter_mut().rev() {
             if child.rect().contains(event.x, event.y) && child.handle_mouse(event) {
+                return true;
+            }
+        }
+        // **A click on a RUN.** Children first, because a widget sitting over
+        // the text is in front of it; only then the box's own inline content.
+        //
+        // Reported as `LinkClicked` for any run, not just an `<a>`: which
+        // elements are interactive is the DOM's question — it holds the
+        // listeners — and the mapping at the other end already turns this into
+        // an ordinary `click` on the named node. A `<span>` with a handler is
+        // as clickable as a link, and the painter must not be the thing that
+        // decides otherwise.
+        if matches!(
+            event.kind,
+            crate::MouseEventKind::Release(crate::layout::MouseButton::Left)
+        ) {
+            if let Some((name, ..)) = self
+                .run_rects
+                .iter()
+                .rev()
+                .find(|(_, rect, _)| rect.contains(event.x, event.y))
+            {
+                self.pending_events
+                    .push(WidgetEvent::LinkClicked(name.clone()));
                 return true;
             }
         }
@@ -1625,11 +2894,24 @@ impl PanelWidget for FlowLayoutPanel {
                 return child.cursor_at(x, y);
             }
         }
+        // **A run answers for itself.** Same order as the click: children are in
+        // front of the text. Reading the run's CASCADED `cursor` is what makes a
+        // link in flow show a hand without this ever knowing what a link is —
+        // the UA sheet says `a { cursor: pointer }` and every other run keeps
+        // the default.
+        if let Some((_, _, Some(cursor))) = self
+            .run_rects
+            .iter()
+            .rev()
+            .find(|(_, rect, _)| rect.contains(x, y))
+        {
+            return cursor.icon();
+        }
         winit::window::CursorIcon::Default
     }
 
     fn drain_events(&mut self) -> Vec<WidgetEvent> {
-        let mut events = Vec::new();
+        let mut events = std::mem::take(&mut self.pending_events);
         for child in &mut self.children {
             events.extend(child.drain_events());
         }
@@ -1689,11 +2971,52 @@ impl PanelWidget for FlowLayoutPanel {
             // **Which formatting context this box establishes.** The DOM
             // resolves `display` and says; nobody else does, so a widget
             // reached by kind rather than by tag keeps flex.
+            // ── Table ────────────────────────────────────────────────────────
+            // A span belongs to the CELL and is read by the table; the border
+            // model belongs to the table and is declared on it. Both arrive as
+            // ordinary declarations, so a page can restyle a table and the
+            // layout follows.
+            WidgetCommand::Custom(name, value) if name == "SetColspan" || name == "SetRowspan" => {
+                if let CommandValue::Number(n) = value {
+                    let span = (*n as u32).max(1);
+                    if name == "SetColspan" {
+                        self.colspan = span;
+                    } else {
+                        self.rowspan = span;
+                    }
+                }
+                CommandValue::None
+            }
+            WidgetCommand::Custom(name, value) if name == "SetBorderSpacing" => {
+                if let Some(px) = command_number(value) {
+                    self.border_spacing = px as f32;
+                    self.relayout();
+                }
+                CommandValue::None
+            }
+            WidgetCommand::Custom(name, value) if name == "SetBorderCollapse" => {
+                if let CommandValue::Text(mode) = value {
+                    // Collapsing removes the spacing — §17.6.2. The declared
+                    // value is kept as it was, so switching back restores it.
+                    self.border_collapse = mode.trim().eq_ignore_ascii_case("collapse");
+                    self.relayout();
+                }
+                CommandValue::None
+            }
+            WidgetCommand::Custom(name, value) if name == "SetTableLayout" => {
+                if let CommandValue::Text(mode) = value {
+                    self.table_layout_fixed = mode.trim().eq_ignore_ascii_case("fixed");
+                    self.relayout();
+                }
+                CommandValue::None
+            }
             WidgetCommand::Custom(name, value) if name == "SetFormatting" => {
                 if let CommandValue::Text(mode) = value {
                     let formatting = match mode.trim() {
                         "flex" => Formatting::Flex,
                         "grid" => Formatting::Grid,
+                        "table" => Formatting::Table,
+                        "table-row" => Formatting::TableRow,
                         _ => Formatting::Normal,
                     };
                     if self.formatting != formatting {
@@ -1842,6 +3165,20 @@ impl PanelWidget for FlowLayoutPanel {
                 }
                 CommandValue::None
             }
+            // The same fact as `SetChildHeightMode`, addressed to the box it is
+            // ABOUT rather than to its container — a flex container needs to
+            // know whether its OWN main size is definite before it can decide
+            // what its items' bases resolve against.
+            WidgetCommand::Custom(name, value) if name == "SetHeightMode" => {
+                if let CommandValue::Text(mode) = value {
+                    let declared = mode.trim() == "declared";
+                    if declared != self.declared_height {
+                        self.declared_height = declared;
+                        self.relayout();
+                    }
+                }
+                CommandValue::None
+            }
             WidgetCommand::Custom(name, value)
                 if name == "SetChildWidthMode" || name == "SetChildHeightMode" =>
             {
@@ -1912,14 +3249,72 @@ impl PanelWidget for FlowLayoutPanel {
             }
             WidgetCommand::Custom(name, value) if name == "SetGridColumns" => {
                 if let CommandValue::Text(spec) = value {
-                    self.grid_columns = crate::css::parse_track_list(spec).unwrap_or_default();
+                    self.grid_columns = crate::css::parse_track_template(spec).unwrap_or_default();
                     self.relayout();
+                }
+                CommandValue::None
+            }
+            WidgetCommand::Custom(name, value) if name == "SetJustifyItems" => {
+                if let CommandValue::Text(mode) = value {
+                    self.justify_items = mode.trim().to_string();
+                    self.relayout();
+                }
+                CommandValue::None
+            }
+            WidgetCommand::Custom(name, value) if name == "SetChildJustifySelf" => {
+                if let CommandValue::Text(spec) = value {
+                    if let Some((child, mode)) = spec.rsplit_once('=') {
+                        self.child_justify_self
+                            .insert(child.to_string(), mode.trim().to_string());
+                        self.relayout();
+                    }
+                }
+                CommandValue::None
+            }
+            WidgetCommand::Custom(name, value) if name == "SetGridAutoFlow" => {
+                if let CommandValue::Text(mode) = value {
+                    let m = mode.to_ascii_lowercase();
+                    self.grid_flow_column = m.split_whitespace().any(|w| w == "column");
+                    self.grid_flow_dense = m.split_whitespace().any(|w| w == "dense");
+                    self.relayout();
+                }
+                CommandValue::None
+            }
+            WidgetCommand::Custom(name, value)
+                if name == "SetGridAutoRows" || name == "SetGridAutoColumns" =>
+            {
+                if let CommandValue::Text(spec) = value {
+                    if let Some(size) = crate::css::TrackSize::parse(spec) {
+                        if name == "SetGridAutoRows" {
+                            self.grid_auto_rows = size;
+                        } else {
+                            self.grid_auto_columns = size;
+                        }
+                        self.relayout();
+                    }
+                }
+                CommandValue::None
+            }
+            WidgetCommand::Custom(name, value) if name == "SetGridAreas" => {
+                if let CommandValue::Text(spec) = value {
+                    self.grid_areas = crate::css::parse_area_template(spec).unwrap_or_default();
+                    self.relayout();
+                }
+                CommandValue::None
+            }
+            WidgetCommand::Custom(name, value) if name == "SetChildGridName" => {
+                if let CommandValue::Text(spec) = value {
+                    if let Some((child, area)) = spec.rsplit_once('=') {
+                        self.child_grid_name
+                            .insert(child.to_string(), area.trim().to_string());
+                        self.relayout();
+                    }
                 }
                 CommandValue::None
             }
             WidgetCommand::Custom(name, value) if name == "SetGridRows" => {
                 if let CommandValue::Text(spec) = value {
-                    self.grid_rows = crate::css::parse_track_list(spec).unwrap_or_default();
+                    self.grid_rows = crate::css::parse_track_template(spec).unwrap_or_default();
                     self.relayout();
                 }
                 CommandValue::None
@@ -1935,6 +3330,22 @@ impl PanelWidget for FlowLayoutPanel {
                 if let Some(gap) = command_number(value) {
                     self.column_gap = Some(gap as f32);
                     self.relayout();
+                }
+                CommandValue::None
+            }
+            // **A container has a text colour too.** `color` was delivered to
+            // every box and consumed only by `label.rs`, so a container dropped
+            // it: a Flutter `AppBar` declaring `color: #ffffff` painted its
+            // title in the default black on its own blue, and nothing in the
+            // chain reported a problem — the declaration arrived, reached the
+            // widget, and had no reader.
+            //
+            // It is the CAPTION this colours. An inline child's run carries its
+            // own colour from its own computed style, which is why the runs
+            // were already right and only the box's own text was wrong.
+            WidgetCommand::Custom(name, value) if name == "SetForeColor" => {
+                if let Some(rgba) = crate::layout::command_color(value) {
+                    self.colors.foreground = rgba;
                 }
                 CommandValue::None
             }
@@ -2008,6 +3419,15 @@ impl PanelWidget for FlowLayoutPanel {
                 if let Some(align) = crate::layout::TextAlign::from_css(value) {
                     self.text_align = align;
                 }
+                CommandValue::None
+            }
+            // `nowrap` is the wrap width being ABSENT — the shaper's own way of
+            // saying "one line". `pre`/`pre-wrap`/`pre-line` carry only their
+            // wrapping behaviour here; keeping the source's spaces is a
+            // question for where text ENTERS the DOM, not for the paint.
+            WidgetCommand::Custom(name, CommandValue::Text(value)) if name == "SetWhiteSpace" => {
+                self.nowrap = matches!(value.as_str(), "nowrap" | "pre");
+                self.relayout();
                 CommandValue::None
             }
             WidgetCommand::Custom(name, value) if name == "SetBordered" => {
@@ -2132,6 +3552,165 @@ mod tests {
         panel.add(Box::new(Button::new("a")));
         panel.add(Box::new(Button::new("b")));
         panel
+    }
+
+    fn text_run(text: &str) -> crate::layout::InlineRun {
+        crate::layout::InlineRun {
+            text: text.to_string(),
+            font: crate::ide_text::FontSpec::sans(13.0),
+            color: (0, 0, 0, 255),
+            source: None,
+            atomic: None,
+            cursor: None,
+        }
+    }
+
+    /// A table with two rows SEES two rows.
+    ///
+    /// Isolated from placement deliberately. When four table tests failed at
+    /// once, two of them reported the second row's cell still at its
+    /// construction size — which is either "the table never reached it" or
+    /// "the table reached it and computed nothing", and those have completely
+    /// different fixes. This asks the first question on its own.
+    #[test]
+    fn a_table_sees_every_row_it_holds() {
+        let mut table = FlowLayoutPanel::new();
+        table.set_rect(LayoutRect::new(0.0, 0.0, 400.0, 300.0));
+        table.handle_command(&WidgetCommand::Custom(
+            "SetFormatting".into(),
+            CommandValue::Text("table".into()),
+        ));
+        for name in ["r1", "r2"] {
+            table.handle_command(&WidgetCommand::Custom(
+                "SetChildDisplay".into(),
+                CommandValue::Text(format!("{name}=table-row")),
+            ));
+            let mut row = FlowLayoutPanel::new();
+            row.name = name.to_string();
+            row.add(Box::new(Button::new(&format!("{name}c1"))));
+            table.add(Box::new(row));
+        }
+
+        let rows = table.table_rows();
+        assert_eq!(rows.len(), 2, "both `<tr>`s are rows of the table");
+        // The grid is built from the rows the table FOUND, not from a hand-
+        // written index list — otherwise the test asserts against its own
+        // guess at the addressing rather than the one layout uses.
+        let grid = table.build_cell_grid(&rows);
+        assert_eq!(grid.len(), 2, "the grid has a line per row");
+        assert_eq!(grid[0].len(), 1, "and a column per cell");
+        assert!(
+            grid[1][0].is_some(),
+            "the second row's cell has a slot of its own"
+        );
+    }
+
+    /// **The wrapped line** — text, a box, then more text, in a column too
+    /// narrow to hold them on one line.
+    ///
+    /// Both placements got this wrong and for the same reason: the text before
+    /// the box was measured with NO wrap width, so a single advance wider than
+    /// the column sent the cursor off the content edge. The box then landed at
+    /// the START of the second line, painted over the words it should follow,
+    /// and the text after it was shaped into what was left — nothing — one
+    /// character per line.
+    ///
+    /// Everything here is asserted against the box's own geometry rather than
+    /// against pixel constants: the point is that the three agree, not that the
+    /// shaper produces a particular width on a particular font.
+    #[test]
+    fn a_box_on_a_wrapped_line_follows_the_text_before_it() {
+        let mut panel = FlowLayoutPanel::new();
+        panel.set_rect(LayoutRect::new(0.0, 0.0, 300.0, 300.0));
+        panel.handle_command(&WidgetCommand::Custom(
+            "SetFormatting".into(),
+            CommandValue::Text("normal".into()),
+        ));
+        panel.handle_command(&WidgetCommand::Custom(
+            "SetChildDisplay".into(),
+            CommandValue::Text("field=inline-block".into()),
+        ));
+        panel.inline_content = vec![
+            text_run("This sentence is deliberately long enough that it must wrap before it reaches "),
+            crate::layout::InlineRun {
+                atomic: Some("field".into()),
+                ..text_run("")
+            },
+            text_run(" and it carries on for a while afterwards."),
+        ];
+        panel.add(Box::new(Button::new("field")));
+
+        let words: Vec<&InlineItem> = panel
+            .inline_items
+            .iter()
+            .filter(|i| i.atomic.is_none())
+            .collect();
+        assert!(
+            words.len() > 2,
+            "the text is split into words so a line can break between them"
+        );
+        assert!(
+            words.iter().any(|w| w.y > 0.0),
+            "a sentence this long in a 300px column has to occupy more than one line"
+        );
+        for word in &words {
+            assert!(
+                word.x + word.w <= 300.0 + 1.0,
+                "a word ran past the content edge at x={} w={}",
+                word.x,
+                word.w
+            );
+        }
+
+        // The box sits after the last word of the text before it, on that
+        // word's line — not at the start of the line below. Found by POSITION
+        // in the item list rather than by matching text, so the assertion does
+        // not quietly depend on how `split_words` merges whitespace.
+        // An item's position is relative to the CONTENT origin and a child's
+        // rect is absolute, so one of them has to move before they can be
+        // compared. The child comes to the items, because the items are what
+        // the assertions below are about.
+        let rect = panel.children[0].rect();
+        let box_rect = LayoutRect::new(
+            rect.x - (panel.rect.x + panel.padding.left),
+            rect.y - (panel.rect.y + panel.top_inset()),
+            rect.w,
+            rect.h,
+        );
+        let slot = panel
+            .inline_items
+            .iter()
+            .position(|i| i.atomic.as_deref() == Some("field"))
+            .expect("the box takes a slot on the line");
+        let before = panel.inline_items[..slot]
+            .iter()
+            .rfind(|i| i.atomic.is_none())
+            .expect("the run before the box was placed");
+        assert_eq!(
+            box_rect.y, before.y,
+            "the box shares a line with the text it follows"
+        );
+        assert!(
+            box_rect.x >= before.x + before.w - 1.0,
+            "the box starts where that text ended: box.x={} text ends at {}",
+            box_rect.x,
+            before.x + before.w
+        );
+
+        // And the tail is placed at all. The walk reads runs only when it
+        // reaches a box, so everything after the LAST box was consumed by
+        // nobody — asserted on the items after the slot, which is empty
+        // without the drain rather than merely wrong.
+        let tail = &panel.inline_items[slot + 1..];
+        assert!(
+            !tail.is_empty(),
+            "the text after the last box has to be laid out too"
+        );
+        assert!(
+            tail.iter()
+                .all(|w| w.y > box_rect.y || w.x >= box_rect.x + box_rect.w - 1.0),
+            "the tail follows the box — it does not start back over the top of it"
+        );
     }
 
     /// **The Flutter guard, at the level Flutter actually reaches.**
@@ -2260,6 +3839,38 @@ mod tests {
             aligned < stretched,
             "baseline stretched the item like `stretch` did: {aligned} vs {stretched}"
         );
+    }
+
+    /// **The Flutter `Column` guard.** `layout_top_down` was rewritten to
+    /// support wrapping, and it is the exact path every Flutter `Column` takes
+    /// (by KIND, through `vybe:gui` — no element, no cascade). This pins the
+    /// unconfigured behaviour: children stack, share the height by flex weight,
+    /// and stretch across the cross axis.
+    #[test]
+    fn an_unconfigured_column_still_stacks_and_stretches() {
+        let mut panel = FlowLayoutPanel::new();
+        panel.flow_direction = FlowDirection::TopDown;
+        panel.set_rect(LayoutRect::new(0.0, 0.0, 400.0, 300.0));
+        panel.add(Box::new(Button::new("a")));
+        panel.add(Box::new(Button::new("b")));
+        panel.add(Box::new(Button::new("c")));
+
+        let r: Vec<LayoutRect> = (0..3).map(|i| panel.child(i).rect()).collect();
+        // Stacked, in order, none on top of another.
+        assert!(r[0].y < r[1].y && r[1].y < r[2].y, "not stacked: {r:?}");
+        // One column — nothing wrapped, because `nowrap` is the default.
+        assert!(
+            r.iter().all(|x| (x.x - r[0].x).abs() < 0.5),
+            "an unconfigured column wrapped: {r:?}"
+        );
+        // `align-items: stretch` fills the cross axis.
+        assert!(
+            r[0].w > 300.0,
+            "a flex child stopped stretching across: {}",
+            r[0].w
+        );
+        // And each has real height — the flex weights divided the container.
+        assert!(r.iter().all(|x| x.h > 10.0), "a child collapsed: {r:?}");
     }
 
     /// Column wrapping — the mirror of the row case, and missing until now.
@@ -2415,16 +4026,39 @@ fn resolve_tracks(
     use crate::css::TrackSize;
     let gaps = gap * (tracks.len() as f32 - 1.0).max(0.0);
     let mut sizes = vec![0.0f32; tracks.len()];
+    // A `minmax(a, 1fr)` track reserves its FLOOR before anything is shared
+    // out, then takes a share of what is left on top. Keeping the floor here
+    // is what makes `minmax(200px, 1fr)` never fall below 200px however many
+    // tracks compete — the whole point of the function.
+    let mut fr_floor = vec![0.0f32; tracks.len()];
     let mut fr_total = 0.0f32;
     let mut used = gaps;
     for (i, track) in tracks.iter().enumerate() {
+        let content = auto_sizes.get(i).copied().unwrap_or(0.0).max(0.0);
         match *track {
             TrackSize::Px(v) => sizes[i] = v.max(0.0),
             TrackSize::Percent(p) => sizes[i] = (extent * p / 100.0).max(0.0),
-            TrackSize::Auto => sizes[i] = auto_sizes.get(i).copied().unwrap_or(0.0).max(0.0),
+            TrackSize::Auto => sizes[i] = content,
             TrackSize::Fr(f) => {
                 fr_total += f.max(0.0);
                 continue;
+            }
+            TrackSize::MinMax(min, max) => {
+                let floor = min.definite(extent).unwrap_or(content).max(0.0);
+                match max.fr() {
+                    // Flexible above its floor: reserve the floor now, share
+                    // the leftover below.
+                    Some(f) => {
+                        fr_total += f.max(0.0);
+                        fr_floor[i] = floor;
+                        sizes[i] = floor;
+                    }
+                    // Bounded on both sides: the content, clamped.
+                    None => {
+                        let cap = max.definite(extent).unwrap_or(f32::INFINITY);
+                        sizes[i] = content.clamp(floor, cap.max(floor));
+                    }
+                }
             }
         }
         used += sizes[i];
@@ -2432,8 +4066,13 @@ fn resolve_tracks(
     if fr_total > 0.0 {
         let leftover = (extent - used).max(0.0);
         for (i, track) in tracks.iter().enumerate() {
-            if let TrackSize::Fr(f) = *track {
-                sizes[i] = leftover * f.max(0.0) / fr_total;
+            let weight = match *track {
+                TrackSize::Fr(f) => Some(f.max(0.0)),
+                TrackSize::MinMax(_, max) => max.fr().map(|f| f.max(0.0)),
+                _ => None,
+            };
+            if let Some(f) = weight {
+                sizes[i] = fr_floor[i] + leftover * f / fr_total;
             }
         }
     }
@@ -2472,10 +4111,41 @@ fn place_grid_items(
             crate::css::GridLine,
         ),
     >,
+    area_names: &std::collections::HashMap<String, String>,
+    template: &[Vec<String>],
     col_count: usize,
+    dense: bool,
 ) -> Vec<GridArea> {
     use crate::css::GridLine;
     let cols = col_count.max(1);
+
+    /// The rectangle a named area covers in the template.
+    ///
+    /// An area is the BOUNDING BOX of every cell bearing its name — that is
+    /// how CSS defines it, and it is why `header header` across two columns is
+    /// one area two tracks wide rather than two areas.
+    fn named_rect(template: &[Vec<String>], name: &str) -> Option<GridArea> {
+        let (mut r0, mut c0) = (usize::MAX, usize::MAX);
+        let (mut r1, mut c1) = (0usize, 0usize);
+        let mut found = false;
+        for (r, row) in template.iter().enumerate() {
+            for (c, cell) in row.iter().enumerate() {
+                if cell == name {
+                    found = true;
+                    r0 = r0.min(r);
+                    c0 = c0.min(c);
+                    r1 = r1.max(r + 1);
+                    c1 = c1.max(c + 1);
+                }
+            }
+        }
+        found.then(|| GridArea {
+            col: c0,
+            row: r0,
+            col_span: c1 - c0,
+            row_span: r1 - r0,
+        })
+    }
 
     // How many tracks an item covers, from whichever pair of lines it gave.
     // A start and an end line span the distance between them; a `span` says the
@@ -2523,9 +4193,25 @@ fn place_grid_items(
 
     let mut areas: Vec<Option<GridArea>> = vec![None; names.len()];
 
+    // Pass 0: items claiming a NAMED area. These are the most explicit
+    // placement there is — the author drew the grid — so they go down first.
+    for (i, name) in names.iter().enumerate() {
+        let Some(area) = area_names.get(name) else {
+            continue;
+        };
+        let Some(rect) = named_rect(template, area) else {
+            continue;
+        };
+        occupy(rect.col, rect.row, rect.col_span, rect.row_span, &mut occupied);
+        areas[i] = Some(rect);
+    }
+
     // Pass 1: everything that named a column line. Explicit first, so the
     // cursor in pass 2 sees them as taken.
     for (i, name) in names.iter().enumerate() {
+        if areas[i].is_some() {
+            continue;
+        }
         let Some(&(cs, ce, rs, re)) = declared.get(name) else {
             continue;
         };
@@ -2556,6 +4242,10 @@ fn place_grid_items(
         let (col_span, row_span) = (span_of(cs, ce).min(cols), span_of(rs, re));
         // A column-pinned item keeps its column and only looks for a free row.
         let pinned = track_of(cs).map(|c| c.min(cols.saturating_sub(1)));
+        if dense {
+            cursor_col = 0;
+            cursor_row = 0;
+        }
         loop {
             let col = pinned.unwrap_or(cursor_col);
             if col + col_span > cols {
@@ -2571,7 +4261,14 @@ fn place_grid_items(
                     col_span,
                     row_span,
                 });
-                if pinned.is_none() {
+                // **`dense` restarts the search from the top for every
+                // item**, so a later small item back-fills a hole an earlier
+                // spanning one left. The default is SPARSE: the cursor never
+                // moves backwards, which is why a hole stays a hole.
+                if dense {
+                    cursor_col = 0;
+                    cursor_row = 0;
+                } else if pinned.is_none() {
                     cursor_col = col + col_span;
                     if cursor_col >= cols {
                         cursor_col = 0;

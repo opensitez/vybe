@@ -70,9 +70,11 @@ const RULES: &[Rule] = &[
     //   `SetVisible(true)` and un-hide every dialog on the page. The spec's own
     //   rule is `dialog:not([open]) { display: none }`, which needs an
     //   attribute condition this table cannot express.
-    // - **`list-item`, `table`, `table-row`, `table-cell`**. `css::Display` has
-    //   no variant for them, and inventing one that lays out like `block` would
-    //   be a rule that reads as implemented and is not.
+    // - **`list-item`**. `css::Display` has no variant for it, and inventing one
+    //   that lays out like `block` would be a rule that reads as implemented and
+    //   is not. The table values WERE in this list for the same reason and are
+    //   now declared below — `Display` grew them along with the table
+    //   formatting context that reads them.
     (
         &[
             "html", "body", "div", "p", "form", "section", "article", "main", "aside", "header",
@@ -98,6 +100,30 @@ const RULES: &[Rule] = &[
           "progress", "meter"],
         &[("display", "inline-block")],
     ),
+    // ---- Tables ----
+    // https://html.spec.whatwg.org/multipage/rendering.html#tables-2
+    //
+    // **This is what makes `<table>` a table.** The tag used to pick a Rust
+    // type — `control_kind` answered `datagridview`, so an HTML table rendered
+    // as a .NET DataGrid control and its rows and cells became generic panels.
+    // A table is a LAYOUT; `DataGridView` is a control; they are not the same
+    // thing and the tag has no business claiming the widget.
+    //
+    // Each value here is read by `Formatting::Table` in `flow_layout.rs`, which
+    // is the half that makes these more than labels.
+    (&["table"], &[("display", "table")]),
+    (&["caption"], &[("display", "table-caption"), ("text-align", "center")]),
+    (&["colgroup"], &[("display", "table-column-group")]),
+    (&["col"], &[("display", "table-column")]),
+    (&["thead"], &[("display", "table-header-group")]),
+    (&["tbody"], &[("display", "table-row-group")]),
+    (&["tfoot"], &[("display", "table-footer-group")]),
+    (&["tr"], &[("display", "table-row")]),
+    // §14.3.9 gives cells `padding: 1px` and centres a header's text. The
+    // border model is the table's and inherits down to here, which is why
+    // neither is declared on the cell.
+    (&["td", "th"], &[("display", "table-cell"), ("padding", "1px")]),
+    (&["th"], &[("font-weight", "bold"), ("text-align", "center")]),
     // ---- The page ----
     // https://html.spec.whatwg.org/multipage/rendering.html#the-page
     //
@@ -137,9 +163,16 @@ const RULES: &[Rule] = &[
     // worked around: an attribute condition would mean re-running the cascade
     // on every attribute write, which is the same reason `dialog:not([open])`
     // is still absent below.
+    // `cursor: pointer` is the third thing that makes a link look like one, and
+    // it is a DECLARATION rather than widget behaviour so that an `<a>` in flow
+    // — which has no widget at all, only a run — still shows a hand.
     (
         &["a"],
-        &[("color", "#0000ee"), ("text-decoration", "underline")],
+        &[
+            ("color", "#0000ee"),
+            ("text-decoration", "underline"),
+            ("cursor", "pointer"),
+        ],
     ),
     // ---- Text decoration ----
     (&["u", "ins"], &[("text-decoration", "underline")]),

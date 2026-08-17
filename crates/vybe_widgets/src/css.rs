@@ -87,6 +87,112 @@ impl GridLine {
     }
 }
 
+/// **A track template, with the auto-repeating section kept separate.**
+///
+/// `repeat(4, 1fr)` expands at parse time — the count is written down. But
+/// `repeat(auto-fill, minmax(200px, 1fr))` cannot: how many times it repeats
+/// depends on how much room the container has, which parsing does not know and
+/// layout does. So the pattern is CARRIED, not expanded, and resolved against a
+/// real extent by [`TrackTemplate::resolve`].
+///
+/// `before`/`after` are the fixed tracks either side of it, because
+/// `200px repeat(auto-fill, 1fr) 200px` is legal and the sidebars must keep
+/// their places.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct TrackTemplate {
+    pub before: Vec<TrackSize>,
+    pub auto_repeat: Option<(AutoRepeat, Vec<TrackSize>)>,
+    pub after: Vec<TrackSize>,
+}
+
+/// `auto-fill` vs `auto-fit` — they place tracks identically and differ only in
+/// what happens to the EMPTY ones: `auto-fit` collapses them, so the filled
+/// tracks absorb the space.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AutoRepeat {
+    Fill,
+    Fit,
+}
+
+impl TrackTemplate {
+    pub fn is_empty(&self) -> bool {
+        self.before.is_empty() && self.auto_repeat.is_none() && self.after.is_empty()
+    }
+
+    /// The concrete track list for a container of this size.
+    ///
+    /// The repetition count is the largest number of whole patterns that fit —
+    /// Grid §7.2.3.1 — computed from each pattern track's own floor, because
+    /// that is the smallest it can ever be and therefore the most that can fit.
+    /// A pattern with no definite floor (`1fr` alone) repeats once: it would
+    /// otherwise divide by zero and fill forever.
+    pub fn resolve(&self, extent: f32, gap: f32) -> Vec<TrackSize> {
+        let mut out = self.before.clone();
+        if let Some((_, pattern)) = &self.auto_repeat {
+            let floor: f32 = pattern.iter().map(|t| t.min_extent(extent)).sum();
+            let fixed: f32 = self
+                .before
+                .iter()
+                .chain(self.after.iter())
+                .map(|t| t.min_extent(extent))
+                .sum();
+            let leading = self.before.len() + self.after.len();
+            let count = if floor > 0.0 {
+                // Each repetition costs its floor plus the gap that precedes it.
+                let room = extent - fixed - gap * leading.saturating_sub(1) as f32;
+                (((room + gap) / (floor + gap * pattern.len() as f32)).floor() as i64).max(1)
+            } else {
+                1
+            };
+            for _ in 0..count.min(1024) {
+                out.extend(pattern.iter().copied());
+            }
+        }
+        out.extend(self.after.iter().copied());
+        if out.is_empty() {
+            out.push(TrackSize::Fr(1.0));
+        }
+        out
+    }
+}
+
+/// `grid-template-areas: "head head" "side main"` — one quoted string per row.
+///
+/// Every row must name the same number of cells; a ragged template is invalid
+/// and dropped whole, because a half-applied grid places items in cells the
+/// author never wrote.
+pub fn parse_area_template(value: &str) -> Option<Vec<Vec<String>>> {
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut rest = value.trim();
+    while let Some(open) = rest.find(['"', '\'']) {
+        let quote = rest.as_bytes()[open] as char;
+        let after = &rest[open + 1..];
+        let close = after.find(quote)?;
+        let cells: Vec<String> = after[..close]
+            .split_whitespace()
+            .map(str::to_string)
+            .collect();
+        if cells.is_empty() {
+            return None;
+        }
+        rows.push(cells);
+        rest = after[close + 1..].trim_start();
+    }
+    if rows.is_empty() {
+        return None;
+    }
+    let width = rows[0].len();
+    rows.iter().all(|r| r.len() == width).then_some(rows)
+}
+
+/// Serialise an area template back to CSS, so the cascade diff can carry it.
+pub fn area_template_css(rows: &[Vec<String>]) -> String {
+    rows.iter()
+        .map(|r| format!("\"{}\"", r.join(" ")))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// `grid-column: <start> / <end>` — the shorthand, which is why it answers two
 /// values. A missing `/` means the start alone, with the end left `auto`.
 pub fn parse_grid_placement(value: &str) -> (Option<GridLine>, Option<GridLine>) {
@@ -110,10 +216,75 @@ pub enum TrackSize {
     Fr(f32),
     /// `auto` — as big as the largest item in the track.
     Auto,
+    /// **`minmax(min, max)`** — a floor and a ceiling on one track.
+    ///
+    /// Not expressible as a single size, which is why `TrackSize` needed a
+    /// second shape rather than another scalar: `minmax(200px, 1fr)` is a track
+    /// that never shrinks below 200px and otherwise takes a share of the
+    /// leftover, and neither half alone says that.
+    ///
+    /// `fr` is invalid in the MIN position per Grid §7.2.2 — a floor cannot be
+    /// a share of what is left over, because the leftover is not known until
+    /// the floors are. Parsed as `auto` there rather than rejected, which is
+    /// what a browser's error handling amounts to for this case.
+    MinMax(MinMaxSide, MinMaxSide),
+}
+
+/// One half of a `minmax()`. A separate type so `TrackSize` stays `Copy` —
+/// a boxed recursive track would make every track list an allocation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MinMaxSide {
+    Px(f32),
+    Percent(f32),
+    Fr(f32),
+    Auto,
+}
+
+impl MinMaxSide {
+    fn parse(token: &str) -> Option<MinMaxSide> {
+        match TrackSize::parse_basic(token)? {
+            TrackSize::Px(v) => Some(MinMaxSide::Px(v)),
+            TrackSize::Percent(p) => Some(MinMaxSide::Percent(p)),
+            TrackSize::Fr(f) => Some(MinMaxSide::Fr(f)),
+            TrackSize::Auto => Some(MinMaxSide::Auto),
+            TrackSize::MinMax(..) => None,
+        }
+    }
+
+    fn as_css(self) -> String {
+        match self {
+            MinMaxSide::Px(v) => format!("{v}px"),
+            MinMaxSide::Percent(p) => format!("{p}%"),
+            MinMaxSide::Fr(f) => format!("{f}fr"),
+            MinMaxSide::Auto => "auto".to_string(),
+        }
+    }
+
+    /// The side as a definite length, when it is one. `fr` and `auto` answer
+    /// `None` — both need something layout knows and parsing does not.
+    pub fn definite(self, extent: f32) -> Option<f32> {
+        match self {
+            MinMaxSide::Px(v) => Some(v),
+            MinMaxSide::Percent(p) => Some(extent * p / 100.0),
+            _ => None,
+        }
+    }
+
+    pub fn fr(self) -> Option<f32> {
+        match self {
+            MinMaxSide::Fr(f) => Some(f),
+            _ => None,
+        }
+    }
 }
 
 impl TrackSize {
-    pub fn parse(token: &str) -> Option<TrackSize> {
+    /// A track size that is NOT a `minmax()` — the four scalar forms.
+    ///
+    /// `em`/`rem`/`%`/`px` all arrive through [`parse_length`], so a track list
+    /// accepts every length unit the rest of the engine does; only `fr` is
+    /// grid's own and handled here.
+    fn parse_basic(token: &str) -> Option<TrackSize> {
         let token = token.trim();
         let lower = token.to_ascii_lowercase();
         if let Some(n) = lower.strip_suffix("fr") {
@@ -126,12 +297,45 @@ impl TrackSize {
         }
     }
 
+    pub fn parse(token: &str) -> Option<TrackSize> {
+        let token = token.trim();
+        let lower = token.to_ascii_lowercase();
+        if let Some(rest) = lower.strip_prefix("minmax(") {
+            let close = matching_paren(rest)?;
+            // Split on the ORIGINAL casing so a unit keyword is not folded, and
+            // on the top-level comma only.
+            let inner = &token["minmax(".len().."minmax(".len() + close];
+            let (min, max) = inner.split_once(',')?;
+            let min = MinMaxSide::parse(min)?;
+            // A floor cannot be a share of the leftover — §7.2.2.
+            let min = if min.fr().is_some() { MinMaxSide::Auto } else { min };
+            return Some(TrackSize::MinMax(min, MinMaxSide::parse(max)?));
+        }
+        Self::parse_basic(token)
+    }
+
     pub fn as_css(self) -> String {
         match self {
             TrackSize::Px(v) => format!("{v}px"),
             TrackSize::Percent(p) => format!("{p}%"),
             TrackSize::Fr(f) => format!("{f}fr"),
             TrackSize::Auto => "auto".to_string(),
+            TrackSize::MinMax(a, b) => format!("minmax({}, {})", a.as_css(), b.as_css()),
+        }
+    }
+
+    /// The smallest this track can be, as a definite length — its FLOOR.
+    ///
+    /// What `auto-fill` counts with: the floor is the most that can fit, so it
+    /// is what decides how many repetitions there is room for. `fr` and `auto`
+    /// have no floor and answer `0`, which is why a pattern made only of them
+    /// repeats once instead of forever.
+    pub fn min_extent(self, extent: f32) -> f32 {
+        match self {
+            TrackSize::Px(v) => v.max(0.0),
+            TrackSize::Percent(p) => (extent * p / 100.0).max(0.0),
+            TrackSize::MinMax(min, _) => min.definite(extent).unwrap_or(0.0).max(0.0),
+            TrackSize::Fr(_) | TrackSize::Auto => 0.0,
         }
     }
 }
@@ -152,6 +356,65 @@ pub fn track_list_css(tracks: &[TrackSize]) -> String {
 /// any other way is unreadable past three columns. An unparseable token drops
 /// the whole declaration rather than silently shortening the grid — a template
 /// with a missing track would place every item in the wrong cell.
+/// Parse a full template, keeping any `repeat(auto-fill|auto-fit, …)` whole.
+///
+/// Split rather than expanded, because the count is not knowable here — see
+/// [`TrackTemplate`].
+pub fn parse_track_template(input: &str) -> Option<TrackTemplate> {
+    let lower = input.to_ascii_lowercase();
+    let Some(at) = lower.find("repeat(") else {
+        return parse_track_list(input).map(|tracks| TrackTemplate {
+            before: tracks,
+            ..TrackTemplate::default()
+        });
+    };
+    let after_open = &input[at + "repeat(".len()..];
+    let close = matching_paren(after_open)?;
+    let inner = &after_open[..close];
+    let (count, pattern) = inner.split_once(',')?;
+    let kind = match count.trim().to_ascii_lowercase().as_str() {
+        "auto-fill" => AutoRepeat::Fill,
+        "auto-fit" => AutoRepeat::Fit,
+        // A numeric `repeat()` is expandable here and always was.
+        _ => {
+            return parse_track_list(input).map(|tracks| TrackTemplate {
+                before: tracks,
+                ..TrackTemplate::default()
+            });
+        }
+    };
+    let before = input[..at].trim();
+    let after = after_open[close + 1..].trim();
+    Some(TrackTemplate {
+        before: if before.is_empty() {
+            Vec::new()
+        } else {
+            parse_track_list(before)?
+        },
+        auto_repeat: Some((kind, parse_track_list(pattern)?)),
+        after: if after.is_empty() {
+            Vec::new()
+        } else {
+            parse_track_list(after)?
+        },
+    })
+}
+
+/// Serialise a template, keeping an auto-repeat in its unexpanded form so a
+/// round trip through the cascade does not freeze the count.
+pub fn track_template_css(t: &TrackTemplate) -> String {
+    let mut parts: Vec<String> = t.before.iter().map(|x| x.as_css()).collect();
+    if let Some((kind, pattern)) = &t.auto_repeat {
+        let word = match kind {
+            AutoRepeat::Fill => "auto-fill",
+            AutoRepeat::Fit => "auto-fit",
+        };
+        parts.push(format!("repeat({word}, {})", track_list_css(pattern)));
+    }
+    parts.extend(t.after.iter().map(|x| x.as_css()));
+    parts.join(" ")
+}
+
 pub fn parse_track_list(input: &str) -> Option<Vec<TrackSize>> {
     let mut out: Vec<TrackSize> = Vec::new();
     let mut rest = input.trim();
@@ -174,7 +437,22 @@ pub fn parse_track_list(input: &str) -> Option<Vec<TrackSize>> {
             rest = after[close + 1..].trim_start();
             continue;
         }
-        let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        // A token ends at whitespace — but NOT whitespace inside parentheses.
+        // `minmax(200px, 1fr)` is one track and splitting it on the space after
+        // the comma would make it two unparseable ones.
+        let mut depth = 0usize;
+        let mut end = rest.len();
+        for (i, ch) in rest.char_indices() {
+            match ch {
+                '(' => depth += 1,
+                ')' => depth = depth.saturating_sub(1),
+                c if c.is_whitespace() && depth == 0 => {
+                    end = i;
+                    break;
+                }
+                _ => {}
+            }
+        }
         let (token, remainder) = rest.split_at(end);
         out.push(TrackSize::parse(token)?);
         rest = remainder.trim_start();
@@ -255,12 +533,120 @@ keyword_enum! {
     /// property meant "is it visible", so `display: flex` marked an element
     /// visible and then did nothing, which reads as an unimplemented feature
     /// rather than a consumed one.
+    /// **`inline-flex`/`inline-grid` are inline-level OUTSIDE and
+    /// flex/grid INSIDE.** `display` names two things — how the box takes part
+    /// in its PARENT's flow, and what formatting context it establishes for its
+    /// CHILDREN — and these are the values where the two answers differ. The
+    /// engine already models exactly that split: the box is told its context,
+    /// the parent is told what kind of box arrived.
+    /// **The table display types** — CSS 2.1 §17.2.
+    ///
+    /// A table is not a grid with nicer names. Its columns are sized from what
+    /// the CELLS contain (§17.5.2), which no other formatting context does:
+    /// grid tracks come from a template the author wrote, flex bases from the
+    /// items. That is why `<table>` cannot simply be `display: grid`, and why
+    /// mapping it to the `datagridview` WIDGET was worse still — it made an
+    /// HTML layout impersonate a .NET control.
+    ///
+    /// `table-column`/`table-column-group` generate NO box. They exist to carry
+    /// a width down onto a column, which is the only thing `<col>` does.
     Display {
         Block => "block",
         Flex => "flex",
         InlineBlock => "inline-block",
         Inline => "inline",
         Grid => "grid",
+        InlineFlex => "inline-flex",
+        InlineGrid => "inline-grid",
+        Table => "table",
+        InlineTable => "inline-table",
+        TableRow => "table-row",
+        TableRowGroup => "table-row-group",
+        TableHeaderGroup => "table-header-group",
+        TableFooterGroup => "table-footer-group",
+        TableCell => "table-cell",
+        TableCaption => "table-caption",
+        TableColumn => "table-column",
+        TableColumnGroup => "table-column-group",
+    }
+}
+
+keyword_enum! {
+    /// `border-collapse` — CSS 2.1 §17.6.
+    ///
+    /// Which of the two border models a table uses. `separate` gives every cell
+    /// its own border with `border-spacing` between them; `collapse` merges
+    /// adjacent borders into one, and the winner is decided by a conflict
+    /// resolution order (§17.6.2), not by whoever drew last.
+    BorderCollapse {
+        Separate => "separate",
+        Collapse => "collapse",
+    }
+}
+
+keyword_enum! {
+    /// `table-layout` — CSS 2.1 §17.5.2.
+    ///
+    /// **The two column-width algorithms.** `auto` measures every cell's
+    /// content, so the table cannot be laid out until all of it is known;
+    /// `fixed` takes the widths from the columns and the first row alone and
+    /// never looks at the rest, which is why it is the fast one.
+    TableLayout {
+        Auto => "auto",
+        Fixed => "fixed",
+    }
+}
+
+keyword_enum! {
+    /// **Take this box out of flow and shift it to one side** — CSS 2.1 §9.5.
+    ///
+    /// The oldest layout mode on the web and the one this engine never had.
+    /// A float is not merely "positioned left": it is removed from the flow,
+    /// pushed until its margin edge meets the containing block or an earlier
+    /// float, and then — the part that makes it a MODE rather than an offset —
+    /// the LINE BOXES beside it are shortened so text wraps around it.
+    Float {
+        None => "none",
+        Left => "left",
+        Right => "right",
+    }
+}
+
+keyword_enum! {
+    /// **Move below the floats already placed** — §9.5.2.
+    ///
+    /// The other half of the float model, and the half a naive implementation
+    /// forgets: without `clear`, a short paragraph beside a tall image can
+    /// never be made to start under it, and every "why is my footer inside the
+    /// sidebar" bug is this.
+    Clear {
+        None => "none",
+        Left => "left",
+        Right => "right",
+        Both => "both",
+    }
+}
+
+keyword_enum! {
+    /// Whether text WRAPS, and what happens to the source's own whitespace.
+    ///
+    /// The half that matters here is wrapping: the shaper already takes an
+    /// optional wrap width, and `nowrap` is that width being absent. Without
+    /// this, a label in a narrow box always broke, and no frontend could say
+    /// otherwise — a toolbar caption or a table cell that must stay on one line
+    /// had no way to ask.
+    ///
+    /// ⚠ The whitespace-PROCESSING half (`pre` keeping runs of spaces and
+    /// newlines) is parsed and not yet honoured: collapsing happens when text
+    /// enters the DOM, so `pre` has to change that, not the paint. `Pre` and
+    /// `PreWrap` therefore only carry their wrapping behaviour today, which is
+    /// recorded rather than hidden.
+    WhiteSpace {
+        Normal => "normal",
+        Nowrap => "nowrap",
+        Pre => "pre",
+        PreWrap => "pre-wrap",
+        PreLine => "pre-line",
     }
 }
 
@@ -304,6 +690,18 @@ keyword_enum! {
         SpaceBetween => "space-between",
         SpaceAround => "space-around",
         SpaceEvenly => "space-evenly",
+    }
+}
+
+keyword_enum! {
+    /// `grid-auto-flow` — which axis auto-placement fills, and how hard it
+    /// tries. `Dense` back-fills earlier holes; the sparse default never moves
+    /// the cursor backwards.
+    GridAutoFlow {
+        Row => "row",
+        Column => "column",
+        RowDense => "row dense",
+        ColumnDense => "column dense",
     }
 }
 
@@ -420,6 +818,98 @@ impl<T: Copy> Sides<T> {
 
 // ── The typed view ──────────────────────────────────────────────────────────
 
+keyword_enum! {
+    /// `cursor` — CSS UI §8.1, the subset a desktop toolkit can actually show.
+    ///
+    /// Inherited, which is what makes `pointer` on an `<a>` cover the `<em>`
+    /// inside it without a second rule.
+    ///
+    /// This is the property that lets a LINK look clickable without the painter
+    /// knowing what a link is. A run carries its resolved cursor exactly as it
+    /// carries its resolved colour, so hard-coding "text runs are hands" — which
+    /// would make every `<span>` a hand — is never needed.
+    Cursor {
+        Auto => "auto",
+        Default => "default",
+        Pointer => "pointer",
+        Text => "text",
+        Move => "move",
+        NotAllowed => "not-allowed",
+        Wait => "wait",
+        Help => "help",
+        Crosshair => "crosshair",
+        Grab => "grab",
+    }
+}
+
+/// `text-transform` — CSS Text §2.1.
+///
+/// A **rendering** transform, not a content one. `textContent` keeps what the
+/// author wrote and only the painted run is re-cased, which is why this is
+/// applied where inline runs are built rather than where text is stored: a
+/// stylesheet that uppercases a label must not change what the DOM answers
+/// when the program reads the label back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextTransform {
+    None,
+    Uppercase,
+    Lowercase,
+    Capitalize,
+}
+
+impl TextTransform {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "none" => Some(Self::None),
+            "uppercase" => Some(Self::Uppercase),
+            "lowercase" => Some(Self::Lowercase),
+            "capitalize" => Some(Self::Capitalize),
+            _ => None,
+        }
+    }
+
+    pub fn as_css(&self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Uppercase => "uppercase",
+            Self::Lowercase => "lowercase",
+            Self::Capitalize => "capitalize",
+        }
+    }
+
+    /// Apply to one run of text.
+    ///
+    /// `capitalize` titlecases the first letter of each WORD, and a word starts
+    /// after any whitespace — so `"hello world"` becomes `"Hello World"` while
+    /// `"o'neill"` keeps its inner letters, which is what the spec's "first
+    /// typographic letter unit" means for the Latin text a form contains.
+    /// Casing is Unicode-aware (`to_uppercase`, not `to_ascii_uppercase`), so
+    /// `"ß"` and accented letters transform rather than passing through.
+    pub fn apply(&self, text: &str) -> String {
+        match self {
+            Self::None => text.to_string(),
+            Self::Uppercase => text.to_uppercase(),
+            Self::Lowercase => text.to_lowercase(),
+            Self::Capitalize => {
+                let mut out = String::with_capacity(text.len());
+                let mut at_word_start = true;
+                for ch in text.chars() {
+                    if at_word_start && ch.is_alphanumeric() {
+                        out.extend(ch.to_uppercase());
+                        at_word_start = false;
+                    } else {
+                        out.push(ch);
+                        if ch.is_whitespace() {
+                            at_word_start = true;
+                        }
+                    }
+                }
+                out
+            }
+        }
+    }
+}
+
 /// The properties layout and painting act on, parsed.
 ///
 /// Every field is optional: `None` is "not specified here", which is what lets
@@ -458,12 +948,44 @@ pub struct CssProperties {
     pub row_gap: Option<Length>,
     pub column_gap: Option<Length>,
 
+    // Table container — CSS 2.1 §17. These live on the TABLE box, not on the
+    // cells: which border model is in force and how wide the gaps are is one
+    // decision for the whole table, which is why `border-collapse` inherits.
+    pub border_collapse: Option<BorderCollapse>,
+    /// `border-spacing` — the gap between cell borders in the separate model.
+    /// One length, not two: the horizontal and vertical values are the same
+    /// number in every table anyone writes, and a second field that nothing
+    /// sets is a field that drifts.
+    pub border_spacing: Option<Length>,
+    pub table_layout: Option<TableLayout>,
+
     // Grid container. Two track lists and nothing else yet: auto-placement
     // fills them row-major, which is what a template alone means in CSS.
-    pub grid_template_columns: Option<Vec<TrackSize>>,
-    pub grid_template_rows: Option<Vec<TrackSize>>,
+    pub grid_template_columns: Option<TrackTemplate>,
+    pub grid_template_rows: Option<TrackTemplate>,
+    /// `grid-template-areas` — one `Vec<String>` per row, one name per cell.
+    ///
+    /// The names ARE the layout: a cell holding `header` in two adjacent
+    /// columns is one area two tracks wide, so the rectangle is derived rather
+    /// than declared. `.` is an empty cell and is kept as-is, because "no area"
+    /// is a name a lookup must miss rather than an absence to skip.
+    pub grid_template_areas: Option<Vec<Vec<String>>>,
+    pub grid_auto_flow: Option<GridAutoFlow>,
+    /// `grid-auto-rows` / `grid-auto-columns` — the size of an IMPLICIT track,
+    /// one the template never named. `auto` until told otherwise, which is why
+    /// a grid with more items than cells grew content-sized rows before this.
+    pub grid_auto_rows: Option<TrackSize>,
+    pub grid_auto_columns: Option<TrackSize>,
+    /// `justify-items` / `justify-self` — the INLINE-axis counterpart of
+    /// `align-items`/`align-self`. Grid has both axes; flex only ever needed
+    /// one, which is why these did not exist.
+    pub justify_items: Option<AlignItems>,
+    pub justify_self: Option<AlignItems>,
 
     // Grid item — where this box sits in its parent's grid.
+    /// `grid-area: header` — the NAME form. The four-line form
+    /// (`grid-area: 1 / 1 / 3 / 2`) writes the four longhands instead.
+    pub grid_area: Option<String>,
     pub grid_column_start: Option<GridLine>,
     pub grid_column_end: Option<GridLine>,
     pub grid_row_start: Option<GridLine>,
@@ -511,6 +1033,23 @@ pub struct CssProperties {
     pub underline: Option<bool>,
     pub line_through: Option<bool>,
     pub line_height: Option<f32>,
+    /// `cursor` — what the pointer looks like over this box or run.
+    pub cursor: Option<Cursor>,
+    /// `text-transform` — inherited, so a rule on a container re-cases the text
+    /// of every descendant run.
+    pub text_transform: Option<TextTransform>,
+    /// Whether text wraps — INHERITED, like the rest of the text axis, so a
+    /// container can set it once for everything inside it.
+    pub white_space: Option<WhiteSpace>,
+    /// `float` — out of flow, shifted to one side, line boxes shortened.
+    /// NOT inherited: a float is a property of the box, not of its text.
+    pub float: Option<Float>,
+    /// `clear` — start below the floats on the named side.
+    pub clear: Option<Clear>,
+    /// `letter-spacing`, in **pixels**. CSS `normal` is `0` — the property adds
+    /// to the font's own advance rather than replacing it, so zero means "the
+    /// font decides", which is exactly what `normal` says.
+    pub letter_spacing: Option<f32>,
 }
 
 impl CssProperties {
@@ -534,8 +1073,18 @@ impl CssProperties {
             gap,
             row_gap,
             column_gap,
+            border_collapse,
+            border_spacing,
+            table_layout,
             grid_template_columns,
             grid_template_rows,
+            grid_template_areas,
+            grid_auto_flow,
+            grid_auto_rows,
+            grid_auto_columns,
+            justify_items,
+            justify_self,
+            grid_area,
             grid_column_start,
             grid_column_end,
             grid_row_start,
@@ -564,6 +1113,10 @@ impl CssProperties {
             underline,
             line_through,
             line_height,
+            text_transform,
+            white_space,
+            cursor,
+            letter_spacing,
         );
         self.offsets.merge_from(&other.offsets);
         self.margin.merge_from(&other.margin);
@@ -627,6 +1180,12 @@ impl CssProperties {
             font_style: self.font_style,
             text_align: self.text_align,
             line_height: self.line_height,
+            text_transform: self.text_transform,
+            white_space: self.white_space,
+            cursor: self.cursor,
+            letter_spacing: self.letter_spacing,
+            border_collapse: self.border_collapse,
+            border_spacing: self.border_spacing,
             ..CssProperties::default()
         }
     }
@@ -663,6 +1222,15 @@ impl CssProperties {
                 .to_string(),
             ));
         }
+        if let Some(transform) = self.text_transform {
+            out.push(("text-transform", transform.as_css().to_string()));
+        }
+        if let Some(cursor) = self.cursor {
+            out.push(("cursor", cursor.as_css().to_string()));
+        }
+        if let Some(spacing) = self.letter_spacing {
+            out.push(("letter-spacing", format!("{spacing}px")));
+        }
         if let Some(align) = self.text_align {
             out.push((
                 "text-align",
@@ -677,6 +1245,12 @@ impl CssProperties {
         }
         if let Some(height) = self.line_height {
             out.push(("line-height", format!("{height}px")));
+        }
+        if let Some(collapse) = self.border_collapse {
+            out.push(("border-collapse", collapse.as_css().to_string()));
+        }
+        if let Some(spacing) = self.border_spacing {
+            out.push(("border-spacing", spacing.to_string()));
         }
         out
     }
@@ -742,6 +1316,12 @@ pub fn changed_declarations(old: &CssProperties, new: &CssProperties) -> Vec<(&'
         "font-style" => font_style, |v: &FontStyle| v.as_css().to_string();
         "text-align" => text_align, |v: &TextAlign| v.as_css().to_string();
         "line-height" => line_height, |v: &f32| format!("{v}px");
+        "text-transform" => text_transform, |v: &TextTransform| v.as_css().to_string();
+        "white-space" => white_space, |v: &WhiteSpace| v.as_css().to_string();
+        "float" => float, |v: &Float| v.as_css().to_string();
+        "clear" => clear, |v: &Clear| v.as_css().to_string();
+        "cursor" => cursor, |v: &Cursor| v.as_css().to_string();
+        "letter-spacing" => letter_spacing, |v: &f32| format!("{v}px");
     );
     // Layout. Included deliberately, and safe for the reason the diff exists:
     // a value that did not move is not pushed, so a font change no longer puts
@@ -772,8 +1352,18 @@ pub fn changed_declarations(old: &CssProperties, new: &CssProperties) -> Vec<(&'
         "align-items" => align_items, |v: &AlignItems| v.as_css().to_string();
         "align-content" => align_content, |v: &JustifyContent| v.as_css().to_string();
         "align-self" => align_self, |v: &AlignItems| v.as_css().to_string();
-        "grid-template-columns" => grid_template_columns, |v: &Vec<TrackSize>| track_list_css(v);
-        "grid-template-rows" => grid_template_rows, |v: &Vec<TrackSize>| track_list_css(v);
+        "border-collapse" => border_collapse, |v: &BorderCollapse| v.as_css().to_string();
+        "border-spacing" => border_spacing, |v: &Length| v.to_string();
+        "table-layout" => table_layout, |v: &TableLayout| v.as_css().to_string();
+        "grid-template-columns" => grid_template_columns, |v: &TrackTemplate| track_template_css(v);
+        "grid-template-rows" => grid_template_rows, |v: &TrackTemplate| track_template_css(v);
+        "grid-template-areas" => grid_template_areas, |v: &Vec<Vec<String>>| area_template_css(v);
+        "grid-auto-flow" => grid_auto_flow, |v: &GridAutoFlow| v.as_css().to_string();
+        "grid-auto-rows" => grid_auto_rows, |v: &TrackSize| v.as_css();
+        "grid-auto-columns" => grid_auto_columns, |v: &TrackSize| v.as_css();
+        "justify-items" => justify_items, |v: &AlignItems| v.as_css().to_string();
+        "justify-self" => justify_self, |v: &AlignItems| v.as_css().to_string();
+        "grid-area" => grid_area, |v: &String| v.clone();
         "grid-column-start" => grid_column_start, |v: &GridLine| v.as_css();
         "grid-column-end" => grid_column_end, |v: &GridLine| v.as_css();
         "grid-row-start" => grid_row_start, |v: &GridLine| v.as_css();
@@ -897,6 +1487,15 @@ pub const INHERITED_PROPERTIES: &[&str] = &[
     "font-style",
     "text-align",
     "line-height",
+    "text-transform",
+    "cursor",
+    "letter-spacing",
+    // §17.6: the border model is a property of the TABLE, but it is declared on
+    // the table and read by the cells, so the spec makes it inherited rather
+    // than making every cell walk up to find its table. `border-spacing` goes
+    // with it for the same reason.
+    "border-collapse",
+    "border-spacing",
 ];
 
 /// A packed `0xAARRGGBB` written back as a CSS colour.
@@ -1730,8 +2329,73 @@ fn apply_declaration(props: &mut CssProperties, name: &str, value: &str, ctx: Fo
         }
         "row-gap" => props.row_gap = parse_length(value),
         "column-gap" => props.column_gap = parse_length(value),
-        "grid-template-columns" => props.grid_template_columns = parse_track_list(value),
-        "grid-template-rows" => props.grid_template_rows = parse_track_list(value),
+        "border-collapse" => props.border_collapse = BorderCollapse::parse(value),
+        "border-spacing" => {
+            // Two lengths are legal (`border-spacing: 4px 8px`); one field
+            // holds one number, so the horizontal one wins and the vertical is
+            // the same. Stated because a two-value table WILL look wrong rather
+            // than fail, and that is the kind of divergence worth naming.
+            props.border_spacing = parse_length(value.split_whitespace().next().unwrap_or(value));
+        }
+        "table-layout" => props.table_layout = TableLayout::parse(value),
+        "grid-template-columns" => props.grid_template_columns = parse_track_template(value),
+        "grid-template-rows" => props.grid_template_rows = parse_track_template(value),
+        "grid-template-areas" => props.grid_template_areas = parse_area_template(value),
+        "grid-auto-flow" => {
+            // `dense` is a separate keyword that may precede or follow the
+            // axis, so normalise before matching rather than listing four
+            // spellings twice.
+            let v = value.to_ascii_lowercase();
+            let dense = v.split_whitespace().any(|w| w == "dense");
+            let column = v.split_whitespace().any(|w| w == "column");
+            props.grid_auto_flow = Some(match (column, dense) {
+                (true, true) => GridAutoFlow::ColumnDense,
+                (true, false) => GridAutoFlow::Column,
+                (false, true) => GridAutoFlow::RowDense,
+                (false, false) => GridAutoFlow::Row,
+            });
+        }
+        "grid-auto-rows" => props.grid_auto_rows = TrackSize::parse(value),
+        "grid-auto-columns" => props.grid_auto_columns = TrackSize::parse(value),
+        "justify-items" => props.justify_items = AlignItems::parse(value),
+        "justify-self" => props.justify_self = AlignItems::parse(value),
+        // The `place-*` shorthands are `<align> <justify>`, in that order —
+        // block axis first, which is the opposite of most CSS pairs and the
+        // reason they are worth spelling out rather than guessing.
+        "place-items" | "place-self" => {
+            let mut parts = value.split_whitespace();
+            let first = parts.next().unwrap_or("");
+            let second = parts.next().unwrap_or(first);
+            if name == "place-items" {
+                props.align_items = AlignItems::parse(first);
+                props.justify_items = AlignItems::parse(second);
+            } else {
+                props.align_self = AlignItems::parse(first);
+                props.justify_self = AlignItems::parse(second);
+            }
+        }
+        "place-content" => {
+            let mut parts = value.split_whitespace();
+            let first = parts.next().unwrap_or("");
+            let second = parts.next().unwrap_or(first);
+            props.align_content = JustifyContent::parse(first);
+            props.justify_content = JustifyContent::parse(second);
+        }
+        // `grid-area` is two properties wearing one name. A single identifier
+        // is an AREA; anything with a `/` is the four-line shorthand, and the
+        // two have nothing in common but their spelling.
+        "grid-area" => {
+            if value.contains('/') {
+                let parts: Vec<&str> = value.split('/').collect();
+                props.grid_row_start = parts.first().and_then(|v| GridLine::parse(v));
+                props.grid_column_start = parts.get(1).and_then(|v| GridLine::parse(v));
+                props.grid_row_end = parts.get(2).and_then(|v| GridLine::parse(v));
+                props.grid_column_end = parts.get(3).and_then(|v| GridLine::parse(v));
+            } else {
+                let name = value.trim();
+                props.grid_area = (!name.is_empty()).then(|| name.to_string());
+            }
+        }
         "grid-column" => {
             let (start, end) = parse_grid_placement(value);
             props.grid_column_start = start;
@@ -1892,6 +2556,19 @@ fn apply_declaration(props: &mut CssProperties, name: &str, value: &str, ctx: Fo
                 if lower.contains("line-through") {
                     props.line_through = Some(true);
                 }
+            }
+        }
+        "text-transform" => props.text_transform = TextTransform::parse(value),
+        "white-space" => props.white_space = WhiteSpace::parse(value),
+        "float" => props.float = Float::parse(value),
+        "clear" => props.clear = Clear::parse(value),
+        "cursor" => props.cursor = Cursor::parse(value),
+        // `normal` is the initial value and means zero ADDED spacing.
+        "letter-spacing" => {
+            props.letter_spacing = if value.trim().eq_ignore_ascii_case("normal") {
+                Some(0.0)
+            } else {
+                parse_px(value)
             }
         }
         "line-height" => {

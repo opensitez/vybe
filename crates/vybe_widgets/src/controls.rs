@@ -102,6 +102,8 @@ pub fn make_widget(
         "trackbar" => Box::new(Slider::new(0.0, 100.0, 50.0).with_name(name)),
         "numericupdown" => Box::new(NumericUpDown::new().with_name(name)),
         "datetimepicker" => Box::new(DateTimePicker::new().with_name(name)),
+        "colorpicker" => Box::new(crate::ColorPicker::new().with_name(name)),
+        "fileinput" => Box::new(crate::FileInput::new().with_name(name)),
         "treeview" => Box::new(TreeView::new("", 1.0).with_name(name)),
         "datagridview" | "datagrid" => Box::new(DataGrid::new(&[]).with_name(name)),
         "listview" => Box::new(ListView::new().with_name(name)),

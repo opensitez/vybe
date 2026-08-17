@@ -61,7 +61,8 @@ mod types;
 pub use recording::{DrawCmd, RecordingCanvas};
 pub use tinyskia::TinySkiaCanvas;
 pub use types::{
-    Color, Font, FontStyle, FontWeight, Image, LineCap, LineJoin, TextAlign, TextBaseline,
+    Color, ColorStop, FillRule, Font, FontStyle, FontWeight, Gradient, GradientKind, Image,
+    LineCap, LineJoin, Paint, Pattern, Repetition, Shadow, TextAlign, TextBaseline,
 };
 
 /// Canvas draw-routing tracing: `0` unread, `1` off, `2` on.
@@ -148,6 +149,37 @@ pub trait Canvas {
     /// Default is 0.
     fn set_line_dash_offset(&mut self, offset: f32);
 
+    /// `fillStyle` — a colour, a gradient or a pattern.
+    ///
+    /// `set_fill_color` is the colour-only spelling and stays the common path;
+    /// this is the full one the spec types as
+    /// `DOMString | CanvasGradient | CanvasPattern`.
+    ///
+    /// Defaulted to the flat-colour fallback so an impl that predates gradients
+    /// keeps compiling AND keeps painting: a gradient degrades to its first
+    /// stop rather than to nothing. An impl that can build a shader overrides
+    /// this; `TinySkiaCanvas` does.
+    fn set_fill_paint(&mut self, paint: &Paint) {
+        self.set_fill_color(paint.as_flat_color());
+    }
+
+    /// `strokeStyle` — the stroke half of [`Canvas::set_fill_paint`].
+    fn set_stroke_paint(&mut self, paint: &Paint) {
+        self.set_stroke_color(paint.as_flat_color());
+    }
+
+    /// `shadowColor` / `shadowBlur` / `shadowOffsetX` / `shadowOffsetY`.
+    ///
+    /// One setter rather than four, because the four are meaningless apart:
+    /// the spec draws a shadow only when the colour is non-transparent AND at
+    /// least one of blur/offset is non-zero, so a backend has to read all four
+    /// to answer "is there a shadow". Splitting them into four trait methods
+    /// would make every impl reassemble the same tuple.
+    ///
+    /// Defaulted to a no-op: a backend without shadow support paints the shape
+    /// unshadowed, which is a visible, honest degradation.
+    fn set_shadow(&mut self, _shadow: &Shadow) {}
+
     // ─── Path building ──────────────────────────────────────────────────
 
     /// Reset the current path. Subsequent `move_to`, `line_to`, `arc`,
@@ -178,9 +210,54 @@ pub trait Canvas {
     /// Add a rectangle to the current path.
     fn rect(&mut self, x: f32, y: f32, w: f32, h: f32);
 
-    /// Add an ellipse with centre `(x, y)` and radii `(rx, ry)` to the
+    /// Add a full ellipse with centre `(x, y)` and radii `(rx, ry)` to the
     /// current path.
+    ///
+    /// This is the closed-ellipse shorthand. The spec's `ellipse()` also takes
+    /// a rotation and a start/end angle pair — see
+    /// [`Canvas::ellipse_arc`], which this delegates to.
     fn ellipse(&mut self, x: f32, y: f32, rx: f32, ry: f32);
+
+    /// `ellipse(x, y, radiusX, radiusY, rotation, startAngle, endAngle, ccw)`.
+    ///
+    /// **Provided, not required.** An ellipse arc is the unit circle arc under
+    /// a scale-then-rotate transform, so it is expressible with `arc` and the
+    /// transform stack every canvas already has — which is the spec's own
+    /// definition, not an approximation of it.
+    ///
+    /// The transform is saved and restored around the arc so the path is the
+    /// only thing that changes. Note the arc is appended to the CURRENT path:
+    /// no `begin_path` here, because `ellipse` is a path-building method and
+    /// the caller may be composing a compound path.
+    ///
+    /// Without this, `ellipse` could only draw a full, axis-aligned ellipse —
+    /// a rotated one, or an elliptical wedge, was unexpressible.
+    fn ellipse_arc(
+        &mut self,
+        x: f32,
+        y: f32,
+        rx: f32,
+        ry: f32,
+        rotation: f32,
+        start: f32,
+        end: f32,
+        ccw: bool,
+    ) {
+        // A degenerate radius collapses the ellipse to a point or a segment;
+        // the scale below would be singular, so take the closed-form shorthand
+        // out and leave the path untouched rather than emit a NaN transform.
+        if rx <= 0.0 || ry <= 0.0 {
+            return;
+        }
+        self.save();
+        self.translate(x, y);
+        self.rotate(rotation);
+        self.scale(rx, ry);
+        // Radius 1 in the scaled space IS `rx`/`ry` in user space. The centre
+        // is the origin because `translate` already moved it there.
+        self.arc(0.0, 0.0, 1.0, start, end, ccw);
+        self.restore();
+    }
 
     /// `textAlign` — which end of the text the `x` names. Default `start`.
     fn set_text_align(&mut self, _align: TextAlign) {}
@@ -293,6 +370,17 @@ pub trait Canvas {
     /// Fill the current path with the current fill colour.
     fn fill(&mut self);
 
+    /// `fill(fillRule)` — fill the current path under an explicit winding rule.
+    ///
+    /// **Provided**, defaulting to [`Canvas::fill`] so `nonzero` (the spec's
+    /// default) costs no impl change. A backend that can select the rule
+    /// overrides this; one that cannot fills `evenodd` as `nonzero`, which
+    /// differs only for self-intersecting paths and is visible rather than
+    /// silent.
+    fn fill_with_rule(&mut self, _rule: FillRule) {
+        self.fill();
+    }
+
     /// Stroke the current path with the current stroke colour and line
     /// width.
     fn stroke(&mut self);
@@ -317,6 +405,37 @@ pub trait Canvas {
     /// Draw an image scaled into the rectangle `(x, y, w, h)`.
     fn draw_image(&mut self, img: &Image, x: f32, y: f32, w: f32, h: f32);
 
+    /// `drawImage(image, sx, sy, sw, sh, dx, dy, dw, dh)` — the nine-argument
+    /// form, which draws a SOURCE RECTANGLE of the image.
+    ///
+    /// This is what a sprite sheet needs, and it is not reducible to the
+    /// four-argument form: that one always takes the whole image.
+    ///
+    /// **Provided**, by cropping the source rectangle into a new [`Image`] and
+    /// drawing that. Copying is honest here rather than clever — the crop is
+    /// the operation, and a backend that can blit a sub-rectangle directly
+    /// should override this.
+    ///
+    /// A source rectangle outside the image is clamped, and an empty one draws
+    /// nothing, which is the spec's own handling.
+    fn draw_image_rect(
+        &mut self,
+        img: &Image,
+        sx: f32,
+        sy: f32,
+        sw: f32,
+        sh: f32,
+        dx: f32,
+        dy: f32,
+        dw: f32,
+        dh: f32,
+    ) {
+        let Some(cropped) = img.crop(sx, sy, sw, sh) else {
+            return;
+        };
+        self.draw_image(&cropped, dx, dy, dw, dh);
+    }
+
     /// `putImageData(imagedata, dx, dy)` — write pixels **directly** into the
     /// bitmap at `(dx, dy)`, one for one.
     ///
@@ -339,6 +458,11 @@ pub trait Canvas {
     /// `save` / `restore` push/pop the clip along with the rest of the
     /// paint state.
     fn clip(&mut self);
+
+    /// `clip(fillRule)` — the clip half of [`Canvas::fill_with_rule`].
+    fn clip_with_rule(&mut self, _rule: FillRule) {
+        self.clip();
+    }
 
     /// Reset the clip to the entire canvas.
     fn reset_clip(&mut self);

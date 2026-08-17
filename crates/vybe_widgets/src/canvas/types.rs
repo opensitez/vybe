@@ -52,6 +52,241 @@ impl Color {
     }
 }
 
+/// One entry of a gradient's colour ramp — `CanvasGradient.addColorStop`.
+///
+/// `offset` is 0..=1 in gradient space. The spec throws `IndexSizeError`
+/// outside that range; `add_color_stop` clamps instead, because a recording
+/// that silently drops a stop is harder to see than one that pins it to the
+/// end. Stops are kept in insertion order and sorted at paint time — the spec
+/// requires stable ordering for equal offsets, which a sort-on-insert loses.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ColorStop {
+    pub offset: f32,
+    pub color: Color,
+}
+
+/// How a pattern repeats — `createPattern`'s second argument.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Repetition {
+    #[default]
+    Repeat,
+    RepeatX,
+    RepeatY,
+    NoRepeat,
+}
+
+impl Repetition {
+    /// Parse the spec's four literals. The empty string is `repeat`, per
+    /// §"createPattern" — a null or missing repetition is not an error.
+    pub fn parse(value: &str) -> Option<Repetition> {
+        match value.trim() {
+            "" | "repeat" => Some(Repetition::Repeat),
+            "repeat-x" => Some(Repetition::RepeatX),
+            "repeat-y" => Some(Repetition::RepeatY),
+            "no-repeat" => Some(Repetition::NoRepeat),
+            _ => None,
+        }
+    }
+}
+
+/// A gradient's geometry. The colour ramp travels beside it in [`Gradient`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GradientKind {
+    /// `createLinearGradient(x0, y0, x1, y1)` — the ramp runs along the line.
+    Linear { x0: f32, y0: f32, x1: f32, y1: f32 },
+    /// `createRadialGradient(x0, y0, r0, x1, y1, r1)` — the ramp runs between
+    /// two circles, which is what makes off-centre highlights expressible.
+    Radial {
+        x0: f32,
+        y0: f32,
+        r0: f32,
+        x1: f32,
+        y1: f32,
+        r1: f32,
+    },
+    /// `createConicGradient(startAngle, x, y)` — the ramp sweeps around a
+    /// point. Note the spec's argument order puts the ANGLE first.
+    Conic { start_angle: f32, x: f32, y: f32 },
+}
+
+/// `CanvasGradient` — geometry plus an ordered colour ramp.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Gradient {
+    pub kind: GradientKind,
+    pub stops: Vec<ColorStop>,
+}
+
+impl Gradient {
+    pub fn linear(x0: f32, y0: f32, x1: f32, y1: f32) -> Self {
+        Self {
+            kind: GradientKind::Linear { x0, y0, x1, y1 },
+            stops: Vec::new(),
+        }
+    }
+
+    pub fn radial(x0: f32, y0: f32, r0: f32, x1: f32, y1: f32, r1: f32) -> Self {
+        Self {
+            kind: GradientKind::Radial {
+                x0,
+                y0,
+                r0,
+                x1,
+                y1,
+                r1,
+            },
+            stops: Vec::new(),
+        }
+    }
+
+    pub fn conic(start_angle: f32, x: f32, y: f32) -> Self {
+        Self {
+            kind: GradientKind::Conic { start_angle, x, y },
+            stops: Vec::new(),
+        }
+    }
+
+    /// `CanvasGradient.addColorStop(offset, color)`.
+    pub fn add_color_stop(&mut self, offset: f32, color: Color) {
+        self.stops.push(ColorStop {
+            offset: offset.clamp(0.0, 1.0),
+            color,
+        });
+    }
+
+    /// The ramp in paint order: by offset, insertion order preserved for ties.
+    ///
+    /// `sort_by` is stable, which is the half the spec actually pins down —
+    /// two stops at the same offset paint in the order they were added, and
+    /// that is how a hard colour boundary is expressed.
+    pub fn sorted_stops(&self) -> Vec<ColorStop> {
+        let mut stops = self.stops.clone();
+        stops.sort_by(|a, b| a.offset.total_cmp(&b.offset));
+        stops
+    }
+}
+
+/// `CanvasPattern` — an image tiled under the shape being painted.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pattern {
+    pub image: Image,
+    pub repetition: Repetition,
+}
+
+/// What `fillStyle` / `strokeStyle` hold.
+///
+/// The spec types both as `DOMString | CanvasGradient | CanvasPattern`, so a
+/// bare `Color` cannot represent the state: it makes every gradient and every
+/// pattern unexpressible, which is why `LinearGradientBrush` and `HatchBrush`
+/// had nowhere to land and stayed on the widget factory.
+///
+/// `Color` is still the default and still the common case — `Paint::Color` is
+/// what a plain `set_fill_color` produces, and the backends keep their fast
+/// path for it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Paint {
+    Color(Color),
+    Gradient(Gradient),
+    Pattern(Pattern),
+}
+
+impl Default for Paint {
+    fn default() -> Self {
+        Paint::Color(Color::BLACK)
+    }
+}
+
+impl Paint {
+    /// The single colour this paint is, if it is one.
+    ///
+    /// Backends that cannot build a shader use this to degrade to a flat fill
+    /// rather than to nothing: a gradient's FIRST stop is a far better answer
+    /// than transparent, and it keeps a shape visible in a capture.
+    pub fn as_flat_color(&self) -> Color {
+        match self {
+            Paint::Color(c) => *c,
+            Paint::Gradient(g) => g
+                .sorted_stops()
+                .first()
+                .map(|s| s.color)
+                .unwrap_or(Color::TRANSPARENT),
+            Paint::Pattern(_) => Color::TRANSPARENT,
+        }
+    }
+}
+
+impl From<Color> for Paint {
+    fn from(color: Color) -> Self {
+        Paint::Color(color)
+    }
+}
+
+/// `shadowColor` + `shadowBlur` + `shadowOffsetX` + `shadowOffsetY`.
+///
+/// The default is a fully transparent colour with no blur and no offset, which
+/// is the spec's "no shadow" state — and why [`Shadow::is_visible`] tests the
+/// alpha first. A shadow with a transparent colour draws nothing no matter how
+/// large the blur.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Shadow {
+    pub color: Color,
+    pub blur: f32,
+    pub offset_x: f32,
+    pub offset_y: f32,
+}
+
+impl Default for Shadow {
+    fn default() -> Self {
+        Self {
+            color: Color::TRANSPARENT,
+            blur: 0.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+        }
+    }
+}
+
+impl Shadow {
+    /// Does this state paint anything?
+    ///
+    /// Per the spec's shadow-drawing preconditions: a shadow is painted when
+    /// the colour is not fully transparent AND at least one of blur, offsetX
+    /// or offsetY is non-zero. A zero-blur zero-offset shadow sits exactly
+    /// under the shape and is invisible, so skipping it is not an
+    /// approximation — it is the same output for less work.
+    pub fn is_visible(&self) -> bool {
+        self.color.a != 0 && (self.blur != 0.0 || self.offset_x != 0.0 || self.offset_y != 0.0)
+    }
+}
+
+/// Which points count as inside a path — `fill(fillRule)` / `clip(fillRule)`.
+///
+/// This is not cosmetic: a path with self-intersections or a hole punched by a
+/// reversed subpath fills DIFFERENTLY under the two rules, and `evenodd` is the
+/// only way to express "hole" without splitting the path.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FillRule {
+    #[default]
+    NonZero,
+    EvenOdd,
+}
+
+impl FillRule {
+    pub fn parse(value: &str) -> Option<FillRule> {
+        match value.trim() {
+            "nonzero" => Some(FillRule::NonZero),
+            "evenodd" => Some(FillRule::EvenOdd),
+            _ => None,
+        }
+    }
+
+    pub fn to_tiny_skia(self) -> tiny_skia::FillRule {
+        match self {
+            FillRule::NonZero => tiny_skia::FillRule::Winding,
+            FillRule::EvenOdd => tiny_skia::FillRule::EvenOdd,
+        }
+    }
+}
+
 /// How the ends of stroked lines are drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LineCap {
@@ -243,6 +478,38 @@ impl PartialEq for Image {
 }
 
 impl Image {
+    /// The sub-rectangle `(sx, sy, sw, sh)` as a new image — `drawImage`'s
+    /// nine-argument source rect.
+    ///
+    /// Clamped to the image bounds, so a rectangle that hangs off the edge
+    /// yields the part that overlaps rather than reading out of bounds. An
+    /// empty or fully outside rectangle answers `None`, which the caller
+    /// renders as "draw nothing" — the spec's own handling.
+    ///
+    /// Negative width or height is normalised, matching how the spec reads a
+    /// rectangle with either extent negative.
+    pub fn crop(&self, sx: f32, sy: f32, sw: f32, sh: f32) -> Option<Image> {
+        let (x0, x1) = if sw < 0.0 { (sx + sw, sx) } else { (sx, sx + sw) };
+        let (y0, y1) = if sh < 0.0 { (sy + sh, sy) } else { (sy, sy + sh) };
+
+        let x0 = x0.floor().max(0.0) as u32;
+        let y0 = y0.floor().max(0.0) as u32;
+        let x1 = (x1.ceil().max(0.0) as u32).min(self.width);
+        let y1 = (y1.ceil().max(0.0) as u32).min(self.height);
+        if x1 <= x0 || y1 <= y0 {
+            return None;
+        }
+
+        let (w, h) = (x1 - x0, y1 - y0);
+        let mut out = Vec::with_capacity((w * h * 4) as usize);
+        for row in y0..y1 {
+            let start = ((row * self.width + x0) * 4) as usize;
+            let end = start + (w * 4) as usize;
+            out.extend_from_slice(&self.pixels[start..end]);
+        }
+        Some(Image::from_rgba(w, h, out))
+    }
+
     /// Construct an image from raw RGBA pixel data.
     pub fn from_rgba(width: u32, height: u32, pixels: Vec<u8>) -> Self {
         debug_assert_eq!(

@@ -39,6 +39,15 @@ pub enum DrawCmd {
     SetFont(Font),
     SetLineDash(Vec<f32>),
     SetLineDashOffset(f32),
+    /// `fillStyle` / `strokeStyle` when they hold a gradient or a pattern.
+    ///
+    /// Recorded SEPARATELY from `SetFillColor` rather than replacing it: a
+    /// colour is by far the common case, and collapsing the two would make
+    /// every existing recording assertion carry a `Paint::Color(..)` wrapper
+    /// for no gain. `set_fill_color` still records `SetFillColor`.
+    SetFillPaint(super::Paint),
+    SetStrokePaint(super::Paint),
+    SetShadow(super::Shadow),
 
     // Path building
     BeginPath,
@@ -79,9 +88,27 @@ pub enum DrawCmd {
         rx: f32,
         ry: f32,
     },
+    /// The spec's full `ellipse()` — rotation and a start/end angle pair.
+    ///
+    /// Its own variant rather than a widened `Ellipse`, because the default
+    /// `ellipse_arc` composes save/rotate/scale/arc/restore: recorded through
+    /// that path an elliptical wedge would arrive as five commands and the
+    /// recording would no longer say what was asked for. A recording is a
+    /// transcript, so the call is the unit.
+    EllipseArc {
+        x: f32,
+        y: f32,
+        rx: f32,
+        ry: f32,
+        rotation: f32,
+        start: f32,
+        end: f32,
+        ccw: bool,
+    },
 
     // Drawing
     Fill,
+    FillWithRule(super::FillRule),
     Stroke,
     FillRect {
         x: f32,
@@ -129,7 +156,21 @@ pub enum DrawCmd {
         w: f32,
         h: f32,
     },
+    /// The nine-argument `drawImage` — the SOURCE rectangle is the point, and
+    /// cropping at record time would throw away what the call said.
+    DrawImageRect {
+        image: Image,
+        sx: f32,
+        sy: f32,
+        sw: f32,
+        sh: f32,
+        dx: f32,
+        dy: f32,
+        dw: f32,
+        dh: f32,
+    },
     Clip,
+    ClipWithRule(super::FillRule),
     ResetClip,
 
     // State stack
@@ -191,6 +232,9 @@ impl RecordingCanvas {
                 DrawCmd::SetFont(f) => target.set_font(f),
                 DrawCmd::SetLineDash(intervals) => target.set_line_dash(intervals),
                 DrawCmd::SetLineDashOffset(o) => target.set_line_dash_offset(*o),
+                DrawCmd::SetFillPaint(p) => target.set_fill_paint(p),
+                DrawCmd::SetStrokePaint(p) => target.set_stroke_paint(p),
+                DrawCmd::SetShadow(s) => target.set_shadow(s),
 
                 // Path building
                 DrawCmd::BeginPath => target.begin_path(),
@@ -218,9 +262,20 @@ impl RecordingCanvas {
                 } => target.arc(*x, *y, *r, *start, *end, *ccw),
                 DrawCmd::Rect { x, y, w, h } => target.rect(*x, *y, *w, *h),
                 DrawCmd::Ellipse { x, y, rx, ry } => target.ellipse(*x, *y, *rx, *ry),
+                DrawCmd::EllipseArc {
+                    x,
+                    y,
+                    rx,
+                    ry,
+                    rotation,
+                    start,
+                    end,
+                    ccw,
+                } => target.ellipse_arc(*x, *y, *rx, *ry, *rotation, *start, *end, *ccw),
 
                 // Drawing
                 DrawCmd::Fill => target.fill(),
+                DrawCmd::FillWithRule(rule) => target.fill_with_rule(*rule),
                 DrawCmd::Stroke => target.stroke(),
                 DrawCmd::FillRect { x, y, w, h } => target.fill_rect(*x, *y, *w, *h),
                 DrawCmd::StrokeRect { x, y, w, h } => target.stroke_rect(*x, *y, *w, *h),
@@ -233,7 +288,19 @@ impl RecordingCanvas {
                 DrawCmd::DrawImage { image, x, y, w, h } => {
                     target.draw_image(image, *x, *y, *w, *h)
                 }
+                DrawCmd::DrawImageRect {
+                    image,
+                    sx,
+                    sy,
+                    sw,
+                    sh,
+                    dx,
+                    dy,
+                    dw,
+                    dh,
+                } => target.draw_image_rect(image, *sx, *sy, *sw, *sh, *dx, *dy, *dw, *dh),
                 DrawCmd::Clip => target.clip(),
+                DrawCmd::ClipWithRule(rule) => target.clip_with_rule(*rule),
                 DrawCmd::ResetClip => target.reset_clip(),
 
                 // State stack
@@ -377,6 +444,15 @@ impl Canvas for RecordingCanvas {
     fn set_line_dash_offset(&mut self, offset: f32) {
         self.commands.push(DrawCmd::SetLineDashOffset(offset));
     }
+    fn set_fill_paint(&mut self, paint: &super::Paint) {
+        self.commands.push(DrawCmd::SetFillPaint(paint.clone()));
+    }
+    fn set_stroke_paint(&mut self, paint: &super::Paint) {
+        self.commands.push(DrawCmd::SetStrokePaint(paint.clone()));
+    }
+    fn set_shadow(&mut self, shadow: &super::Shadow) {
+        self.commands.push(DrawCmd::SetShadow(*shadow));
+    }
 
     // Path building
     fn begin_path(&mut self) {
@@ -421,10 +497,35 @@ impl Canvas for RecordingCanvas {
     fn ellipse(&mut self, x: f32, y: f32, rx: f32, ry: f32) {
         self.commands.push(DrawCmd::Ellipse { x, y, rx, ry });
     }
+    fn ellipse_arc(
+        &mut self,
+        x: f32,
+        y: f32,
+        rx: f32,
+        ry: f32,
+        rotation: f32,
+        start: f32,
+        end: f32,
+        ccw: bool,
+    ) {
+        self.commands.push(DrawCmd::EllipseArc {
+            x,
+            y,
+            rx,
+            ry,
+            rotation,
+            start,
+            end,
+            ccw,
+        });
+    }
 
     // Drawing
     fn fill(&mut self) {
         self.commands.push(DrawCmd::Fill);
+    }
+    fn fill_with_rule(&mut self, rule: super::FillRule) {
+        self.commands.push(DrawCmd::FillWithRule(rule));
     }
     fn stroke(&mut self) {
         self.commands.push(DrawCmd::Stroke);
@@ -468,8 +569,36 @@ impl Canvas for RecordingCanvas {
             dy,
         });
     }
+    #[allow(clippy::too_many_arguments)]
+    fn draw_image_rect(
+        &mut self,
+        img: &Image,
+        sx: f32,
+        sy: f32,
+        sw: f32,
+        sh: f32,
+        dx: f32,
+        dy: f32,
+        dw: f32,
+        dh: f32,
+    ) {
+        self.commands.push(DrawCmd::DrawImageRect {
+            image: img.clone(),
+            sx,
+            sy,
+            sw,
+            sh,
+            dx,
+            dy,
+            dw,
+            dh,
+        });
+    }
     fn clip(&mut self) {
         self.commands.push(DrawCmd::Clip);
+    }
+    fn clip_with_rule(&mut self, rule: super::FillRule) {
+        self.commands.push(DrawCmd::ClipWithRule(rule));
     }
     fn reset_clip(&mut self) {
         self.commands.push(DrawCmd::ResetClip);
@@ -519,6 +648,79 @@ mod tests {
     /// Where the recorded path ends, for the arc tests below.
     fn end_of(c: &RecordingCanvas) -> Option<(f32, f32)> {
         c.last_point()
+    }
+
+    /// A gradient must PAINT, not merely record. This is the whole point of
+    /// `fillStyle` accepting one: before it, the state held a bare `Color` and
+    /// a gradient was unexpressible, so `LinearGradientBrush` had nowhere to
+    /// land.
+    ///
+    /// Asserted on PIXELS through the real backend, because a recording
+    /// assertion would pass even if the shader were never built.
+    #[test]
+    fn a_linear_gradient_paints_a_ramp_not_a_flat_fill() {
+        use crate::canvas::{Gradient, Paint, TinySkiaCanvas};
+
+        let mut pixmap = tiny_skia::Pixmap::new(64, 8).expect("pixmap");
+        let mut gradient = Gradient::linear(0.0, 0.0, 64.0, 0.0);
+        gradient.add_color_stop(0.0, Color::rgb(255, 0, 0));
+        gradient.add_color_stop(1.0, Color::rgb(0, 0, 255));
+
+        {
+            let mut c = TinySkiaCanvas::new(&mut pixmap);
+            c.set_fill_paint(&Paint::Gradient(gradient));
+            c.fill_rect(0.0, 0.0, 64.0, 8.0);
+        }
+
+        let px = |x: u32| {
+            let p = pixmap.pixel(x, 4).expect("pixel in bounds");
+            (p.red(), p.blue())
+        };
+        let (left_r, left_b) = px(1);
+        let (right_r, right_b) = px(62);
+
+        assert!(
+            left_r > 200 && left_b < 60,
+            "the left end is the first stop (red), got r={left_r} b={left_b}",
+        );
+        assert!(
+            right_b > 200 && right_r < 60,
+            "the right end is the last stop (blue), got r={right_r} b={right_b}",
+        );
+        // The ramp is the assertion that separates a gradient from a flat
+        // fill of either stop: the middle must be neither end.
+        let (mid_r, mid_b) = px(32);
+        assert!(
+            mid_r > 40 && mid_b > 40 && mid_r < 220 && mid_b < 220,
+            "the middle interpolates, got r={mid_r} b={mid_b}",
+        );
+    }
+
+    /// `evenodd` and `nonzero` disagree about a hole, and that disagreement is
+    /// the only reason the rule is a parameter. A backend that ignored it
+    /// would fill the hole and this would catch it.
+    #[test]
+    fn the_even_odd_fill_rule_leaves_a_hole_that_nonzero_fills() {
+        use crate::canvas::{FillRule, TinySkiaCanvas};
+
+        // Two nested squares wound the SAME way: under `nonzero` the winding
+        // numbers add and the inner square is inside; under `evenodd` they
+        // cancel and it is a hole.
+        let paint_with = |rule: FillRule| {
+            let mut pixmap = tiny_skia::Pixmap::new(40, 40).expect("pixmap");
+            {
+                let mut c = TinySkiaCanvas::new(&mut pixmap);
+                c.set_fill_color(Color::rgb(0, 0, 0));
+                c.begin_path();
+                c.rect(0.0, 0.0, 40.0, 40.0);
+                c.rect(10.0, 10.0, 20.0, 20.0);
+                c.fill_with_rule(rule);
+            }
+            pixmap.pixel(20, 20).expect("centre pixel").alpha()
+        };
+
+        assert_eq!(paint_with(FillRule::NonZero), 255, "nonzero fills the centre");
+        assert_eq!(paint_with(FillRule::EvenOdd), 0, "evenodd punches a hole");
     }
 
     #[test]

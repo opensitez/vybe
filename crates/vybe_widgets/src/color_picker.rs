@@ -11,7 +11,6 @@ use super::layout::{
     MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, WidgetId,
 };
 use super::rounded_rect_path;
-use cosmic_text::Color as CosmicColor;
 use tiny_skia::*;
 
 /// A picked color in RGBA.
@@ -186,6 +185,11 @@ impl ColorPicker {
         if let Some(c) = PickedColor::from_hex(hex) {
             self.set_color(c);
         }
+    }
+
+    /// Where the picker opens: directly under the swatch, left edges aligned.
+    fn popup_origin(&self) -> (f32, f32) {
+        (self.rect.x, self.rect.y + self.rect.h)
     }
 
     /// Total popup size.
@@ -623,42 +627,55 @@ impl PanelWidget for ColorPicker {
         self.rect
     }
 
+    /// `<input type="color">` — **a swatch that opens a picker**, HTML §4.10.5.1.15.
+    ///
+    /// This used to force `open = true` and paint the whole picker at the
+    /// control's origin, ignoring the rect's size entirely: a 64x24 input drew a
+    /// 200x200 panel across its neighbours. Harmless while it had no callers —
+    /// the properties panel drives `render_popup`/`handle_click` directly and
+    /// never goes through `PanelWidget` — and it acquired one the moment
+    /// `<input type=color>` was wired to this widget.
+    ///
+    /// The popup is drawn BELOW the swatch, in the widget's own render pass, so
+    /// it is clipped by nothing and painted over by any sibling drawn later.
+    /// A real browser puts it in the top layer; this has no such layer, which is
+    /// the one part of this that is an approximation rather than the control.
     fn render(&mut self, ctx: &mut RenderContext) {
         let r = self.rect;
         if r.w <= 0.0 || r.h <= 0.0 {
             return;
         }
-
-        // Render the full picker inline — temporarily set open so render_popup works
-        let was_open = self.open;
-        self.open = true;
-        self.render_popup(ctx.pixmap, r.x, r.y, ctx.scale);
-        self.open = was_open;
-
-        // Also draw hex text next to the swatch at the bottom
-        let sv_y = r.y + PADDING;
-        let swatch_y = sv_y + SV_SIZE + GAP;
-        let text_x = r.x + PADDING + SWATCH_H + 6.0;
-        let hex = self.color.to_hex();
-        super::ide_text::draw_text(
-            ctx.pixmap,
-            ctx.font_system,
-            ctx.swash_cache,
-            &hex,
-            text_x,
-            swatch_y + 4.0,
-            12.0,
-            CosmicColor::rgba(60, 60, 60, 255),
-            ctx.scale,
-        );
+        self.render_swatch(ctx.pixmap, r.x, r.y, r.w, r.h, ctx.scale);
+        if self.open {
+            let (x, y) = self.popup_origin();
+            self.render_popup(ctx.pixmap, x, y, ctx.scale);
+        }
     }
 
     fn handle_mouse(&mut self, event: &MouseEvent) -> bool {
-        if !self.rect.contains(event.x, event.y) && !self.dragging_sv && !self.dragging_hue {
+        // The swatch opens and closes the picker. Clicking it is the only way
+        // in — the control is 64x24 and the picker is not.
+        if self.rect.contains(event.x, event.y) {
+            if matches!(event.kind, MouseEventKind::Press(LayoutMouseButton::Left)) {
+                self.open = !self.open;
+            }
+            return true;
+        }
+        let (px, py) = self.popup_origin();
+        let (pw, ph) = Self::popup_size();
+        let in_popup =
+            self.open && event.x >= px && event.x <= px + pw && event.y >= py && event.y <= py + ph;
+        // A press anywhere else dismisses it, which is what every popup does
+        // and what makes a second control reachable while this one is open.
+        if !in_popup && !self.dragging_sv && !self.dragging_hue {
+            if self.open && matches!(event.kind, MouseEventKind::Press(LayoutMouseButton::Left)) {
+                self.open = false;
+                return true;
+            }
             return false;
         }
 
-        let (sv_x, sv_y, hue_x, hue_y) = self.layout_regions(self.rect.x, self.rect.y);
+        let (sv_x, sv_y, hue_x, hue_y) = self.layout_regions(px, py);
 
         match event.kind {
             MouseEventKind::Press(LayoutMouseButton::Left) => {

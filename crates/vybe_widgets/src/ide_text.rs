@@ -41,6 +41,11 @@ pub struct FontSpec {
     /// what a baseline is measured within — two callers using the same size and
     /// different line heights put the same glyphs on different rows.
     pub line_height: Option<f32>,
+    /// `letter-spacing`, in logical pixels, ADDED to the font's own advance.
+    /// `0.0` is CSS `normal` — the font decides — which is why this is a plain
+    /// `f32` rather than an `Option`: there is no "unset" that differs from
+    /// adding nothing.
+    pub letter_spacing: f32,
 }
 
 impl FontSpec {
@@ -54,6 +59,7 @@ impl FontSpec {
             underline: false,
             line_through: false,
             line_height: None,
+            letter_spacing: 0.0,
         }
     }
 
@@ -117,6 +123,9 @@ impl FontSpec {
         }
         if let Some(style) = props.font_style {
             self.italic = style != crate::css::FontStyle::Normal;
+        }
+        if let Some(spacing) = props.letter_spacing {
+            self.letter_spacing = spacing;
         }
         if let Some(underline) = props.underline {
             self.underline = underline;
@@ -195,6 +204,12 @@ impl FontSpec {
             });
         if let Some(color) = color {
             attrs = attrs.color(color);
+        }
+        // Zero is `normal`, and shaping with an explicit 0 is not the same as
+        // not asking: leaving the attribute unset is what lets the font's own
+        // kerning stand.
+        if self.letter_spacing != 0.0 {
+            attrs = attrs.letter_spacing(self.letter_spacing);
         }
         attrs
     }
@@ -355,6 +370,77 @@ pub fn draw_rich_text(
         CosmicColor::rgb(0, 0, 0),
     );
     width / scale
+}
+
+/// Where each span was actually PAINTED, once the shaper has broken the lines.
+///
+/// `(span index, x, y, w, h)` in LOGICAL pixels relative to the text origin. A
+/// span that WRAPS yields **one rect per line it occupies**, which is the whole
+/// reason this exists instead of a running sum of advances: summing is right
+/// only while nothing wraps, and the moment a line breaks every span after it
+/// is reported at the wrong x on the wrong line. For a hit test that means a
+/// click on a wrapped link finds nothing at all — not "finds the first line".
+///
+/// Byte ranges are how a glyph is traced back to its span. `set_rich_text`
+/// concatenates the span texts, each glyph records the byte it came from, and
+/// the spans partition that range in order — so the span is a lookup, never a
+/// guess. Shaped through the same [`shape_rich_text`] the painter uses, so the
+/// geometry is the layout that was drawn rather than a second opinion about it.
+pub fn rich_text_span_rects(
+    fs: &mut FontSystem,
+    spans: &[(String, FontSpec, CosmicColor)],
+    wrap_width: Option<f32>,
+    scale: f32,
+) -> Vec<(usize, f32, f32, f32, f32)> {
+    let Some(buf) = shape_rich_text(fs, spans, wrap_width, scale) else {
+        return Vec::new();
+    };
+    // Where each span begins in the concatenated text.
+    let mut starts: Vec<usize> = Vec::with_capacity(spans.len());
+    let mut at = 0usize;
+    for (text, _, _) in spans {
+        starts.push(at);
+        at += text.len();
+    }
+    let mut out: Vec<(usize, f32, f32, f32, f32)> = Vec::new();
+    for run in buf.layout_runs() {
+        // A span is contiguous WITHIN a line, so its extent there is the
+        // min-left and max-right of its glyphs. Flushed on every change of
+        // span and at the end of the line, which is also what keeps a span
+        // that spans two lines from being merged into one impossible rect.
+        let mut current: Option<(usize, f32, f32)> = None;
+        let mut flush = |current: &mut Option<(usize, f32, f32)>| {
+            if let Some((index, left, right)) = current.take() {
+                out.push((
+                    index,
+                    left / scale,
+                    run.line_top / scale,
+                    (right - left) / scale,
+                    run.line_height / scale,
+                ));
+            }
+        };
+        for glyph in run.glyphs {
+            // `rposition` because the spans partition the range in order: the
+            // last start at or before this byte owns it.
+            let Some(index) = starts.iter().rposition(|start| *start <= glyph.start) else {
+                continue;
+            };
+            let (left, right) = (glyph.x, glyph.x + glyph.w);
+            match current.as_mut() {
+                Some((open, l, r)) if *open == index => {
+                    *l = l.min(left);
+                    *r = r.max(right);
+                }
+                _ => {
+                    flush(&mut current);
+                    current = Some((index, left, right));
+                }
+            }
+        }
+        flush(&mut current);
+    }
+    out
 }
 
 /// Shape differently-styled spans into one buffer — **the** inline layout.
@@ -592,9 +678,24 @@ pub(crate) fn draw_buffer(
     py: f32,
     color: CosmicColor,
 ) {
-    let (cr, cg, cb, ca) = (color.r(), color.g(), color.b(), color.a());
     for run in buf.layout_runs() {
         for glyph in run.glyphs {
+            // **The GLYPH's own colour wins; the parameter is the fallback.**
+            // `shape_rich_text` attaches each span's colour to its attrs, so a
+            // shaped buffer already knows what colour every glyph is — and this
+            // loop used to read the parameter ONCE, outside it, and paint the
+            // whole buffer in that single colour.
+            //
+            // Every span colour in the engine was therefore computed, resolved
+            // through the cascade, carried into the shaper and then thrown away
+            // one line before it was used. `draw_rich_text` passes black, so
+            // ALL rich text painted black no matter what any element declared:
+            // a Flutter `AppBar` with `color: #ffffff` on its own blue bar, and
+            // equally a `color: #ff0000` set directly on the text.
+            let (cr, cg, cb, ca) = match glyph.color_opt {
+                Some(c) => (c.r(), c.g(), c.b(), c.a()),
+                None => (color.r(), color.g(), color.b(), color.a()),
+            };
             let pg = glyph.physical((px, py + run.line_y), 1.0);
             if let Some(img) = sc.get_image(fs, pg.cache_key) {
                 if img.placement.width == 0 || img.placement.height == 0 {
@@ -644,6 +745,72 @@ mod tests {
         assert!(matches!(family_of("fantasy"), Family::Fantasy));
         // Empty is "unspecified", which is the UI default rather than an error.
         assert!(matches!(family_of(""), Family::SansSerif));
+    }
+
+    #[test]
+    fn letter_spacing_reaches_shaping_and_widens_the_measured_run() {
+        // Measured, not stored: a `letter-spacing` that never reached
+        // cosmic-text would leave the width identical and the property would
+        // be a silent no-op. Nine gaps between ten glyphs at 4px is ~36px, so
+        // the widened run must clear the base by a wide margin.
+        let mut fs = FontSystem::new();
+        let text = "HELLO WORLD";
+        let base = FontSpec::sans(14.0);
+        let mut spaced = FontSpec::sans(14.0);
+        spaced.letter_spacing = 4.0;
+
+        let plain = measure_text_spec(&mut fs, text, &base, 1.0);
+        let wide = measure_text_spec(&mut fs, text, &spaced, 1.0);
+        assert!(
+            wide > plain + 20.0,
+            "letter-spacing did not reach shaping: {plain} -> {wide}"
+        );
+    }
+
+    /// A span that wraps gets a rect PER LINE — the case a sum of advances
+    /// cannot express.
+    ///
+    /// This is the whole justification for asking the shaper. Summing advances
+    /// puts everything after the first line break at the wrong x on the wrong
+    /// line, so a click on a wrapped link lands nowhere. Here the link is long
+    /// enough to break, and both of its rects have to be inside the wrap width
+    /// and on different lines.
+    #[test]
+    fn a_wrapped_span_reports_one_rect_per_line_it_occupies() {
+        let mut fs = FontSystem::new();
+        let spans = vec![
+            (
+                "see ".to_string(),
+                FontSpec::sans(14.0),
+                CosmicColor::rgb(0, 0, 0),
+            ),
+            (
+                "a link long enough that it has to break across two lines".to_string(),
+                FontSpec::sans(14.0),
+                CosmicColor::rgb(0, 0, 238),
+            ),
+        ];
+        let wrap = 160.0;
+        let rects = rich_text_span_rects(&mut fs, &spans, Some(wrap), 1.0);
+
+        let link: Vec<_> = rects.iter().filter(|(index, ..)| *index == 1).collect();
+        assert!(
+            link.len() >= 2,
+            "the link wraps, so it occupies more than one line: {rects:?}"
+        );
+
+        let lines: std::collections::BTreeSet<i32> =
+            link.iter().map(|(_, _, y, _, _)| *y as i32).collect();
+        assert!(
+            lines.len() >= 2,
+            "its rects must be on DIFFERENT lines, not stacked at one y: {link:?}"
+        );
+        for (_, x, _, w, _) in &link {
+            assert!(
+                *x >= 0.0 && x + w <= wrap + 1.0,
+                "a rect ran outside the wrap width — the sum-of-advances bug: {link:?}"
+            );
+        }
     }
 
     #[test]

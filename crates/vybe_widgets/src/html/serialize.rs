@@ -65,25 +65,25 @@ pub fn escape_attribute(s: &str) -> String {
 }
 
 impl Document {
-    /// The document's body and everything in it.
+    /// The document, serialised — `<html>`, `<head>`, `<body>` and everything
+    /// in them.
     ///
-    /// The body IS the form, so this is the whole rendered tree. `<head>` is
-    /// not synthesised: a compiled program has a title and nothing else that
-    /// would go there, and inventing markup that no frontend produced would
-    /// make the output stop being evidence.
+    /// The wrapper used to be SYNTHESISED here: a literal `"<body>"` was
+    /// written around the document's children, because the document node was
+    /// standing in for the body. Now that tree construction puts real elements
+    /// in the tree ([`Document::body`]), writing one as well produced a body
+    /// inside a body. Serialising the children is both simpler and more
+    /// honest — the output is the tree, with nothing invented, which is the
+    /// only reason this is usable as evidence.
     pub fn to_html(&mut self) -> String {
         let mut out = String::new();
-        out.push_str("<body>");
         let children = self.child_nodes_in_order(DOCUMENT);
-        if children.is_empty() {
-            out.push_str("</body>");
-            return out;
+        for (index, child) in children.into_iter().enumerate() {
+            if index > 0 {
+                out.push('\n');
+            }
+            self.write_node(&mut out, child, 0);
         }
-        for child in children {
-            out.push('\n');
-            self.write_node(&mut out, child, 1);
-        }
-        out.push_str("\n</body>");
         out
     }
 
@@ -245,10 +245,23 @@ impl Document {
 mod tests {
     use crate::dom::{DOCUMENT, Document};
 
+    /// The document a browser serialises around any body content.
+    ///
+    /// `<html>`, `<head>` and `<body>` are always in the tree — tree
+    /// construction inserts them whether or not the markup said so — so every
+    /// expectation here carries them. Written once rather than ten times, so
+    /// what each test is actually about stays legible.
+    fn page(body: &str) -> String {
+        if body.is_empty() {
+            return "<html>\n  <head></head>\n  <body></body>\n</html>".to_string();
+        }
+        format!("<html>\n  <head></head>\n  <body>\n{body}\n  </body>\n</html>")
+    }
+
     #[test]
     fn an_empty_document_is_an_empty_body() {
         let mut doc = Document::new("t");
-        assert_eq!(doc.to_html(), "<body></body>");
+        assert_eq!(doc.to_html(), page(""));
     }
 
     #[test]
@@ -257,7 +270,7 @@ mod tests {
         let b = doc.create_element("button", "");
         doc.append_child(DOCUMENT, b);
         doc.set_text_content(b, "OK");
-        assert_eq!(doc.to_html(), "<body>\n  <button>OK</button>\n</body>");
+        assert_eq!(doc.to_html(), page("    <button>OK</button>"));
     }
 
     #[test]
@@ -270,10 +283,7 @@ mod tests {
         let mut doc = Document::new("t");
         let list = doc.create_element("select", "6");
         doc.append_child(DOCUMENT, list);
-        assert_eq!(
-            doc.to_html(),
-            "<body>\n  <select size=\"6\"></select>\n</body>"
-        );
+        assert_eq!(doc.to_html(), page("    <select size=\"6\"></select>"));
     }
 
     #[test]
@@ -281,7 +291,7 @@ mod tests {
         let mut doc = Document::new("t");
         let input = doc.create_element("input", "text");
         doc.append_child(DOCUMENT, input);
-        assert_eq!(doc.to_html(), "<body>\n  <input type=\"text\">\n</body>");
+        assert_eq!(doc.to_html(), page("    <input type=\"text\">"));
     }
 
     #[test]
@@ -294,7 +304,7 @@ mod tests {
         doc.set_text_content(b, "Go");
         assert_eq!(
             doc.to_html(),
-            "<body>\n  <div>\n    <button>Go</button>\n  </div>\n</body>"
+            page("    <div>\n      <button>Go</button>\n    </div>")
         );
     }
 
@@ -309,7 +319,7 @@ mod tests {
         doc.set_style_property(b, "background-color", "#fff");
         assert_eq!(
             doc.to_html(),
-            "<body>\n  <button style=\"background-color: #fff; color: red\"></button>\n</body>"
+            page("    <button style=\"background-color: #fff; color: red\"></button>")
         );
     }
 
@@ -323,7 +333,7 @@ mod tests {
         doc.set_attribute(b, "id", "field");
         assert_eq!(
             doc.to_html(),
-            "<body>\n  <input id=\"field\" type=\"text\" placeholder=\"name\">\n</body>"
+            page("    <input id=\"field\" type=\"text\" placeholder=\"name\">")
         );
     }
 
@@ -335,7 +345,7 @@ mod tests {
         doc.set_attribute(b, "disabled", "");
         assert_eq!(
             doc.to_html(),
-            "<body>\n  <button disabled></button>\n</body>"
+            page("    <button disabled></button>")
         );
     }
 
@@ -348,7 +358,7 @@ mod tests {
         doc.set_attribute(b, "title", "say \"hi\"");
         assert_eq!(
             doc.to_html(),
-            "<body>\n  <button title=\"say &quot;hi&quot;\">a &lt; b &amp; c</button>\n</body>"
+            page("    <button title=\"say &quot;hi&quot;\">a &lt; b &amp; c</button>")
         );
     }
 
@@ -359,7 +369,7 @@ mod tests {
         let mut doc = Document::new("t");
         let orphan = doc.create_element("button", "");
         doc.set_text_content(orphan, "invisible");
-        assert_eq!(doc.to_html(), "<body></body>");
+        assert_eq!(doc.to_html(), page(""));
         // …but it serialises on its own, which is what makes the bug legible.
         assert_eq!(doc.outer_html(orphan), "<button>invisible</button>");
     }
