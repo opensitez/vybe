@@ -376,3 +376,111 @@ fn remove_event_listener_takes_the_listener_it_was_given() {
     html::remove_event_listener(doc, node, "input", &first);
     assert_eq!(html::listeners_for(doc, node, "click").len(), 1);
 }
+
+/// **`innerHTML` — set the page in one go.**
+///
+/// The parser, the HTML grammar and the tree-builder all existed; every entry
+/// point built a NEW document, so a frontend that renders a whole page at once
+/// (rather than appending controls one at a time) had nothing to call.
+#[test]
+fn inner_html_replaces_the_subtree_and_reads_back() {
+    let doc = setup();
+    let host = create(doc, "div", "");
+    apply(
+        doc,
+        DomOp::AppendChild {
+            parent: DOCUMENT,
+            child: host,
+        },
+    );
+
+    apply(
+        doc,
+        DomOp::SetInnerHtml {
+            node: host,
+            html: "<button>7</button><button>8</button>".into(),
+        },
+    );
+    let kids = match apply(doc, DomOp::ChildNodes(host)) {
+        DomValue::Nodes(n) => n,
+        other => panic!("expected nodes, got {other:?}"),
+    };
+    assert_eq!(kids.len(), 2, "the fragment did not build two children");
+    assert_eq!(text(apply(doc, DomOp::NodeName(kids[0]))).to_lowercase(), "button");
+
+    // Setting again REPLACES — the spec's own wording, and the difference
+    // between a page that redraws and one that grows on every render.
+    apply(
+        doc,
+        DomOp::SetInnerHtml {
+            node: host,
+            html: "<span>only</span>".into(),
+        },
+    );
+    let kids = match apply(doc, DomOp::ChildNodes(host)) {
+        DomValue::Nodes(n) => n,
+        other => panic!("expected nodes, got {other:?}"),
+    };
+    assert_eq!(kids.len(), 1, "innerHTML appended instead of replacing");
+
+    // …and reads back as markup.
+    let html = text(apply(doc, DomOp::InnerHtml(host)));
+    assert!(html.contains("span"), "innerHTML read back as {html:?}");
+
+    // Emptying is how a page clears itself.
+    apply(
+        doc,
+        DomOp::SetInnerHtml {
+            node: host,
+            html: String::new(),
+        },
+    );
+    match apply(doc, DomOp::ChildNodes(host)) {
+        DomValue::Nodes(n) => assert!(n.is_empty(), "innerHTML = \"\" left {} children", n.len()),
+        other => panic!("expected nodes, got {other:?}"),
+    }
+}
+
+/// A fragment must NEST — the child of a child belongs inside it.
+///
+/// The seeded element sits at index 0 of the sink's open-element stack, so the
+/// driver's depth is offset by one. Without that offset a `close_to` closed the
+/// WRAPPER instead of the element inside it, and everything after the first
+/// child landed as a sibling of the wrapper rather than its content.
+#[test]
+fn inner_html_keeps_its_nesting() {
+    let doc = setup();
+    let host = create(doc, "div", "");
+    apply(
+        doc,
+        DomOp::AppendChild {
+            parent: DOCUMENT,
+            child: host,
+        },
+    );
+    apply(
+        doc,
+        DomOp::SetInnerHtml {
+            node: host,
+            html: "<div id='w'><span>a</span><span>b</span><span>c</span></div>".into(),
+        },
+    );
+
+    // One child of the host: the wrapper.
+    let top = match apply(doc, DomOp::ChildNodes(host)) {
+        DomValue::Nodes(n) => n,
+        other => panic!("expected nodes, got {other:?}"),
+    };
+    assert_eq!(top.len(), 1, "the fragment unwrapped itself: {top:?}");
+
+    // …and all THREE spans inside it, not just the first.
+    let inner = match apply(doc, DomOp::ChildNodes(top[0])) {
+        DomValue::Nodes(n) => n,
+        other => panic!("expected nodes, got {other:?}"),
+    };
+    assert_eq!(
+        inner.len(),
+        3,
+        "children escaped the wrapper after the first"
+    );
+}

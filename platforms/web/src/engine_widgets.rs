@@ -149,6 +149,12 @@ impl WebEngine for Widgets {
                 None => DomValue::Null,
             },
             DomOp::ChildNodes(n) => DomValue::Nodes(doc.children_of(n)),
+            DomOp::InnerHtml(n) => DomValue::Text(doc.inner_html(n)),
+            // The SETTER is not here: parsing belongs to the parser, and it
+            // needs to re-enter `apply` to build the tree — which would be a
+            // second borrow of the document this closure already holds. It is
+            // dispatched before the lock instead, in `apply`.
+            DomOp::SetInnerHtml { .. } => DomValue::None,
             DomOp::IsConnected(n) => DomValue::Bool(doc.connected(n)),
             DomOp::TextContent(n) => DomValue::Text(doc.text_content(n)),
             DomOp::SetTextContent(n, t) => {
@@ -164,6 +170,7 @@ impl WebEngine for Widgets {
                 Some(v) => DomValue::Text(v),
                 None => DomValue::Null,
             },
+            DomOp::AttributeNames(n) => DomValue::Texts(doc.get_attribute_names(n)),
             DomOp::SetAttributeNS {
                 node,
                 namespace,

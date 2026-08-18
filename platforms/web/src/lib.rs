@@ -56,6 +56,10 @@ pub mod engine;
 pub mod engine_widgets;
 pub mod fetch;
 pub mod html;
+/// WHATWG File System Access — `showOpenFilePicker` and friends. Behind `gui`
+/// because a picker is the user agent's own chrome, which only the toolkit has.
+#[cfg(feature = "gui")]
+pub mod file_system_access;
 pub mod timers;
 pub mod ui_events;
 pub mod url;
@@ -76,6 +80,8 @@ pub fn register(vm: &mut VM) {
     #[cfg(feature = "gui")]
     canvas_backend_widgets::install();
 
+    #[cfg(feature = "gui")]
+    file_system_access::register(vm);
     console::register(vm);
     crypto::register(vm);
     url::register(vm);

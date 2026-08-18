@@ -1532,6 +1532,12 @@ impl TreeSink for ValueSink {
 /// because the parser only ever asked it to do things the DOM defines.
 struct DocumentSink {
     document: crate::engine::DocumentId,
+    /// The lowest depth `close_to` may return to.
+    ///
+    /// `0` for a whole document — the root is always reachable. For a FRAGMENT
+    /// it is `1`: the element being filled sits at index 0 and is not the
+    /// fragment's to close.
+    floor: usize,
     /// Every open element, innermost last. The document root is not one of
     /// them, so `close_to(0)` returns to it.
     open: Vec<crate::engine::NodeId>,
@@ -1546,8 +1552,25 @@ impl DocumentSink {
     fn new(document: crate::engine::DocumentId) -> DocumentSink {
         DocumentSink {
             document,
+            floor: 0,
             open: Vec::new(),
             tags: Vec::new(),
+            notes: Vec::new(),
+        }
+    }
+
+    /// A sink that builds INTO an existing element rather than a new document.
+    ///
+    /// The whole of what `innerHTML` needs beyond what already existed: the
+    /// parser, the grammar and the tree-building were all here, and every entry
+    /// point made a fresh `Document`. Seeding the open-element stack with the
+    /// target is what points the same machinery at a subtree.
+    fn fragment(document: crate::engine::DocumentId, parent: crate::engine::NodeId) -> DocumentSink {
+        DocumentSink {
+            document,
+            floor: 1,
+            open: vec![parent],
+            tags: vec![String::new()],
             notes: Vec::new(),
         }
     }
@@ -1643,6 +1666,16 @@ impl TreeSink for DocumentSink {
     }
 
     fn close_to(&mut self, depth: usize) {
+        // **The driver's depth is relative to ITS root; ours is offset by the
+        // seeded element.** A document sink's `open` holds only elements, so
+        // driver-depth N is index N. A fragment's holds the element being
+        // filled at index 0, so the same N is index N + 1 — and truncating to
+        // N closed the wrapper instead of the child inside it.
+        //
+        // Measured: `<div id=w><div class=h></div><div class=s></div></div>`
+        // put `.h` inside `#w` and `.s` beside it, so a one-element-deep
+        // fragment silently unwrapped itself after the first child.
+        let depth = depth.saturating_add(self.floor);
         self.open.truncate(depth);
         self.tags.truncate(depth);
     }
@@ -1748,6 +1781,32 @@ fn parse_html_document(source: &str) -> Value {
             .insert("__parseRecoveries".into(), make_array(entries));
     }
     handle
+}
+
+/// **`Element.innerHTML = …`** — parse `source` and make it the element's
+/// content, replacing whatever was there (DOM Parsing §2.3).
+///
+/// Replacement is the spec's own wording and it is not a detail: setting
+/// `innerHTML` is defined as discarding the children and inserting the parsed
+/// fragment, so appending would leave a page that grows every time it is
+/// redrawn — which is exactly what a framework does on each render.
+pub fn set_inner_html(document: crate::engine::DocumentId, node: crate::engine::NodeId, source: &str) {
+    // Remove first, so a parse that yields nothing still empties the box —
+    // `el.innerHTML = ""` is how a page clears itself.
+    for child in match crate::engine::apply(document, DomOp::ChildNodes(node)) {
+        DomValue::Nodes(children) => children,
+        _ => Vec::new(),
+    } {
+        crate::engine::apply(
+            document,
+            DomOp::RemoveChild {
+                parent: node,
+                child,
+            },
+        );
+    }
+    let mut sink = DocumentSink::fragment(document, node);
+    let _ = drive(source, Grammar::Html, &mut sink);
 }
 
 fn parse_markup(xml: &str, grammar: Grammar) -> Result<Value, String> {

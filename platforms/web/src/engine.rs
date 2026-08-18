@@ -159,6 +159,13 @@ pub enum DomOp {
     NodeValue(NodeId),
     ParentNode(NodeId),
     ChildNodes(NodeId),
+    /// `element.innerHTML` — read the subtree as markup.
+    InnerHtml(NodeId),
+    /// `element.innerHTML = …` — REPLACE the subtree from markup.
+    SetInnerHtml {
+        node: NodeId,
+        html: String,
+    },
     /// `node.isConnected`
     IsConnected(NodeId),
     /// `node.textContent`
@@ -169,6 +176,9 @@ pub enum DomOp {
     SetAttribute(NodeId, String, String),
     /// Absent yields [`DomValue::Null`], per spec — not an empty string.
     GetAttribute(NodeId, String),
+    /// `element.getAttributeNames()` — DOM §4.9. The qualified names of the
+    /// element's content attributes.
+    AttributeNames(NodeId),
     RemoveAttribute(NodeId, String),
     /// `element.setAttributeNS(namespace, qualifiedName, value)` and
     /// `getAttributeNS(namespace, localName)` — DOM §4.9.
@@ -269,6 +279,8 @@ pub enum DomValue {
     Events(Vec<(NodeId, String)>),
     /// Two numbers that are one fact — a size, today.
     Pair(f64, f64),
+    /// A list of strings — attribute names, today.
+    Texts(Vec<String>),
 }
 
 // ── Windows: WHATWG HTML §7, browsing contexts ──────────────────────────
@@ -455,6 +467,16 @@ pub fn engine() -> Option<Arc<dyn WebEngine>> {
 /// headless run has no document, exactly as a canvas op with no painter
 /// draws nothing.
 pub fn apply(document: DocumentId, op: DomOp) -> DomValue {
+    // **`innerHTML =` is parsed BEFORE the engine is entered.** Building the
+    // fragment means calling `apply` again, once per element, and the engine
+    // holds the document for the length of one op — so dispatching this
+    // through `e.document(..)` like every other write would deadlock on the
+    // first tag. Handling it here keeps each of those inner writes an ordinary,
+    // separately-locked operation.
+    if let DomOp::SetInnerHtml { node, html } = &op {
+        crate::dom_parser::set_inner_html(document, *node, html);
+        return DomValue::None;
+    }
     match engine() {
         Some(e) => e.document(document, op),
         None => DomValue::None,

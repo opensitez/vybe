@@ -197,13 +197,69 @@ pub fn register_types(fw: &mut Framework<'_>) {
             ("isConnected", "web:dom", "isConnected"),
             ("setAttribute", "web:dom", "setAttribute"),
             ("getAttribute", "web:dom", "getAttribute"),
-            ("hasAttribute", "web:dom", "toggleAttribute"),
+            // ⚠ This was mapped to `toggleAttribute` — asking whether an
+            // attribute exists FLIPPED it, and answered the toggle's result
+            // rather than the presence. `hasAttribute` is a real host fn now.
+            ("hasAttribute", "web:dom", "hasAttribute"),
+            // `getAttributeNames()` — DOM §4.9. The only attribute call that is
+            // not addressed by name, which is what lets a caller ask an element
+            // what it HAS rather than whether it has one particular thing.
+            ("getAttributeNames", "web:dom", "getAttributeNames"),
+            ("toggleAttribute", "web:dom", "toggleAttribute"),
+            ("removeAttribute", "web:dom", "removeAttribute"),
+            // Traversal — DOM §4.2.6 / §4.4, over the LIVE tree.
+            ("firstChild", "web:dom", "firstChild"),
+            ("lastChild", "web:dom", "lastChild"),
+            ("nextSibling", "web:dom", "nextSibling"),
+            ("previousSibling", "web:dom", "previousSibling"),
+            ("parentNode", "web:dom", "parentNode"),
+            ("childNodes", "web:dom", "childNodes"),
+            ("children", "web:dom", "children"),
+            ("firstElementChild", "web:dom", "firstElementChild"),
+            ("lastElementChild", "web:dom", "lastElementChild"),
+            // Mutation and matching.
+            ("remove", "web:dom", "remove"),
+            ("matches", "web:dom", "matches"),
+            ("closest", "web:dom", "closest"),
+            ("contains", "web:dom", "contains"),
+            ("querySelector", "web:dom", "querySelector"),
+            ("querySelectorAll", "web:dom", "querySelectorAll"),
+            // `classList` — flat, because a host vtable has nowhere to hang a
+            // live `DOMTokenList`. `el.classListAdd("x")` reaches the same
+            // store `class` does; the JS spelling `el.classList.add("x")`
+            // needs a `DOMTokenList` object and is NOT wired.
+            ("classListAdd", "web:dom", "classListAdd"),
+            ("classListRemove", "web:dom", "classListRemove"),
+            ("classListToggle", "web:dom", "classListToggle"),
+            ("classListContains", "web:dom", "classListContains"),
             ("removeAttribute", "web:dom", "removeAttribute"),
             ("addEventListener", "web:dom", "addEventListener"),
             ("removeEventListener", "web:dom", "removeEventListener"),
+            ("innerHtml", "web:dom", "innerHtml"),
+            ("setInnerHtml", "web:dom", "setInnerHtml"),
             ("querySelector", "web:dom", "querySelector"),
             ("querySelectorAll", "web:dom", "querySelectorAll"),
             ("getElementsByTagName", "web:dom", "getElementsByTagName"),
+            // Traversal and matching — DOM §4.2.6 / §4.9. Registered on the
+            // ELEMENT vtable so a guest reaches them by their IDL spelling,
+            // which is the whole point of the 1:1 mapping: `el.closest(sel)`
+            // in the guest IS `closest` in the host, not a shim.
+            ("firstChild", "web:dom", "firstChild"),
+            ("lastChild", "web:dom", "lastChild"),
+            ("nextSibling", "web:dom", "nextSibling"),
+            ("previousSibling", "web:dom", "previousSibling"),
+            ("children", "web:dom", "children"),
+            ("firstElementChild", "web:dom", "firstElementChild"),
+            ("lastElementChild", "web:dom", "lastElementChild"),
+            ("remove", "web:dom", "remove"),
+            ("hasAttribute", "web:dom", "hasAttribute"),
+            // `getAttributeNames()` — DOM §4.9. The only attribute call that is
+            // not addressed by name, which is what lets a caller ask an element
+            // what it HAS rather than whether it has one particular thing.
+            ("getAttributeNames", "web:dom", "getAttributeNames"),
+            ("matches", "web:dom", "matches"),
+            ("closest", "web:dom", "closest"),
+            ("contains", "web:dom", "contains"),
             // HTML element IDL
             ("focus", "web:html", "focus"),
             ("showPicker", "web:html", "showPicker"),
@@ -213,6 +269,16 @@ pub fn register_types(fw: &mut Framework<'_>) {
             // CSSOM
             ("setStyleProperty", "web:cssom", "setStyleProperty"),
             ("getStyleProperty", "web:cssom", "getStyleProperty"),
+            ("removeStyleProperty", "web:cssom", "removeStyleProperty"),
+            // ⚠ `classList` is NOT here, and cannot be a flat vtable entry:
+            // in the IDL it is a PROPERTY returning a live `DOMTokenList`, so
+            // `el.classList.add(x)` is two hops — a property read, then a
+            // method call on what it answers. The host functions exist
+            // (`classListAdd`/`Remove`/`Toggle`/`Contains`) and a frontend can
+            // route a `classList` role straight to them; what is missing is
+            // the `DOMTokenList` object for the JS spelling. Mapping
+            // `classList` to a method here would make `el.classList` callable
+            // and `el.classList.add` undefined, which is worse than absent.
         ] {
             if let Some(idx) = fw.host_fn_index(module, fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
@@ -235,6 +301,8 @@ pub fn register_types(fw: &mut Framework<'_>) {
             ("removeChild", "web:dom", "removeChild"),
             ("addEventListener", "web:dom", "addEventListener"),
             ("removeEventListener", "web:dom", "removeEventListener"),
+            ("innerHtml", "web:dom", "innerHtml"),
+            ("setInnerHtml", "web:dom", "setInnerHtml"),
             ("setTextContent", "web:dom", "setTextContent"),
             ("title", "web:html", "title"),
             ("setTitle", "web:html", "setTitle"),

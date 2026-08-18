@@ -768,6 +768,400 @@ pub fn register(vm: &mut VM) {
             }
         }),
     );
+    // `Node.firstChild` — DOM §4.4. The first child node, or null.
+    //
+    // Built on `ChildNodes` rather than a new `DomOp`: the tree already
+    // answers "what are this node's children", and "the first one" is a
+    // question about that answer, not a second traversal. Adding an op would
+    // have put the same walk in two places.
+    //
+    // `firstChild`, NOT `firstElementChild`: every node type counts, text and
+    // comments included. That distinction is the whole reason both members
+    // exist in the spec, and picking the wrong one silently skips text.
+    //
+    // The caller that needed this is `send_to_back` — z-order is document
+    // order, so sending a control to the back is `insertBefore` against the
+    // parent's current first child. Without it that lowering imported a
+    // function nothing registered.
+    dom_fn(
+        vm,
+        "firstChild",
+        "first-child",
+        vec![doc(), node()],
+        vec![ValType::Option(Box::new(node()))],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let document = doc_arg(args, 0);
+            match apply(document, DomOp::ChildNodes(node_arg(args, 1))) {
+                DomValue::Nodes(ns) => match ns.first() {
+                    Some(n) => element(document, *n),
+                    None => Value::Null,
+                },
+                _ => Value::Null,
+            }
+        }),
+    );
+    // `Node.lastChild` — DOM §4.4, the mirror of `firstChild`.
+    dom_fn(
+        vm,
+        "lastChild",
+        "last-child",
+        vec![doc(), node()],
+        vec![ValType::Option(Box::new(node()))],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let document = doc_arg(args, 0);
+            match apply(document, DomOp::ChildNodes(node_arg(args, 1))) {
+                DomValue::Nodes(ns) => match ns.last() {
+                    Some(n) => element(document, *n),
+                    None => Value::Null,
+                },
+                _ => Value::Null,
+            }
+        }),
+    );
+    // `Node.nextSibling` / `Node.previousSibling` — DOM §4.4.
+    //
+    // Derived from the PARENT's child list rather than stored links: the tree
+    // answers "who are my children" and "who is my parent", and a sibling is
+    // the neighbour of this node in that list. A node with no parent has no
+    // siblings, which falls out of `ParentNode` answering null.
+    for (name, kebab, forward) in [
+        ("nextSibling", "next-sibling", true),
+        ("previousSibling", "previous-sibling", false),
+    ] {
+        dom_fn(
+            vm,
+            name,
+            kebab,
+            vec![doc(), node()],
+            vec![ValType::Option(Box::new(node()))],
+            Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+                let document = doc_arg(args, 0);
+                let me = node_arg(args, 1);
+                let DomValue::Node(parent) = apply(document, DomOp::ParentNode(me)) else {
+                    return Value::Null;
+                };
+                let DomValue::Nodes(kids) = apply(document, DomOp::ChildNodes(parent)) else {
+                    return Value::Null;
+                };
+                let Some(i) = kids.iter().position(|n| *n == me) else {
+                    return Value::Null;
+                };
+                let neighbour = if forward {
+                    kids.get(i + 1).copied()
+                } else {
+                    i.checked_sub(1).and_then(|j| kids.get(j).copied())
+                };
+                match neighbour {
+                    Some(n) => element(document, n),
+                    None => Value::Null,
+                }
+            }),
+        );
+    }
+    // `ChildNode.remove()` — DOM §4.2.9. Detach this node from its parent.
+    //
+    // The spec's own definition is "if I have a parent, remove me from it", so
+    // this composes `ParentNode` + `RemoveChild` rather than adding an op. A
+    // node with no parent removes nothing and does not raise, per spec.
+    dom_fn(
+        vm,
+        "remove",
+        "remove",
+        vec![doc(), node()],
+        vec![],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let document = doc_arg(args, 0);
+            let me = node_arg(args, 1);
+            if let DomValue::Node(parent) = apply(document, DomOp::ParentNode(me)) {
+                apply(
+                    document,
+                    DomOp::RemoveChild {
+                        parent,
+                        child: me,
+                    },
+                );
+            }
+            Value::Null
+        }),
+    );
+    // `Element.hasAttribute` — DOM §4.9. Presence, not truthiness: an
+    // attribute set to the empty string IS present, which is what makes
+    // `<input disabled>` work.
+    dom_fn(
+        vm,
+        "hasAttribute",
+        "has-attribute",
+        vec![doc(), node(), ValType::String],
+        vec![ValType::Bool],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let found = matches!(
+                apply(
+                    doc_arg(args, 0),
+                    DomOp::GetAttribute(node_arg(args, 1), str_arg(args, 2)),
+                ),
+                DomValue::Text(_)
+            );
+            Value::Bool(found)
+        }),
+    );
+    // `element.getAttributeNames()` — DOM §4.9. The half of the attribute
+    // surface that was missing: everything else here is addressed BY NAME, so
+    // nothing could ask an element what it has. A diff needs exactly that —
+    // without it a reconciler can compare the attributes it already knows to
+    // look for and no others.
+    dom_fn(
+        vm,
+        "getAttributeNames",
+        "get-attribute-names",
+        vec![doc(), node()],
+        vec![ValType::List(Box::new(ValType::String))],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            match apply(doc_arg(args, 0), DomOp::AttributeNames(node_arg(args, 1))) {
+                DomValue::Texts(names) => {
+                    let items: Vec<Value> =
+                        names.into_iter().map(|n| Value::String(n.into())).collect();
+                    Value::Object(vybe_runtime::heap::alloc(Object::new_array(items)))
+                }
+                _ => Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new()))),
+            }
+        }),
+    );
+    // ── `Element.classList` — DOM §4.9 / DOMTokenList §7.1 ────────────────
+    //
+    // FLAT functions, not an object: the same shape `style.setProperty` already
+    // takes as `setStyleProperty`. A host function surface has no place to hang
+    // a live `DOMTokenList`, and inventing one would be a second way to say
+    // what `class` already says.
+    //
+    // The token list IS the `class` attribute, parsed on demand — so these read
+    // and write through `GetAttribute`/`SetAttribute` and stay consistent with
+    // anything that touched `class` directly. Serialised back space-separated,
+    // in order, which is what the spec's "ordered set serializer" produces.
+    //
+    // Without these the only way to toggle a class was read the attribute,
+    // splice a string, and write it back — in the guest, differently each time.
+    fn tokens(document: crate::engine::DocumentId, n: crate::engine::NodeId) -> Vec<String> {
+        match apply(document, DomOp::GetAttribute(n, "class".to_string())) {
+            DomValue::Text(s) => s.split_whitespace().map(str::to_string).collect(),
+            _ => Vec::new(),
+        }
+    }
+    fn write_tokens(
+        document: crate::engine::DocumentId,
+        n: crate::engine::NodeId,
+        list: &[String],
+    ) {
+        apply(
+            document,
+            DomOp::SetAttribute(n, "class".to_string(), list.join(" ")),
+        );
+    }
+    dom_fn(
+        vm,
+        "classListAdd",
+        "class-list-add",
+        vec![doc(), node(), ValType::String],
+        vec![],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let (document, n, token) = (doc_arg(args, 0), node_arg(args, 1), str_arg(args, 2));
+            if token.is_empty() {
+                return Value::Null;
+            }
+            let mut list = tokens(document, n);
+            // A set: adding a token already present is a no-op, not a
+            // duplicate. That is what makes `add` idempotent per spec.
+            if !list.iter().any(|t| *t == token) {
+                list.push(token);
+                write_tokens(document, n, &list);
+            }
+            Value::Null
+        }),
+    );
+    dom_fn(
+        vm,
+        "classListRemove",
+        "class-list-remove",
+        vec![doc(), node(), ValType::String],
+        vec![],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let (document, n, token) = (doc_arg(args, 0), node_arg(args, 1), str_arg(args, 2));
+            let mut list = tokens(document, n);
+            let before = list.len();
+            list.retain(|t| *t != token);
+            if list.len() != before {
+                write_tokens(document, n, &list);
+            }
+            Value::Null
+        }),
+    );
+    dom_fn(
+        vm,
+        "classListContains",
+        "class-list-contains",
+        vec![doc(), node(), ValType::String],
+        vec![ValType::Bool],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let (document, n, token) = (doc_arg(args, 0), node_arg(args, 1), str_arg(args, 2));
+            Value::Bool(tokens(document, n).iter().any(|t| *t == token))
+        }),
+    );
+    dom_fn(
+        vm,
+        "classListToggle",
+        "class-list-toggle",
+        vec![doc(), node(), ValType::String],
+        vec![ValType::Bool],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let (document, n, token) = (doc_arg(args, 0), node_arg(args, 1), str_arg(args, 2));
+            if token.is_empty() {
+                return Value::Bool(false);
+            }
+            let mut list = tokens(document, n);
+            // Returns whether the token is present AFTER the call — the spec's
+            // return value, and the reason this is not just add-or-remove.
+            let present = list.iter().any(|t| *t == token);
+            if present {
+                list.retain(|t| *t != token);
+            } else {
+                list.push(token);
+            }
+            write_tokens(document, n, &list);
+            Value::Bool(!present)
+        }),
+    );
+    // ── Element-only traversal — DOM §4.2.6 `ParentNode` / `NonDocumentTypeChildNode`
+    //
+    // `children` is NOT `childNodes`: it skips text and comments. That is the
+    // whole reason the spec has both, and the difference bites the moment a
+    // document has whitespace between tags — which parsed markup always does.
+    //
+    // ELEMENT_NODE is 1 (DOM §4.4). Filtering on `NodeType` rather than a new
+    // op keeps this derived from what the tree already answers.
+    fn element_children(
+        document: crate::engine::DocumentId,
+        n: crate::engine::NodeId,
+    ) -> Vec<crate::engine::NodeId> {
+        let DomValue::Nodes(kids) = apply(document, DomOp::ChildNodes(n)) else {
+            return Vec::new();
+        };
+        kids.into_iter()
+            .filter(|k| matches!(apply(document, DomOp::NodeType(*k)), DomValue::Number(t) if t as i32 == 1))
+            .collect()
+    }
+    dom_fn(
+        vm,
+        "children",
+        "children",
+        vec![doc(), node()],
+        vec![ValType::List(Box::new(node()))],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let document = doc_arg(args, 0);
+            let items: Vec<Value> = element_children(document, node_arg(args, 1))
+                .into_iter()
+                .map(|n| element(document, n))
+                .collect();
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(items)))
+        }),
+    );
+    for (name, kebab, last) in [
+        ("firstElementChild", "first-element-child", false),
+        ("lastElementChild", "last-element-child", true),
+    ] {
+        dom_fn(
+            vm,
+            name,
+            kebab,
+            vec![doc(), node()],
+            vec![ValType::Option(Box::new(node()))],
+            Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+                let document = doc_arg(args, 0);
+                let kids = element_children(document, node_arg(args, 1));
+                let pick = if last { kids.last() } else { kids.first() };
+                match pick {
+                    Some(n) => element(document, *n),
+                    None => Value::Null,
+                }
+            }),
+        );
+    }
+    // `Node.contains(other)` — DOM §4.4. True if `other` is this node or a
+    // descendant of it. Inclusive, per spec: a node contains itself.
+    dom_fn(
+        vm,
+        "contains",
+        "contains",
+        vec![doc(), node(), node()],
+        vec![ValType::Bool],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let document = doc_arg(args, 0);
+            let (me, other) = (node_arg(args, 1), node_arg(args, 2));
+            let mut cursor = Some(other);
+            while let Some(n) = cursor {
+                if n == me {
+                    return Value::Bool(true);
+                }
+                cursor = match apply(document, DomOp::ParentNode(n)) {
+                    DomValue::Node(p) => Some(p),
+                    _ => None,
+                };
+            }
+            Value::Bool(false)
+        }),
+    );
+    // `Element.matches(selector)` — DOM §4.9.
+    //
+    // Derived from `querySelectorAll` + membership rather than a new matcher:
+    // the engine already owns selector semantics, and a SECOND implementation
+    // is how the two drift. Costs a document-wide query per call, which is the
+    // honest trade for having exactly one matcher.
+    fn matches_selector(
+        document: crate::engine::DocumentId,
+        n: crate::engine::NodeId,
+        selector: &str,
+    ) -> bool {
+        match apply(document, DomOp::QuerySelectorAll(selector.to_string())) {
+            DomValue::Nodes(ns) => ns.contains(&n),
+            _ => false,
+        }
+    }
+    dom_fn(
+        vm,
+        "matches",
+        "matches",
+        vec![doc(), node(), ValType::String],
+        vec![ValType::Bool],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            Value::Bool(matches_selector(
+                doc_arg(args, 0),
+                node_arg(args, 1),
+                &str_arg(args, 2),
+            ))
+        }),
+    );
+    // `Element.closest(selector)` — DOM §4.9. This node, then each ancestor,
+    // first match wins. Inclusive of self, per spec.
+    dom_fn(
+        vm,
+        "closest",
+        "closest",
+        vec![doc(), node(), ValType::String],
+        vec![ValType::Option(Box::new(node()))],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let document = doc_arg(args, 0);
+            let selector = str_arg(args, 2);
+            let mut cursor = Some(node_arg(args, 1));
+            while let Some(n) = cursor {
+                if matches_selector(document, n, &selector) {
+                    return element(document, n);
+                }
+                cursor = match apply(document, DomOp::ParentNode(n)) {
+                    DomValue::Node(p) => Some(p),
+                    _ => None,
+                };
+            }
+            Value::Null
+        }),
+    );
     dom_fn(
         vm,
         "childNodes",
@@ -1347,6 +1741,35 @@ pub fn register(vm: &mut VM) {
             Value::Null
         }),
     );
+    // `CSSStyleDeclaration.removeProperty(name)` — CSSOM §6.7.1.
+    //
+    // Returns the OLD value, which is what makes it more than a setter: the
+    // spec has it answer the removed declaration's value (or `""` when there
+    // was none), so a caller can restore it.
+    //
+    // Removal is spelled as setting the empty string, because the declaration
+    // store treats "" as absent — the same convention `setProperty(name, "")`
+    // has in a browser. That keeps one storage rule instead of adding a
+    // `RemoveStyleProperty` op that would have to agree with it.
+    css_fn(
+        vm,
+        "removeStyleProperty",
+        "remove-property",
+        vec![doc(), node(), ValType::String],
+        vec![ValType::String],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let (document, n, prop) = (doc_arg(args, 0), node_arg(args, 1), str_arg(args, 2));
+            let old = match apply(document, DomOp::GetStyleProperty(n, prop.clone())) {
+                DomValue::Text(s) => s,
+                _ => String::new(),
+            };
+            apply(
+                document,
+                DomOp::SetStyleProperty(n, prop, String::new()),
+            );
+            Value::String(std::sync::Arc::from(old.as_str()))
+        }),
+    );
     // `getPropertyValue` answers `""` for a property that is not set — CSSOM
     // says so outright, and it is the one place a DOM read is NOT nullable.
     // `getAttribute` next door returns `option<string>` for exactly the same
@@ -1746,6 +2169,46 @@ pub fn register(vm: &mut VM) {
     // `ecma:function.bind` result where the receiver had to be threaded. The
     // host calls it and does not care which; a narrower type would be a claim
     // this file cannot make.
+    // `innerHTML`, both directions — DOM Parsing §2.3.
+    //
+    // The parser, the HTML grammar and the tree-builder all existed; every
+    // entry point built a NEW document, so there was no way to say "make this
+    // markup the contents of that element". This is the missing door, not a
+    // missing engine.
+    dom_fn(
+        vm,
+        "innerHtml",
+        "inner-html",
+        vec![doc(), node()],
+        vec![ValType::String],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            match crate::engine::apply(
+                doc_arg(args, 0),
+                crate::engine::DomOp::InnerHtml(node_arg(args, 1)),
+            ) {
+                crate::engine::DomValue::Text(html) => Value::String(Arc::from(html.as_str())),
+                _ => Value::String(Arc::from("")),
+            }
+        }),
+    );
+    dom_fn(
+        vm,
+        "setInnerHtml",
+        "set-inner-html",
+        vec![doc(), node(), ValType::String],
+        vec![],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            crate::engine::apply(
+                doc_arg(args, 0),
+                crate::engine::DomOp::SetInnerHtml {
+                    node: node_arg(args, 1),
+                    html: str_arg(args, 2),
+                },
+            );
+            Value::Null
+        }),
+    );
+
     dom_fn(
         vm,
         "removeEventListener",
@@ -1767,6 +2230,20 @@ pub fn register(vm: &mut VM) {
         vec![],
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let cb = args.get(3).cloned().unwrap_or(Value::Undefined);
+            // **A null callback registers nothing** — DOM §2.7: "If callback is
+            // null, then return." It is not an error and not a listener; a
+            // browser accepts the call and does nothing, which is what lets a
+            // framework hand over a whole slate of optional handlers and pass
+            // `null` for the ones the program did not write.
+            //
+            // Registering it stored a listener that was null when the event
+            // fired: every Flutter `ElevatedButton` declares `onPressed` AND
+            // `onLongPress`, both wire to `click`, and a program that supplies
+            // only the first made every click raise "null is not callable"
+            // twice before reaching the handler that WAS there.
+            if matches!(cb, Value::Null | Value::Undefined) {
+                return Value::Null;
+            }
             add_event_listener(doc_arg(args, 0), node_arg(args, 1), &str_arg(args, 2), cb);
             Value::Null
         }),
