@@ -748,7 +748,7 @@ begin
   WriteLn(f > 0.7);
 end."#
         ),
-        &["True"]
+        &["TRUE"]
     );
 }
 

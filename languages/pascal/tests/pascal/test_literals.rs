@@ -34,14 +34,14 @@ fn lit_empty_string() {
 fn lit_bool_true() {
     assert_eq!(
         run_pascal("program T; begin WriteLn(true); end."),
-        &["true"]
+        &["TRUE"]
     );
 }
 #[test]
 fn lit_bool_false() {
     assert_eq!(
         run_pascal("program T; begin WriteLn(false); end."),
-        &["false"]
+        &["FALSE"]
     );
 }
 #[test]

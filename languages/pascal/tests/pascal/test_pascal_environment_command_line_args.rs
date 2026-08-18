@@ -14,7 +14,7 @@ begin
 end.
 "#,
     );
-    assert_eq!(out, vec!["True"]);
+    assert_eq!(out, vec!["TRUE"]);
 }
 
 #[test]
@@ -27,7 +27,7 @@ begin
 end.
 "#,
     );
-    assert_eq!(out, vec!["True"]);
+    assert_eq!(out, vec!["TRUE"]);
 }
 
 #[test]
@@ -43,7 +43,7 @@ begin
 end.
 "#,
     );
-    assert_eq!(out, vec!["True"]);
+    assert_eq!(out, vec!["TRUE"]);
 }
 
 #[test]
@@ -74,7 +74,7 @@ begin
 end.
 "#,
     );
-    assert_eq!(out, vec!["False", "False"]);
+    assert_eq!(out, vec!["FALSE", "FALSE"]);
 }
 
 #[test]
@@ -102,7 +102,7 @@ begin
 end.
 "#,
     );
-    assert_eq!(out, vec!["True"]);
+    assert_eq!(out, vec!["TRUE"]);
 }
 
 #[test]
@@ -116,7 +116,7 @@ begin
 end.
 "#,
     );
-    assert_eq!(out, vec!["True"]);
+    assert_eq!(out, vec!["TRUE"]);
 }
 
 #[test]
@@ -129,7 +129,7 @@ begin
 end.
 "#,
     );
-    assert_eq!(out, vec!["True"]);
+    assert_eq!(out, vec!["TRUE"]);
 }
 
 #[test]
@@ -142,7 +142,7 @@ begin
 end.
 "#,
     );
-    assert_eq!(out, vec!["True"]);
+    assert_eq!(out, vec!["TRUE"]);
 }
 
 #[test]
@@ -174,7 +174,7 @@ begin
 end.
 "#,
     );
-    assert_eq!(out, vec!["True"]);
+    assert_eq!(out, vec!["TRUE"]);
 }
 
 #[test]
@@ -225,7 +225,7 @@ begin
 end.
 "#,
     );
-    assert_eq!(out, vec!["True"]);
+    assert_eq!(out, vec!["TRUE"]);
 }
 
 #[test]
@@ -239,7 +239,7 @@ begin
 end.
 "#,
     );
-    assert_eq!(out, vec!["True"]);
+    assert_eq!(out, vec!["TRUE"]);
 }
 
 #[test]
@@ -253,7 +253,7 @@ begin
 end.
 "#,
     );
-    assert_eq!(out, vec!["True"]);
+    assert_eq!(out, vec!["TRUE"]);
 }
 
 #[test]
@@ -267,7 +267,7 @@ begin
 end.
 "#,
     );
-    assert_eq!(out, vec!["True"]);
+    assert_eq!(out, vec!["TRUE"]);
 }
 
 #[test]

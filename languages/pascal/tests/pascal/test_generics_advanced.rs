@@ -357,7 +357,7 @@ fn generic_buffer_write_read() {
         run_pascal(
             r#"program T; type TBuf<T>=class private F:T; public procedure Write(v:T); function Read:T; end; procedure TBuf<T>.Write(v:T); begin F:=v; end; function TBuf<T>.Read:T; begin Result:=F; end; var b:TBuf<Double>; begin b:=TBuf<Double>.Create; b.Write(3.5); WriteLn(b.Read>3.0); b.Free; end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -387,7 +387,7 @@ fn generic_singleton_class_instance() {
         run_pascal(
             r#"program T; type TSing<T>=class public class var Inst:TSing<T>; class function Get:TSing<T>; end; class var TSing<Integer>.Inst:TSing<Integer>; class function TSing<T>.Get:TSing<T>; begin if Inst=nil then Inst:=TSing<T>.Create; Result:=Inst; end; var s:TSing<Integer>; begin s:=TSing<Integer>.Get; WriteLn(s<>nil); s.Free; TSing<Integer>.Inst:=nil; end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 

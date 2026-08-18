@@ -73,7 +73,7 @@ fn try_except_sets_recovery_flag() {
         run_pascal(
             r#"program T; var ok:Boolean; begin ok:=false; try raise Exception.Create('x'); except ok:=true; end; WriteLn(ok); end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 

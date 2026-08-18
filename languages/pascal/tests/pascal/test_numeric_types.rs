@@ -317,7 +317,7 @@ begin
   WriteLn(area > 12.0);
 end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 

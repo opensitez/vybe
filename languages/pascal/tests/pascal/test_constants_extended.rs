@@ -321,7 +321,7 @@ fn const_compare_in_if() {
 fn const_real_pi_approximation() {
     assert_eq!(
         run_pascal(r#"program T; const PI = 3.14159; begin WriteLn(PI > 3); end."#),
-        &["True"]
+        &["TRUE"]
     );
 }
 

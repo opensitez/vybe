@@ -17,7 +17,7 @@ begin
   WriteLn(CompareStr('hello', 'hello') = 0);
 end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -30,7 +30,7 @@ begin
   WriteLn(CompareStr('abc', 'abd') < 0);
 end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -43,7 +43,7 @@ begin
   WriteLn(CompareStr('z', 'a') > 0);
 end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -56,7 +56,7 @@ begin
   WriteLn(CompareText('Hello', 'hello') = 0);
 end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 

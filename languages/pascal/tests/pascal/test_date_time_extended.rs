@@ -277,7 +277,7 @@ fn leap_year_detected_via_feb_twenty_nine() {
         run_pascal(
             r#"program T; var d:TDateTime; begin d:=EncodeDate(2000,2,29); WriteLn(DayOf(d)=29); end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 

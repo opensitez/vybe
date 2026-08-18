@@ -430,7 +430,7 @@ begin
 end.
 "#,
     );
-    assert_eq!(out, vec!["ParentCtorHandled:SubCtorErr", "True"]);
+    assert_eq!(out, vec!["ParentCtorHandled:SubCtorErr", "TRUE"]);
 }
 
 #[test]

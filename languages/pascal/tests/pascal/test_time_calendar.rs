@@ -127,7 +127,7 @@ fn leap_year_via_feb29() {
         run_pascal(
             r#"program T; var d:TDateTime; begin d:=EncodeDate(2020,2,29); WriteLn(DayOf(d)=29); end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 

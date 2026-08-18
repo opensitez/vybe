@@ -13,7 +13,7 @@ fn sin_zero_is_zero() {
 fn sin_pi_over_two_one() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(Trunc(Sin(1.5707963)*1000)); end."#),
-        &["1000"]
+        &["999"]
     );
 }
 
@@ -53,7 +53,7 @@ fn cos_pi_over_two_near_zero() {
 fn cos_pi_negative_one() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(Trunc(Cos(3.1415926)*1000)); end."#),
-        &["-1000"]
+        &["-999"]
     );
 }
 
@@ -61,7 +61,7 @@ fn cos_pi_negative_one() {
 fn cos_pi_over_three_half() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(Trunc(Cos(1.0471976)*1000)); end."#),
-        &["500"]
+        &["499"]
     );
 }
 
@@ -117,7 +117,7 @@ fn arctan_negative_input() {
 fn arctan_large_value_near_pi_over_two() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(Trunc(ArcTan(1000.0)*100)); end."#),
-        &["157"]
+        &["156"]
     );
 }
 
@@ -165,7 +165,7 @@ fn arctan2_quadrant_one() {
 fn arctan2_quadrant_two() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(Trunc(ArcTan2(1.0,-1.0)*100)); end."#),
-        &["233"]
+        &["235"]
     );
 }
 
@@ -173,7 +173,7 @@ fn arctan2_quadrant_two() {
 fn arctan2_quadrant_three() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(Trunc(Abs(ArcTan2(-1.0,-1.0))*100)); end."#),
-        &["233"]
+        &["235"]
     );
 }
 
@@ -321,7 +321,7 @@ fn arctan_fraction_less_than_one() {
 fn arctan2_small_y_large_x() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(Trunc(ArcTan2(0.1,10.0)*10000)); end."#),
-        &["999"]
+        &["99"]
     );
 }
 

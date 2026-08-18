@@ -241,7 +241,7 @@ fn cardinal_large_unsigned() {
         run_pascal(
             r#"program T; var c: Cardinal; begin c := 4000000000; WriteLn(c > 1000000000); end."#
         ),
-        &["True"]
+        &["TRUE"]
     );
 }
 
@@ -275,7 +275,7 @@ fn extended_float_type() {
 fn currency_type_roundtrip() {
     assert_eq!(
         run_pascal(r#"program T; var c: Currency; begin c := 19.99; WriteLn(c > 19); end."#),
-        &["True"]
+        &["TRUE"]
     );
 }
 

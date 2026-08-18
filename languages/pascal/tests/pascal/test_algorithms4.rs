@@ -498,7 +498,7 @@ begin
   WriteLn(arr[5] >= pivot);
 end."#
         ),
-        &["true", "true"]
+        &["TRUE", "TRUE"]
     );
 }
 

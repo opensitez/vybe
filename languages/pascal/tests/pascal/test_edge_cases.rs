@@ -128,7 +128,7 @@ fn mixed_output() {
       WriteLn(3.14);
     end."#
         ),
-        &["3", "hello", "true", "3.14"]
+        &["3", "hello", "TRUE", "3.14"]
     );
 }
 

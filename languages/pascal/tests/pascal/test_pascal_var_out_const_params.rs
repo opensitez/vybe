@@ -385,7 +385,7 @@ begin
 end.
 "#,
     );
-    assert_eq!(out, vec!["True", "False"]);
+    assert_eq!(out, vec!["TRUE", "FALSE"]);
 }
 
 #[test]
@@ -435,7 +435,7 @@ begin
 end.
 "#,
     );
-    assert_eq!(out, vec!["True", "123"]);
+    assert_eq!(out, vec!["TRUE", "123"]);
 }
 
 #[test]

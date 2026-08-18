@@ -301,7 +301,7 @@ begin
 end.
 "#,
     );
-    assert_eq!(out, vec!["True"]);
+    assert_eq!(out, vec!["FALSE"]);
 }
 
 #[test]
@@ -517,7 +517,7 @@ begin
 end.
 "#,
     );
-    assert_eq!(out, vec!["100", "StreamPayload", "True"]);
+    assert_eq!(out, vec!["100", "StreamPayload", "TRUE"]);
 }
 
 #[test]

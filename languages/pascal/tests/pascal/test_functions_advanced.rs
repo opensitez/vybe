@@ -51,7 +51,7 @@ begin
   WriteLn(MyAbs(-2.5) > 2.0);
 end."#
         ),
-        &["7", "true"]
+        &["7", "TRUE"]
     );
 }
 
@@ -606,7 +606,7 @@ function Ratio(a, b: Integer): Double;
 begin Result := a / b; end;
 begin WriteLn(Ratio(7, 2) > 3.0); end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 

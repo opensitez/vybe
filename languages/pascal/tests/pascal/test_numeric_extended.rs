@@ -5,7 +5,7 @@ use super::helpers::run_pascal;
 fn int64_large_positive_literal() {
     assert_eq!(
         run_pascal(r#"program T; var i:Int64; begin i:=9223372036854775807; WriteLn(i>0); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -57,7 +57,7 @@ fn int64_in_record_field() {
         run_pascal(
             r#"program T; type TR=record Total:Int64; end; var r:TR; begin r.Total:=5000000000; WriteLn(r.Total>4000000000); end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -75,7 +75,7 @@ fn currency_multiply_quantity() {
         run_pascal(
             r#"program T; var price,qty,total:Currency; begin price:=9.99; qty:=3; total:=price*qty; WriteLn(total>29.0); end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -93,7 +93,7 @@ fn currency_round_half_up() {
 fn currency_compare_equality() {
     assert_eq!(
         run_pascal(r#"program T; var a,b:Currency; begin a:=10.00; b:=10.00; WriteLn(a=b); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -101,7 +101,7 @@ fn currency_compare_equality() {
 fn currency_negative_balance() {
     assert_eq!(
         run_pascal(r#"program T; var c:Currency; begin c:=-5.50; WriteLn(c<0); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -111,7 +111,7 @@ fn extended_high_precision_add() {
         run_pascal(
             r#"program T; var e:Extended; begin e:=1.23456789; e:=e+0.00000001; WriteLn(e>1.234567); end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -119,7 +119,7 @@ fn extended_high_precision_add() {
 fn extended_division_small_fraction() {
     assert_eq!(
         run_pascal(r#"program T; var e:Extended; begin e:=1.0/3.0; WriteLn(e>0.333); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -183,7 +183,7 @@ fn ceil_negative_fraction() {
 fn frac_returns_fractional_part() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(Frac(3.75)>0.7); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -211,7 +211,7 @@ fn extended_compare_with_double() {
         run_pascal(
             r#"program T; var e:Extended; d:Double; begin e:=1.0; d:=1.0; WriteLn(e=d); end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -261,7 +261,7 @@ fn currency_subtract_tax() {
 fn extended_sqrt_two_approx() {
     assert_eq!(
         run_pascal(r#"program T; var e:Extended; begin e:=Sqrt(2.0); WriteLn(e>1.414); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 

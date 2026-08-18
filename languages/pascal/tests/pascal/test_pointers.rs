@@ -177,7 +177,7 @@ begin
   WriteLn(p1 = p3);
 end."#
         ),
-        &["true", "false"]
+        &["TRUE", "FALSE"]
     );
 }
 
@@ -199,7 +199,7 @@ begin
   WriteLn(p1 <> p2);
 end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -237,7 +237,7 @@ begin
   WriteLn(b);
 end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -258,7 +258,7 @@ begin
   WriteLn(p2 = nil);
 end."#
         ),
-        &["true", "false"]
+        &["TRUE", "FALSE"]
     );
 }
 
@@ -277,7 +277,7 @@ begin
   WriteLn(p = nil);
 end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -468,7 +468,7 @@ begin
   WriteLn(Assigned(p));
 end."#
         ),
-        &["false"]
+        &["FALSE"]
     );
 }
 
@@ -484,7 +484,7 @@ begin
   WriteLn(Assigned(p));
 end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -501,7 +501,7 @@ begin
   WriteLn(p = q);
 end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -564,7 +564,7 @@ end."#
 fn assigned_returns_false_for_nil_pointer() {
     assert_eq!(
         run_pascal(r#"program T; var p: ^Integer; begin WriteLn(Assigned(p)); end."#),
-        &["false"]
+        &["FALSE"]
     );
 }
 
@@ -574,7 +574,7 @@ fn assigned_returns_true_after_new() {
         run_pascal(
             r#"program T; var p: ^Integer; begin New(p); WriteLn(Assigned(p)); Dispose(p); end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -584,7 +584,7 @@ fn pointer_equality_same_address() {
         run_pascal(
             r#"program T; var x: Integer; p, q: ^Integer; begin x := 1; p := @x; q := @x; WriteLn(p = q); end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -592,7 +592,7 @@ fn pointer_equality_same_address() {
 fn nil_pointer_compare_not_equal_assigned() {
     assert_eq!(
         run_pascal(r#"program T; var p: ^Integer; begin WriteLn(p = nil); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 

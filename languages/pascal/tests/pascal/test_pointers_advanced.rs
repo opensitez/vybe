@@ -27,7 +27,7 @@ fn new_dispose_double_value() {
         run_pascal(
             r#"program T; var p:^Double; begin New(p); p^:=2.5; WriteLn(p^>2.0); Dispose(p); end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -207,7 +207,7 @@ fn typed_pointer_subtract_returns_difference() {
         run_pascal(
             r#"program T; var a:array[0..2] of Integer; p,q:^Integer; begin a[0]:=1; a[2]:=3; p:=@a[0]; q:=@a[2]; WriteLn((q-p)>=0); end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -217,7 +217,7 @@ fn pointer_boolean_negate_via_deref() {
         run_pascal(
             r#"program T; var b:Boolean; p:^Boolean; begin b:=true; p:=@b; p^:=not p^; WriteLn(b); end."#
         ),
-        &["false"]
+        &["FALSE"]
     );
 }
 
@@ -303,7 +303,7 @@ fn pointer_equality_after_reassign_same_addr() {
         run_pascal(
             r#"program T; var x:Integer; p,q:^Integer; begin x:=0; p:=@x; q:=@x; WriteLn(p=q); end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -313,7 +313,7 @@ fn pointer_inequality_different_locals() {
         run_pascal(
             r#"program T; var a,b:Integer; p,q:^Integer; begin a:=1; b:=1; p:=@a; q:=@b; WriteLn(p<>q); end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 

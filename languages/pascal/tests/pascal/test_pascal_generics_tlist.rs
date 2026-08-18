@@ -208,7 +208,7 @@ begin
 end.
 "#,
     );
-    assert_eq!(out, vec!["true"]);
+    assert_eq!(out, vec!["TRUE"]);
 }
 
 #[test]

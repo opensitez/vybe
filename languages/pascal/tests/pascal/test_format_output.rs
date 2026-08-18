@@ -134,7 +134,7 @@ begin
 end.
 "#;
     let out = run_pascal(src);
-    assert_eq!(out, vec!["123", "0", "true"]);
+    assert_eq!(out, vec!["123", "0", "TRUE"]);
 }
 
 #[test]

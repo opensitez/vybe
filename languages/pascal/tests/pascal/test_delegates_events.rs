@@ -327,7 +327,7 @@ fn event_raise_on_handler_invocation() {
         run_pascal(
             r#"program T; type TEv=procedure; var raised:Boolean; p:TEv; begin raised:=false; p:=procedure begin raised:=true; end; p; WriteLn(raised); end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 

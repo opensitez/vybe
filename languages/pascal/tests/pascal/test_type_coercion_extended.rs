@@ -93,7 +93,7 @@ fn booltostr_lowercase_format() {
 fn strtobool_true_literal() {
     assert_eq!(
         run_pascal(r#"program T; var b: Boolean; begin b:=StrToBool('True'); WriteLn(b); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -101,7 +101,7 @@ fn strtobool_true_literal() {
 fn strtobool_false_literal() {
     assert_eq!(
         run_pascal(r#"program T; var b: Boolean; begin b:=StrToBool('False'); WriteLn(b); end."#),
-        &["false"]
+        &["FALSE"]
     );
 }
 

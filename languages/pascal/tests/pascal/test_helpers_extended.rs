@@ -67,7 +67,7 @@ fn boolean_helper_toggle() {
         run_pascal(
             r#"program T; type TBoolHelper=record helper for Boolean function Toggle:Boolean; end; function TBoolHelper.Toggle:Boolean; begin Result:=not Self; end; var b:Boolean; begin b:=true; b:=b.Toggle; WriteLn(b); end."#
         ),
-        &["false"]
+        &["FALSE"]
     );
 }
 

@@ -187,7 +187,7 @@ fn dynamic_array_boolean_all_true() {
         run_pascal(
             r#"program T; var f:array of Boolean; i:Integer; ok:Boolean; begin f:=[true,true]; ok:=true; for i:=0 to High(f) do if not f[i] then ok:=false; WriteLn(ok); end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 

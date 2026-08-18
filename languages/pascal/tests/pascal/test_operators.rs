@@ -234,7 +234,7 @@ fn logical_xor_false_when_both_same() {
 fn logical_not_inverts_false() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(not False); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -290,7 +290,7 @@ fn shift_right_halves_bits() {
 fn real_equality_exact_match() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(1.5 = 1.5); end."#),
-        &["True"]
+        &["TRUE"]
     );
 }
 
@@ -298,7 +298,7 @@ fn real_equality_exact_match() {
 fn string_not_equal_operator() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn('a' <> 'b'); end."#),
-        &["True"]
+        &["TRUE"]
     );
 }
 
@@ -308,6 +308,6 @@ fn chained_range_check_with_and() {
         run_pascal(
             r#"program T; var n: Integer; begin n := 5; WriteLn((n > 1) and (n < 10)); end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }

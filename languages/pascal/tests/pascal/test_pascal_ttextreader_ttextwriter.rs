@@ -75,7 +75,7 @@ begin
 end.
 "#,
     );
-    assert_eq!(out, vec!["False", "True"]);
+    assert_eq!(out, vec!["FALSE", "TRUE"]);
 }
 
 #[test]
@@ -95,7 +95,7 @@ begin
 end.
 "#,
     );
-    assert_eq!(out, vec!["True"]);
+    assert_eq!(out, vec!["TRUE"]);
 }
 
 #[test]
@@ -119,7 +119,7 @@ begin
 end.
 "#,
     );
-    assert_eq!(out, vec!["True", "ABC"]);
+    assert_eq!(out, vec!["TRUE", "ABC"]);
 }
 
 #[test]
@@ -283,7 +283,7 @@ begin
 end.
 "#,
     );
-    assert_eq!(out, vec!["True", "0"]);
+    assert_eq!(out, vec!["TRUE", "0"]);
 }
 
 #[test]
@@ -471,5 +471,5 @@ begin
 end.
 "#,
     );
-    assert_eq!(out, vec!["True"]);
+    assert_eq!(out, vec!["TRUE"]);
 }

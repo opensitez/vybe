@@ -67,7 +67,7 @@ fn static_array_boolean_flags_all_true() {
         run_pascal(
             r#"program T; var a: array[1..3] of Boolean; i: Integer; ok: Boolean; begin for i:=1 to 3 do a[i]:=true; ok:=a[1] and a[2] and a[3]; WriteLn(ok); end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 

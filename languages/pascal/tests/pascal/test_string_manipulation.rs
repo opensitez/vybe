@@ -13,7 +13,7 @@ fn comparestr_equal_returns_zero() {
 fn comparestr_less_returns_negative() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(CompareStr('abc','abd') < 0); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -21,7 +21,7 @@ fn comparestr_less_returns_negative() {
 fn comparestr_greater_returns_positive() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(CompareStr('z','a') > 0); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -37,7 +37,7 @@ fn comparetext_case_insensitive_equal() {
 fn comparetext_mixed_case_ordering() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(CompareText('Beta','alpha') > 0); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -201,7 +201,7 @@ fn comparestr_empty_strings() {
 fn comparestr_prefix_is_less() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(CompareStr('app','apple') < 0); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -209,7 +209,7 @@ fn comparestr_prefix_is_less() {
 fn comparetext_empty_vs_nonempty() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(CompareText('','A') < 0); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -269,7 +269,7 @@ fn pos_then_copy_extract_token() {
 fn comparestr_length_difference() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(CompareStr('aa','aaa') < 0); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -306,7 +306,7 @@ fn stringreplace_delete_by_empty() {
 fn concat_then_comparestr_equal() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(CompareStr('ab'+'c','abc')=0); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 

@@ -16,7 +16,7 @@ begin
   WriteLn(Odd(7));
 end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -29,7 +29,7 @@ begin
   WriteLn(Odd(4));
 end."#
         ),
-        &["false"]
+        &["FALSE"]
     );
 }
 
@@ -42,7 +42,7 @@ begin
   WriteLn(Odd(0));
 end."#
         ),
-        &["false"]
+        &["FALSE"]
     );
 }
 
@@ -55,7 +55,7 @@ begin
   WriteLn(Odd(-3));
 end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -114,7 +114,7 @@ begin
   WriteLn(Frac(3.25) = 0.25);
 end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -228,7 +228,7 @@ begin
   WriteLn(Pi < 4.0);
 end."#
         ),
-        &["true", "true"]
+        &["TRUE", "TRUE"]
     );
 }
 
@@ -259,7 +259,7 @@ begin
   WriteLn(Sqrt(2.0) < 1.5);
 end."#
         ),
-        &["true", "true"]
+        &["TRUE", "TRUE"]
     );
 }
 

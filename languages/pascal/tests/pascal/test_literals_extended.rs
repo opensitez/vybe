@@ -99,7 +99,7 @@ fn array_literal_string() {
 fn boolean_literals_in_expression() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(true and false); WriteLn(true or false); end."#),
-        &["false", "true"]
+        &["FALSE", "TRUE"]
     );
 }
 

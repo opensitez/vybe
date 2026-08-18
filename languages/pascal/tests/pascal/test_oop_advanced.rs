@@ -333,7 +333,7 @@ class var TSing.Inst:TSing;
 class function TSing.Instance:TSing; begin if Inst=nil then Inst:=TSing.Create; Result:=Inst; end;
 var a,b:TSing; begin a:=TSing.Instance; b:=TSing.Instance; WriteLn(a=b); a.Free; TSing.Inst:=nil; end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 

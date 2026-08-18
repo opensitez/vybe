@@ -133,7 +133,7 @@ fn format_hex_style() {
 fn writeln_bool_values() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(true); WriteLn(false); end."#),
-        &["true", "false"]
+        &["TRUE", "FALSE"]
     );
 }
 

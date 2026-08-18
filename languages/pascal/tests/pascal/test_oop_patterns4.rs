@@ -569,7 +569,7 @@ begin
 end.
 "#;
     let out = run_pascal(src);
-    assert_eq!(out, vec!["MyApp", "true"]);
+    assert_eq!(out, vec!["MyApp", "TRUE"]);
 }
 
 #[test]

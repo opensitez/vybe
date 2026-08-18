@@ -227,7 +227,7 @@ fn packed_record_compare_two_instances() {
         run_pascal(
             r#"program T; type TP=packed record V:Byte; end; var a,b:TP; begin a.V:=3; b.V:=3; WriteLn(a.V=b.V); end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -297,7 +297,7 @@ fn variant_record_real_arm_fraction() {
         run_pascal(
             r#"program T; type TVal=record case K:Integer of 0:(I:Integer); 1:(R:Double); end; var v:TVal; begin v.K:=1; v.R:=1.25; WriteLn(Frac(v.R)=0.25); end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 

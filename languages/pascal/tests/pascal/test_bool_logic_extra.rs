@@ -5,7 +5,7 @@ use super::helpers::run_pascal;
 fn and_both_true() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(true and true); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -13,7 +13,7 @@ fn and_both_true() {
 fn and_left_false() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(false and true); end."#),
-        &["false"]
+        &["FALSE"]
     );
 }
 
@@ -21,7 +21,7 @@ fn and_left_false() {
 fn and_right_false() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(true and false); end."#),
-        &["false"]
+        &["FALSE"]
     );
 }
 
@@ -29,7 +29,7 @@ fn and_right_false() {
 fn or_left_true() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(true or false); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -37,7 +37,7 @@ fn or_left_true() {
 fn or_both_false() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(false or false); end."#),
-        &["false"]
+        &["FALSE"]
     );
 }
 
@@ -45,7 +45,7 @@ fn or_both_false() {
 fn or_right_true() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(false or true); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -53,7 +53,7 @@ fn or_right_true() {
 fn not_true() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(not true); end."#),
-        &["false"]
+        &["FALSE"]
     );
 }
 
@@ -61,7 +61,7 @@ fn not_true() {
 fn not_false() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(not false); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -113,7 +113,7 @@ fn or_short_circuit() {
 fn and_chain() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn((1<2) and (3<4) and (5<6)); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -121,7 +121,7 @@ fn and_chain() {
 fn or_chain() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn((1>2) or (3>4) or (5<6)); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -131,7 +131,7 @@ fn not_and_demorgan() {
         run_pascal(
             r#"program T; var a,b:Boolean; begin a:=true; b:=false; WriteLn(not (a and b)); end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -141,7 +141,7 @@ fn not_or_demorgan() {
         run_pascal(
             r#"program T; var a,b:Boolean; begin a:=false; b:=false; WriteLn(not (a or b)); end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -205,7 +205,7 @@ fn repeat_until_and() {
 fn boolean_var_assign() {
     assert_eq!(
         run_pascal(r#"program T; var f:Boolean; begin f:=3>2; WriteLn(f); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -213,7 +213,7 @@ fn boolean_var_assign() {
 fn nested_not() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(not not true); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -231,7 +231,7 @@ fn xor_in_loop_parity() {
 fn and_with_compare() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn((5=5) and (6>5)); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -239,7 +239,7 @@ fn and_with_compare() {
 fn or_with_compare() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn((5=6) or (7=7)); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -255,7 +255,7 @@ fn if_not_or() {
 fn complex_paren() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn((true or false) and (not false)); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -271,7 +271,7 @@ fn xor_three_terms() {
 fn bool_from_equal() {
     assert_eq!(
         run_pascal(r#"program T; var a,b:Integer; begin a:=4; b:=4; WriteLn(a=b); end."#),
-        &["True"]
+        &["TRUE"]
     );
 }
 
@@ -279,7 +279,7 @@ fn bool_from_equal() {
 fn bool_from_not_equal() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(3<>4); end."#),
-        &["True"]
+        &["TRUE"]
     );
 }
 
@@ -363,6 +363,6 @@ fn boolean_implies_style() {
 fn triple_and() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(true and true and true); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }

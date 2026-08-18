@@ -59,7 +59,7 @@ begin
 end.
 "#,
     );
-    assert_eq!(out, vec!["False"]);
+    assert_eq!(out, vec!["FALSE"]);
 }
 
 #[test]
@@ -80,7 +80,7 @@ begin
 end.
 "#,
     );
-    assert_eq!(out, vec!["True", "False", "True"]);
+    assert_eq!(out, vec!["TRUE", "FALSE", "TRUE"]);
 }
 
 #[test]
@@ -120,7 +120,7 @@ begin
 end.
 "#,
     );
-    assert_eq!(out, vec!["1", "False"]);
+    assert_eq!(out, vec!["1", "FALSE"]);
 }
 
 #[test]

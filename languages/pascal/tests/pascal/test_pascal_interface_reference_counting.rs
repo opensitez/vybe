@@ -380,7 +380,7 @@ begin
 end.
 "#,
     );
-    assert_eq!(out, vec!["False"]);
+    assert_eq!(out, vec!["FALSE"]);
 }
 
 #[test]

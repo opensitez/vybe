@@ -20,7 +20,7 @@ begin
   WriteLn((not a) or (not b));
 end."#
         ),
-        &["true", "true"]
+        &["TRUE", "TRUE"]
     );
 }
 
@@ -37,7 +37,7 @@ begin
   WriteLn((not a) and (not b));
 end."#
         ),
-        &["true", "true"]
+        &["TRUE", "TRUE"]
     );
 }
 
@@ -58,7 +58,7 @@ begin
   WriteLn(not (a and b) = ((not a) or (not b)));
 end."#
         ),
-        &["True", "True", "True", "True"]
+        &["TRUE", "TRUE", "TRUE", "TRUE"]
     );
 }
 
@@ -88,7 +88,7 @@ begin
   WriteLn(allPos);
 end."#
         ),
-        &["true", "false"]
+        &["TRUE", "FALSE"]
     );
 }
 
@@ -109,7 +109,7 @@ begin
   WriteLn(anyNeg);
 end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -136,7 +136,7 @@ begin
   WriteLn(found);
 end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -157,7 +157,7 @@ begin
   WriteLn((x < y) and (y < z) and (x < z));
 end."#
         ),
-        &["true", "false"]
+        &["TRUE", "FALSE"]
     );
 }
 
@@ -216,7 +216,7 @@ begin
   WriteLn(parity);
 end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -420,7 +420,7 @@ begin
   WriteLn(isRunning and not isPaused and not isDone);
 end."#
         ),
-        &["true", "false", "false"]
+        &["TRUE", "FALSE", "FALSE"]
     );
 }
 

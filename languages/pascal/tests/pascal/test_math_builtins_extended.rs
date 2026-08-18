@@ -125,7 +125,7 @@ fn trunc_negative_fraction() {
 fn frac_zero_for_integer() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(Frac(5.0)=0.0); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -245,7 +245,7 @@ fn succ_integer() {
 fn odd_one_is_true() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(Odd(1)); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -253,7 +253,7 @@ fn odd_one_is_true() {
 fn even_eight_is_true() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(not Odd(8)); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -261,7 +261,7 @@ fn even_eight_is_true() {
 fn exp_one_is_e() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(Exp(1.0)>2.7); WriteLn(Exp(1.0)<2.8); end."#),
-        &["true", "true"]
+        &["TRUE", "TRUE"]
     );
 }
 
@@ -279,7 +279,7 @@ fn random_bounded_below_six() {
         run_pascal(
             r#"program T; var r:Integer; begin Randomize; r:=Random(6); WriteLn((r>=0) and (r<=5)); end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -351,7 +351,7 @@ fn clamp_via_min_max() {
 fn pythagorean_triple_check() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(Sqr(3)+Sqr(4)=Sqr(5)); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 

@@ -97,7 +97,7 @@ fn matrix_boolean_and_reduction() {
         run_pascal(
             r#"program T; var m: array[1..2,1..2] of Boolean; r,c: Integer; ok: Boolean; begin for r:=1 to 2 do for c:=1 to 2 do m[r,c]:=true; ok:=m[1,1] and m[2,2]; WriteLn(ok); end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -197,6 +197,6 @@ fn matrix_identity_check() {
         run_pascal(
             r#"program T; var m: array[1..2,1..2] of Integer; r,c: Integer; ok: Boolean; begin for r:=1 to 2 do for c:=1 to 2 do if r=c then m[r,c]:=1 else m[r,c]:=0; ok:=(m[1,1]=1) and (m[2,2]=1) and (m[1,2]=0); WriteLn(ok); end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }

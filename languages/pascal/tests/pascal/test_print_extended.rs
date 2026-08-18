@@ -125,7 +125,7 @@ fn write_zero_integer() {
 fn write_boolean_true_default() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(True); end."#),
-        &["True"]
+        &["TRUE"]
     );
 }
 
@@ -133,7 +133,7 @@ fn write_boolean_true_default() {
 fn write_boolean_false_default() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(False); end."#),
-        &["False"]
+        &["FALSE"]
     );
 }
 

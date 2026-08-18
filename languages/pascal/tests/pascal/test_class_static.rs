@@ -168,7 +168,7 @@ begin
   c.Free;
 end."#
         ),
-        &["true", "true"]
+        &["TRUE", "TRUE"]
     );
 }
 

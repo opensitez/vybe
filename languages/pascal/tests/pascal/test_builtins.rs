@@ -30,7 +30,7 @@ fn io_writeln_real() {
 fn io_writeln_bool() {
     assert_eq!(
         run_pascal("program T; begin WriteLn(true); end."),
-        &["true"]
+        &["TRUE"]
     );
 }
 #[test]
@@ -385,7 +385,7 @@ fn copy_from_dynamic_array_slice() {
 fn random_zero_to_one_range() {
     assert_eq!(
         run_pascal(r#"program T; begin Randomize; WriteLn(Random < 1.0); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -395,7 +395,7 @@ fn random_range_inclusive_bounds() {
         run_pascal(
             r#"program T; var n: Integer; begin Randomize; n := Random(6); WriteLn((n >= 0) and (n <= 5)); end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -413,7 +413,7 @@ fn include_exclude_set_characters() {
 fn paramstr_zero_returns_program_path_marker() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(Length(ParamStr(0)) > 0); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 

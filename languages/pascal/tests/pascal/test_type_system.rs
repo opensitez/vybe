@@ -453,7 +453,7 @@ fn sizeof_integer_type() {
 fn type_info_returns_runtime_type_data() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(TypeInfo(Integer) <> nil); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 

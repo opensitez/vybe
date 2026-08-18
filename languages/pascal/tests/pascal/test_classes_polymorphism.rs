@@ -567,7 +567,7 @@ function THigh.Key: Integer; begin Result := 99; end;
 var o: TOrdered;
 begin o := THigh.Create; WriteLn(o.Key > 10); o.Free; end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 

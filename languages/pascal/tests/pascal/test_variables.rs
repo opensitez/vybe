@@ -18,7 +18,7 @@ fn var_string() {
 fn var_boolean() {
     assert_eq!(
         run_pascal("program T; var b: Boolean; begin b := true; WriteLn(b); end."),
-        &["true"]
+        &["TRUE"]
     );
 }
 #[test]
@@ -53,7 +53,7 @@ fn var_default_str() {
 fn var_default_bool() {
     assert_eq!(
         run_pascal("program T; var b: Boolean; begin WriteLn(b); end."),
-        &["false"]
+        &["FALSE"]
     );
 }
 #[test]

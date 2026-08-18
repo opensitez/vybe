@@ -67,7 +67,7 @@ fn set_subset_superset_relations() {
         run_pascal(
             r#"program T; type TF=(A,B,C); var small,big: set of TF; begin small:=[A]; big:=[A,B]; WriteLn(small<=big); WriteLn(big>=small); end."#
         ),
-        &["true", "true"]
+        &["TRUE", "TRUE"]
     );
 }
 
@@ -125,7 +125,7 @@ fn set_of_char_range_membership() {
 fn set_empty_equals_empty() {
     assert_eq!(
         run_pascal(r#"program T; type TF=(A,B); var s1,s2: set of TF; begin WriteLn(s1=s2); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -263,7 +263,7 @@ fn enum_compare_equality() {
         run_pascal(
             r#"program T; type TS=(On,Off); var a,b:TS; begin a:=On; b:=On; WriteLn(a=b); end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -331,7 +331,7 @@ fn enum_explicit_start_at_ten() {
 fn set_superset_strict_false_when_equal() {
     assert_eq!(
         run_pascal(r#"program T; type TF=(A); var s: set of TF; begin s:=[A]; WriteLn(s>s); end."#),
-        &["false"]
+        &["FALSE"]
     );
 }
 
@@ -371,7 +371,7 @@ fn set_intersection_result_is_subset_of_both() {
         run_pascal(
             r#"program T; type TF=(A,B,C); var s1,s2,i: set of TF; begin s1:=[A,B]; s2:=[B,C]; i:=s1*s2; WriteLn(i<=s1); WriteLn(i<=s2); end."#
         ),
-        &["true", "true"]
+        &["TRUE", "TRUE"]
     );
 }
 
@@ -391,6 +391,6 @@ fn set_equality_after_include() {
         run_pascal(
             r#"program T; type TF=(A,B); var s1,s2: set of TF; begin s1:=[A]; s2:=[A]; Include(s2,B); WriteLn(s1=s2); end."#
         ),
-        &["false"]
+        &["FALSE"]
     );
 }

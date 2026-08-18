@@ -53,7 +53,7 @@ fn dec_delta_on_word_value() {
 fn odd_on_three_returns_true() {
     assert_eq!(
         run_pascal("program T; begin WriteLn(Odd(3)); end."),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -61,7 +61,7 @@ fn odd_on_three_returns_true() {
 fn odd_on_four_returns_false() {
     assert_eq!(
         run_pascal("program T; begin WriteLn(Odd(4)); end."),
-        &["false"]
+        &["FALSE"]
     );
 }
 
@@ -69,7 +69,7 @@ fn odd_on_four_returns_false() {
 fn odd_on_negative_three() {
     assert_eq!(
         run_pascal("program T; begin WriteLn(Odd(-3)); end."),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -77,7 +77,7 @@ fn odd_on_negative_three() {
 fn odd_on_negative_four() {
     assert_eq!(
         run_pascal("program T; begin WriteLn(Odd(-4)); end."),
-        &["false"]
+        &["FALSE"]
     );
 }
 
@@ -85,7 +85,7 @@ fn odd_on_negative_four() {
 fn odd_on_large_even_int64() {
     assert_eq!(
         run_pascal("program T; begin WriteLn(Odd(1000002)); end."),
-        &["false"]
+        &["FALSE"]
     );
 }
 
@@ -93,7 +93,7 @@ fn odd_on_large_even_int64() {
 fn odd_on_large_odd_int64() {
     assert_eq!(
         run_pascal("program T; begin WriteLn(Odd(1000001)); end."),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -103,7 +103,7 @@ fn random_after_randomize_is_nonnegative() {
         run_pascal(
             r#"program T; var r: Double; begin Randomize; r := Random; WriteLn(r >= 0.0); end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -123,7 +123,7 @@ fn random_range_upper_bound_exclusive() {
         run_pascal(
             r#"program T; var n: Integer; begin Randomize; n := Random(3); WriteLn((n >= 0) and (n < 3)); end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -133,7 +133,7 @@ fn random_range_hundred_values() {
         run_pascal(
             r#"program T; var n: Integer; begin Randomize; n := Random(100); WriteLn(n < 100); end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -295,7 +295,7 @@ fn assigned_on_new_pointer_before_dispose() {
         run_pascal(
             r#"program T; var p: ^Integer; begin New(p); WriteLn(Assigned(p)); Dispose(p); end."#
         ),
-        &["true"]
+        &["TRUE"]
     );
 }
 
@@ -303,7 +303,7 @@ fn assigned_on_new_pointer_before_dispose() {
 fn paramstr_one_when_missing_is_empty() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(Length(ParamStr(1)) = 0); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 

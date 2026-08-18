@@ -289,7 +289,7 @@ begin
   WriteLn(flag);
 end."#
         ),
-        &["false"]
+        &["FALSE"]
     );
 }
 

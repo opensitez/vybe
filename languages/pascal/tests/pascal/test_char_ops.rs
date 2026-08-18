@@ -351,7 +351,7 @@ end."#
 fn char_comparison_less_than() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn('a' < 'b'); end."#),
-        &["true"]
+        &["TRUE"]
     );
 }
 
