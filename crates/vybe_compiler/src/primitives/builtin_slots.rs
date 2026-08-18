@@ -285,13 +285,20 @@ pub fn unbound_reason(ty: BuiltinType, slot: ProtocolSlot) -> Option<&'static st
         // `no_language_binding_contradicts_an_unbound_reason` exists to catch.
         // The rest of the numeric surface is still unmeasured.
         (T::Int, S::Char) | (T::Int, S::ToString) | (T::Double, S::ToString) => return None,
+        // Same graduation, 2026-08-17: `(BigInt, Not)` is bound in the PLATFORM
+        // table above (`host:ecma:bigint:not`, ECMA-262 §6.1.6.2.2), so the
+        // blanket arm below cannot also claim it is unbound. This is the
+        // contradiction `a_bound_pair_never_claims_to_be_unbound` caught — the
+        // platform-table twin of the language-binding check, and the reason it
+        // exists separately: the pair was bound centrally, which no profile
+        // scan would ever see.
+        (T::BigInt, S::Not) => return None,
         (T::Int, _) | (T::Double, _) | (T::BigInt, _) => {
             "No target chosen yet. The numeric slots were left out of the \
              default table deliberately: §3a measured STRING behaviour across \
              four languages, and the numeric rows are still listed under \
              'Still to measure'. Binding them from the same reasoning would be \
-             the guess §2e exists to prevent. Separately, they are also \
-             unresolvable — see `unresolvable_reason`."
+             the guess §2e exists to prevent."
         }
         (T::Object, _) => {
             "A plain object's slots come from its class, and a user class always \
@@ -311,31 +318,36 @@ pub fn unbound_reason(ty: BuiltinType, slot: ProtocolSlot) -> Option<&'static st
 /// would conclude it is handled, when what it lacks is resolution, not a
 /// binding.
 ///
-/// The two axes are ORTHOGONAL, and the numeric types show why: `int`, `double`
-/// and `bigint` are unbound *and* unresolvable — nobody has chosen a target,
-/// and nothing could reach it if they had. Requiring a binding here would force
-/// those two independent facts into one answer.
+/// The two axes are ORTHOGONAL, and the numeric types are what PROVED it: they
+/// were once unbound *and* unresolvable, and step 4 fixed only the second —
+/// `int`/`double`/`bigint` now resolve through `PLATFORM_SPELLINGS` while still
+/// carrying no chosen target, so they appear in [`unbound_reason`] and no longer
+/// here. Had the two facts shared one answer, that half-fix could not have been
+/// recorded at all.
 pub fn unresolvable_reason(ty: BuiltinType) -> Option<&'static str> {
     use BuiltinType as T;
     Some(match ty {
-        T::Int | T::Double | T::BigInt => {
-            "The platform's only numeric classifier, \
-             `Compiler::is_numeric_type_hint`, returns a bool over ~20 spellings \
-             (`int32`, `longint`, `real`, `single`, `sbyte`, …) and cannot say \
-             which of int/double/bigint a hint names. Adding that discriminator \
-             here would be a new per-language spelling table in shared code — \
-             the anti-pattern this plan retires. It arrives with step 4, when \
-             each language declares its own numeric spellings."
-        }
+        // `Int`/`Double`/`BigInt` are NOT here any more, 2026-08-17. The old
+        // reason said the discriminator "arrives with step 4" — step 4 landed,
+        // and `builtin_types::PLATFORM_SPELLINGS` now says which numeric each
+        // spelling names (`s("int", Exact, Int)`, `s("real", Exact, Double)`,
+        // `s("bigint", Exact, BigInt)`), with a profile's `[builtin_types]`
+        // consulted first. `builtin_type_of` is a single `classify_with` call
+        // over that table, so all three resolve today; measured live via
+        // `VYBE_SLOT_AUDIT=1` (`type=double hint=real`). Leaving the reason in
+        // place told step 4's own audit that its work was still pending.
         T::Array => {
             "Not resolvable from a static hint: `expr_is_array_like` is a \
              VALUE-SHAPE heuristic (array literal, `lookup_array_binding`, \
              `array()`/`str_split()` calls, arithmetic on arrays), not a \
              static-type read. Resolving `Array` off it would capture receivers \
              that merely look array-ish, so array slots reach only via the \
-             runtime `ObjectKind::Array` path until step 4. Measured: PHP's \
-             `array $xs` yields the hint `array`, which no shared classifier \
-             reads."
+             runtime `ObjectKind::Array` path. Unlike the numeric types, step 4 \
+             did NOT settle this one: `PLATFORM_SPELLINGS` has no `Array` row, \
+             because an array hint carries an ELEMENT type (`integer()`, \
+             `List<int>`, `int[]`) and matching it needs a shape rule rather \
+             than a spelling. Measured: PHP's `array $xs` yields the hint \
+             `array`, which no shared classifier reads."
         }
         T::Map => {
             "Resolves too narrowly: `is_dictionary_type_hint` requires the \
@@ -471,14 +483,12 @@ mod tests {
     fn unresolvable_types_are_exactly_the_ones_the_resolver_misses() {
         for ty in BuiltinType::ALL {
             let recorded = unresolvable_reason(ty).is_some();
-            let expected = matches!(
-                ty,
-                BuiltinType::Int
-                    | BuiltinType::Double
-                    | BuiltinType::BigInt
-                    | BuiltinType::Array
-                    | BuiltinType::Map
-            );
+            // Int/Double/BigInt dropped out 2026-08-17: step 4's
+            // `PLATFORM_SPELLINGS` discriminates them, so `builtin_type_of`
+            // names all three. `Array` and `Map` are what the resolver still
+            // misses — `Array` has no row at all, `Map` only the `dictionary`
+            // and `hashtable` spellings.
+            let expected = matches!(ty, BuiltinType::Array | BuiltinType::Map);
             assert_eq!(
                 recorded, expected,
                 "{ty:?}: unresolvable_reason recorded={recorded} expected={expected} \

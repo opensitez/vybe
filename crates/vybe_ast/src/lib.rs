@@ -1074,6 +1074,12 @@ pub enum ArrayTransformOp {
     /// `UNPACK(vector, mask, field)`: scatter vector elements into mask-true
     /// positions and fill mask-false positions from `field`.
     UnpackMask,
+    /// `RESHAPE(source, shape[, pad])`: the source's elements rebuilt into an
+    /// array of the given shape, cycling `pad` when the shape asks for more
+    /// than the source holds and truncating when it asks for fewer. The node's
+    /// [`ArrayTraversalOrder`] is which subscript runs fastest as the source is
+    /// consumed — Fortran's `ORDER=` permutation, NumPy's `order=`.
+    Reshape,
 }
 
 #[derive(Debug, Clone)]

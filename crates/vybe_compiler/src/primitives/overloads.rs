@@ -203,33 +203,36 @@ impl Compiler {
         Some(trimmed[start..end].trim().to_string())
     }
 
-    pub(super) fn normalize_fortran_dispatch_type(&self, type_hint: &str) -> String {
+    /// The key two types must share to be the SAME type for overload dispatch.
+    ///
+    /// Was `normalize_fortran_dispatch_type`, which hardcoded Fortran's
+    /// spellings — `integer`/`int`, `real`/`float`/`double`/`double precision`,
+    /// `logical`/`bool` — inside a shared crate. Those now live in Fortran's own
+    /// `[builtin_types]`, and this asks the shared spelling table, language
+    /// entries first. Any language whose profile declares its spellings gets
+    /// overload dispatch for free; none has to be named here.
+    ///
+    /// Two kinds of key, and they cannot collide: a built-in is keyed by the
+    /// `BuiltinType` it classifies to, so `real` and `double precision` agree
+    /// without either being canonical, while a user type keys on its canonical
+    /// name. The `builtin:` prefix keeps a type actually NAMED `Int` from
+    /// colliding with the built-in.
+    pub(super) fn overload_dispatch_key(&self, type_hint: &str) -> String {
         let resolved = self.resolve_source_type_alias(type_hint);
         let normalized = Self::normalize_type_hint(&resolved);
         let trimmed = normalized.trim();
 
-        if let Some(inner) = trimmed
-            .strip_prefix("type(")
-            .and_then(|rest| rest.strip_suffix(')'))
-            .or_else(|| {
-                trimmed
-                    .strip_prefix("class(")
-                    .and_then(|rest| rest.strip_suffix(')'))
-            })
-        {
-            return self.canon(inner.trim());
+        // `type(T)` / `class(T)` wrap a USER type name — check before the
+        // spelling table so a declared spelling cannot capture the wrapper.
+        if let Some(inner) = super::calls::strip_parametric_type_wrapper(trimmed) {
+            return self.canon(inner);
         }
 
-        if trimmed == "int" || trimmed.starts_with("integer") {
-            return "integer".to_string();
-        }
-        if matches!(trimmed, "real" | "float" | "double" | "double precision")
-            || trimmed.starts_with("real(")
-        {
-            return "real".to_string();
-        }
-        if trimmed == "bool" || trimmed.starts_with("logical") {
-            return "logical".to_string();
+        if let Some(ty) = vybe_ast::builtin_types::classify_with(
+            &self.profile.builtin_type_spellings,
+            trimmed,
+        ) {
+            return format!("builtin:{ty:?}");
         }
 
         self.canon(trimmed)
@@ -256,7 +259,7 @@ impl Compiler {
             .iter()
             .map(|expr| {
                 self.infer_expr_type_hint(expr)
-                    .map(|hint| self.normalize_fortran_dispatch_type(&hint))
+                    .map(|hint| self.overload_dispatch_key(&hint))
             })
             .collect();
         let has_known_arg_types = arg_types.iter().any(Option::is_some);
@@ -276,16 +279,22 @@ impl Compiler {
 
             let mut score = 0usize;
             let mut compatible = true;
+            // Did a DECLARED parameter actually match a arg whose type we can
+            // name (`evidence`), or did it face one we cannot (`unproven`)?
+            let mut evidence = false;
+            let mut unproven = false;
             for (arg_type, param_type) in arg_types.iter().zip(param_types.iter()) {
                 let Some(param_type) = param_type.as_ref() else {
                     continue;
                 };
-                let param_key = self.normalize_fortran_dispatch_type(param_type);
+                let param_key = self.overload_dispatch_key(param_type);
                 let Some(arg_key) = arg_type.as_ref() else {
+                    unproven = true;
                     continue;
                 };
                 if arg_key == &param_key {
                     score += 2;
+                    evidence = true;
                     continue;
                 }
                 compatible = false;
@@ -293,6 +302,27 @@ impl Compiler {
             }
 
             if !compatible {
+                continue;
+            }
+
+            // An unknown arg type used to `continue` past the check above, which
+            // made it compatible with EVERY declared parameter at score 0 — so a
+            // sole overload won here and returned below, long before
+            // `allow_unknown_fallback` was ever consulted. For an operator that
+            // is not a harmless guess: the builtin is the correct alternative,
+            // and picking the overload inside its own implementation is how
+            // `c%v = a%v + b%v` recursed into itself.
+            //
+            // So a winner resting ONLY on unknowns needs positive evidence when
+            // a builtin could serve instead. Generic-NAME dispatch
+            // (`allow_unknown_fallback`) keeps the old behaviour on purpose:
+            // there is no builtin to fall back to, so a single overload must
+            // still be selected for an argument that does not infer.
+            //
+            // Gated on `unproven` rather than `!evidence` alone so an overload
+            // whose target records no parameter types at all — nothing to prove
+            // anything against — resolves exactly as it did before.
+            if unproven && !evidence && !allow_unknown_fallback {
                 continue;
             }
 

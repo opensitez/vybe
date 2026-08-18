@@ -7,7 +7,6 @@ license.workspace = true
 
 [features]
 default = []
-gui_forms = []
 
 [dependencies]
 vybe_language_c = { workspace = true }

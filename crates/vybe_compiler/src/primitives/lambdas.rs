@@ -363,7 +363,13 @@ impl Compiler {
         }
 
         let result_slot = if self.profile.function_return == ReturnStyle::ResultSlot {
-            let rs = self.define_local("Result");
+            // The NAME comes from the profile, like the three sites in
+            // `classes.rs` — hardcoding it captured any user variable spelled
+            // the same in a case-insensitive language. Fortran writes `result`
+            // as an ordinary identifier constantly; Pascal really does spell
+            // the slot, which is why the default stays `Result`.
+            let slot_name = self.profile.result_slot_name.clone();
+            let rs = self.define_local(&slot_name);
             self.emit_null();
             self.emit_u16(Op::LOCAL_SET, rs);
             let saved_rs = self.current_result_slot.take();

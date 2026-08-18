@@ -31,6 +31,21 @@ pub(super) fn strip_generic_suffix(name: &str) -> &str {
     common::generics::generic_base_name(name)
 }
 
+/// `type(T)` / `class(T)` → `T`; anything else → `None`.
+///
+/// A parametric wrapper naming a user type, as opposed to a generic
+/// INSTANTIATION (`List<int>`, `Dictionary(Of K, V)`) — hence the exact head
+/// match rather than "strip whatever precedes the paren". `character(len=10)`
+/// and `Dictionary(Of …)` both keep their spelling.
+pub(super) fn strip_parametric_type_wrapper(hint: &str) -> Option<&str> {
+    let open = hint.find('(')?;
+    let (head, rest) = hint.split_at(open);
+    if !head.eq_ignore_ascii_case("type") && !head.eq_ignore_ascii_case("class") {
+        return None;
+    }
+    Some(rest.strip_prefix('(')?.strip_suffix(')')?.trim())
+}
+
 pub(super) fn extract_generic_type_name(name: &str) -> Option<String> {
     common::generics::first_generic_argument_leaf_name(name)
 }
@@ -417,17 +432,50 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
                     return None;
                 }
                 let receiver_type = resolve_receiver_type_hint(compiler, object)?;
-                compiler
+                // A USER CLASS INHERITS ITS FRAMEWORK BASE'S DECLARED MEMBERS.
+                //
+                // This used to bail the moment the receiver resolved to a
+                // pending class — `.is_none().then(...)` — so `class Calculator
+                // : Form` lost the declared type of every inherited member and
+                // the hop after it resolved against nothing. `this.Controls`
+                // answered no type, `.Add` found no owner, and the call landed
+                // on `undefined`: every C# WinForms form that adds a control
+                // died in its constructor.
+                //
+                // The walk is the one `namespace_tree_instance_method_owner`
+                // already performs for METHODS a few hundred lines below —
+                // climb `pending.parent` until a registered type answers. A
+                // member the user's own class declares stops the climb and
+                // returns `None`, because that is an override and its type is
+                // the class's business, not the framework's.
+                //
+                // Only vb/pascal/cobol were unaffected, and not because they
+                // resolve this correctly: the shared `Controls`/`Add` intercept
+                // in `compile_call` matches canon'd lowercase names, which only
+                // a `case_sensitive = false` profile produces. So the same
+                // source compiled two ways, and the type-losing path was
+                // reachable only in the languages that fold no case.
+                let mut current = compiler
                     .resolve_pending_class_name_for_type_hint(&receiver_type)
-                    .is_none()
-                    .then(|| {
-                        vybe_runtime::namespaces::lookup_type_member_return(
+                    .unwrap_or_else(|| Compiler::normalize_type_hint(&receiver_type));
+                loop {
+                    if vybe_runtime::namespaces::is_registered_type(
+                        &compiler.profile.namespaces.type_scopes,
+                        &current,
+                    ) {
+                        return vybe_runtime::namespaces::lookup_type_member_return(
                             &compiler.profile.namespaces.type_scopes,
-                            &Compiler::normalize_type_hint(&receiver_type),
+                            &Compiler::normalize_type_hint(&current),
                             field,
-                        )
-                    })
-                    .flatten()
+                        );
+                    }
+                    let pending = compiler.pending_classes.get(&current)?;
+                    let key = compiler.js_member_storage_name_for_class(&current, field);
+                    if pending.instance_member_names.iter().any(|name| name == &key) {
+                        return None;
+                    }
+                    current = pending.parent.clone()?;
+                }
             };
             if owner_is_self {
                 compiler
@@ -859,12 +907,26 @@ impl Compiler {
         &self,
         type_hint: &str,
     ) -> Option<String> {
-        let receiver_type = type_hint
-            .trim()
-            .strip_prefix("class(")
-            .and_then(|inner| inner.strip_suffix(')'))
-            .map(str::trim)
-            .unwrap_or(type_hint.trim());
+        // `type(T)` and `class(T)` are a parametric WRAPPER around a type name,
+        // not part of the name. Only `class(` was stripped here, so Fortran —
+        // which declares dummies as `type(Acc), intent(in) :: a` — never
+        // matched its own pending class, and every `a%component` read came back
+        // untyped.
+        //
+        // That silence was not inert. Fortran's operator-overload resolution
+        // treats an operand of unknown type as compatible with any declared
+        // parameter, so inside `interface operator(+)`'s own implementation
+        // `c%v = a%v + b%v` re-selected the overload instead of resolving
+        // `integer + integer`, and recursed until the stack died. Writing the
+        // components to locals first made it work, which is what pinned the
+        // cause to the member read rather than to dispatch.
+        //
+        // The two spellings are already stripped TOGETHER by
+        // `fortran_out_param_ctor_name` and `normalize_fortran_dispatch_type`;
+        // this site had drifted. Case-insensitive because it does not normalise
+        // first and Fortran spells it `TYPE(Acc)` just as readily.
+        let trimmed = type_hint.trim();
+        let receiver_type = strip_parametric_type_wrapper(trimmed).unwrap_or(trimmed);
         let resolved_receiver_type = self.resolve_source_type_alias(receiver_type);
         let receiver_canon = self
             .canon(strip_generic_suffix(&resolved_receiver_type))
@@ -3257,27 +3319,10 @@ impl Compiler {
             return Ok(());
         }
 
-        // `vybe.gui.setProperty(name, "Text", v)` — the BY-NAME GUI surface a
-        // program writes itself. Matched on the module path the way the host
-        // prefix arm below already matches `vybe`/`wasi`/`wasm`, and answered
-        // HERE because the host-call arms further down are reached by several
-        // different resolutions and only one of them would have caught it.
-        {
-            let parts = self.flatten_member_chain(callee);
-            if parts.len() >= 3
-                && parts[parts.len() - 3].eq_ignore_ascii_case("vybe")
-                && parts[parts.len() - 2].eq_ignore_ascii_case("gui")
-            {
-                let arg_exprs: Vec<&Expression> = args.iter().map(|a| &a.value).collect();
-                if self.try_emit_gui_property_by_name(
-                    common::gui::GUI_MODULE,
-                    &parts[parts.len() - 1],
-                    &arg_exprs,
-                )? {
-                    return Ok(());
-                }
-            }
-        }
+        // The `vybe.gui.setProperty(name, "Text", v)` arm is GONE. It matched a
+        // BY-NAME GUI surface that is not a language's own: real VB.NET writes
+        // `display.Text = v`, and the two samples that spelled it this way now
+        // do. Nothing in the tree names `vybe.gui.*`.
 
         if self.try_compile_go_map_has_call(callee, args)? {
             return Ok(());
@@ -4523,14 +4568,6 @@ impl Compiler {
                         }
                     };
                     if let Some((module, func)) = resolved {
-                        // `vybe.gui.setProperty(name, "Text", v)` — a three
-                        // segment host path is how a program spells the BY-NAME
-                        // GUI surface, and it is lowered onto the document
-                        // rather than left calling a registry the renderer no
-                        // longer paints from.
-                        if self.try_emit_gui_property_by_name(&module, &func, &arg_exprs)? {
-                            return Ok(());
-                        }
                         let mut arg_slots = Vec::with_capacity(arg_exprs.len());
                         for (index, arg) in arg_exprs.iter().enumerate() {
                             self.compile_expr(arg)?;
@@ -4902,13 +4939,6 @@ impl Compiler {
                                     },
                                 ),
                             ) => {
-                                // The BY-NAME GUI surface is a program-visible
-                                // spelling, not plumbing, so it is lowered onto
-                                // the document rather than left calling a host
-                                // registry the renderer no longer paints from.
-                                if self.try_emit_gui_property_by_name(&module, &func, &arg_exprs)? {
-                                    return Ok(());
-                                }
                                 // `Convert.ToInt32(c)` where `c` is a CHAR is the
                                 // same operation as the `(int)c` cast: read the
                                 // code point, don't parse the text. .NET picks

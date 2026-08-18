@@ -314,6 +314,25 @@ pub const REMOVE_ITEM_EMIT: &str = "gui.remove_item";
 pub const ITEM_TEXT_EMIT: &str = "gui.item_text";
 pub const SET_ITEM_TEXT_EMIT: &str = "gui.set_item_text";
 
+/// `Application.Run` — and it emits NOTHING, deliberately.
+///
+/// A document is not told to run. It runs because it HAS content, which is the
+/// condition the launch gate already reads, so there is no DOM call left for
+/// this to lower to. Emitting nothing is the honest answer; the alternative was
+/// a host function whose entire effect was setting a `should_run` flag on a
+/// host that is being deleted (guiplan.md, "There is no `runApplication`, for
+/// anybody").
+///
+/// It stays a NAMED emit rather than being dropped from the tree because the
+/// frontends still spell it — `Application.Run`, `Application.Terminate` — and a
+/// declared leaf that answers "nothing" is what stops each of them inventing a
+/// private answer.
+pub const APP_RUN_EMIT: &str = "gui.app.run";
+
+
+/// `Application.Terminate` — closes the browsing context.
+pub const APP_EXIT_EMIT: &str = "gui.app.exit";
+
 /// The DOM operation a property role IS. `(module, func, attribute-key)`.
 ///
 /// The roles ARE `vybe:gui`'s canonical property names — the vocabulary every
@@ -444,6 +463,81 @@ fn property_op(role: &str, setting: bool) -> (&'static str, &'static str, Option
         // `BackColor`. Text colour is a separate role because it is a separate
         // CSS property (`Font.Color` / `ForeColor` → `color`), and conflating
         // them is how a panel ends up painting its caption instead of itself.
+        // A FONT IS A STYLE PROPERTY, reached exactly like `left` or
+        // `backcolor`. It was the one role named as explicitly unmapped, so
+        // `X.Font.Size := 16` became `setAttribute("font", …)` and reached
+        // nothing — which is also why the CSS inheritance in `vybe_widgets`
+        // measured neutral: `font_family`/`font_size`/`font_weight`/
+        // `font_style` are all in its inherited set, and every `.dfm` in the
+        // corpus declares `Font.Name`, so nothing could exercise it.
+        //
+        // The value is a Font OBJECT, so the write composes CSS's own `font`
+        // shorthand from it (`italic bold 12px Arial`) — the same shape as the
+        // `columncount` arm building `repeat(N, 1fr)`. One property carries all
+        // four axes, so the cascade inherits them together as CSS specifies.
+        "font" => (
+            CSSOM_MODULE,
+            if setting {
+                "setStyleProperty"
+            } else {
+                "getStyleProperty"
+            },
+            Some("font"),
+        ),
+        // Box spacing, the pointer, and the background image — all CSS
+        // properties CSS already names, reached exactly like `backcolor`.
+        // Every one was declared by the frontends and mapped by nobody, so it
+        // fell through to `setAttribute` under its toolkit spelling.
+        //
+        // ⚠ `padding`/`margin` take a LENGTH and so join the `px` list below:
+        // `Padding := 8` is `padding: 8px`, and a browser drops `"8"`.
+        "padding" => (
+            CSSOM_MODULE,
+            if setting {
+                "setStyleProperty"
+            } else {
+                "getStyleProperty"
+            },
+            Some("padding"),
+        ),
+        "margin" => (
+            CSSOM_MODULE,
+            if setting {
+                "setStyleProperty"
+            } else {
+                "getStyleProperty"
+            },
+            Some("margin"),
+        ),
+        "cursor" => (
+            CSSOM_MODULE,
+            if setting {
+                "setStyleProperty"
+            } else {
+                "getStyleProperty"
+            },
+            Some("cursor"),
+        ),
+        "backgroundimage" => (
+            CSSOM_MODULE,
+            if setting {
+                "setStyleProperty"
+            } else {
+                "getStyleProperty"
+            },
+            Some("background-image"),
+        ),
+        // `TabIndex` is an HTML ATTRIBUTE, not a style — `tabindex` is how the
+        // document orders focus, which is exactly what the toolkit means.
+        "tabindex" => (
+            DOM_MODULE,
+            if setting {
+                "setAttribute"
+            } else {
+                "getAttribute"
+            },
+            Some("tabindex"),
+        ),
         "backcolor" => (
             CSSOM_MODULE,
             if setting {
@@ -789,14 +883,28 @@ impl Compiler {
                     vybe_runtime::namespaces::DOM_ELEMENT_TYPE,
                     line,
                 );
+                // **Every arm of this match must leave the stack EXACTLY as it
+                // found it.** `appendChild` and the property setters are host
+                // calls that answer a value, and `Children` answers none — so
+                // without these drops the effect differed per field, and a
+                // constructor applied N fields left N values behind.
+                //
+                // Harmless while a constructor was a STATEMENT. Fatal in
+                // expression position: `[Text('a'), Text('b')]` builds its
+                // elements onto the stack for `array.new_fixed`, which then took
+                // the residue instead of the widgets. Bound to a variable first
+                // it worked, which is exactly what made it look like a list bug
+                // rather than a stack one.
                 self.chunk().emit_if(line);
                 self.emit_u16(Op::LOCAL_GET, parent);
                 self.emit_u16(Op::LOCAL_GET, value);
                 self.emit_gui_append_child(line);
+                self.emit(Op::DROP);
                 self.chunk().emit_else(line);
                 self.emit_u16(Op::LOCAL_GET, parent);
                 self.emit_u16(Op::LOCAL_GET, value);
                 self.emit_gui_property_set(&role, line);
+                self.emit(Op::DROP);
                 self.chunk().emit_end(line);
             }
             // A LIST of children — `Column(children: [...])`. Each element
@@ -815,8 +923,32 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_SET, list);
                 self.emit_u16(Op::LOCAL_SET, parent);
 
+                // The length is asked the way `.length` is asked EVERYWHERE
+                // else — `collections::emit_len`, which dispatches on the shape
+                // at run time.
+                //
+                // The raw `array.len` opcode was here, and it answers 0 for any
+                // value that is not a packed `ObjectKind::Array` — no trap, no
+                // diagnostic, just zero. So a `children:` list that arrived in
+                // any other collection shape made this loop run zero times:
+                // every child widget was constructed, sized and laid out, and
+                // then attached to nothing. The document held a Scaffold with an
+                // empty Column while 70+ live elements sat orphaned beside it.
+                //
+                // A widget that was given no list at all has NO children, and
+                // that is not an error — `AppBar()` without `actions:` is
+                // ordinary. `emit_len`'s last fallback is `Object.keys(value)`,
+                // which THROWS on null, so the absent case has to be answered
+                // before asking.
+                let current = self.current;
                 self.emit_u16(Op::LOCAL_GET, list);
-                collections::emit_array_length(self.chunk(), line);
+                self.emit(Op::REF_IS_NULL);
+                self.chunk().emit_if_value(line);
+                self.emit_const(Value::I32(0));
+                self.chunk().emit_else(line);
+                self.emit_u16(Op::LOCAL_GET, list);
+                collections::emit_len(&mut self.chunks, current, line);
+                self.chunk().emit_end(line);
                 self.emit_u16(Op::LOCAL_SET, count);
                 self.emit_const(Value::I32(0));
                 self.emit_u16(Op::LOCAL_SET, index);
@@ -840,6 +972,13 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, parent);
                 self.emit_u16(Op::LOCAL_GET, item);
                 self.emit_gui_append_child(line);
+                // **Inside the loop, once per child.** `appendChild` answers a
+                // value, so a list of N children leaves N of them — this is not
+                // one residue per ARM, it is one per ITERATION. Dropping once
+                // outside the loop would under-drop by N-1, which is how a
+                // constructor in expression position ended up feeding
+                // `array.new_fixed` the leftovers instead of its widgets.
+                self.emit(Op::DROP);
 
                 self.emit_u16(Op::LOCAL_GET, index);
                 self.emit_const(Value::I32(1));
@@ -852,10 +991,12 @@ impl Compiler {
             FieldGui::Event(name) => {
                 let role = format!("on{}", name.to_ascii_lowercase());
                 self.emit_gui_property_set(&role, line);
+                self.emit(Op::DROP);
             }
             // The child's text IS this control's caption, not a nested control.
             FieldGui::Caption => {
                 self.emit_gui_property_set("text", line);
+                self.emit(Op::DROP);
             }
         }
         Ok(())
@@ -964,6 +1105,54 @@ impl Compiler {
         let ctrl = self.define_local("__gui_ctrl_recv");
         self.emit_u16(Op::LOCAL_SET, ctrl);
         let doc_idx = self.import(DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT);
+
+        // A FORM's own verbs. `HTMLDialogElement` names all three outright, so
+        // there is nothing to invent: `ShowModal` IS `showModal()`, `Close` IS
+        // `close()`, and the modal result is `returnValue`.
+        //
+        // These are the verbs a toolkit has and a plain control does not, which
+        // is why they are their own arm rather than more `visible` writes:
+        // showing a form MODALLY is a statement about input to everything else,
+        // and no attribute on the element expresses that.
+        //
+        // ⚠ `show`/`hide` above stay the `visible` role — a control appearing is
+        // not a dialog opening, and collapsing the two would make `Button.Show`
+        // try to open a dialog.
+        if let Some(func) = match verb {
+            "show_modal" => Some("showModal"),
+            "show_form" => Some("show"),
+            "close" => Some("close"),
+            _ => None,
+        } {
+            self.chunk().emit_call(doc_idx, 0, line);
+            self.emit_u16(Op::LOCAL_GET, ctrl);
+            let idx = self.import(DOCUMENT_MODULE, func);
+            self.emit_host_call(idx, 2);
+            self.emit_null();
+            return;
+        }
+
+        // `Dispose` — DESTROY the control, which in a document means detaching
+        // the node. `ChildNode.remove()` (DOM §4.2.9) is exactly that, and it
+        // takes the handlers with it: listeners live on the node, so a removed
+        // node stops receiving input without anything hunting them down.
+        //
+        // ⚠ This is the verb that must NOT be confused with `Hide`. Hiding is
+        // the `visible` role — the node stays in the tree and can be shown
+        // again, which is what a multi-window application relies on. Disposing
+        // is final: there is nothing left to show. The old host fn conflated
+        // the two (it set `Visible=false` and dropped handlers), so a disposed
+        // control could be resurrected by writing `Visible` back.
+        //
+        // A node with no parent removes nothing and does not raise, per spec —
+        // so disposing twice is safe without a guard here.
+        if verb == "dispose" {
+            self.chunk().emit_call(doc_idx, 0, line);
+            self.emit_u16(Op::LOCAL_GET, ctrl);
+            let idx = self.import(DOM_MODULE, "remove");
+            self.emit_host_call(idx, 2);
+            return;
+        }
 
         // Z-ORDER IS DOCUMENT ORDER. Both verbs re-parent the control among its
         // existing siblings rather than assigning a `z-index`: painting order
@@ -1131,6 +1320,26 @@ impl Compiler {
 
     /// Lower `gui.prop_set.<role>` — stack in `[control, value]`, out `[_]`.
     pub fn emit_gui_property_set(&mut self, role: &str, line: u32) {
+        // The WINDOW title is the DOCUMENT's, not an element's.
+        //
+        // It is the one role whose target is not the control it was written on:
+        // `MaterialApp(title:)`, a VCL form's `Caption` and a WinForms form's
+        // `Text` all name the string the window manager shows, and HTML holds
+        // exactly one of those — `document.title`, the `<title>` in the head.
+        // Routed through the ordinary attribute path it became `title=""` on
+        // the element, which is the hover TOOLTIP: the value was written, was
+        // readable, and appeared nowhere a user looks.
+        if role == "windowtitle" {
+            let value = self.define_local("__gui_window_title");
+            self.emit_u16(Op::LOCAL_SET, value);
+            self.emit(Op::DROP); // the control — the title is not its property
+            let doc_idx = self.import(DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT);
+            self.chunk().emit_call(doc_idx, 0, line);
+            self.emit_u16(Op::LOCAL_GET, value);
+            let set_idx = self.import(DOCUMENT_MODULE, "setTitle");
+            self.emit_host_call(set_idx, 2);
+            return;
+        }
         // `OnClick := handler` IS `addEventListener("click", handler)`. HTML
         // spells the same thing as an `on<type>` IDL attribute, so the role
         // needs no translation table — the event type is whatever follows
@@ -1263,6 +1472,26 @@ impl Compiler {
         let ctrl = self.define_local("__gui_prop_ctrl");
         self.emit_u16(Op::LOCAL_SET, value);
         self.emit_u16(Op::LOCAL_SET, ctrl);
+        // **A box placed by COORDINATES says so.** `left`/`top` are inert on a
+        // `position: static` box in CSS, so a frontend writing them already
+        // means `absolute` — it simply had not said it. Declaring it here, at
+        // the write, is what lets containers stop claiming it at birth: a
+        // control that IS positioned becomes a containing block for its own
+        // children, and one that is not stays in flow.
+        //
+        // Written before the coordinate itself so the box is already positioned
+        // when the value lands, and only for the two roles that mean placement
+        // — `width`/`height` are a size, not a position.
+        if matches!(role, "left" | "top") {
+            let doc_idx = self.import(DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT);
+            self.chunk().emit_call(doc_idx, 0, line);
+            self.emit_u16(Op::LOCAL_GET, ctrl);
+            emit_string_const(self.chunk(), "position", line);
+            emit_string_const(self.chunk(), "absolute", line);
+            let set_idx = self.import(CSSOM_MODULE, "setStyleProperty");
+            self.emit_host_call(set_idx, 4);
+            self.emit(Op::DROP);
+        }
         let doc_idx = self.import(DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT);
         self.chunk().emit_call(doc_idx, 0, line);
         self.emit_u16(Op::LOCAL_GET, ctrl);
@@ -1286,6 +1515,42 @@ impl Compiler {
                     self.emit_host_call(idx, 4);
                     return;
                 }
+                // `Font` arrives as the value OBJECT the language built
+                // (`{name, size, bold, italic}`) and leaves as CSS's own
+                // shorthand, `<style> <weight> <size>px <family>`. Composed
+                // here for the same reason `columncount` composes
+                // `repeat(N, 1fr)`: the DOM takes CSS TEXT, and the fields are
+                // runtime values, so there is nothing to fold.
+                if role == "font" {
+                    let font = self.define_local("__gui_font");
+                    self.emit_u16(Op::LOCAL_SET, font);
+                    for (field, css) in [("italic", "italic "), ("bold", "bold ")] {
+                        self.emit_u16(Op::LOCAL_GET, font);
+                        let key = self.str_const(field);
+                        self.emit_struct_field_op(Op::STRUCT_GET, 0, key);
+                        ops::emit_dyn_to_bool(self.chunk(), line);
+                        self.chunk().emit_if_value(line);
+                        emit_string_const(self.chunk(), css, line);
+                        self.chunk().emit_else(line);
+                        emit_string_const(self.chunk(), "", line);
+                        self.chunk().emit_end(line);
+                    }
+                    ops::emit_dyn_add(self.chunk(), line);
+                    self.emit_u16(Op::LOCAL_GET, font);
+                    let size_key = self.str_const("size");
+                    self.emit_struct_field_op(Op::STRUCT_GET, 0, size_key);
+                    strings::emit_to_string(self.chunk(), line);
+                    ops::emit_dyn_add(self.chunk(), line);
+                    emit_string_const(self.chunk(), "px ", line);
+                    ops::emit_dyn_add(self.chunk(), line);
+                    self.emit_u16(Op::LOCAL_GET, font);
+                    let name_key = self.str_const("name");
+                    self.emit_struct_field_op(Op::STRUCT_GET, 0, name_key);
+                    ops::emit_dyn_add(self.chunk(), line);
+                    let idx = self.import(module, func);
+                    self.emit_host_call(idx, 4);
+                    return;
+                }
                 self.emit_u16(Op::LOCAL_GET, value);
                 // `disabled`/`hidden` are the INVERSE of enabled/visible; the
                 // frontend lowered to the ATTRIBUTE role, so negate here once.
@@ -1303,8 +1568,30 @@ impl Compiler {
                 //
                 // `dock` shares this arm and must NOT get a unit: it carries
                 // an edge keyword, not a length.
-                if matches!(role, "left" | "top" | "width" | "height") {
+                //
+                // **A CSS property value is TEXT, whatever it started as.**
+                // `setStyleProperty` takes a string, and a value that is not
+                // one has to be asked what it says — which is the guest's own
+                // `to_string`, so a value type answers with its own spelling.
+                //
+                // This used to run only for the LENGTH roles, as a side effect
+                // of needing somewhere to append `px`. Every other property
+                // handed the host a raw object, and the host formatted it the
+                // only way it can from outside the guest: the literal
+                // `[object]`. That is why `EdgeInsets` reached CSS correctly
+                // and `Alignment` did not — one is a length and the other is
+                // not, and nothing else about them differs.
+                //
+                // Only for the CSSOM. The other modules on this path take
+                // typed arguments — `enabled`/`visible` are negated to an i32
+                // just above — and stringifying those would break them.
+                if module == CSSOM_MODULE {
                     strings::emit_to_string(self.chunk(), line);
+                }
+                if matches!(
+                    role,
+                    "left" | "top" | "width" | "height" | "padding" | "margin"
+                ) {
                     emit_string_const(self.chunk(), "px", line);
                     ops::emit_dyn_add(self.chunk(), line);
                 }
@@ -1935,9 +2222,22 @@ impl Compiler {
         let create_idx = self.import(DOM_MODULE, HOST_FN_CREATE_ELEMENT);
         self.chunk().emit_call(create_idx, 3, line);
         self.emit_control_type_stamp(type_name, line);
-        if element.establishes_containing_block() {
-            self.emit_container_is_positioned(line);
-        }
+        // **A container is NOT positioned just for being a container.**
+        //
+        // This used to stamp `position: absolute` on every container element at
+        // creation, so that a child's `Left`/`Top` would resolve against it.
+        // But `absolute` takes the box OUT OF FLOW, and a frontend whose
+        // containers carry no coordinates — Flutter, where `Scaffold`/`Column`/
+        // `Row` are pure flex boxes — had its whole tree removed from layout.
+        // Every container sat at 0,0 at its default size, one on top of
+        // another: an app that rendered as a single label.
+        //
+        // Positioning is now declared where coordinates actually are, by
+        // `emit_gui_property_set`'s `left`/`top` arm. A box that IS placed by
+        // coordinates says `position: absolute` about itself — which also makes
+        // it a containing block for its own children, so VCL and WinForms keep
+        // exactly the nesting they had, and a box that is not placed stays in
+        // flow where it belongs.
         for (prop, value) in &element.declares {
             self.emit_declared_style(prop, value, line);
         }
@@ -2018,60 +2318,16 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, element);
     }
 
-    /// `vybe.gui.setProperty(name, prop, value)` / `getProperty(name, prop)` —
-    /// the BY-NAME surface, lowered onto the document.
-    ///
-    /// These are not internal plumbing: a program writes them itself, so they
-    /// are part of the language surface and had to survive the move to the DOM.
-    /// They used to reach `GuiState`, which the renderer no longer paints from
-    /// once a document has content — so the calculator's every display update
-    /// wrote to a registry nothing reads, while its clicks fired correctly.
-    ///
-    /// A name IS `getElementById`; that is what the `name` role has always
-    /// meant. The property spelling must be a literal, because the ROLE decides
-    /// the DOM operation — a computed one falls through to the old call rather
-    /// than guess.
-    pub(super) fn try_emit_gui_property_by_name(
-        &mut self,
-        module: &str,
-        func: &str,
-        args: &[&Expression],
-    ) -> Result<bool, String> {
-        if !module.eq_ignore_ascii_case(GUI_MODULE) {
-            return Ok(false);
-        }
-        let setting = func.eq_ignore_ascii_case(HOST_FN_SET_PROPERTY_BY_NAME);
-        let getting = func.eq_ignore_ascii_case(HOST_FN_GET_PROPERTY_BY_NAME);
-        if !(setting || getting) {
-            return Ok(false);
-        }
-        let expected = if setting { 3 } else { 2 };
-        if args.len() != expected {
-            return Ok(false);
-        }
-        let Some(role) = args.get(1).and_then(|arg| match &arg.kind {
-            vybe_ast::ExprKind::Lit(vybe_ast::Literal::Str(prop)) => {
-                Some(prop.to_ascii_lowercase())
-            }
-            _ => None,
-        }) else {
-            return Ok(false);
-        };
-
-        let line = self.line;
-        let doc_idx = self.import(DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT);
-        self.chunk().emit_call(doc_idx, 0, line);
-        self.compile_expr(args[0])?;
-        let by_id = self.import(DOM_MODULE, "getElementById");
-        self.emit_host_call(by_id, 2);
-        if setting {
-            self.compile_expr(args[2])?;
-            self.emit_gui_property_set(&role, line);
-        } else {
-            self.emit_gui_property_get(&role, line);
-        }
-        Ok(true)
-    }
+    // `try_emit_gui_property_by_name` is GONE, and with it the last reason for
+    // `GUI_MODULE` to be matched against a program's own source.
+    //
+    // It lowered `vybe.gui.setProperty(name, prop, value)` onto
+    // `getElementById` + the property ROLE — correct as far as it went, but it
+    // existed to keep an INVENTED spelling working. Real VB.NET has no such
+    // call: a control is a variable and you write `display.Text = v`. The two
+    // samples that spelled it this way (`examples/vb/calculator.vb`,
+    // `form_contacts.vb`) are real VB.NET now, and nothing in the tree names
+    // `vybe.gui.*`, so the arm had no input left.
 
     /// Declare a container `position: absolute`.
     ///
@@ -2126,13 +2382,10 @@ impl Compiler {
     }
 }
 
-/// Emit `vybe:gui::new_<Type>(args)` to create a new control.
-/// `import_idx` must be the result of `compiler.import("vybe:gui", host_fn_new_control(canonical_type).as_str())`.
-/// Stack on entry: [arg0, arg1, ...] (constructor args, if any)
-/// Stack on exit: [control]
-pub fn emit_new_control(chunk: &mut Chunk, import_idx: u16, argc: u8, line: u32) {
-    chunk.emit_call(import_idx, argc, line);
-}
+// `emit_new_control` is GONE — zero callers. Construction goes through
+// `CtorSpec::control_fn` → `emit_control_element`, which creates the ELEMENT
+// (`web:html.activeDocument` + `web:dom.createElement`). Nothing has called a
+// `new_<Type>` control factory since the frontends became element declarations.
 
 /// Emit `vybe:gui::onEvent(control_name, event_name, handler_fn)`.
 /// `import_idx` must be the result of `compiler.import("vybe:gui", HOST_FN_BIND_EVENT)`.
@@ -2154,40 +2407,16 @@ pub fn emit_bind_event(chunk: &mut Chunk, import_idx: u16, line: u32) {
     chunk.emit_call(import_idx, 3, line);
 }
 
-/// Emit `vybe:gui::removeEvent(control_name, event_name, handler_fn)`.
-/// `import_idx` must be the result of `compiler.import("vybe:gui", HOST_FN_UNBIND_EVENT)`.
-/// Caller drops the result if used as a statement.
-pub fn emit_unbind_event(chunk: &mut Chunk, import_idx: u16, line: u32) {
-    chunk.emit_call(import_idx, 3, line);
-}
-
-/// Emit `vybe:gui::controlsAdd(parent, child)`.
-/// `import_idx` must be `compiler.import("vybe:gui", HOST_FN_ADD_CHILD)`.
-/// Stack on entry: [parent, child]
-/// Stack on exit:  [host_call_result]   (caller drops if statement)
-pub fn emit_add_child(chunk: &mut Chunk, import_idx: u16, line: u32) {
-    chunk.emit_call(import_idx, 2, line);
-}
-
-/// Emit `vybe:gui::runApplication(form)`.
-/// `import_idx` must be `compiler.import("vybe:gui", HOST_FN_RUN_APPLICATION)`.
-pub fn emit_run_application(chunk: &mut Chunk, import_idx: u16, line: u32) {
-    chunk.emit_call(import_idx, 1, line);
-}
-
-/// Emit `vybe:gui::appExit()`.
-/// `import_idx` must be `compiler.import("vybe:gui", HOST_FN_APP_EXIT)`.
-pub fn emit_app_exit(chunk: &mut Chunk, import_idx: u16, line: u32) {
-    chunk.emit_call(import_idx, 0, line);
-}
-
-/// Emit `vybe:gui::raiseEvent(arg0, ..., argN, event_name)`.
-/// `import_idx` must be `compiler.import("vybe:gui", HOST_FN_RAISE_EVENT)`.
-/// Stack on entry: [arg0, arg1, ..., event_name_string]
-/// Stack on exit:  [host_call_result]   (caller drops if statement)
-pub fn emit_raise_event(chunk: &mut Chunk, import_idx: u16, total_args: u8, line: u32) {
-    chunk.emit_call(import_idx, total_args, line);
-}
+// `emit_unbind_event`, `emit_add_child`, `emit_run_application`,
+// `emit_app_exit` and `emit_raise_event` are GONE — all five had zero callers.
+// Each was one line wrapping a host call, and each named a function on a host
+// that is being deleted:
+//   - unbind  → the DOM's `removeEventListener`, via the `on<event>` role
+//   - addChild→ `gui.append_child`, which appends to the DOCUMENT
+//   - run/exit→ nothing at all; a document is not told to run
+//   - raise   → a frontend dispatches its own events
+// `emit_bind_event` above is the ONE survivor, and only because the VB
+// `Handles` path still calls it (`classes.rs`); it goes when that does.
 
 /// Push a string constant onto the stack (helper used when assembling
 /// arguments for the GUI host calls above).

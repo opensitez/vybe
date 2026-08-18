@@ -32,55 +32,12 @@ impl Compiler {
         )
     }
 
-    /// Static cases (push a string constant):
-    ///   - `Ident("btn")`          -> "btn"
-    ///   - `Me` / `This`           -> current class name (lowercased)
-    ///   - `Member { Me, "btn" }` -> "btn"
-    /// Dynamic fallback (runtime lookup): compile expr, then read `__control_name`.
-    fn emit_event_control_key(&mut self, control: &Expression, line: u32) -> Result<(), String> {
-        let is_self_ident = |c: &Compiler, n: &str| {
-            let cn = c.canon(n);
-            cn == c.profile.self_keyword || cn == "me" || cn == "this" || cn == "mybase"
-        };
-        let key: Option<String> = match &control.kind {
-            ExprKind::This | ExprKind::Super => self.current_class.clone().map(|c| self.canon(&c)),
-            ExprKind::Ident(name) if is_self_ident(self, name) => {
-                self.current_class.clone().map(|c| self.canon(&c))
-            }
-            ExprKind::Ident(name) => {
-                let is_class_field = if let Some(ref cn) = self.current_class {
-                    self.pending_classes
-                        .get(cn.as_str())
-                        .map(|pc| pc.fields.iter().any(|f| f.eq_ignore_ascii_case(name)))
-                        .unwrap_or(false)
-                } else {
-                    false
-                };
-                if is_class_field {
-                    Some(self.canon(name))
-                } else {
-                    None
-                }
-            }
-            ExprKind::Member { object, field, .. } => {
-                let is_self = matches!(&object.kind, ExprKind::This | ExprKind::Super)
-                    || matches!(&object.kind, ExprKind::Ident(n) if is_self_ident(self, n));
-                if is_self {
-                    Some(self.canon(field))
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        };
-        if let Some(k) = key {
-            self.emit_const(Value::String(Arc::from(k.as_str())));
-        } else {
-            self.compile_expr(control)?;
-            common::gui::emit_get_control_name(self.chunk(), line);
-        }
-        Ok(())
-    }
+    // `emit_event_control_key` is GONE. It built the NAME key for the
+    // name-addressed event registry (`Ident("btn")` -> "btn", `Me` -> the class
+    // name, else a runtime `__control_name` read). Both callers now subscribe
+    // through the DOM by the `on<event>` role, so there is no name to build —
+    // and the key it produced was the empty string for any control created by
+    // `createElement`, which is why those subscriptions never fired.
 
     fn build_event_binding_target(&self, control: &Expression, event: &str) -> Expression {
         let control = match &control.kind {
@@ -232,13 +189,22 @@ impl Compiler {
             self.emit(Op::DROP);
             return Ok(());
         }
+        // The receiver is a CONTROL that the static type did not prove is an
+        // element — `object`-declared, or a type the frontend flags. It is
+        // still a control, so it still subscribes through the DOM: same role,
+        // same emit, just reached without the static proof.
+        //
+        // This used to bind through the name-keyed host instead, which is the
+        // broken registry the comment above describes — an element built by
+        // `createElement` has no `__control_name`, so every subscription taking
+        // this branch registered under an EMPTY key and could never fire.
+        // Routing it to the role means the two arms cannot disagree.
         if self.should_use_gui_event_host(control, event) {
             let line = self.line;
-            let bind_idx = self.import("vybe:gui", common::gui::HOST_FN_BIND_EVENT);
-            self.emit_event_control_key(control, line)?;
-            self.emit_const(Value::String(Arc::from(event)));
+            self.compile_expr(control)?;
             self.compile_expr(handler)?;
-            common::gui::emit_bind_event(self.chunk(), bind_idx, line);
+            let role = format!("on{}", event.to_ascii_lowercase());
+            self.emit_gui_property_set(&role, line);
             self.emit(Op::DROP);
             return Ok(());
         }
@@ -279,13 +245,17 @@ impl Compiler {
             self.emit(Op::DROP);
             return Ok(());
         }
+        // Mirror of the subscribe arm above: an unproven-but-real control
+        // unsubscribes through the DOM, exactly as it subscribed. The two
+        // halves MUST use the same registry — that is the bug this file's
+        // first comment records, and binding through the host here while the
+        // element arm removed through the DOM would recreate it one branch
+        // over.
         if self.should_use_gui_event_host(control, event) {
             let line = self.line;
-            let unbind_idx = self.import("vybe:gui", common::gui::HOST_FN_UNBIND_EVENT);
-            self.emit_event_control_key(control, line)?;
-            self.emit_const(Value::String(Arc::from(event)));
+            self.compile_expr(control)?;
             self.compile_expr(handler)?;
-            common::gui::emit_unbind_event(self.chunk(), unbind_idx, line);
+            self.emit_remove_event_listener(event, line);
             self.emit(Op::DROP);
             return Ok(());
         }

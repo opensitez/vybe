@@ -5,10 +5,15 @@
 //! All graphics, focus management, hover states, and keyboard routing live
 //! in vybe_widgets.
 //!
-//! Two entry points:
-//! - `launch_gui` — programmatic forms (GuiState already has widgets)
-//! - `launch_vybewidget_form` — designer forms (builds widgets from `vybe_platform_dotnet::winforms::designer::Form`)
-//!   (requires `gui_forms` feature)
+//! One entry point: `launch_gui`.
+//!
+//! There were two. `launch_vybewidget_form` built a form by CONSTRUCTING
+//! widgets from a WinForms designer model — `Button`, `DataGrid`, `TreeView`
+//! imported by Rust type — which is `document.createElement` spelled as a type
+//! import, in the crate that is supposed to be the user agent rather than the
+//! page. It sat behind a `gui_forms` feature that no manifest in the workspace
+//! ever enabled, so it compiled out of every build; 344 lines of it, deleted
+//! rather than left to look like a supported path.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -33,13 +38,6 @@ use vybe_widgets::{
     run_app,
 };
 
-#[cfg(feature = "gui_forms")]
-use vybe_widgets::{
-    BindingNavigator, Button, Checkbox, ContextMenu, DataGrid, DateTimePicker, FlowLayoutPanel,
-    Form as WidgetForm, GroupBox, Label, ListBox, ListView, MaskedTextBox, MenuStrip,
-    MonthCalendar, NumericUpDown, Panel, PictureBox, ProgressBar, Radio, ScrollBar, Select, Slider,
-    SplitContainer, StatusStrip, TableLayoutPanel, Tabs, TextInput, ToolStrip, TreeView,
-};
 
 // ── Data binding types ─────────────────────────────────────────────────
 
@@ -73,171 +71,6 @@ struct DataStore {
 
 // ── Control type → Widget mapping (designer forms only) ────────────────
 
-#[cfg(feature = "gui_forms")]
-fn make_widget(ctrl: &vybe_platform_dotnet::winforms::designer::Control) -> Box<dyn PanelWidget> {
-    let text = ctrl
-        .properties
-        .get_string("Text")
-        .unwrap_or_default()
-        .to_string();
-    // Preserve original case — VB compiler will lowercase identifiers as needed
-    let name = &ctrl.name;
-
-    match ctrl.control_type {
-        vybe_platform_dotnet::winforms::designer::ControlType::Button => {
-            let mut w = Button::new(&text).with_name(&name);
-            w.width = ctrl.bounds.width as f32;
-            w.height = ctrl.bounds.height as f32;
-            Box::new(w)
-        }
-        vybe_platform_dotnet::winforms::designer::ControlType::Label
-        | vybe_platform_dotnet::winforms::designer::ControlType::LinkLabel => {
-            let mut w = Label::new(&text).with_name(&name);
-            w.width = ctrl.bounds.width as f32;
-            w.height = ctrl.bounds.height as f32;
-            Box::new(w)
-        }
-        vybe_platform_dotnet::winforms::designer::ControlType::TextBox
-        | vybe_platform_dotnet::winforms::designer::ControlType::RichTextBox => {
-            let mut w = TextInput::new().with_name(&name);
-            w.value = text;
-            w.width = ctrl.bounds.width as f32;
-            w.height = ctrl.bounds.height as f32;
-            Box::new(w)
-        }
-        vybe_platform_dotnet::winforms::designer::ControlType::MaskedTextBox => {
-            let mut w = MaskedTextBox::new().with_name(&name);
-            w.value = text;
-            Box::new(w)
-        }
-        vybe_platform_dotnet::winforms::designer::ControlType::CheckBox => {
-            Box::new(Checkbox::new(&text).with_name(&name))
-        }
-        vybe_platform_dotnet::winforms::designer::ControlType::RadioButton => {
-            Box::new(Radio::new(&text).with_name(&name))
-        }
-        vybe_platform_dotnet::winforms::designer::ControlType::ComboBox => {
-            let items = ctrl
-                .properties
-                .get_string_array("Items")
-                .cloned()
-                .unwrap_or_default();
-            let mut w = Select::new(items).with_name(&name);
-            w.width = ctrl.bounds.width as f32;
-            w.height = ctrl.bounds.height as f32;
-            Box::new(w)
-        }
-        vybe_platform_dotnet::winforms::designer::ControlType::ListBox
-        | vybe_platform_dotnet::winforms::designer::ControlType::CheckedListBox => {
-            let items = ctrl
-                .properties
-                .get_string_array("Items")
-                .cloned()
-                .unwrap_or_default();
-            let mut w = ListBox::new().with_name(&name);
-            w.items = items;
-            w.width = ctrl.bounds.width as f32;
-            w.height = ctrl.bounds.height as f32;
-            Box::new(w)
-        }
-        vybe_platform_dotnet::winforms::designer::ControlType::Panel
-        | vybe_platform_dotnet::winforms::designer::ControlType::UserControl => {
-            let mut w = Panel::new().with_name(&name);
-            w.width = ctrl.bounds.width as f32;
-            w.height = ctrl.bounds.height as f32;
-            Box::new(w)
-        }
-        vybe_platform_dotnet::winforms::designer::ControlType::Frame => {
-            let mut w = GroupBox::new(&text).with_name(&name);
-            w.width = ctrl.bounds.width as f32;
-            w.height = ctrl.bounds.height as f32;
-            Box::new(w)
-        }
-        vybe_platform_dotnet::winforms::designer::ControlType::PictureBox => {
-            let mut w = PictureBox::new().with_name(&name);
-            w.width = ctrl.bounds.width as f32;
-            w.height = ctrl.bounds.height as f32;
-            Box::new(w)
-        }
-        vybe_platform_dotnet::winforms::designer::ControlType::ProgressBar => {
-            let mut w = ProgressBar::new().with_name(&name);
-            w.width = ctrl.bounds.width as f32;
-            w.height = ctrl.bounds.height as f32;
-            Box::new(w)
-        }
-        vybe_platform_dotnet::winforms::designer::ControlType::TrackBar => {
-            Box::new(Slider::new(0.0, 100.0, 50.0).with_name(&name))
-        }
-        vybe_platform_dotnet::winforms::designer::ControlType::NumericUpDown => {
-            Box::new(NumericUpDown::new().with_name(&name))
-        }
-        vybe_platform_dotnet::winforms::designer::ControlType::DateTimePicker => {
-            Box::new(DateTimePicker::new().with_name(&name))
-        }
-        vybe_platform_dotnet::winforms::designer::ControlType::TreeView => {
-            Box::new(TreeView::new("", 1.0).with_name(&name))
-        }
-        vybe_platform_dotnet::winforms::designer::ControlType::DataGridView
-        | vybe_platform_dotnet::winforms::designer::ControlType::DataGrid => {
-            Box::new(DataGrid::new(&[]).with_name(&name))
-        }
-        vybe_platform_dotnet::winforms::designer::ControlType::ListView => {
-            Box::new(ListView::new().with_name(&name))
-        }
-        vybe_platform_dotnet::winforms::designer::ControlType::TabControl => {
-            let mut w = Tabs::new(&["Tab1"]).with_name(&name);
-            w.width = ctrl.bounds.width as f32;
-            w.height = ctrl.bounds.height as f32;
-            Box::new(w)
-        }
-        vybe_platform_dotnet::winforms::designer::ControlType::MonthCalendar => {
-            Box::new(MonthCalendar::new().with_name(&name))
-        }
-        vybe_platform_dotnet::winforms::designer::ControlType::HScrollBar => {
-            let mut w = ScrollBar::new(false).with_name(&name);
-            w.width = ctrl.bounds.width as f32;
-            w.height = ctrl.bounds.height as f32;
-            Box::new(w)
-        }
-        vybe_platform_dotnet::winforms::designer::ControlType::VScrollBar => {
-            let mut w = ScrollBar::new(true).with_name(&name);
-            w.width = ctrl.bounds.width as f32;
-            w.height = ctrl.bounds.height as f32;
-            Box::new(w)
-        }
-        vybe_platform_dotnet::winforms::designer::ControlType::MenuStrip => {
-            Box::new(MenuStrip::new().with_name(&name))
-        }
-        vybe_platform_dotnet::winforms::designer::ControlType::ToolStrip => {
-            Box::new(ToolStrip::new().with_name(&name))
-        }
-        vybe_platform_dotnet::winforms::designer::ControlType::StatusStrip => {
-            Box::new(StatusStrip::new().with_name(&name))
-        }
-        vybe_platform_dotnet::winforms::designer::ControlType::ContextMenuStrip => {
-            Box::new(ContextMenu::new().with_name(&name))
-        }
-        vybe_platform_dotnet::winforms::designer::ControlType::SplitContainer => {
-            Box::new(SplitContainer::new(false).with_name(&name))
-        }
-        vybe_platform_dotnet::winforms::designer::ControlType::FlowLayoutPanel => {
-            Box::new(FlowLayoutPanel::new().with_name(&name))
-        }
-        vybe_platform_dotnet::winforms::designer::ControlType::TableLayoutPanel => {
-            Box::new(TableLayoutPanel::new(2, 2).with_name(&name))
-        }
-        vybe_platform_dotnet::winforms::designer::ControlType::BindingNavigator => {
-            Box::new(BindingNavigator::new(&name))
-        }
-        _ => {
-            let mut w = Label::new(&format!("[{}]", ctrl.name));
-            w.transparent = true;
-            w.width = ctrl.bounds.width as f32;
-            w.height = ctrl.bounds.height as f32;
-            Box::new(w)
-        }
-    }
-}
 
 // ── FormApp — Application impl ─────────────────────────────────────────
 
@@ -1072,7 +905,12 @@ fn register_dialog_fns(vm: &mut vybe_runtime::VM) {
     use std::sync::Arc;
     use vybe_runtime::Value;
     use vybe_runtime::value::{Object, ObjectKind};
-    use vybe_widgets::dialogs::{FileDialog, FolderDialog};
+    // Through `platforms/web`, not around it. These three pickers ARE the
+    // File System Access API — `showOpenFilePicker`/`showSaveFilePicker`/
+    // `showDirectoryPicker` — and web publishes them. The runner reaching
+    // `vybe_widgets::dialogs` directly is what made two crates owners of the
+    // browser's surface.
+    use vybe_platform_web::file_system_access as picker;
 
     vm.register_host_fn(
         "vybe:gui",
@@ -1103,7 +941,7 @@ fn register_dialog_fns(vm: &mut vybe_runtime::VM) {
                     } else {
                         title
                     };
-                    if let Some(path) = FileDialog::new(dlg_title).open() {
+                    if let Some(path) = picker::open_file(&dlg_title, "", "") {
                         if let Some(Value::Object(obj)) = args.first() {
                             obj.lock().unwrap().properties.insert(
                                 "filename".into(),
@@ -1121,7 +959,7 @@ fn register_dialog_fns(vm: &mut vybe_runtime::VM) {
                     } else {
                         title
                     };
-                    if let Some(path) = FileDialog::new(dlg_title).save() {
+                    if let Some(path) = picker::save_file(&dlg_title, "", "", "") {
                         if let Some(Value::Object(obj)) = args.first() {
                             obj.lock().unwrap().properties.insert(
                                 "filename".into(),
@@ -1139,7 +977,7 @@ fn register_dialog_fns(vm: &mut vybe_runtime::VM) {
                     } else {
                         title
                     };
-                    if let Some(path) = FolderDialog::new(dlg_title).pick() {
+                    if let Some(path) = picker::pick_directory(&dlg_title, "") {
                         if let Some(Value::Object(obj)) = args.first() {
                             obj.lock().unwrap().properties.insert(
                                 "selectedpath".into(),
@@ -1180,163 +1018,9 @@ fn register_dialog_fns(vm: &mut vybe_runtime::VM) {
 
 // ── Extract binding info from form definition (designer forms only) ────
 
-#[cfg(feature = "gui_forms")]
-fn extract_binding_info(
-    form: &vybe_platform_dotnet::winforms::designer::Form,
-) -> (
-    Vec<DataBindingEntry>,
-    Vec<BindingSourceInfo>,
-    Vec<NavigatorInfo>,
-) {
-    let mut data_bindings = Vec::new();
-    let mut binding_sources = Vec::new();
-    let mut navigators = Vec::new();
-
-    for ctrl in &form.controls {
-        let type_name = format!("{:?}", ctrl.control_type);
-
-        if type_name.contains("BindingSource") {
-            let data_source = ctrl
-                .properties
-                .get_string("DataSource")
-                .unwrap_or_default()
-                .to_string();
-            let data_member = ctrl
-                .properties
-                .get_string("DataMember")
-                .unwrap_or_default()
-                .to_string();
-            if !data_source.is_empty() && !data_member.is_empty() {
-                binding_sources.push(BindingSourceInfo {
-                    name: ctrl.name.clone(),
-                    data_adapter_name: data_source,
-                    data_member,
-                });
-            }
-        }
-
-        if type_name.contains("BindingNavigator") {
-            let bs = ctrl
-                .properties
-                .get_string("BindingSource")
-                .unwrap_or_default()
-                .to_string();
-            if !bs.is_empty() {
-                navigators.push(NavigatorInfo {
-                    navigator_name: ctrl.name.clone(),
-                    binding_source_name: bs,
-                });
-            }
-        }
-
-        let binding_source = ctrl
-            .properties
-            .get_string("DataBindings.Source")
-            .map(|s| s.to_string());
-        if let Some(ref bs_name) = binding_source {
-            if !bs_name.is_empty() {
-                for (key, val) in ctrl.properties.iter() {
-                    let k = key.as_str();
-                    if k.starts_with("DataBindings.") && k != "DataBindings.Source" {
-                        let prop = &k["DataBindings.".len()..];
-                        if let Some(column) = val.as_string() {
-                            if !column.is_empty() {
-                                data_bindings.push(DataBindingEntry {
-                                    control_name: ctrl.name.clone(),
-                                    property: prop.to_string(),
-                                    source_name: bs_name.clone(),
-                                    column: column.to_string(),
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    (data_bindings, binding_sources, navigators)
-}
 
 // ── Public launch functions ────────────────────────────────────────────
 
-/// Launch a designer form — builds widgets from a `vybe_platform_dotnet::winforms::designer::Form` model.
-/// Requires the `gui_forms` feature.
-#[cfg(feature = "gui_forms")]
-pub fn launch_vybewidget_form(
-    mut vm: vybe_runtime::VM,
-    gui: Arc<Mutex<GuiState>>,
-    form: &vybe_platform_dotnet::winforms::designer::Form,
-) {
-    register_dialog_fns(&mut vm);
-
-    if let Some(form_obj) = gui.lock().unwrap().form_object.clone() {
-        vm.globals.insert("__f".into(), form_obj);
-    }
-
-    let model_control_count = form
-        .controls
-        .iter()
-        .filter(|c| !c.control_type.is_non_visual())
-        .count();
-    if model_control_count > 0 {
-        let id_to_bounds: std::collections::HashMap<_, _> =
-            form.controls.iter().map(|c| (c.id, &c.bounds)).collect();
-
-        let mut g = gui.lock().unwrap();
-        g.form = WidgetForm::new(&form.text);
-        g.control_names.clear();
-        for ctrl in &form.controls {
-            if ctrl.control_type.is_non_visual() {
-                continue;
-            }
-            let widget = make_widget(ctrl);
-
-            let mut abs_x = ctrl.bounds.x;
-            let mut abs_y = ctrl.bounds.y;
-            let mut parent = ctrl.parent_id;
-            while let Some(pid) = parent {
-                if let Some(pb) = id_to_bounds.get(&pid) {
-                    abs_x += pb.x;
-                    abs_y += pb.y;
-                }
-                parent = form
-                    .controls
-                    .iter()
-                    .find(|c| c.id == pid)
-                    .and_then(|c| c.parent_id);
-            }
-
-            g.form.add_boxed_control(
-                widget,
-                abs_x as f32,
-                abs_y as f32,
-                ctrl.bounds.width as f32,
-                ctrl.bounds.height as f32,
-            );
-            g.control_names.push(ctrl.name.clone());
-        }
-    }
-
-    gui.lock().unwrap().form.debug_dump();
-
-    let (data_bindings, binding_sources, navigators) = extract_binding_info(form);
-
-    let app = FormApp {
-        font_system: FontSystem::new(),
-        swash_cache: SwashCache::new(),
-        vm: Rc::new(RefCell::new(vm)),
-        gui,
-        data_bindings,
-        binding_sources,
-        navigators,
-        data_store: std::collections::HashMap::new(),
-        initialised: false,
-        timer_last_fire: std::collections::HashMap::new(),
-    };
-
-    run_app(&form.text, form.width as u32, form.height as u32, 1.0, app);
-}
 
 /// Launch a programmatic form — GuiState already has all widgets and event handlers.
 pub fn launch_gui(mut vm: vybe_runtime::VM, gui: Arc<Mutex<GuiState>>) {
@@ -1417,24 +1101,6 @@ pub fn capture_gui(
     crate::gui_capture::capture_to_png(&gui, path, control, 1.0)
 }
 
-/// Wrapper that dispatches to `launch_gui` or `launch_vybewidget_form`.
-/// Requires the `gui_forms` feature for the designer form path.
-#[cfg(feature = "gui_forms")]
-pub fn launch_vm_form(
-    vm: vybe_runtime::VM,
-    gui: Arc<Mutex<GuiState>>,
-    initial_form: Option<vybe_platform_dotnet::winforms::designer::Form>,
-) {
-    let should_launch = gui.lock().unwrap().should_run || initial_form.is_some();
-
-    if should_launch {
-        if let Some(form) = initial_form {
-            launch_vybewidget_form(vm, gui, &form);
-        } else {
-            launch_gui(vm, gui);
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {

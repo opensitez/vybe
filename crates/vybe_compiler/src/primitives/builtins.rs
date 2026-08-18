@@ -1535,6 +1535,30 @@ impl Compiler {
             self.emit_gui_set_item_text(line);
             return;
         }
+        // `Application.Run` — nothing to emit. See `APP_RUN_EMIT`: a document
+        // is not told to run. Drop whatever the call site pushed and answer
+        // null so the stack contract holds like any other call.
+        if name == common::gui::APP_RUN_EMIT {
+            for _ in 0..argc {
+                self.emit(Op::DROP);
+            }
+            self.emit_null();
+            return;
+        }
+        // `Application.Terminate` — nothing, for the same reason as `Run`.
+        //
+        // `web:window.close` exists but takes a WINDOW HANDLE, and the only way
+        // to get one is `window.open` — there is no zero-argument "current
+        // window" accessor, because a script cannot close a context it did not
+        // open (HTML §7.2.2.1). So a top-level `Terminate` has no call to make,
+        // and inventing an accessor to receive it would be a shim.
+        if name == common::gui::APP_EXIT_EMIT {
+            for _ in 0..argc {
+                self.emit(Op::DROP);
+            }
+            self.emit_null();
+            return;
+        }
         // `gui.ctrl.<verb>` — a control METHOD, declared by role exactly as a
         // property is, so `Show`/`Hide`/`Focus` become DOM operations here and
         // nowhere else.

@@ -320,10 +320,17 @@ pub fn drain() -> Vec<Dispatch> {
         let node = event_field(&event, "target")
             .map(|v| v.as_f64() as NodeId)
             .unwrap_or(0);
-        let sender = vybe_widgets::dom::with_document(document, |d| {
-            d.get_attribute(node, "id").unwrap_or_default()
-        })
-        .unwrap_or_default();
+        // Through the web surface, not around it. `getAttribute` is a DOM
+        // operation `platforms/web` already exposes, and reaching past it into
+        // `vybe_widgets::dom` made this crate a second driver of a document
+        // web is supposed to own.
+        let sender = match vybe_platform_web::engine::apply(
+            document,
+            vybe_platform_web::engine::DomOp::GetAttribute(node, "id".to_string()),
+        ) {
+            vybe_platform_web::engine::DomValue::Text(id) => id,
+            _ => String::new(),
+        };
         out.push(Dispatch {
             callback,
             event,

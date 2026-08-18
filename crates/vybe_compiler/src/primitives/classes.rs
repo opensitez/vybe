@@ -197,13 +197,18 @@ impl Compiler {
         false
     }
 
-    fn emit_form_identity_stamp(&mut self, this_slot: u16, class_name: &str, _line: u32) {
+    /// A form carries its class name as its `name` — the DOM `id`.
+    ///
+    /// Written through the `name` ROLE, like every other property. It used to
+    /// call `vybe:gui.controlSetProperty` directly, which is a second way of
+    /// saying the same thing: the role already resolves to the element's `id`,
+    /// and a private call beside it is exactly the duplicated role→DOM match
+    /// that drifts (guiplan.md, "Do not").
+    fn emit_form_identity_stamp(&mut self, this_slot: u16, class_name: &str, line: u32) {
         let stamped_name = self.canon(class_name);
-        let set_property = self.import("vybe:gui", "controlSetProperty");
         self.emit_u16(Op::LOCAL_GET, this_slot);
-        self.emit_const(Value::String(Arc::from("Name")));
         self.emit_const(Value::String(Arc::from(stamped_name.as_str())));
-        self.emit_host_call(set_property, 3);
+        self.emit_gui_property_set("name", line);
         self.emit(Op::DROP);
     }
 

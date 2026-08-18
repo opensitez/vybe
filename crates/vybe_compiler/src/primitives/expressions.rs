@@ -5426,6 +5426,21 @@ impl Compiler {
                             line,
                         );
                     }
+                    crate::ast::ArrayTransformOp::Reshape => {
+                        if !(args.len() == 2 || args.len() == 3) {
+                            return Err("Reshape expects source, shape, and optional pad".into());
+                        }
+                        for arg in args {
+                            self.compile_expr(arg)?;
+                        }
+                        common::array_transforms::emit_reshape(
+                            &mut self.chunks,
+                            self.current,
+                            args.len() == 3,
+                            *order,
+                            line,
+                        );
+                    }
                 }
             }
 
