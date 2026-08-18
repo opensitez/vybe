@@ -36143,6 +36143,46 @@ fn vb_withevents_handler_block(
 /// inject an empty one. Strips the `handles` field from the method afterward
 /// so the compiler doesn't double-process it.
 fn inject_handles_into_constructor(members: &mut Vec<ClassMember>) {
+    // **A `WithEvents` field is already wired, and wiring it again fires the
+    // handler TWICE.**
+    //
+    // `normalize_vb_withevents_assignments` (which runs FIRST) implements
+    // VB.NET's real rule: a `WithEvents` field's synthesised setter hooks the
+    // handler when the field is ASSIGNED. In a designer form that assignment
+    // is `Me.btn1 = New Button()` inside `InitializeComponent`, so the control
+    // is wired exactly where it is created — the same place, and the same one
+    // registration, that C# gets from an explicit `+=`.
+    //
+    // Appending a second `AddHandler` here for the same field produced a
+    // second `addEventListener` on the same control for the same event with
+    // the same handler. Measured on a one-button form: 2 registrations with
+    // `WithEvents`, 1 without. Every shipped designer form declares its
+    // controls `WithEvents` (37 in `allcontrols`, 12 in TicTacToe), so every
+    // `Handles`-wired handler in every VB form ran twice per event.
+    //
+    // Invisible to the whole corpus: the second registration is byte-identical
+    // to the first, so no dump differs and no capture changes — captures do not
+    // click.
+    //
+    // This injection still OWNS every other case, and must: `Handles Me.Load`
+    // names the FORM, which is never assigned, so the assignment-time path
+    // cannot reach it. That is the split — assignment-wired fields here,
+    // everything else in the constructor.
+    let with_events: HashSet<String> = members
+        .iter()
+        .filter_map(|member| match member {
+            ClassMember::Field {
+                name, with_events, ..
+            } if *with_events => Some(name.to_ascii_lowercase()),
+            _ => None,
+        })
+        .collect();
+    let already_wired_by_assignment = |handle: &str| -> bool {
+        let (control, _) = split_event_target(handle);
+        withevents_field_name(&control)
+            .is_some_and(|field| with_events.contains(&field.to_ascii_lowercase()))
+    };
+
     // First pass: collect (handler_method_name, handles_list) and clear them
     // off the methods so the compile_function_decl path doesn't re-emit.
     let mut to_inject: Vec<(String, Vec<String>)> = Vec::new();
@@ -36160,7 +36200,13 @@ fn inject_handles_into_constructor(members: &mut Vec<ClassMember>) {
                     && !mname.starts_with("__vb_myclass_")
                 {
                     let mut constructor_handles = Vec::new();
+                    // Taken either way — a handle the assignment path owns must
+                    // be DROPPED, not left behind, or `compile_class` picks it
+                    // up from the surviving list and re-registers it there.
                     for handle in std::mem::take(handles) {
+                        if already_wired_by_assignment(&handle) {
+                            continue;
+                        }
                         constructor_handles.push(handle);
                     }
                     if !constructor_handles.is_empty() {

@@ -41,7 +41,9 @@ pub fn register() {
         emit_dispatch: None,
         normalize_class: Some(normalize_class::normalize_class),
         register_tree: None,
-        expand_source: None,
+        // Not textual inclusion — C# has none. This is the one hook that sees
+        // the real source path, which `[CallerFilePath]` needs.
+        expand_source: Some(walker::expand_source),
     });
     vybe_platform_dotnet::winforms::form_modules::register(
         vybe_platform_dotnet::winforms::form_modules::FormModuleLanguage {

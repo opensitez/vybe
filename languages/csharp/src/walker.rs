@@ -10,7 +10,29 @@ use vybe_compiler::primitives::pointers as common_pointers;
 use vybe_platform_dotnet::emitter::core::exceptions as dotnet_exceptions;
 use vybe_platform_dotnet::emitter::core::lowering as dotnet_lowering;
 
+thread_local! {
+    /// The path of the file about to be parsed, left here by `expand_source`.
+    /// The bundle is the only layer that knows it — same invariant C's
+    /// `__FILE__` rests on — and `parse` TAKES it rather than reading it, so a
+    /// program compiled from a string (in-process, dynamic eval) can never
+    /// inherit the previous program's path.
+    static PENDING_SOURCE_PATH: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Records the source path for `[CallerFilePath]`; the text passes through
+/// untouched — C# has no textual inclusion to expand.
+pub fn expand_source(path: &std::path::Path, source: &str) -> Result<String, String> {
+    PENDING_SOURCE_PATH.with(|slot| {
+        *slot.borrow_mut() = Some(path.display().to_string());
+    });
+    Ok(source.to_string())
+}
+
 pub fn parse(source: &str) -> Result<Module, String> {
+    let source_path = PENDING_SOURCE_PATH
+        .with(|slot| slot.borrow_mut().take())
+        .unwrap_or_default();
     // Every registry this walk keeps, created here and dropped when `parse`
     // returns — including on the `?` paths below.
     let mut __w_owned = CsWalker::default();
@@ -94,6 +116,13 @@ pub fn parse(source: &str) -> Result<Module, String> {
         }
     }
 
+    // Top-level statements are a method body (`<Main>$`) like any other, and
+    // `goto` is legal there — but this list is assembled here rather than by
+    // `walk_body`, which is where every other body gets relooped. Without
+    // this the label form parsed, produced `Label`/`GoTo` markers, and then
+    // nothing consumed them: the jump silently did nothing.
+    let mut body = vybe_language_c::walker::lower_c_gotos(body);
+
     // Install the shared .NET Exception hierarchy at the top of every C#
     // program. The BCL surface and constructor field semantics live in
     // platforms/dotnet so every .NET-shaped frontend can share them.
@@ -109,6 +138,11 @@ pub fn parse(source: &str) -> Result<Module, String> {
         imports,
         directives: Default::default(),
     };
+    // First rewrite: caller-info reads `span.start_line` off the nodes the
+    // walk just produced. Every pass below rebuilds expressions, and a rebuilt
+    // node carries no span.
+    inject_caller_info(&mut module, source_path);
+    lower_csharp_goto_cases(__w, &mut module.body);
     rewrite_using_imports(&mut module);
     normalize_task_surface(&mut module);
     inject_interface_defaults(__w, &mut module.body);
@@ -3611,11 +3645,20 @@ fn lower_csharp_using_declarations(body: &mut Vec<Statement>) {
         }
     }
     for s in body.iter_mut() {
-        visit_csharp_stmt_lists_for_using(&mut s.kind, lower_csharp_using_declarations);
+        visit_csharp_stmt_lists_for_using(&mut s.kind, &mut |list| {
+            lower_csharp_using_declarations(list)
+        });
     }
 }
 
-fn visit_csharp_stmt_lists_for_using(kind: &mut StmtKind, visit: fn(&mut Vec<Statement>)) {
+/// Every nested statement LIST a C# statement owns. One enumeration, shared by
+/// every pass that has to descend the statement tree (`using` lowering,
+/// caller-info injection) so a new statement kind is taught to all of them at
+/// once instead of being silently skipped by one.
+fn visit_csharp_stmt_lists_for_using(
+    kind: &mut StmtKind,
+    visit: &mut dyn FnMut(&mut Vec<Statement>),
+) {
     match kind {
         StmtKind::Block(body)
         | StmtKind::NamespaceDecl { body, .. }
@@ -3626,7 +3669,7 @@ fn visit_csharp_stmt_lists_for_using(kind: &mut StmtKind, visit: fn(&mut Vec<Sta
             for member in members {
                 match member {
                     ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
-                        visit_csharp_stmt_lists_for_using(&mut stmt.kind, visit);
+                        visit_csharp_stmt_lists_for_using(&mut stmt.kind, &mut *visit);
                     }
                     ClassMember::Constructor { body, .. } => visit(body),
                     ClassMember::Property { getter, setter, .. } => {
@@ -3657,7 +3700,7 @@ fn visit_csharp_stmt_lists_for_using(kind: &mut StmtKind, visit: fn(&mut Vec<Sta
         }
         StmtKind::For { init, body, .. } => {
             if let Some(init) = init {
-                visit_csharp_stmt_lists_for_using(&mut init.kind, visit);
+                visit_csharp_stmt_lists_for_using(&mut init.kind, &mut *visit);
             }
             visit(body);
         }
@@ -3704,6 +3747,620 @@ fn visit_csharp_stmt_lists_for_using(kind: &mut StmtKind, visit: fn(&mut Vec<Sta
         }
         _ => {}
     }
+}
+
+// ── `goto case` / `goto default` (C# §13.10.4) ──────────────────────────────
+
+/// `goto case <v>` and `goto default` re-enter the SAME switch at a different
+/// arm. That is a jump, not a fall-through, and a `Switch` node cannot express
+/// it: the walker parsed it into a `GoTo` whose target names no label, so
+/// nothing consumed it and the jump silently did nothing.
+///
+/// Lowered to a re-dispatch loop — the switch runs again with a new selector:
+///
+///     __cs_sel_0 = <selector>; __cs_state_0 = 0; __cs_again_0 = true;
+///     __cs_switch_0: while (__cs_again_0) {
+///         __cs_again_0 = false;
+///         if (__cs_state_0 == 1) { <default arm> }
+///         else switch (__cs_sel_0) {
+///             case A: …  // `goto case B` → sel = B; again = true; continue __cs_switch_0;
+///             default: __cs_state_0 = 1; __cs_again_0 = true; continue __cs_switch_0;
+///         }
+///     }
+///
+/// The loop is LABELLED and the jumps use a labelled `continue`, so a user
+/// `continue` inside an arm still means the enclosing user loop.
+///
+/// Only switches that actually contain one of these jumps are rewritten;
+/// every other switch keeps its own node.
+fn lower_csharp_goto_cases(__w: &mut CsWalker, body: &mut Vec<Statement>) {
+    // `goto case Color.Green` carries its target as SOURCE TEXT (the walker
+    // has nowhere else to put it). Re-parse each one through the same walker
+    // that walked the case labels, so an enum member folds to the same
+    // ordinal on both sides.
+    let mut targets: Vec<String> = Vec::new();
+    // `goto default` names no value, so a switch whose only jump is that form
+    // contributes nothing to `targets` — tracked separately, or the pass bails
+    // out and the jump stays unconsumed.
+    let mut saw_default = false;
+    collect_csharp_goto_case_targets(body, &mut targets, &mut saw_default);
+    if targets.is_empty() && !saw_default {
+        return;
+    }
+    let mut values: HashMap<String, Expression> = HashMap::new();
+    for target in targets {
+        if let Some(expr) = parse_csharp_inline_expression(__w, &target) {
+            values.insert(target, expr);
+        }
+    }
+    let mut counter = 0usize;
+    rewrite_csharp_goto_case_switches(body, &values, &mut counter);
+}
+
+/// The target text of every `goto case <expr>` in the tree.
+fn collect_csharp_goto_case_targets(
+    stmts: &mut Vec<Statement>,
+    out: &mut Vec<String>,
+    saw_default: &mut bool,
+) {
+    for stmt in stmts.iter_mut() {
+        if let StmtKind::GoTo(target) = &stmt.kind {
+            if let Some(value) = csharp_goto_case_value(target) {
+                out.push(value.to_string());
+            } else if csharp_goto_is_default(target) {
+                *saw_default = true;
+            }
+        }
+        visit_csharp_stmt_lists_for_using(&mut stmt.kind, &mut |list| {
+            collect_csharp_goto_case_targets(list, out, saw_default)
+        });
+    }
+}
+
+/// `"case Color.Green"` → `Some("Color.Green")`; anything else → `None`.
+fn csharp_goto_case_value(target: &str) -> Option<&str> {
+    target.strip_prefix("case ").map(str::trim)
+}
+
+fn csharp_goto_is_default(target: &str) -> bool {
+    target.trim() == "default"
+}
+
+fn rewrite_csharp_goto_case_switches(
+    stmts: &mut Vec<Statement>,
+    values: &HashMap<String, Expression>,
+    counter: &mut usize,
+) {
+    for stmt in stmts.iter_mut() {
+        visit_csharp_stmt_lists_for_using(&mut stmt.kind, &mut |list| {
+            rewrite_csharp_goto_case_switches(list, values, counter)
+        });
+        let StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } = &mut stmt.kind
+        else {
+            continue;
+        };
+        // The walk above already visited this switch's arms, so a nested
+        // switch that needed the same treatment is already a `Block` and
+        // cannot be mistaken for one of THIS switch's jumps.
+        let has_jump = cases
+            .iter()
+            .any(|case| csharp_arm_has_goto_case(&case.body))
+            || default
+                .as_ref()
+                .is_some_and(|body| csharp_arm_has_goto_case(body));
+        if !has_jump {
+            continue;
+        }
+
+        let id = *counter;
+        *counter += 1;
+        let sel = format!("__cs_sel_{id}");
+        let state = format!("__cs_state_{id}");
+        let again = format!("__cs_again_{id}");
+        let loop_label = format!("__cs_switch_{id}");
+
+        let selector = std::mem::replace(expr, Expression::null());
+        let mut cases = std::mem::take(cases);
+        let default_body = default.take();
+
+        for case in cases.iter_mut() {
+            rewrite_csharp_goto_case_jumps(
+                &mut case.body,
+                values,
+                &sel,
+                &state,
+                &again,
+                &loop_label,
+            );
+        }
+        let mut default_body = default_body;
+        if let Some(body) = default_body.as_mut() {
+            rewrite_csharp_goto_case_jumps(body, values, &sel, &state, &again, &loop_label);
+        }
+
+        // The switch's own `default:` sets the state and re-dispatches, so the
+        // arm's statements live in exactly ONE place — the `if` below.
+        let default_arm = default_body.as_ref().map(|_| {
+            csharp_goto_case_jump_stmts(None, &sel, &state, &again, &loop_label)
+        });
+
+        let mut loop_body = vec![csharp_set(
+            &again,
+            Expression::new(ExprKind::Lit(Literal::Bool(false))),
+        )];
+        let inner_switch = Statement::new(StmtKind::Switch {
+            expr: Expression::ident(&sel),
+            cases,
+            default: default_arm,
+        });
+        loop_body.push(match default_body {
+            Some(body) => Statement::new(StmtKind::If {
+                cond: Expression::new(ExprKind::Binary {
+                    op: BinOp::StrictEq,
+                    left: Box::new(Expression::ident(&state)),
+                    right: Box::new(Expression::int(1)),
+                }),
+                then_body: body,
+                elifs: Vec::new(),
+                else_body: Some(vec![inner_switch]),
+            }),
+            None => inner_switch,
+        });
+
+        let mut lowered = vec![csharp_let(&sel, selector), csharp_let(&state, Expression::int(0))];
+        lowered.push(csharp_let(
+            &again,
+            Expression::new(ExprKind::Lit(Literal::Bool(true))),
+        ));
+        lowered.push(Statement::new(StmtKind::Labeled {
+            label: loop_label,
+            body: Box::new(Statement::new(StmtKind::While {
+                cond: Expression::ident(&again),
+                body: loop_body,
+                else_body: None,
+            })),
+        }));
+        stmt.kind = StmtKind::Block(lowered);
+    }
+}
+
+fn csharp_set(name: &str, value: Expression) -> Statement {
+    Statement::new(StmtKind::Assign {
+        targets: vec![Expression::ident(name)],
+        value,
+        by_ref: false,
+    })
+}
+
+fn csharp_let(name: &str, init: Expression) -> Statement {
+    Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(name.to_string()),
+            type_hint: None,
+            init: Some(init),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Let,
+    })
+}
+
+/// True when this arm jumps to another arm of ITS OWN switch. A nested switch
+/// owns its jumps, so the walk stops there.
+fn csharp_arm_has_goto_case(stmts: &[Statement]) -> bool {
+    stmts.iter().any(|stmt| match &stmt.kind {
+        StmtKind::GoTo(target) => {
+            csharp_goto_case_value(target).is_some() || csharp_goto_is_default(target)
+        }
+        StmtKind::Switch { .. } => false,
+        _ => {
+            let mut found = false;
+            let mut probe = stmt.clone();
+            visit_csharp_stmt_lists_for_using(&mut probe.kind, &mut |list| {
+                found |= csharp_arm_has_goto_case(list);
+            });
+            found
+        }
+    })
+}
+
+/// Replace this arm's `goto case`/`goto default` with the re-dispatch. Nested
+/// switches are skipped — their jumps belong to them.
+fn rewrite_csharp_goto_case_jumps(
+    stmts: &mut Vec<Statement>,
+    values: &HashMap<String, Expression>,
+    sel: &str,
+    state: &str,
+    again: &str,
+    loop_label: &str,
+) {
+    let mut out: Vec<Statement> = Vec::with_capacity(stmts.len());
+    for mut stmt in std::mem::take(stmts) {
+        if let StmtKind::GoTo(target) = &stmt.kind {
+            if let Some(text) = csharp_goto_case_value(target) {
+                match values.get(text) {
+                    Some(value) => {
+                        out.extend(csharp_goto_case_jump_stmts(
+                            Some(value.clone()),
+                            sel,
+                            state,
+                            again,
+                            loop_label,
+                        ));
+                        continue;
+                    }
+                    // Unparseable target: leave the jump alone rather than
+                    // turn it into a silently different one.
+                    None => {}
+                }
+            } else if csharp_goto_is_default(target) {
+                out.extend(csharp_goto_case_jump_stmts(
+                    None, sel, state, again, loop_label,
+                ));
+                continue;
+            }
+        }
+        if !matches!(stmt.kind, StmtKind::Switch { .. }) {
+            visit_csharp_stmt_lists_for_using(&mut stmt.kind, &mut |list| {
+                rewrite_csharp_goto_case_jumps(list, values, sel, state, again, loop_label)
+            });
+        }
+        out.push(stmt);
+    }
+    *stmts = out;
+}
+
+/// `Some(value)` → jump to the arm matching that value; `None` → the default
+/// arm.
+fn csharp_goto_case_jump_stmts(
+    value: Option<Expression>,
+    sel: &str,
+    state: &str,
+    again: &str,
+    loop_label: &str,
+) -> Vec<Statement> {
+    let mut out = Vec::new();
+    match value {
+        Some(value) => {
+            out.push(csharp_set(sel, value));
+            out.push(csharp_set(state, Expression::int(0)));
+        }
+        None => out.push(csharp_set(state, Expression::int(1))),
+    }
+    out.push(csharp_set(
+        again,
+        Expression::new(ExprKind::Lit(Literal::Bool(true))),
+    ));
+    out.push(Statement::new(StmtKind::Continue(ContinueTarget::Label(
+        loop_label.to_string(),
+    ))));
+    out
+}
+
+// ── Caller-info attributes (C# §21.5.5) ─────────────────────────────────────
+
+/// Which fact about the CALL SITE a `[Caller*]` parameter asks for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CallerInfoKind {
+    MemberName,
+    LineNumber,
+    FilePath,
+}
+
+/// One method that has at least one caller-info parameter.
+struct CallerInfoMethod {
+    /// (parameter index, fact) for each caller-info parameter.
+    entries: Vec<(usize, CallerInfoKind)>,
+    /// Every parameter's declared default. A call that omits an ORDINARY
+    /// optional parameter sitting before a caller-info one still gets the
+    /// caller-info value in C# — the compiler writes both, the default first.
+    /// Reproducing that needs the defaults here.
+    defaults: Vec<Option<Expression>>,
+    /// True when the first parameter is marked `this` — the call site spells
+    /// the receiver as `x.M(…)`, and the receiver becomes argument 0 only
+    /// after `rewrite_extension_calls` runs.
+    is_extension: bool,
+    /// The type the method is declared on, so an extension method invoked the
+    /// long way (`Ext.Dump(s)`) is told apart from the instance spelling
+    /// (`s.Dump()`) — they fill a different number of parameters.
+    declaring_type: Option<String>,
+}
+
+/// Methods carrying caller-info parameters, keyed by method name — what a call
+/// site spells. C# resolves overloads by signature, but a caller-info
+/// parameter is optional by definition, so an argument list that already
+/// reaches its index is left alone either way.
+type CallerInfoTargets = HashMap<String, CallerInfoMethod>;
+
+/// Everything the injection needs that is not the call site itself.
+struct CallerInfoPass {
+    targets: CallerInfoTargets,
+    /// The compiling file's path, as `[CallerFilePath]` reports it. Empty when
+    /// the source did not arrive from a file (a string compiled in-process),
+    /// which is the one case .NET cannot produce.
+    source_path: String,
+}
+
+/// `[CallerMemberName]` and friends are the compiler filling in an omitted
+/// optional argument AT THE CALL SITE — not a runtime lookup and not
+/// reflection. Nothing downstream can answer them: by the time a call reaches
+/// the VM, the enclosing member and the source line are gone. So the walker
+/// answers them here, off the tree it just built, while spans are still the
+/// ones `to_span` recorded.
+fn inject_caller_info(module: &mut Module, source_path: String) {
+    let mut targets = CallerInfoTargets::new();
+    collect_caller_info_targets(&mut module.body, None, &mut targets);
+    if targets.is_empty() {
+        return;
+    }
+    let pass = CallerInfoPass {
+        targets,
+        source_path,
+    };
+    // C# compiles top-level statements into a synthetic entry point that
+    // .NET names `<Main>$`, and that is the string `[CallerMemberName]`
+    // reports from file scope — verbatim, angle brackets and all.
+    inject_caller_info_body(&mut module.body, "<Main>$", &pass);
+}
+
+fn collect_caller_info_targets(
+    stmts: &mut Vec<Statement>,
+    declaring_type: Option<&str>,
+    out: &mut CallerInfoTargets,
+) {
+    for stmt in stmts.iter_mut() {
+        collect_caller_info_in_stmt(stmt, declaring_type, out);
+    }
+}
+
+fn collect_caller_info_in_stmt(
+    stmt: &mut Statement,
+    declaring_type: Option<&str>,
+    out: &mut CallerInfoTargets,
+) {
+    if let StmtKind::FunctionDecl {
+        name,
+        params,
+        modifiers,
+        ..
+    } = &stmt.kind
+    {
+        let entries: Vec<(usize, CallerInfoKind)> = modifiers
+            .decorators
+            .iter()
+            .filter_map(param_caller_info_entry)
+            .collect();
+        if !entries.is_empty() {
+            out.insert(
+                name.clone(),
+                CallerInfoMethod {
+                    entries,
+                    defaults: params.iter().map(|param| param.default.clone()).collect(),
+                    // `this` on the first parameter is the walker's extension
+                    // marker (`PassBy::Const`, set in `walk_param_…`).
+                    is_extension: params
+                        .first()
+                        .is_some_and(|param| param.pass_by == PassBy::Const),
+                    declaring_type: declaring_type.map(str::to_string),
+                },
+            );
+        }
+    }
+    // A class method is a `ClassMember`, not an element of a statement LIST,
+    // so the shared list walk below descends into method BODIES and never
+    // hands back the method declaration itself — which is exactly where the
+    // parameter attributes live. Enumerate members here.
+    if let StmtKind::ClassDecl { name, members, .. }
+    | StmtKind::StructDecl { name, members, .. }
+    | StmtKind::ModuleDecl { name, members, .. } = &mut stmt.kind
+    {
+        let owner = name.clone();
+        for member in members.iter_mut() {
+            match member {
+                ClassMember::Method(inner) | ClassMember::NestedType(inner) => {
+                    collect_caller_info_in_stmt(inner, Some(&owner), out)
+                }
+                ClassMember::Constructor { body, .. } => {
+                    collect_caller_info_targets(body, Some(&owner), out)
+                }
+                ClassMember::Property { getter, setter, .. } => {
+                    if let Some(getter) = getter {
+                        collect_caller_info_targets(getter, Some(&owner), out);
+                    }
+                    if let Some(setter) = setter {
+                        collect_caller_info_targets(&mut setter.body, Some(&owner), out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        return;
+    }
+    visit_csharp_stmt_lists_for_using(&mut stmt.kind, &mut |list| {
+        collect_caller_info_targets(list, declaring_type, out)
+    });
+}
+
+/// Read one `__vybe_param_attribute(index, <Attribute>)` carrier — the shared
+/// shape `walk_params_with_decorators` parks parameter attributes in.
+fn param_caller_info_entry(decorator: &Expression) -> Option<(usize, CallerInfoKind)> {
+    let ExprKind::New { class, args } = &decorator.kind else {
+        return None;
+    };
+    if !matches!(&class.kind, ExprKind::Ident(n) if n == "__vybe_param_attribute") {
+        return None;
+    }
+    let [index, attribute] = args.as_slice() else {
+        return None;
+    };
+    let ExprKind::Lit(Literal::Int(index)) = &index.value.kind else {
+        return None;
+    };
+    // `parse_attribute_specs` normalizes every attribute to its `…Attribute`
+    // spelling, so only that form can arrive here.
+    let kind = match attribute_leaf_name(&attribute.value)?.as_str() {
+        "CallerMemberNameAttribute" => CallerInfoKind::MemberName,
+        "CallerLineNumberAttribute" => CallerInfoKind::LineNumber,
+        "CallerFilePathAttribute" => CallerInfoKind::FilePath,
+        _ => return None,
+    };
+    Some((usize::try_from(*index).ok()?, kind))
+}
+
+fn inject_caller_info_body(stmts: &mut Vec<Statement>, member: &str, pass: &CallerInfoPass) {
+    // Nested member scopes FIRST. A call inside a local function, a nested
+    // type, or a property accessor belongs to THAT member — and injection is
+    // idempotent (an argument list that already reaches the caller-info index
+    // is skipped), so the enclosing member's sweep below cannot overwrite what
+    // the inner scope already answered.
+    for stmt in stmts.iter_mut() {
+        inject_caller_info_scopes(stmt, pass);
+    }
+    for stmt in stmts.iter_mut() {
+        stmt.walk_exprs_mut(&mut |expr| inject_caller_info_call(expr, member, pass));
+    }
+}
+
+fn inject_caller_info_scopes(stmt: &mut Statement, pass: &CallerInfoPass) {
+    match &mut stmt.kind {
+        StmtKind::FunctionDecl { name, body, .. } => {
+            // Operator declarations already carry their metadata name
+            // (`op_Addition`), which is what .NET reports.
+            let member = csharp_metadata_member_name(name);
+            inject_caller_info_body(body, &member, pass);
+            return;
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members.iter_mut() {
+                inject_caller_info_member(member, pass);
+            }
+            return;
+        }
+        _ => {}
+    }
+    visit_csharp_stmt_lists_for_using(&mut stmt.kind, &mut |list| {
+        for s in list.iter_mut() {
+            inject_caller_info_scopes(s, pass);
+        }
+    });
+}
+
+fn inject_caller_info_member(member: &mut ClassMember, pass: &CallerInfoPass) {
+    match member {
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            inject_caller_info_scopes(stmt, pass)
+        }
+        // .NET names an instance constructor `.ctor` in metadata, and that is
+        // the string a `[CallerMemberName]` call from a constructor body sees.
+        ClassMember::Constructor { body, .. } => inject_caller_info_body(body, ".ctor", pass),
+        ClassMember::Property {
+            name,
+            getter,
+            setter,
+            ..
+        } => {
+            let member_name = csharp_metadata_member_name(name);
+            if let Some(getter) = getter {
+                inject_caller_info_body(getter, &member_name, pass);
+            }
+            if let Some(setter) = setter {
+                inject_caller_info_body(&mut setter.body, &member_name, pass);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn inject_caller_info_call(expr: &mut Expression, member: &str, pass: &CallerInfoPass) {
+    let span = expr.span;
+    let ExprKind::Call { callee, args, .. } = &mut expr.kind else {
+        return;
+    };
+    let name = match &callee.kind {
+        ExprKind::Ident(name) => name.rsplit('.').next().unwrap_or(name).to_string(),
+        ExprKind::Member { field, .. } => field.clone(),
+        _ => return,
+    };
+    let Some(method) = pass.targets.get(&name) else {
+        return;
+    };
+    // A named argument can fill a caller-info parameter out of position; the
+    // positional append below could not express that, so leave such calls to
+    // their declared defaults rather than guess.
+    if args.iter().any(|arg| arg.name.is_some()) {
+        return;
+    }
+    // An extension call still spells its receiver as `x.M(…)` here —
+    // `rewrite_extension_calls` moves it into argument 0 later — so the
+    // argument list has already filled one more parameter than it holds.
+    // Invoked the long way (`Ext.Dump(s)`) the receiver IS argument 0 already,
+    // which is what comparing the callee's object against the declaring type
+    // tells apart.
+    let invoked_on_declaring_type = matches!(&callee.kind, ExprKind::Member { object, .. }
+        if matches!(&object.kind, ExprKind::Ident(owner)
+            if Some(owner.as_str()) == method.declaring_type.as_deref()));
+    let receiver_args = usize::from(method.is_extension && !invoked_on_declaring_type);
+    let filled = args.len() + receiver_args;
+    let mut pending: Vec<(usize, CallerInfoKind)> = method
+        .entries
+        .iter()
+        .copied()
+        .filter(|(index, _)| *index >= filled)
+        .collect();
+    pending.sort_by_key(|(index, _)| *index);
+    for (index, kind) in pending {
+        // An ordinary optional parameter sitting before this one has to be
+        // written out first — C# emits its declared default and the
+        // caller-info value together. Without a default there is nothing to
+        // write, so nothing is injected rather than binding to the wrong
+        // parameter.
+        while args.len() + receiver_args < index {
+            let Some(Some(default)) = method.defaults.get(args.len() + receiver_args) else {
+                return;
+            };
+            args.push(Argument::positional(default.clone()));
+        }
+        args.push(Argument::positional(caller_info_literal(
+            kind, member, span, pass,
+        )));
+    }
+}
+
+/// The name .NET metadata gives a member — what `[CallerMemberName]` reports.
+///
+/// An indexer IS a property, named `Item`; the walker splits it into
+/// role-named accessors so the shared index site can resolve `obj[i]`, and
+/// .NET reports `Item` from inside any of them. MEASURED against `dotnet run`
+/// on both the getter and the setter form.
+fn csharp_metadata_member_name(name: &str) -> String {
+    match name {
+        "__index__" | "__getitem__" | "__setitem__" | "__get___index__" | "__set___index__" => {
+            "Item".to_string()
+        }
+        _ => name.to_string(),
+    }
+}
+
+fn caller_info_literal(
+    kind: CallerInfoKind,
+    member: &str,
+    span: vybe_ast::Span,
+    pass: &CallerInfoPass,
+) -> Expression {
+    let literal = match kind {
+        CallerInfoKind::MemberName => Literal::Str(member.to_string()),
+        // `Span` counts lines from zero (`to_span` subtracts one); C# reports
+        // the line as an editor shows it, counting from one.
+        CallerInfoKind::LineNumber => Literal::Int(i64::from(span.start_line) + 1),
+        CallerInfoKind::FilePath => Literal::Str(pass.source_path.clone()),
+    };
+    Expression::with_span(ExprKind::Lit(literal), span)
 }
 
 fn lower_one_csharp_using(var: &str, resource: Expression, tail: Vec<Statement>) -> Vec<Statement> {
@@ -7948,6 +8605,14 @@ fn walk_local_var(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<StmtKind, Stri
         _ => None,
     };
 
+    // Park the declared type for a target-typed `new()` in the initializer.
+    // `var` parks nothing: `var x = new();` has no target and is not C#.
+    let saved_target = std::mem::replace(
+        &mut __w.target_new_type,
+        type_hint
+            .clone()
+            .filter(|hint| !hint.eq_ignore_ascii_case("var")),
+    );
     let mut declarations = Vec::new();
     for p in inner {
         match p.as_rule() {
@@ -7962,6 +8627,7 @@ fn walk_local_var(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<StmtKind, Stri
             _ => {}
         }
     }
+    __w.target_new_type = saved_target;
 
     if let Some(type_hint) = type_hint.filter(|hint| !hint.eq_ignore_ascii_case("var")) {
         let normalized_hint = normalize_runtime_type_name(&type_hint).to_lowercase();
@@ -9828,6 +10494,11 @@ pub(crate) struct CsWalker {
     declared_enums: std::collections::HashSet<String>,
     named_tuple_vars: std::collections::HashMap<String, usize>,
     interface_defaults: std::collections::HashMap<String, Vec<ClassMember>>,
+    /// The declared type of the declaration currently being walked, parked so
+    /// a target-typed `new()` in its initializer can resolve against it.
+    /// Saved and restored around each declaration, so a nested declaration
+    /// never leaks its type outward.
+    target_new_type: Option<String>,
 }
 
 
@@ -10840,9 +11511,16 @@ fn walk_field(__w: &mut CsWalker, pair: Pair<Rule>, mods: Modifiers) -> Result<V
     let mut type_hint = None;
     let mut declarators: Vec<VarDeclarator> = Vec::new();
 
+    // The field's type reaches the walker before its declarators (grammar
+    // order), so parking it here is enough for a target-typed `new()` in the
+    // field initializer to resolve against it.
+    let saved_target = __w.target_new_type.take();
     for p in pair.into_inner() {
         match p.as_rule() {
-            Rule::type_name => type_hint = Some(p.as_str().to_string()),
+            Rule::type_name => {
+                type_hint = Some(p.as_str().to_string());
+                __w.target_new_type = type_hint.clone();
+            }
             // `public int A, B;` declares one field per comma-separated
             // declarator — walk them all, not just the first.
             Rule::var_declarator_list => {
@@ -10855,6 +11533,7 @@ fn walk_field(__w: &mut CsWalker, pair: Pair<Rule>, mods: Modifiers) -> Result<V
             _ => {}
         }
     }
+    __w.target_new_type = saved_target;
 
     Ok(declarators
         .into_iter()
@@ -14045,6 +14724,15 @@ fn walk_stackalloc_expr(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind
 }
 
 fn walk_new_expr(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, String> {
+    // C# 9 target-typed `new(…)` — the parenthesized form specifically. It is
+    // the ONLY typeless `new` whose type comes from the declaration; `new[]
+    // { … }` infers from its elements and `new { … }` is an anonymous type, so
+    // neither may consume a parked target type.
+    let target_typed_form = pair
+        .as_str()
+        .trim_start_matches("new")
+        .trim_start()
+        .starts_with('(');
     let mut type_name = String::new();
     let mut raw_type_name = String::new();
     let mut args = Vec::new();
@@ -14116,6 +14804,21 @@ fn walk_new_expr(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, Strin
                     args.push(Argument::positional(expr));
                 }
             }
+        }
+    }
+
+    // Target-typed `new()` takes its type from the DECLARATION, not the
+    // expression — the same rule the grammar already records for this form and
+    // the same one `default` follows (carried as `DefaultOf("")` and filled in
+    // by the declaration walker). The declaration parks its declared type on
+    // the walker before descending into the initializer; resolving it HERE,
+    // before any shape decision, is what lets `List<int> a = new() { 1, 2 }`
+    // reach the list-initializer IIFE below instead of constructing a class
+    // named "".
+    if type_name.is_empty() && target_typed_form {
+        if let Some(target) = __w.target_new_type.clone() {
+            raw_type_name = target.trim().to_string();
+            type_name = strip_csharp_type_path_generic_args(&raw_type_name);
         }
     }
 
