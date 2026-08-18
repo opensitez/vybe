@@ -36,28 +36,3 @@ pub fn emit_noop(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     emit_gui_call(chunks, current, "noop", argc, line);
 }
 
-pub fn emit_control_show(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_gui_call(chunks, current, "__ctrl_show", argc, line);
-}
-
-pub fn emit_control_hide(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_gui_call(chunks, current, "__ctrl_hide", argc, line);
-}
-
-pub fn emit_control_close(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_gui_call(chunks, current, "__ctrl_close", argc, line);
-}
-
-pub fn emit_form_show_dialog(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_gui_call(chunks, current, "__dlg_showdialog", argc, line);
-}
-
-pub fn emit_controls_add(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_gui_call(
-        chunks,
-        current,
-        vybe_compiler::primitives::gui::HOST_FN_ADD_CHILD,
-        argc,
-        line,
-    );
-}

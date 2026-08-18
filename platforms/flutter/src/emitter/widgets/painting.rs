@@ -1,5 +1,5 @@
 //! Painting / effect widgets — opacity, clipping, decoration, custom paint,
-//! shaders and physical-model shadows. All lower onto a `vybe:gui` Panel.
+//! shaders and physical-model shadows. All lower onto a `div`.
 
 use crate::emitter::catalog::{F_CHILD_ONLY, FlutterClass, FlutterField};
 
@@ -80,8 +80,8 @@ const F_PHYSSHAPE: &[FlutterField] = &[
 
 // Every widget here is a pure paint EFFECT over its child (opacity, clip,
 // colour filter, shadow). None of those effects is expressible on the backing
-// `vybe:gui` controls, so each realizes transparently — the child renders in
-// the wrapper's place rather than inside an inert Panel.
+// element yet, so each is transparent — the child renders in the wrapper's
+// place rather than inside an inert box.
 pub(crate) const CLASSES: &[FlutterClass] = &[
     FlutterClass::wrapper("Opacity", "SingleChildRenderObjectWidget", F_OPACITY),
     FlutterClass::wrapper(

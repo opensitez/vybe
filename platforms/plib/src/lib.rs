@@ -11,9 +11,9 @@ pub mod emitter;
 /// this crate; it reaches the platform through `vybe_runtime::registry`
 /// function pointers, exactly as it already does for languages.
 pub fn register() {
-    // Mount the namespace tree HERE, at plugin-registration time. Previously
-    // `vybe_compiler` called this from `resolver.rs` via a hard Cargo
-    // dependency, which is what prevented this crate from ever being a dylib.
+    // Mount the namespace tree HERE, at plugin-registration time. `vybe_compiler`
+    // must never gain a Cargo dependency on this crate — that is what would stop
+    // it ever shipping as a dylib.
     emitter::tree_register::register_namespace_tree();
     vybe_runtime::registry::register_platform(vybe_runtime::registry::PlatformDef {
         name: "plib",

@@ -34,9 +34,7 @@ pub fn classes() -> &'static [DotnetClass] {
             // `widget_host_fn` FIRST, so leaving one here would keep the
             // control on `vybe:gui::new_Canvas` and the element mapping would
             // never be reached — only a `<canvas>` tag owns a drawing surface.
-            widget_host_fn: None,
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_fn: None,        },
         DotnetClass {
             name: "WebBrowser",
             parent: Some("Control"),
@@ -65,8 +63,8 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: Some("new_WebBrowser"),
-            widget_host_module: "vybe:gui",
-        },
+            // `<iframe>` — see `html_element_for_control`. Renders as a plain
+            // box until `vybe_widgets` grows a `webbrowser` kind.
+            widget_host_fn: None,        },
     ]
 }

@@ -1,54 +1,30 @@
 //! Flutter platform package.
 //!
-//! A Flutter-shaped adapter over the existing `vybe_widgets`/`vybe:gui`
-//! runtime. To Dart source we *are* Flutter (`Scaffold`, `Column`,
-//! `Checkbox`, `Text`, …); under the hood every widget instantiates and
-//! drives the same `vybe_widgets` controls that the dotnet (WinForms) and
-//! plib (VCL) adapters already use — no Flutter-specific host functions,
-//! no parallel widget runtime.
+//! A Flutter-shaped adapter over the DOM. To Dart source we *are* Flutter
+//! (`Scaffold`, `Column`, `Checkbox`, `Text`, …); under the hood a widget IS an
+//! element, built at its construction site through `web:*` — the same surface
+//! the dotnet (WinForms) and plib (VCL) adapters render through. No
+//! Flutter-specific host functions, no parallel widget runtime.
 //!
 //! The compiler-side code generation surface lives under [`emitter`].
 //!
-//! The adapter also owns its Dart *runtime* — the `runApp`/widget-tree
-//! realizer that walks the constructed widget config objects and drives
-//! `vybe:gui`. It is provided as source ([`runtime_source`]) and compiled into
-//! a program ONLY when that program renders (references `runApp`), so
-//! widget-only code (construction, `is`-checks, the TDD suite) carries none of
-//! it — mirroring how the dotnet adapter emits per-class ctor chunks only for
-//! the classes a program uses.
+//! The adapter also owns its Dart *runtime* — `runApp`, `setState`, and the
+//! composite inflation (`build`/`createState`) that only the guest can run. It
+//! is provided as source ([`runtime_source`]) and compiled into a program ONLY
+//! when that program renders (references `runApp`), so widget-only code
+//! (construction, `is`-checks, the TDD suite) carries none of it — mirroring
+//! how the dotnet adapter emits per-class ctor chunks only for the classes a
+//! program uses.
 
 pub mod emitter;
 
-/// The Flutter adapter's Dart runtime: `runApp`, the widget-tree realizer, and
-/// the minimal `EdgeInsets`/`Alignment` value types. Pure Dart over the
-/// existing `vybe:gui` host — no Flutter-specific host functions. The Dart
-/// frontend appends this only when a module references `runApp`.
+/// The Flutter adapter's Dart runtime: `runApp`, `setState`, composite
+/// inflation, and the minimal `EdgeInsets`/`Alignment` value types. Pure Dart
+/// over `web:*` — no Flutter-specific host functions. The Dart frontend appends
+/// it only when a module references `runApp`.
 ///
-/// The realizer needs two pieces of catalog knowledge at runtime — which widget
-/// types are transparent wrappers, and which property keys the backing controls
-/// actually act on. Both are GENERATED here from the catalog rather than
-/// hand-copied into the Dart source, so the widget modules stay the single
-/// source of truth.
 pub fn runtime_source() -> &'static str {
-    static SOURCE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    SOURCE.get_or_init(|| {
-        let dart_list = |values: &[&str]| {
-            values
-                .iter()
-                .map(|v| format!("\"{v}\""))
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
-        format!(
-            "{}\n\n\
-             // ── Generated from the widget catalog (platforms/flutter/src/emitter/widgets) ──\n\
-             var _vfTransparentTypes = [{}];\n\
-             var _vfLiveProperties = [{}];\n",
-            include_str!("runtime.dart"),
-            dart_list(&emitter::catalog::transparent_types()),
-            dart_list(emitter::catalog::LIVE_PROPERTIES),
-        )
-    })
+    include_str!("runtime.dart")
 }
 
 /// Register this platform with the shared registry.
@@ -58,9 +34,9 @@ pub fn runtime_source() -> &'static str {
 /// this crate; it reaches the platform through `vybe_runtime::registry`
 /// function pointers, exactly as it already does for languages.
 pub fn register() {
-    // Mount the namespace tree HERE, at plugin-registration time. Previously
-    // `vybe_compiler` called this from `resolver.rs` via a hard Cargo
-    // dependency, which is what prevented this crate from ever being a dylib.
+    // Mount the namespace tree HERE, at plugin-registration time. `vybe_compiler`
+    // must never gain a Cargo dependency on this crate — that is what would stop
+    // it ever shipping as a dylib.
     emitter::tree_register::register_namespace_tree();
     vybe_runtime::registry::register_platform(vybe_runtime::registry::PlatformDef {
         name: "flutter",

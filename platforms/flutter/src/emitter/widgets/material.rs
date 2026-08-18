@@ -24,7 +24,13 @@ const APPBAR_FIELDS: &[FlutterField] = &[
 
 const MATERIALAPP_FIELDS: &[FlutterField] = &[
     FlutterField::named("home"),
-    FlutterField::named("title"),
+    // `MaterialApp.title` is the string the OS task switcher shows for the
+    // application — the WINDOW title. On the web that is `document.title`, the
+    // `<title>` element in the head. Left as the field's own name it became a
+    // `title=""` attribute on the root div, which HTML defines as the hover
+    // TOOLTIP: the app's name silently turned into markup nobody displays,
+    // while the window kept a default caption.
+    FlutterField::named_role("title", "windowtitle"),
     FlutterField::named("theme"),
     FlutterField::named("initialRoute"),
     FlutterField::named("routes"),
@@ -324,32 +330,51 @@ const F_ROUNDEDBORDER: &[FlutterField] = &[
 
 pub(crate) const CLASSES: &[FlutterClass] = &[
     // The app shell stacks its slots vertically: app bar, body, bottom bar.
+    // `flex:1` because a `Scaffold` FILLS its app — Flutter hands it a tight
+    // constraint, and without saying so its height was `auto`, so it shrank to
+    // its content and the `Expanded` rows below had no height to divide.
     FlutterClass::widget(
         "Scaffold",
         "StatefulWidget",
-        "div;display:flex;flex-direction:column",
+        "div;display:flex;flex-direction:column;flex:1",
         SCAFFOLD_FIELDS,
     ),
     // An app bar IS the page header, and `<header>` already has a container
     // `control_kind` arm. `flex:0` keeps it a thin fixed bar while the body
     // takes the remaining height — the rule the old realizer applied by
     // special-casing the type name at realize time.
+    // …and a bar is 56px of Material primary with a white title, which is what
+    // makes it read as a bar rather than as a stray line of text above the
+    // page. Nothing else declares this: `backgroundColor`/`elevation` arrive
+    // null from a program that leaves them to the theme, and there is no theme.
     FlutterClass::widget(
         "AppBar",
         "StatefulWidget",
-        "header;display:flex;align-items:center;flex:0",
+        "header;display:flex;align-items:center;flex:0;height:56px;\
+         padding-left:16px;padding-right:16px;\
+         background-color:#1976d2;color:#ffffff;font-size:20px;font-weight:bold",
         APPBAR_FIELDS,
     ),
+    // **The app fills the window** — `height:100%`, the one declaration that
+    // makes every constraint below it definite. Flutter's root has the window's
+    // size by construction; a `<div>` does not, and with `height:auto` the
+    // whole tree shrank to its content, which is a legal CSS reading of a
+    // program that never said otherwise.
     FlutterClass::widget(
         "MaterialApp",
         "StatefulWidget",
-        "div;display:flex;flex-direction:column",
+        "div;display:flex;flex-direction:column;height:100%",
         MATERIALAPP_FIELDS,
     ),
+    // **A Flutter button FILLS the box it is given** — that is what makes
+    // `Expanded(child: Padding(child: ElevatedButton(…)))` a calculator key
+    // rather than a label-sized button parked at the left of an empty cell.
+    // A bare `<button>` is inline-block and shrinks to fit, which is right for
+    // HTML and wrong for this widget, so the widget says so.
     FlutterClass::widget(
         "ElevatedButton",
         "StatefulWidget",
-        "button",
+        "button;width:100%;height:100%",
         ELEVATEDBUTTON_FIELDS,
     ),
     // A card is a grouped surface — `<fieldset>` is what plib and dotnet both

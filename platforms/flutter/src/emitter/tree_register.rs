@@ -50,30 +50,29 @@ fn ctor_spec(class: &FlutterClass) -> CtorSpec {
     }
     // Leaf controls whose child/label Text IS the control's own caption (a
     // button's face), rather than a nested child control.
-    let is_captioned_leaf = matches!(
-        class.name,
-        "ElevatedButton"
-            | "TextButton"
-            | "OutlinedButton"
-            | "CupertinoButton"
-            | "FloatingActionButton"
-            | "Chip"
-            | "ActionChip"
-            | "FilterChip"
-            | "ChoiceChip"
-    );
+    //
+    // ⛔ RETIRED — and the name table with it. `FieldGui::Caption` set a control
+    // PROPERTY from a widget, which stringifies: `AppBar(title: Text('x'))` and
+    // `ElevatedButton(child: Text('7'))` both rendered the literal `[object]`
+    // where the label belonged.
+    //
+    // It was true of the old control host, where a Button owned a `Text`
+    // property and had
+    // no children. HTML does not work that way and never did: a button's face
+    // IS a child node — `<button><span>7</span></button>` — and so is an app
+    // bar's title. Nesting is therefore not a special case of captioning, it is
+    // the only case, and `NestOrProp` already decides it per VALUE (`ref.test`)
+    // instead of per class NAME. A `Tab(text: 'x')` string still lands as a
+    // property through the same arm, because the test asks what the value is.
+    //
+    // The list this replaced was one of the two name tables flexclassplan §4a
+    // rules out: a widget added to the catalog tomorrow got the wrong role
+    // silently unless someone remembered to extend a `matches!` here.
     let field_gui = class
         .fields
         .iter()
         .map(|f| {
-            let caption = (is_captioned_leaf && (f.name == "child" || f.name == "label"))
-                || (class.name == "AppBar" && f.name == "title")
-                || (class.name == "Tab" && f.name == "text");
-            if caption {
-                // A leaf control (button/app-bar) takes its child Text as its
-                // own caption, not as a nested child.
-                FieldGui::Caption
-            } else if f.children {
+            if f.children {
                 FieldGui::Children
             } else if is_callback_field(f.name) {
                 // Every user callback (`onPressed`/`onChanged`/`onTap`/…) wires
@@ -86,8 +85,11 @@ fn ctor_spec(class: &FlutterClass) -> CtorSpec {
                 FieldGui::NestOrProp("Text".to_string())
             } else {
                 // Semantic value fields (`value`/`min`/`max`/`text`/…) forward
-                // as `Set<Prop>` commands to the backing control.
-                FieldGui::NestOrProp(f.name.to_string())
+                // as `Set<Prop>` commands to the backing control — under the
+                // role the catalog DECLARES, which is the field's own name
+                // unless it says otherwise (`MaterialApp.title` is the window
+                // title, not a `title=""` tooltip).
+                FieldGui::NestOrProp(f.role.unwrap_or(f.name).to_string())
             }
         })
         .collect();

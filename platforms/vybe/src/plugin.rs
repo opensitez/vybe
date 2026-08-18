@@ -66,7 +66,20 @@ impl vybe_runtime::Plugin for Plugin {
         let gui_granted = fw.granted(vybe_runtime::capabilities::Capability::Gui);
 
         if let Some(vm) = fw.vm.as_deref_mut() {
-            // Always-on: the vybe:gui 2D drawing surface.
+            // The COLOUR PALETTE, and only that. The GDI+ value-type factories
+            // this used to carry (`pointNew`/`sizeNew`/`fontNew`/`penNew`/
+            // `solidBrushNew`/`hatchBrushNew`/`linearGradientBrushNew`/
+            // `graphicsNew`) are dead — every one is composed in bytecode by
+            // `dotnet.*_new` (`common_ctor_for`), measured by disassembling
+            // `new Point/Size/Font/Pen/SolidBrush`. Drawing itself is
+            // `web:canvas` (`CreateGraphics` → `getContext`).
+            //
+            // ⚠ What is NOT dead is the `color` global and `colorFromName`:
+            // `Color.Red` is a two-op body calling it, and the `Graphics`
+            // bodies read `p.color.r`/`.g`/`.b`/`.a` as NUMBERS to build
+            // `web:canvas::setStrokeStyle`. The RGB table lives here and
+            // nowhere else, deliberately — restating it beside the statics
+            // would be a second copy that drifts.
             crate::drawing::register(vm);
 
             // Widget-backed surface — only under `gui`, when Gui is granted and

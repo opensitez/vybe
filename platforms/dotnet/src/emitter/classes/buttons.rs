@@ -33,9 +33,7 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_fn: None,        },
         DotnetClass {
             name: "Button",
             parent: Some("ButtonBase"),
@@ -46,9 +44,7 @@ pub fn classes() -> &'static [DotnetClass] {
             // `tree_register::html_element_for_control`. A `widget_host_fn`
             // here would win over that mapping and pin the control to
             // `vybe:gui`; see `winforms::component_classes`.
-            widget_host_fn: None,
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_fn: None,        },
         DotnetClass {
             name: "CheckBox",
             parent: Some("ButtonBase"),
@@ -63,9 +59,7 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 0,
             // `<input type="checkbox">`
-            widget_host_fn: None,
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_fn: None,        },
         DotnetClass {
             name: "RadioButton",
             parent: Some("ButtonBase"),
@@ -73,8 +67,6 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 0,
             // `<input type="radio">`
-            widget_host_fn: None,
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_fn: None,        },
     ]
 }

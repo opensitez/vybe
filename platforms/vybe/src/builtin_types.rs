@@ -251,11 +251,11 @@ pub fn register_types(fw: &mut Framework<'_>) {
         &[("none", 0), ("left", 1), ("right", 2), ("middle", 4)],
     );
 
-    // --- Value-type constructors (no-op today: the Point/Size/Font TypeDefs
-    // aren't registered, so these bind only if some future prelude adds them). ---
-    fw.set_constructor("Point", "vybe:gui", "pointNew");
-    fw.set_constructor("Size", "vybe:gui", "sizeNew");
-    fw.set_constructor("Font", "vybe:gui", "fontNew");
+    // No value-type constructors here. `Point`/`Size`/`Font` were bound to
+    // `vybe:gui` host fns that no longer exist, and the binding was already a
+    // no-op — their TypeDefs are not registered, as the comment that stood here
+    // admitted. A value type is composed in BYTECODE (`common_ctor_for` →
+    // `dotnet.point_new`), because it has no element and nothing to insert.
 }
 
 /// Register an enum TypeDef with its compile-time integer constants.

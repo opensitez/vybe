@@ -18,25 +18,21 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 0,
             // `<div>` — created by the element mapping.
-            widget_host_fn: None,
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_fn: None,        },
         DotnetClass {
             name: "GroupBox",
             parent: Some("Control"),
             properties: &["FlatStyle", "UseCompatibleTextRendering"],
             methods: &[],
             ctor_arity: 0,
-            // `<fieldset>` — created by the element mapping. The remaining
-            // containers in this file keep their factory for now:
-            // `FlowLayoutPanel` and `TableLayoutPanel` need a `display` mode
-            // declared and have no selector to declare it on, and
-            // `TabControl`/`TabPage`/`SplitContainer` map to `<vybe-*>` custom
-            // elements whose behaviour still lives in the `vybe:gui` factory
-            // and has to move first. See `tree_register::html_element_for_control`.
-            widget_host_fn: None,
-            widget_host_module: "vybe:gui",
-        },
+            // `<fieldset>` — created by the element mapping, as are
+            // `FlowLayoutPanel` and `TableLayoutPanel`: both are a `<div>`
+            // that DECLARES its display mode (`flex`, `grid`), which is what
+            // `ControlElement.declares` is for. `TabControl`/`TabPage`/
+            // `SplitContainer` map to `<vybe-*>` custom elements whose
+            // behaviour still lives in the `vybe:gui` factory and has to move
+            // first. See `tree_register::html_element_for_control`.
+            widget_host_fn: None,        },
         DotnetClass {
             name: "TabControl",
             parent: Some("Control"),
@@ -59,9 +55,13 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: Some("new_TabControl"),
-            widget_host_module: "vybe:gui",
-        },
+            // `<vybe-tabcontrol>` — the tag was declared in
+            // `html_element_for_control` all along; the factory simply won the
+            // ctor gate ahead of `is_element_mapped` and kept it off the
+            // element path. `control_kind` strips `vybe-` and finds the real
+            // `tabcontrol` widget, so this is the same control, constructed as
+            // an element.
+            widget_host_fn: None,        },
         DotnetClass {
             name: "TabPage",
             parent: Some("Panel"),
@@ -73,9 +73,8 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: Some("new_TabPage"),
-            widget_host_module: "vybe:gui",
-        },
+            // `<vybe-tabpage>`, declared beside `vybe-tabcontrol`.
+            widget_host_fn: None,        },
         DotnetClass {
             name: "SplitContainer",
             parent: Some("ContainerControl"),
@@ -97,18 +96,14 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: Some("new_SplitContainer"),
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_fn: None,        },
         DotnetClass {
             name: "FlowLayoutPanel",
             parent: Some("Panel"),
             properties: &["FlowDirection", "WrapContents"],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: Some("new_FlowLayoutPanel"),
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_fn: None,        },
         DotnetClass {
             name: "TableLayoutPanel",
             parent: Some("Panel"),
@@ -123,9 +118,7 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: Some("new_TableLayoutPanel"),
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_fn: None,        },
         // ── Declared at last: the designer knew them, the descriptor did not ──
         //
         // `ControlType` (`winforms/control.rs`) has carried `HScrollBar`,
@@ -153,9 +146,7 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_fn: None,        },
         DotnetClass {
             name: "VScrollBar",
             parent: Some("Control"),
@@ -168,9 +159,7 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_fn: None,        },
         // A BindingNavigator IS a ToolStrip — that is its real .NET parent, and
         // saying so is what gives it the strip's `Items` surface for free.
         DotnetClass {
@@ -179,9 +168,7 @@ pub fn classes() -> &'static [DotnetClass] {
             properties: &["BindingSource", "CountItem", "PositionItem"],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_fn: None,        },
         // The bare drag-bar `Splitter` — plib's `TSplitter`, and NOT
         // `SplitContainer`, which is the two-panel container above.
         DotnetClass {
@@ -190,9 +177,7 @@ pub fn classes() -> &'static [DotnetClass] {
             properties: &["BorderStyle", "MinExtra", "MinSize", "SplitPosition"],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_fn: None,        },
         // A `UserControl` is a composite the program itself fills, so it is a
         // plain container — `<section>`, which is a real element and already
         // establishes a containing block.
@@ -202,9 +187,7 @@ pub fn classes() -> &'static [DotnetClass] {
             properties: &["AutoScaleMode", "AutoValidate", "BorderStyle"],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_fn: None,        },
         // `DomainUpDown` is `NumericUpDown`'s text-list twin.
         DotnetClass {
             name: "DomainUpDown",
@@ -219,8 +202,6 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_fn: None,        },
     ]
 }

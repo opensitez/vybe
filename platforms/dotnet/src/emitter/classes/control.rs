@@ -93,8 +93,17 @@ const CONTROL_CREATE_GRAPHICS: &[MethodOp] = &[
 /// including `Form`). Each entry maps to a host fn or, for compound
 /// methods like `CreateGraphics`, to a [`MethodTarget::Body`] sequence.
 ///
-/// - `Show`/`Hide`/`Focus`/`Refresh`/… → host fns in `vybe:gui` (no-ops
-///   in non-display contexts, real implementations under a GUI backend)
+/// - `Show`/`Hide`/`Focus`/`Refresh`/… → the shared control VERBS
+///   (`gui.ctrl.<verb>`), lowered by `primitives/gui.rs` to `web:dom` /
+///   `web:html`. They named `vybe:gui` host fns until this conversion.
+///
+///   ⚠ Those targets were ALREADY dead when they were replaced, and the
+///   replacement therefore changes no bytecode: `tree_register`'s
+///   `gui_control_verb` intercepts each of these names for any
+///   element-backed class and registers a `CommonEmit` leaf BEFORE it looks
+///   at `body`. What the swap removes is the false statement, not a call —
+///   the entry cannot simply be deleted, because the DECLARATION is what
+///   `inherited_methods` yields and so what makes the verb reachable at all.
 /// - `CreateGraphics` → a Body that constructs a `Graphics` dotnet
 ///   instance and stamps `__control_name` from `this`. The returned
 ///   instance has all `Graphics` methods bound (via the standard dotnet
@@ -108,48 +117,55 @@ const CONTROL_METHODS: &[DotnetMethod] = &[
     DotnetMethod {
         name: "Show",
         arity: 1,
-        target: MethodTarget::host("vybe:gui", "__ctrl_show"),
+        target: MethodTarget::common("gui.ctrl.show"),
     },
     DotnetMethod {
         name: "Hide",
         arity: 1,
-        target: MethodTarget::host("vybe:gui", "__ctrl_hide"),
+        target: MethodTarget::common("gui.ctrl.hide"),
     },
     DotnetMethod {
         name: "Focus",
         arity: 1,
-        target: MethodTarget::host("vybe:gui", "__ctrl_focus"),
+        target: MethodTarget::common("gui.ctrl.focus"),
     },
     DotnetMethod {
         name: "Refresh",
         arity: 1,
-        target: MethodTarget::host("vybe:gui", "__ctrl_refresh"),
+        target: MethodTarget::common("gui.ctrl.refresh"),
     },
     DotnetMethod {
         name: "Invalidate",
         arity: 1,
-        target: MethodTarget::host("vybe:gui", "__ctrl_invalidate"),
+        target: MethodTarget::common("gui.ctrl.invalidate"),
     },
     DotnetMethod {
         name: "Update",
         arity: 1,
-        target: MethodTarget::host("vybe:gui", "__ctrl_update"),
+        target: MethodTarget::common("gui.ctrl.update"),
     },
     DotnetMethod {
         name: "BringToFront",
         arity: 1,
-        target: MethodTarget::host("vybe:gui", "__ctrl_bring_to_front"),
+        target: MethodTarget::common("gui.ctrl.bring_to_front"),
     },
     DotnetMethod {
         name: "SendToBack",
         arity: 1,
-        target: MethodTarget::host("vybe:gui", "__ctrl_send_to_back"),
+        target: MethodTarget::common("gui.ctrl.send_to_back"),
     },
     DotnetMethod {
         name: "Select",
         arity: 1,
-        target: MethodTarget::host("vybe:gui", "__ctrl_focus"),
+        target: MethodTarget::common("gui.ctrl.focus"),
     },
+    // ⚠ The one control verb still on `vybe:gui`, and the only one of these
+    // whose target is LIVE: `gui_control_verb` has no `dispose`, so this is
+    // what `btn.Dispose()` actually calls. The host fn hides the control and
+    // drops its handlers off the old `GuiState`; the DOM answer is
+    // `element.remove()`, which is a different observable outcome (the node
+    // stops existing rather than going `hidden`), so it is a semantics
+    // decision and not a rename. Left as-is pending that call.
     DotnetMethod {
         name: "Dispose",
         arity: 1,
@@ -231,9 +247,7 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: CONTROL_METHODS,
             ctor_arity: 0,
-            widget_host_fn: None,
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_fn: None,        },
         // ── ScrollableControl ──────────────────────────────────────────────
         // Adds the autoscroll surface used by Form, Panel, …
         DotnetClass {
@@ -249,9 +263,7 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_fn: None,        },
         // ── ContainerControl ───────────────────────────────────────────────
         // Adds the active-control / parent-form tracking used by Form,
         // UserControl, …
@@ -261,8 +273,6 @@ pub fn classes() -> &'static [DotnetClass] {
             properties: &["ActiveControl", "ParentForm", "AutoValidate"],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_fn: None,        },
     ]
 }

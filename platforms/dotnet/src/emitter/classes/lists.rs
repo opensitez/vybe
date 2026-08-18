@@ -23,9 +23,7 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_fn: None,        },
         DotnetClass {
             name: "ComboBox",
             parent: Some("ListControl"),
@@ -54,9 +52,7 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 0,
             // `<select>` — created by the element mapping.
-            widget_host_fn: None,
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_fn: None,        },
         DotnetClass {
             name: "ListBox",
             parent: Some("ListControl"),
@@ -85,9 +81,7 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 0,
             // `<ul>`
-            widget_host_fn: None,
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_fn: None,        },
         DotnetClass {
             name: "ListView",
             parent: Some("Control"),
@@ -132,9 +126,7 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: Some("new_ListView"),
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_fn: None,        },
         DotnetClass {
             name: "TreeView",
             parent: Some("Control"),
@@ -171,9 +163,7 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 0,
             // `<ul>` — nesting is what makes it a tree.
-            widget_host_fn: None,
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_fn: None,        },
         // A CheckedListBox IS a ListBox with per-item checkboxes, so it
         // inherits the whole list surface by declaring that parent.
         // `vybe_widgets` already has the `checkedlistbox` kind and its default
@@ -191,8 +181,6 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: None,
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_fn: None,        },
     ]
 }

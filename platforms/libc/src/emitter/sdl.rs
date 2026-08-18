@@ -110,8 +110,8 @@ fn emit_window_call(chunks: &mut [Chunk], current: usize, func: &str, argc: u8, 
 }
 
 /// Call a `web:ui-events` host function. SDL's input is an ADAPTER over the
-/// W3C UI Events surface in `platforms/web` — there is no SDL host surface
-/// and no `vybe:gui` involvement: the queue is the web platform's, and every
+/// W3C UI Events surface in `platforms/web` — there is no SDL host surface of
+/// its own: the queue is the web platform's, and every
 /// vocabulary difference (DOM `"keydown"` vs `SDL_KEYDOWN`, DOM's 0-based
 /// `button` vs SDL's 1-based, `key`/`code` strings vs `SDLK_*`) is resolved
 /// here, in emitted code. A browser host satisfies the same imports with the
@@ -156,10 +156,9 @@ fn emit_dom_kind_is(chunks: &mut [Chunk], current: usize, ev: u16, kind: &str, l
 /// Unwrap a C pointer argument to the object it addresses.
 ///
 /// `&e` on a struct reaches a callee either as the struct itself or boxed in
-/// a scalar cell `{__ref_kind:"cell", __value}`. The host used to do this;
-/// now that SDL is adapter-only, the emitted code must — reading `.type`
-/// straight off a cell yields undefined, which is how every field arrived
-/// as zero.
+/// a scalar cell `{__ref_kind:"cell", __value}`. SDL is adapter-only, so the
+/// EMITTED code must unwrap it: reading `.type` straight off a cell yields
+/// undefined, which arrives as zero in every field.
 fn emit_deref_cell(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
     emit_get_local(chunks, current, slot, line);
     let kind_key = chunks[current].add_constant(Value::String(Arc::from("__ref_kind")));
@@ -635,9 +634,8 @@ pub fn emit_sdl_draw_text(chunks: &mut [Chunk], current: usize, _argc: u8, line:
 /// `SDL_UpdateWindowSurface(window)` — nothing to do.
 ///
 /// There is no `present` on the web: a page does not push frames, it draws and
-/// the compositor shows them. This used to call `vybe:gui.runApplication`,
-/// whose only effect on this path was setting `should_run` — and a document
-/// does not need to be told to run. It runs because it HAS content, which is
+/// the compositor shows them. A document does not need to be told to run: it
+/// runs because it HAS content, which is
 /// the same condition `gui_document::with_live` starts the window runner on,
 /// and `load` fires from `gui_launch::fire_load_event` once it does.
 ///
@@ -707,8 +705,8 @@ pub fn emit_sdl_get_performance_frequency(
 /// `SDL_PollEvent(SDL_Event *e)` → 1 if an event was dequeued, else 0.
 ///
 /// Pure ADAPTER over `web:ui-events.pollEvent()`: takes the W3C event object
-/// and writes SDL's struct view of it. No host function of its own, no
-/// `vybe:gui` — the queue belongs to the web platform, and a browser host
+/// and writes SDL's struct view of it. No host function of its own — the
+/// queue belongs to the web platform, and a browser host
 /// serves the same import from the real DOM.
 pub fn emit_sdl_poll_event(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let store_tmp = chunks[current].alloc_scratch(1);

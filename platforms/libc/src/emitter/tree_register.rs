@@ -119,8 +119,24 @@ pub fn register_namespace_tree() {
         );
         root.insert("mysql".to_string(), NamespaceNode::Namespace(mysql.clone()));
         namespaces::register_namespace_tree("libc", NamespaceNode::Namespace(root));
-        namespaces::register_namespace_tree("sqlite3", NamespaceNode::Namespace(sqlite));
-        namespaces::register_namespace_tree("mysql", NamespaceNode::Namespace(mysql));
+        namespaces::register_namespace_tree("sqlite3", NamespaceNode::Namespace(sqlite.clone()));
+        namespaces::register_namespace_tree("mysql", NamespaceNode::Namespace(mysql.clone()));
+
+        // ⛔ THE LEAVES, not just the package node. `sqlite3_open` is a FREE
+        // FUNCTION in C — the source never writes `sqlite3.sqlite3_open` — so
+        // resolution lands on a bare key and `resolve_key` looks it up at the
+        // ROOT of the tree. Registering only the `sqlite3` namespace put every
+        // symbol one level too deep: the package resolved, the call did not,
+        // and both C and Fortran got `undefined is not callable`.
+        //
+        // namespaceplan.md: "Leaves: every callable/readable endpoint that
+        // resolution may land on. A package or type node alone is incomplete."
+        // Registered here rather than as `[builtins]` rows in each consuming
+        // profile, so one registration serves C, Fortran and anything else that
+        // names the C ABI.
+        for (symbol, node) in sqlite.iter().chain(mysql.iter()) {
+            namespaces::register_namespace_tree(symbol, node.clone());
+        }
 
         // Keep compatibility with existing C profile entries that emit
         // `common:sdl.*` without a libc prefix.

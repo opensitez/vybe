@@ -9,8 +9,8 @@
 //!
 //! Leaves follow the dotnet rules:
 //! - each GCL class is a `Type` node at `plib.<class>`;
-//! - its widget host constructor (`vybe:gui new_Button`, `newForm`, …)
-//!   is the `create` static leaf — GCL's Delphi surface is literally
+//! - the element it is built as is the `create` static leaf — GCL's Delphi
+//!   surface is literally
 //!   `TButton.Create`;
 //! - instance methods (Show/Close/Add) are receiver-dispatched, never
 //!   tree-resolved — skipped, same as dotnet;
@@ -110,7 +110,7 @@ fn ctor_spec(class: &super::gcl::GclClass) -> CtorSpec {
 
 /// A VCL property spelling → the shared GUI ROLE it fills.
 ///
-/// The roles are `vybe:gui`'s canonical property names — the vocabulary every
+/// The roles are the shared canonical property names — the vocabulary every
 /// language already spoke. This is the whole of plib's job here: `Caption` and
 /// `Text` are the same role, `ClientWidth` is `width`. The Pascal word stops
 /// at this function; nothing downstream knows VCL exists.
@@ -160,6 +160,13 @@ fn gui_property_role(owner: &str, prop: &str) -> &'static str {
         // WinForms spells the same two `BackColor`/`ForeColor`, which is what
         // the roles are named after.
         "color" => "backcolor",
+        // `Font` IS a style property, reached like `Left` or `Color`. Every
+        // `.dfm` in the corpus declares `Font.Name = 'Segoe UI'`, and without
+        // this row the whole axis was dropped before it could reach the
+        // cascade — which is why `vybe_widgets`' CSS inheritance measured
+        // neutral despite `font_family`/`font_size`/`font_weight`/`font_style`
+        // all being in its inherited set.
+        "font" => "font",
         // VCL's `Alignment` IS CSS `text-align` — how the caption sits inside
         // the control's own box, which is what every framework means by it
         // (WinForms spells it `TextAlign`). The `ta*` constants are declared in
@@ -407,64 +414,10 @@ fn collection_ctors() -> Vec<(&'static str, NamespaceNode)> {
         ]),
     };
 
-    // A queue and a stack are the SAME array store; they differ only in which
-    // end each Delphi verb reaches. `Peek` is the one member that has to know.
-    let fifo_lifo = |peek: &str, take: &str| NamespaceNode::Type {
-        ctor: None,
-        ctor_call: Some(Box::new(NamespaceNode::CommonEmit(
-            "collections.new".to_string(),
-        ))),
-        statics: Subtree::new(),
-        methods: BTreeMap::from([
-            (
-                "enqueue".to_string(),
-                NamespaceNode::CommonEmit("collections.push".to_string()),
-            ),
-            (
-                "push".to_string(),
-                NamespaceNode::CommonEmit("collections.push".to_string()),
-            ),
-            (
-                "dequeue".to_string(),
-                NamespaceNode::CommonEmit(take.to_string()),
-            ),
-            (
-                "pop".to_string(),
-                NamespaceNode::CommonEmit(take.to_string()),
-            ),
-            (
-                "peek".to_string(),
-                NamespaceNode::CommonEmit(peek.to_string()),
-            ),
-            (
-                "clear".to_string(),
-                NamespaceNode::CommonEmit("collections.clear".to_string()),
-            ),
-            (
-                "toarray".to_string(),
-                NamespaceNode::CommonEmit("collections.clone".to_string()),
-            ),
-            (
-                "count".to_string(),
-                namespaces::property(
-                    Some(NamespaceNode::CommonEmit("collections.length".to_string())),
-                    None,
-                ),
-            ),
-        ]),
-        // See the note on the list's — overload resolution reads these.
-        member_returns: BTreeMap::from([("count".to_string(), "Integer".to_string())]),
-    };
-
     vec![
         ("tlist", array_ctor()),
         ("tobjectlist", array_ctor()),
         ("tdictionary", map_type()),
-        (
-            "tqueue",
-            fifo_lifo("pascal.list_first", "collections.shift"),
-        ),
-        ("tstack", fifo_lifo("pascal.list_last", "collections.pop")),
     ]
 }
 
@@ -475,13 +428,15 @@ pub fn register_namespace_tree() {
     ONCE.call_once(|| {
         let mut classes = Subtree::new();
         for class in super::gcl::gcl_classes() {
-            let mut statics = Subtree::new();
-            if let Some(widget_fn) = class.widget_host_fn {
-                statics.insert(
-                    "create".to_string(),
-                    namespaces::host_fn(gui::GUI_MODULE, widget_fn),
-                );
-            }
+            // NO `create` STATIC LEAF. `TButton.Create` is CONSTRUCTION, and
+            // construction is declared once — by `ctor_spec`, whose `control_fn`
+            // carries the element and which the shared resolver drives through
+            // `emit_control_element`. A leaf here declared the same fact a second
+            // time as a raw HOST TARGET, and `widget_host_fn` is an HTML TAG
+            // (`fieldset`, `select`, `input:checkbox`), so it named a host
+            // function that does not exist. It only ever looked harmless because
+            // the working path shadowed it.
+            let statics = Subtree::new();
             // INSTANCE PROPERTIES. The class is an ADAPTER: `TEdit` is a
             // textbox, `Caption` is its text — the control and the concept are
             // already the same thing, so all a VCL class contributes is the
@@ -489,9 +444,7 @@ pub fn register_namespace_tree() {
             // lets the shared resolver answer `lbl.Caption := x` without the
             // compiler knowing Pascal exists; the generic accessors carry the
             // property name as a bound argument.
-            //
-            // `methods` was left empty by every registrar, which is exactly
-            // why the compiler used to reach into platform crates for this.
+
             let mut members: Subtree = BTreeMap::new();
             // What a property READS BACK as. Declared from the role, so the one
             // answer serves every frontend registered this way, and the
@@ -554,9 +507,6 @@ pub fn register_namespace_tree() {
                 members
                     .entry(method.name.to_lowercase())
                     .or_insert_with(|| match method.target {
-                        super::gcl::GclMethodTarget::Host { module, fn_name } => {
-                            namespaces::host_fn(module, fn_name)
-                        }
                         super::gcl::GclMethodTarget::Common { emit } => {
                             NamespaceNode::CommonEmit(emit.to_string())
                         }
@@ -609,27 +559,40 @@ pub fn register_namespace_tree() {
             );
         }
         // `Application` — the VCL global. DECLARED, like everything else in
-        // this tree, so the common resolver answers it; it used to be built
-        // imperatively by a `gcl/builder.rs` that had NO CALLER, so
-        // `Application.Initialize` read `undefined` off a global that was
-        // never installed. That whole file is deleted.
+        // this tree, so the common resolver answers it. Building it imperatively
+        // instead leaves `Application.Initialize` reading `undefined` off a
+        // global nothing installed.
         //
         // `Title` IS `document.title` — the VCL word for the same thing HTML
         // already names, so it needs no host function of its own.
         let mut application = Subtree::new();
+        // `Application.Run` EMITS NOTHING. A document is not told to run — it
+        // runs because it HAS content, which is the condition the launch gate
+        // already reads. `Run` was the last thing keeping a `should_run` flag
+        // alive on a host that is being deleted (guiplan.md, "There is no
+        // `runApplication`, for anybody").
         application.insert(
             "run".to_string(),
-            namespaces::host_fn(gui::GUI_MODULE, gui::HOST_FN_RUN_APPLICATION),
+            NamespaceNode::CommonEmit(gui::APP_RUN_EMIT.to_string()),
         );
         application.insert(
             "terminate".to_string(),
-            namespaces::host_fn(gui::GUI_MODULE, gui::HOST_FN_APP_EXIT),
+            NamespaceNode::CommonEmit(gui::APP_EXIT_EMIT.to_string()),
         );
+        // `Title` IS `document.title`, which is the `windowtitle` ROLE — the
+        // same one a Form's caption fills. Declared as the role, so the VCL
+        // word maps onto a concept HTML already names.
         application.insert(
             "title".to_string(),
             namespaces::property(
-                Some(namespaces::host_fn(gui::DOCUMENT_MODULE, "title")),
-                Some(namespaces::host_fn(gui::DOCUMENT_MODULE, "setTitle")),
+                Some(NamespaceNode::CommonEmit(format!(
+                    "{}windowtitle",
+                    gui::PROP_GET_EMIT
+                ))),
+                Some(NamespaceNode::CommonEmit(format!(
+                    "{}windowtitle",
+                    gui::PROP_SET_EMIT
+                ))),
             ),
         );
         classes.insert(

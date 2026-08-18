@@ -1,8 +1,8 @@
 //! Flutter widget catalog — shared adapter types + aggregation.
 //!
-//! Flutter-shaped adapter surface. Each entry lowers a Flutter widget onto
-//! an existing `vybe_widgets`/`vybe:gui` control (the same host constructors
-//! the dotnet WinForms and plib VCL adapters use) — no Flutter-specific host
+//! Flutter-shaped adapter surface. Each entry lowers a Flutter widget onto an
+//! HTML element — the same `web:*` surface the dotnet WinForms and plib VCL
+//! adapters render through — no Flutter-specific host
 //! functions. The catalog is pure DATA: resolution logic lives in the shared
 //! namespace resolver; construction/field-capture/`is`-checks ride the shared
 //! class machinery (`vybe_compiler::primitives::classes`).
@@ -30,8 +30,14 @@ pub struct FlutterClass {
     /// (`Scaffold(appBar:).appBar`, `Text('x').data`). Each becomes a
     /// readable field on the constructed object.
     pub fields: &'static [FlutterField],
-    /// Backing `vybe:gui` control constructor (`new_Label`, `new_Panel`,
-    /// `new_TreeView`, …). `None` for abstract bases and pure-data types.
+    /// The HTML TAG this widget is — `"div"`, `"fieldset"`, `"input"`. Wired
+    /// into `CtorSpec::control_fn`, which builds the element at the
+    /// construction site. `None` for abstract bases and pure-data types.
+    ///
+    /// The name still says `host_fn` because it once held a control-constructor
+    /// name (`new_Label`, `new_Panel`); it has been a tag since the widgets
+    /// became elements, and `catalog.rs:76` records a wrapper that rendered as
+    /// a 120x20 label because a leftover control name parsed as a tag.
     pub widget_host_fn: Option<&'static str>,
     /// A TRANSPARENT wrapper: the widget contributes no control of its own,
     /// only an effect on its child (`Opacity`, `ClipRRect`, `RepaintBoundary`,
@@ -43,7 +49,7 @@ pub struct FlutterClass {
 }
 
 impl FlutterClass {
-    /// A concrete widget backed by a `vybe:gui` control constructor.
+    /// A concrete widget, backed by the HTML tag it is.
     pub(crate) const fn widget(
         name: &'static str,
         parent: &'static str,
@@ -73,7 +79,7 @@ impl FlutterClass {
             parent: Some(parent),
             interfaces: NO_INTERFACES,
             fields,
-            // ⚠ `"Panel"` here was a `vybe:gui` control name, and once
+            // ⚠ `"Panel"` here was an old control name, and once
             // `control_fn` became the ELEMENT declaration it parsed as the tag
             // `<panel>` — which no `control_kind` arm knows, so every wrapper
             // rendered as a 120x20 label instead of wrapping anything.
@@ -146,6 +152,14 @@ pub struct FlutterField {
     /// construction adds each element to the control. Single-child/scalar
     /// fields (`false`) are resolved per-value at construction runtime.
     pub children: bool,
+    /// The GUI ROLE this field fills, when it is not the field's own name.
+    ///
+    /// `MaterialApp.title` is the clearest case: it is the WINDOW title, the
+    /// string a task switcher shows — not a `title=""` attribute on a div,
+    /// which is a tooltip. Declaring the role here is what stops the
+    /// construction site guessing from a name, and it is where the rest of the
+    /// role declarations belong as they land (flexclassplan §4a).
+    pub role: Option<&'static str>,
 }
 
 impl FlutterField {
@@ -155,6 +169,17 @@ impl FlutterField {
             positional: None,
             default: None,
             children: false,
+            role: None,
+        }
+    }
+    /// A named field that fills a GUI role other than its own name.
+    pub(crate) const fn named_role(name: &'static str, role: &'static str) -> Self {
+        FlutterField {
+            name,
+            positional: None,
+            default: None,
+            children: false,
+            role: Some(role),
         }
     }
     pub(crate) const fn named_default(name: &'static str, default: &'static str) -> Self {
@@ -163,6 +188,7 @@ impl FlutterField {
             positional: None,
             default: Some(default),
             children: false,
+            role: None,
         }
     }
     pub(crate) const fn positional(name: &'static str, slot: u8) -> Self {
@@ -171,6 +197,7 @@ impl FlutterField {
             positional: Some(slot),
             default: None,
             children: false,
+            role: None,
         }
     }
     /// A list-of-children field (`Column(children: [...])`).
@@ -180,6 +207,7 @@ impl FlutterField {
             positional: None,
             default: Some("const []"),
             children: true,
+            role: None,
         }
     }
 }
@@ -368,50 +396,11 @@ pub fn field_defaults(class_name: &str) -> Vec<(&'static str, &'static str)> {
         .unwrap_or_default()
 }
 
-/// Widget type names that realize as TRANSPARENT wrappers — the realizer
-/// renders their child in their place. Derived from the catalog so the Dart
-/// runtime never duplicates the list.
-pub fn transparent_types() -> Vec<&'static str> {
-    flutter_classes()
-        .iter()
-        .filter(|c| c.transparent)
-        .map(|c| c.name)
-        .collect()
-}
-
-/// Property keys the backing `vybe:gui` controls actually act on (the
-/// `set_property` vocabulary: typed commands plus item population). Anything
-/// else a Flutter field would emit — `opacity`, `elevation`, `padding`,
-/// `message`, `clipBehavior` — has no control command behind it, so forwarding
-/// it does nothing except stamp noise (an `EdgeInsets` even stringifies to
-/// `[object]`). The realizer forwards only these.
-pub const LIVE_PROPERTIES: &[&str] = &[
-    "text",
-    "flex",
-    "enabled",
-    "visible",
-    "readonly",
-    "value",
-    "checked",
-    "ischecked",
-    "selected",
-    "selectedindex",
-    "clearitems",
-    "additem",
-    // Box/visual properties — backed by the container and label controls
-    // (`SetWidth`/`SetHeight`/`SetPadding`/`SetSpacing`/`SetBackColor`/
-    // `SetForeColor`/`SetFontSize`).
-    "width",
-    "height",
-    "padding",
-    "spacing",
-    "fontsize",
-    "color",
-    "backcolor",
-    "backgroundcolor",
-    "forecolor",
-    "textcolor",
-];
+// ⛔ No allow-list of "property keys the host acts on" belongs here. Against the
+// DOM a property is an IDL attribute or an HTML attribute; there is no
+// vocabulary to be outside of, so a list can only be wrong.
+// `FlutterClass::transparent` is carried as catalog DATA and has no runtime
+// consumer.
 
 /// The `is`/`instanceof` ancestry for `class`, self first: e.g. `Scaffold` →
 /// `["Scaffold", "StatefulWidget", "Widget"]`. Stamped as the object's

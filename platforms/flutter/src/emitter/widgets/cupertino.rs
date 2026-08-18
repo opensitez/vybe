@@ -1,5 +1,5 @@
-//! Cupertino (iOS-style) widgets — backed by the same `vybe:gui` controls as
-//! their Material counterparts.
+//! Cupertino (iOS-style) widgets — backed by the same elements as their
+//! Material counterparts.
 
 use crate::emitter::catalog::{FlutterClass, FlutterField};
 

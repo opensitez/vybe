@@ -88,6 +88,22 @@ pub fn component_class_exports() -> &'static [(&'static str, ClassType)] {
 fn common_ctor_for(class: &str) -> Option<&'static str> {
     match class {
         "Rectangle" => Some("dotnet.rectangle_new"),
+        // `pointNew` / `sizeNew` were `vybe:gui` host functions that allocated
+        // an object with two fields. A value type is not a widget — there is
+        // no element and nothing to insert — so composing the object here
+        // takes two more names off a surface this conversion exists to shrink.
+        "Point" => Some("dotnet.point_new"),
+        "Size" => Some("dotnet.size_new"),
+        // `Font` was the LAST value type still built by a `vybe:gui` host fn,
+        // and the only one a GUI test actually reached — every other drawing
+        // type already composed here. `platforms/vybe/src/drawing.rs` is gone.
+        "Font" => Some("dotnet.font_new"),
+        "Color" => Some("dotnet.color_new"),
+        "Pen" => Some("dotnet.pen_new"),
+        "SolidBrush" => Some("dotnet.solid_brush_new"),
+        "Graphics" => Some("dotnet.graphics_new"),
+        "HatchBrush" => Some("dotnet.hatch_brush_new"),
+        "LinearGradientBrush" => Some("dotnet.linear_gradient_brush_new"),
         _ => None,
     }
 }
@@ -154,6 +170,19 @@ fn class_to_component_class(class: &DotnetClass) -> ClassType {
                     MethodBody::HostCall(HostTarget::new(module, fn_name)),
                 ));
             }
+            // A shared emit, declared by name. This arm is written out rather
+            // than left to the `_ => {}` below on purpose: a variant that
+            // falls through there declares NO method at all, and an undeclared
+            // method is not a compile error — it is `Me.Focus()` resolving to
+            // `undefined`, which is the failure the comment further down
+            // records for `SuspendLayout`.
+            MethodTarget::Common { emit } => {
+                out = out.with_method(MethodDef::new(
+                    method.name,
+                    param_count,
+                    MethodBody::Common(emit.to_string()),
+                ));
+            }
             // `CreateGraphics` is a non-trivial method Body (construct a
             // Graphics stamped with the control's name). Model it as a shared
             // dotnet emitter so it resolves through the descriptor at the call
@@ -201,9 +230,15 @@ fn class_to_component_class(class: &DotnetClass) -> ClassType {
         out = out
             .with_constructor(ConstructorDef::new(class.ctor_arity).with_common_backing(emit));
     } else if let Some(host_fn) = class.widget_host_fn {
+        // Unreachable today — every dotnet class is `None`. Kept so the gate
+        // still answers the question rather than pretending it cannot be
+        // asked; the module is named once here instead of 82 times in the
+        // class tables.
         out = out.with_constructor(
-            ConstructorDef::new(class.ctor_arity)
-                .with_backing(HostTarget::new(class.widget_host_module, host_fn)),
+            ConstructorDef::new(class.ctor_arity).with_backing(HostTarget::new(
+                vybe_compiler::primitives::gui::GUI_MODULE,
+                host_fn,
+            )),
         );
     } else if crate::emitter::tree_register::is_element_mapped(class.name) {
         // An element-mapped class is CONSTRUCTIBLE without a `vybe:gui`

@@ -1,8 +1,8 @@
 //! GCL: Pascal GUI component library surface.
 //!
 //! This is a Pascal-shaped adapter for VCL/LCL-style source. It lowers
-//! Pascal classes such as `TForm` and `TButton` to the existing generic
-//! `vybe:gui` host imports without adding Pascal-specific host functions.
+//! Pascal classes such as `TForm` and `TButton` onto the DOM through `web:*`,
+//! without adding Pascal-specific host functions.
 
 use vybe_compiler::primitives::gui;
 
@@ -25,21 +25,17 @@ pub struct GclMethod {
 
 #[derive(Debug, Clone, Copy)]
 pub enum GclMethodTarget {
-    Host {
-        module: &'static str,
-        fn_name: &'static str,
-    },
     /// A shared emit in `primitives/gui.rs`, named rather than called through a
     /// host function — the same way a property role binds.
     Common { emit: &'static str },
 }
 
 impl GclMethodTarget {
-    pub const fn host(fn_name: &'static str) -> Self {
-        GclMethodTarget::Host {
-            module: gui::GUI_MODULE,
-            fn_name,
-        }
+    /// A shared GUI emit, named by ROLE. The only kind of target a GCL method
+    /// has: a frontend contributes DECLARED DATA, and every GUI emit lives in
+    /// `primitives/gui.rs` (guiplan.md, "The rules").
+    pub const fn common(emit: &'static str) -> Self {
+        GclMethodTarget::Common { emit }
     }
 }
 
@@ -164,17 +160,17 @@ const SHOW_METHODS: &[GclMethod] = &[
     GclMethod {
         name: "Show",
         arity: 1,
-        target: GclMethodTarget::host("__ctrl_show"),
+        target: GclMethodTarget::common("gui.ctrl.show_form"),
     },
     GclMethod {
         name: "ShowModal",
         arity: 1,
-        target: GclMethodTarget::host("__dlg_showdialog"),
+        target: GclMethodTarget::common("gui.ctrl.show_modal"),
     },
     GclMethod {
         name: "Close",
         arity: 1,
-        target: GclMethodTarget::host("closeForm"),
+        target: GclMethodTarget::common("gui.ctrl.close"),
     },
 ];
 
@@ -541,10 +537,9 @@ static CLASSES: &[GclClass] = &[
         FILE_DIALOG_PROPERTIES,
         EMPTY_METHODS
     ),
-    // `menu` is a real HTML element and the document already knows it —
-    // `vybe-menustrip` was a `vybe:gui` pseudo-tag that no `control_kind` arm
-    // matched, so every menu and every item came out a 120x20 LABEL stacked at
-    // the origin. A menu ITEM is the same tag on purpose: see `SELF_MEMBERS`.
+    // `menu` is a real HTML element and the document already knows it. A
+    // pseudo-tag no `control_kind` arm matches renders as a 120x20 LABEL at the
+    // origin. A menu ITEM is the same tag on purpose: see `SELF_MEMBERS`.
     widget_class!(
         "TMainMenu",
         "TComponent",

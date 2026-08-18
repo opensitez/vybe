@@ -72,9 +72,7 @@ pub fn classes() -> &'static [DotnetClass] {
         ],
         methods: &[],
         ctor_arity: 0,
-        widget_host_fn: Some("new_DataGridView"),
-        widget_host_module: "vybe:gui",
-    },
+        widget_host_fn: None,    },
     // The legacy `DataGrid`, still nameable in an old `.Designer.vb`.
     // `control_kind` already folds `datagrid` onto the `datagridview` widget,
     // so declaring it costs one entry and it renders as the grid it is.
@@ -92,9 +90,7 @@ pub fn classes() -> &'static [DotnetClass] {
         ],
         methods: &[],
         ctor_arity: 0,
-        widget_host_fn: None,
-        widget_host_module: "vybe:gui",
-    },
+        widget_host_fn: None,    },
     // ⚠ `PropertyGrid` has no widget kind yet, so it renders as a LABEL until
     // `vybe_widgets` grows one. That is the designed degradation for a
     // `vybe-*` tag naming a control the widget layer does not know — visible
@@ -114,7 +110,5 @@ pub fn classes() -> &'static [DotnetClass] {
         ],
         methods: &[],
         ctor_arity: 0,
-        widget_host_fn: None,
-        widget_host_module: "vybe:gui",
-    }]
+        widget_host_fn: None,    }]
 }

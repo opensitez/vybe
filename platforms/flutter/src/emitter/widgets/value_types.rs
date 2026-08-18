@@ -26,6 +26,12 @@ const F_EDGEINSETS: &[FlutterField] = &[
     FlutterField::named("bottom"),
 ];
 
+// `Alignment(x, y)` on Flutter's own -1..1 axes.
+const F_ALIGNMENT: &[FlutterField] = &[
+    FlutterField::positional("x", 0),
+    FlutterField::positional("y", 1),
+];
+
 const F_OFFSET: &[FlutterField] = &[
     FlutterField::positional("dx", 0),
     FlutterField::positional("dy", 1),
@@ -162,6 +168,10 @@ pub(crate) const CLASSES: &[FlutterClass] = &[
     FlutterClass::data("Color", None, COLOR_FIELDS),
     FlutterClass::data("EdgeInsets", None, F_EDGEINSETS),
     FlutterClass::data("EdgeInsetsDirectional", None, F_EDGEINSETS),
+    // A value type like the rest — and it has to be one HERE, not only a class
+    // in `runtime.dart`, or its `toString` is never dispatched and the
+    // alignment reaches CSS as the literal `[object]`.
+    FlutterClass::data("Alignment", None, F_ALIGNMENT),
     FlutterClass::data("Offset", None, F_OFFSET),
     FlutterClass::data("Rect", None, F_RECT),
     FlutterClass::data("Radius", None, F_RADIUS),

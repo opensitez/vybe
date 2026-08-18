@@ -197,30 +197,43 @@ fn emit_to_byte(chunk: &mut Chunk, line: u32) {
 /// goes stale the first time `Width` is written.
 ///
 /// Stack on entry: `[x, y, width, height]`; on exit: `[rectangle]`.
-fn emit_rectangle_new(chunk: &mut Chunk, line: u32) {
+/// Build a `System.Drawing` VALUE TYPE from its constructor arguments.
+///
+/// `Point`, `Size` and `Rectangle` are records, not controls — there is no
+/// element to create and nothing to add to a document, so a `vybe:gui` factory
+/// (`pointNew`, `sizeNew`) bought only an allocation the compiler can emit
+/// itself. Composing here is what lets those host functions go.
+///
+/// `fields` is in ARGUMENT order and holds the STORAGE spelling, which is
+/// lowercase: `rect.X` and `pt.X` both read back through the same keyed getter,
+/// so it is the storage name that has to agree across the family, not the
+/// property name. Getting this wrong is silent — the object builds, and the
+/// property reads `undefined`.
+///
+/// Derived properties are deliberately NOT stored. .NET computes
+/// `Rectangle.Right` as `X + Width`, and a stored snapshot goes stale on the
+/// first `Width` write.
+fn emit_value_type_new(chunk: &mut Chunk, type_name: &str, fields: &[&str], line: u32) {
     // Taken into scratch slots so the object can be built UNDERNEATH them —
     // `struct.new` pushes a fresh object and the arguments are already on the
     // stack above where it needs to go. Popped last-first, which is the order
     // they were pushed.
-    let height = chunk.alloc_scratch(1);
-    let width = chunk.alloc_scratch(1);
-    let y = chunk.alloc_scratch(1);
-    let x = chunk.alloc_scratch(1);
-    for slot in [height, width, y, x] {
-        chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
+    let slots: Vec<u16> = fields.iter().map(|_| chunk.alloc_scratch(1)).collect();
+    for slot in slots.iter().rev() {
+        chunk.emit_op_u16(Op::LOCAL_SET, *slot, line);
     }
     chunk.emit_struct_new(0, 0, line);
-    for (field, slot) in [("x", x), ("y", y), ("width", width), ("height", height)] {
-        let key = chunk.add_constant(Value::String(Arc::from(field)));
+    for (field, slot) in fields.iter().zip(&slots) {
+        let key = chunk.add_constant(Value::String(Arc::from(*field)));
         core_wasm::dup(chunk, line);
-        chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, *slot, line);
         // `struct.set` pops [obj, val] and pushes nothing, so the `dup` above
         // is what leaves the object on the stack for the next field.
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
     }
     let type_key = chunk.add_constant(Value::String(Arc::from("__type")));
     core_wasm::dup(chunk, line);
-    chunk.emit_string_const("Rectangle", line);
+    chunk.emit_string_const(type_name, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
 }
 
@@ -253,24 +266,108 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // "Unknown common emit" the moment it is used, which is the loud
         // answer — building an empty rectangle from the wrong argument count
         // would be the silent one.
-        "dotnet.rectangle_new" if argc == 4 => emit_rectangle_new(&mut chunks[current], line),
+        // The `System.Drawing` value types, composed rather than built by a
+        // `vybe:gui` factory. Arity-guarded so an overload this does NOT handle
+        // (`Rectangle(Point, Size)`, `Point(Size)`) falls through to a loud
+        // "Unknown common emit" instead of silently building an empty value.
+        "dotnet.rectangle_new" if argc == 4 => emit_value_type_new(
+            &mut chunks[current],
+            "Rectangle",
+            &["x", "y", "width", "height"],
+            line,
+        ),
+        "dotnet.point_new" if argc == 2 => {
+            emit_value_type_new(&mut chunks[current], "Point", &["x", "y"], line)
+        }
+        "dotnet.size_new" if argc == 2 => {
+            emit_value_type_new(&mut chunks[current], "Size", &["width", "height"], line)
+        }
+        // `Color` — four channels, composed in bytecode like every other value
+        // type. The named statics (`Color.Red`) push their own RGBA and come
+        // here, so no host function looks a colour up by NAME any more.
+        "dotnet.color_new" if argc == 4 => {
+            emit_value_type_new(&mut chunks[current], "Color", &["r", "g", "b", "a"], line)
+        }
+        // The zero-argument form, for the named statics. `MethodOp::NewDotnet`
+        // only supports `argc = 0` (`classes/builder.rs` asserts it), so
+        // `Color.Red` allocates the empty value here and stores its four
+        // channels with `SetField` — the same object either way.
+        "dotnet.color_new" if argc == 0 => {
+            emit_value_type_new(&mut chunks[current], "Color", &[], line)
+        }
+        // `New Font(name, size)` — two ARGUMENTS, four FIELDS.
+        //
+        // The style pair is not passed by this overload but IS read: the
+        // drawing bodies pull `bold`/`italic` off a font argument
+        // (`classes/drawing.rs`, `PushArgField(2, …)`). The retired
+        // `vybe:gui::fontNew` defaulted both to false, and that default is the
+        // contract, so it is reproduced here rather than left undefined — an
+        // absent field reads as `undefined` and would render as a style.
+        "dotnet.font_new" if argc == 2 => {
+            emit_value_type_new(&mut chunks[current], "Font", &["name", "size"], line);
+            for field in ["bold", "italic"] {
+                let key = chunks[current].add_constant(Value::String(Arc::from(field)));
+                core_wasm::dup(&mut chunks[current], line);
+                chunks[current].emit_bool_const(false, line);
+                chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+            }
+        }
+        // A `Pen` and a `SolidBrush` are records too — the drawing bodies read
+        // `pen.color.r` and `pen.width` through `PushArgFieldField`, and
+        // `color` is the ONLY field any of them reads. So the factory allocated
+        // a two-field object and nothing else.
+        "dotnet.pen_new" if argc == 2 => {
+            emit_value_type_new(&mut chunks[current], "Pen", &["color", "width"], line)
+        }
+        "dotnet.solid_brush_new" if argc == 1 => {
+            emit_value_type_new(&mut chunks[current], "SolidBrush", &["color"], line)
+        }
+        // The two patterned brushes. Field names and ORDER are the contract the
+        // retired `vybe:gui` factories set (`platforms/vybe/src/drawing.rs`),
+        // reproduced exactly — a brush is read by property name, so renaming a
+        // field here would silently break every reader.
+        //
+        // ⚠ Neither stores a `color`, and the drawing bodies read
+        // `PushArgFieldField(1, "color", "r")`. So `FillRectangle(hatchBrush, …)`
+        // reads `undefined` — PRE-EXISTING, true of the factories too, and not
+        // introduced here. Fixing it means routing these to the canvas
+        // `createPattern` / `createLinearGradient` that `vybe_widgets` now has,
+        // which is the fill path, not the constructor.
+        // `new Graphics()` — a bare identity record, exactly what `graphicsNew`
+        // built: no arguments, three stamped fields, no canvas.
+        //
+        // A REAL drawing surface never comes from here — it comes from
+        // `CreateGraphics` (`getContext("2d")`) or `Graphics.FromImage`. This
+        // constructor only has to produce something that identifies as a
+        // Graphics, which is why it needs no host function.
+        "dotnet.graphics_new" if argc == 0 => {
+            let chunk = &mut chunks[current];
+            chunk.emit_struct_new(0, 0, line);
+            for (field, value) in [
+                ("__type", "Graphics"),
+                ("__control_type", "Graphics"),
+                ("__control_name", "graphics"),
+            ] {
+                let key = chunk.add_constant(Value::String(Arc::from(field)));
+                core_wasm::dup(chunk, line);
+                chunk.emit_string_const(value, line);
+                chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+            }
+        }
+        "dotnet.hatch_brush_new" if argc == 3 => emit_value_type_new(
+            &mut chunks[current],
+            "HatchBrush",
+            &["backgroundcolor", "foregroundcolor", "hatchstyle"],
+            line,
+        ),
+        "dotnet.linear_gradient_brush_new" if argc == 4 => emit_value_type_new(
+            &mut chunks[current],
+            "LinearGradientBrush",
+            &["rectangle", "startcolor", "endcolor", "wrapmode"],
+            line,
+        ),
         "dotnet.get_type" => emit_get_type(&mut chunks[current], line),
         "dotnet.to_byte" => emit_to_byte(&mut chunks[current], line),
-        "dotnet.winforms_control_show" => {
-            crate::emitter::winforms::adapter::emit_control_show(chunks, current, argc, line);
-        }
-        "dotnet.winforms_control_hide" => {
-            crate::emitter::winforms::adapter::emit_control_hide(chunks, current, argc, line);
-        }
-        "dotnet.winforms_control_close" => {
-            crate::emitter::winforms::adapter::emit_control_close(chunks, current, argc, line);
-        }
-        "dotnet.winforms_form_show_dialog" => {
-            crate::emitter::winforms::adapter::emit_form_show_dialog(chunks, current, argc, line);
-        }
-        "dotnet.winforms_controls_add" => {
-            crate::emitter::winforms::adapter::emit_controls_add(chunks, current, argc, line);
-        }
         "dotnet.control_create_graphics" => {
             emit_control_create_graphics(&mut chunks[current], line);
         }

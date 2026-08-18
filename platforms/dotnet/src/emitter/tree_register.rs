@@ -36,6 +36,10 @@ pub fn register_namespace_tree() {
             let mut static_overloads: BTreeMap<String, Vec<(u8, NamespaceNode)>> = BTreeMap::new();
             let mut methods = Subtree::new();
             let class_is_control = element_backed_control(&class.name);
+            // A form is `document.body`, so node-scoped destruction does not
+            // apply to it — see `gui_control_verb`. `inherits` walks the
+            // descriptor chain, so `class MyForm : Form` answers true too.
+            let class_is_form = namespaces::inherits(&class.name, "Form", descriptor_parent);
             // The WHOLE inherited surface, not just this class's own methods —
             // the tree has no parent link, so anything left off here is
             // unreachable. See `inherited_methods`.
@@ -47,7 +51,7 @@ pub fn register_namespace_tree() {
                 // types declare methods too, and `Update`/`Refresh` are
                 // ordinary names that must not be captured off a non-control.
                 let gui_verb = if class_is_control && !m.is_static {
-                    gui_control_verb(&m.name)
+                    gui_control_verb(&m.name, class_is_form)
                 } else {
                     None
                 };
@@ -217,6 +221,14 @@ pub fn register_namespace_tree() {
             for (name, ty) in self_member_returns(&class.name) {
                 member_returns.insert((*name).to_string(), (*ty).to_string());
             }
+            // `Controls` reads back as a control, so the NEXT hop resolves
+            // `Add` against `Control`'s node — where `shared_emit_accessors`
+            // declares it. Without this the getter answers the element and the
+            // member after it resolves against nothing, which is the exact
+            // failure `self_member_returns` was written for on `Items`.
+            if element_backed_control(&class.name) {
+                member_returns.insert("controls".to_string(), "Control".to_string());
+            }
 
             // The descriptor's backing constructor, as a tree node. dotnet
             // classes are not generic field-capture constructions (no
@@ -365,6 +377,20 @@ fn gui_property_role(prop: &str) -> &'static str {
         "location" => "location",
         "size" | "clientsize" => "size",
         // ComboBox / ListBox selection, the same role plib maps `ItemIndex` to.
+        // Style properties. Every role below ALREADY existed in the shared
+        // table and was reachable from plib — VCL's `Color` maps to
+        // `backcolor`, `Align` to `dock` — but WinForms had no row, so each
+        // one fell through to an ATTRIBUTE of the same name and reached
+        // nothing. `.dfm`/`.Designer.cs` forms set these constantly.
+        "font" => "font",
+        "backcolor" => "backcolor",
+        "forecolor" => "forecolor",
+        "dock" => "dock",
+        "padding" => "padding",
+        "margin" => "margin",
+        "cursor" => "cursor",
+        "tabindex" => "tabindex",
+        "backgroundimage" => "backgroundimage",
         "selectedindex" => "selectedindex",
         "items" => "items",
         "readonly" => "readonly",
@@ -383,26 +409,38 @@ fn gui_property_role(prop: &str) -> &'static str {
 /// `Refresh`/`Invalidate`/`Update` map to real verbs that lower to NOTHING —
 /// a document repaints itself, so there is nothing for an author to ask for.
 /// That is deliberate and is explained at `emit_gui_control_method`.
-fn gui_control_verb(method: &str) -> Option<&'static str> {
+///
+/// `is_form` exists for ONE verb. `Dispose` detaches the node, and a form is
+/// mapped to `body` — so disposing a form would remove the document body and
+/// take the whole app shell with it. A form's own lifetime is a WINDOW
+/// question, not a node question, and it stays on its existing route until
+/// forms stop being the body.
+fn gui_control_verb(method: &str, is_form: bool) -> Option<&'static str> {
     Some(match method.to_ascii_lowercase().as_str() {
         "show" => "show",
         "hide" => "hide",
         "focus" => "focus",
+        // `Control.Select()` IS `Focus()` — `control.rs` already declared both
+        // against the same `__ctrl_focus`, so this is the existing alias said
+        // once more on the DOM route rather than a new behaviour.
+        "select" => "focus",
         "refresh" => "refresh",
         "invalidate" => "invalidate",
         "update" => "update",
-        // ⛔ `BringToFront`/`SendToBack` are NOT converted yet, on purpose.
-        // Z-order is document order, so they are `appendChild` /
-        // `insertBefore(firstChild)` — but `web:dom` exports neither
-        // `parentNode`, `insertBefore` nor `firstChild` today (it has
-        // `appendChild`/`removeChild` and the attribute/text surface, nothing
-        // for reading a parent or a first child). All three are standard DOM
-        // and belong in `web:*`; adding them is a `platforms/web` decision.
-        //
-        // Until then these keep their existing `vybe:gui` target, which WORKS.
-        // Mapping them now would trade a working call for an
-        // `Unresolved import` — and lowering them to a no-op would be a silent
-        // shim, which is worse than either.
+        // Z-order IS document order, so raising a control is re-appending it
+        // to its parent: `parentNode` + `appendChild`, both registered on
+        // `web:dom`. `emit_gui_control_verb` already implements it.
+        "bringtofront" => "bring_to_front",
+        // `SendToBack` is `insertBefore` against the parent's current first
+        // child. It was held back only because `web:dom` had no `firstChild`;
+        // that is registered now, so both halves of the z-order pair lower to
+        // the DOM and neither needs `vybe:gui`.
+        "sendtoback" => "send_to_back",
+        // `Dispose` DESTROYS the control: `ChildNode.remove()`. The host fn it
+        // replaces only set `Visible=false` and dropped the handler table, so a
+        // "disposed" control could be brought back by writing `Visible` — which
+        // is `Hide`, a different verb with a different promise.
+        "dispose" if !is_form => "dispose",
         _ => return None,
     })
 }
@@ -598,6 +636,107 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         "tabpage" => "vybe-tabpage",
         "timer" => "vybe-timer",
 
+        // ── The layout panels ──────────────────────────────────────────────
+        // **Neither is a control — both are a `<div>` and a `display` mode.**
+        // A `Panel`, a `FlowLayoutPanel` and a `TableLayoutPanel` hold children
+        // and draw a background; what separates them is how those children are
+        // arranged, and CSS has said that since flexbox and grid. So they are
+        // the element `Panel` already is, plus the CSS that makes them differ.
+        //
+        // This is the browser-swap test in one line. A `<vybe-tablelayoutpanel>`
+        // — which is what these were — needs a `customElements.define` and a
+        // layout implementation before a real engine renders it at all; a
+        // `<div style="display: grid">` needs neither, because every browser
+        // already implements it. The custom tag was the workaround `declares`
+        // exists to remove: `ControlElement` carries declared CSS through
+        // `setStyleProperty`, so it cascades and serialises like any author
+        // style.
+        //
+        // ⚠ A `TableLayoutPanel` is a GRID, not a `<table>`. Its cells are
+        // positions in a fixed set of tracks, not content that sizes them —
+        // `ColumnCount` says how many, where a table's columns come from what
+        // its cells hold. Mapping it to `<table>` would make an empty grid.
+        //
+        // `ColumnCount`/`RowCount` already reach `grid-template-columns`/
+        // `-rows` as `repeat(n, 1fr)` (the shared role table in
+        // `primitives/gui.rs`), so an explicit count arrives on its own and
+        // OVERWRITES the declared default below, exactly as a later CSS
+        // declaration would.
+        //
+        // ⚠ The 2x2 default is not decoration. These used to be constructed as
+        // `TableLayoutPanel::new(2, 2)`, so a designer that never writes
+        // `ColumnCount` — `examples/vb/allcontrols` is one — got two columns
+        // from the constructor. A bare `display: grid` would have collapsed it
+        // to a single column and lost the layout silently, which is the exact
+        // failure the old "deliberately NOT converted" comment feared. The
+        // default moves from a constructor argument to a declaration; it does
+        // not disappear.
+        //
+        // The values match `vybe_widgets/src/html/panel.rs` (`table_css`,
+        // `flow_css`), which has spelled the same CSS for these two controls
+        // all along — one fact, not two.
+        "flowlayoutpanel" => "div;display:flex;flex-wrap:wrap;gap:4px",
+        "tablelayoutpanel" => {
+            "div;display:grid;grid-template-columns:repeat(2, 1fr);grid-template-rows:repeat(2, 1fr);gap:2px"
+        }
+
+        // ── Controls with a real HTML counterpart ──────────────────────────
+        // Native elements, not `vybe-*`, because HTML already has them and
+        // `control_kind` already routes them to the right widget: an `<input
+        // type=datetime-local>` IS the datetimepicker. Inventing a custom tag
+        // for it would be a second spelling for something the platform ships.
+        "datetimepicker" => "input:datetime-local",
+
+        // **A `DataGridView` is NOT a `<table>`.** This used to emit `table`,
+        // on the reasoning that a table "IS" the grid. It is the reverse
+        // conflation of the one `control_kind` carried on the other side: a
+        // `<table>` is a LAYOUT — a box that arranges its rows and cells —
+        // whereas a `DataGridView` is a CONTROL, with columns it defines
+        // itself, a header it draws itself and scrolling of its own. Now that
+        // `<table>` means the layout, emitting `table` here would render every
+        // WinForms grid as an empty table box with no columns at all.
+        //
+        // No HTML counterpart, so it takes a `vybe-*` tag like the other
+        // controls HTML does not have. `vybe_widget_kind` already answers
+        // `datagridview` for the name, so the widget is reached unchanged.
+        "datagridview" => "vybe-datagridview",
+        // No HTML counterpart, but a real widget behind the name.
+        "listview" => "vybe-listview",
+        "monthcalendar" => "vybe-monthcalendar",
+
+        // ── Non-visual components and the dialogs ──────────────────────────
+        // A Timer, ToolTip or file dialog is a member of the form, not a box
+        // on it — WinForms puts them in `components`, not `Controls`, and
+        // neither ever paints. `renders_nothing` in `vybe_widgets` already
+        // names every tag below, so they are nodes that occupy no rectangle:
+        // constructible, nameable, event-wireable, and invisible.
+        //
+        // That is the whole reason they can come off the factory. The element
+        // was never the problem — a control that drew a grey label where a
+        // timer should be was, and the widget side fixed that before this.
+        // A `WebBrowser` IS an `<iframe>` — an embedded browsing context, which
+        // is what the control is and what a real engine already implements. No
+        // `vybe-*` tag: inventing one for something HTML has outright is the
+        // hack this conversion exists to remove.
+        //
+        // ⚠ `control_kind` maps `iframe` to the `picturebox` widget, because
+        // `vybe_widgets` has no `webbrowser` kind. So it renders as a plain
+        // box until one exists — Youness's call, deliberately taken: the tag is
+        // right, the widget is a later job. When that widget lands, the only
+        // change needed is a `control_kind` arm; this mapping stays.
+        "webbrowser" => "iframe",
+        "imagelist" => "vybe-imagelist",
+        "tooltip" => "vybe-tooltip",
+        "notifyicon" => "vybe-notifyicon",
+        "errorprovider" => "vybe-errorprovider",
+        "helpprovider" => "vybe-helpprovider",
+        "backgroundworker" => "vybe-backgroundworker",
+        "openfiledialog" => "vybe-openfiledialog",
+        "savefiledialog" => "vybe-savefiledialog",
+        "folderbrowserdialog" => "vybe-folderbrowserdialog",
+        "colordialog" => "vybe-colordialog",
+        "fontdialog" => "vybe-fontdialog",
+
         // A `Panel` IS a `<div>` — a block container that draws a background
         // and holds children, which is the whole of what the control is. plib
         // has mapped `TPanel` this way all along; the two now agree.
@@ -612,19 +751,16 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         // waiting on.
         "panel" => "div",
 
-        // ── Deliberately NOT converted yet ─────────────────────────────────
-        // `FlowLayoutPanel` and `TableLayoutPanel` are `<div>` too — the
-        // difference between them and `Panel` is a `display` mode (`flex`,
-        // `grid`), not an element. Mapping them without declaring the mode
-        // would make all three the same control and silently lose the layout,
-        // and there is currently no way to declare it: a rule needs a selector,
-        // and the control's role is stamped as `__control_type`, a struct FIELD
-        // written by `Op::STRUCT_SET` — not an attribute a selector can match.
-        // Promoting it to `data-control-type` is a shared `primitives/gui.rs`
-        // change. Convert these together with that.
+        // ── Everything else ────────────────────────────────────────────────
+        // A class with no element here is not a control this platform can
+        // construct as a node, and answering None is what says so.
         //
-        // `ListView`/`DataGridView`/`WebBrowser` have no counterpart at all;
-        // forcing them onto `<table>` would claim semantics they do not have.
+        // ⚠ This used to hold `FlowLayoutPanel` and `TableLayoutPanel` back,
+        // on the reasoning that a `display` mode "needs a selector" and the
+        // control's role was a struct field no selector could match. That was
+        // true of a SHEET and never of the element: `ControlElement.declares`
+        // carries CSS the control is born with, which needs no selector at
+        // all. Both are converted above.
         _ => return None,
     })
 }
@@ -857,10 +993,50 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
         ],
         _ => vec![],
     };
-    entries
+    let mut out: Vec<(String, NamespaceNode)> = entries
         .iter()
         .map(|(n, node)| ((*n).to_string(), node.clone()))
-        .collect()
+        .collect();
+
+    // ── `Controls` is the ELEMENT, `Add` is `appendChild` ──────────────────
+    //
+    // A control's children live in the DOM, so `Controls` allocates nothing and
+    // hands back the receiver — the same `dotnet.self` shape the strips use for
+    // `Items`. `self_member_returns` (at the registration site) declares that it
+    // reads back as `Control`, which is where `Add` below is found.
+    //
+    // Declared here because the ONLY thing standing in for it was a hardcoded
+    // `members[..] == "controls" && members[..] == "add"` in the shared call
+    // path (`calls.rs`). That compares against canon'd names, and `canon` folds
+    // to lowercase only for a profile with `case_sensitive = false` — so the
+    // match fired for vb/pascal/cobol and was DEAD for csharp, whose canon
+    // preserves `["Controls","Add"]`. Same source, same AST, opposite outcome:
+    // `--dump` shows vb reach `appendChild` and csharp fall through to
+    // `struct.get Controls` on the body element, which is undefined.
+    //
+    // The registered route has no such asymmetry — `lookup_type_instance_member`
+    // folds the member before matching, so every language reaches it. A control
+    // that is element-backed is exactly one that HAS DOM children, which is why
+    // the gate is `element_backed_control` and not a name list.
+    if element_backed_control(class_name) {
+        let ro = |name: &str| {
+            namespaces::property(Some(NamespaceNode::CommonEmit(name.to_string())), None)
+        };
+        out.push(("controls".to_string(), ro("dotnet.self")));
+        // Arity counts the receiver, as every other node here does — a bare
+        // `CommonEmit` leaf is found as a NAME and then not called, which is
+        // the fault already recorded on `Hide`.
+        out.push((
+            "add".to_string(),
+            namespaces::overloads(vec![(
+                2,
+                NamespaceNode::CommonEmit(
+                    vybe_compiler::primitives::gui::APPEND_CHILD_EMIT.to_string(),
+                ),
+            )]),
+        ));
+    }
+    out
 }
 
 /// What a member that IS the receiver READS BACK as.

@@ -1369,49 +1369,65 @@ const BRUSH_METHODS: &[DotnetMethod] = &[DotnetMethod {
     target: MethodTarget::body(GRAPHICS_DISPOSE),
 }];
 
-/// A named `Color` static — `Color.Red` is `colorFromName("Red")`.
+/// A named `Color` static — `Color.Red` IS its four channels.
 ///
-/// The colour NAME is the whole of the binding; the channel values live in
-/// exactly one place (`platforms/vybe/src/drawing.rs`'s palette) and are never
-/// restated here. Writing the RGB triples into this table would make it a
-/// second copy that drifts silently the first time either side is edited.
+/// The RGBA is pushed and the value composed by `Color`'s own constructor, the
+/// same bytecode path `Point` and `Size` take. It used to push the colour NAME
+/// and call a `vybe:gui` host function to look it up in a palette living in
+/// `platforms/vybe/src/drawing.rs` — a host round-trip to turn a compile-time
+/// constant into four compile-time constants. Nothing about a colour needs a
+/// host: it is data, and this is where the data belongs now that it is stated
+/// once.
 ///
-/// Reached as a two-op body rather than a `Fn` leaf because
+/// Still a body rather than a `Fn` leaf, for the original reason:
 /// `ResolutionTarget::HostCall` carries no bound argument — `terminal()`
-/// discards `NamespaceNode::Fn`'s `bound_arg`, so a `Fn` leaf would emit
-/// `colorFromName()` with no arguments and silently answer black. A
-/// `CommonEmit` survives the walk intact and lowers through the same
-/// `dotnet.drawing.*` inline path every `Graphics` method already uses.
+/// discards `NamespaceNode::Fn`'s `bound_arg` — so a leaf would answer with no
+/// arguments at all.
 macro_rules! color_static {
-    ($konst:ident, $name:literal) => {
+    ($konst:ident, $r:literal, $g:literal, $b:literal, $a:literal) => {
         const $konst: &[MethodOp] = &[
-            MethodOp::PushConstStr($name),
+            // ⚠ STILL A HOST CALL, and it should not be. Two attempts failed:
+            //   - `NewDotnet { class: "Color", argc: 4 }` — `classes/builder.rs`
+            //     asserts `argc == 0`; the DSL has no arity-N factory.
+            //   - `NewDotnet { argc: 0 }` + `Dup`/`SetField`/`Drop` per channel
+            //     — CIRCULAR. `Color.Red` is a static ON `Color`, and
+            //     `NewDotnet` needs that class's ctor global installed by an
+            //     EARLIER registration pass, so it answers `undefined`.
+            // The colour is DATA and belongs in bytecode; making it so needs a
+            // `MethodOp` that calls a common emit (the `Color` class,
+            // `common_ctor_for` → `dotnet.color_new`, and both dispatch arms
+            // are already in place for it).
+            // `color.fromargb`'s four-argument form is `(a, r, g, b)`.
+            MethodOp::PushConstFloat($a as f64),
+            MethodOp::PushConstFloat($r as f64),
+            MethodOp::PushConstFloat($g as f64),
+            MethodOp::PushConstFloat($b as f64),
             MethodOp::CallHost {
                 module: "vybe:gui",
-                fn_name: "colorFromName",
-                argc: 1,
+                fn_name: "color.fromargb",
+                argc: 4,
             },
             MethodOp::Return,
         ];
     };
 }
 
-color_static!(COLOR_RED, "Red");
-color_static!(COLOR_BLUE, "Blue");
-color_static!(COLOR_GREEN, "Green");
-color_static!(COLOR_BLACK, "Black");
-color_static!(COLOR_WHITE, "White");
-color_static!(COLOR_YELLOW, "Yellow");
-color_static!(COLOR_ORANGE, "Orange");
-color_static!(COLOR_PURPLE, "Purple");
-color_static!(COLOR_CYAN, "Cyan");
-color_static!(COLOR_MAGENTA, "Magenta");
-color_static!(COLOR_GRAY, "Gray");
-color_static!(COLOR_BROWN, "Brown");
-color_static!(COLOR_PINK, "Pink");
-color_static!(COLOR_LIGHT_GRAY, "LightGray");
-color_static!(COLOR_DARK_GRAY, "DarkGray");
-color_static!(COLOR_TRANSPARENT, "Transparent");
+color_static!(COLOR_RED, 220, 20, 60, 255);
+color_static!(COLOR_BLUE, 30, 144, 255, 255);
+color_static!(COLOR_GREEN, 34, 139, 34, 255);
+color_static!(COLOR_BLACK, 0, 0, 0, 255);
+color_static!(COLOR_WHITE, 255, 255, 255, 255);
+color_static!(COLOR_YELLOW, 255, 215, 0, 255);
+color_static!(COLOR_ORANGE, 255, 140, 0, 255);
+color_static!(COLOR_PURPLE, 128, 0, 128, 255);
+color_static!(COLOR_CYAN, 0, 255, 255, 255);
+color_static!(COLOR_MAGENTA, 255, 0, 255, 255);
+color_static!(COLOR_GRAY, 128, 128, 128, 255);
+color_static!(COLOR_BROWN, 139, 69, 19, 255);
+color_static!(COLOR_PINK, 255, 192, 203, 255);
+color_static!(COLOR_LIGHT_GRAY, 211, 211, 211, 255);
+color_static!(COLOR_DARK_GRAY, 169, 169, 169, 255);
+color_static!(COLOR_TRANSPARENT, 0, 0, 0, 0);
 
 /// The `Color` statics, as (member name, body). `tree_register` registers each
 /// one at `dotnet.system.drawing.color.<lowercased>` — a real path segment, so
@@ -1536,9 +1552,9 @@ pub fn classes() -> &'static [DotnetClass] {
             // (`Graphics` is obtained `FromImage`/`FromHwnd`/`CreateGraphics`),
             // so the honest answer is a `Graphics` over an offscreen canvas —
             // which needs an element this descriptor has no way to make.
-            widget_host_fn: Some("graphicsNew"),
-            widget_host_module: "vybe:gui",
-        },
+            // Composed by `dotnet.graphics_new` — an identity record. A real
+            // surface comes from `CreateGraphics`/`FromImage`, never from here.
+            widget_host_fn: None,        },
         DotnetClass {
             name: "Pen",
             parent: Some("MarshalByRefObject"),
@@ -1563,36 +1579,31 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: PEN_METHODS,
             ctor_arity: 2,
-            widget_host_fn: Some("penNew"),
-            widget_host_module: "vybe:gui",
-        },
+            // Composed by `dotnet.pen_new` — a record of colour and width.
+            widget_host_fn: None,        },
         DotnetClass {
             name: "Brush",
             parent: Some("MarshalByRefObject"),
             properties: &[],
             methods: BRUSH_METHODS,
             ctor_arity: 0,
-            widget_host_fn: None,
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_fn: None,        },
         DotnetClass {
             name: "SolidBrush",
             parent: Some("Brush"),
             properties: &["Color"],
             methods: &[],
             ctor_arity: 1,
-            widget_host_fn: Some("solidBrushNew"),
-            widget_host_module: "vybe:gui",
-        },
+            // Composed by `dotnet.solid_brush_new` — a record of one colour.
+            widget_host_fn: None,        },
         DotnetClass {
             name: "HatchBrush",
             parent: Some("Brush"),
             properties: &["BackgroundColor", "ForegroundColor", "HatchStyle"],
             methods: &[],
             ctor_arity: 3,
-            widget_host_fn: Some("hatchBrushNew"),
-            widget_host_module: "vybe:gui",
-        },
+            // Composed by `dotnet.hatch_brush_new`.
+            widget_host_fn: None,        },
         DotnetClass {
             name: "LinearGradientBrush",
             parent: Some("Brush"),
@@ -1607,9 +1618,8 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 4,
-            widget_host_fn: Some("linearGradientBrushNew"),
-            widget_host_module: "vybe:gui",
-        },
+            // Composed by `dotnet.linear_gradient_brush_new`.
+            widget_host_fn: None,        },
         // System.Drawing.Point — position value type. `new Point(x, y)`
         // lowers to `vybe:gui::pointNew(x, y)` which returns an
         // Object with `{x, y, X, Y}` fields. The GUI property dispatch
@@ -1620,9 +1630,9 @@ pub fn classes() -> &'static [DotnetClass] {
             properties: &["X", "Y", "IsEmpty"],
             methods: &[],
             ctor_arity: 2,
-            widget_host_fn: Some("pointNew"),
-            widget_host_module: "vybe:gui",
-        },
+            // Composed by `dotnet.point_new` — see `common_ctor_for`. A value
+            // type has no element, so the factory only ever allocated.
+            widget_host_fn: None,        },
         // System.Drawing.Size — dimensions value type. Mirror of Point.
         DotnetClass {
             name: "Size",
@@ -1630,9 +1640,35 @@ pub fn classes() -> &'static [DotnetClass] {
             properties: &["Width", "Height", "IsEmpty"],
             methods: &[],
             ctor_arity: 2,
-            widget_host_fn: Some("sizeNew"),
-            widget_host_module: "vybe:gui",
-        },
+            // Composed by `dotnet.size_new` — the mirror of `Point`.
+            widget_host_fn: None,        },
+        // System.Drawing.Color — four channels, 0-255. The `Graphics` bodies
+        // read `pen.color.r`/`.g`/`.b`/`.a` as NUMBERS to build
+        // `web:canvas::setStrokeStyle`, so the channel names are the contract.
+        DotnetClass {
+            name: "Color",
+            parent: None,
+            properties: &["R", "G", "B", "A", "Name", "IsEmpty"],
+            methods: &[],
+            ctor_arity: 4,
+            // Composed by `dotnet.color_new` — see `common_ctor_for`.
+            widget_host_fn: None,        },
+        // System.Drawing.Font — `New Font(name, size)`.
+        //
+        // It had NO class entry here at all: its only declaration was a
+        // `constructor_class(…, "vybe:gui", "fontNew")` backing, so it was the
+        // last type still built by the deleted drawing host. `Bold`/`Italic`
+        // are listed because the drawing bodies read them off a font argument;
+        // the two-argument overload leaves both false, which is the contract
+        // the retired factory set.
+        DotnetClass {
+            name: "Font",
+            parent: None,
+            properties: &["Name", "Size", "Bold", "Italic"],
+            methods: &[],
+            ctor_arity: 2,
+            // Composed by `dotnet.font_new` — see `common_ctor_for`.
+            widget_host_fn: None,        },
         // System.Drawing.Rectangle — position AND extent in one value, and the
         // argument GDI+ overloads half its drawing surface on
         // (`DrawEllipse(pen, rect)`, `DrawRectangle(pen, rect)`).
@@ -1662,8 +1698,6 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 4,
-            widget_host_fn: None,
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_fn: None,        },
     ]
 }

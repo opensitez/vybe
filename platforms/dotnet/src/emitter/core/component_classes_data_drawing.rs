@@ -1,5 +1,4 @@
 use super::super::super::class_exports::DotnetClassExport;
-use super::component_classes_common::constructor_class;
 use vybe_runtime::component_model::{ClassType, ConstructorDef, MethodBody, MethodDef};
 
 pub(super) fn exports() -> Vec<DotnetClassExport> {
@@ -123,35 +122,18 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.sql_adapter_fill".into()),
                 )),
         ),
-        constructor_class("dotnet.System.Drawing", "Point", "vybe:gui", "pointNew"),
-        constructor_class("dotnet.System.Drawing", "Size", "vybe:gui", "sizeNew"),
-        constructor_class("dotnet.System.Drawing", "SizeF", "vybe:gui", "sizeNew"),
-        constructor_class("dotnet.System.Drawing", "Font", "vybe:gui", "fontNew"),
-        constructor_class("dotnet.System.Drawing", "Pen", "vybe:gui", "penNew"),
-        constructor_class(
-            "dotnet.System.Drawing",
-            "SolidBrush",
-            "vybe:gui",
-            "solidBrushNew",
-        ),
-        constructor_class(
-            "dotnet.System.Drawing",
-            "HatchBrush",
-            "vybe:gui",
-            "hatchBrushNew",
-        ),
-        constructor_class(
-            "dotnet.System.Drawing",
-            "LinearGradientBrush",
-            "vybe:gui",
-            "linearGradientBrushNew",
-        ),
-        constructor_class(
-            "dotnet.System.Drawing",
-            "Color",
-            "vybe:gui",
-            "colorFromName",
-        ),
+        // NO `constructor_class(…, "vybe:gui", …)` entries for the drawing
+        // value types. `Point`, `Size`, `SizeF`, `Font`, `Pen`, `SolidBrush`,
+        // `HatchBrush`, `LinearGradientBrush` and `Color` are composed in
+        // BYTECODE by `common_ctor_for` → `dotnet.*_new`, because a value type
+        // has no element and nothing to insert.
+        //
+        // These lines declared a SECOND constructor for the same types, backed
+        // by host fns in the now-deleted `platforms/vybe/src/drawing.rs`. For
+        // most types the bytecode path shadowed them and they were dead text —
+        // which is exactly what made the host look alive to a grep. For `Font`
+        // this one WON, and it was the only `vybe:gui` call any GUI test still
+        // emitted.
         // No `Graphics` entry here: `winforms::component_classes` already
         // declares `dotnet.System.Drawing::Graphics` from the `DotnetClass`
         // table, WITH every drawing method and with `graphicsNew` as its

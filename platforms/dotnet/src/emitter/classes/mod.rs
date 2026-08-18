@@ -140,24 +140,17 @@ pub struct DotnetClass {
     /// `Component`, `Brush` take no args at this layer).
     pub ctor_arity: u8,
 
-    /// If `Some(host_fn)`, this is a concrete leaf class — its ctor calls
-    /// `<widget_host_module>::<host_fn>` at the end of construction to
-    /// wire the underlying backing object. For arity-0 classes the host
-    /// fn is called with 0 args; for arity-N classes the user-supplied
-    /// ctor args are forwarded.
+    /// If `Some(host_fn)`, this is a concrete leaf class whose ctor calls a
+    /// `vybe:gui` host factory to wire a backing object.
     ///
-    /// Abstract bases (`Object`, `Control`, `ButtonBase`, `TextBoxBase`,
-    /// `ListControl`, `ScrollableControl`, `ContainerControl`, `Brush`, …)
-    /// leave this `None` — they bind setters/methods but don't materialize
-    /// a backing object themselves.
+    /// **Every dotnet class is now `None`.** Construction goes through the
+    /// element mapping (`is_element_mapped`) or a composed constructor
+    /// (`common_ctor_for`), so no class builds through a widget factory.
+    /// The field stays because the ctor gate still asks the question; the
+    /// companion `widget_host_module` is gone, since a module beside a
+    /// permanently-absent fn was 82 lines of `"vybe:gui"` that no code read
+    /// and every `grep` had to wade through.
     pub widget_host_fn: Option<&'static str>,
-
-    /// Host module for `widget_host_fn`. `"vybe:gui"` for all WinForms
-    /// controls and drawing types (`Pen`/`SolidBrush`/`Graphics`/etc.).
-    /// Defaulted to `"vybe:gui"` in family files via the
-    /// [`gui_class!`] / explicit-module convention so the GUI control
-    /// families don't have to repeat the module everywhere.
-    pub widget_host_module: &'static str,
 }
 
 impl DotnetClass {
@@ -226,6 +219,13 @@ pub enum MethodTarget {
         module: &'static str,
         fn_name: &'static str,
     },
+    /// A SHARED emit, named by string — `gui.ctrl.<verb>`, `dotnet.<name>`.
+    /// The platform states what the method MEANS and `primitives/` decides
+    /// what it lowers to, which is the difference between an adapter and a
+    /// host call. `plib`'s `GclMethodTarget::Common` is the same shape.
+    Common {
+        emit: &'static str,
+    },
     DotnetCtor {
         class: &'static str,
     },
@@ -236,6 +236,11 @@ impl MethodTarget {
     /// Convenience constructor for `Host` variant.
     pub const fn host(module: &'static str, fn_name: &'static str) -> Self {
         MethodTarget::Host { module, fn_name }
+    }
+
+    /// Convenience constructor for `Common` variant.
+    pub const fn common(emit: &'static str) -> Self {
+        MethodTarget::Common { emit }
     }
 
     /// Convenience constructor for `DotnetCtor` variant.

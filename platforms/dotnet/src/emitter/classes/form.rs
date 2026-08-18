@@ -88,7 +88,16 @@ pub fn classes() -> &'static [DotnetClass] {
         ],
         methods: FORM_METHODS,
         ctor_arity: 0,
-        widget_host_fn: Some("new_Form"),
-        widget_host_module: "vybe:gui",
-    }]
+        // A Form IS the document. `html_element_for_control` maps it to `body`
+        // and `emit_control_element` special-cases it to `document.body`, so
+        // construction has been element-shaped all along for a SUBCLASS —
+        // `class Form1 : Form` went through the control path. Only a bare
+        // `new Form()` still reached the factory.
+        //
+        // What kept the factory alive was the `Controls` collection it
+        // installed as a field. `Controls` is now declared on every
+        // element-backed control and answers `dotnet.self` — a form's children
+        // ARE its element's children — so the factory has nothing left to
+        // provide.
+        widget_host_fn: None,    }]
 }

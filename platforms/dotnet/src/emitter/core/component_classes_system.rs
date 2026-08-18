@@ -16,9 +16,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 properties: &[],
                 methods: &[],
                 ctor_arity: 0,
-                widget_host_fn: None,
-                widget_host_module: "vybe:gui",
-            },
+                widget_host_fn: None,            },
         ),
         DotnetClassExport::with_wrapper(
             "dotnet.System",
@@ -35,9 +33,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 properties: &[],
                 methods: &[],
                 ctor_arity: 0,
-                widget_host_fn: None,
-                widget_host_module: "vybe:gui",
-            },
+                widget_host_fn: None,            },
         ),
     ];
     exports.extend(EXCEPTION_HIERARCHY.iter().map(|(name, parent)| {

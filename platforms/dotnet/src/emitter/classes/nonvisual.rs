@@ -15,9 +15,7 @@ pub fn classes() -> &'static [DotnetClass] {
             properties: &["Enabled", "Interval", "Tag"],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: Some("new_Timer"),
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_fn: None,        },
         // `BindingSource` is NOT declared here. It is a cursor over data, not a
         // control: it has no element, nothing paints it, and every member is a
         // position or a list. Declared in this table it got a `vybe:gui`
@@ -43,9 +41,7 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: Some("new_ImageList"),
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_fn: None,        },
         DotnetClass {
             name: "ToolTip",
             parent: Some("Component"),
@@ -69,9 +65,7 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: Some("new_ToolTip"),
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_fn: None,        },
         DotnetClass {
             name: "NotifyIcon",
             parent: Some("Component"),
@@ -87,9 +81,7 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: Some("new_NotifyIcon"),
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_fn: None,        },
         DotnetClass {
             name: "ErrorProvider",
             parent: Some("Component"),
@@ -105,18 +97,14 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: Some("new_ErrorProvider"),
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_fn: None,        },
         DotnetClass {
             name: "HelpProvider",
             parent: Some("Component"),
             properties: &["HelpNamespace", "Tag"],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: Some("new_HelpProvider"),
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_fn: None,        },
         DotnetClass {
             name: "BackgroundWorker",
             parent: Some("Component"),
@@ -128,8 +116,6 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
-            widget_host_fn: Some("new_BackgroundWorker"),
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_fn: None,        },
     ]
 }

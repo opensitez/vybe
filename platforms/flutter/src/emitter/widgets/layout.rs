@@ -1,5 +1,6 @@
 //! Layout & display widgets — Flex family, boxes, alignment, sizing, text.
-//! Backed by `vybe:gui` flow-layout panels and labels.
+//! Flex containers and text nodes — `Row`/`Column` are flexboxes, `Text` a
+//! span.
 
 use crate::emitter::catalog::{FlutterClass, FlutterField};
 
@@ -41,7 +42,11 @@ const TEXT_FIELDS: &[FlutterField] = &[
 
 const CONTAINER_FIELDS: &[FlutterField] = &[
     FlutterField::named("child"),
-    FlutterField::named("alignment"),
+    // `alignment` is where the content sits across the box — CSS `text-align`,
+    // the same property VCL's `Alignment` and WinForms' `TextAlign` already map
+    // to. Left as its own name it wrote an `alignment=""` attribute no element
+    // reads, which is why a right-aligned display sat on the left.
+    FlutterField::named_role("alignment", "textalign"),
     FlutterField::named("color"),
     FlutterField::named("constraints"),
     FlutterField::named("decoration"),
@@ -64,7 +69,7 @@ const STACK_FIELDS: &[FlutterField] = &[
 
 const ALIGN_FIELDS: &[FlutterField] = &[
     FlutterField::named("child"),
-    FlutterField::named("alignment"),
+    FlutterField::named_role("alignment", "textalign"),
     FlutterField::named("heightFactor"),
     FlutterField::named("widthFactor"),
 ];
@@ -221,7 +226,7 @@ use crate::emitter::catalog::F_CHILD_ONLY;
 // **Flutter's layout model IS flexbox**, which is why this table is nearly
 // mechanical where the WinForms one was not: `Row`/`Column` are flex containers
 // in Flutter's own documentation, `Expanded` is `flex-grow`, `Padding` is
-// `padding`, `SizedBox` is `width`/`height`. Naming a `vybe:gui` control here
+// `padding`, `SizedBox` is `width`/`height`. Naming an old control here
 // threw all of that away twice over — `FlowLayoutPanel` is not an HTML tag, so
 // `control_kind` matched nothing and every container rendered as a 120x20
 // label.
@@ -245,10 +250,20 @@ pub(crate) const CLASSES: &[FlutterClass] = &[
         "div;display:flex",
         FLEX_FIELDS,
     ),
+    // `flex:1` is `mainAxisSize: MainAxisSize.max`, which is a `Column`'s
+    // DEFAULT — it fills its parent's main axis. Declaring it is what lets a
+    // `Scaffold`'s body take the height left over by the app bar, instead of
+    // shrinking to its content and leaving its `Expanded` children nothing to
+    // divide.
+    //
+    // ⚠ It reads the PARENT's main axis, so this is the right rule only while
+    // the parent is also a column — the overwhelmingly common shell. A `Column`
+    // inside a `Row` will grow across instead of merely stretching down.
+    // Narrowing it needs the parent's direction at the construction site.
     FlutterClass::widget(
         "Column",
         "Flex",
-        "div;display:flex;flex-direction:column",
+        "div;display:flex;flex-direction:column;flex:1",
         COLUMN_FIELDS,
     ),
     FlutterClass::widget(
@@ -302,7 +317,26 @@ pub(crate) const CLASSES: &[FlutterClass] = &[
         "div",
         FLEXIBLE_FIELDS,
     ),
-    FlutterClass::widget("Expanded", "Flexible", "div;flex:1", EXPANDED_FIELDS),
+    // **`FlexFit.tight` IS a single-cell grid.** `Expanded` forces its child
+    // to fill the share it was given, on both axes — and a grid item stretches
+    // to its cell on both axes by default (`align-items`/`justify-items` are
+    // `stretch`). Saying it here rather than putting `height:100%` on every
+    // widget that might END UP inside an `Expanded` is the difference between
+    // the rule Flutter has and a guess: a `Padding` in a plain `Column` gets a
+    // LOOSE constraint and must size to its child, which is why the tictactoe
+    // "New Game" button came out the height of the window when `Padding` filled
+    // unconditionally.
+    FlutterClass::widget(
+        "Expanded",
+        "Flexible",
+        // …with an explicit `1fr` cell on both axes. An IMPLICIT track is
+        // `auto`, which sizes to its content and so grows past the share the
+        // flex parent just handed out — the rows overflowed the bottom of the
+        // window again. `1fr` is exactly the container, which is what a tight
+        // constraint means.
+        "div;flex:1;display:grid;grid-template-columns:1fr;grid-template-rows:1fr",
+        EXPANDED_FIELDS,
+    ),
     FlutterClass::widget(
         "Positioned",
         "ParentDataWidget",

@@ -1,5 +1,5 @@
-//! Image widget & image providers — the `Image` widget lowers onto a
-//! `vybe:gui` picture box; the providers are pure data captured at construction.
+//! Image widget & image providers — the `Image` widget lowers onto an `img`;
+//! the providers are pure data captured at construction.
 
 use crate::emitter::catalog::{FlutterClass, FlutterField};
 
