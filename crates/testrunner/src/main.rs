@@ -404,16 +404,27 @@ fn render_dashboard(args: &[String]) -> Result<()> {
     }
     let mut rows: std::collections::BTreeMap<String, Row> = Default::default();
 
-    let mut logs: Vec<PathBuf> = std::fs::read_dir(&saved_dir)
-        .with_context(|| format!("reading {}", saved_dir.display()))?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.is_file() && p.extension().is_some_and(|e| e == "txt"))
+    // The suites are the directories under `tests/` — the same list that gives
+    // a never-run suite its row further down. Each has exactly ONE log,
+    // `saved/tests.<suite>.txt`, and the table reads that and nothing else.
+    //
+    // Reading every `.txt` in the directory counted a test once per file it
+    // appeared in, and that directory accumulates files that are not the
+    // suite's log: per-category runs (`tests.cobol.category_data_editing.txt`)
+    // and duplicates of a whole suite (`fortran.txt` beside
+    // `tests.fortran.txt`). Summed, an eight-day-old fortran log and today's
+    // reported 11920 tests for a 5954-test suite at a blended 73% — neither
+    // run's number — and `done` ran past 100%, because `expected` came from the
+    // one log still in flight while ok/fail came from both.
+    let extracted = extracted_suites();
+    let logs: Vec<PathBuf> = extracted
+        .iter()
+        .map(|suite| saved_dir.join(format!("tests.{suite}.txt")))
+        .filter(|log| log.is_file())
         .collect();
-    logs.sort();
     anyhow::ensure!(
         !logs.is_empty(),
-        "no saved logs in {} — run `testrunner run <suite> --save` first",
+        "no suite logs in {} — run `testrunner run tests/<suite> --save` first",
         saved_dir.display()
     );
 
@@ -548,16 +559,8 @@ fn render_dashboard(args: &[String]) -> Result<()> {
         };
     }
     let head = |t: &str, w: usize| style::bold(&format!("{t:>w$}"));
-    // A suite that was extracted but never saved still gets a row, so its name
-    // is read BEFORE the header — the name column has to be wide enough for
-    // every row the table will print, not just the measured ones.
-    let extracted: std::collections::BTreeSet<String> = std::fs::read_dir("tests")
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| e.path().is_dir())
-        .filter_map(|e| e.file_name().into_string().ok())
-        .collect();
+    // A suite that was extracted but never saved still gets a row — `extracted`
+    // is read at the top now, because it is also what chooses the logs.
     // The name column is as wide as the widest name it carries. A fixed 8 fit
     // every suite until `powershell` (10) — an over-long name does not truncate,
     // it pushes the rest of ITS row right, so one suite knocked every later
@@ -1435,6 +1438,19 @@ fn saved_log_path(results_dir: &Path, resolved: &Path) -> PathBuf {
         name
     };
     results_dir.join("saved").join(format!("{name}.txt"))
+}
+
+/// The suites, as the directories under `tests/` — the one list that says which
+/// suites exist, so a suite with no log yet still gets a row and a suite's log
+/// can be looked up by name rather than found by globbing.
+fn extracted_suites() -> std::collections::BTreeSet<String> {
+    std::fs::read_dir("tests")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.path().is_dir())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect()
 }
 
 /// `tests.php.txt` → `php`, `tests.php.arrays.txt` → `php`, `go.txt` → `go`.

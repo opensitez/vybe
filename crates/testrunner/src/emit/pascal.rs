@@ -57,10 +57,10 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
 /// after the `program` line so the program's own declarations still precede
 /// its `begin`.
 fn with_prologue(src: &str, decls: &str) -> String {
-    let Some(semi) = src.find(';') else {
+    let Some(semi) = prologue_anchor(src) else {
         return src.to_string();
     };
-    let (head, rest) = src.split_at(semi + 1);
+    let (head, rest) = src.split_at(semi);
     let mut out = String::with_capacity(src.len() + decls.len() + 64);
     out.push_str(head);
     if !src.contains("{$mode") {
@@ -75,6 +75,45 @@ fn with_prologue(src: &str, decls: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// Where the prologue goes: just past the `program X;` heading, or past the
+/// first `;` when the source has no program heading at all.
+///
+/// A source that opens with `unit A;` is a STREAM of compilation units, and a
+/// unit's declarations cannot precede its `interface`. Anchoring on the first
+/// `;` put the harness exactly there and made every such file unparseable —
+/// which is what the whole `pascal_unit_initialization_finalization` category
+/// was failing on, ahead of any question about the feature under test.
+///
+/// The program is also the right OWNER: its declaration part is emitted before
+/// the units' frames run, so `__p` exists by the time a unit's `initialization`
+/// calls it.
+fn prologue_anchor(src: &str) -> Option<usize> {
+    let lower = src.to_ascii_lowercase();
+    let mut from = 0usize;
+    let mut found = None;
+    while let Some(off) = lower[from..].find("program") {
+        let at = from + off;
+        from = at + "program".len();
+        // At the start of a line, and a whole word — not `MyProgram`, and not
+        // the word inside a comment that happens to sit mid-line.
+        let line_start = src[..at].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        if !src[line_start..at].trim().is_empty() {
+            continue;
+        }
+        if !src[from..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_whitespace())
+        {
+            continue;
+        }
+        if let Some(semi) = src[at..].find(';') {
+            found = Some(at + semi + 1);
+        }
+    }
+    found.or_else(|| src.find(';').map(|i| i + 1))
 }
 
 /// The harness file is a complete program; a test needs its declarations —
