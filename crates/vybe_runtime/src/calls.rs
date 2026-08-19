@@ -28,31 +28,51 @@ pub(crate) fn continuation_entry_is_async(chunks: &[crate::chunk::Chunk], entry:
 }
 
 pub(crate) fn attach_continuation_protocols(
-    // Insertion-ordered — see `Object::properties`. `globals` stays a HashMap:
-    // global order is not observable through any ECMA surface, and
-    // `VM::globals_slot` holds a raw pointer to it (fixflakyhashmap.md §4).
+    // Insertion-ordered — see `Object::properties`.
+    //
+    // Globals are now a `Vec<Value>` indexed by globalidx (WASM's model), so
+    // this takes the three values it needs already RESOLVED rather than a map
+    // to look them up in. It only ever asked three name questions.
     properties: &mut indexmap::IndexMap<String, Value>,
-    globals: &HashMap<String, Value>,
+    resolved: ContinuationGlobals,
     is_async: bool,
 ) {
     // §27.6.1.2: an ASYNC generator's `next()` returns a promise-wrapped
     // IteratorResult — wire the async driver when the entry chunk is
     // async (falls back to the sync driver if the async stdlib chunk
     // wasn't bundled).
-    let next_key = if is_async && globals.contains_key("__vybe_async_generator_next") {
+    let next = if is_async && resolved.async_next.is_some() {
         // Stamp the object so the compiler's inline `.next()` fast path
         // can defer to this promise-returning driver instead.
         properties.insert("__vybe_async_gen".into(), Value::Bool(true));
-        "__vybe_async_generator_next"
+        resolved.async_next
     } else {
-        "__vybe_generator_next"
+        resolved.sync_next
     };
-    if let Some(next) = globals.get(next_key).cloned() {
+    if let Some(next) = next {
         properties.insert("next".into(), next);
     }
-    if let Some(iter) = globals.get("__vybe_generator_self").cloned() {
+    if let Some(iter) = resolved.generator_self {
         properties.insert("iterator".into(), iter.clone());
         properties.insert("asyncIterator".into(), iter);
+    }
+}
+
+/// The three generator-protocol globals `attach_continuation_protocols` needs,
+/// resolved by name BEFORE the call — the only three name questions it asked.
+pub(crate) struct ContinuationGlobals {
+    pub async_next: Option<Value>,
+    pub sync_next: Option<Value>,
+    pub generator_self: Option<Value>,
+}
+
+impl crate::vm::VM {
+    pub(crate) fn continuation_globals(&self) -> ContinuationGlobals {
+        ContinuationGlobals {
+            async_next: self.global("__vybe_async_generator_next").cloned(),
+            sync_next: self.global("__vybe_generator_next").cloned(),
+            generator_self: self.global("__vybe_generator_self").cloned(),
+        }
     }
 }
 
@@ -615,7 +635,8 @@ impl VM {
                 fields: Vec::new(),
             };
             let entry_is_async = self.chunks[chunk_index].is_async;
-            attach_continuation_protocols(&mut cont.properties, &self.globals, entry_is_async);
+            let cg = self.continuation_globals();
+            attach_continuation_protocols(&mut cont.properties, cg, entry_is_async);
             if !args.is_empty() {
                 // Stash bound args so the first RESUME can re-push them.
                 let bound = Object {

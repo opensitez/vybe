@@ -91,7 +91,10 @@ pub struct HostContext<'a> {
     exit_code_slot: *mut i32,
     /// Raw pointer to VM globals for host-managed JS receiver binding.
     /// Null when no VM is attached (HostContext::empty()).
-    globals_slot: *mut HashMap<String, Value>,
+    /// Globals are indexed by globalidx; host interop still asks BY NAME, so
+    /// the slot carries both halves — the storage and the resolver.
+    globals_slot: *mut Vec<Value>,
+    global_index_slot: *mut HashMap<String, u32>,
     /// Raw pointer to VM.stack for closing escaped upvalues in timer callbacks.
     /// Null when no VM is attached (HostContext::empty()).
     #[allow(dead_code)]
@@ -180,15 +183,42 @@ impl<'a> HostContext<'a> {
     /// stay identical to compiled ones.
     pub fn get_global(&self, name: &str) -> Value {
         unsafe {
-            if self.globals_slot.is_null() {
-                Value::Undefined
-            } else {
-                (*self.globals_slot)
-                    .get(name)
-                    .cloned()
-                    .unwrap_or(Value::Undefined)
-            }
+            self.slot_get(name)
         }
+    }
+
+    /// Resolve a name through the index slot, then read the value slot.
+    unsafe fn slot_get(&self, name: &str) -> Value {
+        if self.globals_slot.is_null() || self.global_index_slot.is_null() {
+            return Value::Undefined;
+        }
+        let vals: &Vec<Value> = &*self.globals_slot;
+        match (*self.global_index_slot).get(name) {
+            Some(&i) => vals.get(i as usize).cloned().unwrap_or(Value::Undefined),
+            None => Value::Undefined,
+        }
+    }
+
+    /// Write by name, allocating an index if the name is new.
+    unsafe fn slot_set(&self, name: &str, value: Value) {
+        if self.globals_slot.is_null() || self.global_index_slot.is_null() {
+            return;
+        }
+        let vals: &mut Vec<Value> = &mut *self.globals_slot;
+        let index: &mut HashMap<String, u32> = &mut *self.global_index_slot;
+        let idx = match index.get(name) {
+            Some(&i) => i as usize,
+            None => {
+                let i = vals.len();
+                index.insert(name.to_string(), i as u32);
+                vals.push(Value::Null);
+                i
+            }
+        };
+        if idx >= vals.len() {
+            vals.resize(idx + 1, Value::Null);
+        }
+        vals[idx] = value;
     }
 
     /// Write a VM global by name — counterpart of [`Self::get_global`],
@@ -196,9 +226,7 @@ impl<'a> HostContext<'a> {
     /// (e.g. `__js_new_target` around [[Construct]] dispatch).
     pub fn set_global(&mut self, name: &str, value: Value) {
         unsafe {
-            if !self.globals_slot.is_null() {
-                (*self.globals_slot).insert(name.to_string(), value);
-            }
+            self.slot_set(name, value);
         }
     }
 
@@ -206,23 +234,14 @@ impl<'a> HostContext<'a> {
     /// Returns `Undefined` when no binding exists.
     pub fn current_js_this(&self) -> Value {
         unsafe {
-            if self.globals_slot.is_null() {
-                Value::Undefined
-            } else {
-                (*self.globals_slot)
-                    .get("__js_this")
-                    .cloned()
-                    .unwrap_or(Value::Undefined)
-            }
+            self.slot_get("__js_this")
         }
     }
 
     /// Update the current JS receiver binding (`__js_this`) in globals.
     pub fn set_js_this(&mut self, value: Value) {
         unsafe {
-            if !self.globals_slot.is_null() {
-                (*self.globals_slot).insert("__js_this".into(), value);
-            }
+            self.slot_set("__js_this", value);
         }
     }
 
@@ -414,7 +433,7 @@ impl<'a> HostContext<'a> {
                 return None;
             }
             match (*self.handle_table_slot).get(handle) {
-                Some(crate::handle_table::HandleEntry::ReadableStreamEnd(id)) => Some(*id),
+                Some(crate::handle_table::HandleEntry::ReadableStreamEnd(e)) => Some(e.id),
                 _ => None,
             }
         }
@@ -430,6 +449,7 @@ impl<'a> HostContext<'a> {
             exit_slot: std::ptr::null_mut(),
             exit_code_slot: std::ptr::null_mut(),
             globals_slot: std::ptr::null_mut(),
+            global_index_slot: std::ptr::null_mut(),
             stack_slot: std::ptr::null(),
             handle_table_slot: std::ptr::null(),
             shared_memory_slot: std::ptr::null(),
@@ -476,11 +496,21 @@ pub enum CanonBuiltin {
     StreamRead,
     StreamWrite,
     StreamCancelRead,
+    StreamCancelWrite,
     StreamDropReadable,
     StreamDropWritable,
     FutureNew,
+    FutureRead,
+    FutureWrite,
+    FutureCancelRead,
+    FutureCancelWrite,
     FutureDropReadable,
     FutureDropWritable,
+    WaitableSetDrop,
+    ThreadYield,
+    ResourceNew,
+    ResourceRep,
+    ResourceDrop,
     BackpressureInc,
     BackpressureDec,
     ContextGet,
@@ -489,6 +519,29 @@ pub enum CanonBuiltin {
 
 impl CanonBuiltin {
     /// CM canonical names (Binary.md spellings) → builtin.
+    /// Split `"future.read@2"` into `("future.read", Some(2))`.
+    ///
+    /// `@` and not `:` — a colon already separates module from function in the
+    /// `host:<module>:<fn>` callee spelling, so `host:canon:future.read:1`
+    /// would rsplit into module `canon:future.read` and function `1`. Two
+    /// encodings sharing a delimiter is how that kind of bug hides.
+    ///
+    /// A bare name keeps `None`, which means "no type immediate was declared".
+    /// That is honest rather than defaulted: a built-in that NEEDS the type
+    /// (`future.{read,write}`, or a `stream<T>` where T is not a byte) refuses
+    /// instead of moving a guessed number of bytes, because a canonical ABI
+    /// that is quietly wrong about layout corrupts a peer's memory.
+    pub fn split_type_immediate(name: &str) -> (&str, Option<u32>) {
+        match name.rsplit_once('@') {
+            Some((bare, idx)) => match idx.parse::<u32>() {
+                Ok(n) => (bare, Some(n)),
+                // Not a number — the colon belongs to the name itself.
+                Err(_) => (name, None),
+            },
+            None => (name, None),
+        }
+    }
+
     pub fn by_name(name: &str) -> Option<Self> {
         Some(match name {
             "lift" => Self::Lift,
@@ -505,11 +558,21 @@ impl CanonBuiltin {
             "stream.read" => Self::StreamRead,
             "stream.write" => Self::StreamWrite,
             "stream.cancel-read" => Self::StreamCancelRead,
+            "stream.cancel-write" => Self::StreamCancelWrite,
             "stream.drop-readable" => Self::StreamDropReadable,
             "stream.drop-writable" => Self::StreamDropWritable,
             "future.new" => Self::FutureNew,
+            "future.read" => Self::FutureRead,
+            "future.write" => Self::FutureWrite,
+            "future.cancel-read" => Self::FutureCancelRead,
+            "future.cancel-write" => Self::FutureCancelWrite,
             "future.drop-readable" => Self::FutureDropReadable,
             "future.drop-writable" => Self::FutureDropWritable,
+            "waitable-set.drop" => Self::WaitableSetDrop,
+            "thread.yield" => Self::ThreadYield,
+            "resource.new" => Self::ResourceNew,
+            "resource.rep" => Self::ResourceRep,
+            "resource.drop" => Self::ResourceDrop,
             "backpressure.inc" => Self::BackpressureInc,
             "backpressure.dec" => Self::BackpressureDec,
             "context.get" => Self::ContextGet,
@@ -562,7 +625,9 @@ pub enum ImportTarget {
     /// Component Model canonical built-in (module "canon"), VM-implemented —
     /// see [`CanonBuiltin`]. Args/results ride the operand stack; the
     /// builtin body pops what it needs.
-    Canon(CanonBuiltin),
+    /// A canonical built-in, with the type immediate its `canon`
+    /// definition carried (`None` when the import declared none).
+    Canon(CanonBuiltin, Option<u32>),
 }
 
 #[derive(Debug, Clone)]
@@ -773,7 +838,15 @@ pub struct VM {
     pub chunks: Vec<Chunk>,
     pub(crate) frames: Vec<CallFrame>,
     pub(crate) stack: Vec<Value>,
-    pub globals: HashMap<String, Value>,
+    /// Module globals, indexed by `globalidx` — WASM's model. `GLOBAL_GET`/
+    /// `GLOBAL_SET` operands index THIS directly; no string is consulted on
+    /// the execution path.
+    pub globals: Vec<Value>,
+    /// name → globalidx, consulted only at INSTANTIATION (binding host and
+    /// imported globals, which WASM also resolves by name at instantiate time)
+    /// and by the debugger. Not one fact in two homes: the vector is the
+    /// storage, this is a resolver used before execution starts.
+    pub global_index: HashMap<String, u32>,
     pub(crate) open_upvalues: Vec<Arc<Mutex<Upvalue>>>,
     pub(crate) host_fns: Vec<HostFn>,
     /// Registry: (module, name) → index into host_fns.
@@ -1038,6 +1111,26 @@ pub struct VM {
     // ── CM3 Canonical ABI (Track A) ─────────────────────────────────────────
     /// Handle table — maps i32 indices to typed component resources.
     pub handle_table: crate::handle_table::HandleTable,
+    /// Component-level types the canonical built-ins are parameterised by.
+    ///
+    /// A `canon` definition is NOT one function — `(canon future.read $t $opts
+    /// (core func $f))` produces a DISTINCT core func per instantiation, and
+    /// `$t` is how `future.read` knows how many bytes one element occupies
+    /// (its signature is `(handle, ptr)` with no count). Registering imports by
+    /// bare name gave every use of a built-in the same identity and no type at
+    /// all, which is why `future.{read,write}` could not be implemented while
+    /// `stream<u8>` could: a byte needs no type to measure.
+    ///
+    /// An import may carry the index as a `name@idx` suffix, so
+    /// `canon`/`future.read@2` and `canon`/`future.read@5` are different core
+    /// funcs over the same built-in — the distinctness the spec requires,
+    /// expressed in the one channel a core import has.
+    pub canon_types: Vec<crate::component::ValType>,
+    /// The `$t` immediate of the canonical built-in currently executing, set
+    /// by the dispatch arm just before the call. Carried on the VM rather than
+    /// threaded through `exec_canon_builtin` because only the typed copies read
+    /// it, and every other built-in would have to ignore an extra parameter.
+    pub(crate) canon_type_immediate: Option<u32>,
     /// Active CM3 tasks (keyed by task ID). Each async export invocation creates one.
     pub cm_tasks: Vec<crate::cm_task::CMTask>,
     /// Next CM3 task ID.
@@ -1064,7 +1157,10 @@ pub struct VM {
 /// "clear on the belief it was empty at boot" guess.
 pub struct VmSnapshot {
     heap: crate::heap::HeapSnapshot,
-    globals: HashMap<String, Value>,
+    /// Both halves: the values AND the name→index resolver, so a script-added
+    /// global vanishes on reset instead of leaving a live index behind.
+    globals: Vec<Value>,
+    global_index: HashMap<String, u32>,
     memory: Vec<u8>,
     extra_memories: Vec<Vec<u8>>,
     wasm_tables: Vec<Vec<Value>>,
@@ -1205,10 +1301,11 @@ impl VM {
             chunks: Vec::new(),
             frames: Vec::new(),
             stack: Vec::with_capacity(256),
-            globals: {
-                let mut g = HashMap::new();
-                g.insert("undefined".to_string(), Value::Undefined);
-                g
+            globals: vec![Value::Undefined],
+            global_index: {
+                let mut ix = HashMap::new();
+                ix.insert("undefined".to_string(), 0u32);
+                ix
             },
             open_upvalues: Vec::new(),
             host_fns: Vec::new(),
@@ -1274,6 +1371,21 @@ impl VM {
             event_fire_hook: None,
             instrumented: std::env::var("VYBE_TRACE").map_or(false, |v| v == "1" || v == "true"),
             handle_table: crate::handle_table::HandleTable::new(),
+            // Seeded with the primitive component types so a CORE module can
+            // name one by index. A real component supplies its own type
+            // section and the indices come from there; a bare core module —
+            // which is what a `.wat` test or a Vybe-compiled program is — has
+            // no such section, and the `$t` immediate would otherwise have
+            // nothing to point at. These four are a documented BOOTSTRAP
+            // convention, not a spec requirement, and a component that
+            // registers its own types simply appends past them.
+            canon_types: vec![
+                crate::component::ValType::Bool, // 0
+                crate::component::ValType::I32,  // 1
+                crate::component::ValType::I64,  // 2
+                crate::component::ValType::F64,  // 3
+            ],
+            canon_type_immediate: None,
             cm_tasks: Vec::new(),
             next_cm_task_id: 1,
             waitable_sets: crate::waitable::WaitableRegistry::new(),
@@ -1290,6 +1402,7 @@ impl VM {
         VmSnapshot {
             heap: crate::heap::snapshot(),
             globals: self.globals.clone(),
+            global_index: self.global_index.clone(),
             memory: self.memory.with_buffer(|b| b.to_vec()),
             extra_memories: self.extra_memories.clone(),
             wasm_tables: self.wasm_tables.clone(),
@@ -1347,6 +1460,7 @@ impl VM {
         crate::heap::restore(&snap.heap);
         // 2. Globals: script-added keys vanish; reassigned baseline keys restored.
         self.globals = snap.globals.clone();
+        self.global_index = snap.global_index.clone();
         // 3. Wasm linear memory + tables + segment-drop state → boot.
         self.memory.with_buffer_mut(|b| {
             b.clear();
@@ -1836,7 +1950,7 @@ impl VM {
         use crate::chunk::ConstExpr;
         match expr {
             ConstExpr::Value(v) => v.clone(),
-            ConstExpr::GlobalGet(name) => self.globals.get(name).cloned().unwrap_or(Value::Null),
+            ConstExpr::GlobalGet(name) => self.global(name).cloned().unwrap_or(Value::Null),
             ConstExpr::Add(left, right) => {
                 let l = self.eval_const_expr(left);
                 let r = self.eval_const_expr(right);
@@ -2344,7 +2458,8 @@ impl VM {
         let exc_ptr = &mut self.last_exception as *mut Option<Value>;
         let exit_ptr = &mut self.pending_exit as *mut bool;
         let exit_code_ptr = &mut self.pending_exit_code as *mut i32;
-        let globals_ptr = &mut self.globals as *mut HashMap<String, Value>;
+        let globals_ptr = &mut self.globals as *mut Vec<Value>;
+        let global_index_ptr = &mut self.global_index as *mut HashMap<String, u32>;
         HostContext {
             invoker: Some(unsafe {
                 // SAFETY: vm_ptr is valid for the duration of the host function call.
@@ -2357,6 +2472,7 @@ impl VM {
             exit_slot: exit_ptr,
             exit_code_slot: exit_code_ptr,
             globals_slot: globals_ptr,
+            global_index_slot: global_index_ptr,
             stack_slot: &self.stack as *const Vec<Value>,
             handle_table_slot: &self.handle_table as *const crate::handle_table::HandleTable,
             shared_memory_slot: &self.memory as *const crate::shared_memory::SharedMemory,
@@ -2610,8 +2726,8 @@ impl VM {
                 ImportTarget::StringConst(s) => {
                     self.import_table.push(ImportTarget::StringConst(s));
                 }
-                ImportTarget::Canon(b) => {
-                    self.import_table.push(ImportTarget::Canon(b));
+                ImportTarget::Canon(b, t) => {
+                    self.import_table.push(ImportTarget::Canon(b, t));
                 }
             }
         }
@@ -2915,9 +3031,9 @@ impl VM {
         {
             let inits = self.chunks[script_idx].global_inits.clone();
             for gi in &inits {
-                if matches!(self.globals.get(&gi.name), None | Some(Value::Null)) {
+                if matches!(self.global(&gi.name), None | Some(Value::Null)) {
                     let val = self.eval_const_expr(&gi.init);
-                    self.globals.insert(gi.name.clone(), val);
+                    self.set_global(&gi.name, val);
                 }
             }
         }
@@ -3092,6 +3208,68 @@ impl VM {
             *b = self.read_byte();
         }
         f64::from_le_bytes(bytes)
+    }
+
+    /// Resolve a global BY NAME — instantiation, host binding, the debugger.
+    /// WASM resolves imported globals by name at instantiate time too; what it
+    /// never does is consult a name during execution.
+    pub fn global(&self, name: &str) -> Option<&Value> {
+        self.global_index
+            .get(name)
+            .and_then(|&i| self.globals.get(i as usize))
+    }
+
+    /// Install/overwrite a global by name, allocating an index if it is new.
+    /// Setup-time only.
+    pub fn set_global(&mut self, name: &str, value: Value) {
+        match self.global_index.get(name) {
+            Some(&i) => {
+                let i = i as usize;
+                if i >= self.globals.len() {
+                    self.globals.resize(i + 1, Value::Null);
+                }
+                self.globals[i] = value;
+            }
+            None => {
+                let i = self.globals.len() as u32;
+                self.global_index.insert(name.to_string(), i);
+                self.globals.push(value);
+            }
+        }
+    }
+
+    /// `set_global` taking an owned name — host installation sites read
+    /// `insert(name, value)` and this keeps them doing so.
+    pub fn set_global_owned(&mut self, name: impl Into<String>, value: Value) {
+        let name = name.into();
+        self.set_global(&name, value);
+    }
+
+    /// Remove a global by name. The slot stays allocated (an index is stable
+    /// for the module's lifetime, as in WASM); the binding is dropped.
+    pub fn remove_global(&mut self, name: &str) -> Option<Value> {
+        let idx = self.global_index.remove(name)? as usize;
+        let old = self.globals.get(idx).cloned();
+        if let Some(slot) = self.globals.get_mut(idx) {
+            *slot = Value::Undefined;
+        }
+        old
+    }
+
+    pub fn has_global(&self, name: &str) -> bool {
+        self.global_index.contains_key(name)
+    }
+
+    /// Every global as `(name, value)` — for the debugger and snapshots, which
+    /// want the names. Never on the execution path.
+    pub fn globals_by_name(&self) -> Vec<(String, Value)> {
+        let mut out: Vec<(String, Value)> = self
+            .global_index
+            .iter()
+            .filter_map(|(n, &i)| self.globals.get(i as usize).map(|v| (n.clone(), v.clone())))
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
     }
 
     pub(crate) fn get_constant(&self, index: u16) -> Value {
@@ -3279,7 +3457,7 @@ impl VM {
             })
             .collect();
         for (key, value) in bindings {
-            self.globals.insert(key, Value::String(value));
+            self.set_global(&key, Value::String(value));
         }
     }
 
@@ -3309,8 +3487,13 @@ impl VM {
             return Ok(ImportTarget::StringConst(Arc::from(name)));
         }
         if module == "canon" {
-            if let Some(b) = CanonBuiltin::by_name(name) {
-                return Ok(ImportTarget::Canon(b));
+            // `name` or `name:<typeidx>` — the type immediate a `canon`
+            // definition carries, in the one channel a core import has. The
+            // suffix is what makes two instantiations of the same built-in
+            // DISTINCT core funcs, as the spec requires.
+            let (bare, type_idx) = CanonBuiltin::split_type_immediate(name);
+            if let Some(b) = CanonBuiltin::by_name(bare) {
+                return Ok(ImportTarget::Canon(b, type_idx));
             }
         }
         if let Some(idx) = self.resolve_host_function_index(module, name) {
@@ -3320,7 +3503,7 @@ impl VM {
             let candidates = [name.to_string(), name.to_lowercase()];
             if let Some(global_name) = candidates
                 .iter()
-                .find(|g| self.globals.contains_key(g.as_str()))
+                .find(|g| self.has_global(g.as_str()))
             {
                 return Ok(ImportTarget::StdlibRedirect(global_name.clone()));
             }
@@ -3331,7 +3514,7 @@ impl VM {
         ];
         if let Some(global_name) = candidates
             .iter()
-            .find(|g| self.globals.contains_key(g.as_str()))
+            .find(|g| self.has_global(g.as_str()))
         {
             return Ok(ImportTarget::StdlibRedirect(global_name.clone()));
         }

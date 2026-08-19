@@ -13,6 +13,9 @@ pub mod vm;
 // its own `impl VM { ... }` block operating on the same struct defined in
 // vm.rs. Private to the crate; external consumers keep using `VM::*`.
 pub(crate) mod calls;
+pub mod canon_copy;
+pub mod canon_layout;
+pub mod canon_value;
 pub mod cm_task;
 pub mod debug;
 pub mod debugger;

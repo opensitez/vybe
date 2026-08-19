@@ -15,6 +15,47 @@ pub const STRING_CONSTANTS_MODULE: &str = "wasm:string-constants";
 /// disjoint: `var count = 5` must not be able to redefine the string constant
 /// `"count"`, and no source language can declare an identifier containing
 /// `:`.
+/// The three globals every module imports from the js-primitive-builtins
+/// proposal. They occupy indices 0..3 of the global index space, so both the
+/// compiler's `normalize_global_table` and the wasm writer's `collect_globals`
+/// must start from them or their numbering diverges.
+pub const PRIMITIVE_GLOBAL_IMPORTS: &[(&str, &str)] = &[
+    ("wasm:js-undefined", "value"),
+    ("wasm:js-boolean", "true"),
+    ("wasm:js-boolean", "false"),
+];
+
+/// THE module global index space, in WASM's order:
+/// primitive imports, then string-constant globals, then host globals, then
+/// module-defined globals in first-seen order.
+///
+/// One definition, two consumers — the compiler assigns operands from it and
+/// the wasm writer encodes the global section from it. Two implementations that
+/// merely agree would be a coincidence, which is the failure this whole area
+/// already had once.
+///
+/// ⚠ String-constant globals are keyed by `imported_global_key(module, name)`;
+/// host globals by their BARE name. That asymmetry is what the bytecode's
+/// `GLOBAL_GET` constant actually holds, so it is load-bearing.
+pub fn global_index_space(
+    string_constants: &[String],
+    host_globals: &[String],
+    defined: &[String],
+) -> Vec<String> {
+    let mut out: Vec<String> = PRIMITIVE_GLOBAL_IMPORTS
+        .iter()
+        .map(|(m, n)| imported_global_key(m, n))
+        .collect();
+    out.extend(
+        string_constants
+            .iter()
+            .map(|t| imported_global_key(STRING_CONSTANTS_MODULE, t)),
+    );
+    out.extend(host_globals.iter().cloned());
+    out.extend(defined.iter().cloned());
+    out
+}
+
 pub fn imported_global_key(module: &str, name: &str) -> String {
     format!("{}::{}", module, name)
 }
@@ -255,6 +296,17 @@ pub struct Chunk {
     /// stops a declared global from shifting the function indices that
     /// `CALL_IMPORT` operands carry.
     pub global_imports: Vec<Import>,
+    /// The module's GLOBAL INDEX SPACE, on the script chunk (chunk 0) only —
+    /// `global_imports` first, then module-defined globals, exactly as WASM
+    /// numbers them. `GLOBAL_GET`/`GLOBAL_SET` operands index THIS, not a
+    /// per-chunk constant pool.
+    ///
+    /// Built after emission by `globals::normalize_global_table`, the same
+    /// shape `link.rs::normalize_import_table` uses for the function imports:
+    /// emitters name a global, the pass assigns it an index and rewrites the
+    /// operands. Names survive here for the custom name section and for
+    /// instantiation-time host binding; execution never consults them.
+    pub globals: Vec<String>,
     /// Type table — WASM GC type section. Only on the script chunk (chunk 0).
     /// Each entry defines a class type with fields and vtable methods.
     /// Loaded into VM's TypeRegistry before execution.
@@ -473,6 +525,7 @@ impl Chunk {
             dup_slot: None,
             imports: Vec::new(),
             global_imports: Vec::new(),
+            globals: Vec::new(),
             types: Vec::new(),
             exception_tags: Vec::new(),
             tags: Vec::new(),

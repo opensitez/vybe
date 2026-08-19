@@ -6,6 +6,7 @@
 //! Profiles are loaded from `languages/<lang>/profile` files — no hardcoded
 //! language knowledge lives in Rust code.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 /// Compilation semantics for a language.
@@ -1141,13 +1142,57 @@ impl LanguageProfile {
     /// Look up a builtin by name, folding case when the language says callable
     /// names fold. Exact first, so a language whose keys are stored verbatim is
     /// unaffected by the fallback.
-    pub fn lookup_builtin(&self, name: &str) -> Option<&BuiltinDef> {
-        self.builtins.get(name).or_else(|| {
-            if self.fold_callable_names {
-                self.builtins.get(&name.to_lowercase())
-            } else {
-                None
-            }
+    pub fn lookup_builtin(&self, name: &str) -> Option<Cow<'_, BuiltinDef>> {
+        if let Some(def) = Self::synthesized_host_builtin(name) {
+            return Some(Cow::Owned(def));
+        }
+        self.builtins
+            .get(name)
+            .or_else(|| {
+                if self.fold_callable_names {
+                    self.builtins.get(&name.to_lowercase())
+                } else {
+                    None
+                }
+            })
+            .map(Cow::Borrowed)
+    }
+
+    /// A callee spelled `host:<module>:<fn>` IS its own definition.
+    ///
+    /// A language that already knows the (module, name) pair of a host import
+    /// should not have to restate it as a table row. WAT is the case that
+    /// forced this: `(import "canon" "stream.read" (func $sr …))` carries the
+    /// pair in the source, but the wast walker could only reach a host call by
+    /// having someone pre-register the LOCAL ALIAS in
+    /// `languages/wast/src/profile` — so `$log` worked and `$stream_read` did
+    /// not, the alias had to be spelled exactly like the profile key, and every
+    /// new importable function needed another row forever. That is not WAT
+    /// failing to map 1:1 onto WASM; it is the compiler discarding half of what
+    /// the import declared.
+    ///
+    /// `host:` is the same spelling profiles already use in an `emit`, so this
+    /// adds no new vocabulary — it just lets the emit form appear as the callee.
+    /// A source identifier cannot collide with it: no language in this tree
+    /// admits `:` in an identifier, which is exactly why the prefix was safe to
+    /// use for emit targets in the first place.
+    ///
+    /// Arity is left wide open because the CALLER knows it — a WAT import
+    /// declares its own signature — and a table row here would be a second,
+    /// stale copy of that fact.
+    fn synthesized_host_builtin(name: &str) -> Option<BuiltinDef> {
+        let rest = name.strip_prefix("host:")?;
+        // `wasi:logging/logging` contains a colon, so the FUNCTION is what
+        // follows the LAST one: `host:wasi:logging/logging:log`.
+        let (module, func) = rest.rsplit_once(':')?;
+        if module.is_empty() || func.is_empty() {
+            return None;
+        }
+        Some(BuiltinDef {
+            emit: BuiltinEmit::HostCall(module.to_string(), func.to_string()),
+            min_args: 0,
+            max_args: u8::MAX,
+            slot: None,
         })
     }
 

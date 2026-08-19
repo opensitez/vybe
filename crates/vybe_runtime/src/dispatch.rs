@@ -950,6 +950,83 @@ impl VM {
         }
     }
 
+    /// The element type of the canonical built-in currently executing, from
+    /// the `$t` immediate its `canon` definition carried.
+    ///
+    /// Refuses rather than defaults. A built-in that needs the type needs the
+    /// REAL one: substituting a plausible width would move the wrong number of
+    /// bytes into a peer component's memory, and nothing downstream could
+    /// detect it. An error names the missing declaration instead.
+    fn canon_element_type(&self, builtin: &str) -> Result<crate::component::ValType, VMError> {
+        let Some(idx) = self.canon_type_immediate else {
+            return Err(VMError::new(format!(
+                "canon {builtin}: no $t immediate — import it as `canon`/`{builtin}@<typeidx>` \
+                 with the type registered in `VM::canon_types`"
+            )));
+        };
+        self.canon_types.get(idx as usize).cloned().ok_or_else(|| {
+            VMError::new(format!(
+                "canon {builtin}: type immediate {idx} is not registered in `VM::canon_types`"
+            ))
+        })
+    }
+
+    /// `cancel_copy` — `CanonicalABI.md` §`canon
+    /// {stream,future}.cancel-{read,write}`. One function for all four, as the
+    /// spec factors it; `EndKind` is the only thing that differs.
+    ///
+    ///     $f : (func (param i32) (result i32))
+    ///
+    /// Cancel RECLAIMS THE BUFFER from an in-flight copy. It does not close
+    /// anything: after cancelling, both ends are still usable and the end
+    /// returns to `Idle`. The `CANCELLED` code exists precisely to tell wasm
+    /// that ownership of the memory buffer has come back to it.
+    fn canon_cancel_copy(&mut self, want: crate::canon_copy::EndKind) -> Result<(), VMError> {
+        use crate::canon_copy::EndKind;
+        use crate::handle_table::{CopyState, HandleEntry};
+        let handle = self.pop().as_i32() as u32;
+        let entry = self.handle_table.get(handle);
+        let end = match (want, entry) {
+            (EndKind::ReadableStream, Some(HandleEntry::ReadableStreamEnd(e)))
+            | (EndKind::WritableStream, Some(HandleEntry::WritableStreamEnd(e)))
+            | (EndKind::ReadableFuture, Some(HandleEntry::ReadableFutureEnd(e)))
+            | (EndKind::WritableFuture, Some(HandleEntry::WritableFutureEnd(e))) => *e,
+            _ => {
+                return Err(VMError::new(format!(
+                    "canon {}: handle is not a {} end",
+                    want.builtin_name(),
+                    want.describe()
+                )));
+            }
+        };
+        // `trap_if(e.state != CopyState.COPYING …)` — there is nothing to
+        // cancel unless a copy is in flight, and silently succeeding would let
+        // a guest believe it had reclaimed a buffer it never lent out.
+        if end.state != CopyState::Copying {
+            return Err(VMError::new(format!(
+                "canon {}: end is not COPYING — there is no copy in flight to cancel",
+                want.builtin_name()
+            )));
+        }
+        if let Some(e) = self.handle_table.get_mut(handle) {
+            let state = match e {
+                HandleEntry::ReadableStreamEnd(s)
+                | HandleEntry::WritableStreamEnd(s)
+                | HandleEntry::ReadableFutureEnd(s)
+                | HandleEntry::WritableFutureEnd(s) => &mut s.state,
+                _ => unreachable!("kind was matched above"),
+            };
+            *state = CopyState::Idle;
+        }
+        // Nothing had been copied into the buffer — the copy blocked before
+        // making progress — so the count is 0.
+        self.push(Value::I32(crate::canon_copy::pack(
+            crate::canon_copy::CopyResult::Cancelled,
+            0,
+        ) as i32))?;
+        Ok(())
+    }
+
     /// Execute a Component Model canonical built-in (VM-implemented import
     /// under module "canon" — see `ImportTarget::Canon`). Args and results
     /// ride the operand stack; each builtin pops exactly its own args.
@@ -1080,11 +1157,11 @@ impl VM {
                 let set_handle = self.pop().as_i32() as u32;
                 let waitable_handle = self.pop().as_i32() as u32;
                 let waitable = match self.handle_table.get(waitable_handle) {
-                    Some(crate::handle_table::HandleEntry::ReadableStreamEnd(sid)) => {
-                        Some(crate::waitable::Waitable::Stream(*sid))
+                    Some(crate::handle_table::HandleEntry::ReadableStreamEnd(e)) => {
+                        Some(crate::waitable::Waitable::Stream(e.id))
                     }
-                    Some(crate::handle_table::HandleEntry::ReadableFutureEnd(fid)) => {
-                        Some(crate::waitable::Waitable::Future(*fid))
+                    Some(crate::handle_table::HandleEntry::ReadableFutureEnd(e)) => {
+                        Some(crate::waitable::Waitable::Future(e.id))
                     }
                     Some(crate::handle_table::HandleEntry::Subtask { future_id, .. }) => {
                         Some(crate::waitable::Waitable::Subtask(*future_id))
@@ -1098,60 +1175,104 @@ impl VM {
                 }
             }
             B::StreamNew => {
-                // canon stream.new — create a stream; push readable_handle
-                // and writable_handle (i32).
+                // canon stream.new — `CanonicalABI.md` §`canon {stream,future}.new`:
+                //
+                //     (canon stream.new $stream_t (core func $f))
+                //     $f : (func (result i64))
+                //     return [ ri | (wi << 32) ]
+                //
+                // ONE i64, not two i32s: readable end in the LOW 32 bits,
+                // writable end in the HIGH 32. This pushed two separate stack
+                // values, which is not a signature any conforming module can
+                // call — and it made the built-in unusable from WAT, because a
+                // frontend that sees `(result i64)` reads one value while a
+                // frontend told `(result i32 i32)` goes looking for the
+                // multi-value pack convention. Neither finds two bare pushes.
                 let stream_id = self.event_loop.borrow_mut().create_stream();
                 let rd =
                     self.handle_table
                         .insert(crate::handle_table::HandleEntry::ReadableStreamEnd(
-                            stream_id,
+                            crate::handle_table::StreamEnd::new(stream_id),
                         ));
                 let wr =
                     self.handle_table
                         .insert(crate::handle_table::HandleEntry::WritableStreamEnd(
-                            stream_id,
+                            crate::handle_table::StreamEnd::new(stream_id),
                         ));
-                self.push(Value::I32(rd as i32))?;
-                self.push(Value::I32(wr as i32))?;
+                self.push(Value::I64((rd as i64) | ((wr as i64) << 32)))?;
             }
             B::StreamWrite => {
-                let item = self.pop();
-                let val = self.pop();
-                // The stream is either the high-level Stream value or a
-                // CM3 writable-end i32 handle (canon stream.new pushes
-                // i32 handles per CanonicalABI §HandleTable).
-                let stream_id = match val {
-                    Value::Object(ref obj) => {
-                        let o = obj.lock().unwrap();
-                        if let ObjectKind::Stream { id } = o.kind {
-                            Some(id)
-                        } else {
-                            None
-                        }
+                // canon stream.write — the mirror of `stream.read`, and the
+                // spec implements both through ONE `stream_copy`:
+                //
+                //     $f : (func (param i32 T T) (result T))
+                //     (handle, ptr, n) -> packed CopyResult
+                //
+                // Elements come FROM linear memory. This used to take the item
+                // as a stack VALUE, which no conforming component could
+                // produce — it worked only because both ends were ours, and it
+                // was the last shape mismatch in the stream family.
+                let n = self.pop().as_i32();
+                let ptr = self.pop().as_i32();
+                let handle = self.pop().as_i32() as u32;
+
+                let end = match self.handle_table.get(handle) {
+                    Some(crate::handle_table::HandleEntry::WritableStreamEnd(e)) => *e,
+                    _ => {
+                        return Err(VMError::new(
+                            "canon stream.write: handle is not a writable stream end",
+                        ));
                     }
-                    Value::I32(handle) => match self.handle_table.get(handle as u32) {
-                        Some(crate::handle_table::HandleEntry::WritableStreamEnd(id)) => Some(*id),
-                        _ => None,
-                    },
-                    _ => None,
                 };
-                if let Some(stream_id) = stream_id {
-                    let mut el = self.event_loop.borrow_mut();
-                    if let Some(fiber) = el.stream_push(stream_id, item) {
-                        el.immediate
-                            .push_back(crate::event_loop::Task::ResumeFiber(fiber));
-                    }
+                if end.state != crate::handle_table::CopyState::Idle {
+                    return Err(VMError::new(
+                        "canon stream.write: end is not IDLE — pipelined copies are not permitted",
+                    ));
                 }
+                if n < 0 || ptr < 0 || n as u32 > crate::canon_copy::MAX_LENGTH {
+                    return Err(VMError::new(
+                        "canon stream.write: buffer length out of range",
+                    ));
+                }
+                let (ptr, n) = (ptr as usize, n as usize);
+                if ptr.saturating_add(n) > self.memory.len() {
+                    return Err(VMError::new(
+                        "canon stream.write: buffer is out of bounds of linear memory",
+                    ));
+                }
+
+                let mut bytes = vec![0u8; n];
+                self.memory.read_bytes(ptr, &mut bytes);
+                // One item per copy, carrying the whole buffer: the reader
+                // flattens items back to bytes, so the item boundary is
+                // invisible downstream (`EventLoop::stream_read_bytes`).
+                let item = Value::Object(crate::heap::alloc(crate::value::Object::new_array(
+                    bytes.iter().map(|b| Value::I32(*b as i32)).collect(),
+                )));
+                let mut el = self.event_loop.borrow_mut();
+                if let Some(fiber) = el.stream_push(end.id, item) {
+                    el.immediate
+                        .push_back(crate::event_loop::Task::ResumeFiber(fiber));
+                }
+                drop(el);
+                // Data is available now, so a reader parked in COPYING by a
+                // BLOCKED read may copy again — the reset the spec performs on
+                // event delivery. Without it, BLOCKED is a dead end.
+                self.handle_table.release_copying(end.id, true);
+                self.push(Value::I32(crate::canon_copy::pack(
+                    crate::canon_copy::CopyResult::Completed,
+                    n as u32,
+                ) as i32))?;
             }
             B::StreamDropReadable => {
                 // canon stream.drop-readable — pops readable stream handle.
                 let handle = self.pop().as_i32() as u32;
-                if let Some(crate::handle_table::HandleEntry::ReadableStreamEnd(sid)) =
+                if let Some(crate::handle_table::HandleEntry::ReadableStreamEnd(end)) =
                     self.handle_table.remove(handle)
                 {
                     // Close the stream so waiting writers don't block forever.
                     let mut el = self.event_loop.borrow_mut();
-                    if let Some(fiber) = el.stream_close(sid) {
+                    if let Some(fiber) = el.stream_close(end.id) {
                         el.immediate
                             .push_back(crate::event_loop::Task::ResumeFiber(fiber));
                     }
@@ -1160,84 +1281,361 @@ impl VM {
             B::StreamDropWritable => {
                 // canon stream.drop-writable — pops writable stream handle.
                 let handle = self.pop().as_i32() as u32;
-                if let Some(crate::handle_table::HandleEntry::WritableStreamEnd(sid)) =
+                if let Some(crate::handle_table::HandleEntry::WritableStreamEnd(end)) =
                     self.handle_table.remove(handle)
                 {
                     // Closing the write end signals EOF to the reader.
                     let mut el = self.event_loop.borrow_mut();
-                    if let Some(fiber) = el.stream_close(sid) {
+                    if let Some(fiber) = el.stream_close(end.id) {
                         el.immediate
                             .push_back(crate::event_loop::Task::ResumeFiber(fiber));
                     }
                 }
             }
             B::StreamRead => {
-                // canon stream.read — pops the stream; pushes the next item,
-                // Null on EOF, or suspends the fiber until an item arrives.
-                let val = self.pop();
-                if let Value::Object(ref obj) = val {
-                    let o = obj.lock().unwrap();
-                    if let ObjectKind::Stream { id } = o.kind {
-                        let stream_id = id;
-                        drop(o);
-                        let has_item = self.event_loop.borrow().stream_has_item(stream_id);
-                        let is_eof = self.event_loop.borrow().stream_is_eof(stream_id);
-                        if has_item {
-                            let item = self
-                                .event_loop
-                                .borrow_mut()
-                                .stream_pop(stream_id)
-                                .unwrap_or(Value::Null);
-                            self.push(item)?;
-                        } else if is_eof {
-                            self.push(Value::Null)?;
-                        } else {
-                            let fiber = self.save_fiber();
-                            self.event_loop
-                                .borrow_mut()
-                                .suspend_stream_reader(stream_id, fiber);
-                            return Err(VMError::new(format!("__stream_read__:{}", stream_id)));
+                // canon stream.read — `CanonicalABI.md` §`canon stream.{read,write}`:
+                //
+                //     (canon stream.read $stream_t $opts (core func $f))
+                //     $f : (func (param i32 T T) (result T))     T = i32
+                //
+                // i.e. `(handle, ptr, n) -> packed`, copying ELEMENTS INTO
+                // LINEAR MEMORY and answering a packed `CopyResult` + count.
+                //
+                // ⚠ This built-in previously took the stream as a stack VALUE
+                // and pushed the item itself. That shape cannot interoperate:
+                // a conforming runtime hands core wasm a handle and a buffer.
+                // It also could not read what `stream.new` produced, because
+                // `stream.new` yields i32 handles and this arm only accepted
+                // the object form — an i32 fell through to `push(Null)`, which
+                // a guest reads as EOF. Silent-empty, never an error.
+                //
+                // ASYNC variant (`opts.async_`): a copy that cannot complete
+                // synchronously answers `BLOCKED` and the real result arrives
+                // later as an `EventCode.STREAM_READ` event. The SYNC variant
+                // instead suspends until an event exists; that needs a resume
+                // path which re-enters the copy (the current suspension
+                // mechanism resumes by pushing exactly one value, which cannot
+                // both fill a buffer and return a count), so it is not wired
+                // yet and this is the async shape.
+                let n = self.pop().as_i32();
+                let ptr = self.pop().as_i32();
+                let handle = self.pop().as_i32() as u32;
+
+                // §stream_copy trap conditions, in spec order.
+                let end = match self.handle_table.get(handle) {
+                    Some(crate::handle_table::HandleEntry::ReadableStreamEnd(e)) => *e,
+                    _ => {
+                        return Err(VMError::new(
+                            "canon stream.read: handle is not a readable stream end",
+                        ));
+                    }
+                };
+                if end.state != crate::handle_table::CopyState::Idle {
+                    return Err(VMError::new(
+                        "canon stream.read: end is not IDLE — pipelined copies are not permitted",
+                    ));
+                }
+                if end.in_waitable_set {
+                    return Err(VMError::new(
+                        "canon stream.read: synchronous read on an end already awaited via a waitable set",
+                    ));
+                }
+                // `Buffer`'s constructor eagerly checks the bounds of (ptr, n),
+                // and MAX_LENGTH is fixed independently of the address type.
+                if n < 0 || ptr < 0 || n as u32 > crate::canon_copy::MAX_LENGTH {
+                    return Err(VMError::new("canon stream.read: buffer length out of range"));
+                }
+                let (ptr, n) = (ptr as usize, n as usize);
+                if ptr.saturating_add(n) > self.memory.len() {
+                    return Err(VMError::new(
+                        "canon stream.read: buffer is out of bounds of linear memory",
+                    ));
+                }
+
+                let bytes = self.event_loop.borrow_mut().stream_read_bytes(end.id, n);
+                if bytes.is_empty() {
+                    // Nothing copied: either the far end is gone for good, or
+                    // it simply has not written yet.
+                    if self.event_loop.borrow().stream_is_eof(end.id) {
+                        // DROPPED means no further copies are possible, so the
+                        // end goes to DONE and anything but `drop-*` now traps.
+                        if let Some(crate::handle_table::HandleEntry::ReadableStreamEnd(e)) =
+                            self.handle_table.get_mut(handle)
+                        {
+                            e.state = crate::handle_table::CopyState::Done;
                         }
+                        self.push(Value::I32(crate::canon_copy::pack(
+                            crate::canon_copy::CopyResult::Dropped,
+                            0,
+                        ) as i32))?;
                     } else {
-                        drop(o);
-                        self.push(Value::Null)?;
+                        // §stream_copy sets `e.state = CopyState.COPYING`
+                        // BEFORE the copy, and only the delivered event resets
+                        // it. So a BLOCKED read leaves the end COPYING: that is
+                        // what makes a subsequent `cancel-read` legal (it traps
+                        // unless COPYING) and what makes a second concurrent
+                        // read trap (it traps unless IDLE). Returning BLOCKED
+                        // while staying IDLE would quietly permit both.
+                        if let Some(crate::handle_table::HandleEntry::ReadableStreamEnd(e)) =
+                            self.handle_table.get_mut(handle)
+                        {
+                            e.state = crate::handle_table::CopyState::Copying;
+                        }
+                        self.push(Value::I32(crate::canon_copy::BLOCKED as i32))?;
                     }
                 } else {
-                    self.push(Value::Null)?;
+                    self.write_memory_bytes(0, ptr, &bytes)?;
+                    self.push(Value::I32(crate::canon_copy::pack(
+                        crate::canon_copy::CopyResult::Completed,
+                        bytes.len() as u32,
+                    ) as i32))?;
                 }
             }
+            // canon {stream,future}.cancel-{read,write} —
+            // `CanonicalABI.md` §`canon {stream,future}.cancel-{read,write}`:
+            //
+            //     $f : (func (param i32) (result i32))
+            //
+            // All four funnel through one `cancel_copy`, so they do here too.
+            //
+            // ⚠ This used to take the stream as a stack VALUE and CLOSE it,
+            // returning nothing. Cancel is not close: it reclaims a buffer from
+            // an in-flight copy and leaves the stream usable. Closing the far
+            // end on a cancel would give every waiting reader a spurious EOF.
             B::StreamCancelRead => {
-                // canon stream.cancel-read — pops the stream, closes it and
-                // resumes any suspended writer.
-                let val = self.pop();
-                if let Value::Object(ref obj) = val {
-                    let o = obj.lock().unwrap();
-                    if let ObjectKind::Stream { id } = o.kind {
-                        let stream_id = id;
-                        drop(o);
-                        let mut el = self.event_loop.borrow_mut();
-                        if let Some(fiber) = el.stream_close(stream_id) {
-                            el.immediate
-                                .push_back(crate::event_loop::Task::ResumeFiber(fiber));
+                self.canon_cancel_copy(crate::canon_copy::EndKind::ReadableStream)?;
+            }
+            B::StreamCancelWrite => {
+                self.canon_cancel_copy(crate::canon_copy::EndKind::WritableStream)?;
+            }
+            B::FutureCancelRead => {
+                self.canon_cancel_copy(crate::canon_copy::EndKind::ReadableFuture)?;
+            }
+            B::FutureCancelWrite => {
+                self.canon_cancel_copy(crate::canon_copy::EndKind::WritableFuture)?;
+            }
+            // canon future.{read,write} — `CanonicalABI.md` §`canon
+            // future.{read,write}`:
+            //
+            //     $f : (func (param i32 T) (result i32))
+            //
+            // `(handle, ptr)` with NO count, because a future carries exactly
+            // one element — the spec fixes the buffer length to 1. Its SIZE
+            // comes from the `$t` immediate, which is why this could not exist
+            // until canon imports could carry one.
+            B::FutureRead => {
+                let ptr = self.pop().as_i32();
+                let handle = self.pop().as_i32() as u32;
+                let t = self.canon_element_type("future.read")?;
+                let end = match self.handle_table.get(handle) {
+                    Some(crate::handle_table::HandleEntry::ReadableFutureEnd(e)) => *e,
+                    _ => {
+                        return Err(VMError::new(
+                            "canon future.read: handle is not a readable future end",
+                        ));
+                    }
+                };
+                if end.state != crate::handle_table::CopyState::Idle {
+                    return Err(VMError::new(
+                        "canon future.read: end is not IDLE — pipelined copies are not permitted",
+                    ));
+                }
+                if end.in_waitable_set {
+                    return Err(VMError::new(
+                        "canon future.read: synchronous read on an end already awaited via a waitable set",
+                    ));
+                }
+                let settled = {
+                    let el = self.event_loop.borrow();
+                    el.future_states.get(&end.id).map(|r| (r.phase, r.value.clone()))
+                };
+                match settled {
+                    Some((crate::event_loop::FuturePhase::Resolved, Some(v))) => {
+                        crate::canon_value::store(&self.memory, &v, &t, ptr as u32)
+                            .map_err(|e| VMError::new(format!("canon future.read: {e}")))?;
+                        self.push(Value::I32(crate::canon_copy::pack(
+                            crate::canon_copy::CopyResult::Completed,
+                            1,
+                        ) as i32))?;
+                    }
+                    // A rejected future is the writable end going away without
+                    // ever producing a value: no further copies are possible.
+                    Some((crate::event_loop::FuturePhase::Rejected, _)) | None => {
+                        if let Some(crate::handle_table::HandleEntry::ReadableFutureEnd(e)) =
+                            self.handle_table.get_mut(handle)
+                        {
+                            e.state = crate::handle_table::CopyState::Done;
                         }
+                        self.push(Value::I32(crate::canon_copy::pack(
+                            crate::canon_copy::CopyResult::Dropped,
+                            0,
+                        ) as i32))?;
+                    }
+                    _ => {
+                        if let Some(crate::handle_table::HandleEntry::ReadableFutureEnd(e)) =
+                            self.handle_table.get_mut(handle)
+                        {
+                            e.state = crate::handle_table::CopyState::Copying;
+                        }
+                        self.push(Value::I32(crate::canon_copy::BLOCKED as i32))?;
                     }
                 }
             }
+            B::FutureWrite => {
+                let ptr = self.pop().as_i32();
+                let handle = self.pop().as_i32() as u32;
+                let t = self.canon_element_type("future.write")?;
+                let end = match self.handle_table.get(handle) {
+                    Some(crate::handle_table::HandleEntry::WritableFutureEnd(e)) => *e,
+                    _ => {
+                        return Err(VMError::new(
+                            "canon future.write: handle is not a writable future end",
+                        ));
+                    }
+                };
+                if end.state != crate::handle_table::CopyState::Idle {
+                    return Err(VMError::new(
+                        "canon future.write: end is not IDLE — pipelined copies are not permitted",
+                    ));
+                }
+                let v = crate::canon_value::load(&self.memory, &t, ptr as u32)
+                    .map_err(|e| VMError::new(format!("canon future.write: {e}")))?;
+                let mut el = self.event_loop.borrow_mut();
+                if let Some(fiber) = el.resolve_future(end.id, v) {
+                    el.immediate
+                        .push_back(crate::event_loop::Task::ResumeFiber(fiber));
+                }
+                drop(el);
+                // The value is available, so a reader parked in COPYING by a
+                // BLOCKED read can copy again — this is the reset the spec
+                // performs when it delivers the event.
+                self.handle_table.release_copying(end.id, true);
+                // A future takes exactly one value, so a successful write is
+                // always one element.
+                self.push(Value::I32(crate::canon_copy::pack(
+                    crate::canon_copy::CopyResult::Completed,
+                    1,
+                ) as i32))?;
+            }
+            // canon resource.new — `CanonicalABI.md` §`canon resource.new`:
+            //
+            //     $f : (func (param $rt.rep) (result i32))     $rt.rep = i32
+            //
+            // Wraps a REPRESENTATION (an opaque i32 the component chose) in an
+            // owning handle. The rep is the component's private business; the
+            // handle is what crosses a boundary, which is the whole point of
+            // the indirection — a peer never sees the representation.
+            B::ResourceNew => {
+                let rep = self.pop().as_i32();
+                let type_id = self.canon_type_immediate.unwrap_or(0);
+                let h = self
+                    .handle_table
+                    .insert(crate::handle_table::HandleEntry::OwnedResource {
+                        type_id,
+                        value: Value::I32(rep),
+                    });
+                self.push(Value::I32(h as i32))?;
+            }
+            // canon resource.rep — §`canon resource.rep`:
+            //
+            //     $f : (func (param i32) (result $rt.rep))
+            //
+            // The inverse, and only valid for a handle of the SAME resource
+            // type: `trap_if(h.rt is not rt)`. Without that check a component
+            // could read another type's representation through a handle it
+            // legitimately holds.
+            B::ResourceRep => {
+                let handle = self.pop().as_i32() as u32;
+                let want = self.canon_type_immediate.unwrap_or(0);
+                match self.handle_table.get(handle) {
+                    Some(crate::handle_table::HandleEntry::OwnedResource { type_id, value })
+                    | Some(crate::handle_table::HandleEntry::BorrowedResource {
+                        type_id, value, ..
+                    }) => {
+                        if self.canon_type_immediate.is_some() && *type_id != want {
+                            return Err(VMError::new(format!(
+                                "canon resource.rep: handle is resource type {type_id}, not {want}"
+                            )));
+                        }
+                        let rep = value.as_i32();
+                        self.push(Value::I32(rep))?;
+                    }
+                    _ => {
+                        return Err(VMError::new(
+                            "canon resource.rep: handle is not a resource handle",
+                        ));
+                    }
+                }
+            }
+            // canon resource.drop — §`canon resource.drop`:
+            //
+            //     $f : (func (param i32))
+            //
+            // Removes the handle and, IF IT WAS OWNING, calls the resource's
+            // destructor. A borrow is dropped without one — that asymmetry is
+            // the difference between `own` and `borrow`, and getting it wrong
+            // means either a leak or a double free.
+            B::ResourceDrop => {
+                let handle = self.pop().as_i32() as u32;
+                let want = self.canon_type_immediate;
+                match self.handle_table.get(handle) {
+                    Some(crate::handle_table::HandleEntry::OwnedResource { type_id, .. })
+                    | Some(crate::handle_table::HandleEntry::BorrowedResource {
+                        type_id, ..
+                    }) => {
+                        if let Some(want) = want {
+                            if *type_id != want {
+                                return Err(VMError::new(format!(
+                                    "canon resource.drop: handle is resource type {type_id}, not {want}"
+                                )));
+                            }
+                        }
+                    }
+                    _ => {
+                        return Err(VMError::new(
+                            "canon resource.drop: handle is not a resource handle",
+                        ));
+                    }
+                }
+                let removed = self.handle_table.remove(handle);
+                // ⚠ The destructor is NOT called yet. `component_model.rs`
+                // registers one as a `[resource-drop]` ResourceMethod, but
+                // invoking it from here means re-entering the VM mid-builtin,
+                // which the current dispatch cannot do. Left explicit rather
+                // than silently skipped: an owning drop that runs no destructor
+                // leaks whatever the representation owned.
+                let _ = removed;
+            }
+            B::WaitableSetDrop => {
+                // canon waitable-set.drop — pops the set handle and releases it.
+                // Without this a set could be created and waited on but never
+                // freed, so a long-running component leaks one per wait site.
+                let handle = self.pop().as_i32() as u32;
+                self.waitable_sets.remove(handle);
+            }
+            B::ThreadYield => {
+                // canon thread.yield — 🔀. Offer the scheduler a turn. Our
+                // canon built-ins run to completion on the calling fiber, so
+                // there is nothing to hand over synchronously; the honest
+                // answer is "not cancelled".
+                self.push(Value::I32(0))?;
+            }
             B::FutureNew => {
-                // canon future.new — create a future; push readable_handle and writable_handle (i32).
+                // canon future.new — same shape as `stream.new` above and from
+                // the same spec paragraph: `(func (result i64))`,
+                // `return [ ri | (wi << 32) ]`.
                 let future_id = self.event_loop.borrow_mut().create_future();
                 let rd =
                     self.handle_table
                         .insert(crate::handle_table::HandleEntry::ReadableFutureEnd(
-                            future_id,
+                            crate::handle_table::StreamEnd::new(future_id),
                         ));
                 let wr =
                     self.handle_table
                         .insert(crate::handle_table::HandleEntry::WritableFutureEnd(
-                            future_id,
+                            crate::handle_table::StreamEnd::new(future_id),
                         ));
-                self.push(Value::I32(rd as i32))?;
-                self.push(Value::I32(wr as i32))?;
+                self.push(Value::I64((rd as i64) | ((wr as i64) << 32)))?;
             }
             B::FutureDropReadable => {
                 // canon future.drop-readable — pops readable future handle (i32).
@@ -1247,13 +1645,13 @@ impl VM {
             B::FutureDropWritable => {
                 // canon future.drop-writable — pops writable future handle (i32).
                 let handle = self.pop().as_i32() as u32;
-                if let Some(crate::handle_table::HandleEntry::WritableFutureEnd(fid)) =
+                if let Some(crate::handle_table::HandleEntry::WritableFutureEnd(end)) =
                     self.handle_table.remove(handle)
                 {
                     // Dropping the write end without resolving rejects the future.
                     let mut el = self.event_loop.borrow_mut();
                     if let Some(fiber) =
-                        el.reject_future(fid, Value::String(Arc::from("future dropped")))
+                        el.reject_future(end.id, Value::String(Arc::from("future dropped")))
                     {
                         el.immediate
                             .push_back(crate::event_loop::Task::ResumeFiber(fiber));
@@ -1735,16 +2133,20 @@ impl VM {
                     *dst = val;
                 }
                 _ if op == Op::GLOBAL_GET => {
-                    let idx = self.read_u16();
-                    let name = self.constant_str(idx);
-                    let val = self.globals.get(&name).cloned().unwrap_or(Value::Undefined);
+                    // A globalidx over `global_imports ++ defined`, exactly as
+                    // WASM's `global.get`. No name is consulted here.
+                    let idx = self.read_u16() as usize;
+                    let val = self.globals.get(idx).cloned().unwrap_or(Value::Undefined);
                     self.push(val)?;
                 }
                 _ if op == Op::GLOBAL_SET => {
-                    let idx = self.read_u16();
-                    let name = self.constant_str(idx);
+                    // See GLOBAL_GET: a globalidx, not a name.
+                    let idx = self.read_u16() as usize;
                     let val = self.pop();
-                    self.globals.insert(name, val);
+                    if idx >= self.globals.len() {
+                        self.globals.resize(idx + 1, Value::Null);
+                    }
+                    self.globals[idx] = val;
                 }
 
                 // -- Properties --
@@ -3074,7 +3476,7 @@ impl VM {
                             self.call_value(argc)?;
                         }
                         ImportTarget::StdlibRedirect(ref global_name) => {
-                            if let Some(func_val) = self.globals.get(global_name).cloned() {
+                            if let Some(func_val) = self.global(global_name).cloned() {
                                 let args_start = self.stack.len() - argc;
                                 self.stack.insert(args_start, func_val);
                                 self.call_value(argc)?;
@@ -3120,10 +3522,14 @@ impl VM {
                             }
                             self.push(Value::String(s.clone()))?;
                         }
-                        ImportTarget::Canon(b) => {
+                        ImportTarget::Canon(b, type_idx) => {
                             // CM canonical built-in: args/results ride the
                             // stack; the builtin pops exactly its own args
                             // (the emitter's argc matches by construction).
+                            // `type_idx` is the `$t` immediate the `canon`
+                            // definition carried — what tells a typed copy how
+                            // wide one element is.
+                            self.canon_type_immediate = type_idx;
                             self.exec_canon_builtin(b)?;
                         }
                     }
@@ -5388,9 +5794,10 @@ impl VM {
                         }
                         _ => false,
                     };
+                    let cg = self.continuation_globals();
                     crate::calls::attach_continuation_protocols(
                         &mut obj.properties,
-                        &self.globals,
+                        cg,
                         entry_async,
                     );
                     self.push(Value::Object(crate::heap::alloc(obj)))?;
@@ -5675,9 +6082,10 @@ impl VM {
                                 }
                                 _ => false,
                             };
+                            let cg = self.continuation_globals();
                             crate::calls::attach_continuation_protocols(
                                 &mut new_obj.properties,
-                                &self.globals,
+                                cg,
                                 entry_async,
                             );
                             // Store the bound args as an array property

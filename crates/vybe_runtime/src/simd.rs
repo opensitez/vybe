@@ -270,8 +270,7 @@ impl VM {
     /// ⇒ no-op, and the registry/stamp checks in `test_type` stand.
     pub(crate) fn proto_chain_has(&self, val: &Value, target_name: &str) -> bool {
         let target_proto = self
-            .globals
-            .get(&format!("__ctor_{target_name}"))
+            .global(&format!("__ctor_{target_name}"))
             .and_then(|ctor| {
                 if let Value::Object(c) = ctor {
                     c.lock().unwrap().properties.get("prototype").cloned()

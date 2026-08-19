@@ -1399,10 +1399,10 @@ fn operand_stack(vm: &VM) -> Vec<String> {
 
 fn globals(vm: &VM, prefix: Option<&str>) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = vm
-        .globals
-        .iter()
+        .globals_by_name()
+        .into_iter()
         .filter(|(k, _)| prefix.map(|p| k.starts_with(p)).unwrap_or(true))
-        .map(|(k, v)| (k.clone(), render_value(v)))
+        .map(|(k, v)| (k, render_value(&v)))
         .collect();
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out
@@ -1573,7 +1573,7 @@ fn read_named_value(vm: &VM, name: &str) -> Option<crate::Value> {
             }
         }
     }
-    vm.globals.get(name).cloned()
+    vm.global(name).cloned()
 }
 
 /// Parse `base.field[0].other` into a base name + a list of accessors. Only
@@ -1713,9 +1713,9 @@ fn set_var(vm: &mut VM, name: &str, literal: &str) -> Result<String, String> {
             }
         }
     }
-    if vm.globals.contains_key(name) {
-        let old = vm.globals.get(name).map(render_value).unwrap_or_default();
-        vm.globals.insert(name.to_string(), new_val.clone());
+    if vm.has_global(name) {
+        let old = vm.global(name).map(render_value).unwrap_or_default();
+        vm.set_global(name, new_val.clone());
         return Ok(format!("{name}: {old} → {}", render_value(&new_val)));
     }
     Err(format!("no variable `{name}` in scope"))

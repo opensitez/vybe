@@ -39,6 +39,31 @@ fn close_upvalues_in_value(val: &Value, stack: &[Value]) {
     }
 }
 
+/// Flatten one buffered stream item into `stream<u8>` bytes.
+///
+/// The same conversion [`VM::stream_drain`] applies, kept identical on purpose:
+/// two byte-views of one stream that disagree would show up as corrupted output
+/// far from here. `I32` is a single byte (a `u8` element), `String` is its
+/// UTF-8 bytes, and an array is the concatenation of its elements.
+fn flatten_into(item: &Value, out: &mut Vec<u8>) {
+    use crate::value::ObjectKind;
+    match item {
+        Value::I32(b) => out.push(*b as u8),
+        Value::I64(b) => out.push(*b as u8),
+        Value::F64(b) => out.push(*b as u8),
+        Value::String(s) => out.extend_from_slice(s.as_bytes()),
+        Value::Object(obj) => {
+            let o = obj.lock().unwrap();
+            if let ObjectKind::Array(ref elems) = o.kind {
+                for e in elems.iter() {
+                    flatten_into(e, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Phase of a CM3 future in the EventLoop registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FuturePhase {
@@ -59,6 +84,10 @@ pub struct FutureRecord {
 pub struct StreamRecord {
     pub buffer: VecDeque<Value>,
     pub closed: bool,
+    /// Bytes flattened out of `buffer` but not yet handed to a reader.
+    /// `canon stream.read` copies a byte count, which need not land on an item
+    /// boundary; the remainder waits here. See [`EventLoop::stream_read_bytes`].
+    pub pending: Vec<u8>,
 }
 
 /// A task in the event loop.
@@ -233,6 +262,7 @@ impl EventLoop {
             StreamRecord {
                 buffer: VecDeque::new(),
                 closed: false,
+                pending: Vec::new(),
             },
         );
         id
@@ -268,6 +298,41 @@ impl EventLoop {
         self.stream_buffers
             .get_mut(&stream_id)
             .and_then(|rec| rec.buffer.pop_front())
+    }
+
+    /// Read up to `max` BYTES out of a `stream<u8>` — the unit `canon
+    /// stream.read` copies in, as against [`stream_pop`]'s whole items.
+    ///
+    /// A buffered item is not necessarily one byte: a host that wrote a string
+    /// pushed one `Value` holding many. So an item is flattened on demand and
+    /// whatever the caller could not take stays in `pending`, to be handed out
+    /// by the next read. Without that cursor a 100-byte item read with `n = 10`
+    /// would either overrun the guest's buffer or silently drop 90 bytes —
+    /// and the guest would have no way to detect either.
+    ///
+    /// Conversion matches [`VM::stream_drain`]: `I32` is one byte, `String` is
+    /// its UTF-8 bytes, an array is the concatenation of its elements.
+    pub fn stream_read_bytes(&mut self, stream_id: u64, max: usize) -> Vec<u8> {
+        let Some(rec) = self.stream_buffers.get_mut(&stream_id) else {
+            return Vec::new();
+        };
+        while rec.pending.len() < max {
+            let Some(item) = rec.buffer.pop_front() else {
+                break;
+            };
+            flatten_into(&item, &mut rec.pending);
+        }
+        let take = max.min(rec.pending.len());
+        rec.pending.drain(..take).collect()
+    }
+
+    /// True when a `stream<u8>` has no bytes left AND no items that could
+    /// produce any. Distinct from [`stream_has_item`], which cannot see bytes
+    /// already flattened into the cursor.
+    pub fn stream_has_bytes(&self, stream_id: u64) -> bool {
+        self.stream_buffers
+            .get(&stream_id)
+            .is_some_and(|rec| !rec.pending.is_empty() || !rec.buffer.is_empty())
     }
 
     /// Check whether a stream's buffer is empty AND the stream is closed (EOF).
