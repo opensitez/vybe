@@ -2,9 +2,15 @@
 //!
 //! `Form : ContainerControl : ScrollableControl : Control : Component :
 //! MarshalByRefObject : Object`. The first concrete leaf in the .NET
-//! hierarchy — its ctor calls `vybe:gui::new_Form` to materialise the
-//! actual vybe_widgets backing widget after the parent chain has bound
-//! the inherited control / scrollable / container setters.
+//! hierarchy. Its constructor calls NO host factory: `Form` is element-mapped
+//! to `body`, and the element mapping is what materialises it
+//! (`tree_register::is_element_mapped`), after the parent chain has bound the
+//! inherited control / scrollable / container setters.
+//!
+//! A form is a WINDOW, so its verbs are window verbs: `Close` and `Dispose`
+//! are `window.close()`, `Activate` is `window.focus()`, and `CenterToScreen`
+//! is `moveTo` — each reached through `activeDocument().defaultView`, because a
+//! guest has no global object to spell `window` with.
 //!
 //! ## Property placement
 //!
@@ -29,22 +35,36 @@ const FORM_METHODS: &[DotnetMethod] = &[
     DotnetMethod {
         name: "Close",
         arity: 1,
-        target: MethodTarget::host("vybe:gui", "__ctrl_close"),
+        target: MethodTarget::common("dotnet.winforms_form_close"),
+    },
+    // A form's disposal is its WINDOW closing, not its node being removed.
+    //
+    // ⛔ This declaration is what makes `Control.Dispose` safe to point at the
+    // DOM verb. `Form` maps to `body`, so `element.remove()` on a form would
+    // delete the document body and take the whole app shell with it — which is
+    // exactly why `gui_control_verb` guards `dispose` with `!is_form`. That
+    // guard only sends Form to the INHERITED target; it cannot say what the
+    // target should be. Declaring `Dispose` here does, and `inherited_methods`
+    // yields nearest-first so this shadows `Control`'s.
+    DotnetMethod {
+        name: "Dispose",
+        arity: 1,
+        target: MethodTarget::common("dotnet.winforms_form_close"),
     },
     DotnetMethod {
         name: "ShowDialog",
         arity: 1,
-        target: MethodTarget::host("vybe:gui", "__dlg_showdialog"),
+        target: MethodTarget::common("dotnet.winforms_form_show_dialog"),
     },
     DotnetMethod {
         name: "Activate",
         arity: 1,
-        target: MethodTarget::host("vybe:gui", "__form_activate"),
+        target: MethodTarget::common("dotnet.winforms_form_activate"),
     },
     DotnetMethod {
         name: "CenterToScreen",
         arity: 1,
-        target: MethodTarget::host("vybe:gui", "__form_center_to_screen"),
+        target: MethodTarget::common("dotnet.winforms_form_center_to_screen"),
     },
 ];
 

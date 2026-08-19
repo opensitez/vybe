@@ -542,7 +542,13 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         DotnetClassExport::new(
             "dotnet.System",
             ClassType::new("TimeSpan")
+                // .NET overloads the ctor by arity: (ticks) | (h,m,s) |
+                // (d,h,m,s) | (d,h,m,s,ms). Only 3 was registered, and the
+                // emitter silently answered Zero for the rest.
+                .with_constructor(ConstructorDef::new(1).with_common_backing("dotnet.timespan_new"))
                 .with_constructor(ConstructorDef::new(3).with_common_backing("dotnet.timespan_new"))
+                .with_constructor(ConstructorDef::new(4).with_common_backing("dotnet.timespan_new"))
+                .with_constructor(ConstructorDef::new(5).with_common_backing("dotnet.timespan_new"))
                 .with_method(MethodDef::static_method(
                     "FromDays",
                     1,
@@ -602,6 +608,53 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "Duration",
                     0,
                     MethodBody::Common("dotnet.timespan_duration".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "FromTicks",
+                    1,
+                    MethodBody::Common("dotnet.timespan_from_ticks".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "MaxValue",
+                    0,
+                    MethodBody::Common("dotnet.timespan_max_value".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "MinValue",
+                    0,
+                    MethodBody::Common("dotnet.timespan_min_value".into()),
+                ))
+                // Instance halves of the arithmetic surface. Same emitters as
+                // the statics: an instance call pushes receiver-then-args, so
+                // `a.Add(b)` and `TimeSpan.Add(a, b)` are the same stack.
+                .with_method(MethodDef::new(
+                    "Add",
+                    1,
+                    MethodBody::Common("dotnet.timespan_add".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Subtract",
+                    1,
+                    MethodBody::Common("dotnet.timespan_sub".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "CompareTo",
+                    1,
+                    MethodBody::Common("dotnet.timespan_compare".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToString",
+                    0,
+                    MethodBody::Common("dotnet.timespan_to_string".into()),
+                ))
+                // The BCL-defined unary negation operator. The walker's
+                // operator rewrite turns `-span` into
+                // `TimeSpan.op_UnaryNegation(span)` — the same one-arg stack
+                // shape as `Negate`, so the same emitter serves both.
+                .with_method(MethodDef::static_method(
+                    "op_UnaryNegation",
+                    1,
+                    MethodBody::Common("dotnet.timespan_negate".into()),
                 )),
         ),
         DotnetClassExport::new(

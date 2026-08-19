@@ -91,6 +91,34 @@ pub fn classes() -> &'static [DotnetClass] {
         methods: &[],
         ctor_arity: 0,
         widget_host_fn: None,    },
+    // ── The grid's two collections ─────────────────────────────────────────
+    // Declared so that `Add` has somewhere to be FOUND: `self_member_returns`
+    // says `grid.Columns` reads back as one of these, and the next hop resolves
+    // against the type named there. Without the declaration the lookup answers
+    // nothing and `grid.Columns.Add(…)` calls `undefined` — the same fault
+    // already recorded on `ms.Items.Add`.
+    //
+    // `parent: None` and no element: neither is a control, neither is ever
+    // constructed, and `html_element_for_control` answers None for both. They
+    // are a member set and nothing else — the collection object WinForms
+    // allocates has no counterpart here, because the columns and rows live in
+    // the document.
+    DotnetClass {
+        name: "DataGridViewColumnCollection",
+        parent: None,
+        properties: &["Count"],
+        methods: &[],
+        ctor_arity: 0,
+        widget_host_fn: None,
+    },
+    DotnetClass {
+        name: "DataGridViewRowCollection",
+        parent: None,
+        properties: &["Count"],
+        methods: &[],
+        ctor_arity: 0,
+        widget_host_fn: None,
+    },
     // ⚠ `PropertyGrid` has no widget kind yet, so it renders as a LABEL until
     // `vybe_widgets` grows one. That is the designed degradation for a
     // `vybe-*` tag naming a control the widget layer does not know — visible

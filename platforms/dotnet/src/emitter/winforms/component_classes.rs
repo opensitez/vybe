@@ -85,7 +85,7 @@ pub fn component_class_exports() -> &'static [(&'static str, ClassType)] {
 /// still go through `vybe:gui::pointNew`/`sizeNew` and belong here next; adding
 /// a `rectangleNew` beside them would have grown the surface this conversion
 /// exists to remove.
-fn common_ctor_for(class: &str) -> Option<&'static str> {
+pub(crate) fn common_ctor_for(class: &str) -> Option<&'static str> {
     match class {
         "Rectangle" => Some("dotnet.rectangle_new"),
         // `pointNew` / `sizeNew` were `vybe:gui` host functions that allocated
@@ -229,20 +229,9 @@ fn class_to_component_class(class: &DotnetClass) -> ClassType {
     if let Some(emit) = common_ctor_for(class.name) {
         out = out
             .with_constructor(ConstructorDef::new(class.ctor_arity).with_common_backing(emit));
-    } else if let Some(host_fn) = class.widget_host_fn {
-        // Unreachable today — every dotnet class is `None`. Kept so the gate
-        // still answers the question rather than pretending it cannot be
-        // asked; the module is named once here instead of 82 times in the
-        // class tables.
-        out = out.with_constructor(
-            ConstructorDef::new(class.ctor_arity).with_backing(HostTarget::new(
-                vybe_compiler::primitives::gui::GUI_MODULE,
-                host_fn,
-            )),
-        );
     } else if crate::emitter::tree_register::is_element_mapped(class.name) {
-        // An element-mapped class is CONSTRUCTIBLE without a `vybe:gui`
-        // factory: the element mapping is what materializes it, and the
+        // An element-mapped class is CONSTRUCTIBLE without any host factory:
+        // the element mapping is what materializes it, and the
         // registrar turns that into a `CtorSpec` whose `control_fn` creates
         // the node. The backing stays `None` on purpose — there is no host
         // function to call, and inventing one would put the object back on

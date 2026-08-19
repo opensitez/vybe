@@ -11513,6 +11513,11 @@ fn normalize_vb_convert_change_type_reflection_expr(
                 normalize_vb_convert_change_type_reflection_expr(child, locals);
             }
         }
+        ExprKind::Atomic(op) => {
+            for child in op.children_mut() {
+                normalize_vb_convert_change_type_reflection_expr(child, locals);
+            }
+        }
         ExprKind::Chan(op) => {
             for child in op.children_mut() {
                 normalize_vb_convert_change_type_reflection_expr(child, locals);
@@ -18664,6 +18669,11 @@ fn rewrite_vb_aliases_in_expr(expr: &mut Expression, aliases: &HashMap<String, S
                 rewrite_vb_aliases_in_expr(child, aliases);
             }
         }
+        ExprKind::Atomic(op) => {
+            for child in op.children_mut() {
+                rewrite_vb_aliases_in_expr(child, aliases);
+            }
+        }
         ExprKind::Chan(op) => {
             for child in op.children_mut() {
                 rewrite_vb_aliases_in_expr(child, aliases);
@@ -19202,6 +19212,11 @@ fn normalize_vb_date_literal_statement(
 fn normalize_vb_date_literal_expr(expr: &mut Expression, dates: &HashMap<String, Expression>) {
     match &mut expr.kind {
         ExprKind::Async(op) => {
+            for child in op.children_mut() {
+                normalize_vb_date_literal_expr(child, dates);
+            }
+        }
+        ExprKind::Atomic(op) => {
             for child in op.children_mut() {
                 normalize_vb_date_literal_expr(child, dates);
             }
@@ -21052,6 +21067,11 @@ fn normalize_vb_delegate_binding_expr(
 ) {
     match &mut expr.kind {
         ExprKind::Async(op) => {
+            for child in op.children_mut() {
+                normalize_vb_delegate_binding_expr(child, delegates, locals, bindings);
+            }
+        }
+        ExprKind::Atomic(op) => {
             for child in op.children_mut() {
                 normalize_vb_delegate_binding_expr(child, delegates, locals, bindings);
             }
@@ -23185,12 +23205,25 @@ fn rewrite_vb_pointer_ref_call(callee: &Expression, args: &[Argument]) -> Option
     {
         return args.first().map(|arg| arg.value.clone());
     }
-    if vb_callee_ends(callee, &["BitConverter", "SingleToInt32Bits"])
-        || vb_callee_ends(callee, &["BitConverter", "Int32BitsToSingle"])
-        || vb_callee_ends(callee, &["BitConverter", "DoubleToInt64Bits"])
-        || vb_callee_ends(callee, &["BitConverter", "Int64BitsToDouble"])
-    {
-        return args.first().map(|arg| arg.value.clone());
+    // `BitConverter` reads STORAGE. These four used to return their ARGUMENT
+    // unchanged, so `SingleToInt32Bits(1.0F)` answered 1 where .NET answers
+    // 1065353216 — a name table in a walker producing a silent wrong number.
+    // They are `UnaryOp::Reinterpret` now: the same node Fortran's TRANSFER,
+    // Go's `Float32bits` and Java's `floatToIntBits` reach.
+    for (method, repr) in [
+        ("SingleToInt32Bits", vybe_ast::NumericRepr::I32),
+        ("Int32BitsToSingle", vybe_ast::NumericRepr::F32),
+        ("DoubleToInt64Bits", vybe_ast::NumericRepr::I64),
+        ("Int64BitsToDouble", vybe_ast::NumericRepr::F64),
+    ] {
+        if vb_callee_ends(callee, &["BitConverter", method]) {
+            return args.first().map(|arg| {
+                Expression::new(ExprKind::Unary {
+                    op: UnaryOp::Reinterpret(repr),
+                    expr: Box::new(arg.value.clone()),
+                })
+            });
+        }
     }
 
     let field = field_name(callee)?.to_ascii_lowercase();
@@ -31278,6 +31311,13 @@ fn wrap_vb_resume_next(stmt: Statement, span: Span) -> Statement {
 fn rewrite_vb_err_expr(expr: &mut Expression) -> bool {
     match &mut expr.kind {
         ExprKind::Async(op) => {
+            let mut changed = false;
+            for child in op.children_mut() {
+                changed |= rewrite_vb_err_expr(child);
+            }
+            changed
+        }
+        ExprKind::Atomic(op) => {
             let mut changed = false;
             for child in op.children_mut() {
                 changed |= rewrite_vb_err_expr(child);

@@ -10,7 +10,7 @@ use vybe_runtime::component_model::ComponentDescriptor;
 #[path = "../classes/mod.rs"]
 pub mod classes;
 
-pub use host_map::{map_host_func, namespace_to_host_module, static_method_mappings};
+pub use host_map::static_method_mappings;
 pub use imports::default_interface_imports;
 pub use namespaces::{is_namespace_root, namespace_roots};
 pub use types::{capitalize_control_name, is_noop_method, known_type_mappings, noop_methods};

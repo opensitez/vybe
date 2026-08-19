@@ -290,9 +290,25 @@ impl WebEngine for Widgets {
                 Some(d) => WindowValue::Document(d),
                 None => WindowValue::Null,
             },
+            WindowOp::DefaultView(d) => match wnd::default_view(d) {
+                Some(w) => WindowValue::Window(w),
+                None => WindowValue::Null,
+            },
+            // The document's own title names the context, which is what
+            // `window.name` reads back — `open()` takes the same string as its
+            // `target`.
+            WindowOp::AdoptTopLevel(d) => WindowValue::Window(wnd::adopt(d, "")),
             WindowOp::Close(w) => {
                 wnd::close(w);
                 WindowValue::None
+            }
+            WindowOp::Focus(w) => {
+                wnd::focus(w);
+                WindowValue::None
+            }
+            WindowOp::Screen(w) => {
+                let (width, height) = wnd::screen(w);
+                WindowValue::Pair(width, height)
             }
             WindowOp::Closed(w) => WindowValue::Bool(wnd::closed(w)),
             WindowOp::InnerSize(w) => {

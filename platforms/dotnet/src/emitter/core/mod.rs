@@ -3,6 +3,7 @@ pub mod array_adapter;
 pub mod bindingsource_adapter;
 pub mod bitconverter_adapter;
 pub mod collections_adapter;
+pub mod datagrid_adapter;
 pub mod component_classes;
 pub mod console_adapter;
 pub mod convert_adapter;
@@ -49,7 +50,7 @@ pub mod xml_linq_adapter;
 
 use vybe_runtime::component_model::ComponentDescriptor;
 
-pub use host_map::{map_host_func, namespace_to_host_module, static_method_mappings};
+pub use host_map::static_method_mappings;
 pub use imports::default_interface_imports;
 pub use namespaces::{is_namespace_root, namespace_roots};
 pub use types::{capitalize_data_type, is_known_constant, known_constants, known_type_mappings};

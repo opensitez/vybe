@@ -66,6 +66,21 @@ __vybe_type_get = { emit = "intrinsic:symbol_probe", min_args = 1, max_args = 1 
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
 "Array.isArray"           = { emit = "common:ref_is_array",       min_args = 1, max_args = 1 }
+
+# ── Bit casts ────────────────────────────────────────────────────────────────
+#
+# `BitConverter` reads STORAGE: `SingleToInt32Bits(1.0f)` is 1065353216, not 1.
+# These did not resolve at all before. `common:bits.*` is the shared family that
+# Fortran's TRANSFER, Go's `Float32bits` and Java's `floatToIntBits` reach
+# through the same `UnaryOp::Reinterpret` node.
+# .NET `Math.Round` is BANKER'S rounding by default — `Math.Round(2.5)` is 2,
+# confirmed with `dotnet run`. It did not resolve at all before.
+"Math.Round" = { emit = "common:math.round_half_even", min_args = 1, max_args = 1 }
+
+"BitConverter.SingleToInt32Bits" = { emit = "common:bits.reinterpret_i32", min_args = 1, max_args = 1 }
+"BitConverter.Int32BitsToSingle" = { emit = "common:bits.reinterpret_f32", min_args = 1, max_args = 1 }
+"BitConverter.DoubleToInt64Bits" = { emit = "common:bits.reinterpret_i64", min_args = 1, max_args = 1 }
+"BitConverter.Int64BitsToDouble" = { emit = "common:bits.reinterpret_f64", min_args = 1, max_args = 1 }
 "__csharp_object_get"     = { emit = "common:reflection.object_get", min_args = 2, max_args = 2 }
 
 # ── Math — shorthand resolves through the shared `System.Math` Dotnet tree ──

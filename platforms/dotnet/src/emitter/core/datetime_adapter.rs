@@ -688,7 +688,7 @@ pub fn emit_datetime_add_hours(chunks: &mut Vec<Chunk>, current: usize, line: u3
 
 pub fn emit_datetime_add_months(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let months_slot = chunk.alloc_scratch(9);
+    let months_slot = chunk.alloc_scratch(10);
     let date_slot = months_slot + 1;
     let year_slot = months_slot + 2;
     let month_slot = months_slot + 3;
@@ -697,6 +697,7 @@ pub fn emit_datetime_add_months(chunks: &mut Vec<Chunk>, current: usize, line: u
     let minute_slot = months_slot + 6;
     let second_slot = months_slot + 7;
     let total_months_slot = months_slot + 8;
+    let dim_slot = months_slot + 9;
     chunk.emit_op_u16(Op::LOCAL_SET, months_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, date_slot, line);
 
@@ -738,6 +739,27 @@ pub fn emit_datetime_add_months(chunks: &mut Vec<Chunk>, current: usize, line: u
     push_const(chunk, Value::I32(1), line);
     chunk.emit_op(Op::F64_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, month_slot, line);
+
+    // .NET CLAMPS (`MonthOverflow::Clamp` — MEASURED against `dotnet run`:
+    // 2024-02-29 AddYears(1) → 2025-02-28). The day passed through to
+    // `Date.UTC` unchanged, whose normalising is OVERFLOW semantics — the
+    // PHP/JS policy, not .NET's — so Feb 29 rolled into Mar 1. Clamp to the
+    // target month's length first; the rule is the shared primitive.
+    chunk.emit_op_u16(Op::LOCAL_GET, year_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, month_slot, line);
+    vybe_compiler::primitives::datetime::emit_days_in_month(
+        chunk,
+        vybe_ast::datetime::MonthIndexing::OneBased,
+        line,
+    );
+    chunk.emit_op_u16(Op::LOCAL_SET, dim_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, day_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, dim_slot, line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, dim_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, day_slot, line);
+    chunk.emit_end(line);
 
     emit_utc_from_slots(
         chunks,
@@ -1103,7 +1125,36 @@ pub fn emit_datetime_to_string(chunks: &mut [Chunk], current: usize, argc: u8, l
         emit_substring_from_slot(chunk, iso_slot, 11, 16, line);
         emit_concat(chunk, line);
         chunk.emit_else(line);
+
+        // dd/MM/yyyy — day-first; the ISO slices reversed.
+        chunk.emit_op_u16(Op::LOCAL_GET, format_slot, line);
+        push_const(chunk, Value::String(Arc::from("dd/MM/yyyy")), line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_if(line);
+        emit_substring_from_slot(chunk, iso_slot, 8, 10, line);
+        push_const(chunk, Value::String(Arc::from("/")), line);
+        emit_concat(chunk, line);
+        emit_substring_from_slot(chunk, iso_slot, 5, 7, line);
+        emit_concat(chunk, line);
+        push_const(chunk, Value::String(Arc::from("/")), line);
+        emit_concat(chunk, line);
+        emit_substring_from_slot(chunk, iso_slot, 0, 4, line);
+        emit_concat(chunk, line);
+        chunk.emit_else(line);
+
+        // HH:mm:ss — the ISO time half verbatim.
+        chunk.emit_op_u16(Op::LOCAL_GET, format_slot, line);
+        push_const(chunk, Value::String(Arc::from("HH:mm:ss")), line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_if(line);
+        emit_substring_from_slot(chunk, iso_slot, 11, 19, line);
+        chunk.emit_else(line);
         emit_substring_from_slot(chunk, iso_slot, 0, 19, line);
+        chunk.emit_end(line);
+        chunk.emit_end(line);
+
         chunk.emit_end(line);
         chunk.emit_end(line);
         chunk.emit_end(line);

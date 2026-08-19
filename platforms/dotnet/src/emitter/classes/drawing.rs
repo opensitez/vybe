@@ -31,9 +31,9 @@
 //!
 //! `Pen` and `SolidBrush` are real dotnet classes with arity-N
 //! constructors. The user writes `New Pen(Color.Red, 5)` and the dotnet
-//! ctor forwards to `vybe:gui::penNew(color, width)` — which returns
-//! an Object with `color` and `width` fields. The Graphics method bodies
-//! read those fields directly.
+//! ctor composes the object in bytecode via `dotnet.pen_new` — an Object with
+//! `color` and `width` fields, built by `emit_value_type_new` and no host at
+//! all. The Graphics method bodies read those fields directly.
 //!
 //! The classes also expose all the .NET property setters (`Pen.Color`,
 //! `Pen.Width`, `Brush.Color`, etc.) via the standard property-setter
@@ -1371,8 +1371,10 @@ const BRUSH_METHODS: &[DotnetMethod] = &[DotnetMethod {
 
 /// A named `Color` static — `Color.Red` IS its four channels.
 ///
-/// The RGBA is pushed and the value composed by `Color`'s own constructor, the
-/// same bytecode path `Point` and `Size` take. It used to push the colour NAME
+/// The RGBA is pushed and the object composed by `MethodOp::NewValueType`, the
+/// same `emit_value_type_new` `Point` and `Size` reach through their
+/// constructors — NOT `Color`'s own ctor, which would be circular for a static
+/// declared on `Color`. It used to push the colour NAME
 /// and call a `vybe:gui` host function to look it up in a palette living in
 /// `platforms/vybe/src/drawing.rs` — a host round-trip to turn a compile-time
 /// constant into four compile-time constants. Nothing about a colour needs a
@@ -1383,29 +1385,46 @@ const BRUSH_METHODS: &[DotnetMethod] = &[DotnetMethod {
 /// `ResolutionTarget::HostCall` carries no bound argument — `terminal()`
 /// discards `NamespaceNode::Fn`'s `bound_arg` — so a leaf would answer with no
 /// arguments at all.
+/// A `Color`'s fields, in the order every builder pushes them.
+///
+/// Single-sourced because two places compose a `Color` — `dotnet.color_new`
+/// (`New Color(r, g, b, a)`) and the named statics below — and the drawing
+/// bodies read the result BY NAME (`PushArgFieldField(1, "color", "r")`). If
+/// the two lists drifted, `Color.Red` and `New Color(220, 20, 60, 255)` would
+/// be different objects that both look right.
+pub(crate) const COLOR_FIELDS: &[&str] = &["r", "g", "b", "a"];
+
 macro_rules! color_static {
     ($konst:ident, $r:literal, $g:literal, $b:literal, $a:literal) => {
         const $konst: &[MethodOp] = &[
-            // ⚠ STILL A HOST CALL, and it should not be. Two attempts failed:
-            //   - `NewDotnet { class: "Color", argc: 4 }` — `classes/builder.rs`
+            // **A COLOUR IS DATA.** Four numbers in an object, composed in
+            // bytecode — there is no host in it and no web API for it either,
+            // because a colour is not a browser capability.
+            //
+            // This was the LAST `vybe:gui` import any .NET program still
+            // carried. It stayed a host call through two failed attempts, both
+            // recorded here because the reason is not obvious:
+            //   - `NewDotnet { class: "Color", argc: 4 }` — `builder.rs`
             //     asserts `argc == 0`; the DSL has no arity-N factory.
-            //   - `NewDotnet { argc: 0 }` + `Dup`/`SetField`/`Drop` per channel
-            //     — CIRCULAR. `Color.Red` is a static ON `Color`, and
-            //     `NewDotnet` needs that class's ctor global installed by an
+            //   - `NewDotnet { argc: 0 }` + `Dup`/`SetField` per channel —
+            //     CIRCULAR. `Color.Red` is a static ON `Color`, and
+            //     `NewDotnet` reads `Color`'s ctor GLOBAL, installed by an
             //     EARLIER registration pass, so it answers `undefined`.
-            // The colour is DATA and belongs in bytecode; making it so needs a
-            // `MethodOp` that calls a common emit (the `Color` class,
-            // `common_ctor_for` → `dotnet.color_new`, and both dispatch arms
-            // are already in place for it).
-            // `color.fromargb`'s four-argument form is `(a, r, g, b)`.
-            MethodOp::PushConstFloat($a as f64),
+            // `NewValueType` composes the object with no constructor at all,
+            // which is what removes the ordering dependency.
+            //
+            // ⚠ Field ORDER is the contract: `emit_value_type_new` pops one
+            // value per field, last-first, so these push in `COLOR_FIELDS`
+            // order — `(r, g, b, a)`. The retired host fn was
+            // `color.fromargb(a, r, g, b)`, a DIFFERENT order, which is why
+            // this is a reordering and not just a swapped call.
             MethodOp::PushConstFloat($r as f64),
             MethodOp::PushConstFloat($g as f64),
             MethodOp::PushConstFloat($b as f64),
-            MethodOp::CallHost {
-                module: "vybe:gui",
-                fn_name: "color.fromargb",
-                argc: 4,
+            MethodOp::PushConstFloat($a as f64),
+            MethodOp::NewValueType {
+                type_name: "Color",
+                fields: COLOR_FIELDS,
             },
             MethodOp::Return,
         ];
@@ -1621,9 +1640,9 @@ pub fn classes() -> &'static [DotnetClass] {
             // Composed by `dotnet.linear_gradient_brush_new`.
             widget_host_fn: None,        },
         // System.Drawing.Point — position value type. `new Point(x, y)`
-        // lowers to `vybe:gui::pointNew(x, y)` which returns an
-        // Object with `{x, y, X, Y}` fields. The GUI property dispatch
-        // reads `.x` / `.y` from a control's `location` property.
+        // composes an object with `{x, y}` in bytecode (`dotnet.point_new`).
+        // `.X` / `.Y` are NOT accessors: a value type declares none, so they
+        // resolve as ordinary struct field reads on the lowercased names.
         DotnetClass {
             name: "Point",
             parent: None,

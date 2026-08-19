@@ -35,7 +35,19 @@ pub fn register_namespace_tree() {
             let mut method_overloads: BTreeMap<String, Vec<(u8, NamespaceNode)>> = BTreeMap::new();
             let mut static_overloads: BTreeMap<String, Vec<(u8, NamespaceNode)>> = BTreeMap::new();
             let mut methods = Subtree::new();
-            let class_is_control = element_backed_control(&class.name);
+            // THE control fact, decided ONCE per class and consumed by every
+            // claim below (method verbs, `Controls` seeding, the ctor spec).
+            // Being a control is a WINDOWS.FORMS fact, never a leaf-name
+            // fact: `System.Threading.Timer` declares a `Dispose` too, and a
+            // leaf-keyed answer registered it as `gui.ctrl.dispose` — whose
+            // emitter touches `activeDocument`, which CREATES a document,
+            // which made a headless callback-timer program present a real
+            // window and park in the GUI event loop. Three copies of this
+            // gate briefly existed; copies of one rule drift, so the fact is
+            // computed here and only here.
+            let class_is_control = interface
+                .eq_ignore_ascii_case("dotnet.System.Windows.Forms")
+                && element_backed_control(&class.name);
             // A form is `document.body`, so node-scoped destruction does not
             // apply to it — see `gui_control_verb`. `inherits` walks the
             // descriptor chain, so `class MyForm : Form` answers true too.
@@ -117,7 +129,35 @@ pub fn register_namespace_tree() {
             // Nearest declaration wins, so an override shadows its base.
             let mut property_returns: BTreeMap<String, String> = BTreeMap::new();
             let is_control = element_backed_control(&class.name);
+            // A `System.Drawing` VALUE TYPE declares NO property accessors, so
+            // `p.X` resolves the way `p.x` on a user-declared class already
+            // does: an ordinary STRUCT FIELD read.
+            //
+            // These bound the two generic `vybe:gui` property host functions,
+            // and for an object with no element and no `__control_name` that
+            // host call collapses to exactly a lowercased field access —
+            // `controlGetProperty` returns `o.properties.get(&prop_lower)` and
+            // `controlSetProperty` does `properties.insert(prop_lower, val)`
+            // whenever `live_widget` is false. Those ARE the field names
+            // `emit_value_type_new` stores (`x`, `y`, `r`, `width`, `size`, …),
+            // so declaring nothing reproduces the behaviour and drops the host.
+            //
+            // `primitives/gui.rs::declared_property_role` records the other half
+            // of this: a class with no platform role gets a struct field read,
+            // which is why a user-declared `Class Point` works and why the
+            // platform `Point.X` role capturing it looked like object aliasing.
+            //
+            // ⛔ The predicate is NOT `!is_control` — that also covers the
+            // NON-VISUAL components (Timer, BindingSource), which do carry a
+            // `__control_name` and must keep the host accessor.
+            // `common_ctor_for` is exact: a class whose constructor composes a
+            // plain object is a class whose properties are its fields.
+            let is_value_type =
+                crate::emitter::winforms::component_classes::common_ctor_for(&class.name).is_some();
             for p in inherited_properties(&class.name) {
+                if is_value_type {
+                    continue;
+                }
                 let node = namespaces::property(
                     p.getter
                         .as_ref()
@@ -226,7 +266,7 @@ pub fn register_namespace_tree() {
             // declares it. Without this the getter answers the element and the
             // member after it resolves against nothing, which is the exact
             // failure `self_member_returns` was written for on `Items`.
-            if element_backed_control(&class.name) {
+            if class_is_control {
                 member_returns.insert("controls".to_string(), "Control".to_string());
             }
 
@@ -259,7 +299,10 @@ pub fn register_namespace_tree() {
             // from the TREE (see `accessor_node` above and the `MethodBody`
             // registration); while they lived on ctor-bound thunks, taking
             // this path would have dropped them.
-            let ctor = html_element_for_control(&class.name)
+            // Consumes `class_is_control` — the one carrier of the fact.
+            let ctor = class_is_control
+                .then(|| html_element_for_control(&class.name))
+                .flatten()
                 .map(|element| control_ctor_spec(&class.name, element));
 
             let ty = NamespaceNode::Type {
@@ -484,9 +527,13 @@ fn accessor_node(
     } else if target.name == vybe_compiler::primitives::gui::HOST_FN_GET_PROPERTY
         || target.name == vybe_compiler::primitives::gui::HOST_FN_SET_PROPERTY
     {
-        // Not a control: keep the keyed host-function accessor exactly as it
-        // was. `vybe:gui` still answers for the value types and the drawing
-        // surface, which is why this arm survives the control conversion.
+        // Not a control and not a value type: keep the keyed host-function
+        // accessor. `vybe:gui` no longer answers for the value types or the
+        // drawing surface — those declare NO accessor and fall through to an
+        // ordinary struct field read (see `is_value_type` above). What is left
+        // on this arm is the NON-VISUAL components (`Timer`, `BindingSource`),
+        // which carry a `__control_name` and are the last property surface on
+        // the host.
         namespaces::host_fn_keyed(&target.module, &target.name, prop)
     } else {
         namespaces::host_fn(&target.module, &target.name)
@@ -610,7 +657,9 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         // the kind and these two land on real widgets that already exist
         // (`checkedlistbox`; `datagrid` folds onto `datagridview`).
         "checkedlistbox" => "vybe-checkedlistbox",
-        "datagrid" => "vybe-datagrid",
+        // The legacy grid is the same control and takes the same element, or
+        // the two spellings would render differently for no reason.
+        "datagrid" => "table;border-collapse:collapse;border:1px solid #c8c8c8;background-color:#ffffff",
         // ⚠ These have no widget kind YET, so they render as a label until
         // `vybe_widgets` grows one — the designed degradation, visible in a
         // capture instead of the control vanishing. The declaration still buys
@@ -696,10 +745,26 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         // `<table>` means the layout, emitting `table` here would render every
         // WinForms grid as an empty table box with no columns at all.
         //
-        // No HTML counterpart, so it takes a `vybe-*` tag like the other
-        // controls HTML does not have. `vybe_widget_kind` already answers
-        // `datagridview` for the name, so the widget is reached unchanged.
-        "datagridview" => "vybe-datagridview",
+        // **A `DataGridView` IS a `<table>`** — now that a `<table>` is one.
+        //
+        // This is the second half of the same correction. `<table>` used to
+        // mean the datagridview WIDGET, which made an HTML layout impersonate
+        // a .NET control; the widget layer now implements CSS tables, so the
+        // honest mapping runs the other way and the control is the markup.
+        // Its columns and rows are `<th>`s and `<tr>`s, built by
+        // `datagrid_adapter` from `Columns.Add`/`Rows.Add`.
+        //
+        // ⚠ It went through `vybe-datagridview` on the way here, which was
+        // correct while the data surface was inert but is not a destination: a
+        // `vybe-*` tag needs a `customElements.define` AND a grid
+        // implementation before a real engine draws anything, where a `<table>`
+        // needs neither. The custom tag rendered the grid's default chrome —
+        // a header band and empty row lines — and no data could reach it,
+        // because a widget does not render DOM children.
+        //
+        // `border-collapse` is the grid look: one line between cells rather
+        // than two, which is what a data grid draws.
+        "datagridview" => "table;border-collapse:collapse;border:1px solid #c8c8c8;background-color:#ffffff",
         // No HTML counterpart, but a real widget behind the name.
         "listview" => "vybe-listview",
         "monthcalendar" => "vybe-monthcalendar",
@@ -991,6 +1056,42 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
                 )]),
             ),
         ],
+        // ── The grid's data surface ────────────────────────────────────────
+        // `Columns` and `Rows` hand back the GRID, the same `dotnet.self`
+        // shape the strips use for `Items` — a collection object would be a
+        // second place for state the document already holds. What separates
+        // them is the declared return TYPE (`self_member_returns`), because
+        // unlike a strip's items these two do NOT mean the same append:
+        // `Columns.Add` builds a `<th>`, `Rows.Add` a whole `<tr>` of `<td>`s.
+        // Aliasing them to one `Add` the way the strips do would make a column
+        // and a row the same thing, which is exactly what they are not.
+        "datagridview" | "datagrid" => vec![
+            ("columns", ro("dotnet.self")),
+            ("rows", ro("dotnet.self")),
+        ],
+        // The two collection types the members above read back as. They hold
+        // nothing and are never constructed — they exist so that `Add` has
+        // somewhere to be found, and so that it can be a DIFFERENT `Add` on
+        // each. Arity counts the receiver.
+        "datagridviewcolumncollection" => vec![(
+            "add",
+            namespaces::overloads(vec![
+                (2, emit("dotnet.datagrid_add_column")),
+                (3, emit("dotnet.datagrid_add_column")),
+            ]),
+        )],
+        // Registered per arity because `Rows.Add(…)` is variadic and bytecode
+        // has no variadic shape: each count is its own overload, and the emit
+        // reads `argc` to know how many cells to build. Eight is a stated
+        // ceiling — beyond it the call is not found, which is the loud answer.
+        "datagridviewrowcollection" => vec![(
+            "add",
+            namespaces::overloads(
+                (1..=9)
+                    .map(|argc| (argc, emit("dotnet.datagrid_add_row")))
+                    .collect(),
+            ),
+        )],
         _ => vec![],
     };
     let mut out: Vec<(String, NamespaceNode)> = entries
@@ -1059,6 +1160,15 @@ fn self_member_returns(class_name: &str) -> &'static [(&'static str, &'static st
         | "toolstripdropdownitem" => &[
             ("items", "ToolStripMenuItem"),
             ("dropdownitems", "ToolStripMenuItem"),
+        ],
+        // ⚠ Two DIFFERENT types, where the strips above alias one. A strip and
+        // its item are the same `<menu>` element, so a single member set serves
+        // both; a column and a row are not the same thing and their `Add`s
+        // build different elements. Declaring one type for both would silently
+        // make `Rows.Add` append a `<th>`.
+        "datagridview" | "datagrid" => &[
+            ("columns", "DataGridViewColumnCollection"),
+            ("rows", "DataGridViewRowCollection"),
         ],
         _ => &[],
     }

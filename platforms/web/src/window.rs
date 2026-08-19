@@ -151,6 +151,49 @@ pub fn register(vm: &mut VM) {
             Value::Null
         }),
     );
+    // `window.screen.width` / `.height` (CSSOM View). Flattened onto the
+    // window, as `setTextContent` flattens an IDL attribute setter: the ABI is
+    // functions, and a `Screen` object with two readonly numbers would be a
+    // resource whose only purpose is to hold them.
+    //
+    // The DISPLAY, not the window — `innerWidth` next door is the viewport, and
+    // conflating the two is what makes a "centre on screen" land off-screen.
+    win_fn(
+        vm,
+        "screenWidth",
+        "screen-width",
+        vec![win()],
+        vec![ValType::F64],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            Value::F64(first(window(WindowOp::Screen(win_arg(args, 0)))))
+        }),
+    );
+    win_fn(
+        vm,
+        "screenHeight",
+        "screen-height",
+        vec![win()],
+        vec![ValType::F64],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            Value::F64(second(window(WindowOp::Screen(win_arg(args, 0)))))
+        }),
+    );
+    // `window.focus()` (HTML §7.2.2) — what `Form.Activate` and Pascal's
+    // `TForm.BringToFront` both mean at the WINDOW level. The control-level
+    // verb is `gui.ctrl.bring_to_front`, which re-appends a NODE; this moves a
+    // browsing context, and the two are different operations on different
+    // things.
+    win_fn(
+        vm,
+        "focus",
+        "focus",
+        vec![win()],
+        vec![],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            window(WindowOp::Focus(win_arg(args, 0)));
+            Value::Null
+        }),
+    );
     win_fn(
         vm,
         "closed",

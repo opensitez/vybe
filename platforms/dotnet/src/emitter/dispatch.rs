@@ -182,11 +182,13 @@ fn emit_to_byte(chunk: &mut Chunk, line: u32) {
 /// `New Rectangle(x, y, width, height)` — a value type built from primitives,
 /// with no host function behind it.
 ///
-/// `Point` and `Size` construct through `vybe:gui::pointNew`/`sizeNew`, and a
-/// `rectangleNew` beside them would have been a third host function for four
-/// numbers in an object — growth in exactly the direction this platform is
-/// being converted away from. So the constructor is composed here instead,
-/// the way `StringBuilder`'s is.
+/// `Point` and `Size` used to construct through `vybe:gui::pointNew`/`sizeNew`,
+/// and a `rectangleNew` beside them would have been a third host function for
+/// four numbers in an object — growth in exactly the direction this platform
+/// was being converted away from. So the constructor is composed here instead,
+/// the way `StringBuilder`'s is. The other two followed
+/// (`dotnet.point_new` / `dotnet.size_new`); none of them has a host behind it
+/// any more.
 ///
 /// Field names are LOWERCASE to match `pointNew`'s `{x, y}`: the property axis
 /// reads `rect.X` through the same keyed getter that answers `Point.X`, and it
@@ -213,7 +215,7 @@ fn emit_to_byte(chunk: &mut Chunk, line: u32) {
 /// Derived properties are deliberately NOT stored. .NET computes
 /// `Rectangle.Right` as `X + Width`, and a stored snapshot goes stale on the
 /// first `Width` write.
-fn emit_value_type_new(chunk: &mut Chunk, type_name: &str, fields: &[&str], line: u32) {
+pub(crate) fn emit_value_type_new(chunk: &mut Chunk, type_name: &str, fields: &[&str], line: u32) {
     // Taken into scratch slots so the object can be built UNDERNEATH them —
     // `struct.new` pushes a fresh object and the arguments are already on the
     // stack above where it needs to go. Popped last-first, which is the order
@@ -249,8 +251,29 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // implementation: the receiver is already on the stack. plib spells the
         // same member `pascal.self` for the same reason.
         "dotnet.self" => {}
+        // The grid's data surface, built as DOM. See `datagrid_adapter`.
+        "dotnet.datagrid_add_column" => {
+            crate::emitter::core::datagrid_adapter::emit_add_column(chunks, current, argc, line);
+        }
+        "dotnet.datagrid_add_row" => {
+            crate::emitter::core::datagrid_adapter::emit_add_row(chunks, current, argc, line);
+        }
         "dotnet.winforms_application_run" => {
             crate::emitter::winforms::adapter::emit_application_run(chunks, current, argc, line);
+        }
+        "dotnet.winforms_form_close" => {
+            crate::emitter::winforms::adapter::emit_form_close(chunks, current, argc, line);
+        }
+        "dotnet.winforms_form_show_dialog" => {
+            crate::emitter::winforms::adapter::emit_form_show_dialog(chunks, current, argc, line);
+        }
+        "dotnet.winforms_form_center_to_screen" => {
+            crate::emitter::winforms::adapter::emit_form_center_to_screen(
+                chunks, current, argc, line,
+            );
+        }
+        "dotnet.winforms_form_activate" => {
+            crate::emitter::winforms::adapter::emit_form_activate(chunks, current, argc, line);
         }
         "dotnet.winforms_application_exit" => {
             crate::emitter::winforms::adapter::emit_application_exit(chunks, current, argc, line);
@@ -285,9 +308,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // `Color` — four channels, composed in bytecode like every other value
         // type. The named statics (`Color.Red`) push their own RGBA and come
         // here, so no host function looks a colour up by NAME any more.
-        "dotnet.color_new" if argc == 4 => {
-            emit_value_type_new(&mut chunks[current], "Color", &["r", "g", "b", "a"], line)
-        }
+        "dotnet.color_new" if argc == 4 => emit_value_type_new(
+            &mut chunks[current],
+            "Color",
+            crate::emitter::classes::drawing::COLOR_FIELDS,
+            line,
+        ),
         // The zero-argument form, for the named statics. `MethodOp::NewDotnet`
         // only supports `argc = 0` (`classes/builder.rs` asserts it), so
         // `Color.Red` allocates the empty value here and stores its four
@@ -1238,6 +1264,30 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.timespan_new" => {
             crate::emitter::core::timespan_adapter::emit_timespan_new(chunks, current, argc, line)
+        }
+        "dotnet.threading_timer_new" => {
+            crate::emitter::core::thread_adapter::emit_threading_timer_new(chunks, current, line)
+        }
+        "dotnet.threading_timer_change" => {
+            crate::emitter::core::thread_adapter::emit_threading_timer_change(chunks, current, line)
+        }
+        "dotnet.threading_timer_dispose" => {
+            crate::emitter::core::thread_adapter::emit_threading_timer_dispose(chunks, current, line)
+        }
+        "dotnet.timeout_infinite" => {
+            chunks[current].emit_f64_const(-1.0, line);
+        }
+        "dotnet.timespan_from_ticks" => {
+            crate::emitter::core::timespan_adapter::emit_timespan_from_ticks(chunks, current, line)
+        }
+        "dotnet.timespan_max_value" => {
+            crate::emitter::core::timespan_adapter::emit_timespan_max_value(chunks, current, line)
+        }
+        "dotnet.timespan_min_value" => {
+            crate::emitter::core::timespan_adapter::emit_timespan_min_value(chunks, current, line)
+        }
+        "dotnet.timespan_to_string" => {
+            crate::emitter::core::timespan_adapter::emit_timespan_to_string(chunks, current, line)
         }
         "dotnet.timespan_compare" => {
             crate::emitter::core::timespan_adapter::emit_timespan_compare(chunks, current, line)

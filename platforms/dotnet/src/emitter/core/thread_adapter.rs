@@ -517,6 +517,168 @@ pub fn emit_task_delay(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     chunks[current].emit_end(line);
 }
 
+/// The tick body of a `System.Threading.Timer` — arity 0, ONE capture: the
+/// timer object. Invokes `__cb(__state)`, then, if `__period` > 0,
+/// re-schedules ITSELF (`REF_FUNC` of its own chunk index — known before the
+/// push, since the chunk is appended next) and stores the new id so `Change`
+/// and `Dispose` always see the live timer. setTimeout-only rescheduling,
+/// no setInterval: one cancellation path instead of two.
+fn emit_threading_timer_tick_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let self_idx = chunks.len();
+    let mut tick =
+        vybe_compiler::primitives::functions::create_function_chunk("__dotnet_threading_timer_tick", 0);
+    tick.capture_base = 0;
+    tick.capture_count = 1;
+    tick.local_count = 1;
+    let obj_slot = 0u16;
+
+    // __cb(__state)
+    tick.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    struct_get(&mut tick, "__cb", line);
+    tick.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    struct_get(&mut tick, "__state", line);
+    tick.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    tick.emit_op(Op::DROP, line);
+
+    // period > 0 → reschedule self
+    tick.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    struct_get(&mut tick, "__period", line);
+    tick.emit_f64_const(0.0, line);
+    tick.emit_op(Op::F64_GT, line);
+    tick.emit_if(line);
+    tick.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    tick.emit_op_u16(Op::REF_FUNC, self_idx as u16, line);
+    tick.emit(1, line);
+    vybe_compiler::primitives::functions::emit_closure_upvalue(&mut tick, true, obj_slot, line);
+    tick.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    struct_get(&mut tick, "__period", line);
+    {
+        let set_timeout = tick.add_import("web:timers", "setTimeout");
+        tick.emit_call(set_timeout, 2, line);
+    }
+    struct_set_drop(&mut tick, "__id", line);
+    tick.emit_end(line);
+
+    tick.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    tick.emit_op(Op::RETURN, line);
+    chunks.push(tick);
+    self_idx
+}
+
+/// Schedule the tick for `obj_slot`'s timer at the delay in `delay_slot`,
+/// storing the timeout id on the object. Emits nothing when the delay is
+/// `Timeout.Infinite` (-1) — .NET's "created but not started".
+fn emit_threading_timer_schedule(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    obj_slot: u16,
+    delay_slot: u16,
+    line: u32,
+) {
+    let tick_idx = emit_threading_timer_tick_chunk(chunks, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::LOCAL_GET, delay_slot, line);
+    chunk.emit_f64_const(0.0, line);
+    chunk.emit_op(Op::F64_GE, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_op_u16(Op::REF_FUNC, tick_idx as u16, line);
+    chunk.emit(1, line);
+    vybe_compiler::primitives::functions::emit_closure_upvalue(chunk, true, obj_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, delay_slot, line);
+    {
+        let set_timeout = chunk.add_import("web:timers", "setTimeout");
+        chunk.emit_call(set_timeout, 2, line);
+    }
+    struct_set_drop(chunk, "__id", line);
+    chunk.emit_end(line);
+}
+
+/// `new System.Threading.Timer(callback, state, dueTime, period)`.
+/// Stack: [cb, state, due, period] → [timer]. Callbacks are EVENT-LOOP jobs
+/// (`web:timers`, a `DeferredSource` the loop drains) — the WASM-compliant
+/// split this platform already uses for `Task.Delay`: the ECMA surface owns
+/// callbacks, `wasi:clocks` owns real blocking in real threads. A
+/// `wasi:threads` timer would CLONE captured locals across the boundary and
+/// the canonical `fired = true` callback would vanish.
+pub fn emit_threading_timer_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let period_slot = chunks[current].alloc_scratch(4);
+    let due_slot = period_slot + 1;
+    let state_slot = period_slot + 2;
+    let cb_slot = period_slot + 3;
+    {
+        let chunk = &mut chunks[current];
+        chunk.emit_op_u16(Op::LOCAL_SET, period_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, due_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, state_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, cb_slot, line);
+    }
+    let obj_slot = {
+        let chunk = &mut chunks[current];
+        let obj_slot = chunk.alloc_scratch(1);
+        let object_new = chunk.add_import("ecma:object", "new");
+        chunk.emit_call(object_new, 0, line);
+        chunk.emit_op_u16(Op::LOCAL_TEE, obj_slot, line);
+        chunk.emit_string_const("ThreadingTimer", line);
+        struct_set_drop(chunk, "__type", line);
+        chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, cb_slot, line);
+        struct_set_drop(chunk, "__cb", line);
+        chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, state_slot, line);
+        struct_set_drop(chunk, "__state", line);
+        chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, period_slot, line);
+        struct_set_drop(chunk, "__period", line);
+        obj_slot
+    };
+    emit_threading_timer_schedule(chunks, current, obj_slot, due_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+}
+
+/// `timer.Change(dueTime, period)` — cancel the pending tick, re-arm.
+/// Stack: [timer, due, period] → [true] (.NET returns bool).
+pub fn emit_threading_timer_change(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let period_slot = chunks[current].alloc_scratch(3);
+    let due_slot = period_slot + 1;
+    let obj_slot = period_slot + 2;
+    {
+        let chunk = &mut chunks[current];
+        chunk.emit_op_u16(Op::LOCAL_SET, period_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, due_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+        struct_get(chunk, "__id", line);
+        let clear = chunk.add_import("web:timers", "clearTimeout");
+        chunk.emit_call(clear, 1, line);
+        chunk.emit_op(Op::DROP, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, period_slot, line);
+        struct_set_drop(chunk, "__period", line);
+    }
+    emit_threading_timer_schedule(chunks, current, obj_slot, due_slot, line);
+    chunks[current].emit_bool_const(true, line);
+}
+
+/// `timer.Dispose()` — cancel and go quiet. Reached through `using` too.
+/// Stack: [timer] → [null].
+pub fn emit_threading_timer_dispose(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let obj_slot = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    struct_get(chunk, "__id", line);
+    let clear = chunk.add_import("web:timers", "clearTimeout");
+    chunk.emit_call(clear, 1, line);
+    chunk.emit_op(Op::DROP, line);
+    // Period 0 so an already-queued tick that fires after disposal does not
+    // re-arm itself.
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_f64_const(0.0, line);
+    struct_set_drop(chunk, "__period", line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
 /// `Task.Yield()` — a completed promise-shaped awaitable that still travels
 /// through the common await/JSPI path.
 pub fn emit_task_yield(chunks: &mut [Chunk], current: usize, line: u32) {

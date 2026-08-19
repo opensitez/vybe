@@ -296,7 +296,24 @@ pub enum WindowOp {
     },
     /// `window.document`
     Document(WindowId),
+    /// `Document.defaultView` — the inverse of [`WindowOp::Document`].
+    ///
+    /// A document reaches its own window through this in every real engine; a
+    /// script that holds the global uses `window`/`self` instead, which a guest
+    /// with no global object cannot spell.
+    DefaultView(DocumentId),
+    /// Give an existing document its TOP-LEVEL browsing context — the tab the
+    /// user agent makes before any script runs.
+    ///
+    /// Not a spec operation, because in a browser it is not an operation at
+    /// all: the context is already there. It exists because a standalone
+    /// toolkit has to bootstrap the thing a user agent is handed.
+    AdoptTopLevel(DocumentId),
     Close(WindowId),
+    /// `window.focus()` — bring the context to the front.
+    Focus(WindowId),
+    /// `window.screen` (CSSOM View) — the DISPLAY's size, not the window's.
+    Screen(WindowId),
     /// `window.closed`
     Closed(WindowId),
     /// `window.innerWidth` / `innerHeight`

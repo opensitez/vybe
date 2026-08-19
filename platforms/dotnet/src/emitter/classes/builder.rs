@@ -159,6 +159,9 @@ fn compile_body_offset(
                 import_cursor += 1;
                 chunk.emit_call(idx, argc, line);
             }
+            MethodOp::NewValueType { type_name, fields } => {
+                crate::emitter::dispatch::emit_value_type_new(chunk, type_name, fields, line);
+            }
             MethodOp::NewDotnet { class, argc } => {
                 vybe_compiler::primitives::globals::emit_read(chunk, class, line);
                 // The `call` opcode expects stack = [callee, arg0, …, argN-1]

@@ -159,17 +159,25 @@ const CONTROL_METHODS: &[DotnetMethod] = &[
         arity: 1,
         target: MethodTarget::common("gui.ctrl.focus"),
     },
-    // ⚠ The one control verb still on `vybe:gui`, and the only one of these
-    // whose target is LIVE: `gui_control_verb` has no `dispose`, so this is
-    // what `btn.Dispose()` actually calls. The host fn hides the control and
-    // drops its handlers off the old `GuiState`; the DOM answer is
-    // `element.remove()`, which is a different observable outcome (the node
-    // stops existing rather than going `hidden`), so it is a semantics
-    // decision and not a rename. Left as-is pending that call.
+    // `Dispose` DESTROYS the control: `ChildNode.remove()`.
+    //
+    // The semantics decision this used to be "pending" is made: the retired
+    // `vybe:gui::__ctrl_dispose` only set `Visible = false` and dropped the
+    // handler table, so a "disposed" control could be brought back by writing
+    // `Visible` — which is `Hide`, a DIFFERENT verb with a different promise.
+    // Removing the node is what `Dispose` actually claims.
+    //
+    // ⚠ The comment here used to say `gui_control_verb` has no `dispose`. It
+    // does (`"dispose" if !is_form`), so an element-backed control ALREADY took
+    // the DOM route and this target was reached only by `Form` and by Control
+    // subclasses with no element of their own (`ContainerControl`,
+    // `ScrollableControl`). `Form` now declares its own `Dispose` — a window
+    // close — so pointing this at the shared verb can no longer delete the
+    // document body.
     DotnetMethod {
         name: "Dispose",
         arity: 1,
-        target: MethodTarget::host("vybe:gui", "__ctrl_dispose"),
+        target: MethodTarget::common("gui.ctrl.dispose"),
     },
     DotnetMethod {
         name: "SuspendLayout",

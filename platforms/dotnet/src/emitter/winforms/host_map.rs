@@ -35,28 +35,6 @@ pub fn static_method_mappings() -> &'static [DotnetStaticMethodMapping] {
     STATIC_METHOD_MAPPINGS.as_slice()
 }
 
-pub fn namespace_to_host_module(prefix: &str) -> Option<&'static str> {
-    match prefix {
-        "system.windows.forms" | "application" => Some("vybe:gui"),
-        _ => None,
-    }
-}
-
-pub fn map_host_func(module: &str, func: &str) -> Option<String> {
-    match (module, func) {
-        ("vybe:gui", f) => {
-            let canonical = vybe_compiler::primitives::gui::canonical_control_name(f);
-            if !canonical.is_empty() && canonical != f {
-                Some(vybe_compiler::primitives::gui::host_fn_new_control(
-                    &canonical,
-                ))
-            } else {
-                Some(f.to_string())
-            }
-        }
-        _ => None,
-    }
-}
 
 #[cfg(test)]
 mod tests {

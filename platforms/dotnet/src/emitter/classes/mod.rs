@@ -20,8 +20,14 @@
 //! Control → Component → MarshalByRefObject → Object`) and binds the
 //! property setters owned at each level. The user write `Me.Text = "Hello"`
 //! emits plain `struct_set "text"`; the VM finds `__set_text` (installed
-//! by `Control` in the inherited chain) and dispatches to a setter chunk
-//! that calls `vybe:gui::controlSetProperty(this, "Text", "Hello")`.
+//! by `Control` in the inherited chain) and dispatches to a setter chunk.
+//!
+//! That chunk used to call `vybe:gui::controlSetProperty(this, "Text",
+//! "Hello")`. It no longer does: `tree_register::accessor_node` rewrites a
+//! CONTROL's accessors into the shared role emits (`gui.prop_set.<role>`),
+//! which `primitives/gui.rs` lowers onto `web:dom` / `web:html` / `web:cssom`.
+//! A VALUE TYPE declares no accessor at all and reads as a struct field. The
+//! keyed host accessor survives only for the NON-VISUAL components.
 //!
 //! ## Why classes and not host-side setter installation
 //!
@@ -327,6 +333,24 @@ pub enum MethodOp {
     /// constructor global must already be installed by an earlier
     /// `register_dotnet_classes` iteration. Result is left on the stack.
     NewDotnet { class: &'static str, argc: u8 },
+    /// Build a `System.Drawing` VALUE TYPE in bytecode: pops one value per
+    /// field (pushed in `fields` order) and leaves the object on the stack.
+    ///
+    /// This exists because `NewDotnet` is CIRCULAR for a static declared ON the
+    /// type it builds. `Color.Red` is a static on `Color`, and `NewDotnet`
+    /// reads `Color`'s constructor GLOBAL, which an earlier
+    /// `register_dotnet_classes` pass installs — so at the point `Color.Red`
+    /// needs it, it answers `undefined`. Composing the object directly needs no
+    /// constructor and therefore no ordering.
+    ///
+    /// It is the same `emit_value_type_new` that `dotnet.color_new` and friends
+    /// use, so a colour built here and one built by `New Color(...)` are the
+    /// same object with the same fields — which matters, because the drawing
+    /// bodies read them by name (`PushArgFieldField(1, "color", "r")`).
+    NewValueType {
+        type_name: &'static str,
+        fields: &'static [&'static str],
+    },
     /// `struct_set` — pops `[obj, val]`, stores `val` into `obj.<field>`,
     /// leaves the stored value on the stack. (Mirrors the existing
     /// VM `struct_set` semantics.)

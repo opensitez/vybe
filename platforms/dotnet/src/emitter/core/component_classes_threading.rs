@@ -222,5 +222,34 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("threading.sleep".to_string()),
                 )),
         ),
+        DotnetClassExport::new(
+            "dotnet.System.Threading",
+            // Callback timer on the event loop — see `emit_threading_timer_new`
+            // for why the loop and not a wasi thread.
+            ClassType::new("Timer")
+                .with_constructor(
+                    ConstructorDef::new(4).with_common_backing("dotnet.threading_timer_new"),
+                )
+                .with_method(MethodDef::new(
+                    "Change",
+                    2,
+                    MethodBody::Common("dotnet.threading_timer_change".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Dispose",
+                    0,
+                    MethodBody::Common("dotnet.threading_timer_dispose".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Threading",
+            // `Timeout.Infinite` — the -1 sentinel every timer API compares
+            // against; a constant, but .NET spells it as a class member.
+            ClassType::new("Timeout").with_method(MethodDef::static_method(
+                "Infinite",
+                0,
+                MethodBody::Common("dotnet.timeout_infinite".into()),
+            )),
+        ),
     ]
 }

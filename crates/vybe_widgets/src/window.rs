@@ -100,6 +100,120 @@ pub fn open(target: &str, features: &str) -> WindowId {
     id
 }
 
+/// Give an EXISTING document its top-level browsing context — the tab the user
+/// agent already made.
+///
+/// **This is the half of HTML §7 that was missing.** `open()` creates a context
+/// AND a document, which is right for `window.open()`, and it was the ONLY way a
+/// context came into being — so the ambient document, the one every program
+/// actually runs in, had none. In a browser that cannot happen: the initial
+/// document always sits in a top-level traversable, because the tab exists
+/// before a byte of script does. Everything downstream followed from the gap —
+/// `Document.defaultView` answered null for every program, and `window.close()`
+/// was unreachable for the main window because nothing could name it.
+///
+/// Idempotent, and it must be: `active_document()` is called on nearly every
+/// DOM operation, and a second context over one document would be a second tab
+/// showing the same page.
+///
+/// Marked `#[must_use]` for the id, but the id is genuinely ignorable at the
+/// bootstrap call site — what matters there is that the context now EXISTS.
+pub fn adopt(document_id: DocumentId, name: &str) -> WindowId {
+    let mut ctx = contexts().lock().unwrap();
+    // `.map` ends the immutable borrow before the insert below.
+    if let Some(existing) = ctx
+        .windows
+        .values()
+        .find(|w| w.document_id == document_id)
+        .map(|w| w.id)
+    {
+        return existing;
+    }
+    ctx.next_id += 1;
+    let id = ctx.next_id;
+    ctx.windows.insert(
+        id,
+        BrowsingContext {
+            id,
+            document_id,
+            name: name.to_string(),
+            // A top-level context starts at the origin. `open()` takes
+            // `left`/`top` from its features string; nobody passes features to
+            // the tab they were already given.
+            screen_x: 0.0,
+            screen_y: 0.0,
+            closed: false,
+        },
+    );
+    ctx.order.push(id);
+    id
+}
+
+/// `window.screen` (CSSOM View) — the DISPLAY, not the window.
+///
+/// A toolkit has no display of its own to measure, and the SHELL does — winit
+/// knows the monitor, this crate does not. So the shell sets it and everything
+/// else reads it, rather than each caller guessing.
+///
+/// ⛔ Unset, this answers the context's own VIEWPORT, which makes "centre on the
+/// screen" resolve to "already centred". That is deliberate: the retired
+/// `vybe:gui::__form_center_to_screen` hardcoded **1920x1080** with a comment
+/// admitting it was a guess, and a wrong number that lands a window off-screen
+/// is worse than a true statement that nothing is known. A real engine supplies
+/// the real display and the arithmetic starts meaning something with no code
+/// change here.
+fn screen_slot() -> &'static Mutex<Option<(f64, f64)>> {
+    static SCREEN: OnceLock<Mutex<Option<(f64, f64)>>> = OnceLock::new();
+    SCREEN.get_or_init(|| Mutex::new(None))
+}
+
+/// Tell the registry how big the real display is. For the shell that owns a
+/// window system; a browser engine would answer from the platform instead.
+pub fn set_screen(width: f64, height: f64) {
+    *screen_slot().lock().unwrap() = Some((width, height));
+}
+
+/// `screen.width` / `screen.height`, falling back to this context's viewport.
+pub fn screen(id: WindowId) -> (f64, f64) {
+    match *screen_slot().lock().unwrap() {
+        Some(size) => size,
+        None => inner_size(id),
+    }
+}
+
+/// `window.focus()` (HTML §7.2.2) — bring this context to the front.
+///
+/// Front-ness IS `order`: the list is the z-order every consumer already reads
+/// through [`open_windows`], so focusing moves the id to the end rather than
+/// storing a second `focused` flag that could disagree with it. One fact, one
+/// place — the same rule `innerWidth` follows by reading the viewport instead
+/// of keeping its own copy of the size.
+pub fn focus(id: WindowId) {
+    let mut ctx = contexts().lock().unwrap();
+    if !ctx.windows.contains_key(&id) {
+        return;
+    }
+    ctx.order.retain(|w| *w != id);
+    ctx.order.push(id);
+}
+
+/// `Document.defaultView` — the window whose document this is.
+///
+/// The inverse of [`document`], and the standard way a script reaches its own
+/// window when it holds a document rather than the global. Null for a document
+/// with no context, which is the spec's own answer (a `DOMParser` document has
+/// no browsing context and no `defaultView`).
+///
+/// A CLOSED context still answers, deliberately: `w.close(); w.document` is
+/// valid, and a closed window is a live handle reporting `closed = true`.
+pub fn default_view(document_id: DocumentId) -> Option<WindowId> {
+    let ctx = contexts().lock().unwrap();
+    ctx.windows
+        .values()
+        .find(|w| w.document_id == document_id)
+        .map(|w| w.id)
+}
+
 pub fn with_window<T>(id: WindowId, f: impl FnOnce(&BrowsingContext) -> T) -> Option<T> {
     let ctx = contexts().lock().unwrap();
     ctx.windows.get(&id).map(f)

@@ -250,6 +250,16 @@ pub(crate) fn emit_build_timespan_from_total_ms(chunk: &mut Chunk, line: u32) {
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, seconds_slot, line);
     struct_set_named_field(chunk, "Seconds", line);
+
+    // Milliseconds component — the remainder after whole seconds. Was simply
+    // never set: `FromSeconds(1.5).Milliseconds` read a missing field.
+    core_wasm::dup(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, rem_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, seconds_slot, line);
+    push_const(chunk, Value::F64(1000.0), line);
+    chunk.emit_op(Op::F64_MUL, line);
+    chunk.emit_op(Op::F64_SUB, line);
+    struct_set_named_field(chunk, "Milliseconds", line);
 }
 
 /// Build a TimeSpan from a count of `unit_ms` units. Stack: `[n]` →
@@ -349,32 +359,193 @@ fn emit_compare_numeric_slots(chunk: &mut Chunk, left_slot: u16, right_slot: u16
 }
 
 pub fn emit_timespan_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    // .NET overloads by arity: (ticks) | (h,m,s) | (d,h,m,s) | (d,h,m,s,ms).
+    // Everything reduces to total milliseconds; one builder serves all four.
+    // The old body matched ONLY arity 3 and silently fell back to Zero for
+    // the rest — `new TimeSpan(0,1,2,3)` compiled and answered 00:00:00.
     let chunk = &mut chunks[current];
     match argc {
-        3 => {
-            let seconds_slot = chunk.alloc_scratch(3);
-            let minutes_slot = seconds_slot + 1;
-            let hours_slot = seconds_slot + 2;
-
-            chunk.emit_op_u16(Op::LOCAL_SET, seconds_slot, line);
-            chunk.emit_op_u16(Op::LOCAL_SET, minutes_slot, line);
-            chunk.emit_op_u16(Op::LOCAL_SET, hours_slot, line);
-
-            chunk.emit_op_u16(Op::LOCAL_GET, hours_slot, line);
-            push_const(chunk, Value::F64(3600.0), line);
-            chunk.emit_op(Op::F64_MUL, line);
-            chunk.emit_op_u16(Op::LOCAL_GET, minutes_slot, line);
+        1 => {
+            // Ticks: 100ns units, 10_000 per millisecond.
+            push_const(chunk, Value::F64(10_000.0), line);
+            chunk.emit_op(Op::F64_DIV, line);
+            emit_build_timespan_from_total_ms(chunk, line);
+        }
+        3 | 4 | 5 => {
+            // Pop into slots right-to-left, then Horner up from the largest
+            // unit present. Arity picks whether the leading arg is days.
+            let n = argc as u16;
+            let base = chunk.alloc_scratch(n);
+            for i in 0..n {
+                chunk.emit_op_u16(Op::LOCAL_SET, base + i, line);
+            }
+            // Slots now hold args reversed: base+0 = LAST arg.
+            let has_days = argc >= 4;
+            let has_ms = argc == 5;
+            let mut next = n; // reading index, front to back
+            let mut arg = |chunk: &mut Chunk| {
+                next -= 1;
+                chunk.emit_op_u16(Op::LOCAL_GET, base + next, line);
+            };
+            if has_days {
+                arg(chunk);
+                push_const(chunk, Value::F64(24.0), line);
+                chunk.emit_op(Op::F64_MUL, line);
+            } else {
+                push_const(chunk, Value::F64(0.0), line);
+            }
+            // hours (+ days*24), then *60+minutes, *60+seconds, *1000(+ms)
+            arg(chunk);
+            chunk.emit_op(Op::F64_ADD, line);
             push_const(chunk, Value::F64(60.0), line);
             chunk.emit_op(Op::F64_MUL, line);
+            arg(chunk);
             chunk.emit_op(Op::F64_ADD, line);
-            chunk.emit_op_u16(Op::LOCAL_GET, seconds_slot, line);
+            push_const(chunk, Value::F64(60.0), line);
+            chunk.emit_op(Op::F64_MUL, line);
+            arg(chunk);
             chunk.emit_op(Op::F64_ADD, line);
             push_const(chunk, Value::F64(1000.0), line);
             chunk.emit_op(Op::F64_MUL, line);
+            if has_ms {
+                arg(chunk);
+                chunk.emit_op(Op::F64_ADD, line);
+            }
             emit_build_timespan_from_total_ms(chunk, line);
         }
         _ => emit_timespan_zero(chunks, current, line),
     }
+}
+
+/// `TimeSpan.FromTicks(n)` — 100ns units.
+pub fn emit_timespan_from_ticks(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    push_const(chunk, Value::F64(10_000.0), line);
+    chunk.emit_op(Op::F64_DIV, line);
+    emit_build_timespan_from_total_ms(chunk, line);
+}
+
+/// `Int64::MAX` ticks in milliseconds — the magnitude of
+/// `TimeSpan.MaxValue`/`MinValue` (±10,675,199 days). f64 carries it exactly
+/// enough: the tests assert sign and scale, and .NET itself documents the
+/// bound in ticks, not a full-precision ms value.
+const MAX_VALUE_MS: f64 = 9.223372036854776e18 / 10_000.0;
+
+pub fn emit_timespan_max_value(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    push_const(chunk, Value::F64(MAX_VALUE_MS), line);
+    emit_build_timespan_from_total_ms(chunk, line);
+}
+
+pub fn emit_timespan_min_value(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    push_const(chunk, Value::F64(-MAX_VALUE_MS), line);
+    emit_build_timespan_from_total_ms(chunk, line);
+}
+
+/// `ts.ToString()` — .NET's constant format: `[-][d.]hh:mm:ss[.fffffff]`.
+/// Stack: `[ts]` → `[string]`.
+pub fn emit_timespan_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let obj_slot = chunk.alloc_scratch(4);
+    let ms_slot = obj_slot + 1;
+    let part_slot = obj_slot + 2;
+    let out_slot = obj_slot + 3;
+    chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+    emit_total_ms_from_obj(chunk, obj_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, ms_slot, line);
+
+    // Sign prefix; work on |ms| after.
+    chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    chunk.emit_op(Op::F64_LT, line);
+    chunk.emit_if(line);
+    push_const(chunk, Value::String(Arc::from("-")), line);
+    chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
+    push_const(chunk, Value::F64(-1.0), line);
+    chunk.emit_op(Op::F64_MUL, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, ms_slot, line);
+    chunk.emit_else(line);
+    push_const(chunk, Value::String(Arc::from("")), line);
+    chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
+    chunk.emit_end(line);
+
+    let number_to_string = chunk.add_import("ecma:number", "toString");
+    let pad_start = chunk.add_import("ecma:string", "padStart");
+    let concat = chunk.add_import("wasm:js-string", "concat");
+
+    // days — printed WITHOUT padding, only when non-zero.
+    chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
+    push_const(chunk, Value::F64(86_400_000.0), line);
+    chunk.emit_op(Op::F64_DIV, line);
+    math::emit_trunc(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, part_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    chunk.emit_op(Op::F64_GT, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, out_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, part_slot, line);
+    push_const(chunk, Value::I32(10), line);
+    chunk.emit_call(number_to_string, 2, line);
+    chunk.emit_call(concat, 2, line);
+    push_const(chunk, Value::String(Arc::from(".")), line);
+    chunk.emit_call(concat, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
+    chunk.emit_end(line);
+
+    // hh:mm:ss — each: component, toString, padStart(2,'0'), concat.
+    for (unit_ms, modulo, suffix) in [
+        (3_600_000.0, 24.0, ":"),
+        (60_000.0, 60.0, ":"),
+        (1_000.0, 60.0, ""),
+    ] {
+        chunk.emit_op_u16(Op::LOCAL_GET, out_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
+        push_const(chunk, Value::F64(unit_ms), line);
+        chunk.emit_op(Op::F64_DIV, line);
+        math::emit_trunc(chunk, line);
+        push_const(chunk, Value::F64(modulo), line);
+        math::emit_c_fmod(chunk, line);
+        push_const(chunk, Value::I32(10), line);
+        chunk.emit_call(number_to_string, 2, line);
+        push_const(chunk, Value::I32(2), line);
+        push_const(chunk, Value::String(Arc::from("0")), line);
+        chunk.emit_call(pad_start, 3, line);
+        chunk.emit_call(concat, 2, line);
+        if !suffix.is_empty() {
+            push_const(chunk, Value::String(Arc::from(suffix)), line);
+            chunk.emit_call(concat, 2, line);
+        }
+        chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
+    }
+
+    // Fractional part — .NET prints seven digits (ticks precision), only
+    // when the sub-second remainder is non-zero: ".fffffff" = ms*10_000.
+    chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
+    push_const(chunk, Value::F64(1_000.0), line);
+    math::emit_c_fmod(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, part_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    chunk.emit_op(Op::F64_GT, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, out_slot, line);
+    push_const(chunk, Value::String(Arc::from(".")), line);
+    chunk.emit_call(concat, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, part_slot, line);
+    push_const(chunk, Value::F64(10_000.0), line);
+    chunk.emit_op(Op::F64_MUL, line);
+    math::emit_trunc(chunk, line);
+    push_const(chunk, Value::I32(10), line);
+    chunk.emit_call(number_to_string, 2, line);
+    push_const(chunk, Value::I32(7), line);
+    push_const(chunk, Value::String(Arc::from("0")), line);
+    chunk.emit_call(pad_start, 3, line);
+    chunk.emit_call(concat, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
+    chunk.emit_end(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, out_slot, line);
 }
 
 pub fn emit_timespan_compare(chunks: &mut [Chunk], current: usize, line: u32) {

@@ -5,8 +5,9 @@
 //! so they're shared across `Button` and the check/radio variants.
 //!
 //! `Button` adds `DialogResult`. `CheckBox` and `RadioButton` add the
-//! `Checked` / `CheckState` family. All three are concrete leaves backed
-//! by the matching `vybe:gui::new_<Type>` host fn.
+//! `Checked` / `CheckState` family. All three are concrete leaves backed by an
+//! ELEMENT, not a host factory — `<button>` and `<input type="checkbox">` /
+//! `<input type="radio">`, declared in `tree_register::html_element_for_control`.
 
 use super::DotnetClass;
 

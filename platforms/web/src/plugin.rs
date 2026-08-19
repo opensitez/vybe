@@ -57,8 +57,7 @@ impl vybe_runtime::Plugin for Plugin {
         // any number of resets.
         #[cfg(feature = "gui")]
         if let Some(vm) = fw.vm.as_deref_mut() {
-            vm.globals
-                .insert("document".into(), crate::html::document_handle(0));
+            vm.set_global("document", crate::html::document_handle(0));
         }
     }
 

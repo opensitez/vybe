@@ -929,14 +929,6 @@ pub fn uses_runtime_collection_dispatch_arity(name: &str, arg_count: u8) -> bool
     surface().uses_runtime_collection_dispatch_arity(name, arg_count)
 }
 
-pub fn namespace_to_host_module(prefix: &str) -> &str {
-    host_map::namespace_to_host_module(prefix)
-}
-
-pub fn map_host_func(module: &str, func: &str) -> String {
-    host_map::map_host_func(module, func)
-}
-
 pub fn static_method_mappings() -> &'static [host_map::DotnetStaticMethodMapping] {
     host_map::static_method_mappings()
 }
@@ -1704,19 +1696,6 @@ mod tests {
                 .iter()
                 .any(|exp| exp.interface == "dotnet.System" && exp.name == "Console")
         );
-        assert!(
-            descriptor
-                .imports
-                .iter()
-                .any(|imp| imp.interface == "vybe:gui"
-                    && imp.name == vybe_compiler::primitives::gui::HOST_FN_SET_PROPERTY)
-        );
-        assert!(
-            descriptor
-                .imports
-                .iter()
-                .any(|imp| imp.interface == "vybe:gui" && imp.name == "new_Form")
-        );
         // StringBuilder no longer imports `vybe:types/stringBuilderNew`;
         // the constructor is a Common emit (`dotnet.string_builder_new`)
         // composing existing primitives. Verify the descriptor lists the
@@ -1762,13 +1741,6 @@ mod tests {
                 .iter()
                 .any(|exp| exp.interface == "dotnet.System.Windows.Forms" && exp.name == "Form")
         );
-        assert!(
-            !descriptor
-                .imports
-                .iter()
-                .any(|imp| imp.interface == "vybe:gui"
-                    && imp.name == vybe_compiler::primitives::gui::HOST_FN_RUN_APPLICATION)
-        );
     }
 
     #[test]
@@ -1787,13 +1759,6 @@ mod tests {
                 .iter()
                 .any(|exp| exp.interface == "dotnet.System.Windows.Forms"
                     && exp.name == "Application")
-        );
-        assert!(
-            !descriptor
-                .imports
-                .iter()
-                .any(|imp| imp.interface == "vybe:gui"
-                    && imp.name == vybe_compiler::primitives::gui::HOST_FN_RUN_APPLICATION)
         );
         assert!(
             !descriptor

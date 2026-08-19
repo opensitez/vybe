@@ -134,6 +134,15 @@ fn split_words(text: &str) -> Vec<&str> {
 /// Addressing a row by its index among the table's children treated a whole
 /// `<tbody>` AS a row: `cells_of` then looked for cells among its children,
 /// found `<tr>`s instead, and every grouped table rendered completely empty.
+/// The [`RowPath::row`] of the ANONYMOUS row — CSS 2.1 §17.2.1.
+///
+/// A cell that is not inside a row still belongs to one: the table generates an
+/// anonymous row box around it. That is not a convenience, it is what makes
+/// `<table><th>a</th><th>b</th></table>` a header rather than nothing, and it
+/// is how a toolkit that appends CELLS to a grid gets a row without ever
+/// saying the word.
+const ANONYMOUS_ROW: usize = usize::MAX;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct RowPath {
     /// The row group holding this row, if any — an index into the table's
@@ -1566,7 +1575,18 @@ impl FlowLayoutPanel {
             })
             .collect();
 
+        // §17.2.1 — cells sitting directly in the table share ONE anonymous
+        // row, generated before any real row because that is where they are in
+        // tree order. Consecutive runs would each get their own row in the full
+        // rule; one row is the case that occurs and the one a caller appending
+        // cells to a grid means.
         let (mut header, mut body, mut footer) = (Vec::new(), Vec::new(), Vec::new());
+        if kinds.iter().any(|(_, display)| display == "table-cell") {
+            header.push(RowPath {
+                group: None,
+                row: ANONYMOUS_ROW,
+            });
+        }
         for (index, display) in kinds {
             match display.as_str() {
                 "table-row" => body.push(RowPath {
@@ -1631,6 +1651,13 @@ impl FlowLayoutPanel {
     /// The ONE place the group indirection is resolved — every caller works in
     /// `RowPath` and none of them repeats this walk.
     fn row_panel_mut(&mut self, path: RowPath) -> Option<&mut FlowLayoutPanel> {
+        // The anonymous row has no box of its own — that is what "anonymous"
+        // means. Its cells are the TABLE's own children, so the table stands in
+        // for the row it generated, and `cells_of` skips the children that are
+        // rows rather than cells.
+        if path.row == ANONYMOUS_ROW {
+            return Some(self);
+        }
         let holder: &mut FlowLayoutPanel = match path.group {
             Some(group) => self
                 .children
@@ -1648,6 +1675,11 @@ impl FlowLayoutPanel {
 
     /// The row box itself, to be given its rect.
     fn row_box_mut(&mut self, path: RowPath) -> Option<&mut Box<dyn PanelWidget>> {
+        // Nothing to give a rect to: an anonymous row is a box the LAYOUT has
+        // and the tree does not.
+        if path.row == ANONYMOUS_ROW {
+            return None;
+        }
         match path.group {
             Some(group) => self
                 .children
@@ -1711,10 +1743,44 @@ impl FlowLayoutPanel {
         let Some(row_box) = self.row_panel_mut(row) else {
             return Vec::new();
         };
+        // **A row's cells are the children that are CELLS.** For a real `<tr>`
+        // that is all of them, and an unrecorded display means a cell, which is
+        // what the markup means. It matters for the ANONYMOUS row, whose
+        // "children" are the table's own: the `<tr>`s among them are rows in
+        // their own right and must not be swallowed as cells of the row the
+        // table generated around its loose ones.
+        //
+        // Filtered AFTER `enumerate`, so every cell keeps its real index among
+        // its siblings — `with_cell` addresses the child list directly, and a
+        // compacted index would reach the wrong box.
+        let cells: Vec<(usize, bool)> = row_box
+            .children
+            .iter()
+            .enumerate()
+            .map(|(index, child)| {
+                let is_cell = !matches!(
+                    row_box.child_display.get(child.name()).map(String::as_str),
+                    Some("table-row")
+                        | Some("table-row-group")
+                        | Some("table-header-group")
+                        | Some("table-footer-group")
+                        | Some("table-column")
+                        | Some("table-column-group")
+                        | Some("table-caption")
+                );
+                (index, is_cell)
+            })
+            .collect();
+        let keep: Vec<usize> = cells
+            .into_iter()
+            .filter(|(_, is_cell)| *is_cell)
+            .map(|(index, _)| index)
+            .collect();
         row_box
             .children
             .iter_mut()
             .enumerate()
+            .filter(|(index, _)| keep.contains(index))
             .map(|(index, child)| {
                 // A span lives on the cell, put there by `set_attribute`. A cell
                 // that is not a panel — or one nobody gave a span — occupies one
@@ -1789,6 +1855,27 @@ impl FlowLayoutPanel {
 
     fn place_cell(&mut self, cell: TableCell, rect: LayoutRect) {
         self.with_cell(cell, |child| child.set_rect(rect));
+    }
+
+    /// The width a cell DECLARED, if it declared one.
+    ///
+    /// The distinction `table-layout: fixed` is built on: §17.5.2.1 sizes a
+    /// column from the first row's specified widths and divides what is left
+    /// evenly, so a cell that never asked for a width must not be read as
+    /// having asked for the one it currently has.
+    ///
+    /// The fact lives on the ROW, not here — `SetChildWidthMode` announces
+    /// each child's `axis_mode` to its own container — so the table asks
+    /// through the row that holds the cell, which is the same indirection
+    /// every other cell access takes.
+    fn cell_declared_width(&mut self, cell: TableCell) -> Option<f32> {
+        let name = self.with_cell(cell, |child| child.name().to_string())?;
+        let row = self.row_panel_mut(cell.row)?;
+        if !row.child_declared_width.contains(&name) {
+            return None;
+        }
+        let width = row.children.get(cell.index)?.rect().w;
+        (width > 0.0).then_some(width)
     }
 
     /// A cell's two intrinsic widths — CSS 2.1 §17.5.2.2 / css-sizing §4.1.
@@ -1881,13 +1968,20 @@ impl FlowLayoutPanel {
             // The first row alone decides. A cell with no width of its own
             // takes an equal share, which is what a fixed table does with the
             // space nobody claimed.
+            //
+            // ⚠ A cell's DECLARED width, never its current one. This used to
+            // read `child.rect().w` — the width the cell already had — which is
+            // a fixed table's own output fed back as its input: laid out once
+            // by any other route, `table-layout: fixed` simply kept whatever
+            // widths were already there and changed nothing at all. The two
+            // algorithms then agreed on every table, which is the one thing
+            // §17.5.2.1 exists to prevent.
             for column in 0..columns {
                 let width = grid
                     .first()
                     .and_then(|row| row[column])
                     .filter(|c| c.origin == (0, column) && c.colspan == 1)
-                    .and_then(|cell| self.with_cell(cell, |child| child.rect().w))
-                    .filter(|w| *w > 0.0)
+                    .and_then(|cell| self.cell_declared_width(cell))
                     .unwrap_or(even);
                 widths[column] = width;
             }

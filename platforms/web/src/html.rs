@@ -265,6 +265,14 @@ pub fn active_document() -> DocumentId {
         Some(id) => id,
         None => {
             let id = crate::engine::new_document("");
+            // **The tab, made before any script runs.** A document without a
+            // browsing context is a thing a browser never has, and every window
+            // verb was unreachable without one: `Document.defaultView` answered
+            // null for every program, so nothing could name the window to close
+            // it, move it, or ask its size. `adopt` is idempotent, and this is
+            // the one place the AMBIENT document comes into being — `open()`
+            // brings its own context with it.
+            crate::engine::window(crate::engine::WindowOp::AdoptTopLevel(id));
             slot.0 = Some(id);
             id
         }
@@ -293,6 +301,12 @@ fn active_document_slot() -> &'static std::sync::Mutex<ActiveDocument> {
 ///
 /// Deliberately does NOT create one, unlike [`active_document`]: asking the
 /// question must not answer it. That is why this reads the slot directly.
+///
+/// The slot is an honest proxy for the context now, and was not always: until
+/// the ambient document was adopted into a top-level context, NOTHING created a
+/// `BrowsingContext` except `window.open()`, so this function was named for one
+/// concept and testing another. Setting the slot and adopting the context are
+/// the same step in [`active_document`], so the two cannot disagree.
 pub fn has_browsing_context() -> bool {
     active_document_slot()
         .lock()
@@ -1550,6 +1564,31 @@ pub fn register(vm: &mut VM) {
         vec![node()],
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             element(doc_arg(args, 0), DOCUMENT)
+        }),
+    );
+    // `document.defaultView` (HTML §3.1.1) — the WindowProxy of this document's
+    // browsing context, or null if it has none.
+    //
+    // **This is how a guest names its own window.** In a browser you never ask
+    // for the current window, you ARE in it: `window`/`self`/`globalThis` are
+    // the global object. A guest here holds no such global, so the standard
+    // document→window accessor is the door, and it is the exact inverse of the
+    // `window.document` already registered next door.
+    //
+    // A document with no context answers NULL rather than inventing one — a
+    // `DOMParser` document genuinely has no `defaultView`, and creating a
+    // browsing context for it would put a tab on screen for a parsed string.
+    html_fn(
+        vm,
+        "defaultView",
+        "default-view",
+        vec![doc()],
+        vec![ValType::Borrow("window".to_string())],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            match crate::engine::window(crate::engine::WindowOp::DefaultView(doc_arg(args, 0))) {
+                crate::engine::WindowValue::Window(w) => Value::F64(w as f64),
+                _ => Value::Null,
+            }
         }),
     );
     html_fn(

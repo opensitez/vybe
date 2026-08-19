@@ -1581,6 +1581,21 @@ impl Document {
             self.link_child(parent, child, before);
             if box_ {
                 self.rebuild_inline_content(parent);
+                // **Text is what a column is measured FROM.** A `<td>` gets its
+                // text as a TEXT NODE, and this branch returns before the one
+                // that tells an enclosing table a cell changed — so a cell's
+                // content never reached `column_widths` on the pass that used
+                // it. The `else` arm above is safe already: `apply_text` ends
+                // by asking the table.
+                //
+                // The tell was that a table needed TWO rows to size correctly.
+                // Text landing after the table's last measurement leaves that
+                // cell contributing nothing, so with two rows the other row
+                // rescued the column and it looked correct; with one row both
+                // columns fell back to an even split, the SHORTER text taking
+                // the WIDER column because its min-content was the only
+                // measurement that had arrived in time.
+                self.relayout_enclosing_table(parent);
             } else {
                 let text = self.text_content(parent);
                 self.apply_text(parent, &text);
@@ -1652,6 +1667,23 @@ impl Document {
             self.restyle_subtree(child);
             self.restyle_positional_siblings(child);
             self.rebuild_inline_content(parent);
+            // **Text is what a column is measured FROM**, so a table has to
+            // look again for exactly the reason a new cell makes it look
+            // again — and this branch returns before the one below that says
+            // so. A `<td>` gets its text as a TEXT NODE, which is the only
+            // kind of child that takes this path, so the effect was that no
+            // cell's content ever reached `column_widths` on the pass that
+            // used it.
+            //
+            // The tell was that a table needed TWO rows to size correctly. The
+            // last row to be filled is the one whose text lands after the
+            // table's final measurement, so with two rows the first one
+            // rescued the column and the defect looked like a text-path
+            // problem. With a single row nothing rescued it and both columns
+            // fell back to an even split — the SHORTER text taking the wider
+            // column, its min-content being the only measurement that had
+            // arrived in time.
+            self.relayout_enclosing_table(parent);
             return true;
         }
 
@@ -3713,6 +3745,30 @@ impl Document {
                 CommandValue::Text(context.to_string()),
             ),
         );
+        // **`flex-direction` has an INITIAL VALUE, and it is `row`** — css-flexbox
+        // §5.1. An undeclared property is not an absent one: `display: flex`
+        // alone means a ROW, and every browser lays one out that way.
+        //
+        // Only a DECLARED `flex-direction` ever reached the widget, whose own
+        // default is `TopDown` — so a flex container that did not spell the
+        // axis out got a column. Nothing declared it wrong; the initial value
+        // simply never arrived. A `FlowLayoutPanel`, which is `display: flex;
+        // flex-wrap: wrap` and nothing else, stacked its buttons vertically at
+        // full width instead of flowing them across and wrapping.
+        //
+        // Sent from here because this is where the box BECOMES a flex
+        // container, which is the moment the initial value starts to apply.
+        if context == "flex" {
+            let direction = self
+                .computed_style(node)
+                .flex_direction
+                .map(|d| d.as_css().to_string())
+                .unwrap_or_else(|| "row".to_string());
+            self.command(
+                node,
+                &WidgetCommand::Custom("SetFlexDirection".into(), CommandValue::Text(direction)),
+            );
+        }
         // **Whether its own block size is definite**, which is the other half
         // of what a formatting context needs before it can size anything: with
         // `height: auto` there is no main size for a column to divide, so its
@@ -7013,10 +7069,25 @@ mod tests {
     ///
     /// Tests of normal flow deliberately do NOT use this helper — they build a
     /// bare `<div>`, which is what a page actually has.
+    /// A flex COLUMN of the given size — the shape the tests below are about.
+    ///
+    /// ⚠ The axis is declared. This fixture used to say `display: flex` alone
+    /// and get a column anyway, because the widget's own default was `TopDown`
+    /// and an undeclared `flex-direction` never reached it. CSS says the
+    /// initial value is `row` (css-flexbox §5.1), so that was a real defect —
+    /// a `FlowLayoutPanel`, which is `display: flex; flex-wrap: wrap` and
+    /// nothing else, stacked its buttons vertically instead of flowing them.
+    ///
+    /// Every test using this fixture is about `align-items`, `justify-content`,
+    /// `order` or margins DOWN a column, and none of them is about which axis
+    /// an undeclared container picks. Saying it out loud keeps them meaning
+    /// what they were written to mean; the default itself is pinned by
+    /// `a_flex_container_that_declares_no_axis_is_a_row`.
     fn container_with(doc: &mut Document, w: f32, h: f32) -> NodeId {
         let panel = doc.create_element("div", "");
         doc.append_child(DOCUMENT, panel);
         doc.set_style_property(panel, "display", "flex");
+        doc.set_style_property(panel, "flex-direction", "column");
         doc.set_style_property(panel, "position", "relative");
         doc.set_style_property(panel, "width", &format!("{w}px"));
         doc.set_style_property(panel, "height", &format!("{h}px"));
@@ -8782,6 +8853,137 @@ mod tests {
         }
     }
 
+    /// **`<tfoot>` renders last however the markup was written** — §17.2.1.
+    ///
+    /// The whole reason the groups exist. Every other grouped test here appends
+    /// the footer after the body, which is the one order that would pass with
+    /// no reordering at all — so the reordering was untested by construction.
+    ///
+    /// This failed too, and for the same reason as the column-width test: the
+    /// body row's cell was texted after the table's last measurement, so the
+    /// row measured ~2px and the two rows overlapped. The ORDERING was right
+    /// throughout — the footer sat one slot down, the slot was just empty.
+    #[test]
+    fn a_footer_written_first_still_renders_last() {
+        let mut doc = Document::new("t");
+        let table = doc.create_element("table", "");
+        doc.append_child(DOCUMENT, table);
+
+        // The footer FIRST, which is legal and what §17.2.1 is about.
+        let foot = doc.create_element("tfoot", "");
+        doc.append_child(table, foot);
+        let foot_row = doc.create_element("tr", "");
+        doc.append_child(foot, foot_row);
+        let total = doc.create_element("td", "");
+        doc.append_child(foot_row, total);
+        doc.set_text_content(total, "total");
+
+        let body = doc.create_element("tbody", "");
+        doc.append_child(table, body);
+        let body_row = doc.create_element("tr", "");
+        doc.append_child(body, body_row);
+        let value = doc.create_element("td", "");
+        doc.append_child(body_row, value);
+        doc.set_text_content(value, "value");
+
+        let footer = doc.rect(total).unwrap();
+        let content = doc.rect(value).unwrap();
+        assert!(
+            footer.y >= content.y + content.h,
+            "the footer is BELOW the body it was written above: {footer:?} vs {content:?}"
+        );
+    }
+
+    /// **`table-layout: fixed` ignores the content** — §17.5.2.1.
+    ///
+    /// The whole difference from `auto`: the columns are decided from the
+    /// table's width alone, so a column holding a long run is no wider than
+    /// one holding a short one. Asserted against the SAME markup laid out both
+    /// ways, because "equal widths" alone would also be true of a table whose
+    /// contents happened to match.
+    ///
+    /// This caught a real defect on the `auto` half before it ever reached
+    /// `fixed`: a single-row table split its width EVENLY and gave the wider
+    /// column to the SHORTER text. Text reaches a `<td>` as a text node, and
+    /// `insert_before`'s text-node branch returned without telling the
+    /// enclosing table — so a cell's content never reached `column_widths` on
+    /// the pass that used it. Two rows hid it, the other row having been
+    /// measured in time to size the column.
+    #[test]
+    fn a_fixed_table_sizes_its_columns_without_asking_the_content() {
+        let short = "id";
+        let long = "a description long enough to want a column of its own";
+
+        let mut auto = Document::new("t");
+        let (_, auto_cells) = table_of(&mut auto, &[&[short, long]]);
+        let auto_first = auto.rect(auto_cells[0][0]).unwrap();
+        let auto_second = auto.rect(auto_cells[0][1]).unwrap();
+        assert!(
+            auto_second.w > auto_first.w,
+            "auto gives the longer run the wider column: {} vs {}",
+            auto_first.w,
+            auto_second.w
+        );
+
+        let mut fixed = Document::new("t");
+        let (fixed_table, fixed_cells) = table_of(&mut fixed, &[&[short, long]]);
+        fixed.set_style_property(fixed_table, "table-layout", "fixed");
+        let first = fixed.rect(fixed_cells[0][0]).unwrap();
+        let second = fixed.rect(fixed_cells[0][1]).unwrap();
+        assert!(
+            (first.w - second.w).abs() < 1.0,
+            "fixed divides the table evenly and never asks: {} vs {}",
+            first.w,
+            second.w
+        );
+    }
+
+    /// **A cell with no row still gets one** — CSS 2.1 §17.2.1.
+    ///
+    /// The table generates an ANONYMOUS row box around cells that sit directly
+    /// in it. Without that, `<table><th>a</th><th>b</th></table>` renders
+    /// nothing at all, and a toolkit that appends CELLS to a grid — which is
+    /// what `DataGridView.Columns.Add` does — can never produce a header.
+    #[test]
+    fn cells_directly_in_a_table_share_an_anonymous_row() {
+        let mut doc = Document::new("t");
+        let table = doc.create_element("table", "");
+        doc.append_child(DOCUMENT, table);
+
+        let mut heads = Vec::new();
+        for text in ["name", "email"] {
+            let cell = doc.create_element("th", "");
+            doc.append_child(table, cell);
+            doc.set_text_content(cell, text);
+            heads.push(cell);
+        }
+        // …and a real row after them, which must NOT be swallowed into the
+        // anonymous one.
+        let row = doc.create_element("tr", "");
+        doc.append_child(table, row);
+        let body_cell = doc.create_element("td", "");
+        doc.append_child(row, body_cell);
+        doc.set_text_content(body_cell, "ada");
+
+        let first = doc.rect(heads[0]).unwrap();
+        let second = doc.rect(heads[1]).unwrap();
+        assert!(
+            second.x > first.x,
+            "the loose cells are SIDE BY SIDE, which is what one row means: {first:?} then {second:?}"
+        );
+        assert_eq!(first.y, second.y, "and they share a top edge");
+
+        let below = doc.rect(body_cell).unwrap();
+        assert!(
+            below.y >= first.y + first.h,
+            "the real row follows the anonymous one: {first:?} then {below:?}"
+        );
+        assert_eq!(
+            first.x, below.x,
+            "and joins the column the loose cells established"
+        );
+    }
+
     /// **The table's BOX covers the rows it drew.**
     ///
     /// Every other test here asks where a cell went, and they all passed while
@@ -10264,6 +10466,43 @@ mod tests {
         doc.set_style_property(b, "min-width", "150px");
         doc.set_style_property(b, "width", "100px");
         assert_eq!(doc.style_property(b, "width"), "150px");
+    }
+
+    /// **`display: flex` alone is a ROW** — css-flexbox §5.1.
+    ///
+    /// An undeclared property is not an absent one. Only a declared
+    /// `flex-direction` ever reached the widget, whose own default is
+    /// `TopDown`, so a container that did not spell the axis out silently got
+    /// a column — and every test that could have caught it declared the axis
+    /// implicitly by sharing a fixture that meant a column.
+    ///
+    /// Found in a capture of a `FlowLayoutPanel`, which is `display: flex;
+    /// flex-wrap: wrap` and nothing else: it stacked its buttons vertically at
+    /// full width where a browser flows them across and wraps.
+    #[test]
+    fn a_flex_container_that_declares_no_axis_is_a_row() {
+        let mut doc = Document::new("t");
+        let panel = doc.create_element("div", "");
+        doc.append_child(DOCUMENT, panel);
+        doc.set_style_property(panel, "display", "flex");
+        doc.set_style_property(panel, "width", "400px");
+        doc.set_style_property(panel, "height", "200px");
+
+        let a = doc.create_element("button", "");
+        let b = doc.create_element("button", "");
+        doc.append_child(panel, a);
+        doc.append_child(panel, b);
+
+        let first = doc.rect(a).unwrap();
+        let second = doc.rect(b).unwrap();
+        assert!(
+            second.x > first.x,
+            "the second child is BESIDE the first, not below it: {first:?} then {second:?}"
+        );
+        assert_eq!(
+            first.y, second.y,
+            "and they share a top edge, which is what one row means"
+        );
     }
 
     #[test]

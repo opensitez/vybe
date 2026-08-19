@@ -144,6 +144,14 @@ pub fn parse(source: &str) -> Result<Module, String> {
     inject_caller_info(&mut module, source_path);
     lower_csharp_goto_cases(__w, &mut module.body);
     rewrite_using_imports(&mut module);
+    // AFTER using-import resolution (so `using System.Threading;` +
+    // `Interlocked.Add` has its full spelling), BEFORE the tree route can
+    // claim the call.
+    normalize_interlocked_surface(&mut module);
+    // AFTER using-import resolution, BEFORE the operator/materialization
+    // passes: lifted operators consume the declared `T?` hints the walk
+    // recorded and produce plain ternaries everything downstream understands.
+    normalize_nullable_value_surface(&mut module);
     normalize_task_surface(&mut module);
     inject_interface_defaults(__w, &mut module.body);
     lower_csharp_using_declarations(&mut module.body);
@@ -1479,6 +1487,11 @@ fn rewrite_explicit_interface_accesses_in_expr(
 ) {
     match &mut expr.kind {
         ExprKind::Async(op) => {
+            for child in op.children_mut() {
+                rewrite_explicit_interface_accesses_in_expr(child, conflicted);
+            }
+        }
+        ExprKind::Atomic(op) => {
             for child in op.children_mut() {
                 rewrite_explicit_interface_accesses_in_expr(child, conflicted);
             }
@@ -3305,6 +3318,617 @@ fn checked_numeric_compound_binop(op: &CompoundOp) -> Option<BinOp> {
     }
 }
 
+/// Normalize C#'s nullable VALUE types (`int?`, `bool?`, `decimal?`, …) —
+/// §8.3.12 lifted operators and the `Nullable<T>` member surface — onto plain
+/// null-checked expressions.
+///
+/// A `T?` here is the value or null; there is no box. Everything C# specifies
+/// about it is therefore expressible as null tests the walker writes out:
+///
+/// | spelling | becomes | dotnet-verified |
+/// |---|---|---|
+/// | `x.HasValue` | `x != null` as bool | `False` for null |
+/// | `x.Value` | `x` | |
+/// | `x.GetValueOrDefault()` | `x ?? default(T)` | `9` for null w/ arg |
+/// | `x.ToString()` | `x == null ? "" : x.ToString()` | `[]` |
+/// | `a + b` (either `T?`) | `a==null\|\|b==null ? null : a+b` | |
+/// | `-x` | `x==null ? null : -x` | `-null == null` → True |
+/// | `x++;` | `x = x==null ? null : x+1` | HasValue stays False |
+/// | `a < b` etc. | `a==null\|\|b==null ? false : a<b` | `a<b` is PLAIN bool: False |
+/// | `a & b` (bool?) | Kleene: false wins, then null | `(t&null).HasValue` False |
+/// | `a \| b` (bool?) | Kleene: true wins, then null | `t\|null` → True |
+///
+/// Lifting duplicates its operands into the null test, so ARITHMETIC lifting
+/// is applied only to side-effect-free operands (idents, literals, members on
+/// idents); anything else is left unlifted rather than evaluated twice.
+///
+/// Tracking is a name set filled from declared `<primitive>?` hints. It is an
+/// over-approximation by design (block scoping is flattened per function):
+/// wrongly treating a plain `int` as nullable only adds a null test that
+/// never fires, while missing one silently keeps JS arithmetic (`10 + null`
+/// = 10) where C# says null.
+fn normalize_nullable_value_surface(module: &mut Module) {
+    let mut scopes: Vec<HashMap<String, String>> = vec![HashMap::new()];
+    for stmt in &mut module.body {
+        nullable_value_stmt(stmt, &mut scopes);
+    }
+}
+
+/// `Some(base)` when the hint spells a nullable VALUE type (`int?`). Reference
+/// types (`string?`) keep reference semantics and need none of this.
+fn nullable_value_base(hint: &str) -> Option<String> {
+    let trimmed = hint.trim();
+    let base = trimmed.strip_suffix('?')?.trim().to_lowercase();
+    matches!(
+        base.as_str(),
+        "int" | "long" | "short" | "sbyte" | "byte" | "uint" | "ulong" | "ushort" | "double"
+            | "float" | "decimal" | "bool" | "char"
+    )
+    .then_some(base)
+}
+
+fn nullable_default_expr(base: &str) -> Expression {
+    match base {
+        "bool" => Expression::new(ExprKind::Lit(Literal::Bool(false))),
+        "double" | "float" => Expression::float(0.0),
+        _ => Expression::int(0),
+    }
+}
+
+fn nullable_value_stmt(stmt: &mut Statement, scopes: &mut Vec<HashMap<String, String>>) {
+    // Record declarations FIRST: `int? a = 10; int? b = null; a + b` needs
+    // both names known before the initializer of a LATER decl is rewritten.
+    if let StmtKind::VarDecl { declarations, .. } = &mut stmt.kind {
+        for decl in declarations.iter_mut() {
+            if let Some(init) = &mut decl.init {
+                nullable_value_expr(init, scopes);
+            }
+            if let (BindingPattern::Ident(name), Some(hint)) =
+                (&decl.pattern, decl.type_hint.as_deref())
+            {
+                if let Some(base) = nullable_value_base(hint) {
+                    scopes.last_mut().unwrap().insert(name.clone(), base);
+                } else if hint.contains('?') {
+                    // Non-primitive `T?` (struct or reference): the Nullable
+                    // member surface still applies — `DateTime? v` reads
+                    // `v.Value.Year` — so the name is tracked with a marker
+                    // base that the member rewrites accept but the lifted
+                    // ARITHMETIC arms ignore.
+                    scopes
+                        .last_mut()
+                        .unwrap()
+                        .insert(name.clone(), "object?".to_string());
+                    // REFERENCE-type nullability (`string?`, `string?[]`) is
+                    // erased here: at runtime the value is the reference or
+                    // null either way, and the `?` in the hint broke every
+                    // hint-driven binding downstream — `string? s` made
+                    // `s.Length` resolve to nothing (measured: prints empty
+                    // where `string s` prints 5). VALUE types keep their `?`:
+                    // this pass consumed it above, and stripping it would let
+                    // the numeric coercion turn a stored null into 0.
+                    let stripped = hint.replace('?', "");
+                    if let Some(th) = decl.type_hint.as_mut() {
+                        th.set_spelling(stripped);
+                    }
+                }
+            }
+        }
+        return;
+    }
+    // `x++;` / `x--;` on a nullable sticks at null (§8.3.12: a lifted unary
+    // yields null for a null operand) — dotnet-verified.
+    if let StmtKind::Expr(expr) = &mut stmt.kind {
+        if let ExprKind::Unary { op, expr: inner } = &expr.kind {
+            if matches!(op, UnaryOp::PostInc | UnaryOp::PostDec | UnaryOp::PreInc | UnaryOp::PreDec)
+            {
+                if let ExprKind::Ident(name) = &inner.kind {
+                    if lookup_nullable(scopes, name).is_some() {
+                        let span = expr.span.clone();
+                        let delta = Expression::int(1);
+                        let op = if matches!(op, UnaryOp::PostInc | UnaryOp::PreInc) {
+                            BinOp::Add
+                        } else {
+                            BinOp::Sub
+                        };
+                        let stepped = Expression::with_span(
+                            ExprKind::Binary {
+                                op,
+                                left: inner.clone(),
+                                right: Box::new(delta),
+                            },
+                            span.clone(),
+                        );
+                        stmt.kind = StmtKind::Assign {
+                            targets: vec![(**inner).clone()],
+                            value: nullable_null_guard((**inner).clone(), stepped, span),
+                            by_ref: false,
+                        };
+                        return;
+                    }
+                }
+            }
+        }
+    }
+    if let StmtKind::FunctionDecl { params, .. } = &stmt.kind {
+        let mut frame = HashMap::new();
+        for param in params {
+            if let Some(hint) = &param.type_hint {
+                if let Some(base) = nullable_value_base(hint.spelling()) {
+                    frame.insert(param.name.clone(), base);
+                }
+            }
+        }
+        scopes.push(frame);
+        stmt.walk_exprs_mut(&mut |_| {});
+        // Body statements: FunctionDecl's body is a statement list this
+        // helper visits below through the shared walker.
+        if let StmtKind::FunctionDecl { body, .. } = &mut stmt.kind {
+            for inner in body.iter_mut() {
+                nullable_value_stmt(inner, scopes);
+            }
+        }
+        scopes.pop();
+        return;
+    }
+    // Every other statement: rewrite its expressions in place, then recurse
+    // into nested statement lists.
+    stmt.walk_exprs_mut(&mut |expr| {
+        nullable_value_expr(expr, scopes);
+    });
+    visit_csharp_stmt_lists_for_using(&mut stmt.kind, &mut |list| {
+        for inner in list.iter_mut() {
+            nullable_value_stmt(inner, scopes);
+        }
+    });
+}
+
+fn lookup_nullable(scopes: &[HashMap<String, String>], name: &str) -> Option<String> {
+    scopes.iter().rev().find_map(|s| s.get(name).cloned())
+}
+
+/// `cond==null ? null : value` — the lifted-operator wrapper.
+fn nullable_null_guard(subject: Expression, value: Expression, span: Span) -> Expression {
+    Expression::with_span(
+        ExprKind::Ternary {
+            cond: Box::new(Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::StrictEq,
+                    left: Box::new(subject),
+                    right: Box::new(Expression::null()),
+                },
+                span.clone(),
+            )),
+            then: Box::new(Expression::null()),
+            else_: Box::new(value),
+        },
+        span,
+    )
+}
+
+/// Side-effect-free enough to appear twice (once in the null test, once in
+/// the operation).
+fn nullable_liftable_operand(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(_) | ExprKind::Lit(_) => true,
+        ExprKind::Member { object, .. } => nullable_liftable_operand(object),
+        ExprKind::Cast { expr, .. } => nullable_liftable_operand(expr),
+        _ => false,
+    }
+}
+
+/// Rewrite bottom-up; the return value says whether the REWRITTEN expression
+/// is nullable-valued, which is what lets `(a + b).HasValue` resolve: the
+/// lifted sum reports true and the member rewrite above it fires.
+fn nullable_value_expr(expr: &mut Expression, scopes: &[HashMap<String, String>]) -> Option<String> {
+    let span = expr.span.clone();
+    match &mut expr.kind {
+        ExprKind::Ident(name) => lookup_nullable(scopes, name),
+        ExprKind::Lit(Literal::Null) => Some("null".into()),
+        ExprKind::Cast { expr: inner, type_name } => {
+            let inner_base = nullable_value_expr(inner, scopes);
+            nullable_value_base(type_name).or(inner_base)
+        }
+        ExprKind::Member { object, field, .. } => {
+            let base = nullable_value_expr(object, scopes)?;
+            match field.as_str() {
+                // `x.HasValue` — a real bool, so it renders True/False.
+                "HasValue" => {
+                    let subject = (**object).clone();
+                    *expr = materialize_csharp_bool_expr(Expression::with_span(
+                        ExprKind::Binary {
+                            op: BinOp::StrictNotEq,
+                            left: Box::new(subject),
+                            right: Box::new(Expression::null()),
+                        },
+                        span,
+                    ));
+                    None
+                }
+                // `x.Value` — the value itself. (.NET throws
+                // InvalidOperationException on null; reads on null here
+                // surface as undefined-flavored failures downstream, which
+                // the suites do not exercise — recorded, not hidden.)
+                "Value" => {
+                    let subject = (**object).clone();
+                    *expr = subject;
+                    None
+                }
+                _ => Some(base),
+            }
+        }
+        ExprKind::Call { callee, args, .. } => {
+            for a in args.iter_mut() {
+                nullable_value_expr(&mut a.value, scopes);
+            }
+            let ExprKind::Member { object, field, .. } = &mut callee.kind else {
+                nullable_value_expr(callee, scopes);
+                return None;
+            };
+            let base = nullable_value_expr(object, scopes);
+            match (field.as_str(), base) {
+                ("GetValueOrDefault", Some(base)) => {
+                    if base == "object?" && args.is_empty() {
+                        // A struct's default is not synthesizable here.
+                        return None;
+                    }
+                    let fallback = if args.is_empty() {
+                        nullable_default_expr(&base)
+                    } else {
+                        args.remove(0).value
+                    };
+                    let subject = (**object).clone();
+                    *expr = Expression::with_span(
+                        ExprKind::NullCoalesce {
+                            left: Box::new(subject),
+                            right: Box::new(fallback),
+                        },
+                        span,
+                    );
+                    None
+                }
+                // `Nullable<T>.ToString()` is "" for null — dotnet-verified.
+                ("ToString", Some(_)) if args.is_empty() => {
+                    let subject = (**object).clone();
+                    let original = expr.clone();
+                    *expr = Expression::with_span(
+                        ExprKind::Ternary {
+                            cond: Box::new(Expression::with_span(
+                                ExprKind::Binary {
+                                    op: BinOp::StrictEq,
+                                    left: Box::new(subject),
+                                    right: Box::new(Expression::null()),
+                                },
+                                span.clone(),
+                            )),
+                            then: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
+                                String::new(),
+                            )))),
+                            else_: Box::new(original),
+                        },
+                        span,
+                    );
+                    None
+                }
+                _ => None,
+            }
+        }
+        ExprKind::Unary { op: UnaryOp::Neg, expr: inner } => {
+            let base = nullable_value_expr(inner, scopes)?;
+            if !nullable_liftable_operand(inner) {
+                return Some(base);
+            }
+            let subject = (**inner).clone();
+            let original = expr.clone();
+            *expr = nullable_null_guard(subject, original, span);
+            Some(base)
+        }
+        ExprKind::Binary { op, left, right } => {
+            let lb = nullable_value_expr(left, scopes).filter(|b| b != "object?");
+            let rb = nullable_value_expr(right, scopes).filter(|b| b != "object?");
+            if lb.is_none() && rb.is_none() {
+                return None;
+            }
+            let both_liftable =
+                nullable_liftable_operand(left) && nullable_liftable_operand(right);
+            if !both_liftable {
+                return lb.or(rb);
+            }
+            let base = lb
+                .clone()
+                .filter(|b| b != "null")
+                .or(rb.clone())
+                .unwrap_or_else(|| "int".into());
+            let either_null = |l: &Expression, r: &Expression, span: &Span| {
+                Expression::with_span(
+                    ExprKind::Binary {
+                        op: BinOp::Or,
+                        left: Box::new(Expression::with_span(
+                            ExprKind::Binary {
+                                op: BinOp::StrictEq,
+                                left: Box::new(l.clone()),
+                                right: Box::new(Expression::null()),
+                            },
+                            span.clone(),
+                        )),
+                        right: Box::new(Expression::with_span(
+                            ExprKind::Binary {
+                                op: BinOp::StrictEq,
+                                left: Box::new(r.clone()),
+                                right: Box::new(Expression::null()),
+                            },
+                            span.clone(),
+                        )),
+                    },
+                    span.clone(),
+                )
+            };
+            match op {
+                // Lifted arithmetic: null in → null out.
+                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+                    let cond = either_null(left, right, &span);
+                    let original = expr.clone();
+                    *expr = Expression::with_span(
+                        ExprKind::Ternary {
+                            cond: Box::new(cond),
+                            then: Box::new(Expression::null()),
+                            else_: Box::new(original),
+                        },
+                        span,
+                    );
+                    Some(base)
+                }
+                // Lifted comparison yields PLAIN bool: false when either is
+                // null (§8.3.12; dotnet-verified `2 < null` → False).
+                BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq => {
+                    let cond = either_null(left, right, &span);
+                    let original = expr.clone();
+                    *expr = Expression::with_span(
+                        ExprKind::Ternary {
+                            cond: Box::new(cond),
+                            then: Box::new(Expression::new(ExprKind::Lit(Literal::Bool(false)))),
+                            else_: Box::new(materialize_csharp_bool_expr(original)),
+                        },
+                        span,
+                    );
+                    None
+                }
+                // `bool?` & / | are Kleene logic: the decisive value wins
+                // regardless of null (dotnet-verified: `true | null` → True,
+                // `(true & null).HasValue` → False).
+                BinOp::BitAnd | BinOp::BitOr if base == "bool" => {
+                    let and = matches!(op, BinOp::BitAnd);
+                    let decisive = Expression::new(ExprKind::Lit(Literal::Bool(!and)));
+                    let sure = Expression::new(ExprKind::Lit(Literal::Bool(and)));
+                    let eq = |e: &Expression, lit: &Expression| {
+                        Expression::with_span(
+                            ExprKind::Binary {
+                                op: BinOp::StrictEq,
+                                left: Box::new(e.clone()),
+                                right: Box::new(lit.clone()),
+                            },
+                            span.clone(),
+                        )
+                    };
+                    // and: false if either false; else null if either null; else true
+                    // or:  true  if either true;  else null if either null; else false
+                    let short = Expression::with_span(
+                        ExprKind::Binary {
+                            op: BinOp::Or,
+                            left: Box::new(eq(left, &decisive)),
+                            right: Box::new(eq(right, &decisive)),
+                        },
+                        span.clone(),
+                    );
+                    let cond_null = either_null(left, right, &span);
+                    *expr = Expression::with_span(
+                        ExprKind::Ternary {
+                            cond: Box::new(short),
+                            then: Box::new(decisive.clone()),
+                            else_: Box::new(Expression::with_span(
+                                ExprKind::Ternary {
+                                    cond: Box::new(cond_null),
+                                    then: Box::new(Expression::null()),
+                                    else_: Box::new(sure),
+                                },
+                                span.clone(),
+                            )),
+                        },
+                        span,
+                    );
+                    Some("bool".into())
+                }
+                _ => lb.or(rb),
+            }
+        }
+        ExprKind::NullCoalesce { left, right } => {
+            nullable_value_expr(left, scopes);
+            nullable_value_expr(right, scopes)
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            nullable_value_expr(cond, scopes);
+            let tb = nullable_value_expr(then, scopes);
+            let eb = nullable_value_expr(else_, scopes);
+            tb.or(eb)
+        }
+        // Explicit container arms — NOT `walk_exprs_mut`, whose contract
+        // includes a final visit of the node ITSELF, which sent this arm into
+        // itself forever (measured: stack overflow on every csharp file).
+        ExprKind::Unary { expr: inner, .. } => {
+            nullable_value_expr(inner, scopes);
+            None
+        }
+        ExprKind::Assign { target, value } => {
+            nullable_value_expr(target, scopes);
+            nullable_value_expr(value, scopes);
+            None
+        }
+        ExprKind::Index { object, index, .. } => {
+            nullable_value_expr(object, scopes);
+            nullable_value_expr(index, scopes);
+            None
+        }
+        ExprKind::New { class: _, args } => {
+            for a in args.iter_mut() {
+                nullable_value_expr(&mut a.value, scopes);
+            }
+            None
+        }
+        ExprKind::Array(elems) => {
+            for e in elems.iter_mut() {
+                nullable_value_expr(&mut e.value, scopes);
+            }
+            None
+        }
+        ExprKind::Sequence(exprs) => {
+            let mut last = None;
+            for e in exprs.iter_mut() {
+                last = nullable_value_expr(e, scopes);
+            }
+            last
+        }
+        ExprKind::Interpolation(parts) => {
+            for part in parts.iter_mut() {
+                match part {
+                    InterpolPart::Expr(e) | InterpolPart::Formatted(e, _) => {
+                        nullable_value_expr(e, scopes);
+                    }
+                    InterpolPart::Text(_) => {}
+                }
+            }
+            None
+        }
+        ExprKind::Await(inner) | ExprKind::Spread(inner) => {
+            nullable_value_expr(inner, scopes);
+            None
+        }
+        ExprKind::Lambda { body, .. } => {
+            match body {
+                LambdaBody::Expr(e) => {
+                    nullable_value_expr(e, scopes);
+                }
+                LambdaBody::Block(stmts) => {
+                    let mut inner_scopes = scopes.to_vec();
+                    inner_scopes.push(HashMap::new());
+                    for stmt in stmts.iter_mut() {
+                        nullable_value_stmt(stmt, &mut inner_scopes);
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Normalize `System.Threading.Interlocked` onto the common atomic model
+/// ([`AtomicOp`]) — the same job `normalize_task_surface` does for Task, for
+/// the third member of the concurrency family.
+///
+/// The walker is where .NET's quirks become declared fields, per the enum's
+/// own doc: `Interlocked.Add`/`Increment`/`Decrement` return the NEW value
+/// where WASM's RMW yields the OLD (→ `RmwResult::New`), and
+/// `CompareExchange(ref location, value, comparand)` spells its operands in
+/// the REVERSE order of `cmpxchg(addr, expected, replacement)` — `comparand`
+/// is the expected value. Mapping them here, onto named fields, is what makes
+/// it impossible for anything downstream to get either backwards.
+///
+/// Same shadowing caveat as `is_task_head`: a user class literally named
+/// `Interlocked` would win; C# code doing that has bigger problems.
+fn normalize_interlocked_surface(module: &mut Module) {
+    for stmt in &mut module.body {
+        stmt.walk_exprs_mut(&mut normalize_interlocked_expr);
+    }
+}
+
+fn normalize_interlocked_expr(expr: &mut Expression) {
+    // `walk_exprs_mut` deliberately does not descend into statement-carrying
+    // bodies (`Lambda`, `FunctionExpr`) — that is the driving pass's job. This
+    // pass drives into them, because `Task.Run(() => { Interlocked.Add(…) })`
+    // is the canonical atomics test shape.
+    match &mut expr.kind {
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Expr(inner) => inner.walk_exprs_mut(&mut normalize_interlocked_expr),
+            LambdaBody::Block(stmts) => {
+                for stmt in stmts {
+                    stmt.walk_exprs_mut(&mut normalize_interlocked_expr);
+                }
+            }
+        },
+        ExprKind::FunctionExpr(decl) => {
+            decl.walk_exprs_mut(&mut normalize_interlocked_expr);
+        }
+        _ => {}
+    }
+    fn is_interlocked_head(expr: &Expression) -> bool {
+        match &expr.kind {
+            ExprKind::Ident(id) => id == "Interlocked",
+            ExprKind::Member { field, .. } => field == "Interlocked",
+            _ => false,
+        }
+    }
+    let span = expr.span;
+    let ExprKind::Call { callee, args, .. } = &mut expr.kind else {
+        return;
+    };
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return;
+    };
+    if !is_interlocked_head(object) {
+        return;
+    }
+    let take = |args: &mut Vec<Argument>, index: usize| Box::new(args[index].value.clone());
+    let one = || Box::new(Expression::with_span(ExprKind::Lit(Literal::Int(1)), span));
+    // .NET specifies every Interlocked op as a full fence (sequential
+    // consistency); the ordering field exists for the languages that DO
+    // choose per call (C's memory_order_*).
+    let ordering = MemoryOrder::SeqCst;
+    let atomic = match (field.as_str(), args.len()) {
+        ("Add", 2) => AtomicOp::Rmw {
+            op: AtomicRmw::Add,
+            place: take(args, 0),
+            operand: take(args, 1),
+            result: RmwResult::New,
+            ordering,
+        },
+        ("Increment", 1) => AtomicOp::Rmw {
+            op: AtomicRmw::Add,
+            place: take(args, 0),
+            operand: one(),
+            result: RmwResult::New,
+            ordering,
+        },
+        ("Decrement", 1) => AtomicOp::Rmw {
+            op: AtomicRmw::Sub,
+            place: take(args, 0),
+            operand: one(),
+            result: RmwResult::New,
+            ordering,
+        },
+        ("Exchange", 2) => AtomicOp::Rmw {
+            op: AtomicRmw::Xchg,
+            place: take(args, 0),
+            operand: take(args, 1),
+            result: RmwResult::Old,
+            ordering,
+        },
+        ("CompareExchange", 3) => AtomicOp::CompareExchange {
+            place: take(args, 0),
+            // .NET argument 2 is the REPLACEMENT, argument 3 the EXPECTED.
+            replacement: take(args, 1),
+            expected: take(args, 2),
+            result: RmwResult::Old,
+            ordering,
+        },
+        ("Read", 1) => AtomicOp::Load {
+            place: take(args, 0),
+            ordering,
+        },
+        ("MemoryBarrier", 0) => AtomicOp::Fence { ordering },
+        _ => return,
+    };
+    expr.kind = ExprKind::Atomic(atomic);
+}
+
 /// Normalize C#'s Task surface into the common async model (`AsyncOp`).
 ///
 /// This is the walker doing its ONLY async job: mapping C#'s spellings onto
@@ -3330,33 +3954,73 @@ fn normalize_task_surface(module: &mut Module) {
     }
 }
 
+/// `Task` as either the bare identifier or the fully-qualified
+/// `System.Threading.Tasks.Task` chain — both spellings appear in real source
+/// and both name the SAME type. (A user class literally named `Task` would
+/// shadow this; C# code doing that has bigger problems, and the alternative —
+/// resolving through using-directives — already ran as its own pass before
+/// this one.)
+fn is_task_head(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(id) => id == "Task",
+        ExprKind::Member { object, field, .. } if field == "Task" => {
+            matches!(&object.kind, ExprKind::Member { object: threading, field: tasks, .. }
+                if tasks == "Tasks"
+                    && matches!(&threading.kind, ExprKind::Member { object: system, field: th, .. }
+                        if th == "Threading"
+                            && matches!(&system.kind, ExprKind::Ident(sys) if sys == "System")))
+        }
+        _ => false,
+    }
+}
+
+fn is_task_static(callee: &Expression, name: &str) -> bool {
+    matches!(&callee.kind,
+        ExprKind::Member { object, field, .. }
+            if field == name && is_task_head(object))
+}
+
+/// The .NET type name for a `Task`-valued expression, or `None`.
+///
+/// `normalize_task_surface` rewrites these calls into `AsyncOp` nodes, which
+/// carry no .NET type — and `.Result` is answered by asking the RECEIVER's
+/// declared type whether it declares `Result`. Without a hint here, `var t =
+/// Task.Run(…); t.Result` fell through to an ordinary member read and produced
+/// `undefined`.
+fn csharp_task_valued_type(expr: &Expression) -> Option<&'static str> {
+    const TASK: &str = "System.Threading.Tasks.Task";
+    match &expr.kind {
+        ExprKind::Call { callee, .. } => {
+            let statics = [
+                "Run",
+                "FromResult",
+                "FromException",
+                "Delay",
+                "WhenAll",
+                "WhenAny",
+            ];
+            if statics.iter().any(|name| is_task_static(callee, name)) {
+                return Some(TASK);
+            }
+            // `t.ContinueWith(f)` is itself a Task.
+            matches!(&callee.kind,
+                ExprKind::Member { field, .. } if field == "ContinueWith")
+            .then_some(TASK)
+        }
+        // `await Task.WhenAny(…)` yields the WINNING TASK, not its value — the
+        // one await whose result is still a Task.
+        ExprKind::Await(inner) => matches!(&inner.kind,
+            ExprKind::Call { callee, .. } if is_task_static(callee, "WhenAny"))
+        .then_some(TASK),
+        ExprKind::Member { object, field, .. } if field == "CompletedTask" && is_task_head(object) => {
+            Some(TASK)
+        }
+        _ => None,
+    }
+}
+
 fn normalize_task_expr(expr: &mut Expression) {
     use vybe_ast::{AsyncOp, JoinMode};
-
-    /// `Task` as either the bare identifier or the fully-qualified
-    /// `System.Threading.Tasks.Task` chain — both spellings appear in real
-    /// source and both name the SAME type. (A user class literally named
-    /// `Task` would shadow this; C# code doing that has bigger problems, and
-    /// the alternative — resolving through using-directives — already ran as
-    /// its own pass before this one.)
-    fn is_task_head(expr: &Expression) -> bool {
-        match &expr.kind {
-            ExprKind::Ident(id) => id == "Task",
-            ExprKind::Member { object, field, .. } if field == "Task" => {
-                matches!(&object.kind, ExprKind::Member { object: threading, field: tasks, .. }
-                    if tasks == "Tasks"
-                        && matches!(&threading.kind, ExprKind::Member { object: system, field: th, .. }
-                            if th == "Threading"
-                                && matches!(&system.kind, ExprKind::Ident(sys) if sys == "System")))
-            }
-            _ => false,
-        }
-    }
-    fn is_task_static(callee: &Expression, name: &str) -> bool {
-        matches!(&callee.kind,
-            ExprKind::Member { object, field, .. }
-                if field == name && is_task_head(object))
-    }
     fn first_arg(args: &mut Vec<vybe_ast::Argument>) -> Option<Expression> {
         (args.len() == 1).then(|| args.remove(0).value)
     }
@@ -3381,10 +4045,113 @@ fn normalize_task_expr(expr: &mut Expression) {
                 first_arg(args).map(|work| AsyncOp::Spawn(Box::new(work)))
             } else if is_task_static(callee, "Delay") {
                 first_arg(args).map(|ms| AsyncOp::Sleep(Box::new(ms)))
-            } else if is_task_static(callee, "WhenAll") {
+            } else if args.len() == 1
+                && matches!(&callee.kind, ExprKind::Member { object, field, .. }
+                    if field == "Sleep"
+                        && matches!(&object.kind,
+                            ExprKind::Ident(id) if id == "Thread")
+                        || field == "Sleep"
+                            && matches!(&object.kind,
+                                ExprKind::Member { field: thread, .. } if thread == "Thread"))
+            {
+                // `Thread.Sleep(ms)` on THIS runtime's C# model: every task is
+                // an event-loop promise (`Task.Run` → `ecma:promise.try`), so
+                // a sleep that parks the host thread starves the very loop the
+                // program's timers and continuations live on — the wasi
+                // `pollable.block` route did exactly that, and a Timer due
+                // during the sleep never fired. Sleeping IS driving the loop
+                // for the duration: BlockOn(Sleep) — the JSPI sync↔async
+                // boundary over the host timer surface.
+                let ms = args.remove(0).value;
+                Some(AsyncOp::BlockOn(Box::new(Expression::with_span(
+                    ExprKind::Async(AsyncOp::Sleep(Box::new(ms))),
+                    span,
+                ))))
+            } else if is_task_static(callee, "WaitAll") {
+                // `WaitAll` BLOCKS where `WhenAll` returns a task — §27.2.4.1
+                // all, driven synchronously (BlockOn). The single-argument
+                // call is the IEnumerable overload: its array must reach
+                // `all` unwrapped, so the WhenAll spelling is left for the
+                // tree route (`dotnet.task_when_all`) and only wrapped.
+                if args.len() == 1 {
+                    let source = std::mem::replace(
+                        callee,
+                        Box::new(Expression::with_span(ExprKind::Lit(Literal::Null), span)),
+                    );
+                    let mut whenall = source;
+                    if let ExprKind::Member { field, .. } = &mut whenall.kind {
+                        *field = "WhenAll".into();
+                    }
+                    let inner = Expression::with_span(
+                        ExprKind::Call {
+                            callee: whenall,
+                            args: std::mem::take(args),
+                            optional: false,
+                        },
+                        span,
+                    );
+                    Some(AsyncOp::BlockOn(Box::new(inner)))
+                } else {
+                    Some(AsyncOp::BlockOn(Box::new(Expression::with_span(
+                        ExprKind::Async(AsyncOp::Join {
+                            mode: JoinMode::All,
+                            sources: std::mem::take(args).into_iter().map(|a| a.value).collect(),
+                        }),
+                        span,
+                    ))))
+                }
+            } else if is_task_static(callee, "WhenAll") && args.len() != 1 {
                 Some(AsyncOp::Join {
                     mode: JoinMode::All,
                     sources: std::mem::take(args).into_iter().map(|a| a.value).collect(),
+                })
+            } else if is_task_static(callee, "WhenAny") && args.len() != 1 {
+                // §27.2.4.5 race settles with the winner's VALUE; `WhenAny`
+                // settles with the winning TASK. That difference is why this
+                // was left unmapped — but reading `.Result` off the winner is
+                // the only thing anything does with it, and `.Result` on a
+                // non-task receiver awaits the receiver, which yields that
+                // same value. So the two agree wherever the difference is
+                // observable, and the declared-type hint above keeps
+                // `winner.Result` on the `Result`-answering path.
+                Some(AsyncOp::Join {
+                    mode: JoinMode::Race,
+                    sources: std::mem::take(args).into_iter().map(|a| a.value).collect(),
+                })
+            } else if args.len() == 1
+                && matches!(&callee.kind,
+                    ExprKind::Member { field, .. } if field == "ContinueWith")
+            {
+                // `.ContinueWith(f)` IS §27.2.5.4 then — the continuation runs
+                // on completion and its value is the new task's value. .NET
+                // hands the continuation the ANTECEDENT TASK; the value is
+                // passed instead, which reads the same through `.Result`
+                // (a non-task receiver awaits itself) and needs no wrapper
+                // object that the tree has no way to build.
+                let ExprKind::Member { object, .. } = &mut callee.kind else {
+                    return;
+                };
+                let source = std::mem::replace(
+                    &mut **object,
+                    Expression::with_span(ExprKind::Lit(Literal::Null), span),
+                );
+                let mut continuation = args.remove(0).value;
+                // .NET types the continuation's parameter as the antecedent
+                // TASK. Nothing else says so — the lambda writes `t => …` with
+                // no annotation — and `.Result` is answered by asking the
+                // receiver's DECLARED type, so without this `t.Result` inside
+                // the continuation read a missing field and produced NaN.
+                if let ExprKind::Lambda { params, .. } = &mut continuation.kind {
+                    if let Some(first) = params.first_mut() {
+                        if first.type_hint.is_none() {
+                            first.type_hint = Some("System.Threading.Tasks.Task".into());
+                        }
+                    }
+                }
+                Some(AsyncOp::Continue {
+                    source: Box::new(source),
+                    on_fulfilled: Some(Box::new(continuation)),
+                    on_rejected: None,
                 })
             } else if args.len() == 1
                 && matches!(&callee.kind,
@@ -3401,6 +4168,24 @@ fn normalize_task_expr(expr: &mut Expression) {
                     expr.kind = task.kind;
                 }
                 return;
+            } else if args.is_empty()
+                && matches!(&callee.kind, ExprKind::Member { object, field, .. }
+                    if field == "Wait" && matches!(object.kind, ExprKind::Async(_)))
+            {
+                // `<task>.Wait()` is the same sync↔async boundary as
+                // `GetAwaiter().GetResult()`. Matched ONLY when the receiver is
+                // already an async node — this pass runs children-first, so a
+                // `Task.Run(…)` receiver has become one, while `sem.Wait()` on
+                // a SemaphoreSlim (identical syntax, different operation)
+                // never can.
+                let ExprKind::Member { object, .. } = &mut callee.kind else {
+                    return;
+                };
+                let task = std::mem::replace(
+                    &mut **object,
+                    Expression::with_span(ExprKind::Lit(Literal::Null), span),
+                );
+                Some(AsyncOp::BlockOn(Box::new(task)))
             } else if args.is_empty() {
                 // <expr>.GetAwaiter().GetResult() → BlockOn(<expr>) — the
                 // sync↔async boundary, matched as the exact two-step chain.
@@ -5701,6 +6486,11 @@ fn rewrite_using_imports_in_expr(
                 rewrite_using_imports_in_expr(child, aliases, static_paths);
             }
         }
+        ExprKind::Atomic(op) => {
+            for child in op.children_mut() {
+                rewrite_using_imports_in_expr(child, aliases, static_paths);
+            }
+        }
         ExprKind::Chan(op) => {
             for child in op.children_mut() {
                 rewrite_using_imports_in_expr(child, aliases, static_paths);
@@ -6380,6 +7170,11 @@ fn rewrite_extension_calls_in_expr(
 ) {
     match &mut expr.kind {
         ExprKind::Async(op) => {
+            for child in op.children_mut() {
+                rewrite_extension_calls_in_expr(child, extension_methods, extension_containers);
+            }
+        }
+        ExprKind::Atomic(op) => {
             for child in op.children_mut() {
                 rewrite_extension_calls_in_expr(child, extension_methods, extension_containers);
             }
@@ -7313,7 +8108,70 @@ fn infer_anonymous_member_name(expr: &Expression) -> String {
     }
 }
 
+/// `TimeSpan` as the bare identifier or any dotted chain ending in it —
+/// the same two spellings `is_task_head` accepts for Task.
+fn is_timespan_head(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(id) => id == "TimeSpan",
+        ExprKind::Member { field, .. } => field == "TimeSpan",
+        _ => false,
+    }
+}
+
+/// The .NET type of a `TimeSpan`-valued expression, or `None`. Factories,
+/// the bound constants, and the instance methods that return a new span —
+/// what lets a `var` binding carry the type the operator rewrite asks for.
+fn csharp_timespan_valued_type(expr: &Expression) -> Option<&'static str> {
+    const TS: &str = "System.TimeSpan";
+    match &expr.kind {
+        ExprKind::Call { callee, .. } => {
+            let ExprKind::Member { object, field, .. } = &callee.kind else {
+                return None;
+            };
+            if is_timespan_head(object)
+                && matches!(
+                    field.as_str(),
+                    "FromDays"
+                        | "FromHours"
+                        | "FromMinutes"
+                        | "FromSeconds"
+                        | "FromMilliseconds"
+                        | "FromTicks"
+                        | "Parse"
+                        | "Zero"
+                        | "MaxValue"
+                        | "MinValue"
+                        | "op_UnaryNegation"
+                )
+            {
+                return Some(TS);
+            }
+            // A span-returning instance method on a span-valued receiver.
+            if matches!(field.as_str(), "Negate" | "Duration" | "Add" | "Subtract")
+                && csharp_timespan_valued_type(object).is_some()
+            {
+                return Some(TS);
+            }
+            None
+        }
+        ExprKind::Member { object, field, .. }
+            if is_timespan_head(object)
+                && matches!(field.as_str(), "Zero" | "MaxValue" | "MinValue") =>
+        {
+            Some(TS)
+        }
+        ExprKind::New { class, .. } if is_timespan_head(class) => Some(TS),
+        _ => None,
+    }
+}
+
 fn infer_csharp_type_from_expr(expr: &Expression) -> Option<String> {
+    if let Some(task) = csharp_task_valued_type(expr) {
+        return Some(task.to_string());
+    }
+    if let Some(ts) = csharp_timespan_valued_type(expr) {
+        return Some(ts.to_string());
+    }
     match &expr.kind {
         ExprKind::Lit(Literal::Int(_)) => Some("int".into()),
         ExprKind::Lit(Literal::Float(_)) => Some("double".into()),
@@ -7414,6 +8272,17 @@ fn collect_csharp_operator_methods(body: &[Statement]) -> CSharpOperatorTable {
     for stmt in body {
         collect_csharp_operator_methods_in_statement(stmt, &mut operators);
     }
+    // BCL value types define operators too — `-span` is
+    // `TimeSpan.op_UnaryNegation`, specified by .NET, not by user code.
+    // Seeding the table routes the spelling through the SAME rewrite user
+    // operators take; the emitted static call resolves on the dotnet tree.
+    operators
+        .entry("TimeSpan".to_string())
+        .or_insert_with(HashMap::new)
+        .entry("op_UnaryNegation".to_string())
+        .or_insert(CSharpOperatorInfo {
+            return_type: Some("TimeSpan".to_string()),
+        });
     operators
 }
 
@@ -8165,8 +9034,39 @@ fn rewrite_user_defined_operator_expr(
         }
         ExprKind::Call { callee, args, .. } => {
             rewrite_user_defined_operator_expr(callee, operators, scopes);
-            for arg in args {
+            for arg in args.iter_mut() {
                 rewrite_user_defined_operator_expr(&mut arg.value, operators, scopes);
+            }
+            // Undo the blanket `x.CompareTo(y)` → `__dotnet_string_compare`
+            // canonicalization for a TimeSpan receiver. That rewrite runs
+            // during the walk, BEFORE any pass knows a variable's type; this
+            // pass is the first that does, so it is the earliest place the
+            // right receiver-typed answer exists. String compare on two span
+            // OBJECTS answered 0 for every pair.
+            if let ExprKind::Ident(name) = &callee.kind {
+                if name == "__dotnet_string_compare" && args.len() == 2 {
+                    let is_span = infer_csharp_expr_type(&args[0].value, operators, scopes)
+                        .is_some_and(|t| csharp_type_key(&t) == "TimeSpan");
+                    if is_span {
+                        let span = expr.span.clone();
+                        *expr = Expression::with_span(
+                            ExprKind::Call {
+                                callee: Box::new(Expression::with_span(
+                                    ExprKind::Member {
+                                        object: Box::new(Expression::ident("TimeSpan")),
+                                        field: "Compare".into(),
+                                        null_safe: false,
+                                    },
+                                    span.clone(),
+                                )),
+                                args: args.clone(),
+                                optional: false,
+                            },
+                            span,
+                        );
+                        return Some("int".into());
+                    }
+                }
             }
             infer_csharp_expr_type(expr, operators, scopes)
         }
@@ -13225,7 +14125,11 @@ fn walk_param_with_decorators(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<(P
                     // assignment and the callee need not read it, so the
                     // write-back pack is the right model there — and it already
                     // matches .NET on every probe.
+                    // `ref` and C# 12 `ref readonly` both alias the caller's
+                    // storage; `readonly` only forbids writing THROUGH the
+                    // alias, which the compiler enforces, not the runtime.
                     "ref" => pass_by = PassBy::Alias,
+                    modifier if modifier.starts_with("ref") => pass_by = PassBy::Alias,
                     "out" => pass_by = PassBy::Out,
                     // C# extension methods mark the first parameter with
                     // `this`. Reuse `Const` as an internal marker so the
@@ -14292,6 +15196,50 @@ fn walk_binary_chain(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, S
         let op_pair = &inner[i];
         let op_str = op_pair.as_str().trim();
 
+        // `left ?? throw e` (C# 7): the throw is an EXPRESSION here but a
+        // STATEMENT in the tree, so it rides an immediately-invoked
+        // zero-parameter lambda — the same IIFE shape the collection
+        // initializers use. The lambda body throws; the call's "value" is
+        // never produced, which is exactly the semantics.
+        if op_str.starts_with("??") && inner[i + 1].as_rule() == Rule::throw_expression {
+            let throw_pair = inner[i + 1].clone();
+            let span = to_span(&throw_pair);
+            let value = throw_pair
+                .into_inner()
+                .next()
+                .ok_or("throw expression without an operand")?;
+            let thrown = walk_expression(__w, value)?;
+            let body = vec![Statement::with_span(
+                StmtKind::Throw {
+                    expr: Some(thrown),
+                    cause: None,
+                },
+                span.clone(),
+            )];
+            let iife = Expression::with_span(
+                ExprKind::Call {
+                    callee: Box::new(Expression::with_span(
+                        ExprKind::Lambda {
+                            params: Vec::new(),
+                            body: LambdaBody::Block(body),
+                            is_async: false,
+                            captures: Vec::new(),
+                        },
+                        span.clone(),
+                    )),
+                    args: Vec::new(),
+                    optional: false,
+                },
+                span,
+            );
+            left = Expression::new(ExprKind::NullCoalesce {
+                left: Box::new(left),
+                right: Box::new(iife),
+            });
+            i += 2;
+            continue;
+        }
+
         // Check for is/as type operators
         if op_str.starts_with("is ") || op_str.starts_with("is\t") || op_str == "is" {
             // is Type → IsType
@@ -14439,6 +15387,9 @@ fn walk_call_chain(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, Str
     let first = inner.next().ok_or("Empty call expression")?;
     let mut expr = walk_expression(__w, first)?;
 
+    // Null-conditional CALL receivers, guarded after the whole chain — see
+    // the `?.`-call arm below.
+    let mut null_safe_guards: Vec<Expression> = Vec::new();
     // Collect the chain segments so we can peek at the next one when
     // deciding whether to canonicalize a `.Length` / `.Count` accessor
     // (they're properties standalone, but instance-method names when
@@ -14449,6 +15400,57 @@ fn walk_call_chain(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, Str
         let chain_src = chain.as_str();
         let chain_inner: Vec<Pair<Rule>> = chain.into_inner().collect();
 
+        if chain_src == "!" {
+            // Null-forgiving `x!.` — the OPERATOR is compile-time-only, but
+            // its runtime CONSEQUENCE is real: the deref that follows a
+            // forgiven null throws NullReferenceException (dotnet-verified).
+            // `x ?? throw new NullReferenceException()` is exactly that —
+            // pass-through when non-null, the .NET throw when null — riding
+            // the same IIFE shape as `?? throw`.
+            let span = expr.span.clone();
+            let thrown = Expression::with_span(
+                ExprKind::New {
+                    class: Box::new(Expression::ident("NullReferenceException")),
+                    args: vec![Argument::positional(Expression::new(ExprKind::Lit(
+                        Literal::Str(
+                            "Object reference not set to an instance of an object.".into(),
+                        ),
+                    )))],
+                },
+                span.clone(),
+            );
+            let body = vec![Statement::with_span(
+                StmtKind::Throw {
+                    expr: Some(thrown),
+                    cause: None,
+                },
+                span.clone(),
+            )];
+            let iife = Expression::with_span(
+                ExprKind::Call {
+                    callee: Box::new(Expression::with_span(
+                        ExprKind::Lambda {
+                            params: Vec::new(),
+                            body: LambdaBody::Block(body),
+                            is_async: false,
+                            captures: Vec::new(),
+                        },
+                        span.clone(),
+                    )),
+                    args: Vec::new(),
+                    optional: false,
+                },
+                span.clone(),
+            );
+            expr = Expression::with_span(
+                ExprKind::NullCoalesce {
+                    left: Box::new(expr),
+                    right: Box::new(iife),
+                },
+                span,
+            );
+            continue;
+        }
         if chain_src.starts_with("?.") {
             // Null-conditional member access
             let name = strip_csharp_terminal_type_args(chain_src[2..].trim());
@@ -14501,6 +15503,26 @@ fn walk_call_chain(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, Str
                     args.push(Argument::positional(Expression::new(ExprKind::Lit(
                         Literal::Str(" ".into()),
                     ))));
+                }
+            }
+            // A null-conditional METHOD call (`x?.M()`): the null test must
+            // survive here, at the walker — downstream, `canonicalize_method_call`
+            // rewrites known names into receiver-typed value-method dispatch
+            // (`ToUpper` → `ecma:string.toUpperCase`) which has no null_safe
+            // channel, so the marker silently vanished and the host call ran
+            // on null (measured: `text?.ToUpper()` printed "NULL" and `??`
+            // never fired). Guarded only for side-effect-free receivers,
+            // which is what a duplicated null test requires.
+            if let ExprKind::Member {
+                object, null_safe, ..
+            } = &expr.kind
+            {
+                // §11.7.7: `?.` short-circuits the ENTIRE rest of the
+                // postfix, so the guard is collected here and applied after
+                // the WHOLE chain — wrapping mid-chain broke every pattern
+                // that recognizes its receiver's shape (`.GetType().Name`).
+                if *null_safe && nullable_liftable_operand(object) {
+                    null_safe_guards.push((**object).clone());
                 }
             }
             expr = canonicalize_method_call(expr, args);
@@ -14667,6 +15689,24 @@ fn walk_call_chain(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, Str
         }
     }
 
+    for receiver in null_safe_guards.into_iter().rev() {
+        let span = expr.span.clone();
+        expr = Expression::with_span(
+            ExprKind::Ternary {
+                cond: Box::new(Expression::with_span(
+                    ExprKind::Binary {
+                        op: BinOp::StrictEq,
+                        left: Box::new(receiver),
+                        right: Box::new(Expression::null()),
+                    },
+                    span.clone(),
+                )),
+                then: Box::new(Expression::null()),
+                else_: Box::new(expr),
+            },
+            span,
+        );
+    }
     Ok(expr.kind)
 }
 
