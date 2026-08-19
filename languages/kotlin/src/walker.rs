@@ -4042,9 +4042,14 @@ fn rewrite_import_aliases_in_expr(__w: &mut KtWalker,
 
 fn post_alias_kotlin_lowering(__w: &mut KtWalker, expr: &Expression) -> Option<Expression> {
     match &expr.kind {
-        ExprKind::Member { object, field, .. } if field == "absoluteValue" => {
+        // `x.absoluteValue` and `x.ulp` are extension PROPERTIES: a `Member`,
+        // not a call, so a `[builtins]` row alone never fires. Rewriting to a
+        // call is what lets the row apply.
+        ExprKind::Member { object, field, .. }
+            if field == "absoluteValue" || field == "ulp" =>
+        {
             Some(Expression::new(ExprKind::Call {
-                callee: Box::new(Expression::ident("absoluteValue")),
+                callee: Box::new(Expression::ident(field)),
                 args: vec![Argument::positional(*object.clone())],
                 optional: false,
             }))
@@ -7578,27 +7583,14 @@ fn normalize_kotlin_operator_stmt(__w: &mut KtWalker,
     }
 }
 
-fn kotlin_type_is_regex_match_result(ty: &str) -> bool {
-    matches!(
-        ty,
-        "java.util.regex.Matcher" | "kotlin.text.MatchResult" | "MatchResult"
-    )
-}
-
-fn kotlin_regex_match_property_call(object: Expression, field: &str) -> Option<Expression> {
-    if !matches!(field, "value" | "range") {
-        return None;
-    }
-    Some(Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::new(ExprKind::Member {
-            object: Box::new(object),
-            field: field.to_string(),
-            null_safe: false,
-        })),
-        args: vec![],
-        optional: false,
-    }))
-}
+// `MatchResult.value` and `.range` used to be rewritten here into a CALL of a
+// same-named method. They are properties in Kotlin and they are properties in
+// the object a match produces — `kotlin.regex_*` sets `value`, `range`,
+// `groupValues`, `groups` and `destructured` as ordinary fields — so the
+// rewrite had nothing to call and, worse, fired TWICE: the null-safe path
+// (`result?.value`) produced `Call{Member{result,"value"}}` and the member arm
+// then wrapped that Member again, giving `result.value()()`. The AST dump named
+// it immediately; reading the two arms did not, because neither is wrong alone.
 
 fn normalize_kotlin_operator_expr(__w: &mut KtWalker, 
     expr: &mut Expression,
@@ -8027,15 +8019,6 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
                         field: mangled,
                         null_safe: false,
                     });
-                    return;
-                }
-                if kotlin_expr_type(__w, obj2, locals, operators)
-                    .as_deref()
-                    .is_some_and(kotlin_type_is_regex_match_result)
-                    && let Some(replacement) =
-                        kotlin_regex_match_property_call((**obj2).clone(), field)
-                {
-                    *expr = replacement;
                     return;
                 }
                 if matches!(field.as_str(), "isSuccess" | "isFailure")
@@ -8680,6 +8663,36 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
                     return;
                 }
             }
+            // **`s.toRegex(opts)` IS `Regex(s, opts)`** — kotlin.text says so,
+            // and spelling it that way is what makes a CHAINED call work.
+            //
+            // The receiver's type is resolved by the shared
+            // `resolve_receiver_type_hint`, which reads locals, scope types and
+            // constructor calls — not this walker's `kotlin_expr_type`. So
+            // `val r = s.toRegex(); r.containsMatchIn(t)` resolved (the local
+            // carried the type) while `s.toRegex().containsMatchIn(t)` did not,
+            // and every method on it read `undefined`. Normalising to the
+            // constructor gives the chained form the same receiver shape the
+            // working form already had, instead of teaching a second resolver
+            // about a second spelling.
+            if let ExprKind::Member { object, field, .. } = &callee.kind
+                && field == "toRegex"
+                && !is_user_member_name(__w, field, args.len())
+            {
+                let mut ctor_args = vec![Argument::positional((**object).clone())];
+                ctor_args.extend(args.iter().cloned());
+                // `New`, not `Call` — the shared `resolve_receiver_type_hint`
+                // reads a CONSTRUCTION to type a receiver, and a plain call to
+                // an identifier that happens to name a type is not one. The AST
+                // dump is what settled it: `Regex("y")` parses as
+                // `New { class: Ident("Regex") }`, and rewriting to `Call`
+                // produced a node that looked right and typed as nothing.
+                *expr = Expression::new(ExprKind::New {
+                    class: Box::new(Expression::ident("Regex")),
+                    args: ctor_args,
+                });
+                return;
+            }
             if args.is_empty()
                 && let ExprKind::Member { object, field, .. } = &callee.kind
                 && field.starts_with("component")
@@ -8691,28 +8704,6 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
                     object: object.clone(),
                     index: Box::new(Expression::int(n - 1)),
                     null_safe: false,
-                });
-                return;
-            }
-            if let ExprKind::Ident(name) = &callee.kind
-                && name == "__kt_safe_get"
-                && args.len() == 2
-                && kotlin_expr_type(__w, &args[0].value, locals, operators)
-                    .as_deref()
-                    .is_some_and(kotlin_type_is_regex_match_result)
-                && let ExprKind::Lit(Literal::Str(field)) = &args[1].value.kind
-                && let Some(getter) =
-                    kotlin_regex_match_property_call(args[0].value.clone(), field.as_str())
-            {
-                let receiver = args[0].value.clone();
-                *expr = Expression::new(ExprKind::Ternary {
-                    cond: Box::new(Expression::new(ExprKind::Binary {
-                        op: BinOp::Eq,
-                        left: Box::new(receiver.clone()),
-                        right: Box::new(Expression::new(ExprKind::Lit(Literal::Null))),
-                    })),
-                    then: Box::new(Expression::new(ExprKind::Lit(Literal::Null))),
-                    else_: Box::new(getter),
                 });
                 return;
             }
@@ -12793,6 +12784,16 @@ fn kotlin_expr_type(__w: &mut KtWalker,
             }
             if let ExprKind::Ident(name) = &callee.kind
                 && matches!(name.as_str(), "Regex" | "__kt_regex_new")
+            {
+                return Some("kotlin.text.Regex".to_string());
+            }
+            // `Regex.fromLiteral(s)` is the companion's second constructor, so
+            // it has to type like one. Without this the value resolved fine and
+            // every method on it read `undefined`: instance members come off the
+            // TYPE node, and the type is what was missing — not the member.
+            if let ExprKind::Member { object, field, .. } = &callee.kind
+                && field == "fromLiteral"
+                && matches!(&object.kind, ExprKind::Ident(name) if name == "Regex")
             {
                 return Some("kotlin.text.Regex".to_string());
             }

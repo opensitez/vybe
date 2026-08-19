@@ -13843,6 +13843,19 @@ fn rewrite_java_tostring_expr(__w: &mut JavaWalker,
                     // An `EnumSet` receiver is not rewritten either: the
                     // declared local type resolves to the `jvm.java.util.EnumSet`
                     // tree node, whose `methods` carry the same emits.
+                    if java_type_is_bitset(locals.get(name).map(String::as_str)) {
+                        if let Some(internal) = java_bitset_method_name(field) {
+                            let mut new_args = Vec::with_capacity(args.len() + 1);
+                            new_args.push(Argument::positional((**object).clone()));
+                            new_args.extend(args.iter().cloned());
+                            *expr = Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident(internal)),
+                                args: new_args,
+                                optional: false,
+                            });
+                            return;
+                        }
+                    }
                     if java_type_is_uuid(locals.get(name).map(String::as_str)) {
                         if let Some(internal) = java_uuid_method_name(field) {
                             let mut new_args = Vec::with_capacity(args.len() + 1);
@@ -13897,19 +13910,6 @@ fn rewrite_java_tostring_expr(__w: &mut JavaWalker,
                     }
                     if java_type_is_zone_id(locals.get(name).map(String::as_str)) {
                         if let Some(internal) = java_zone_method_name(field) {
-                            let mut new_args = Vec::with_capacity(args.len() + 1);
-                            new_args.push(Argument::positional((**object).clone()));
-                            new_args.extend(args.iter().cloned());
-                            *expr = Expression::new(ExprKind::Call {
-                                callee: Box::new(Expression::ident(internal)),
-                                args: new_args,
-                                optional: false,
-                            });
-                            return;
-                        }
-                    }
-                    if java_type_is_bitset(locals.get(name).map(String::as_str)) {
-                        if let Some(internal) = java_bitset_method_name(field) {
                             let mut new_args = Vec::with_capacity(args.len() + 1);
                             new_args.push(Argument::positional((**object).clone()));
                             new_args.extend(args.iter().cloned());
@@ -15079,21 +15079,6 @@ fn java_map_method_name(method: &str) -> Option<&'static str> {
     })
 }
 
-fn java_type_is_bitset(type_name: Option<&str>) -> bool {
-    let Some(type_name) = type_name else {
-        return false;
-    };
-    let base = type_name
-        .rsplit('.')
-        .next()
-        .unwrap_or(type_name)
-        .split('<')
-        .next()
-        .unwrap_or(type_name)
-        .trim();
-    base == "BitSet"
-}
-
 fn java_type_is_uuid(type_name: Option<&str>) -> bool {
     let Some(type_name) = type_name else {
         return false;
@@ -15218,6 +15203,28 @@ fn java_uuid_method_name(method: &str) -> Option<&'static str> {
     })
 }
 
+/// ⛔ **This table is not legacy — it is a TYPE-DIRECTED OVERRIDE, and the
+/// namespace tree cannot express what it does yet.**
+///
+/// BitSet's instance methods are registered as tree leaves on `util.bitset`
+/// (see `platforms/jvm`), and 43 of the 46 BitSet tests resolve through them.
+/// Three do not: `length`, `get(from, to)` and `cardinality` on a receiver
+/// whose type does not resolve. Those names are claimed EARLIER than the tree
+/// by the java profile's `[value_methods]` — `length` is `strings.length`,
+/// `get` is the collection accessor — and a profile row wins, so `bs.length()`
+/// compiled to `wasm:js-string.length` and trapped with "not a string".
+///
+/// Twelve of BitSet's twenty-four method names collide that way: `set`, `get`,
+/// `clear`, `cardinality`, `length`, `size`, `isEmpty`, `equals`, `clone`,
+/// `stream`, `toString`, `hashCode`. This table exists to beat them at the AST,
+/// gated on a BitSet-typed receiver, which is the one thing `[value_methods]`
+/// cannot be gated on.
+///
+/// Deleting it needs the RESOLVER ORDER changed so a known receiver type
+/// consults the tree before the profile — a shared-compiler change, not a
+/// java one. The leaves stay registered regardless: they are what makes
+/// `BitSet` reachable from Kotlin and any other JVM language, which it was not
+/// before.
 fn java_bitset_method_name(method: &str) -> Option<&'static str> {
     Some(match method {
         "set" => "__java_bitset_set",
@@ -15245,6 +15252,10 @@ fn java_bitset_method_name(method: &str) -> Option<&'static str> {
         "hashCode" => "__java_bitset_hash_code",
         _ => return None,
     })
+}
+
+fn java_type_is_bitset(type_name: Option<&str>) -> bool {
+    matches!(type_name, Some("BitSet") | Some("java.util.BitSet"))
 }
 
 fn java_bigint_method_name(method: &str) -> Option<&'static str> {

@@ -50,15 +50,17 @@ pub fn emit_scalb(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::F64_MUL, line);
 }
 
+/// `Math.ulp(x)` — the distance to the adjacent representable value.
+///
+/// Was `abs(x) * f64::EPSILON`, a RELATIVE approximation: `ulp(1000.0)` came
+/// back 2.22e-13 where Java gives 1.1368683772161603e-13, wrong by 2x. It is
+/// right only at 1.0, where EPSILON happens to BE the ULP.
 pub fn emit_ulp(chunks: &mut [Chunk], current: usize, line: u32) {
-    let value = chunks[current].alloc_scratch(1);
-    set(&mut chunks[current], value, line);
-    get(&mut chunks[current], value, line);
-    host::emit(&mut chunks[current], "ecma:math", "abs", 1, line);
-    chunks[current].emit_f64_const(f64::EPSILON, line);
-    chunks[current].emit_op(Op::F64_MUL, line);
-    chunks[current].emit_f64_const(f64::MIN_POSITIVE, line);
-    chunks[current].emit_op(Op::F64_MAX, line);
+    vybe_compiler::primitives::math::emit_ulp(
+        &mut chunks[current],
+        vybe_ast::FloatLane::F64,
+        line,
+    );
 }
 
 pub fn emit_get_exponent(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -99,50 +101,37 @@ pub fn emit_copy_sign(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::F64_MUL, line);
 }
 
+/// `Math.nextAfter` / `nextUp` / `nextDown` — the adjacent representable value.
+///
+/// All three were `x ± f64::EPSILON`. EPSILON is the ULP *at 1.0*, so
+/// `nextAfter(1000.0, +inf)` added far below half an ULP and returned **1000
+/// unchanged**; `nextDown(1.0)` overshot by one ULP because the spacing halves
+/// below a power of two. A step of one ULP is a step of ONE in the bit pattern,
+/// which is what the shared primitive does.
 pub fn emit_next_after(chunks: &mut [Chunk], current: usize, line: u32) {
-    let direction = chunks[current].alloc_scratch(1);
-    let start = chunks[current].alloc_scratch(1);
-    set(&mut chunks[current], direction, line);
-    set(&mut chunks[current], start, line);
-    get(&mut chunks[current], direction, line);
-    get(&mut chunks[current], start, line);
-    chunks[current].emit_op(Op::F64_EQ, line);
-    chunks[current].emit_if(line);
-    get(&mut chunks[current], start, line);
-    chunks[current].emit_else(line);
-    get(&mut chunks[current], direction, line);
-    get(&mut chunks[current], start, line);
-    chunks[current].emit_op(Op::F64_GT, line);
-    chunks[current].emit_if(line);
-    get(&mut chunks[current], start, line);
-    chunks[current].emit_f64_const(f64::EPSILON, line);
-    chunks[current].emit_op(Op::F64_ADD, line);
-    chunks[current].emit_else(line);
-    get(&mut chunks[current], start, line);
-    chunks[current].emit_f64_const(f64::EPSILON, line);
-    chunks[current].emit_op(Op::F64_SUB, line);
-    chunks[current].emit_end(line);
-    chunks[current].emit_end(line);
+    vybe_compiler::primitives::math::emit_next_after(
+        &mut chunks[current],
+        vybe_ast::FloatLane::F64,
+        line,
+    );
 }
 
 pub fn emit_next_up(chunks: &mut [Chunk], current: usize, line: u32) {
-    let value = chunks[current].alloc_scratch(1);
-    set(&mut chunks[current], value, line);
-    get(&mut chunks[current], value, line);
-    chunks[current].emit_f64_const(f64::MAX, line);
-    chunks[current].emit_op(Op::F64_GE, line);
-    chunks[current].emit_if(line);
-    chunks[current].emit_f64_const(f64::INFINITY, line);
-    chunks[current].emit_else(line);
-    get(&mut chunks[current], value, line);
-    chunks[current].emit_f64_const(f64::EPSILON, line);
-    chunks[current].emit_op(Op::F64_ADD, line);
-    chunks[current].emit_end(line);
+    vybe_compiler::primitives::math::emit_next_toward(
+        &mut chunks[current],
+        true,
+        vybe_ast::FloatLane::F64,
+        line,
+    );
 }
 
 pub fn emit_next_down(chunks: &mut [Chunk], current: usize, line: u32) {
-    chunks[current].emit_f64_const(f64::EPSILON, line);
-    chunks[current].emit_op(Op::F64_SUB, line);
+    vybe_compiler::primitives::math::emit_next_toward(
+        &mut chunks[current],
+        false,
+        vybe_ast::FloatLane::F64,
+        line,
+    );
 }
 
 pub fn emit_fma(chunks: &mut [Chunk], current: usize, line: u32) {

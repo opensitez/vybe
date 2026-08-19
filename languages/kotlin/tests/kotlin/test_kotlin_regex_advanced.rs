@@ -142,7 +142,14 @@ fn test_regex_match_entire_line_with_options_combo() {
         }
     "#,
     );
-    assert_eq!(out, &["true", "false", "false"]);
+    // `matches` requires the WHOLE input to match, which `^\n*OK\?$` does
+    // against `"\n\nOK?"`: `^` is the start of input, `\n*` takes both
+    // newlines, and `$` is the end. The old `false` read `^`/`$` as line
+    // anchors, but that is what `MULTILINE` would make them — and the third
+    // line shows the difference, because with `MULTILINE` the pattern matches
+    // a LINE while `matches` still demands the whole input, so `"line1\nOK?"`
+    // fails. Verified against kotlinc.
+    assert_eq!(out, &["true", "true", "false"]);
 }
 
 #[test]

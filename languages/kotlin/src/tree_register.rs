@@ -91,26 +91,42 @@ fn kotlin_random_type() -> NamespaceNode {
 fn kotlin_regex_type() -> NamespaceNode {
     let mut methods = Subtree::new();
     for (name, emit, min_args, max_args) in [
-        ("matches", "jvm.java.regex_pattern_match_full", 1, 1),
-        ("matchEntire", "jvm.java.regex_pattern_match_entire", 1, 1),
-        ("containsMatchIn", "jvm.java.regex_pattern_contains", 1, 1),
-        ("find", "jvm.java.regex_pattern_find", 1, 2),
-        ("findAll", "jvm.java.regex_pattern_find_all", 1, 2),
-        ("matchesAt", "jvm.java.regex_pattern_matches_at", 2, 2),
-        ("split", "jvm.java.regex_pattern_split", 1, 2),
-        ("splitToSequence", "jvm.java.regex_pattern_split", 1, 2),
-        ("replace", "jvm.java.regex_pattern_replace_all", 2, 2),
-        ("replaceFirst", "jvm.java.regex_pattern_replace_first", 2, 2),
+        ("matches", "kotlin.regex_matches", 1, 1),
+        ("matchEntire", "kotlin.regex_match_entire", 1, 1),
+        ("containsMatchIn", "kotlin.regex_contains", 1, 1),
+        ("find", "kotlin.regex_find", 1, 2),
+        ("findAll", "kotlin.regex_find_all", 1, 2),
+        ("matchesAt", "kotlin.regex_matches_at", 2, 2),
+        ("split", "kotlin.regex_split", 1, 2),
+        ("splitToSequence", "kotlin.regex_split", 1, 2),
+        ("replace", "kotlin.regex_replace", 2, 2),
+        ("replaceFirst", "kotlin.regex_replace_first", 2, 2),
         ("toPattern", "kotlin.regex_to_pattern", 0, 0),
-        ("pattern", "jvm.java.regex_pattern_pattern", 0, 0),
+        ("pattern", "kotlin.regex_pattern", 0, 0),
     ] {
         methods.insert(name.to_ascii_lowercase(), common_method(emit, min_args, max_args));
     }
 
+    // `Regex.escape` and `Regex.fromLiteral` are companion-object functions, so
+    // they hang off the TYPE rather than an instance.
+    let mut statics = Subtree::new();
+    statics.insert(
+        "escape".to_string(),
+        common_method("kotlin.regex_escape", 1, 1),
+    );
+    statics.insert(
+        "escapereplacement".to_string(),
+        common_method("kotlin.regex_escape", 1, 1),
+    );
+    statics.insert(
+        "fromliteral".to_string(),
+        common_method("kotlin.regex_from_literal", 1, 1),
+    );
+
     NamespaceNode::Type {
         ctor: None,
         ctor_call: Some(Box::new(common_emit("kotlin.regex_new"))),
-        statics: Subtree::new(),
+        statics,
         methods,
         member_returns: [
             ("matches".to_string(), "Boolean".to_string()),

@@ -365,59 +365,81 @@ fn emit_join_rendered_local(
     let out = chunks[current].alloc_scratch(1);
     let idx = chunks[current].alloc_scratch(1);
     let text = chunks[current].alloc_scratch(1);
+    let skipped = chunks[current].alloc_scratch(1);
+    // ⛔ **"Has anything been appended?" is not "is `out` empty?".**
+    //
+    // The separator used to be chosen by comparing `out` against `""`, which
+    // is the same question ONLY while no element renders as the empty string.
+    // `listOf("", "a").joinToString("|")` answered `a` instead of `|a`: after
+    // the first element `out` was still `""`, so the second looked like the
+    // first and took no separator. `Regex("").split("abc")` is exactly that
+    // list, which is how it surfaced — five correct pieces joined into four.
+    //
+    // An explicit flag answers the real question, and keeps the property the
+    // old comment was protecting: with `skip`, an element that is dropped must
+    // not leave a separator behind, so the flag is only raised when something
+    // was actually appended.
+    let appended = chunks[current].alloc_scratch(1);
 
     chunks[current].emit_string_const("", line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, appended, line);
 
     let state = loops::emit_for_in_start(chunks, current, arr_slot, idx, line);
     // Stack: [element] — render it through the chunk.
     emit_call_render(chunks, current, render_idx, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, text, line);
 
-    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
-
-    // The separator is decided by whether anything has been appended YET, not
-    // by the index — an index rule would emit a leading `, ` the moment an
-    // element is skipped.
+    // Decide ONCE whether this element contributes, so the flag update below
+    // cannot disagree with the piece that was appended.
     if let Some(marker) = skip {
         chunks[current].emit_op_u16(Op::LOCAL_GET, text, line);
         chunks[current].emit_string_const(marker, line);
         call_import(chunks, current, "wasm:js-string", "equals", 2, line);
         ops::emit_dyn_to_bool(&mut chunks[current], line);
-        chunks[current].emit_if_value(line);
-        chunks[current].emit_string_const("", line);
-        chunks[current].emit_else(line);
-        emit_separated_text(chunks, current, out, text, sep_slot, line);
-        chunks[current].emit_end(line);
     } else {
-        emit_separated_text(chunks, current, out, text, sep_slot, line);
+        chunks[current].emit_i32_const(0, line);
     }
+    chunks[current].emit_op_u16(Op::LOCAL_SET, skipped, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, skipped, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_string_const("", line);
+    chunks[current].emit_else(line);
+    emit_separated_text(chunks, current, appended, text, sep_slot, line);
+    chunks[current].emit_end(line);
 
     strings::emit_concat(&mut chunks[current], 2, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+
+    // `appended |= !skipped`
+    chunks[current].emit_op_u16(Op::LOCAL_GET, appended, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, skipped, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_op(Op::I32_OR, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, appended, line);
 
     loops::emit_for_in_end(chunks, current, idx, state, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
 }
 
-/// `(out == "" ? "" : sep) + text` — the piece appended for one element.
+/// `(appended ? sep : "") + text` — the piece appended for one element.
 fn emit_separated_text(
     chunks: &mut Vec<Chunk>,
     current: usize,
-    out: u16,
+    appended: u16,
     text: u16,
     sep_slot: u16,
     line: u32,
 ) {
-    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
-    chunks[current].emit_string_const("", line);
-    call_import(chunks, current, "wasm:js-string", "equals", 2, line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, appended, line);
     chunks[current].emit_if_value(line);
-    chunks[current].emit_string_const("", line);
-    chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, sep_slot, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_string_const("", line);
     chunks[current].emit_end(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, text, line);
     strings::emit_concat(&mut chunks[current], 2, line);

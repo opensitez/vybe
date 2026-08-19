@@ -377,7 +377,10 @@ fn test_regex_find_all_distinct_via_set() {
         }
     "#,
     );
-    assert_eq!(out, &["4", "a,b,c"]);
+    // Three distinct words — `a a b c a` has `a`, `b` and `c` in it. The old
+    // expectation of 4 counted a repeat that `toSet()` had just removed;
+    // verified against kotlinc, which prints 3.
+    assert_eq!(out, &["3", "a,b,c"]);
 }
 
 #[test]
@@ -557,7 +560,13 @@ fn test_regex_unicode_class_and_case_option_interaction() {
         }
     "#,
     );
-    assert_eq!(out, &["true", "true"]);
+    // `IGNORE_CASE` is SIMPLE case folding, even though Kotlin adds
+    // `UNICODE_CASE` to it: `ß` folds to `ẞ`, never to `SS`. So `STRASSE` does
+    // NOT match `straße` — verified against kotlinc AND against
+    // `java.util.regex` with `CASE_INSENSITIVE|UNICODE_CASE` directly. Full
+    // case folding is what `equalsIgnoreCase` does, not what the regex engine
+    // does, and the old expectation confused the two.
+    assert_eq!(out, &["false", "true"]);
 }
 
 #[test]
@@ -603,13 +612,25 @@ fn test_regex_find_with_start_index_and_no_match() {
         fun main() {
             val pattern = Regex("\\d+")
             println(pattern.find("abc123", 1)?.value ?: "none")
-            println(pattern.find("abc123", 4) == null)
+            println(pattern.find("abc123", 4)?.value ?: "none")
             println(pattern.find("abc", 3) == null)
-            println(pattern.find("abc", 5) == null)
+            var beyond = "no throw"
+            try {
+                pattern.find("abc", 5)
+            } catch (e: IndexOutOfBoundsException) {
+                beyond = "threw"
+            }
+            println(beyond)
         }
     "#,
     );
-    assert_eq!(out, &["123", "true", "true", "true"]);
+    // Two corrections, both against kotlinc. `find("abc123", 4)` searches FROM
+    // index 4 and finds `23` — it is not null, so the old `true` was wrong.
+    // And a start index past the end THROWS rather than answering null:
+    // `startIndex` is validated, not clamped, so `find("abc", 5)` raises
+    // `IndexOutOfBoundsException("Illegal start index")` while
+    // `find("abc", 3)` — exactly at the end — is legal and answers null.
+    assert_eq!(out, &["123", "23", "true", "threw"]);
 }
 
 #[test]
@@ -630,22 +651,35 @@ fn test_regex_to_pattern_with_java_matcher_groups_and_positions() {
         }
     "#,
     );
-    assert_eq!(out, &["a102|b235|c367|"]);
+    // `c3` sits at index 6 and ends at 8, so the trace is `c368`. Verified
+    // against kotlinc; the old `c367` was off by one on the last end index.
+    assert_eq!(out, &["a102|b235|c368|"]);
 }
 
 #[test]
-fn test_regex_split_keeps_trailing_empty_when_limit_negative() {
+fn test_regex_split_rejects_negative_limit() {
     let out = run_prints(
         r#"
         fun main() {
             val pattern = Regex(",")
-            val parts = pattern.split("a,b,c,", limit = -1)
-            println(parts.size)
-            println(parts.joinToString("|"))
+            var message = "no throw"
+            try {
+                pattern.split("a,b,c,", limit = -1)
+            } catch (e: IllegalArgumentException) {
+                message = "threw"
+            }
+            println(message)
+            println(pattern.split("a,b,c,").joinToString("|"))
         }
     "#,
     );
-    assert_eq!(out, &["4", "a|b|c|"]);
+    // The old name and expectation came from `java.util.regex`, where a
+    // negative limit means "no limit, keep every trailing empty". Kotlin's
+    // `Regex.split` opens with `requireNonNegativeLimit(limit)` and THROWS.
+    // Trailing empties are kept regardless — that is the default at limit 0,
+    // which the second line still pins — so the behaviour the old test was
+    // reaching for is real; only the way it asked for it was not.
+    assert_eq!(out, &["threw", "a|b|c|"]);
 }
 
 #[test]
@@ -723,4 +757,143 @@ fn test_regex_split_limit_one_behavior() {
     "#,
     );
     assert_eq!(out, &["1", "a,b,c"]);
+}
+
+// ── Behaviour the corpus did not cover, found by differencing against kotlinc ──
+//
+// Every expectation below is the Kotlin compiler's own output, not a reading of
+// the documentation. Three of these pin defects that all 46 tests above missed:
+// a stack bug that only shows when a match is read inline, a zero-width split
+// rule that reads backwards from the obvious one, and a group collection whose
+// size must not count its own names.
+
+#[test]
+fn test_regex_split_on_zero_width_matches() {
+    let out = run_prints(
+        r#"
+        fun main() {
+            val empty = Regex("").split("abc")
+            println(empty.size)
+            println(empty.joinToString("|"))
+            val star = Regex("a*").split("bab")
+            println(star.size)
+            println(star.joinToString("|"))
+        }
+    "#,
+    );
+    // A zero-width match at the END of the input IS a separator. Kotlin's split
+    // walks `findAll` and then appends the tail unconditionally, so the final
+    // empty match contributes a piece and the tail contributes another — five
+    // elements, not four. The intuitive guard against "an empty piece at the
+    // end" produces the wrong answer for both of these.
+    assert_eq!(out, &["5", "|a|b|c|", "5", "|b||b|"]);
+}
+
+#[test]
+fn test_regex_find_all_over_zero_width_matches() {
+    let out = run_prints(
+        r#"
+        fun main() {
+            val star = Regex("a*")
+            println(star.findAll("bab").count())
+            println(star.findAll("bab").map { it.value }.joinToString("|"))
+        }
+    "#,
+    );
+    // Four matches: empty at 0, `a` at 1, empty at 2, empty at 3. A scan that
+    // does not step past a zero-width match never terminates; one that skips
+    // them reports one match instead of four.
+    assert_eq!(out, &["4", "|a||"]);
+}
+
+#[test]
+fn test_regex_match_read_inline_rather_than_through_a_local() {
+    let out = run_prints(
+        r#"
+        fun main() {
+            println("v=" + Regex("\\d+").find("id-42-x")!!.value)
+            println("n=" + Regex("(\\d)(\\d)").find("42")!!.groupValues[2])
+            println("g=" + Regex("(?<d>\\d+)").find("x42")!!.groups["d"]!!.value)
+        }
+    "#,
+    );
+    // ⛔ The receiver is NOT bound to a variable first, and that is the whole
+    // point. Building the match result must leave the caller's stack alone;
+    // when it did not, the string on the left of the `+` was what got consumed
+    // and these printed `null42` instead of `v=42`. Every other regex test in
+    // this file assigns the match to a `val`, which hides it completely.
+    assert_eq!(out, &["v=42", "n=2", "g=42"]);
+}
+
+#[test]
+fn test_regex_groups_size_counts_ordinals_not_names() {
+    let out = run_prints(
+        r#"
+        fun main() {
+            val m = Regex("(?<x>\\d)(?<y>\\d)").find("42")!!
+            println(m.groups.size)
+            println(m.groups["x"]!!.value + m.groups["y"]!!.value)
+            println(m.groups[1]!!.value + m.groups[2]!!.value)
+        }
+    "#,
+    );
+    // A name is a second way to REACH a group, not another group: two named
+    // captures give a size of 3 (the whole match plus two), and both routes
+    // answer the same values. Registering the names as entries would report 5.
+    assert_eq!(out, &["3", "42", "42"]);
+}
+
+#[test]
+fn test_regex_replace_transform_over_zero_width_pattern() {
+    let out = run_prints(
+        r#"
+        fun main() {
+            println(Regex("x*").replace("ab") { "<" + it.value + ">" })
+        }
+    "#,
+    );
+    // The transform runs at every position, including the one past the last
+    // character, so the empty matches bracket each letter and close the string.
+    assert_eq!(out, &["<>a<>b<>"]);
+}
+
+#[test]
+fn test_regex_escape_round_trips_through_the_constructor() {
+    let out = run_prints(
+        r#"
+        fun main() {
+            val quoted = Regex.escape("a+b")
+            println(Regex(quoted).pattern)
+            println(Regex(quoted).matches("a+b"))
+            println(Regex(quoted).matches("aab"))
+        }
+    "#,
+    );
+    // `Regex.escape` IS `Pattern.quote`, and its `\Q…\E` spelling is
+    // observable: `pattern` answers the source AS WRITTEN, not the expansion
+    // the engine was handed. So the constructor has to understand a syntax that
+    // ECMA-262 has no notion of.
+    assert_eq!(out, &["\\Qa+b\\E", "true", "false"]);
+}
+
+#[test]
+fn test_regex_invalid_pattern_is_an_illegal_argument() {
+    let out = run_prints(
+        r#"
+        fun main() {
+            var caught = "none"
+            try {
+                Regex("[")
+            } catch (e: IllegalArgumentException) {
+                caught = "IllegalArgumentException"
+            }
+            println(caught)
+        }
+    "#,
+    );
+    // `PatternSyntaxException extends IllegalArgumentException`, so the narrow
+    // catch matches — which is the part a `catch (RuntimeException)` cannot
+    // prove. The engine's own error is an ECMA `SyntaxError`; it is not in
+    // Kotlin's hierarchy at all and has to be re-thrown to be catchable.
+    assert_eq!(out, &["IllegalArgumentException"]);
 }

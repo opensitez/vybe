@@ -340,8 +340,18 @@ abs   = { emit = "host:ecma:math:abs",   min_args = 1, max_args = 1 }
 absoluteValue = { emit = "host:ecma:math:abs", min_args = 1, max_args = 1 }
 sqrt  = { emit = "host:ecma:math:sqrt",  min_args = 1, max_args = 1 }
 pow   = { emit = "host:ecma:math:pow",   min_args = 2, max_args = 2 }
-round = { emit = "common:kotlin.round",  min_args = 1, max_args = 1 }
+# kotlinc: `round(2.5)`=2.0, `(-2.5)`=-2.0 — ties to EVEN. We were rounding
+# away from zero, i.e. wrong in the OPPOSITE direction from Go.
+round = { emit = "common:math.round_half_even",  min_args = 1, max_args = 1 }
 sign  = { emit = "common:kotlin.sign",   min_args = 1, max_args = 1 }
+
+# `x.ulp`, `x.nextUp()`, `x.nextDown()`, `x.nextTowards(y)` — the adjacent
+# representable Double. The walker only ever TYPE-declared these (as returning
+# Double); nothing bound them, so they were `undefined is not callable`. Now the
+# shared family in `primitives/math.rs`, which steps the BIT PATTERN — the same
+# code Java's `Math.ulp`/`nextAfter`, C's `nextafter` and Fortran's
+# `SPACING`/`NEAREST` reach.
+ulp         = { emit = "common:math.ulp64",        min_args = 1, max_args = 1 }
 ceil  = { emit = "host:ecma:math:ceil",  min_args = 1, max_args = 1 }
 floor = { emit = "host:ecma:math:floor", min_args = 1, max_args = 1 }
 sin   = { emit = "host:ecma:math:sin",   min_args = 1, max_args = 1 }
@@ -419,6 +429,13 @@ toLong     = { emit = "common:kotlin.to_long_radix", min_args = 0, max_args = 1 
 # conversion still has to EXIST — `x.toDouble()` is how Kotlin code opts out of
 # integer division, and an absent method is an "undefined is not callable" trap.
 toDouble   = { emit = "common:kotlin.to_double",  min_args = 0, max_args = 0 }
+
+# `x.nextUp()` / `nextDown()` / `nextTowards(y)` are member CALLS, so they bind
+# here rather than in `[builtins]` — the receiver is implicit. (`x.ulp` is a
+# PROPERTY and needs the walker's Member->Call rewrite instead.)
+nextUp      = { emit = "common:math.next_up64",    min_args = 0, max_args = 0 }
+nextDown    = { emit = "common:math.next_down64",  min_args = 0, max_args = 0 }
+nextTowards = { emit = "common:math.next_after64", min_args = 1, max_args = 1 }
 toFloat    = { emit = "host:ecma:number:Number",  min_args = 0, max_args = 0 }
 toIntOrNull    = { emit = "common:kotlin.to_int_or_null_radix", min_args = 0, max_args = 1 }
 toDoubleOrNull = { emit = "common:kotlin.to_double_or_null", min_args = 0, max_args = 0 }

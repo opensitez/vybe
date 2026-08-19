@@ -26,6 +26,18 @@ fn jvm_exception_chain(exc_name: &str) -> Vec<&'static str> {
             "Exception",
             "Throwable",
         ],
+        // `java.util.regex.PatternSyntaxException extends
+        // IllegalArgumentException` — thrown when `Regex("[")` fails to
+        // compile, which is the one place a Kotlin program routinely catches a
+        // regex error.
+        "PatternSyntaxException" => vec![
+            "PatternSyntaxException",
+            "IllegalArgumentException",
+            "RuntimeException",
+            "RuntimeError",
+            "Exception",
+            "Throwable",
+        ],
         "IllegalStateException" => vec![
             "IllegalStateException",
             "RuntimeException",

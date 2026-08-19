@@ -67,16 +67,60 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::hof::emit_sequence_zip(chunks, current, argc, line);
             true
         }
-        "kotlin.regex_new" => {
-            vybe_platform_jvm::emitter::regex_adapter::emit_pattern_compile(chunks, current, argc, line);
+        "kotlin.regex_new" | "kotlin.regex_from_string" => {
+            crate::emitter::regex::emit_regex_new(chunks, current, argc, line);
             true
         }
-        "kotlin.regex_from_string" => {
-            vybe_platform_jvm::emitter::regex_adapter::emit_pattern_compile(chunks, current, argc, line);
+        "kotlin.regex_escape" => {
+            crate::emitter::regex::emit_escape(chunks, current, line);
+            true
+        }
+        "kotlin.regex_from_literal" => {
+            crate::emitter::regex::emit_from_literal(chunks, current, line);
+            true
+        }
+        "kotlin.regex_pattern" => {
+            crate::emitter::regex::emit_pattern(chunks, current, line);
             true
         }
         "kotlin.regex_to_pattern" => {
-            vybe_platform_jvm::emitter::regex_adapter::emit_to_pattern(chunks, current, line);
+            crate::emitter::regex::emit_to_pattern(chunks, current, line);
+            true
+        }
+        "kotlin.regex_find" => {
+            crate::emitter::regex::emit_find(chunks, current, argc, line);
+            true
+        }
+        "kotlin.regex_find_all" => {
+            crate::emitter::regex::emit_find_all(chunks, current, argc, line);
+            true
+        }
+        "kotlin.regex_match_entire" => {
+            crate::emitter::regex::emit_match_entire(chunks, current, line);
+            true
+        }
+        "kotlin.regex_matches" => {
+            crate::emitter::regex::emit_matches(chunks, current, line);
+            true
+        }
+        "kotlin.regex_contains" => {
+            crate::emitter::regex::emit_contains(chunks, current, line);
+            true
+        }
+        "kotlin.regex_matches_at" => {
+            crate::emitter::regex::emit_matches_at(chunks, current, argc, line);
+            true
+        }
+        "kotlin.regex_split" => {
+            crate::emitter::regex::emit_split(chunks, current, argc, line);
+            true
+        }
+        "kotlin.regex_replace" => {
+            crate::emitter::regex::emit_replace(chunks, current, false, line);
+            true
+        }
+        "kotlin.regex_replace_first" => {
+            crate::emitter::regex::emit_replace(chunks, current, true, line);
             true
         }
         "kotlin.dict_set_tracked" => {

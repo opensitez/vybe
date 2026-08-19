@@ -1,4 +1,10 @@
-//! Java reflection surface backed by the shared reflection descriptor shape.
+//! JVM `java.lang.Class` / `Object.getClass()` reflection, backed by the
+//! shared reflection descriptor shape.
+//!
+//! Moved here from `languages/java` unchanged: `Class` is a JDK type, so any
+//! JVM language that reaches it should reach the same emitter. The language
+//! crate keeps only the profile rows that NAME these — `getName`,
+//! `getSimpleName` — because those spellings are how Java asks for it.
 
 use vybe_compiler::primitives::instructions::host;
 use vybe_compiler::primitives::{reflection, strings};

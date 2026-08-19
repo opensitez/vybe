@@ -37,23 +37,18 @@ pub fn emit_double_tostring(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
 
 /// Kotlin `round(x)` rounds ties away from zero. ECMA `Math.round` ties toward
 /// +infinity, so `round(-2.5)` must not use the host directly.
+/// `kotlin.math.round` — ties to EVEN, per kotlinc: `round(2.5)` is `2.0`.
+///
+/// This used to compute ties-AWAY-from-zero by hand (`x<0 ? ceil(x-0.5) :
+/// floor(x+0.5)`), which is Go's policy, not Kotlin's. It is the shared
+/// primitive now, so the qualified `kotlin.math.round(x)` route and the
+/// imported bare `round(x)` route cannot drift apart.
 pub fn emit_round(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
-    let v = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, v, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
-    chunks[current].emit_f64_const(0.0, line);
-    chunks[current].emit_op(Op::F64_LT, line);
-    chunks[current].emit_if_value(line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
-    chunks[current].emit_f64_const(0.5, line);
-    chunks[current].emit_op(Op::F64_SUB, line);
-    chunks[current].emit_op(Op::F64_CEIL, line);
-    chunks[current].emit_else(line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
-    chunks[current].emit_f64_const(0.5, line);
-    chunks[current].emit_op(Op::F64_ADD, line);
-    chunks[current].emit_op(Op::F64_FLOOR, line);
-    chunks[current].emit_end(line);
+    vybe_compiler::primitives::math::emit_round(
+        &mut chunks[current],
+        vybe_ast::MidpointPolicy::HalfEven,
+        line,
+    );
 }
 
 /// Kotlin `sign(x)` returns -1.0, 0.0, 1.0, or NaN for NaN.

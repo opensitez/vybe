@@ -4,6 +4,7 @@
 //! operations naturally return another array-backed stream; terminal optional
 //! operations reuse the Java Optional pair representation.
 
+use vybe_compiler::primitives::callable;
 use vybe_compiler::primitives::collections;
 use vybe_compiler::primitives::instructions::host;
 use vybe_runtime::Chunk;
@@ -101,7 +102,7 @@ pub fn emit_generate(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, supplier_slot, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 0, 1, line);
+    callable::emit_direct_invoke(chunks, current, 0, line);
     collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
 
@@ -346,7 +347,7 @@ pub fn emit_extreme_value(chunks: &mut [Chunk], current: usize, argc: u8, is_min
         chunks[current].emit_op_u16(Op::LOCAL_GET, comparator_slot, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, best_slot, line);
-        chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+        callable::emit_direct_invoke(chunks, current, 2, line);
         chunks[current].emit_i32_const(0, line);
         if is_min {
             vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
@@ -1840,9 +1841,15 @@ fn emit_string_concat(chunks: &mut [Chunk], current: usize, line: u32) {
     let left_slot = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, right_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, left_slot, line);
+    // ⛔ `String.valueOf`, NOT `ecma:string.String`. Both stringify, but only
+    // `valueOf` reaches the object's `toString` slot — JS `String(x)` on a
+    // `HashSet` renders something else entirely, which is what
+    // `collectors_to_collection_hash_set` was measuring. `languages/java` had
+    // the correct form and this copy did not; unifying on this one without
+    // fixing it would have taken `Collectors.joining` backwards.
     chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
-    host::emit(&mut chunks[current], "ecma:string", "String", 1, line);
+    crate::emitter::string_adapter::emit_value_of(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
-    host::emit(&mut chunks[current], "ecma:string", "String", 1, line);
+    crate::emitter::string_adapter::emit_value_of(chunks, current, line);
     vybe_compiler::primitives::strings::emit_str_concat(&mut chunks[current], line);
 }

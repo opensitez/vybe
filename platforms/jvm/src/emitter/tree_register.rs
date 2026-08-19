@@ -901,6 +901,107 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
     }
 }
 
+/// `java.util.BitSet`'s instance methods.
+///
+/// The class was ALREADY half here — `ensure_type_node`/`insert_common_static`
+/// gave the tree its constructor and `valueOf` — while all 23 instance methods
+/// lived in the java WALKER as a method-name table (`java_bitset_method_name`)
+/// feeding synthetic `__java_bitset_*` profile rows. So a `BitSet` reached the
+/// platform two different ways depending on whether you constructed it or
+/// called it, and only one of those was reachable from another JVM language.
+///
+/// `java.util.regex.Matcher` is the model: it has NO walker table, its methods
+/// are leaves here, and it works — which is what made this migration safe to
+/// attempt rather than a guess.
+///
+/// Arities exclude the receiver; the profile rows counted it, so each is one
+/// lower than the row it replaces.
+/// `java.util.Optional`'s INSTANCE methods, and `java.lang.Class`.
+///
+/// Both classes were reachable through the tree only by their statics —
+/// `Optional.of`/`empty`/`ofNullable` were leaves while all sixteen instance
+/// methods were not, so another JVM language could BUILD an Optional and then
+/// not ask it anything. `Class` had no leaves at all.
+///
+/// Same asymmetry `BitSet` had, and the same fix. Arities exclude the receiver.
+fn insert_java_optional_and_class(root: &mut Subtree) {
+    let mut optional = Subtree::new();
+    for (member, emit, min_args, max_args) in [
+        ("isPresent", "jvm.java.optional_is_present", 0, 0),
+        ("isEmpty", "jvm.java.optional_is_empty", 0, 0),
+        ("get", "jvm.java.optional_or_else_throw", 0, 0),
+        ("orElse", "jvm.java.optional_or_else", 1, 1),
+        ("orElseGet", "jvm.java.optional_or_else_get", 1, 1),
+        ("orElseThrow", "jvm.java.optional_or_else_throw", 0, 1),
+        ("ifPresent", "jvm.java.optional_if_present", 1, 1),
+        ("ifPresentOrElse", "jvm.java.optional_if_present_or_else", 2, 2),
+        ("filter", "jvm.java.optional_filter", 1, 1),
+        ("map", "jvm.java.optional_map", 1, 1),
+        ("flatMap", "jvm.java.optional_flat_map", 1, 1),
+        ("or", "jvm.java.optional_or", 1, 1),
+        ("stream", "jvm.java.optional_stream", 0, 0),
+        ("equals", "jvm.java.optional_equals", 1, 1),
+        ("toString", "jvm.java.optional_to_string", 0, 0),
+    ] {
+        optional.insert(
+            member.to_ascii_lowercase(),
+            common_method(emit, min_args, max_args),
+        );
+    }
+    for type_path in ["util.optional", "util.optionalint", "util.optionallong", "util.optionaldouble"] {
+        ensure_type_node(root, type_path);
+        merge_type_methods(root, type_path, optional.clone());
+    }
+
+    let mut class_methods = Subtree::new();
+    for (member, emit) in [
+        ("getname", "jvm.java.class_name"),
+        ("getsimplename", "jvm.java.class_simple_name"),
+    ] {
+        class_methods.insert(member.to_string(), common_method(emit, 0, 0));
+    }
+    ensure_type_node(root, "lang.class");
+    merge_type_methods(root, "lang.class", class_methods);
+}
+
+fn insert_java_util_bitset(root: &mut Subtree) {
+    ensure_type_node(root, "util.bitset");
+    let mut methods = Subtree::new();
+    for (member, emit, min_args, max_args) in [
+        ("set", "jvm.java.bitset_set", 1, 3),
+        ("get", "jvm.java.bitset_get", 1, 2),
+        ("clear", "jvm.java.bitset_clear", 0, 2),
+        ("flip", "jvm.java.bitset_flip", 1, 2),
+        ("cardinality", "jvm.java.bitset_cardinality", 0, 0),
+        ("length", "jvm.java.bitset_length", 0, 0),
+        ("size", "jvm.java.bitset_size", 0, 0),
+        ("isEmpty", "jvm.java.bitset_is_empty", 0, 0),
+        ("nextSetBit", "jvm.java.bitset_next_set_bit", 1, 1),
+        ("nextClearBit", "jvm.java.bitset_next_clear_bit", 1, 1),
+        ("previousSetBit", "jvm.java.bitset_previous_set_bit", 1, 1),
+        ("previousClearBit", "jvm.java.bitset_previous_clear_bit", 1, 1),
+        ("and", "jvm.java.bitset_and", 1, 1),
+        ("or", "jvm.java.bitset_or", 1, 1),
+        ("xor", "jvm.java.bitset_xor", 1, 1),
+        ("andNot", "jvm.java.bitset_and_not", 1, 1),
+        ("intersects", "jvm.java.bitset_intersects", 1, 1),
+        ("equals", "jvm.java.bitset_equals", 1, 1),
+        ("clone", "jvm.java.bitset_clone", 0, 0),
+        ("stream", "jvm.java.bitset_stream", 0, 0),
+        // Both array views share one emitter, exactly as the walker table did.
+        ("toLongArray", "jvm.java.bitset_to_array", 0, 0),
+        ("toByteArray", "jvm.java.bitset_to_array", 0, 0),
+        ("toString", "jvm.java.bitset_to_string", 0, 0),
+        ("hashCode", "jvm.java.bitset_hash_code", 0, 0),
+    ] {
+        methods.insert(
+            member.to_ascii_lowercase(),
+            common_method(emit, min_args, max_args),
+        );
+    }
+    merge_type_methods(root, "util.bitset", methods);
+}
+
 fn insert_java_util_regex(root: &mut Subtree) {
     ensure_type_node(root, "util.regex.pattern");
     ensure_type_node(root, "util.regex.matcher");
@@ -2451,54 +2552,54 @@ fn insert_java_stream_statics(root: &mut Subtree) {
         "util.stream.doublestream",
         "util.stream.stream",
     ] {
-        insert_common_static(root, type_path, "empty", "java.stream_empty");
-        insert_common_static(root, type_path, "of", "java.stream_of");
-        insert_common_static(root, type_path, "concat", "java.stream_concat");
-        insert_common_static(root, type_path, "generate", "java.stream_generate");
-        insert_common_static(root, type_path, "builder", "java.stream_builder");
+        insert_common_static(root, type_path, "empty", "jvm.java.stream_empty");
+        insert_common_static(root, type_path, "of", "jvm.java.stream_of");
+        insert_common_static(root, type_path, "concat", "jvm.java.stream_concat");
+        insert_common_static(root, type_path, "generate", "jvm.java.stream_generate");
+        insert_common_static(root, type_path, "builder", "jvm.java.stream_builder");
     }
     for type_path in ["util.stream.intstream", "util.stream.longstream"] {
-        insert_common_static(root, type_path, "range", "java.stream_range");
-        insert_common_static(root, type_path, "rangeclosed", "java.stream_range_closed");
-        insert_common_static(root, type_path, "iterate", "java.stream_iterate");
+        insert_common_static(root, type_path, "range", "jvm.java.stream_range");
+        insert_common_static(root, type_path, "rangeclosed", "jvm.java.stream_range_closed");
+        insert_common_static(root, type_path, "iterate", "jvm.java.stream_iterate");
     }
     insert_common_static(
         root,
         "util.stream.doublestream",
         "iterate",
-        "java.stream_iterate",
+        "jvm.java.stream_iterate",
     );
     insert_common_static(
         root,
         "util.stream.stream",
         "iterate",
-        "java.stream_iterate_strict",
+        "jvm.java.stream_iterate_strict",
     );
 
     for (member, emit) in [
-        ("joining", "java.collectors_joining"),
-        ("tolist", "java.collectors_to_list"),
-        ("toset", "java.collectors_to_set"),
-        ("tounmodifiablelist", "java.collectors_to_list"),
-        ("tounmodifiableset", "java.collectors_to_set"),
-        ("tocollection", "java.collectors_to_collection"),
-        ("counting", "java.collectors_counting"),
-        ("summingint", "java.collectors_summing_int"),
-        ("summinglong", "java.collectors_summing_int"),
-        ("summingdouble", "java.collectors_summing_int"),
-        ("averagingint", "java.collectors_averaging_int"),
-        ("averaginglong", "java.collectors_averaging_int"),
-        ("averagingdouble", "java.collectors_averaging_int"),
-        ("tomap", "java.collectors_to_map"),
-        ("tounmodifiablemap", "java.collectors_to_map"),
-        ("mapping", "java.collectors_mapping"),
-        ("filtering", "java.collectors_filtering"),
-        ("collectingandthen", "java.collectors_collecting_and_then"),
-        ("reducing", "java.collectors_reducing"),
-        ("groupingby", "java.collectors_grouping_by"),
-        ("partitioningby", "java.collectors_partitioning_by"),
-        ("minby", "java.collectors_min_by"),
-        ("maxby", "java.collectors_max_by"),
+        ("joining", "jvm.java.collectors_joining"),
+        ("tolist", "jvm.java.collectors_to_list"),
+        ("toset", "jvm.java.collectors_to_set"),
+        ("tounmodifiablelist", "jvm.java.collectors_to_list"),
+        ("tounmodifiableset", "jvm.java.collectors_to_set"),
+        ("tocollection", "jvm.java.collectors_to_collection"),
+        ("counting", "jvm.java.collectors_counting"),
+        ("summingint", "jvm.java.collectors_summing_int"),
+        ("summinglong", "jvm.java.collectors_summing_int"),
+        ("summingdouble", "jvm.java.collectors_summing_int"),
+        ("averagingint", "jvm.java.collectors_averaging_int"),
+        ("averaginglong", "jvm.java.collectors_averaging_int"),
+        ("averagingdouble", "jvm.java.collectors_averaging_int"),
+        ("tomap", "jvm.java.collectors_to_map"),
+        ("tounmodifiablemap", "jvm.java.collectors_to_map"),
+        ("mapping", "jvm.java.collectors_mapping"),
+        ("filtering", "jvm.java.collectors_filtering"),
+        ("collectingandthen", "jvm.java.collectors_collecting_and_then"),
+        ("reducing", "jvm.java.collectors_reducing"),
+        ("groupingby", "jvm.java.collectors_grouping_by"),
+        ("partitioningby", "jvm.java.collectors_partitioning_by"),
+        ("minby", "jvm.java.collectors_min_by"),
+        ("maxby", "jvm.java.collectors_max_by"),
     ] {
         insert_common_static(root, "util.stream.collectors", member, emit);
     }
@@ -3585,6 +3686,8 @@ pub fn register_namespace_tree() {
         insert_java_stream_statics(&mut root);
         insert_java_net_url_uri(&mut root);
         insert_java_util_collection_methods(&mut root);
+        insert_java_optional_and_class(&mut root);
+        insert_java_util_bitset(&mut root);
         insert_java_util_regex(&mut root);
         insert_java_math_biginteger_methods(&mut root);
         insert_java_util_collection_statics(&mut root);

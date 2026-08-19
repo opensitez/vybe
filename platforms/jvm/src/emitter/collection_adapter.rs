@@ -75,7 +75,7 @@ fn get_iterator_view(chunks: &mut [Chunk], current: usize, iterator: u16, line: 
     chunks[current].emit_end(line);
 }
 
-fn emit_is_ecma_set(chunks: &mut [Chunk], current: usize, value: u16, line: u32) {
+pub(crate) fn emit_is_ecma_set(chunks: &mut [Chunk], current: usize, value: u16, line: u32) {
     get(&mut chunks[current], value, line);
     host::emit(&mut chunks[current], "ecma:object", "toStringTag", 1, line);
     chunks[current].emit_string_const("[object Set]", line);

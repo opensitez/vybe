@@ -22,10 +22,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     use crate::emitter::enum_set_adapter as enum_set;
     use crate::emitter::instant_adapter as instant;
     use crate::emitter::io_adapter as io;
+    use crate::emitter::list_adapter;
     use crate::emitter::map_adapter as map;
     use crate::emitter::math_adapter as math;
     use crate::emitter::optional_adapter as optional;
     use crate::emitter::random_adapter as random;
+    use crate::emitter::reflection_adapter as reflection;
     use crate::emitter::regex_adapter as regex;
     use crate::emitter::stream_adapter as stream;
     use crate::emitter::string_adapter;
@@ -35,6 +37,390 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     use crate::emitter::url_adapter as url;
     use crate::emitter::uuid_adapter as uuid;
     match name {
+        // ── java.util.List / ArrayList / HashMap / iterators ──
+        //
+        // Moved wholesale from `languages/java`. The 29 targets whose names the
+        // platform ALREADY used are deliberately not here — those are the ones
+        // where the two crates disagree, and they need a per-case answer rather
+        // than a rename.
+        "jvm.java.size_value" => {
+            list_adapter::emit_size(chunks, current, line);
+        }
+        "jvm.java.double_to_string" => {
+            list_adapter::emit_double_to_string(chunks, current, line);
+        }
+        "jvm.java.list_clone" => {
+            list_adapter::emit_list_clone(chunks, current, line);
+        }
+        "jvm.java.set_add" => {
+            list_adapter::emit_set_add(chunks, current, argc, line);
+        }
+        "jvm.java.copy_on_write_add_if_absent" => {
+            list_adapter::emit_copy_on_write_add_if_absent(chunks, current, line);
+        }
+        "jvm.java.iterator_remove_unsupported" => {
+            list_adapter::emit_iterator_remove_unsupported(chunks, current, line);
+        }
+        "jvm.java.blocking_queue_add" => {
+            list_adapter::emit_blocking_queue_offer(chunks, current, argc, true, line);
+        }
+        "jvm.java.blocking_queue_offer" => {
+            list_adapter::emit_blocking_queue_offer(chunks, current, argc, false, line);
+        }
+        "jvm.java.blocking_queue_put" => {
+            list_adapter::emit_blocking_queue_put(chunks, current, line);
+        }
+        "jvm.java.blocking_queue_take" => {
+            list_adapter::emit_blocking_queue_take(chunks, current, line);
+        }
+        "jvm.java.blocking_queue_poll" => {
+            list_adapter::emit_blocking_queue_poll(chunks, current, argc, line);
+        }
+        "jvm.java.queue_remove_checked" => {
+            list_adapter::emit_queue_remove_checked(chunks, current, line);
+        }
+        "jvm.java.queue_element_checked" => {
+            list_adapter::emit_queue_element_checked(chunks, current, line);
+        }
+        "jvm.java.blocking_queue_remaining_capacity" => {
+            list_adapter::emit_blocking_queue_remaining_capacity(chunks, current, line);
+        }
+        "jvm.java.blocking_queue_drain_to" => {
+            list_adapter::emit_blocking_queue_drain_to(chunks, current, argc, line);
+        }
+        "jvm.java.atomic_new" => {
+            list_adapter::emit_atomic_new(chunks, current, line);
+        }
+        "jvm.java.atomic_get" => {
+            list_adapter::emit_atomic_get(chunks, current, line);
+        }
+        "jvm.java.atomic_set" => {
+            list_adapter::emit_atomic_set(chunks, current, line);
+        }
+        "jvm.java.atomic_get_and_set" => {
+            list_adapter::emit_atomic_get_and_set(chunks, current, line);
+        }
+        "jvm.java.atomic_compare_and_set" => {
+            list_adapter::emit_atomic_compare_and_set(chunks, current, line);
+        }
+        "jvm.java.atomic_increment_and_get" => {
+            list_adapter::emit_atomic_delta(chunks, current, 1.0, false, line);
+        }
+        "jvm.java.atomic_get_and_increment" => {
+            list_adapter::emit_atomic_delta(chunks, current, 1.0, true, line);
+        }
+        "jvm.java.atomic_get_and_decrement" => {
+            list_adapter::emit_atomic_delta(chunks, current, -1.0, true, line);
+        }
+        "jvm.java.atomic_add_and_get" => {
+            list_adapter::emit_atomic_add_and_get(chunks, current, line);
+        }
+        "jvm.java.concurrent_for_each_key" => {
+            list_adapter::emit_concurrent_for_each(chunks, current, 0, line);
+        }
+        "jvm.java.concurrent_for_each_value" => {
+            list_adapter::emit_concurrent_for_each(chunks, current, 1, line);
+        }
+        "jvm.java.concurrent_reduce_keys" => {
+            list_adapter::emit_concurrent_reduce(chunks, current, 0, line);
+        }
+        "jvm.java.concurrent_reduce_values" => {
+            list_adapter::emit_concurrent_reduce(chunks, current, 1, line);
+        }
+        "jvm.java.concurrent_reduce_entries" => {
+            list_adapter::emit_concurrent_reduce(chunks, current, 2, line);
+        }
+        "jvm.java.concurrent_search_keys" => {
+            list_adapter::emit_concurrent_search(chunks, current, 0, line);
+        }
+        "jvm.java.concurrent_search_values" => {
+            list_adapter::emit_concurrent_search(chunks, current, 1, line);
+        }
+        "jvm.java.concurrent_search_entries" => {
+            list_adapter::emit_concurrent_search(chunks, current, 2, line);
+        }
+        "jvm.java.semaphore_new" => {
+            list_adapter::emit_semaphore_new(chunks, current, argc, line);
+        }
+        "jvm.java.semaphore_available" => {
+            list_adapter::emit_semaphore_available(chunks, current, line);
+        }
+        "jvm.java.semaphore_acquire" => {
+            list_adapter::emit_semaphore_acquire(chunks, current, argc, line);
+        }
+        "jvm.java.semaphore_release" => {
+            list_adapter::emit_semaphore_release(chunks, current, argc, line);
+        }
+        "jvm.java.semaphore_try_acquire" => {
+            list_adapter::emit_semaphore_try_acquire(chunks, current, argc, line);
+        }
+        "jvm.java.semaphore_drain" => {
+            list_adapter::emit_semaphore_drain(chunks, current, line);
+        }
+        "jvm.java.semaphore_has_queued" => {
+            list_adapter::emit_semaphore_has_queued(chunks, current, line);
+        }
+        "jvm.java.semaphore_queue_length" => {
+            list_adapter::emit_semaphore_queue_length(chunks, current, line);
+        }
+        "jvm.java.semaphore_is_fair" => {
+            list_adapter::emit_semaphore_is_fair(chunks, current, line);
+        }
+        "jvm.java.thread_start_with" => {
+            list_adapter::emit_java_thread_start_with(chunks, current, line);
+        }
+        "jvm.java.thread_join" => {
+            list_adapter::emit_java_thread_join(chunks, current, line);
+        }
+        "jvm.java.thread_sleep" => {
+            list_adapter::emit_java_thread_sleep(chunks, current, line);
+        }
+        "jvm.java.list_set_value" => {
+            list_adapter::emit_set(chunks, current, 3, line);
+        }
+        "jvm.java.list_remove_at_value" => {
+            list_adapter::emit_remove_at(chunks, current, line);
+        }
+        "jvm.java.list_contains_all" => {
+            list_adapter::emit_contains_all(chunks, current, line);
+        }
+        "jvm.java.list_equals" => {
+            list_adapter::emit_list_equals(chunks, current, line);
+        }
+        "jvm.java.sub_list" => {
+            list_adapter::emit_sub_list(chunks, current, line);
+        }
+        "jvm.java.list_sort" => {
+            list_adapter::emit_sort(chunks, current, argc, line);
+        }
+        "jvm.java.add_all" => {
+            list_adapter::emit_add_all(chunks, current, argc, line);
+        }
+        "jvm.java.remove_all" => {
+            list_adapter::emit_remove_all(chunks, current, line);
+        }
+        "jvm.java.retain_all" => {
+            list_adapter::emit_retain_all(chunks, current, line);
+        }
+        "jvm.java.list_remove_if" => {
+            list_adapter::emit_remove_if(chunks, current, line);
+        }
+        "jvm.java.list_replace_all" => {
+            list_adapter::emit_replace_all(chunks, current, line);
+        }
+        "jvm.java.stack_push" => {
+            list_adapter::emit_stack_push(chunks, current, line);
+        }
+        "jvm.java.stack_search" => {
+            list_adapter::emit_stack_search(chunks, current, line);
+        }
+        "jvm.java.vector_capacity" => {
+            list_adapter::emit_vector_capacity(chunks, current, line);
+        }
+        "jvm.java.vector_ensure_capacity" => {
+            list_adapter::emit_vector_ensure_capacity(chunks, current, line);
+        }
+        "jvm.java.vector_trim_to_size" => {
+            list_adapter::emit_vector_trim_to_size(chunks, current, line);
+        }
+        "jvm.java.vector_set_size" => {
+            list_adapter::emit_vector_set_size(chunks, current, line);
+        }
+        "jvm.java.enumeration_from_array" => {
+            list_adapter::emit_enumeration_from_array(chunks, current, line);
+        }
+        "jvm.java.enumeration_has_more" => {
+            list_adapter::emit_enumeration_has_more(chunks, current, line);
+        }
+        "jvm.java.enumeration_next" => {
+            list_adapter::emit_enumeration_next(chunks, current, line);
+        }
+        "jvm.java.hashtable_put" => {
+            list_adapter::emit_hashtable_put(chunks, current, line);
+        }
+        "jvm.java.hashtable_keys" => {
+            list_adapter::emit_hashtable_keys(chunks, current, line);
+        }
+        "jvm.java.hashtable_elements" => {
+            list_adapter::emit_hashtable_elements(chunks, current, line);
+        }
+        "jvm.java.sorted_sub_set" => {
+            list_adapter::emit_sorted_set_range_view(chunks, current, 0, line);
+        }
+        "jvm.java.sorted_head_set" => {
+            list_adapter::emit_sorted_set_range_view(chunks, current, 1, line);
+        }
+        "jvm.java.sorted_tail_set" => {
+            list_adapter::emit_sorted_set_range_view(chunks, current, 2, line);
+        }
+        "jvm.java.sorted_first_key" => {
+            list_adapter::emit_sorted_map_key(chunks, current, false, line);
+        }
+        "jvm.java.sorted_last_key" => {
+            list_adapter::emit_sorted_map_key(chunks, current, true, line);
+        }
+        "jvm.java.concurrent_map_put" => {
+            list_adapter::emit_concurrent_map_put(chunks, current, line);
+        }
+        "jvm.java.map_put_all" => {
+            list_adapter::emit_map_put_all(chunks, current, line);
+        }
+        "jvm.java.map_get_or_default" => {
+            list_adapter::emit_map_get_or_default(chunks, current, line);
+        }
+        "jvm.java.map_contains_key" => {
+            list_adapter::emit_map_contains_key(chunks, current, line);
+        }
+        "jvm.java.map_contains_value" => {
+            list_adapter::emit_map_contains_value(chunks, current, line);
+        }
+        "jvm.java.put_if_absent" => {
+            list_adapter::emit_map_put_if_absent(chunks, current, line);
+        }
+        "jvm.java.compute_if_absent" => {
+            list_adapter::emit_map_compute_if_absent(chunks, current, line);
+        }
+        "jvm.java.compute_if_present" => {
+            list_adapter::emit_map_compute_if_present(chunks, current, line);
+        }
+        "jvm.java.map_compute" => {
+            list_adapter::emit_map_compute(chunks, current, line);
+        }
+        "jvm.java.map_merge" => {
+            list_adapter::emit_map_merge(chunks, current, line);
+        }
+        "jvm.java.map_remove" => {
+            list_adapter::emit_map_remove(chunks, current, argc, line);
+        }
+        "jvm.java.map_replace" => {
+            list_adapter::emit_map_replace(chunks, current, argc, line);
+        }
+        "jvm.java.map_replace_all" => {
+            list_adapter::emit_map_replace_all(chunks, current, line);
+        }
+        "jvm.java.map_for_each" => {
+            list_adapter::emit_map_for_each(chunks, current, line);
+        }
+        "jvm.java.map_clone" => {
+            list_adapter::emit_map_clone(chunks, current, line);
+        }
+        "jvm.java.map_equals" => {
+            list_adapter::emit_map_equals(chunks, current, line);
+        }
+        "jvm.java.map_key_set_remove" => {
+            list_adapter::emit_map_key_set_remove(chunks, current, line);
+        }
+        "jvm.java.sorted_map_first_entry" => {
+            list_adapter::emit_sorted_map_end_entry(chunks, current, false, line);
+        }
+        "jvm.java.sorted_map_last_entry" => {
+            list_adapter::emit_sorted_map_end_entry(chunks, current, true, line);
+        }
+        "jvm.java.sorted_map_ceiling_entry" => {
+            list_adapter::emit_sorted_map_bound_entry(chunks, current, 0, line);
+        }
+        "jvm.java.sorted_map_floor_entry" => {
+            list_adapter::emit_sorted_map_bound_entry(chunks, current, 1, line);
+        }
+        "jvm.java.sorted_map_higher_entry" => {
+            list_adapter::emit_sorted_map_bound_entry(chunks, current, 2, line);
+        }
+        "jvm.java.sorted_map_lower_entry" => {
+            list_adapter::emit_sorted_map_bound_entry(chunks, current, 3, line);
+        }
+        "jvm.java.sorted_map_ceiling_key" => {
+            list_adapter::emit_sorted_map_bound_key(chunks, current, 0, line);
+        }
+        "jvm.java.sorted_map_floor_key" => {
+            list_adapter::emit_sorted_map_bound_key(chunks, current, 1, line);
+        }
+        "jvm.java.sorted_map_poll_first_entry" => {
+            list_adapter::emit_sorted_map_poll_entry(chunks, current, false, line);
+        }
+        "jvm.java.sorted_map_poll_last_entry" => {
+            list_adapter::emit_sorted_map_poll_entry(chunks, current, true, line);
+        }
+        "jvm.java.sorted_map_descending_key_set" => {
+            list_adapter::emit_sorted_map_descending_key_set(chunks, current, line);
+        }
+        "jvm.java.sorted_map_descending_map" => {
+            list_adapter::emit_sorted_map_descending_map(chunks, current, line);
+        }
+        "jvm.java.map_sub_map" => {
+            list_adapter::emit_map_range_view(chunks, current, 0, line);
+        }
+        "jvm.java.map_head_map" => {
+            list_adapter::emit_map_range_view(chunks, current, 1, line);
+        }
+        "jvm.java.map_tail_map" => {
+            list_adapter::emit_map_range_view(chunks, current, 2, line);
+        }
+        "jvm.java.entry_set_value" => {
+            list_adapter::emit_entry_set_value(chunks, current, line);
+        }
+        // ── java.lang.String / Character / Integer ──
+        "jvm.java.str_index_of" => string_adapter::emit_index_of(chunks, current, argc, line),
+        "jvm.java.str_last_index_of" => {
+            string_adapter::emit_last_index_of(chunks, current, argc, line)
+        }
+        "jvm.java.str_starts_with" => {
+            string_adapter::emit_starts_with(chunks, current, argc, line)
+        }
+        "jvm.java.string_value_of" => string_adapter::emit_value_of(chunks, current, line),
+        "jvm.java.string_concat" => string_adapter::emit_concat(chunks, current, line),
+        "jvm.java.replace_regex" => {
+            string_adapter::emit_replace_regex(chunks, current, true, line)
+        }
+        "jvm.java.replace_first_regex" => {
+            string_adapter::emit_replace_regex(chunks, current, false, line)
+        }
+        "jvm.java.compare_ignore_case" => {
+            string_adapter::emit_compare_ignore_case(chunks, current, line)
+        }
+        "jvm.java.equals_ignore_case" => {
+            string_adapter::emit_equals_ignore_case(chunks, current, line)
+        }
+        "jvm.java.str_matches" => string_adapter::emit_matches(chunks, current, line),
+        "jvm.java.to_char_array" => string_adapter::emit_to_char_array(chunks, current, line),
+        "jvm.java.compare_to" => string_adapter::emit_compare_to(chunks, current, line),
+        "jvm.java.char_ord" => string_adapter::emit_char_ord(chunks, current, line),
+        "jvm.java.trunc_cast" => string_adapter::emit_trunc_cast(chunks, current, line),
+        "jvm.java.from_char_code" => string_adapter::emit_from_char_code(chunks, current, line),
+        // ── java.util.Optional ──
+        "jvm.java.optional_empty" => optional::emit_empty(chunks, current, line),
+        "jvm.java.optional_of_nullable" => optional::emit_of_nullable(chunks, current, line),
+        "jvm.java.optional_of" => optional::emit_of(chunks, current, line),
+        "jvm.java.optional_of_long" => optional::emit_of_long(chunks, current, line),
+        "jvm.java.optional_or_else" | "jvm.java.optional_or_else_get" => optional::emit_or_else(
+            chunks,
+            current,
+            name == "jvm.java.optional_or_else_get",
+            line,
+        ),
+        "jvm.java.optional_is_present" => optional::emit_is_present(chunks, current, line),
+        "jvm.java.optional_if_present" => optional::emit_if_present(chunks, current, line),
+        "jvm.java.optional_filter" => optional::emit_filter(chunks, current, line),
+        "jvm.java.optional_map" => optional::emit_map(chunks, current, line),
+        "jvm.java.optional_flat_map" => optional::emit_flat_map(chunks, current, line),
+        "jvm.java.optional_if_present_or_else" => {
+            optional::emit_if_present_or_else(chunks, current, line)
+        }
+        "jvm.java.optional_is_empty" => optional::emit_is_empty(chunks, current, line),
+        "jvm.java.optional_or" | "jvm.java.optional_or_get" => {
+            optional::emit_or(chunks, current, name == "jvm.java.optional_or_get", line)
+        }
+        "jvm.java.optional_stream" => optional::emit_stream(chunks, current, line),
+        "jvm.java.optional_equals" => optional::emit_equals(chunks, current, line),
+        "jvm.java.optional_to_string" => optional::emit_to_string(chunks, current, line),
+        "jvm.java.optional_or_else_throw" => {
+            optional::emit_or_else_throw(chunks, current, argc > 1, line)
+        }
+        // ── java.lang.Class / Object.getClass() ──
+        "jvm.java.class_name" => reflection::emit_class_name(chunks, current, line),
+        "jvm.java.class_simple_name" => {
+            reflection::emit_class_simple_name(chunks, current, line)
+        }
+        "jvm.java.object_get_class" => reflection::emit_object_get_class(chunks, current, line),
         // ── java.math.BigInteger (ecma:bigint-backed; tree-bound so every
         // JVM-family language resolves it) ──
         "jvm.java.bigint_new" => bigint::emit_new(chunks, current, argc, line),
@@ -760,9 +1146,6 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "jvm.java.require_non_null" => {
             string_adapter::emit_require_non_null(chunks, current, argc, line)
         }
-        "jvm.java.optional_empty" => optional::emit_empty(chunks, current, line),
-        "jvm.java.optional_of" => optional::emit_of(chunks, current, line),
-        "jvm.java.optional_of_nullable" => optional::emit_of_nullable(chunks, current, line),
         "jvm.java.stream_empty" => stream::emit_empty(chunks, current, line),
         "jvm.java.stream_of" => stream::emit_of(chunks, current, argc, line),
         "jvm.java.stream_builder" => stream::emit_builder(chunks, current, line),
@@ -917,6 +1300,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "jvm.java.collection_passthrough_new" => {
             collection::emit_passthrough_new(chunks, current, argc, line)
         }
+        // ⛔ NOT unified on the java implementation. Kotlin reaches this target
+        // (three profile rows: `iterator`, `listIterator`, `__jvm_list_iterator`)
+        // and java's richer version regressed its iterator and set suites.
+        // Java's ListIterator carries cursor state and sublist awareness that
+        // Kotlin's dict-backed sets do not model, so "superset" holds for the
+        // List contract and NOT for the shared iterator entry point.
         "jvm.java.list_iterator" => collection::emit_list_iterator(chunks, current, argc, line),
         "jvm.java.iterator_next" => collection::emit_iterator_next(chunks, current, line),
         "jvm.java.iterator_has_next" => collection::emit_iterator_has_next(chunks, current, line),
@@ -933,7 +1322,10 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "jvm.java.iterator_set" => collection::emit_iterator_set(chunks, current, line),
         "jvm.java.iterator_add" => collection::emit_iterator_add(chunks, current, line),
-        "jvm.java.add" => collection::emit_add(chunks, current, argc, line),
+        // The unified emitter: iterator | backing-map | sublist | ecma-set |
+        // set-collection | plain. `collection::emit_add` knew three of those
+        // six and `list_adapter::emit_add` the other three.
+        "jvm.java.add" => list_adapter::emit_add(chunks, current, argc, line),
         "jvm.java.get" => collection::emit_get(chunks, current, line),
         "jvm.java.list_set" => collection::emit_set(chunks, current, line),
         "jvm.java.size" => collection::emit_size(chunks, current, line),
@@ -942,7 +1334,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "jvm.java.contains" => collection::emit_contains(chunks, current, line),
         "jvm.java.is_empty" => collection::emit_is_empty(chunks, current, line),
-        "jvm.java.list_clear" => collection::emit_clear(chunks, current, line),
+        "jvm.java.list_clear" => list_adapter::emit_clear(chunks, current, line),
         "jvm.java.list_remove" => collection::emit_remove(chunks, current, argc, line),
         "jvm.java.list_remove_value" => collection::emit_remove(chunks, current, 3, line),
         "jvm.java.list_index_of" => collection::emit_index_of(chunks, current, line),
