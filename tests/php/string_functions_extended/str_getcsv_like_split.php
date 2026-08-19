@@ -23,4 +23,4 @@ ob_start();
 
 $parts = str_getcsv('a,b, c'); echo count($parts); echo '|'; echo $parts[2] === '' ? 'empty' : 'value';
 
-__vybe_check(ob_get_clean(), "4|empty");
+__vybe_check(ob_get_clean(), "3|value");

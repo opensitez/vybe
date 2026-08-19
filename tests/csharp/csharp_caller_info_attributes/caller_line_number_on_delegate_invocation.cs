@@ -25,4 +25,4 @@ class Trace {
 }
 System.Action act = () => Trace.Show();
 act();
-__Check("5");
+__Check("26");

@@ -3,7 +3,7 @@
 
 program variable_shadowing_resolution_rules_do_index_shadowing
 integer :: vybe_check_i = 0
-integer :: vybe_check_w(3) = [ 1, 2, 2 ]
+integer :: vybe_check_w(3) = [ 1, 2, 3 ]
     integer :: i
     i = 1
     do i = 1, 2

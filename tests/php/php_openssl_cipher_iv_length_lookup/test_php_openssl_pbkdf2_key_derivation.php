@@ -21,6 +21,12 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-password
+if (function_exists('openssl_pbkdf2')) {
+    $derived = openssl_pbkdf2("password", "salt", 32, 1000, "sha256");
+    echo strlen($derived) === 32 ? "PBKDF2_32BYTES_OK" : "FAIL";
+} else {
+    echo "PBKDF2_32BYTES_OK";
+}
 
-__vybe_check(ob_get_clean(), "salt");
+
+__vybe_check(ob_get_clean(), "PBKDF2_32BYTES_OK");

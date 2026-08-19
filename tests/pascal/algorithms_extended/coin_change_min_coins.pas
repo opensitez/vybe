@@ -63,12 +63,23 @@ begin
   end;
 end;
 var coins: array[0..2] of Integer;
-    amount, i, count, remain: Integer;
+    dp: array[0..15] of Integer;
+    amount, i, v, count: Integer;
 begin
   coins[0]:=1; coins[1]:=5; coins[2]:=11;
-  amount := 15; count := 0; remain := amount;
-  for i := 2 downto 0 do
-    while remain >= coins[i] do begin remain := remain - coins[i]; Inc(count); end;
+  amount := 15;
+  // GREEDY IS WRONG for this coin set — it takes 11 and then four 1s (5 coins),
+  // while the minimum is 5+5+5 (3 coins). Minimum-coin change needs the DP,
+  // which is what a test named `min_coins` is asserting.
+  dp[0] := 0;
+  for v := 1 to amount do
+  begin
+    dp[v] := 9999;
+    for i := 0 to 2 do
+      if (coins[i] <= v) and (dp[v - coins[i]] + 1 < dp[v]) then
+        dp[v] := dp[v - coins[i]] + 1;
+  end;
+  count := dp[amount];
   __p(__vs(count));
 __vybeCheck('3');
 end.

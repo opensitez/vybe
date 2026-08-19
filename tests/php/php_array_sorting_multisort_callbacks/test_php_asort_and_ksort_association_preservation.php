@@ -25,4 +25,4 @@ $fruit = ["d" => "lemon", "a" => "orange", "b" => "banana", "c" => "apple"];
 asort($fruit);
 echo implode(",", array_keys($fruit)) . " | " . implode(",", $fruit);
 
-__vybe_check(ob_get_clean(), "b,d,a,c | banana,lemon,orange,apple");
+__vybe_check(ob_get_clean(), "c,b,d,a | apple,banana,lemon,orange");

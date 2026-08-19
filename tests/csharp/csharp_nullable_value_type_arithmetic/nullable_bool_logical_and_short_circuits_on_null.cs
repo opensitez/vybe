@@ -26,4 +26,4 @@ bool? f = false;
 __P((t & n).ToString());
 __P((n & f).ToString());
 __P((f & t).ToString());
-__Check("\n\nFalse");
+__Check("\nFalse\nFalse");

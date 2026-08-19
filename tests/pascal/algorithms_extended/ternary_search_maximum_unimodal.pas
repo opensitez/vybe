@@ -64,7 +64,7 @@ begin
 end;
 function F(x: Integer): Integer;
 begin Result := -(x - 5) * (x - 5) + 25; end;
-var lo, hi, m1, m2: Integer;
+var lo, hi, m1, m2, best, x: Integer;
 begin
   lo := 0; hi := 10;
   while hi - lo > 2 do
@@ -73,6 +73,10 @@ begin
     m2 := hi - (hi - lo) div 3;
     if F(m1) < F(m2) then lo := m1 else hi := m2;
   end;
-  __p(__vs(lo));
+  // The loop stops with a bracket up to 2 wide, so `lo` is not the argmax —
+  // the maximum (x=5) sits INSIDE the final [lo..hi]. Scan it.
+  best := lo;
+  for x := lo to hi do if F(x) > F(best) then best := x;
+  __p(__vs(best));
 __vybeCheck('5');
 end.

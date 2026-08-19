@@ -21,6 +21,8 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-hello world hello
+echo mb_substr_count("hello world hello", "hello");
+echo mb_substr_count("abababab", "ab");
 
-__vybe_check(ob_get_clean(), "hello");
+
+__vybe_check(ob_get_clean(), "24");

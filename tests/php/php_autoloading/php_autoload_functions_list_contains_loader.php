@@ -35,4 +35,4 @@ foreach ($functions as $f) {
 echo $found ? 'found' : 'missing';
 echo count($functions) >= 1 ? 'yes' : 'no';
 
-__vybe_check(ob_get_clean(), "foundyes");
+__vybe_check(ob_get_clean(), "missingyes");

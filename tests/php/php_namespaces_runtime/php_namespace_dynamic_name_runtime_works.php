@@ -2,6 +2,8 @@
 // vybe-test: php/php_namespaces_runtime/php_namespace_dynamic_name_runtime_works
 // origin: languages/php/tests/php/test_php_namespaces_runtime.rs
 
+namespace Runtime;
+
 function __vybe_check($got, $want) {
     // Match the Rust harness's normalisation: strip \r, then drop trailing
     // newlines (it split on "\n" and popped empty trailing elements).
@@ -21,10 +23,10 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-namespace Runtime;
 class Service { public function endpoint(): string { return 'ok'; } }
 $name = 'Runtime\\Service';
 $class = new $name();
 echo $class->endpoint();
+
 
 __vybe_check(ob_get_clean(), "ok");

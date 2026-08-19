@@ -1,6 +1,8 @@
 // vybe-test: dart/dart_convert_utf8_encode_decode/utf8_encode_emoji
 // origin: languages/dart/tests/dart/test_dart_convert_utf8_encode_decode.rs
 
+import 'dart:convert';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,7 +22,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:convert';
 void __vybeMain() {
   // '🚀' is 4 bytes: 0xF0 0x9F 0x9A 0x80 (240, 159, 154, 128)
   final bytes = utf8.encode('🚀');

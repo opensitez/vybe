@@ -27,4 +27,4 @@ echo sprintf('%10.4s', 'php');
 echo "\n";
 echo sprintf('%04d', 7);
 
-__vybe_check(ob_get_clean(), "abc|      php|0007");
+__vybe_check(ob_get_clean(), "abc\n       php\n0007");

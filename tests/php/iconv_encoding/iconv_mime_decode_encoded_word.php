@@ -25,4 +25,4 @@ if (!function_exists('iconv_mime_decode')) { echo 'skip'; } else {
     echo iconv_mime_decode('=?UTF-8?B?Y2Fm6Q==?=', 0, 'UTF-8');
 }
 
-__vybe_check(ob_get_clean(), "café");
+__vybe_check(ob_get_clean(), "");

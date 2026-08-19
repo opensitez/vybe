@@ -28,4 +28,4 @@ $select = false;
 $fn = $select ? trim(... ) : strtoupper(...);
 echo $fn('  php  ');
 
-__vybe_check(ob_get_clean(), "php|PHP");
+__vybe_check(ob_get_clean(), "php|  PHP  ");

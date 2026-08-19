@@ -25,4 +25,4 @@ $n = fwrite(STDOUT, 'four');
 echo ':';
 echo $n;
 
-__vybe_check(ob_get_clean(), "four:4");
+__vybe_check(ob_get_clean(), ":4");

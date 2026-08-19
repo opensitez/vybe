@@ -1,6 +1,9 @@
 // vybe-test: dart/dart_isolate_capabilities_pause_kill/isolate_ping_with_custom_response
 // origin: languages/dart/tests/dart/test_dart_isolate_capabilities_pause_kill.rs
 
+import 'dart:isolate';
+import 'dart:async';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,8 +23,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:isolate';
-import 'dart:async';
 void isolateMain(_) {
   // Keep it alive
   Timer(Duration(hours: 1), () {});

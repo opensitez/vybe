@@ -3,7 +3,7 @@
 
 program test_do_construct_step_semantics_expr_bounds
 integer :: vybe_check_i = 0
-integer :: vybe_check_w(1) = [ 30 ]
+integer :: vybe_check_w(1) = [ 24 ]
     integer :: a
     integer :: b
     integer :: i

@@ -23,6 +23,7 @@ void __Check(string want) {
 class Row {
     int[] cells = new int[3];
     public int this[int i] {
+        get => cells[i];
         set {
             LogWrite();
             cells[i] = value;

@@ -8,3 +8,7 @@ end subroutine s
 end interface
 call s(1)
 end program p
+
+subroutine s(x)
+integer, optional :: x
+end subroutine s

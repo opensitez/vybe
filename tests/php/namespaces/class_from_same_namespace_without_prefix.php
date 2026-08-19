@@ -2,6 +2,7 @@
 // vybe-test: php/namespaces/class_from_same_namespace_without_prefix
 // origin: languages/php/tests/php/test_namespaces.rs
 
+namespace {
 function __vybe_check($got, $want) {
     // Match the Rust harness's normalisation: strip \r, then drop trailing
     // newlines (it split on "\n" and popped empty trailing elements).
@@ -20,6 +21,7 @@ function __vybe_check($got, $want) {
 }
 
 ob_start();
+}
 
 namespace App {
     class A { public function v(): int { return 1; } }
@@ -28,7 +30,10 @@ namespace App {
             return (new A())->v();
         }
     }
-}
+}namespace {
 echo (new \App\B())->pull();
+}
 
+namespace {
 __vybe_check(ob_get_clean(), "1");
+}

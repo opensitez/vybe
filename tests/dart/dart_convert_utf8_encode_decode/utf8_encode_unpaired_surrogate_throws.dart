@@ -1,6 +1,8 @@
 // vybe-test: dart/dart_convert_utf8_encode_decode/utf8_encode_unpaired_surrogate_throws
 // origin: languages/dart/tests/dart/test_dart_convert_utf8_encode_decode.rs
 
+import 'dart:convert';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,7 +22,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:convert';
 void __vybeMain() {
   // Dart strings are UTF-16. 
   // Wait, utf8.encode might not throw on unpaired surrogates, it might encode them as replacement chars.

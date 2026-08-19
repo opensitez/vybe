@@ -1,5 +1,8 @@
 // vybe-test: pascal/pascal_unhandled_exception_hooks/test_exceptproc_function_return_fail
 // origin: languages/pascal/tests/pascal/test_pascal_unhandled_exception_hooks.rs
+// ExceptProc HALTS: fpc 3.2.2 runs the hook, then exits 217 — the
+// statement after the fault never executes, so the verdict is the code.
+// vybe-test-exit: 217
 program Test;
 {$mode delphi}
 // Vybe test harness — Pascal.

@@ -1,6 +1,15 @@
 // vybe-test: pascal/pascal_unit_initialization_finalization/test_unit_initialization_nested_routine_call
 // origin: languages/pascal/tests/pascal/test_pascal_unit_initialization_finalization.rs
 unit NestedInitUnit;
+interface
+  var InitValue: Integer;
+implementation
+function ComputeInitVal: Integer; begin Result := 42; end;
+initialization
+  InitValue := ComputeInitVal;
+end.
+
+program Test;
 {$mode delphi}
 // Vybe test harness — Pascal.
 //
@@ -61,15 +70,6 @@ begin
     Halt(1);
   end;
 end;
-interface
-  var InitValue: Integer;
-implementation
-function ComputeInitVal: Integer; begin Result := 42; end;
-initialization
-  InitValue := ComputeInitVal;
-end.
-
-program Test;
 uses NestedInitUnit;
 begin
   __p(__vs(InitValue));

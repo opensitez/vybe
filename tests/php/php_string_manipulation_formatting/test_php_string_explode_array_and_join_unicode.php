@@ -26,4 +26,4 @@ $items = explode(',', $text);
 $joined = implode('|', $items);
 echo count($items) . '|' . substr($joined, 0, 12);
 
-__vybe_check(ob_get_clean(), "6|a|b||c||");
+__vybe_check(ob_get_clean(), "4|a|b| c| ");

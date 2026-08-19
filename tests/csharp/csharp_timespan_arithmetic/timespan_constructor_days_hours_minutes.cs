@@ -21,4 +21,4 @@ void __Check(string want) {
 }
 
 var span=new System.TimeSpan(1,2,30); __P((span.Days).ToString()); __P((span.Hours).ToString()); __P((span.Minutes).ToString());
-__Check("1\n2\n30");
+__Check("0\n1\n2");

@@ -26,4 +26,4 @@ echo bin2hex($raw);
 echo "\n";
 echo hex2bin(bin2hex($raw)) === $raw ? 'same' : 'diff';
 
-__vybe_check(ob_get_clean(), "0001ff414243|same");
+__vybe_check(ob_get_clean(), "0001ff414243\nsame");

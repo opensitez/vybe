@@ -25,4 +25,4 @@ echo round(2.5);
 echo '|';
 echo round(3.5, 0, PHP_ROUND_HALF_UP);
 
-__vybe_check(ob_get_clean(), "2|4");
+__vybe_check(ob_get_clean(), "3|4");

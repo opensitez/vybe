@@ -8,8 +8,8 @@ IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION.
     STRING S1 DELIMITED SIZE INTO WS-VYBE-L
     EVALUATE WS-VYBE-I
         WHEN 1
-            IF WS-VYBE-L NOT = "OK"
-                DISPLAY "FAIL at 1 want [OK] got [" WS-VYBE-L "]"
+            IF WS-VYBE-L NOT = "    A"
+                DISPLAY "FAIL at 1 want [    A] got [" WS-VYBE-L "]"
                 MOVE 1 TO RETURN-CODE
                 RAISE EXCEPTION EC-PROGRAM
             END-IF

@@ -1,6 +1,8 @@
 // vybe-test: dart/dart_developer_timeline_events/timeline_instant_sync
 // origin: languages/dart/tests/dart/test_dart_developer_timeline_events.rs
 
+import 'dart:developer';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,7 +22,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:developer';
 void __vybeMain() {
   Timeline.instantSync('instantEvent', arguments: {'count': 10});
   __p('instant_done');

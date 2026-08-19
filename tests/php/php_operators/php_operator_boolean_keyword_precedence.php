@@ -21,6 +21,12 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-(function() { $a = true; $a = $a or false; return $a ? 1 : 0; })()
+echo ((1 || 0 && 0)) ? 1 : 0, "\n";
+echo (((1 || 0) && 0)) ? 1 : 0, "\n";
+echo (function() { $a = true; $a = $a or false; return $a ? 1 : 0; })(), "\n";
+echo (function() { $a = true; $a = $a || false; return $a ? 1 : 0; })(), "\n";
+echo (function() { $a = false; $a = $a and true; return $a ? 1 : 0; })(), "\n";
+echo (function() { $a = false; $a = $a && true; return $a ? 1 : 0; })(), "\n";
 
-__vybe_check(ob_get_clean(), "1");
+
+__vybe_check(ob_get_clean(), "1\n0\n1\n1\n0\n0");

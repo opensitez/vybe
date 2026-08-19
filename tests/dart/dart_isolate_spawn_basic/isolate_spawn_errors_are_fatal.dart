@@ -1,6 +1,8 @@
 // vybe-test: dart/dart_isolate_spawn_basic/isolate_spawn_errors_are_fatal
 // origin: languages/dart/tests/dart/test_dart_isolate_spawn_basic.rs
 
+import 'dart:isolate';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,7 +22,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:isolate';
 void __vybeMain() async {
   final receivePort = ReceivePort();
   final isolate = await Isolate.spawn((_) {}, null, errorsAreFatal: true);

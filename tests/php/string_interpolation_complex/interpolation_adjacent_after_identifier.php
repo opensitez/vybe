@@ -27,4 +27,4 @@ echo "\n";
 echo "{$id}-suffix";
 echo "\n";
 
-__vybe_check(ob_get_clean(), "item_label|item-suffix");
+__vybe_check(ob_get_clean(), "item_label\nitem-suffix");

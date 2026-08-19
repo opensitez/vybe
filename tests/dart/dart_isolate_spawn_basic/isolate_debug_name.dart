@@ -1,6 +1,8 @@
 // vybe-test: dart/dart_isolate_spawn_basic/isolate_debug_name
 // origin: languages/dart/tests/dart/test_dart_isolate_spawn_basic.rs
 
+import 'dart:isolate';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,7 +22,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:isolate';
 void __vybeMain() {
   final isolate = Isolate.current;
   __p(isolate.debugName == 'main' || isolate.debugName!.isNotEmpty);

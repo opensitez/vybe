@@ -36,4 +36,4 @@ class Child extends Base {
 $obj = new Child();
 echo $obj->label() . '|' . $obj->local();
 
-__vybe_check(ob_get_clean(), "trait|base");
+__vybe_check(ob_get_clean(), "trait|trait");

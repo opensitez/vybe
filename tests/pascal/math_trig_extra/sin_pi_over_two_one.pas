@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; begin __p(__vs(Trunc(Sin(1.5707963)*1000))); __vybeCheck('1000');
+end; begin __p(__vs(Trunc(Sin(1.5707963)*1000))); __vybeCheck('999');
 end.

@@ -33,4 +33,4 @@ function make_value(): void {
 make_value();
 echo 'done';
 
-__vybe_check(ob_get_clean(), "secret|secret|done");
+__vybe_check(ob_get_clean(), "secret|secretdone");

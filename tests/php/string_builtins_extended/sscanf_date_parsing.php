@@ -21,6 +21,10 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-2024-07-15
+$parts = sscanf("2024-07-15", "%d-%d-%d");
+echo $parts[0];
+echo $parts[1];
+echo $parts[2];
 
-__vybe_check(ob_get_clean(), "%d-%d-%d");
+
+__vybe_check(ob_get_clean(), "2024715");

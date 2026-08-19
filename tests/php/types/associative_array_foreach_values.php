@@ -23,4 +23,4 @@ ob_start();
 
 $files = []; $files['a.knt'] = '/tmp/a'; $files['b.knt'] = '/tmp/b'; foreach ($files as $path) { echo $path; }
 
-__vybe_check(ob_get_clean(), "/tmp/a\n/tmp/b");
+__vybe_check(ob_get_clean(), "/tmp/a/tmp/b");

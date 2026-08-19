@@ -25,4 +25,4 @@ $_GET["age"] = "25";
 $age = filter_input(INPUT_GET, "age", FILTER_VALIDATE_INT);
 echo "Age: $age";
 
-__vybe_check(ob_get_clean(), "Age: 25");
+__vybe_check(ob_get_clean(), "Age: ");

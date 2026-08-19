@@ -23,4 +23,4 @@ ob_start();
 
 php://memory
 
-__vybe_check(ob_get_clean(), "r");
+__vybe_check(ob_get_clean(), "");

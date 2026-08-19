@@ -2,6 +2,7 @@
 // vybe-test: php/php_dynamic_calling/php_dynamic_calling_callable_from_fqn_string
 // origin: languages/php/tests/php/test_php_dynamic_calling.rs
 
+namespace {
 function __vybe_check($got, $want) {
     // Match the Rust harness's normalisation: strip \r, then drop trailing
     // newlines (it split on "\n" and popped empty trailing elements).
@@ -20,6 +21,7 @@ function __vybe_check($got, $want) {
 }
 
 ob_start();
+}
 
 namespace DynCallNs {
     class Factory {
@@ -33,4 +35,6 @@ namespace DynCallNs {
     echo call_user_func([$handler, 'create'], 'item');
 }
 
+namespace {
 __vybe_check(ob_get_clean(), "yes|created:item");
+}

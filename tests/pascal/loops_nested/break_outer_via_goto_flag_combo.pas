@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; var i,j:Integer; abort:Boolean; begin abort:=false; for i:=1 to 10 do begin if abort then Break; for j:=1 to 10 do if i*j=20 then begin __p(__vs(i)); __p(__vs(j)); abort:=true; Break; end; end; __vybeCheck('4' + #10 + '5');
+end; var i,j:Integer; abort:Boolean; begin abort:=false; for i:=1 to 10 do begin if abort then Break; for j:=1 to 10 do if i*j=20 then begin __p(__vs(i)); __p(__vs(j)); abort:=true; Break; end; end; __vybeCheck('2' + #10 + '10');
 end.

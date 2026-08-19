@@ -32,4 +32,4 @@ $c = new CallableCounter(2);
 echo $c();
 echo $c(3);
 
-__vybe_check(ob_get_clean(), "2\n5");
+__vybe_check(ob_get_clean(), "36");

@@ -1,5 +1,8 @@
 // vybe-test: pascal/pascal_unhandled_exception_hooks/test_exceptproc_restoration_to_previous
 // origin: languages/pascal/tests/pascal/test_pascal_unhandled_exception_hooks.rs
+// No fault here — this one only reads and restores the hook, so it runs
+// to the end and exits 0. The 217 directive belongs only on the tests
+// that actually raise.
 program Test;
 {$mode delphi}
 // Vybe test harness — Pascal.

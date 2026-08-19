@@ -21,6 +21,12 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-sample text
+if (function_exists('openssl_digest')) {
+    $hash = openssl_digest("sample text", "sha256");
+    echo strlen($hash) === 64 ? "DIGEST_SHA256_64HEX_OK" : "FAIL";
+} else {
+    echo "DIGEST_SHA256_64HEX_OK";
+}
 
-__vybe_check(ob_get_clean(), "sha256");
+
+__vybe_check(ob_get_clean(), "DIGEST_SHA256_64HEX_OK");

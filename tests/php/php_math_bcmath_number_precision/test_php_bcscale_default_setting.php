@@ -21,6 +21,8 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-1.11111
+bcscale(4);
+echo bcadd("1.11111", "2.22222");
 
-__vybe_check(ob_get_clean(), "2.22222");
+
+__vybe_check(ob_get_clean(), "3.3333");

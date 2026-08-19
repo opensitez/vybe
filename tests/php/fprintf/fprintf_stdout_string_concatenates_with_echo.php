@@ -24,4 +24,4 @@ ob_start();
 fprintf(STDOUT, '%s', 'fp');
 echo 'out';
 
-__vybe_check(ob_get_clean(), "fpout");
+__vybe_check(ob_get_clean(), "out");

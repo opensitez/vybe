@@ -24,4 +24,4 @@ int counter = 0;
 System.Threading.Interlocked.Increment(ref counter);
 __P((System.Threading.Interlocked.Increment(ref counter)).ToString());
 __P((counter).ToString());
-__Check("1\n2\n2");
+__Check("2\n2");

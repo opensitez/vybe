@@ -1,6 +1,8 @@
 // vybe-test: dart/dart_developer_service_extensions/register_extension
 // origin: languages/dart/tests/dart/test_dart_developer_service_extensions.rs
 
+import 'dart:developer';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,7 +22,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:developer';
 void __vybeMain() {
   registerExtension('ext.my.customMethod', (method, parameters) async {
     return ServiceExtensionResponse.result('{"success": true}');

@@ -6,8 +6,8 @@ program recursive_optional_arguments_default_chain
     print *, "FAIL: want [6] got [", walk(3), "]"
     stop 1
 end if
-    if ((walk(3, 2)) /= 9) then
-    print *, "FAIL: want [9] got [", walk(3, 2), "]"
+    if ((walk(3, 2)) /= 6) then
+    print *, "FAIL: want [6] got [", walk(3, 2), "]"
     stop 1
 end if
 contains

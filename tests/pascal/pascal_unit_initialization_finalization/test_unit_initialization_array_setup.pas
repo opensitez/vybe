@@ -1,6 +1,16 @@
 // vybe-test: pascal/pascal_unit_initialization_finalization/test_unit_initialization_array_setup
 // origin: languages/pascal/tests/pascal/test_pascal_unit_initialization_finalization.rs
 unit LookupUnit;
+interface
+  var Squares: array[0..3] of Integer;
+implementation
+var i: Integer;
+initialization
+  for i := 0 to 3 do
+    Squares[i] := i * i;
+end.
+
+program Test;
 {$mode delphi}
 // Vybe test harness — Pascal.
 //
@@ -61,16 +71,6 @@ begin
     Halt(1);
   end;
 end;
-interface
-  var Squares: array[0..3] of Integer;
-implementation
-var i: Integer;
-initialization
-  for i := 0 to 3 do
-    Squares[i] := i * i;
-end.
-
-program Test;
 uses LookupUnit;
 begin
   __p(__vs(Squares[3]));

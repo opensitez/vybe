@@ -25,4 +25,4 @@ $source = new DateTime('2024-03-01 12:00:00', new DateTimeZone('UTC'));
 $local = $source->setTimezone(new DateTimeZone('Europe/Paris'));
 echo $source->format('H:i') . '|' . $local->format('H:i');
 
-__vybe_check(ob_get_clean(), "12:00|13:00");
+__vybe_check(ob_get_clean(), "13:00|13:00");

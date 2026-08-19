@@ -35,4 +35,4 @@ for ($i = 0; $i < 4; $i++) {
 }
 echo $sum;
 
-__vybe_check(ob_get_clean(), "3");
+__vybe_check(ob_get_clean(), "12");

@@ -27,4 +27,4 @@ echo $it->key();
 echo '|';
 echo $it->current();
 
-__vybe_check(ob_get_clean(), "2|3");
+__vybe_check(ob_get_clean(), "c|3");

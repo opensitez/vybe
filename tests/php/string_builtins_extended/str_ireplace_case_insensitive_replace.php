@@ -21,6 +21,8 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-HELLO
+$result = str_ireplace("HELLO", "Hi", "Hello World HELLO hello");
+echo $result;
 
-__vybe_check(ob_get_clean(), "Hi");
+
+__vybe_check(ob_get_clean(), "Hi World Hi Hi");

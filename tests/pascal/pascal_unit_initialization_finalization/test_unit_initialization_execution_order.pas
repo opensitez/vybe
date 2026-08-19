@@ -1,6 +1,17 @@
 // vybe-test: pascal/pascal_unit_initialization_finalization/test_unit_initialization_execution_order
 // origin: languages/pascal/tests/pascal/test_pascal_unit_initialization_finalization.rs
 unit TestUnitInit;
+interface
+  procedure Dummy;
+implementation
+procedure Dummy; begin end;
+initialization
+  __p(__vs('UnitInitialized'));
+finalization
+  __p(__vs('UnitFinalized'));
+end.
+
+program Test;
 {$mode delphi}
 // Vybe test harness — Pascal.
 //
@@ -61,17 +72,6 @@ begin
     Halt(1);
   end;
 end;
-interface
-  procedure Dummy;
-implementation
-procedure Dummy; begin end;
-initialization
-  __p(__vs('UnitInitialized'));
-finalization
-  __p(__vs('UnitFinalized'));
-end.
-
-program Test;
 uses TestUnitInit;
 begin
   __p(__vs('MainProgramBody'));

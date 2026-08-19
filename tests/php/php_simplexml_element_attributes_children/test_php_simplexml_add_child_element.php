@@ -21,6 +21,9 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-setting
+$sxe = new SimpleXMLElement("<root/>");
+$child = $sxe->addChild("setting", "enabled");
+echo $sxe->setting == "enabled" ? "ADD_CHILD_OK" : "FAIL";
 
-__vybe_check(ob_get_clean(), "enabled");
+
+__vybe_check(ob_get_clean(), "ADD_CHILD_OK");

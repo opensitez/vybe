@@ -35,4 +35,4 @@ try {
     echo '|throw-failed';
 }
 
-__vybe_check(ob_get_clean(), "enter|caught:from-caller");
+__vybe_check(ob_get_clean(), "entercaught:from-caller");

@@ -32,4 +32,4 @@ echo "\n";
 echo sprintf("%-10s|", "left");
 echo "\n";
 
-__vybe_check(ob_get_clean(), "00042\n3.14\ncart has 5 items     right\nleft      |");
+__vybe_check(ob_get_clean(), "00042\n3.14\ncart has 5 items\n     right\nleft      |");

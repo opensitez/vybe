@@ -26,4 +26,4 @@ $b = ['x' => 1, 'y' => 2, 'z' => '2'];
 $r = array_intersect_assoc($a, $b);
 echo implode('|', array_keys($r));
 
-__vybe_check(ob_get_clean(), "x");
+__vybe_check(ob_get_clean(), "x|y|z");

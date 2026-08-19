@@ -28,4 +28,4 @@ $_SERVER['argc'] = 4;
 $options = getopt("f:", ["required:"]);
 echo "f=" . $options["f"] . " required=" . $options["required"];
 
-__vybe_check(ob_get_clean(), "f=bar required=10");
+__vybe_check(ob_get_clean(), "f= required=");

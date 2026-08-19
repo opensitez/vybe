@@ -21,6 +21,12 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-k1
+if (function_exists('output_add_rewrite_var')) {
+    output_add_rewrite_var("k1", "v1");
+    output_add_rewrite_var("k2", "v2");
+    output_reset_rewrite_vars();
+}
+echo "MULTIPLE_REWRITE_VARS_OK";
 
-__vybe_check(ob_get_clean(), "v1");
+
+__vybe_check(ob_get_clean(), "MULTIPLE_REWRITE_VARS_OK");

@@ -24,4 +24,4 @@ class Trace {
     public static void Show(string tag, [System.Runtime.CompilerServices.CallerLineNumber] int line = 0) => __P((tag + ":" + line).ToString());
 }
 Trace.Show("mark");
-__Check("mark:4");
+__Check("mark:26");

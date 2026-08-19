@@ -28,4 +28,4 @@ echo date('H', $g);
 echo '|';
 echo date('H', $l);
 
-__vybe_check(ob_get_clean(), "12|17");
+__vybe_check(ob_get_clean(), "07|12");

@@ -29,4 +29,4 @@ spl_autoload_register(function (string $class): void {
 echo class_exists('Autoload\\\\Missing', false) ? 'found' : 'not_found';
 echo class_exists('Autoload\\\\Missing', true) ? 'loaded' : 'not_loaded';
 
-__vybe_check(ob_get_clean(), "not_foundloaded");
+__vybe_check(ob_get_clean(), "not_foundnot_loaded");

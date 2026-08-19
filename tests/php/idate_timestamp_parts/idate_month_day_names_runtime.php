@@ -25,4 +25,4 @@ date_default_timezone_set('UTC');
 $timestamp = mktime(0, 0, 0, 12, 31, 2023);
 echo idate('L', $timestamp) . "|" . idate('t', $timestamp);
 
-__vybe_check(ob_get_clean(), "1|31");
+__vybe_check(ob_get_clean(), "0|31");

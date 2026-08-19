@@ -40,4 +40,4 @@ rewind($fp);
 echo stream_get_contents($fp);
 fclose($fp);
 
-__vybe_check(ob_get_clean(), "PRE_data");
+__vybe_check(ob_get_clean(), "PRE_PRE_data");

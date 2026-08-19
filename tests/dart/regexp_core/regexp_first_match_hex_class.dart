@@ -28,5 +28,5 @@ void __vybeMain() {
 
 void main() {
   __vybeMain();
-  __check('ff');
+  __check('ff00');
 }

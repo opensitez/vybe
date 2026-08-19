@@ -21,6 +21,10 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-class
+$doc = new DOMDocument();
+$el = $doc->createElement("div");
+$el->setAttribute("class", "container");
+echo $el->getAttribute("class") === "container" ? "SET_ATTR_OK" : "FAIL";
 
-__vybe_check(ob_get_clean(), "container");
+
+__vybe_check(ob_get_clean(), "SET_ATTR_OK");

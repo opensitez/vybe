@@ -1,6 +1,13 @@
 // vybe-test: kotlin/math_builtins/test_ulp_precision_invariant
 // origin: languages/kotlin/tests/kotlin/test_math_builtins.rs
 
+// `kotlin.math.ulp(v)` and `kotlin.math.nextAfter(a, b)` do not exist —
+// `kotlinc` rejects both with "unresolved reference". `ulp` is an extension
+// PROPERTY (`v.ulp`) and the function is `nextTowards`. Repaired against
+// kotlinc, which compiles this form clean and prints true/true/true/true.
+import kotlin.math.ulp
+import kotlin.math.nextTowards
+
 var __buf: String = ""
 
 fun __p(s: String) {
@@ -27,13 +34,13 @@ fun __check(want: String) {
 
 fun main() {
             val v = 1.0
-            val step = kotlin.math.ulp(v)
+            val step = v.ulp
             val nearOne = 1.0 + step
-            val isAdjacent = kotlin.math.nextAfter(1.0, Double.POSITIVE_INFINITY) == nearOne
+            val isAdjacent = 1.0.nextTowards(Double.POSITIVE_INFINITY) == nearOne
             __p((nearOne > v).toString())
             __p((step > 0.0).toString())
             __p((isAdjacent).toString())
-            __p((kotlin.math.abs(step - kotlin.math.ulp(nearOne)) < 1e-20).toString())
+            __p((kotlin.math.abs(step - nearOne.ulp) < 1e-20).toString())
         
 __check("true\ntrue\ntrue\ntrue")
 }

@@ -24,4 +24,4 @@ ob_start();
 [,  $last] = ['a', 'b', 'c'];
 echo $last;
 
-__vybe_check(ob_get_clean(), "c");
+__vybe_check(ob_get_clean(), "b");

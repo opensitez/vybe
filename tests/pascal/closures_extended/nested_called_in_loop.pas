@@ -66,7 +66,7 @@ procedure Outer;
 var factor: Integer;
   function Scale(x: Integer): Integer;
   begin Result := x * factor; end;
-  i: Integer;
+var i: Integer;
 begin
   factor := 3;
   for i := 1 to 3 do __p(__vs(Scale(i)));

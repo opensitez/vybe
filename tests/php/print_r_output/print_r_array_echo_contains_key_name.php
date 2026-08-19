@@ -24,4 +24,4 @@ ob_start();
 print_r(['id' => 1]);
 echo 'END';
 
-__vybe_check(ob_get_clean(), "Array\n(\n    [id] => 1\n)END");
+__vybe_check(ob_get_clean(), "Array\n(\n    [id] => 1\n)\nEND");

@@ -28,4 +28,4 @@ try {
     echo 'type_error';
 }
 
-__vybe_check(ob_get_clean(), "type_error");
+__vybe_check(ob_get_clean(), "a-Array");

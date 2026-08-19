@@ -23,4 +23,4 @@ ob_start();
 
 echo ob_get_contents() === false ? 'false' : 'true';
 
-__vybe_check(ob_get_clean(), "false");
+__vybe_check(ob_get_clean(), "true");

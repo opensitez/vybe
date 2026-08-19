@@ -2,6 +2,7 @@
 // vybe-test: php/namespaces/namespace_group_use_braces
 // origin: languages/php/tests/php/test_namespaces.rs
 
+namespace {
 function __vybe_check($got, $want) {
     // Match the Rust harness's normalisation: strip \r, then drop trailing
     // newlines (it split on "\n" and popped empty trailing elements).
@@ -20,6 +21,7 @@ function __vybe_check($got, $want) {
 }
 
 ob_start();
+}
 
 namespace Vendor\Support {
     class Str {
@@ -31,4 +33,6 @@ namespace App {
     echo Str::upper('ok');
 }
 
+namespace {
 __vybe_check(ob_get_clean(), "OK");
+}

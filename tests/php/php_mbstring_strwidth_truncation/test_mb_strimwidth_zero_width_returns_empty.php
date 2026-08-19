@@ -23,4 +23,4 @@ ob_start();
 
 echo mb_strimwidth('abcdef', 0, 0, '...');
 
-__vybe_check(ob_get_clean(), "");
+__vybe_check(ob_get_clean(), "...");

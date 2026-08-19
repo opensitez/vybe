@@ -26,4 +26,4 @@ $b = [10, 20];
 $mapped = array_map(fn($x, $y) => $x + $y, $a, $b);
 echo json_encode($mapped);
 
-__vybe_check(ob_get_clean(), "[11,22]");
+__vybe_check(ob_get_clean(), "[11,22,3]");

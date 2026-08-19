@@ -34,4 +34,4 @@ echo ($transform instanceof Transform) ? "yes" : "no";
 echo "|";
 echo $transform->apply("x"), "\n";
 
-__vybe_check(ob_get_clean(), "yes|\"value\":\"x\"");
+__vybe_check(ob_get_clean(), "yes|{\"value\":\"x\"}");

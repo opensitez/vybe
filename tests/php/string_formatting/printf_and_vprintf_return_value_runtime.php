@@ -30,4 +30,4 @@ $c = vprintf("%s:%d\n", ["p", 7]);
 echo "|";
 echo $a . "," . $c;
 
-__vybe_check(ob_get_clean(), "A=3|S=x y|p:7|4,4");
+__vybe_check(ob_get_clean(), "A=3\n|S=x y|p:7\n|4,4");

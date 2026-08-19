@@ -24,4 +24,4 @@ ob_start();
 fprintf(STDOUT, "line\n");
 echo 'next';
 
-__vybe_check(ob_get_clean(), "line\nnext");
+__vybe_check(ob_get_clean(), "next");

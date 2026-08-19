@@ -1,6 +1,8 @@
 // vybe-test: dart/dart_developer_service_extensions/post_event_multiple
 // origin: languages/dart/tests/dart/test_dart_developer_service_extensions.rs
 
+import 'dart:developer';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,7 +22,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:developer';
 void __vybeMain() {
   postEvent('ext.test.event1', {'a': 1});
   postEvent('ext.test.event2', {'b': 2});

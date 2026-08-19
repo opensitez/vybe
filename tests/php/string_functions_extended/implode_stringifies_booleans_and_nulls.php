@@ -23,4 +23,4 @@ ob_start();
 
 echo implode(',', [true, false, null]);
 
-__vybe_check(ob_get_clean(), "1, ");
+__vybe_check(ob_get_clean(), "1,,");

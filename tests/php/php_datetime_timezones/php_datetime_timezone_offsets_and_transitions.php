@@ -21,6 +21,11 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-(new DateTimeZone('UTC'))->getOffset(new DateTimeImmutable('2024-01-01 00:00:00', new DateTimeZone('UTC')))
+$tz = new DateTimeZone('Europe/Berlin');
+$abbrevs = DateTimeZone::listAbbreviations();
+echo array_key_exists('ce', $abbrevs) ? 'ce' : 'no';
+$transitions = $tz->getTransitions(strtotime('2024-01-01'), strtotime('2024-07-01'));
+echo count($transitions) > 0 ? 'has' : 'none';
 
-__vybe_check(ob_get_clean(), "0");
+
+__vybe_check(ob_get_clean(), "nohas");

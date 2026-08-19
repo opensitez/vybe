@@ -1,6 +1,8 @@
 // vybe-test: dart/dart_isolate_errors_exit/isolate_exit_kills_isolate
 // origin: languages/dart/tests/dart/test_dart_isolate_errors_exit.rs
 
+import 'dart:isolate';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,7 +22,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:isolate';
 void isolateMain(SendPort port) {
   Isolate.exit(port, 'dead');
   // if not killed, this throws

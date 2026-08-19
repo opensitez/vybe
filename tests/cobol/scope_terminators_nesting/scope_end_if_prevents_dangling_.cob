@@ -21,8 +21,8 @@ PROCEDURE DIVISION.
     STRING "INNER" DELIMITED SIZE INTO WS-VYBE-L
     EVALUATE WS-VYBE-I
         WHEN 1
-            IF WS-VYBE-L NOT = "AFTER"
-                DISPLAY "FAIL at 1 want [AFTER] got [" WS-VYBE-L "]"
+            IF WS-VYBE-L NOT = "INNER"
+                DISPLAY "FAIL at 1 want [INNER] got [" WS-VYBE-L "]"
                 MOVE 1 TO RETURN-CODE
                 RAISE EXCEPTION EC-PROGRAM
             END-IF

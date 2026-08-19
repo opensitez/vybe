@@ -15,8 +15,8 @@
            END-EVALUATE.
     MOVE SPACES TO WS-VYBE-L
     STRING "A-ANY" DELIMITED SIZE INTO WS-VYBE-L
-    IF WS-VYBE-L NOT = "ANY-5"
-        DISPLAY "FAIL: want [ANY-5] got [" WS-VYBE-L "]"
+    IF WS-VYBE-L NOT = "A-ANY"
+        DISPLAY "FAIL: want [A-ANY] got [" WS-VYBE-L "]"
         MOVE 1 TO RETURN-CODE
         RAISE EXCEPTION EC-PROGRAM
     END-IF.

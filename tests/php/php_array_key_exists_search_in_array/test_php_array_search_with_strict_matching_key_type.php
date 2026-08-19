@@ -25,4 +25,4 @@ $a = ["1" => "one", 2 => "two", "3" => "three"];
 echo array_search("2", $a) . "|";
 echo (array_search("2", $a, true) === false ? "strict-no" : "strict-yes");
 
-__vybe_check(ob_get_clean(), "1|strict-no");
+__vybe_check(ob_get_clean(), "|strict-no");

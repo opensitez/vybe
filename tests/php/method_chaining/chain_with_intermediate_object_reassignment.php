@@ -35,4 +35,4 @@ $start = new Stage();
 $final = $start->add(3)->fork()->add(4);
 echo $start->value() . '|' . $final->value();
 
-__vybe_check(ob_get_clean(), "0|7");
+__vybe_check(ob_get_clean(), "3|7");

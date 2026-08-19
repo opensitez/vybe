@@ -23,4 +23,4 @@ ob_start();
 
 echo sprintf("x\\n|%s", "y");
 
-__vybe_check(ob_get_clean(), "x\n|y");
+__vybe_check(ob_get_clean(), "x\\n|y");

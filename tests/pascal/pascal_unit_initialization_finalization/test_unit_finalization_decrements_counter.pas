@@ -1,6 +1,17 @@
 // vybe-test: pascal/pascal_unit_initialization_finalization/test_unit_finalization_decrements_counter
 // origin: languages/pascal/tests/pascal/test_pascal_unit_initialization_finalization.rs
 unit CounterUnit;
+interface
+  var Counter: Integer;
+implementation
+initialization
+  Counter := 1;
+finalization
+  Dec(Counter);
+  __p(__vs('CounterFinalized:' + Counter.ToString));
+end.
+
+program Test;
 {$mode delphi}
 // Vybe test harness — Pascal.
 //
@@ -61,17 +72,6 @@ begin
     Halt(1);
   end;
 end;
-interface
-  var Counter: Integer;
-implementation
-initialization
-  Counter := 1;
-finalization
-  Dec(Counter);
-  __p(__vs('CounterFinalized:' + Counter.ToString));
-end.
-
-program Test;
 uses CounterUnit;
 begin
   __p(__vs('CounterBody:' + Counter.ToString));

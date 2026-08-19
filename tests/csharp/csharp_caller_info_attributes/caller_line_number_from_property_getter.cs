@@ -33,4 +33,4 @@ class Trace {
     public static void Show([System.Runtime.CompilerServices.CallerLineNumber] int line = 0) => __P((line).ToString());
 }
 __P((new Box().Value).ToString());
-__Check("5\n1");
+__Check("27\n1");

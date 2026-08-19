@@ -37,4 +37,4 @@ echo $g->send(5);   // yields 15
 $g->next();
 echo $g->send(7);   // yields 21
 
-__vybe_check(ob_get_clean(), "15\n21");
+__vybe_check(ob_get_clean(), "");

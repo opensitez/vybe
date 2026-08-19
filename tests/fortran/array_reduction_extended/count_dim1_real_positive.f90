@@ -4,16 +4,16 @@ program t
 real :: m(2,3) = reshape([1.0,-1.0,2.0,3.0,-2.0,4.0],[2,3])
 integer :: c(3)
 c = count(m > 0.0, dim=1)
-if ((c(1)) /= 2) then
-    print *, "FAIL: want [2] got [", c(1), "]"
+if ((c(1)) /= 1) then
+    print *, "FAIL: want [1] got [", c(1), "]"
     stop 1
 end if
-if ((c(2)) /= 1) then
-    print *, "FAIL: want [1] got [", c(2), "]"
+if ((c(2)) /= 2) then
+    print *, "FAIL: want [2] got [", c(2), "]"
     stop 1
 end if
-if ((c(3)) /= 2) then
-    print *, "FAIL: want [2] got [", c(3), "]"
+if ((c(3)) /= 1) then
+    print *, "FAIL: want [1] got [", c(3), "]"
     stop 1
 end if
 end program t

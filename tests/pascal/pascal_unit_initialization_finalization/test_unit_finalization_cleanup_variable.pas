@@ -1,6 +1,17 @@
 // vybe-test: pascal/pascal_unit_initialization_finalization/test_unit_finalization_cleanup_variable
 // origin: languages/pascal/tests/pascal/test_pascal_unit_initialization_finalization.rs
 unit CleanupUnit;
+interface
+  procedure Touch;
+implementation
+procedure Touch; begin __p(__vs('TouchWork')); end;
+initialization
+  __p(__vs('InitCleanupUnit'));
+finalization
+  __p(__vs('FinalizeCleanupUnit'));
+end.
+
+program Test;
 {$mode delphi}
 // Vybe test harness — Pascal.
 //
@@ -61,17 +72,6 @@ begin
     Halt(1);
   end;
 end;
-interface
-  procedure Touch;
-implementation
-procedure Touch; begin __p(__vs('TouchWork')); end;
-initialization
-  __p(__vs('InitCleanupUnit'));
-finalization
-  __p(__vs('FinalizeCleanupUnit'));
-end.
-
-program Test;
 uses CleanupUnit;
 begin
   Touch;

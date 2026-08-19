@@ -27,4 +27,4 @@ echo array_key_exists('ce', $abbrevs) ? 'ce' : 'no';
 $transitions = $tz->getTransitions(strtotime('2024-01-01'), strtotime('2024-07-01'));
 echo count($transitions) > 0 ? 'has' : 'none';
 
-__vybe_check(ob_get_clean(), "ceno");
+__vybe_check(ob_get_clean(), "nohas");

@@ -40,4 +40,4 @@ function apply_formatter(Formatter $formatter, string $value): string {
 echo apply_formatter(new Upper(), 'ab');
 echo apply_formatter(new Lower(), 'AB');
 
-__vybe_check(ob_get_clean(), "AB\nab");
+__vybe_check(ob_get_clean(), "ABab");

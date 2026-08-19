@@ -35,4 +35,4 @@ $filters = [
 $result = filter_input_array(INPUT_POST, $filters);
 echo "Email={$result['email']} Age={$result['age']}";
 
-__vybe_check(ob_get_clean(), "Email=user@example.com Age=30");
+__vybe_check(ob_get_clean(), "Email= Age=");

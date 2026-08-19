@@ -1,6 +1,19 @@
 // vybe-test: pascal/pascal_unit_initialization_finalization/test_unit_initialization_with_try_except
 // origin: languages/pascal/tests/pascal/test_pascal_unit_initialization_finalization.rs
 unit SafeInitUnit;
+interface
+  var SafeInitSuccess: Boolean;
+implementation
+uses SysUtils;
+initialization
+  try
+    SafeInitSuccess := True;
+  except
+    SafeInitSuccess := False;
+  end;
+end.
+
+program Test;
 {$mode delphi}
 // Vybe test harness — Pascal.
 //
@@ -61,19 +74,6 @@ begin
     Halt(1);
   end;
 end;
-interface
-  var SafeInitSuccess: Boolean;
-implementation
-uses SysUtils;
-initialization
-  try
-    SafeInitSuccess := True;
-  except
-    SafeInitSuccess := False;
-  end;
-end.
-
-program Test;
 uses SafeInitUnit;
 begin
   __p(__vs(SafeInitSuccess));

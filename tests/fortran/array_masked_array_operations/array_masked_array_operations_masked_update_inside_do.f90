@@ -3,7 +3,7 @@
 
 program array_masked_array_operations_masked_update_inside_do
 integer :: vybe_check_i = 0
-integer :: vybe_check_w(3) = [ 39, 5, 15 ]
+integer :: vybe_check_w(3) = [ 40, 5, 15 ]
     integer :: values(4)
     integer :: result(4)
     integer :: i

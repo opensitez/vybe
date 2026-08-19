@@ -32,4 +32,4 @@ $rows = [new WithGetter()];
 $names = array_column($rows, 'name');
 echo json_encode($names);
 
-__vybe_check(ob_get_clean(), "[null]");
+__vybe_check(ob_get_clean(), "[]");

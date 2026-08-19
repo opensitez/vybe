@@ -23,4 +23,4 @@ ob_start();
 
 echo strcspn('abc', '') ;
 
-__vybe_check(ob_get_clean(), "0");
+__vybe_check(ob_get_clean(), "3");

@@ -1,6 +1,21 @@
 // vybe-test: pascal/pascal_unit_initialization_finalization/test_unit_initialization_singleton_instantiation
 // origin: languages/pascal/tests/pascal/test_pascal_unit_initialization_finalization.rs
 unit SingletonUnit;
+interface
+  type TSingleton = class
+    public procedure Speak;
+  end;
+  var SingletonInstance: TSingleton;
+implementation
+procedure TSingleton.Speak; begin __p(__vs('SingletonActive')); end;
+initialization
+  SingletonInstance := TSingleton.Create;
+finalization
+  SingletonInstance.Free;
+  __p(__vs('SingletonFreed'));
+end.
+
+program Test;
 {$mode delphi}
 // Vybe test harness — Pascal.
 //
@@ -61,21 +76,6 @@ begin
     Halt(1);
   end;
 end;
-interface
-  type TSingleton = class
-    public procedure Speak;
-  end;
-  var SingletonInstance: TSingleton;
-implementation
-procedure TSingleton.Speak; begin __p(__vs('SingletonActive')); end;
-initialization
-  SingletonInstance := TSingleton.Create;
-finalization
-  SingletonInstance.Free;
-  __p(__vs('SingletonFreed'));
-end.
-
-program Test;
 uses SingletonUnit;
 begin
   SingletonInstance.Speak;

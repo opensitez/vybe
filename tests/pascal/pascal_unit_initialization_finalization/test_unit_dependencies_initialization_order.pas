@@ -1,6 +1,26 @@
 // vybe-test: pascal/pascal_unit_initialization_finalization/test_unit_dependencies_initialization_order
 // origin: languages/pascal/tests/pascal/test_pascal_unit_initialization_finalization.rs
 unit UnitA;
+interface procedure ProcA;
+implementation
+procedure ProcA; begin end;
+initialization
+  __p(__vs('InitA'));
+finalization
+  __p(__vs('FinalA'));
+end.
+
+unit UnitB;
+interface uses UnitA; procedure ProcB;
+implementation
+procedure ProcB; begin ProcA; end;
+initialization
+  __p(__vs('InitB'));
+finalization
+  __p(__vs('FinalB'));
+end.
+
+program Test;
 {$mode delphi}
 // Vybe test harness — Pascal.
 //
@@ -61,26 +81,6 @@ begin
     Halt(1);
   end;
 end;
-interface procedure ProcA;
-implementation
-procedure ProcA; begin end;
-initialization
-  __p(__vs('InitA'));
-finalization
-  __p(__vs('FinalA'));
-end.
-
-unit UnitB;
-interface uses UnitA; procedure ProcB;
-implementation
-procedure ProcB; begin ProcA; end;
-initialization
-  __p(__vs('InitB'));
-finalization
-  __p(__vs('FinalB'));
-end.
-
-program Test;
 uses UnitB;
 begin
   __p(__vs('MainProgram'));

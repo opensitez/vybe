@@ -1,6 +1,8 @@
 // vybe-test: dart/dart_convert_json_utf8_streams/json_utf8_bind
 // origin: languages/dart/tests/dart/test_dart_convert_json_utf8_streams.rs
 
+import 'dart:convert';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,7 +22,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:convert';
 void __vybeMain() async {
   final stream = Stream.fromIterable([ [123, 34, 97, 34, 58, 49, 125] ]); // {"a":1}
   final decoded = await utf8.decoder.bind(stream).transform(json.decoder).first;

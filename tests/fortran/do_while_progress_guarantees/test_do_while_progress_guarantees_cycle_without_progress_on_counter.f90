@@ -3,7 +3,7 @@
 
 program t
 integer :: vybe_check_i = 0
-integer :: vybe_check_w(2) = [ 3, 4 ]
+integer :: vybe_check_w(2) = [ 3, 5 ]
     integer :: i
     integer :: total
     i = 0

@@ -1,6 +1,8 @@
 // vybe-test: dart/dart_convert_json_encode_decode/json_encode_large_integer
 // origin: languages/dart/tests/dart/test_dart_convert_json_encode_decode.rs
 
+import 'dart:convert';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,7 +22,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:convert';
 void __vybeMain() {
   // Dart ints are 64-bit, JS JSON limits safely to 53-bit. 
   // Dart's jsonEncode on native supports full 64-bit int serialization

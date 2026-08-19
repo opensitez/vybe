@@ -25,4 +25,4 @@ echo strpos("abcabc", "a", -4) === 2 ? "pos2" : "no";
 echo "\n";
 echo strpos("abc", "") === 0 ? "empty-zero" : "non-zero";
 
-__vybe_check(ob_get_clean(), "pos2\nempty-zero");
+__vybe_check(ob_get_clean(), "no\nempty-zero");

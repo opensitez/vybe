@@ -32,4 +32,4 @@ $b = clone $a;
 echo $a->label;
 echo $b->label;
 
-__vybe_check(ob_get_clean(), "A|A:clone");
+__vybe_check(ob_get_clean(), "AA:clone");

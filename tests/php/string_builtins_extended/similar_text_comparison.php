@@ -21,6 +21,10 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-World
+$common = similar_text("World", "Word");
+echo $common;
+similar_text("Hello", "Hello", $pct);
+echo ($pct == 100.0) ? "full" : "partial";
 
-__vybe_check(ob_get_clean(), "Word");
+
+__vybe_check(ob_get_clean(), "4full");

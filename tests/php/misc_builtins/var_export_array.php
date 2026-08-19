@@ -23,4 +23,4 @@ ob_start();
 
 var_export([1,2,3]);
 
-__vybe_check(ob_get_clean(), "array (  0 => 1,  1 => 2,  2 => 3,\n)");
+__vybe_check(ob_get_clean(), "array (\n  0 => 1,\n  1 => 2,\n  2 => 3,\n)");

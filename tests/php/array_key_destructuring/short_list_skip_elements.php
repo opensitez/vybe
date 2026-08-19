@@ -24,4 +24,4 @@ ob_start();
 [, $second,  $fourth] = [10, 20, 30, 40];
 echo "$second,$fourth";
 
-__vybe_check(ob_get_clean(), "20,40");
+__vybe_check(ob_get_clean(), "20,30");

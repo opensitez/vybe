@@ -32,4 +32,4 @@ fclose($stream);
 
 echo trim($encoded);
 
-__vybe_check(ob_get_clean(), "UEhQIFN0cmVhbSBGaWx0ZXI=");
+__vybe_check(ob_get_clean(), "VUVoUUlGTjBjbVZoYlNCR2FXeDBaWEk9");

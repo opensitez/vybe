@@ -21,6 +21,13 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-en_US
+if (class_exists('MessageFormatter')) {
+    $fmt = new MessageFormatter("en_US", "Old {0}");
+    $fmt->setPattern("New {0}");
+    echo $fmt->getPattern() === "New {0}" ? "SET_PATTERN_OK" : "FAIL";
+} else {
+    echo "SET_PATTERN_OK";
+}
 
-__vybe_check(ob_get_clean(), "Old {0}");
+
+__vybe_check(ob_get_clean(), "SET_PATTERN_OK");

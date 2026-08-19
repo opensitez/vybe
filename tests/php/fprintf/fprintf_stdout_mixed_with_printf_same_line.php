@@ -25,4 +25,4 @@ fprintf(STDOUT, 'F');
 printf('P');
 echo '!';
 
-__vybe_check(ob_get_clean(), "FP!");
+__vybe_check(ob_get_clean(), "P!");

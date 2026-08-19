@@ -25,4 +25,4 @@ echo str_starts_with('café noir', 'café') ? 'starts' : 'no';
 echo "\n";
 echo str_starts_with('café noir', 'CAFÉ') ? 'starts-upper' : 'no-upper';
 
-__vybe_check(ob_get_clean(), "starts|no-upper");
+__vybe_check(ob_get_clean(), "starts\nno-upper");

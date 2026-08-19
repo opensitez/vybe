@@ -27,4 +27,4 @@ echo (null ?? 'default');
 echo '|';
 echo ('' ?: 'fallback');
 
-__vybe_check(ob_get_clean(), "0| |fallback");
+__vybe_check(ob_get_clean(), "0|default|fallback");

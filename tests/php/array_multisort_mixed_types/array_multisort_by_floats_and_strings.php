@@ -26,4 +26,4 @@ $labels = ["a", "b", "c", "d", "e"];
 array_multisort($vals, SORT_ASC, SORT_NUMERIC, $labels, SORT_ASC, SORT_STRING);
 echo implode(',', $vals) . "|" . implode(',', $labels);
 
-__vybe_check(ob_get_clean(), "1,2.5,2.5,3,1.2|e,c,d,b,a");
+__vybe_check(ob_get_clean(), "1,1.2,2.5,2.5,3|e,a,c,d,b");

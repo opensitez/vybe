@@ -2,10 +2,10 @@
 ! origin: languages/fortran/tests/fortran/test_transfer_extended.rs
 program t
 character(len=3) :: s = 'abc'
-integer :: n
+integer :: n(1)
 n = transfer(s, 0, 1)
-if ((n) /= 97) then
-    print *, "FAIL: want [97] got [", n, "]"
+if ((n(1)) /= 6513249) then
+    print *, "FAIL: want [6513249] got [", n(1), "]"
     stop 1
 end if
 end program t

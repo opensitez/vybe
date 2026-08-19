@@ -39,4 +39,4 @@ echo $obj->visible();
 echo '|' . $obj->secret();
 echo '|' . $obj->public;
 
-__vybe_check(ob_get_clean(), "pub|prot|pub|prot");
+__vybe_check(ob_get_clean(), "pub|prot|prot|pub");

@@ -6,12 +6,12 @@ program array_fill_pattern_internals_fill_then_replace_tail
     values = (/ 1, 1, 1, 1, 1, 1 /)
     values(1:3) = -3
     values(4:6) = values(1:3) + 5
-    if ((sum(values)) /= 8) then
-    print *, "FAIL: want [8] got [", sum(values), "]"
+    if ((sum(values)) /= -3) then
+    print *, "FAIL: want [-3] got [", sum(values), "]"
     stop 1
 end if
-    if ((values(3)) /= 2) then
-    print *, "FAIL: want [2] got [", values(3), "]"
+    if ((values(3)) /= -3) then
+    print *, "FAIL: want [-3] got [", values(3), "]"
     stop 1
 end if
     if ((values(6)) /= 2) then

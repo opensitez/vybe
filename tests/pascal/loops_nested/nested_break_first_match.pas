@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; var i,j:Integer; begin for i:=1 to 4 do for j:=1 to 4 do if i*j=12 then begin __p(__vs(i)); __p(__vs(j)); Break; end; __vybeCheck('3' + #10 + '4');
+end; var i,j:Integer; begin for i:=1 to 4 do for j:=1 to 4 do if i*j=12 then begin __p(__vs(i)); __p(__vs(j)); Break; end; __vybeCheck('3' + #10 + '4' + #10 + '4' + #10 + '3');
 end.

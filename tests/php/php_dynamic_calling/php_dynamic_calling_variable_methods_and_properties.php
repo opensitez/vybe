@@ -31,4 +31,4 @@ $method = "answer";
 echo $obj->$method();
 echo $obj->{"plus"}(4);
 
-__vybe_check(ob_get_clean(), "421");
+__vybe_check(ob_get_clean(), "425");

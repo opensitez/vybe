@@ -19,8 +19,8 @@ PROCEDURE DIVISION.
     STRING WS-I DELIMITED SIZE " " DELIMITED SIZE WS-J DELIMITED SIZE INTO WS-VYBE-L
     EVALUATE WS-VYBE-I
         WHEN 1
-            IF WS-VYBE-L NOT = "1 1"
-                DISPLAY "FAIL at 1 want [1 1] got [" WS-VYBE-L "]"
+            IF WS-VYBE-L NOT = "3 1"
+                DISPLAY "FAIL at 1 want [3 1] got [" WS-VYBE-L "]"
                 MOVE 1 TO RETURN-CODE
                 RAISE EXCEPTION EC-PROGRAM
             END-IF

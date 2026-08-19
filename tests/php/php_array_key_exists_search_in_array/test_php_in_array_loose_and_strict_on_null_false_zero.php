@@ -26,4 +26,4 @@ echo (in_array("", $a) ? "empty-loose" : "empty-loose-no") . "|";
 echo (in_array("", $a, true) ? "empty-strict" : "empty-strict-no") . "|";
 echo (in_array(0, $a, true) ? "zero-strict" : "zero-strict-no");
 
-__vybe_check(ob_get_clean(), "empty-loose-no|empty-strict-no|zero-strict-no");
+__vybe_check(ob_get_clean(), "empty-loose|empty-strict-no|zero-strict");

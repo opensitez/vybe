@@ -29,4 +29,4 @@ $filtered = array_filter(
 );
 echo implode(',', array_keys($filtered));
 
-__vybe_check(ob_get_clean(), "x,z");
+__vybe_check(ob_get_clean(), "x,y,z");

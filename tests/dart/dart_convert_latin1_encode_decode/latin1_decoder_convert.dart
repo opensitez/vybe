@@ -1,6 +1,8 @@
 // vybe-test: dart/dart_convert_latin1_encode_decode/latin1_decoder_convert
 // origin: languages/dart/tests/dart/test_dart_convert_latin1_encode_decode.rs
 
+import 'dart:convert';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,7 +22,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:convert';
 void __vybeMain() {
   final decoder = Latin1Decoder();
   __p(decoder.convert([65, 66]));

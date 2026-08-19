@@ -27,4 +27,4 @@ echo trim("xxHelloxx", "x");
 echo "\n";
 echo trim("xyxxyx", "xy");
 
-__vybe_check(ob_get_clean(), "Hello World\nHello\n");
+__vybe_check(ob_get_clean(), "Hello World\nHello");

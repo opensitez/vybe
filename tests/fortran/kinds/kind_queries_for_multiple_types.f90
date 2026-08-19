@@ -12,16 +12,16 @@ program test
     s = "abc"
     i = 5
     r = 3.0
-    if ((kind(l)) /= 8) then
-    print *, "FAIL: want [8] got [", kind(l), "]"
+    if ((kind(l)) /= 4) then
+    print *, "FAIL: want [4] got [", kind(l), "]"
     stop 1
 end if
-    if ((kind(c)) /= 8) then
-    print *, "FAIL: want [8] got [", kind(c), "]"
+    if ((kind(c)) /= 4) then
+    print *, "FAIL: want [4] got [", kind(c), "]"
     stop 1
 end if
-    if ((kind(s)) /= 8) then
-    print *, "FAIL: want [8] got [", kind(s), "]"
+    if ((kind(s)) /= 1) then
+    print *, "FAIL: want [1] got [", kind(s), "]"
     stop 1
 end if
     if ((kind(i)) /= 4) then

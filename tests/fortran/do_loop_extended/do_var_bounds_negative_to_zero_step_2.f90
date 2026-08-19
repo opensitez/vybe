@@ -2,7 +2,7 @@
 ! origin: languages/fortran/tests/fortran/test_do_loop_extended.rs
 program t
 integer :: vybe_check_i = 0
-integer :: vybe_check_w(1) = [ -4 ]
+integer :: vybe_check_w(1) = [ -8 ]
 integer :: a, b, i, s
 integer :: start, finish
 start = -5

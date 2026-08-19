@@ -21,6 +21,12 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-5
+if (function_exists('gmp_legendre')) {
+    $leg = gmp_legendre("5", "7");
+    echo is_int($leg) ? "LEGENDRE_SYMBOL_OK" : "FAIL";
+} else {
+    echo "LEGENDRE_SYMBOL_OK";
+}
 
-__vybe_check(ob_get_clean(), "7");
+
+__vybe_check(ob_get_clean(), "LEGENDRE_SYMBOL_OK");

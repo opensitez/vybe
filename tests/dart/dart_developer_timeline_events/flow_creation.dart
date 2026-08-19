@@ -1,6 +1,8 @@
 // vybe-test: dart/dart_developer_timeline_events/flow_creation
 // origin: languages/dart/tests/dart/test_dart_developer_timeline_events.rs
 
+import 'dart:developer';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,7 +22,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:developer';
 void __vybeMain() {
   final flow = Flow.begin();
   __p(flow.id > 0);

@@ -1,6 +1,8 @@
 // vybe-test: dart/dart_typed_data_unmodifiable_views/unmodifiable_float64x2list_view_creation
 // origin: languages/dart/tests/dart/test_dart_typed_data_unmodifiable_views.rs
 
+import 'dart:typed_data';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,7 +22,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:typed_data';
 void __vybeMain() {
   final l = Float64x2List.fromList([Float64x2(10.0, 20.0)]);
   final ul = UnmodifiableFloat64x2ListView(l);

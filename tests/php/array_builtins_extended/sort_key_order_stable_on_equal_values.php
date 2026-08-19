@@ -25,4 +25,4 @@ $a = [2 => "same", 1 => "same", 0 => "low"];
 asort($a);
 echo implode(',', array_keys($a));
 
-__vybe_check(ob_get_clean(), "2,1,0");
+__vybe_check(ob_get_clean(), "0,2,1");

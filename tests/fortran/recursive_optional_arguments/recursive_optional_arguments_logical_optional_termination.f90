@@ -2,12 +2,12 @@
 ! origin: languages/fortran/tests/fortran/test_recursive_optional_arguments.rs
 
 program recursive_optional_arguments_logical_optional_termination
-    if ((parity(6)) /= 21) then
-    print *, "FAIL: want [21] got [", parity(6), "]"
+    if ((parity(6)) /= 12) then
+    print *, "FAIL: want [12] got [", parity(6), "]"
     stop 1
 end if
-    if ((parity(6, .false.)) /= 9) then
-    print *, "FAIL: want [9] got [", parity(6, .false.), "]"
+    if ((parity(6, .false.)) /= 21) then
+    print *, "FAIL: want [21] got [", parity(6, .false.), "]"
     stop 1
 end if
 contains

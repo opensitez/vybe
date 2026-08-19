@@ -25,4 +25,4 @@ $input = ["a", "b", "c"];
 $result = preg_filter('/z/', 'X$0', $input);
 echo var_export($result, true);
 
-__vybe_check(ob_get_clean(), "NULL");
+__vybe_check(ob_get_clean(), "array (\n)");

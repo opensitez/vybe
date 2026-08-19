@@ -21,6 +21,14 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-('a' . 1 . true)
+echo ('a' . 1 . true), "\n";
+echo ('a' . (1 + true)), "\n";
+echo (1 + '2'), "\n";
+echo ('3' + '4'), "\n";
+echo ('2' . ('1' + 2)), "\n";
+echo ('value=' . (1 ? 2 : 3)), "\n";
+echo (function() { $left = 'left'; $right = null; return $left . ($right ?? 'fallback'); })(), "\n";
+echo (function() { $left = 'left'; $right = 'right'; return $left . ($right ?? 'fallback'); })(), "\n";
 
-__vybe_check(ob_get_clean(), "a11");
+
+__vybe_check(ob_get_clean(), "a11\na2\n3\n7\n23\nvalue=2\nleftfallback\nleftright");

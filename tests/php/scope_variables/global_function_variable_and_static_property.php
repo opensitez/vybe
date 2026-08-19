@@ -36,4 +36,4 @@ Holder::$tag = 'global-tag';
 function read_holder(): string { return Holder::$tag; }
 echo read_holder();
 
-__vybe_check(ob_get_clean(), "from-scope|from-scope|global-tag");
+__vybe_check(ob_get_clean(), "from-scope|global-tag");

@@ -30,4 +30,4 @@ echo "\n";
 echo "{$fruit}";
 echo "\n";
 
-__vybe_check(ob_get_clean(), "apple \napple");
+__vybe_check(ob_get_clean(), "apple\n \napple");

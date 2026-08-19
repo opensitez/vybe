@@ -25,4 +25,4 @@ class Trace {
 }
 Trace.Show();
 Trace.Show();
-__Check("4\n5");
+__Check("26\n27");

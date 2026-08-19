@@ -1,6 +1,8 @@
 // vybe-test: dart/dart_convert_json_encode_decode/json_decode_list
 // origin: languages/dart/tests/dart/test_dart_convert_json_encode_decode.rs
 
+import 'dart:convert';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,7 +22,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:convert';
 void __vybeMain() {
   final list = jsonDecode('[1,"two",false,null]');
   __p('${list[0]}:${list[1]}:${list[2]}:${list[3]}');

@@ -23,4 +23,4 @@ ob_start();
 
 fprintf(STDOUT, '%x', 255);
 
-__vybe_check(ob_get_clean(), "ff");
+__vybe_check(ob_get_clean(), "");

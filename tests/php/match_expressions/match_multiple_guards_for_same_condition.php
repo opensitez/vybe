@@ -29,4 +29,4 @@ echo match (12) {
     default => 'none',
 };
 
-__vybe_check(ob_get_clean(), "bigger");
+__vybe_check(ob_get_clean(), "exact");

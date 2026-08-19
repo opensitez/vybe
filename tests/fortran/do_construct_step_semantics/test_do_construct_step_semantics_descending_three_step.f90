@@ -3,7 +3,7 @@
 
 program test_do_construct_step_semantics
 integer :: vybe_check_i = 0
-integer :: vybe_check_w(1) = [ 22 ]
+integer :: vybe_check_w(1) = [ 18 ]
     integer :: i
     integer :: total
     total = 0

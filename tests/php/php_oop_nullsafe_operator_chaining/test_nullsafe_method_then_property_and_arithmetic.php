@@ -34,4 +34,4 @@ echo ($has->counter?->value() + 1);
 echo '|';
 echo ($none->counter?->value() + 1) ?? 'none';
 
-__vybe_check(ob_get_clean(), "5|none");
+__vybe_check(ob_get_clean(), "5|1");

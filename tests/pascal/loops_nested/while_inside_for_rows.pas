@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; var i,j:Integer; begin for i:=1 to 3 do begin j:=0; while j<i do begin __p(__vs(i*10+j)); Inc(j); end; end; __vybeCheck('11' + #10 + '12' + #10 + '21' + #10 + '22' + #10 + '23' + #10 + '31' + #10 + '32' + #10 + '33');
+end; var i,j:Integer; begin for i:=1 to 3 do begin j:=0; while j<i do begin __p(__vs(i*10+j)); Inc(j); end; end; __vybeCheck('10' + #10 + '20' + #10 + '21' + #10 + '30' + #10 + '31' + #10 + '32');
 end.

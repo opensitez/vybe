@@ -25,4 +25,4 @@ echo strip_tags("<p>safe</p><script>bad()</script><em>ok</em>", "<em>");
 echo "|";
 echo strip_tags("<div><span>v</span></div>", "<span>");
 
-__vybe_check(ob_get_clean(), "safeok|<span>v</span>");
+__vybe_check(ob_get_clean(), "safebad()<em>ok</em>|<span>v</span>");

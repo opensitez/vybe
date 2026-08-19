@@ -20,5 +20,5 @@ void __Check(string want) {
     }
 }
 
-int? a=2; int? b=null; __P(((a<b).HasValue).ToString());
+int? a=2; int? b=null; __P((a<b).ToString());
 __Check("False");

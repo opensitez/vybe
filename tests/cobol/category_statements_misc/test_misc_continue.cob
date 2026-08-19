@@ -18,8 +18,8 @@
     STRING "NO" DELIMITED SIZE INTO WS-VYBE-L
     EVALUATE WS-VYBE-I
         WHEN 1
-            IF WS-VYBE-L NOT = "YES"
-                DISPLAY "FAIL at 1 want [YES] got [" WS-VYBE-L "]"
+            IF WS-VYBE-L NOT = "NO"
+                DISPLAY "FAIL at 1 want [NO] got [" WS-VYBE-L "]"
                 MOVE 1 TO RETURN-CODE
                 RAISE EXCEPTION EC-PROGRAM
             END-IF

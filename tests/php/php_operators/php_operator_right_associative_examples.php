@@ -21,6 +21,13 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-(1 <=> 2) > 0
+echo (1 <=> 2) > 0, "\n";
+echo (2 <=> 1) > 0, "\n";
+echo ((1 <=> 1) === 0), "\n";
+echo ('1' <=> '2'), "\n";
+echo ('a' <=> 'b'), "\n";
+echo (true <=> false), "\n";
+echo (false <=> true), "\n";
 
-__vybe_check(ob_get_clean(), "0");
+
+__vybe_check(ob_get_clean(), "\n1\n1\n-1\n-1\n1\n-1");

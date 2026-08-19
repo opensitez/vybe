@@ -34,4 +34,4 @@ do {
 } while ($i < 4);
 echo $out;
 
-__vybe_check(ob_get_clean(), "0o1o2e3o");
+__vybe_check(ob_get_clean(), "0o1e2o3e");

@@ -1,6 +1,8 @@
 // vybe-test: dart/dart_developer_debugger/developer_debugger_trigger
 // origin: languages/dart/tests/dart/test_dart_developer_debugger.rs
 
+import 'dart:developer';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,7 +22,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:developer';
 void __vybeMain() {
   // If no debugger is attached, this is a no-op and returns false.
   final triggered = debugger(message: 'test_debugger');

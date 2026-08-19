@@ -21,6 +21,10 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-abcdefg
+$n = strcspn("abcdefg", "deh");
+echo $n;
+echo strcspn("hello", "aeiou");
+echo strcspn("", "abc");
 
-__vybe_check(ob_get_clean(), "deh");
+
+__vybe_check(ob_get_clean(), "310");

@@ -24,4 +24,4 @@ ob_start();
 $i = new DateInterval('P15D');
 echo $i->format('%R%a');
 
-__vybe_check(ob_get_clean(), "+15");
+__vybe_check(ob_get_clean(), "+(unknown)");

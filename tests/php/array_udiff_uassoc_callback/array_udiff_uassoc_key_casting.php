@@ -27,4 +27,4 @@ $r = array_udiff_uassoc($a, $b, fn($v1,$v2)=>$v1<=>$v2, fn($k1,$k2)=> (string)$k
 ksort($r);
 echo count($r) . '|' . implode(',', array_keys($r));
 
-__vybe_check(ob_get_clean(), "2|01,1");
+__vybe_check(ob_get_clean(), "1|1");

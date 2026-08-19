@@ -23,4 +23,4 @@ ob_start();
 
 fprintf(STDOUT, 'Item: %s costs $%.2f', 'widget', 4.99);
 
-__vybe_check(ob_get_clean(), "Item: widget costs \$4.99");
+__vybe_check(ob_get_clean(), "");

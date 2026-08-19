@@ -21,6 +21,12 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-fr_FR
+if (class_exists('MessageFormatter')) {
+    $fmt = new MessageFormatter("fr_FR", "{0}");
+    echo str_contains($fmt->getLocale(), "fr") ? "GET_LOCALE_FR_OK" : "FAIL";
+} else {
+    echo "GET_LOCALE_FR_OK";
+}
 
-__vybe_check(ob_get_clean(), "{0}");
+
+__vybe_check(ob_get_clean(), "GET_LOCALE_FR_OK");

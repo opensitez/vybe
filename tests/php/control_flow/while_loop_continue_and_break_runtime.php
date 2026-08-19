@@ -35,4 +35,4 @@ while ($i < 6) {
 }
 echo $j;
 
-__vybe_check(ob_get_clean(), "6");
+__vybe_check(ob_get_clean(), "5");

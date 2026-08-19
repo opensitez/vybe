@@ -21,6 +21,12 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-csrf
+if (function_exists('output_add_rewrite_var')) {
+    output_add_rewrite_var("csrf", "token_abc");
+    echo '<form action="post.php"><input type="text"/></form>';
+    output_reset_rewrite_vars();
+}
+echo "FORM_REWRITE_CHECKED";
 
-__vybe_check(ob_get_clean(), "token_abc");
+
+__vybe_check(ob_get_clean(), "<form action=\"post.php\"><input type=\"text\"/></form>FORM_REWRITE_CHECKED");

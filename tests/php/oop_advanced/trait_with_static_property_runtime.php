@@ -38,4 +38,4 @@ $b = new B();
 echo $a->next();
 echo $b->next();
 
-__vybe_check(ob_get_clean(), "1\n2");
+__vybe_check(ob_get_clean(), "11");

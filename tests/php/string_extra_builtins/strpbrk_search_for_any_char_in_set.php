@@ -21,6 +21,10 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-This is a test
+$result = strpbrk("This is a test", "aeiou");
+echo is_string($result) ? "found" : "not";
+$none = strpbrk("bcdfg", "aeiou");
+echo $none === false ? "false" : "found";
 
-__vybe_check(ob_get_clean(), "aeiou");
+
+__vybe_check(ob_get_clean(), "foundfalse");

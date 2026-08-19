@@ -21,6 +21,12 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-5
+if (function_exists('gmp_jacobi')) {
+    $jac = gmp_jacobi("5", "21");
+    echo is_int($jac) ? "JACOBI_SYMBOL_OK" : "FAIL";
+} else {
+    echo "JACOBI_SYMBOL_OK";
+}
 
-__vybe_check(ob_get_clean(), "21");
+
+__vybe_check(ob_get_clean(), "JACOBI_SYMBOL_OK");

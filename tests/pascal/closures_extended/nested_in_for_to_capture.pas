@@ -66,7 +66,7 @@ procedure Outer;
 var prefix: Integer;
   function LabelOf(i: Integer): Integer;
   begin Result := prefix * 10 + i; end;
-  i: Integer;
+var i: Integer;
 begin
   prefix := 2;
   for i := 1 to 3 do __p(__vs(LabelOf(i)));

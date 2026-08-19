@@ -25,4 +25,4 @@ $values = ["alpha" => "10", "beta" => "2", "gamma" => "A", "delta" => "9", "epsi
 arsort($values, SORT_NUMERIC);
 echo implode("|", array_values($values));
 
-__vybe_check(ob_get_clean(), "10|9|2|0|0");
+__vybe_check(ob_get_clean(), "10|9|2|A|0");

@@ -24,4 +24,4 @@ ob_start();
 $str = "foo\r\nbar";
 echo nl2br($str, false);
 
-__vybe_check(ob_get_clean(), "foo<br>\r\nbar");
+__vybe_check(ob_get_clean(), "foo<br>\nbar");

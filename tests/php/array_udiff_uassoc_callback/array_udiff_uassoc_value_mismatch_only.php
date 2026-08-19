@@ -26,4 +26,4 @@ $b = ["a" => 1, "b" => 9];
 $r = array_udiff_uassoc($a, $b, fn($v1,$v2)=>$v1<=>$v2, "strcmp");
 echo implode(',', array_keys($r)) . '|' . $r['c'];
 
-__vybe_check(ob_get_clean(), "c|3");
+__vybe_check(ob_get_clean(), "b,c|3");

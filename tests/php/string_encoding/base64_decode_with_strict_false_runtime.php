@@ -25,4 +25,4 @@ echo base64_decode('@@', false) === false ? 'invalid' : 'valid';
 echo "\n";
 echo base64_decode('@@', true) === false ? 'invalid' : 'valid';
 
-__vybe_check(ob_get_clean(), "valid|invalid");
+__vybe_check(ob_get_clean(), "valid\ninvalid");

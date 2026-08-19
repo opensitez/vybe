@@ -21,6 +21,12 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-en_US
+if (class_exists('MessageFormatter')) {
+    $res = MessageFormatter::formatMessage("en_US", "Result: {0}", [100]);
+    echo $res === "Result: 100" ? "FORMAT_MSG_SHORTCUT_OK" : "FAIL";
+} else {
+    echo "FORMAT_MSG_SHORTCUT_OK";
+}
 
-__vybe_check(ob_get_clean(), "Result: {0}");
+
+__vybe_check(ob_get_clean(), "FORMAT_MSG_SHORTCUT_OK");

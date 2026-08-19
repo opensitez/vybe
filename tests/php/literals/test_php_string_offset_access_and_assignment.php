@@ -29,4 +29,4 @@ $s[1] = 'Z';
 echo '\n';
 echo $s;
 
-__vybe_check(ob_get_clean(), "a\nb\naZc");
+__vybe_check(ob_get_clean(), "a\\nb\\naZc");

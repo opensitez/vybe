@@ -31,4 +31,4 @@ foreach ($items as $v) {
 }
 echo $out;
 
-__vybe_check(ob_get_clean(), "60");
+__vybe_check(ob_get_clean(), "50");

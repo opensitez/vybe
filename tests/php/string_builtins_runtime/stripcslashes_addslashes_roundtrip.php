@@ -24,4 +24,4 @@ ob_start();
 $s = addslashes("a\\nb\\'c\\\"d");
 echo stripcslashes($s);
 
-__vybe_check(ob_get_clean(), "a\nb'cd");
+__vybe_check(ob_get_clean(), "a\\nb\\'c\\\"d");

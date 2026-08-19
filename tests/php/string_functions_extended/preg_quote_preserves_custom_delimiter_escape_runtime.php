@@ -26,4 +26,4 @@ echo $p === "\/a\$b\[c\]" ? 'ok' : 'bad';
 echo '|';
 echo preg_match("/" . $p . "/", '/a$b[c]') === 1 ? 'match' : 'nomatch';
 
-__vybe_check(ob_get_clean(), "ok|match");
+__vybe_check(ob_get_clean(), "bad|match");

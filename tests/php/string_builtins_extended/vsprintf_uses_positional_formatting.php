@@ -23,4 +23,4 @@ ob_start();
 
 echo vsprintf("A:%2\$s B:%1\$d", ["first", 7]);
 
-__vybe_check(ob_get_clean(), "A:7 B:first");
+__vybe_check(ob_get_clean(), "A:7 B:0");

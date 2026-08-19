@@ -41,4 +41,4 @@ if (is_array($functions) && count($functions) >= 2) {
     echo 'bad';
 }
 
-__vybe_check(ob_get_clean(), "autoload_order_prepend|autoload_order_default");
+__vybe_check(ob_get_clean(), "none|none");

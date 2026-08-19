@@ -1,6 +1,8 @@
 // vybe-test: dart/dart_isolate_transferable_data/isolate_send_large_data
 // origin: languages/dart/tests/dart/test_dart_isolate_transferable_data.rs
 
+import 'dart:isolate';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,7 +22,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:isolate';
 void isolateMain(SendPort port) {
   final list = List.filled(1000, 42); // Send by value / serialized copy
   port.send(list);

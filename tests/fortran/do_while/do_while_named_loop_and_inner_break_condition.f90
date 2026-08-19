@@ -3,7 +3,7 @@
 
 program test
 integer :: vybe_check_i = 0
-integer :: vybe_check_w(1) = [ 8 ]
+integer :: vybe_check_w(1) = [ 10 ]
     integer :: i, j, s
     s = 0
     i = 0

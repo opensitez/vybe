@@ -1,6 +1,8 @@
 // vybe-test: dart/dart_isolate_capabilities_pause_kill/isolate_pause_resume
 // origin: languages/dart/tests/dart/test_dart_isolate_capabilities_pause_kill.rs
 
+import 'dart:isolate';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,7 +22,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:isolate';
 void __vybeMain() async {
   // We can't pause current isolate and resume it easily without a deadlock,
   // but we can spawn one, pause it, and resume it.

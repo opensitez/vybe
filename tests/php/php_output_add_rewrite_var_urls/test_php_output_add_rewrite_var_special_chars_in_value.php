@@ -21,6 +21,11 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-tag
+if (function_exists('output_add_rewrite_var')) {
+    output_add_rewrite_var("tag", "a & b = c");
+    output_reset_rewrite_vars();
+}
+echo "SPECIAL_CHARS_REWRITE_OK";
 
-__vybe_check(ob_get_clean(), "a & b = c");
+
+__vybe_check(ob_get_clean(), "SPECIAL_CHARS_REWRITE_OK");

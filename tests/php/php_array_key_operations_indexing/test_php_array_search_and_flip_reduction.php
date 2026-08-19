@@ -27,4 +27,4 @@ $flipped = array_flip($roles);
 echo $pos . '|';
 echo $flipped['read'];
 
-__vybe_check(ob_get_clean(), "3|0");
+__vybe_check(ob_get_clean(), "3|2");

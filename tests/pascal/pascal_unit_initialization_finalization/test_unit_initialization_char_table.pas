@@ -1,6 +1,16 @@
 // vybe-test: pascal/pascal_unit_initialization_finalization/test_unit_initialization_char_table
 // origin: languages/pascal/tests/pascal/test_pascal_unit_initialization_finalization.rs
 unit CharTableUnit;
+interface
+  var HexChars: array[0..15] of Char;
+implementation
+var i: Integer;
+initialization
+  for i := 0 to 9 do HexChars[i] := Chr(Ord('0') + i);
+  for i := 10 to 15 do HexChars[i] := Chr(Ord('A') + i - 10);
+end.
+
+program Test;
 {$mode delphi}
 // Vybe test harness — Pascal.
 //
@@ -61,16 +71,6 @@ begin
     Halt(1);
   end;
 end;
-interface
-  var HexChars: array[0..15] of Char;
-implementation
-var i: Integer;
-initialization
-  for i := 0 to 9 do HexChars[i] := Chr(Ord('0') + i);
-  for i := 10 to 15 do HexChars[i] := Chr(Ord('A') + i - 10);
-end.
-
-program Test;
 uses CharTableUnit;
 begin
   __p(__vs(HexChars[10] + HexChars[15]));

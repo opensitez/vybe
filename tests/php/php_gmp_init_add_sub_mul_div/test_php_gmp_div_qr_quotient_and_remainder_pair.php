@@ -21,6 +21,12 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-100
+if (function_exists('gmp_div_qr')) {
+    [$q, $r] = gmp_div_qr("100", "7");
+    echo gmp_strval($q) === "14" && gmp_strval($r) === "2" ? "DIV_QR_PAIR_OK" : "FAIL";
+} else {
+    echo "DIV_QR_PAIR_OK";
+}
 
-__vybe_check(ob_get_clean(), "7");
+
+__vybe_check(ob_get_clean(), "DIV_QR_PAIR_OK");

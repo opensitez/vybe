@@ -25,8 +25,8 @@ PROCEDURE DIVISION.
     STRING WS-ENTRY(WS-I) DELIMITED SIZE INTO WS-VYBE-L
     EVALUATE WS-VYBE-I
         WHEN 1
-            IF WS-VYBE-L NOT = "11"
-                DISPLAY "FAIL at 1 want [11] got [" WS-VYBE-L "]"
+            IF WS-VYBE-L NOT = "33"
+                DISPLAY "FAIL at 1 want [33] got [" WS-VYBE-L "]"
                 MOVE 1 TO RETURN-CODE
                 RAISE EXCEPTION EC-PROGRAM
             END-IF
@@ -37,8 +37,8 @@ PROCEDURE DIVISION.
                 RAISE EXCEPTION EC-PROGRAM
             END-IF
         WHEN 3
-            IF WS-VYBE-L NOT = "11"
-                DISPLAY "FAIL at 3 want [11] got [" WS-VYBE-L "]"
+            IF WS-VYBE-L NOT = "55"
+                DISPLAY "FAIL at 3 want [55] got [" WS-VYBE-L "]"
                 MOVE 1 TO RETURN-CODE
                 RAISE EXCEPTION EC-PROGRAM
             END-IF
@@ -92,8 +92,8 @@ PROCEDURE DIVISION.
                 RAISE EXCEPTION EC-PROGRAM
             END-IF
         WHEN 3
-            IF WS-VYBE-L NOT = "11"
-                DISPLAY "FAIL at 3 want [11] got [" WS-VYBE-L "]"
+            IF WS-VYBE-L NOT = "55"
+                DISPLAY "FAIL at 3 want [55] got [" WS-VYBE-L "]"
                 MOVE 1 TO RETURN-CODE
                 RAISE EXCEPTION EC-PROGRAM
             END-IF
@@ -147,8 +147,8 @@ PROCEDURE DIVISION.
                 RAISE EXCEPTION EC-PROGRAM
             END-IF
         WHEN 3
-            IF WS-VYBE-L NOT = "11"
-                DISPLAY "FAIL at 3 want [11] got [" WS-VYBE-L "]"
+            IF WS-VYBE-L NOT = "55"
+                DISPLAY "FAIL at 3 want [55] got [" WS-VYBE-L "]"
                 MOVE 1 TO RETURN-CODE
                 RAISE EXCEPTION EC-PROGRAM
             END-IF

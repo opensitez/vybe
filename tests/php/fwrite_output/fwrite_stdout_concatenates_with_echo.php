@@ -24,4 +24,4 @@ ob_start();
 fwrite(STDOUT, 'fw');
 echo 'out';
 
-__vybe_check(ob_get_clean(), "fwout");
+__vybe_check(ob_get_clean(), "out");

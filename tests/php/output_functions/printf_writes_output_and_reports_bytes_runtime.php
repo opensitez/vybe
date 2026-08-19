@@ -24,4 +24,4 @@ ob_start();
 $written = printf('%s:%d', 'age', 7);
 echo '|' . $written;
 
-__vybe_check(ob_get_clean(), "age:7|6");
+__vybe_check(ob_get_clean(), "age:7|5");

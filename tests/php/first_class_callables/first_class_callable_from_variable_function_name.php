@@ -27,4 +27,4 @@ echo $fn('hello');
 echo '|';
 echo $fn('');
 
-__vybe_check(ob_get_clean(), "5\n0");
+__vybe_check(ob_get_clean(), "5|0");

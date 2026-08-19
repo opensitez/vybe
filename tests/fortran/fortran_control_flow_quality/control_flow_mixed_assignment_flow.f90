@@ -3,7 +3,7 @@
 
 program control_flow_mixed_assignment_flow
 integer :: vybe_check_i = 0
-integer :: vybe_check_w(1) = [ 20 ]
+integer :: vybe_check_w(1) = [ 22 ]
     integer :: x
     integer :: y
     x = 5

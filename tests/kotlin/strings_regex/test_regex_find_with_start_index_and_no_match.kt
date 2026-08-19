@@ -28,9 +28,15 @@ fun __check(want: String) {
 fun main() {
             val pattern = Regex("\\d+")
             __p((pattern.find("abc123", 1)?.value ?: "none").toString())
-            __p((pattern.find("abc123", 4) == null).toString())
+            __p((pattern.find("abc123", 4)?.value ?: "none").toString())
             __p((pattern.find("abc", 3) == null).toString())
-            __p((pattern.find("abc", 5) == null).toString())
+            var beyond = "no throw"
+            try {
+                pattern.find("abc", 5)
+            } catch (e: IndexOutOfBoundsException) {
+                beyond = "threw"
+            }
+            __p((beyond).toString())
         
-__check("123\ntrue\ntrue\ntrue")
+__check("123\n23\ntrue\nthrew")
 }

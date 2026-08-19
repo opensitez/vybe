@@ -1,6 +1,14 @@
 // vybe-test: pascal/pascal_unit_initialization_finalization/test_unit_initialization_math_constant_setup
 // origin: languages/pascal/tests/pascal/test_pascal_unit_initialization_finalization.rs
 unit MathConstUnit;
+interface
+  var TwoPi: Double;
+implementation
+initialization
+  TwoPi := 2.0 * 3.1415926535;
+end.
+
+program Test;
 {$mode delphi}
 // Vybe test harness — Pascal.
 //
@@ -61,14 +69,6 @@ begin
     Halt(1);
   end;
 end;
-interface
-  var TwoPi: Double;
-implementation
-initialization
-  TwoPi := 2.0 * 3.1415926535;
-end.
-
-program Test;
 uses MathConstUnit;
 begin
   __p(__vs(TwoPi > 6.28));

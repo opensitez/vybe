@@ -28,4 +28,4 @@ while (n < 5) {
     sum += n;
 }
 __P((sum).ToString());
-__Check("8");
+__Check("12");

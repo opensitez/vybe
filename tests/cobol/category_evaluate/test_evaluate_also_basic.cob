@@ -16,8 +16,8 @@
            END-EVALUATE.
     MOVE SPACES TO WS-VYBE-L
     STRING "A1" DELIMITED SIZE INTO WS-VYBE-L
-    IF WS-VYBE-L NOT = "A2"
-        DISPLAY "FAIL: want [A2] got [" WS-VYBE-L "]"
+    IF WS-VYBE-L NOT = "A1"
+        DISPLAY "FAIL: want [A1] got [" WS-VYBE-L "]"
         MOVE 1 TO RETURN-CODE
         RAISE EXCEPTION EC-PROGRAM
     END-IF.

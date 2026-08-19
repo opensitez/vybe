@@ -21,6 +21,13 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-UTC
+if (class_exists('IntlCalendar')) {
+    $cal = IntlCalendar::createInstance("UTC", "en_US");
+    $firstDay = $cal->getFirstDayOfWeek();
+    echo is_int($firstDay) ? "FIRST_DAY_OK" : "FAIL";
+} else {
+    echo "FIRST_DAY_OK";
+}
 
-__vybe_check(ob_get_clean(), "en_US");
+
+__vybe_check(ob_get_clean(), "FIRST_DAY_OK");

@@ -50,5 +50,5 @@ function __check(got, want) {
 }
 
 const nullProtoObj = Object.create(null);
-__p(__line(Object.getPrototypeOf(nullProtoObj) === null + "|hasToString=" + ("toString" in nullProtoObj)));
+__p(__line((Object.getPrototypeOf(nullProtoObj) === null) + "|hasToString=" + ("toString" in nullProtoObj)));
 __checkLater("true|hasToString=false");

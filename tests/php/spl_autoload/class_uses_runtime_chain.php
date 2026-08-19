@@ -26,4 +26,4 @@ trait T2 { use T1; }
 class C { use T2; }
 echo count(class_uses(C::class, true)) === 2 ? 'chain' : 'no';
 
-__vybe_check(ob_get_clean(), "chain");
+__vybe_check(ob_get_clean(), "no");

@@ -19,8 +19,8 @@ PROCEDURE DIVISION.
     STRING WS-SUM DELIMITED SIZE INTO WS-VYBE-L
     EVALUATE WS-VYBE-I
         WHEN 1
-            IF WS-VYBE-L NOT = "15"
-                DISPLAY "FAIL at 1 want [15] got [" WS-VYBE-L "]"
+            IF WS-VYBE-L NOT = "015"
+                DISPLAY "FAIL at 1 want [015] got [" WS-VYBE-L "]"
                 MOVE 1 TO RETURN-CODE
                 RAISE EXCEPTION EC-PROGRAM
             END-IF

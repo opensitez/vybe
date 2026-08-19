@@ -1,6 +1,8 @@
 // vybe-test: dart/dart_convert_json_encode_decode/json_encode_escape_characters
 // origin: languages/dart/tests/dart/test_dart_convert_json_encode_decode.rs
 
+import 'dart:convert';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,7 +22,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:convert';
 void __vybeMain() {
   final map = {'text': 'line1\nline2\t"quoted"'};
   __p(jsonEncode(map));

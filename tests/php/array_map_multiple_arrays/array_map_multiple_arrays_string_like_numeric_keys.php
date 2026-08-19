@@ -26,4 +26,4 @@ $b = ['a', 'b', 'c', 'd'];
 $res = array_map(fn($x, $y) => "$x:$y", $a, $b);
 echo count($res) . '|' . $res[0] . '|' . ($res[1] ?? 'null') . '|' . ($res[2] ?? 'null');
 
-__vybe_check(ob_get_clean(), "3|1:a|3:b|:c");
+__vybe_check(ob_get_clean(), "4|1:a|3:b|:c");

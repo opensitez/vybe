@@ -21,8 +21,8 @@ PROCEDURE DIVISION.
                 RAISE EXCEPTION EC-PROGRAM
             END-IF
         WHEN 2
-            IF WS-VYBE-L NOT = "RAN"
-                DISPLAY "FAIL at 2 want [RAN] got [" WS-VYBE-L "]"
+            IF WS-VYBE-L NOT = "SKIPPED"
+                DISPLAY "FAIL at 2 want [SKIPPED] got [" WS-VYBE-L "]"
                 MOVE 1 TO RETURN-CODE
                 RAISE EXCEPTION EC-PROGRAM
             END-IF
@@ -44,8 +44,8 @@ PROCEDURE DIVISION.
                 RAISE EXCEPTION EC-PROGRAM
             END-IF
         WHEN 2
-            IF WS-VYBE-L NOT = "RAN"
-                DISPLAY "FAIL at 2 want [RAN] got [" WS-VYBE-L "]"
+            IF WS-VYBE-L NOT = "SKIPPED"
+                DISPLAY "FAIL at 2 want [SKIPPED] got [" WS-VYBE-L "]"
                 MOVE 1 TO RETURN-CODE
                 RAISE EXCEPTION EC-PROGRAM
             END-IF

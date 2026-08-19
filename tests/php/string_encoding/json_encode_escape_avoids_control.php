@@ -27,4 +27,4 @@ echo $json;
 echo "\n";
 echo json_decode($json, true)['path'];
 
-__vybe_check(ob_get_clean(), "{\"path\":\"café\",\"n\":2}|café");
+__vybe_check(ob_get_clean(), "{\"path\":\"café\",\"n\":2}\ncafé");

@@ -15,8 +15,8 @@
            END-EVALUATE.
     MOVE SPACES TO WS-VYBE-L
     STRING "1-10" DELIMITED SIZE INTO WS-VYBE-L
-    IF WS-VYBE-L NOT = "11-20"
-        DISPLAY "FAIL: want [11-20] got [" WS-VYBE-L "]"
+    IF WS-VYBE-L NOT = "1-10"
+        DISPLAY "FAIL: want [1-10] got [" WS-VYBE-L "]"
         MOVE 1 TO RETURN-CODE
         RAISE EXCEPTION EC-PROGRAM
     END-IF.

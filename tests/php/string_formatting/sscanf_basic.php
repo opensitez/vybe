@@ -21,6 +21,9 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-Age: 25
+$result = sscanf("Age: 25", "Age: %d");
+echo $result[0];
+echo "\n";
 
-__vybe_check(ob_get_clean(), "Age: %d");
+
+__vybe_check(ob_get_clean(), "25");

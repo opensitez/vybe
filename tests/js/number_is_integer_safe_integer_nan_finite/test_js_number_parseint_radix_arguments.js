@@ -50,4 +50,4 @@ function __check(got, want) {
 }
 
 __p(__line(`${Number.parseInt("1010", 2)}:${Number.parseInt("FF", 16)}:${Number.parseInt("077", 8)}`));
-__checkLater("10:255:77");
+__checkLater("10:255:63");

@@ -12,8 +12,8 @@ PROCEDURE DIVISION.
     DISPLAY WS-BUF.
     MOVE SPACES TO WS-VYBE-L
     STRING WS-BUF DELIMITED SIZE INTO WS-VYBE-L
-    IF WS-VYBE-L NOT = "ɕɕɕɕ"
-        DISPLAY "FAIL: want [ɕɕɕɕ] got [" WS-VYBE-L "]"
+    IF WS-VYBE-L NOT = "����"
+        DISPLAY "FAIL: want [����] got [" WS-VYBE-L "]"
         MOVE 1 TO RETURN-CODE
         RAISE EXCEPTION EC-PROGRAM
     END-IF.

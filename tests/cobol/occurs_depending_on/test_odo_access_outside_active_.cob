@@ -28,8 +28,8 @@ PROCEDURE DIVISION.
                 RAISE EXCEPTION EC-PROGRAM
             END-IF
         WHEN 2
-            IF WS-VYBE-L NOT = "11"
-                DISPLAY "FAIL at 2 want [11] got [" WS-VYBE-L "]"
+            IF WS-VYBE-L NOT = "33"
+                DISPLAY "FAIL at 2 want [33] got [" WS-VYBE-L "]"
                 MOVE 1 TO RETURN-CODE
                 RAISE EXCEPTION EC-PROGRAM
             END-IF
@@ -58,8 +58,8 @@ PROCEDURE DIVISION.
                 RAISE EXCEPTION EC-PROGRAM
             END-IF
         WHEN 2
-            IF WS-VYBE-L NOT = "11"
-                DISPLAY "FAIL at 2 want [11] got [" WS-VYBE-L "]"
+            IF WS-VYBE-L NOT = "33"
+                DISPLAY "FAIL at 2 want [33] got [" WS-VYBE-L "]"
                 MOVE 1 TO RETURN-CODE
                 RAISE EXCEPTION EC-PROGRAM
             END-IF

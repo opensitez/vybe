@@ -25,4 +25,4 @@ $arr = ["x" => 10, "y" => 20, "z" => 30];
 $s = array_slice($arr, 1, 2, false);
 echo implode(",", array_keys($s)) . "|" . implode(",", $s);
 
-__vybe_check(ob_get_clean(), "0,1|20,30");
+__vybe_check(ob_get_clean(), "y,z|20,30");

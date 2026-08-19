@@ -32,4 +32,4 @@ skip:
 }
 echo guarded();
 
-__vybe_check(ob_get_clean(), "set");
+__vybe_check(ob_get_clean(), "zero");

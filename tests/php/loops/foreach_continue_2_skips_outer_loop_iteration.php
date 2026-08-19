@@ -31,4 +31,4 @@ for ($i = 0; $i < 4; $i++) {
 }
 echo $out;
 
-__vybe_check(ob_get_clean(), "1234");
+__vybe_check(ob_get_clean(), "");

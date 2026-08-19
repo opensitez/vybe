@@ -37,5 +37,5 @@ fun main() {
             }
             __p((trace).toString())
         
-__check("a102|b235|c367|")
+__check("a102|b235|c368|")
 }

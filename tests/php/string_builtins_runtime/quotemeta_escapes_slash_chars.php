@@ -23,4 +23,4 @@ ob_start();
 
 echo quotemeta('a/b|c');
 
-__vybe_check(ob_get_clean(), "a/b\\|c");
+__vybe_check(ob_get_clean(), "a/b|c");

@@ -21,6 +21,14 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-Hello World PHP
+$token = strtok("Hello World PHP", " ");
+$parts = [];
+while ($token !== false) {
+    $parts[] = $token;
+    $token = strtok(" ");
+}
+echo count($parts);
+echo $parts[0];
 
-__vybe_check(ob_get_clean(), " ");
+
+__vybe_check(ob_get_clean(), "3Hello");

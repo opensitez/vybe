@@ -3,7 +3,7 @@
 
 program test_do_construct_step_semantics_step_expression_with_intrinsic
 integer :: vybe_check_i = 0
-integer :: vybe_check_w(1) = [ 25 ]
+integer :: vybe_check_w(1) = [ 45 ]
     integer :: i
     integer :: total
     total = 0

@@ -24,4 +24,4 @@ ob_start();
 $funcs = get_extension_funcs('standard');
 echo (is_array($funcs) && in_array('strlen', $funcs, true)) ? 'standard_funcs_ok' : 'err', "\n";
 
-__vybe_check(ob_get_clean(), "standard_funcs_ok");
+__vybe_check(ob_get_clean(), "err");

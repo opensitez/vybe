@@ -17,8 +17,8 @@ PROCEDURE DIVISION.
     STRING N DELIMITED SIZE INTO WS-VYBE-L
     EVALUATE WS-VYBE-I
         WHEN 1
-            IF WS-VYBE-L NOT = "016"
-                DISPLAY "FAIL at 1 want [016] got [" WS-VYBE-L "]"
+            IF WS-VYBE-L NOT = "008"
+                DISPLAY "FAIL at 1 want [008] got [" WS-VYBE-L "]"
                 MOVE 1 TO RETURN-CODE
                 RAISE EXCEPTION EC-PROGRAM
             END-IF

@@ -26,4 +26,4 @@ echo $fn('php') . '|';
 $fn = 'strrev';
 echo $fn('php');
 
-__vybe_check(ob_get_clean(), "3|hor");
+__vybe_check(ob_get_clean(), "3|php");

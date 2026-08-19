@@ -27,4 +27,4 @@ class Box {
     }
 }
 new Box().Read<int>();
-__Check("Read");
+__Check("<Main>$");

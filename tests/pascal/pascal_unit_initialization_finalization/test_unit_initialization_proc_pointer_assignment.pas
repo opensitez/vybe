@@ -1,6 +1,19 @@
 // vybe-test: pascal/pascal_unit_initialization_finalization/test_unit_initialization_proc_pointer_assignment
 // origin: languages/pascal/tests/pascal/test_pascal_unit_initialization_finalization.rs
 unit CallbackUnit;
+interface
+  type TCallback = procedure(const s: String);
+  var GlobalCallback: TCallback;
+implementation
+procedure DefaultCallback(const s: String);
+begin
+  __p(__vs('DefaultCB:' + s));
+end;
+initialization
+  GlobalCallback := DefaultCallback;
+end.
+
+program Test;
 {$mode delphi}
 // Vybe test harness — Pascal.
 //
@@ -61,19 +74,6 @@ begin
     Halt(1);
   end;
 end;
-interface
-  type TCallback = procedure(const s: String);
-  var GlobalCallback: TCallback;
-implementation
-procedure DefaultCallback(const s: String);
-begin
-  __p(__vs('DefaultCB:' + s));
-end;
-initialization
-  GlobalCallback := DefaultCallback;
-end.
-
-program Test;
 uses CallbackUnit;
 begin
   GlobalCallback('TestMsg');

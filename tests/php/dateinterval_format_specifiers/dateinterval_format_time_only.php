@@ -24,4 +24,4 @@ ob_start();
 $i = new DateInterval('PT90S');
 echo $i->format('%i:%s');
 
-__vybe_check(ob_get_clean(), "00:90");
+__vybe_check(ob_get_clean(), "0:90");

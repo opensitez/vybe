@@ -30,4 +30,4 @@ foreach ($tokens as $token) {
 }
 echo implode(", ", $names);
 
-__vybe_check(ob_get_clean(), "T_OPEN_TAG, T_ECHO, T_CONSTANT_ENCAPSED_STRING, ;");
+__vybe_check(ob_get_clean(), "T_ECHO, T_CONSTANT_ENCAPSED_STRING, ;");

@@ -2,6 +2,7 @@
 // vybe-test: php/php_closures_bind_bindto_scope/test_php_closure_bind_to_namespace_scope
 // origin: languages/php/tests/php/test_php_closures_bind_bindto_scope.rs
 
+namespace {
 function __vybe_check($got, $want) {
     // Match the Rust harness's normalisation: strip \r, then drop trailing
     // newlines (it split on "\n" and popped empty trailing elements).
@@ -20,6 +21,7 @@ function __vybe_check($got, $want) {
 }
 
 ob_start();
+}
 
 namespace ScopeDemo {
     class ScopeClass {
@@ -33,4 +35,6 @@ namespace ScopeDemo {
     echo $obj->token();
 }
 
+namespace {
 __vybe_check(ob_get_clean(), "ns-token");
+}

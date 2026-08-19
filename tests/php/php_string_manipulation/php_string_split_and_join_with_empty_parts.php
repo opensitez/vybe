@@ -25,4 +25,4 @@ $source = ',a, b,';
 echo count(explode(',', $source)) . '|';
 echo implode('|', explode(',', $source));
 
-__vybe_check(ob_get_clean(), "5| |a||b|");
+__vybe_check(ob_get_clean(), "4||a| b|");

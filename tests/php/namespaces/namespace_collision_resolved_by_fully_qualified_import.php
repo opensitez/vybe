@@ -2,6 +2,7 @@
 // vybe-test: php/namespaces/namespace_collision_resolved_by_fully_qualified_import
 // origin: languages/php/tests/php/test_namespaces.rs
 
+namespace {
 function __vybe_check($got, $want) {
     // Match the Rust harness's normalisation: strip \r, then drop trailing
     // newlines (it split on "\n" and popped empty trailing elements).
@@ -20,6 +21,7 @@ function __vybe_check($got, $want) {
 }
 
 ob_start();
+}
 
 namespace Legacy { class Logger { public function id(): string { return 'L'; } } }
 namespace Modern { class Logger { public function id(): string { return 'M'; } } }
@@ -30,7 +32,10 @@ namespace App {
         $new = new \Modern\Logger();
         return $old->id() . $new->id();
     }
-}
+}namespace {
 echo \App\pick();
+}
 
+namespace {
 __vybe_check(ob_get_clean(), "LM");
+}

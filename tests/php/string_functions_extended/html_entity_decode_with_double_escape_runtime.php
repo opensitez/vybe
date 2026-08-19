@@ -25,4 +25,4 @@ echo html_entity_decode('&amp;lt;');
 echo '|';
 echo html_entity_decode('&amp;amp;lt;');
 
-__vybe_check(ob_get_clean(), "<|&lt;");
+__vybe_check(ob_get_clean(), "&lt;|&amp;lt;");

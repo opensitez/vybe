@@ -26,4 +26,4 @@ $res = array_filter($arr, fn($v, $k) => $k === 'a' || $v === 2, ARRAY_FILTER_USE
 ksort($res);
 echo implode('|', array_keys($res)) . '|' . implode(',', array_values($res));
 
-__vybe_check(ob_get_clean(), "a,b|1,2");
+__vybe_check(ob_get_clean(), "a|b|1,2");

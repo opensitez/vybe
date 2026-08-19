@@ -25,4 +25,4 @@ $json = '{"big_int": 9223372036854775807}';
 $data = json_decode($json, true, flags: JSON_BIGINT_AS_STRING);
 echo gettype($data["big_int"]) . "=" . $data["big_int"];
 
-__vybe_check(ob_get_clean(), "string=9223372036854775807");
+__vybe_check(ob_get_clean(), "integer=9223372036854775807");

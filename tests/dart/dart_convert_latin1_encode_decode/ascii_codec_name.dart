@@ -1,6 +1,8 @@
 // vybe-test: dart/dart_convert_latin1_encode_decode/ascii_codec_name
 // origin: languages/dart/tests/dart/test_dart_convert_latin1_encode_decode.rs
 
+import 'dart:convert';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,7 +22,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:convert';
 void __vybeMain() {
   __p(ascii.name);
 }

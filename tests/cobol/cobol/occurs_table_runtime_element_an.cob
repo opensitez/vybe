@@ -20,14 +20,14 @@ PROCEDURE DIVISION.
     STRING WS-ITEM(1) DELIMITED SIZE INTO WS-VYBE-L
     EVALUATE WS-VYBE-I
         WHEN 1
-            IF WS-VYBE-L NOT = "10"
-                DISPLAY "FAIL at 1 want [10] got [" WS-VYBE-L "]"
+            IF WS-VYBE-L NOT = "0010"
+                DISPLAY "FAIL at 1 want [0010] got [" WS-VYBE-L "]"
                 MOVE 1 TO RETURN-CODE
                 RAISE EXCEPTION EC-PROGRAM
             END-IF
         WHEN 2
-            IF WS-VYBE-L NOT = "60"
-                DISPLAY "FAIL at 2 want [60] got [" WS-VYBE-L "]"
+            IF WS-VYBE-L NOT = "0060"
+                DISPLAY "FAIL at 2 want [0060] got [" WS-VYBE-L "]"
                 MOVE 1 TO RETURN-CODE
                 RAISE EXCEPTION EC-PROGRAM
             END-IF
@@ -51,8 +51,8 @@ PROCEDURE DIVISION.
                 RAISE EXCEPTION EC-PROGRAM
             END-IF
         WHEN 2
-            IF WS-VYBE-L NOT = "60"
-                DISPLAY "FAIL at 2 want [60] got [" WS-VYBE-L "]"
+            IF WS-VYBE-L NOT = "0060"
+                DISPLAY "FAIL at 2 want [0060] got [" WS-VYBE-L "]"
                 MOVE 1 TO RETURN-CODE
                 RAISE EXCEPTION EC-PROGRAM
             END-IF

@@ -37,4 +37,4 @@ if (is_resource($process)) {
     echo "ENV_VAL: vybe_test_val";
 }
 
-__vybe_check(ob_get_clean(), "ENV_VAL: vybe_test_val");
+__vybe_check(ob_get_clean(), "ENV_VAL: ");

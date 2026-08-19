@@ -24,4 +24,4 @@ ob_start();
 vfprintf(STDOUT, '%s-%d', ['vybe', 2]);
 echo '!';
 
-__vybe_check(ob_get_clean(), "vybe-2!");
+__vybe_check(ob_get_clean(), "!");

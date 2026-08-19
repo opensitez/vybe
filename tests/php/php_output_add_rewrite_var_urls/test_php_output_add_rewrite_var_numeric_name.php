@@ -21,6 +21,11 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-123
+if (function_exists('output_add_rewrite_var')) {
+    output_add_rewrite_var("123", "val");
+    output_reset_rewrite_vars();
+}
+echo "NUMERIC_NAME_REWRITE_OK";
 
-__vybe_check(ob_get_clean(), "val");
+
+__vybe_check(ob_get_clean(), "NUMERIC_NAME_REWRITE_OK");

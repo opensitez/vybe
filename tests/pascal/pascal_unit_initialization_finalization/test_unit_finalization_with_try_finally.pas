@@ -1,6 +1,19 @@
 // vybe-test: pascal/pascal_unit_initialization_finalization/test_unit_finalization_with_try_finally
 // origin: languages/pascal/tests/pascal/test_pascal_unit_initialization_finalization.rs
 unit SafeFinalUnit;
+interface
+  procedure DoWork;
+implementation
+procedure DoWork; begin end;
+finalization
+  try
+    __p(__vs('FinalizeWork'));
+  finally
+    __p(__vs('FinalizeFinally'));
+  end;
+end.
+
+program Test;
 {$mode delphi}
 // Vybe test harness — Pascal.
 //
@@ -61,19 +74,6 @@ begin
     Halt(1);
   end;
 end;
-interface
-  procedure DoWork;
-implementation
-procedure DoWork; begin end;
-finalization
-  try
-    __p(__vs('FinalizeWork'));
-  finally
-    __p(__vs('FinalizeFinally'));
-  end;
-end.
-
-program Test;
 uses SafeFinalUnit;
 begin
   DoWork;

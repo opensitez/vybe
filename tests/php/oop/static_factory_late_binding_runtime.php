@@ -31,4 +31,4 @@ class ButtonWidget extends BaseWidget {}
 echo (new ButtonWidget('submit'))->id;
 echo ButtonWidget::make('cancel')->id;
 
-__vybe_check(ob_get_clean(), "submit|cancel");
+__vybe_check(ob_get_clean(), "submitcancel");

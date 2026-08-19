@@ -1,5 +1,6 @@
 ' vybe-test: vb/vb_object_late_binding/late_binding_array_access
 ' origin: languages/vb/tests/vb/test_vb_object_late_binding.rs
+Option Strict Off
 
 ' Vybe test harness — Visual Basic.
 '
@@ -41,7 +42,6 @@ Module VybeCheck
     End Sub
 End Module
 
-Option Strict Off
 Module M
 Sub Main()
 Dim arr() As Integer = {1, 2, 3}

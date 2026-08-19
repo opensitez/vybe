@@ -21,6 +21,15 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-Alice
+class UserList {
+    public array $users;
+    public function __construct(string ...$users) {
+        $this->users = $users;
+    }
+}
 
-__vybe_check(ob_get_clean(), "Bob");
+$ul = new UserList("Alice", "Bob", "Charlie");
+echo count($ul->users);
+
+
+__vybe_check(ob_get_clean(), "3");

@@ -37,4 +37,4 @@ switch ($x) {
 }
 echo implode('-', $out);
 
-__vybe_check(ob_get_clean(), "default-two");
+__vybe_check(ob_get_clean(), "four");

@@ -30,4 +30,4 @@ echo $t;
 echo '\n';
 echo "abc\nxyz";
 
-__vybe_check(ob_get_clean(), "hi\\nthere\nAB\nabc\\nxyz");
+__vybe_check(ob_get_clean(), "hi\\nthere\\nAB\\nabc\nxyz");

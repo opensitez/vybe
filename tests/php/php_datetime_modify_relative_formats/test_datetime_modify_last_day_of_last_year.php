@@ -25,4 +25,4 @@ $dt = new DateTime('2024-07-19', new DateTimeZone('UTC'));
 $dt->modify('last day of last year');
 echo $dt->format('Y-m-d'), "\n";
 
-__vybe_check(ob_get_clean(), "2023-12-31");
+__vybe_check(ob_get_clean(), "2023-07-31");

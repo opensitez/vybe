@@ -2,6 +2,7 @@
 // vybe-test: php/namespaces/namespace_trait_prefixed_fully_qualified_use
 // origin: languages/php/tests/php/test_namespaces.rs
 
+namespace {
 function __vybe_check($got, $want) {
     // Match the Rust harness's normalisation: strip \r, then drop trailing
     // newlines (it split on "\n" and popped empty trailing elements).
@@ -20,6 +21,7 @@ function __vybe_check($got, $want) {
 }
 
 ob_start();
+}
 
 namespace Core {
     trait HasToken {
@@ -33,4 +35,6 @@ namespace App {
     echo (new Item())->token();
 }
 
+namespace {
 __vybe_check(ob_get_clean(), "tok");
+}

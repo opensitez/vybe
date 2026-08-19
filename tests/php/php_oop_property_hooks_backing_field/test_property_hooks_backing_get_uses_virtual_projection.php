@@ -31,4 +31,4 @@ $p = new Price();
 $p->cents = 12.5;
 echo $p->cents;
 
-__vybe_check(ob_get_clean(), "12.5");
+__vybe_check(ob_get_clean(), "0");

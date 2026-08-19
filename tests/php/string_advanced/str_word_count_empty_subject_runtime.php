@@ -25,4 +25,4 @@ echo str_word_count('');
 echo '|';
 echo str_word_count('a   b', 2);
 
-__vybe_check(ob_get_clean(), "0|2");
+__vybe_check(ob_get_clean(), "0|Array");

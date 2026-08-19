@@ -11,8 +11,8 @@ PROCEDURE DIVISION.
     DISPLAY S.
     MOVE SPACES TO WS-VYBE-L
     STRING S DELIMITED SIZE INTO WS-VYBE-L
-    IF WS-VYBE-L NOT = "   042  "
-        DISPLAY "FAIL: want [   042  ] got [" WS-VYBE-L "]"
+    IF WS-VYBE-L NOT = "    42"
+        DISPLAY "FAIL: want [    42] got [" WS-VYBE-L "]"
         MOVE 1 TO RETURN-CODE
         RAISE EXCEPTION EC-PROGRAM
     END-IF.

@@ -26,4 +26,4 @@ echo $p['error_count'] === 0 ? 'ok' : 'bad';
 echo '|';
 echo isset($p['zone']) && is_string($p['zone']) ? 'zone' : 'nozone';
 
-__vybe_check(ob_get_clean(), "ok|zone");
+__vybe_check(ob_get_clean(), "ok|nozone");

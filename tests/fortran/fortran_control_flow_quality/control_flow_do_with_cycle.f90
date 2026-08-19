@@ -3,7 +3,7 @@
 
 program control_flow_do_with_cycle
 integer :: vybe_check_i = 0
-integer :: vybe_check_w(1) = [ 26 ]
+integer :: vybe_check_w(1) = [ 27 ]
     integer :: i
     integer :: total
     total = 0

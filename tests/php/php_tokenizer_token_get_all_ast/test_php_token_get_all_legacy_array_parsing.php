@@ -34,4 +34,4 @@ foreach ($tokens as $tok) {
 }
 echo implode(" ", $tokenTypes);
 
-__vybe_check(ob_get_clean(), "T_OPEN_TAG T_VARIABLE = T_LNUMBER ;");
+__vybe_check(ob_get_clean(), "T_OPEN_TAG T_VARIABLE T_WHITESPACE = T_WHITESPACE T_LNUMBER ;");

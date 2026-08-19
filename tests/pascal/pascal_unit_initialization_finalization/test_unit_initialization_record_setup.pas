@@ -1,6 +1,16 @@
 // vybe-test: pascal/pascal_unit_initialization_finalization/test_unit_initialization_record_setup
 // origin: languages/pascal/tests/pascal/test_pascal_unit_initialization_finalization.rs
 unit RecInitUnit;
+interface
+  type TPoint = record X, Y: Integer; end;
+  var DefaultPoint: TPoint;
+implementation
+initialization
+  DefaultPoint.X := 10;
+  DefaultPoint.Y := 20;
+end.
+
+program Test;
 {$mode delphi}
 // Vybe test harness — Pascal.
 //
@@ -61,16 +71,6 @@ begin
     Halt(1);
   end;
 end;
-interface
-  type TPoint = record X, Y: Integer; end;
-  var DefaultPoint: TPoint;
-implementation
-initialization
-  DefaultPoint.X := 10;
-  DefaultPoint.Y := 20;
-end.
-
-program Test;
 uses RecInitUnit;
 begin
   __p(__vs(DefaultPoint.X.ToString + ',' + DefaultPoint.Y.ToString));

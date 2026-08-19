@@ -28,4 +28,4 @@ $fn = function(string $arg) use (&$value): void {
 $fn('ignored');
 echo $value;
 
-__vybe_check(ob_get_clean(), "outer");
+__vybe_check(ob_get_clean(), "inner");

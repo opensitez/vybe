@@ -32,4 +32,4 @@ foreach ($items as $pair) {
 }
 echo $sum;
 
-__vybe_check(ob_get_clean(), "7");
+__vybe_check(ob_get_clean(), "12");

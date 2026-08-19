@@ -2,6 +2,7 @@
 // vybe-test: php/namespaces/namespace_function_exists_across_namespaces
 // origin: languages/php/tests/php/test_namespaces.rs
 
+namespace {
 function __vybe_check($got, $want) {
     // Match the Rust harness's normalisation: strip \r, then drop trailing
     // newlines (it split on "\n" and popped empty trailing elements).
@@ -20,6 +21,7 @@ function __vybe_check($got, $want) {
 }
 
 ob_start();
+}
 
 namespace Plugin {
     function enabled(): string { return 'yes'; }
@@ -28,7 +30,10 @@ namespace App {
     function check(): string {
         return (function_exists('\\Plugin\\enabled') ? 'exists' : 'missing') . '|' . function_exists('Plugin\\enabled');
     }
-}
+}namespace {
 echo \App\check();
+}
 
-__vybe_check(ob_get_clean(), "exists|0");
+namespace {
+__vybe_check(ob_get_clean(), "exists|1");
+}

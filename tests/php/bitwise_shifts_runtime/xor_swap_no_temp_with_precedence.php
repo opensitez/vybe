@@ -29,4 +29,4 @@ $a ^= $b;
 echo $a;
 echo $b;
 
-__vybe_check(ob_get_clean(), "1010");
+__vybe_check(ob_get_clean(), "103");

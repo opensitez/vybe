@@ -29,4 +29,4 @@ $nameC = $nameB;
 $$nameC = 5;
 echo $value;
 
-__vybe_check(ob_get_clean(), "1|5");
+__vybe_check(ob_get_clean(), "value|1");

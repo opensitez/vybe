@@ -2,7 +2,7 @@
 ! origin: languages/fortran/tests/fortran/test_control_flow_extended.rs
 program t
 integer :: vybe_check_i = 0
-integer :: vybe_check_w(2) = [ 3, 1 ]
+integer :: vybe_check_w(2) = [ 3, 2 ]
 integer :: i, j
 outer_loop: do i = 1, 4
 inner_loop: do j = 1, 6

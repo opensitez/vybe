@@ -15,8 +15,8 @@ end if
     print *, "FAIL: want [2] got [", a(4), "]"
     stop 1
 end if
-    if ((sum(a)) /= 21) then
-    print *, "FAIL: want [21] got [", sum(a), "]"
+    if ((sum(a)) /= 18) then
+    print *, "FAIL: want [18] got [", sum(a), "]"
     stop 1
 end if
 end program t

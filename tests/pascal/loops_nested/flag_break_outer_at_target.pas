@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; var i,j:Integer; done:Boolean; begin done:=false; for i:=1 to 5 do if not done then for j:=1 to 5 do if (i=2) and (j=3) then done:=true else __p(__vs(IntToStr(i)+':'+IntToStr(j))); __p(__vs('stop')); __vybeCheck('1:1' + #10 + '1:2' + #10 + '1:3' + #10 + '1:4' + #10 + '1:5' + #10 + '2:1' + #10 + '2:2' + #10 + 'stop');
+end; var i,j:Integer; done:Boolean; begin done:=false; for i:=1 to 5 do if not done then for j:=1 to 5 do if (i=2) and (j=3) then done:=true else __p(__vs(IntToStr(i)+':'+IntToStr(j))); __p(__vs('stop')); __vybeCheck('1:1' + #10 + '1:2' + #10 + '1:3' + #10 + '1:4' + #10 + '1:5' + #10 + '2:1' + #10 + '2:2' + #10 + '2:4' + #10 + '2:5' + #10 + 'stop');
 end.

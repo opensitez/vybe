@@ -1,7 +1,7 @@
 *> vybe-test: cobol/category_data_division_global_clause/test_global_shadowing
 *> origin: languages/cobol/tests/cobol/test_category_data_division_global_clause.rs
 IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION.
-01 WS-VYBE-L PIC X(256). 01 G PIC X VALUE 'G' IS GLOBAL. PROCEDURE DIVISION. CALL 'S1'. DISPLAY G.
+01 WS-VYBE-L PIC X(256) IS GLOBAL. 01 G PIC X VALUE 'G' IS GLOBAL. PROCEDURE DIVISION. CALL 'S1'. DISPLAY G.
     MOVE SPACES TO WS-VYBE-L
     STRING G DELIMITED SIZE INTO WS-VYBE-L
     IF WS-VYBE-L NOT = "L"

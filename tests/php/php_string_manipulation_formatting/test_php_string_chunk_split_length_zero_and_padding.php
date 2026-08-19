@@ -27,4 +27,4 @@ echo str_replace("e", "", "seed", $count);
 echo "|";
 echo $count;
 
-__vybe_check(ob_get_clean(), "abc->def->|sd|1");
+__vybe_check(ob_get_clean(), "abc->def->|sd|2");

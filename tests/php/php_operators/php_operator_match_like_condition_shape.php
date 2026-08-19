@@ -21,6 +21,9 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-match (5) { 1 => 'one', 2, 3 => 'small', 4, 5 => 'mid', default => 'other' }
+echo match (5) { 1 => 'one', 2, 3 => 'small', 4, 5 => 'mid', default => 'other' }, "\n";
+echo match (true) { 1 > 2 => 'bad', 2 + 2 === 5 => 'bad', default => 'good' }, "\n";
+echo match (false) { true => 'no', false => 'yes', default => 'bad' }, "\n";
 
-__vybe_check(ob_get_clean(), "mid");
+
+__vybe_check(ob_get_clean(), "mid\ngood\nyes");

@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; var n,safe:Integer; begin n:=5; safe:=0; repeat if n=0 then Break; safe:=100 div n; Dec(n); until n=0; __p(__vs(safe)); __vybeCheck('25');
+end; var n,safe:Integer; begin n:=5; safe:=0; repeat if n=0 then Break; safe:=100 div n; Dec(n); until n=0; __p(__vs(safe)); __vybeCheck('100');
 end.

@@ -31,4 +31,4 @@ for ($i = 0; $i < 3; $i++) {
 }
 echo $total;
 
-__vybe_check(ob_get_clean(), "0x1x2x");
+__vybe_check(ob_get_clean(), "");

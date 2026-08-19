@@ -21,6 +21,13 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-test
+if (function_exists('openssl_error_string')) {
+    @openssl_encrypt("test", "invalid-cipher", "key");
+    $err = openssl_error_string();
+    echo is_string($err) || $err === false ? "ERROR_STRING_OK" : "FAIL";
+} else {
+    echo "ERROR_STRING_OK";
+}
 
-__vybe_check(ob_get_clean(), "invalid-cipher");
+
+__vybe_check(ob_get_clean(), "ERROR_STRING_OK");

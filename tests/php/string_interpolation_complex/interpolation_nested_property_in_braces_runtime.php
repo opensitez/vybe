@@ -30,4 +30,4 @@ echo "\n";
 echo "nested={$node->child->value}";
 echo "\n";
 
-__vybe_check(ob_get_clean(), "value=42|nested=42");
+__vybe_check(ob_get_clean(), "value=42\nnested=42");

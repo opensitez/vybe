@@ -23,4 +23,4 @@ ob_start();
 
 $parts = str_split('abcdef', 2); echo count($parts); echo '|'; echo $parts[0] . $parts[1];
 
-__vybe_check(ob_get_clean(), "3|ab");
+__vybe_check(ob_get_clean(), "3|abcd");

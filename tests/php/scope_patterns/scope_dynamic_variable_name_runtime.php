@@ -28,4 +28,4 @@ echo $$name;
 echo '|';
 echo $color;
 
-__vybe_check(ob_get_clean(), "green|blue");
+__vybe_check(ob_get_clean(), "green|green");

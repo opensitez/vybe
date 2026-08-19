@@ -25,4 +25,4 @@ echo str_ends_with('smile 😃', '😃') ? 'ends' : 'no';
 echo "\n";
 echo str_ends_with('smile 😃', '') ? 'empty' : 'no-empty';
 
-__vybe_check(ob_get_clean(), "ends|empty");
+__vybe_check(ob_get_clean(), "ends\nempty");

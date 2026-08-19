@@ -28,4 +28,4 @@ $f = new Fiber(function (): void {
 $f->start();
 $f->resume('payload');
 
-__vybe_check(ob_get_clean(), "nullnull");
+__vybe_check(ob_get_clean(), "set");

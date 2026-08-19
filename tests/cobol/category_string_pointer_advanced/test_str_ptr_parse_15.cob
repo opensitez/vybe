@@ -1,6 +1,8 @@
 *> vybe-test: cobol/category_string_pointer_advanced/test_str_ptr_parse_15
 *> origin: languages/cobol/tests/cobol/test_category_string_pointer_advanced.rs
-IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'.
+IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION. DISPLAY 'OK'.
     MOVE SPACES TO WS-VYBE-L
     STRING 'OK' DELIMITED SIZE INTO WS-VYBE-L
     IF WS-VYBE-L NOT = "OK"

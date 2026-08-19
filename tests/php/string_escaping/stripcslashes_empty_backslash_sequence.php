@@ -23,4 +23,4 @@ ob_start();
 
 echo stripcslashes('x\\\\');
 
-__vybe_check(ob_get_clean(), "x\\\\");
+__vybe_check(ob_get_clean(), "x\\");

@@ -8,3 +8,7 @@ end subroutine s
 end interface
 call s(y=2)
 end program p
+
+subroutine s(x,y)
+integer, optional :: x,y
+end subroutine s

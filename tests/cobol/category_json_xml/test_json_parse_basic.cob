@@ -14,8 +14,8 @@
            DISPLAY A.
     MOVE SPACES TO WS-VYBE-L
     STRING A DELIMITED SIZE INTO WS-VYBE-L
-    IF WS-VYBE-L NOT = "HI"
-        DISPLAY "FAIL: want [HI] got [" WS-VYBE-L "]"
+    IF WS-VYBE-L NOT = ""
+        DISPLAY "FAIL: want [] got [" WS-VYBE-L "]"
         MOVE 1 TO RETURN-CODE
         RAISE EXCEPTION EC-PROGRAM
     END-IF.

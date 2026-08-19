@@ -28,4 +28,4 @@ echo ("1" === 1) . '|';
 echo (0 == false) . '|';
 echo (0 === false);
 
-__vybe_check(ob_get_clean(), "1|0|1|0|1|0");
+__vybe_check(ob_get_clean(), "1||1||1|");

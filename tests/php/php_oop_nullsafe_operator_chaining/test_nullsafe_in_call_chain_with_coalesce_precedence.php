@@ -46,4 +46,4 @@ echo (new RootWithLevel())->holder()?->level?->name() ?? 'no-name';
 echo '|';
 echo (new RootWithLevel())->holder()?->level?->name() ?: 'fallback-name';
 
-__vybe_check(ob_get_clean(), "no-holder|no-name|fallback-name");
+__vybe_check(ob_get_clean(), "no-holder||fallback-name");

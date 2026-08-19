@@ -26,4 +26,4 @@ $d2 = $d->setTimestamp(1704067200);
 echo $d->format('U') === '1704067200' ? 'old' : 'not old';
 echo ':' . $d2->format('Y-m-d');
 
-__vybe_check(ob_get_clean(), "not old:2024-01-01");
+__vybe_check(ob_get_clean(), "old:2024-01-01");

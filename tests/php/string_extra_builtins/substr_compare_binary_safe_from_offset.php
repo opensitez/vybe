@@ -21,6 +21,10 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-abcdefg
+$result = substr_compare("abcdefg", "cde", 2, 3);
+echo $result === 0 ? "equal" : "not-equal";
+$diff = substr_compare("abcdefg", "xyz", 0, 3);
+echo $diff !== 0 ? "different" : "same";
 
-__vybe_check(ob_get_clean(), "cde");
+
+__vybe_check(ob_get_clean(), "equaldifferent");

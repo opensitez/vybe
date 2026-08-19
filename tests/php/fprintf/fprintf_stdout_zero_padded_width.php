@@ -23,4 +23,4 @@ ob_start();
 
 fprintf(STDOUT, '%05d', 7);
 
-__vybe_check(ob_get_clean(), "00007");
+__vybe_check(ob_get_clean(), "");

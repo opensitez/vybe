@@ -21,6 +21,10 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-Hello, %s!
+echo sprintf("Hello, %s!", "World");
+echo "\n";
+echo sprintf("%s and %s", "foo", "bar");
+echo "\n";
 
-__vybe_check(ob_get_clean(), "World");
+
+__vybe_check(ob_get_clean(), "Hello, World!\nfoo and bar");

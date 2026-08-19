@@ -1,5 +1,6 @@
 ' vybe-test: vb/vb_object_late_binding/object_default_property
 ' origin: languages/vb/tests/vb/test_vb_object_late_binding.rs
+Option Strict Off
 
 ' Vybe test harness — Visual Basic.
 '
@@ -41,7 +42,6 @@ Module VybeCheck
     End Sub
 End Module
 
-Option Strict Off
 Class C
 Default Public Property Item(i As Integer) As String
 Get

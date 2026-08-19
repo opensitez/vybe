@@ -1,6 +1,25 @@
 // vybe-test: pascal/pascal_unit_initialization_finalization/test_unit_initialization_interface_instance
 // origin: languages/pascal/tests/pascal/test_pascal_unit_initialization_finalization.rs
 unit IntfInitUnit;
+interface
+  type IService = interface
+    ['{12345678-1234-1234-1234-123456789012}']
+    procedure Execute;
+  end;
+  var ServiceRef: IService;
+implementation
+type TServiceImpl = class(TInterfacedObject, IService)
+  public procedure Execute;
+end;
+procedure TServiceImpl.Execute; begin __p(__vs('InitServiceExecuted')); end;
+
+initialization
+  ServiceRef := TServiceImpl.Create;
+finalization
+  ServiceRef := nil;
+end.
+
+program Test;
 {$mode delphi}
 // Vybe test harness — Pascal.
 //
@@ -61,25 +80,6 @@ begin
     Halt(1);
   end;
 end;
-interface
-  type IService = interface
-    ['{12345678-1234-1234-1234-123456789012}']
-    procedure Execute;
-  end;
-  var ServiceRef: IService;
-implementation
-type TServiceImpl = class(TInterfacedObject, IService)
-  public procedure Execute;
-end;
-procedure TServiceImpl.Execute; begin __p(__vs('InitServiceExecuted')); end;
-
-initialization
-  ServiceRef := TServiceImpl.Create;
-finalization
-  ServiceRef := nil;
-end.
-
-program Test;
 uses IntfInitUnit;
 begin
   ServiceRef.Execute;

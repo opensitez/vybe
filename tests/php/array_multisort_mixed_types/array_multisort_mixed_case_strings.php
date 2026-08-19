@@ -26,4 +26,4 @@ $names = ["B", "A", "C", "D"];
 array_multisort($keys, SORT_ASC, SORT_STRING | SORT_FLAG_CASE, $names, SORT_ASC, SORT_STRING);
 echo implode(',', $keys) . "|" . implode(',', $names);
 
-__vybe_check(ob_get_clean(), "Alpha,Bravo,beta,charlie|A,D,B,C");
+__vybe_check(ob_get_clean(), "Alpha,beta,Bravo,charlie|A,B,D,C");

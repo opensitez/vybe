@@ -1,7 +1,7 @@
 -- vybe-test: lua/loops_for_numeric/numeric_for_zero_step_raises_error
 -- origin: languages/lua/tests/lua/test_loops_for_numeric.rs
 
-local __w1 = "true"
+local __w1 = "false"
 local __i = 0
 
 local ok, err = pcall(function() for i = 1, 5, 0 do end end)

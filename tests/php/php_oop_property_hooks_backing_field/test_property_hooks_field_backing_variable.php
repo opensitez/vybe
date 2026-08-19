@@ -31,4 +31,4 @@ $c->count = 5;
 $c->count = 10;
 echo $c->count, "\n";
 
-__vybe_check(ob_get_clean(), "15");
+__vybe_check(ob_get_clean(), "10");

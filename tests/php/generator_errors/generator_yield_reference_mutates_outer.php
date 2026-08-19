@@ -31,4 +31,4 @@ $ref = &$g->current();
 $g->next();
 echo $ref;
 
-__vybe_check(ob_get_clean(), "3");
+__vybe_check(ob_get_clean(), "");

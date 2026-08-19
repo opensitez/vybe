@@ -3,7 +3,7 @@
 
 program t
 integer :: vybe_check_i = 0
-integer :: vybe_check_w(2) = [ 0, 1 ]
+integer :: vybe_check_w(2) = [ 1, 0 ]
     integer, allocatable :: values(:)
     values = (/ 0 * 17 /)
         vybe_check_i = vybe_check_i + 1

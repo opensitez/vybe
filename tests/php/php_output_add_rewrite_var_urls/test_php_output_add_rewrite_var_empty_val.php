@@ -21,6 +21,11 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-empty_var
+if (function_exists('output_add_rewrite_var')) {
+    output_add_rewrite_var("empty_var", "");
+    output_reset_rewrite_vars();
+}
+echo "EMPTY_VAL_REWRITE_OK";
 
-__vybe_check(ob_get_clean(), "");
+
+__vybe_check(ob_get_clean(), "EMPTY_VAL_REWRITE_OK");

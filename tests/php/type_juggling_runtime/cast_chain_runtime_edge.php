@@ -28,4 +28,4 @@ echo (bool)'false' . '|';
 echo (string)false . '|';
 echo (string)true;
 
-__vybe_check(ob_get_clean(), "12|12|0|1||1");
+__vybe_check(ob_get_clean(), "12|12||1||1");

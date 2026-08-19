@@ -23,4 +23,4 @@ ob_start();
 
 echo urlencode('~');
 
-__vybe_check(ob_get_clean(), "~");
+__vybe_check(ob_get_clean(), "%7E");

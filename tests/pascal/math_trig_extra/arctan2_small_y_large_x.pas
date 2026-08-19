@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; begin __p(__vs(Trunc(ArcTan2(0.1,10.0)*10000))); __vybeCheck('999');
+end; begin __p(__vs(Trunc(ArcTan2(0.1,10.0)*10000))); __vybeCheck('99');
 end.

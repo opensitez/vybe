@@ -1,6 +1,9 @@
 // vybe-test: dart/dart_isolate_transferable_data/transferable_typed_data_transfers_ownership
 // origin: languages/dart/tests/dart/test_dart_isolate_transferable_data.rs
 
+import 'dart:isolate';
+import 'dart:typed_data';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,8 +23,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:isolate';
-import 'dart:typed_data';
 void __vybeMain() {
   final list = Uint8List.fromList([10, 20, 30]);
   final ttd = TransferableTypedData.fromList([list]);

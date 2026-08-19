@@ -21,6 +21,17 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-Bob
+class Customer {
+    public function __construct(
+        /** @var string Customer full name */
+        public string $name,
+        /** @var string Customer email address */
+        public string $email
+    ) {}
+}
 
-__vybe_check(ob_get_clean(), "bob@example.com");
+$c = new Customer("Bob", "bob@example.com");
+echo "$c->name <$c->email>";
+
+
+__vybe_check(ob_get_clean(), "Bob <bob@example.com>");

@@ -15,8 +15,8 @@ PROCEDURE DIVISION.
     STRING "DONE" DELIMITED SIZE INTO WS-VYBE-L
     EVALUATE WS-VYBE-I
         WHEN 1
-            IF WS-VYBE-L NOT = "DONE"
-                DISPLAY "FAIL at 1 want [DONE] got [" WS-VYBE-L "]"
+            IF WS-VYBE-L NOT = "INSIDE"
+                DISPLAY "FAIL at 1 want [INSIDE] got [" WS-VYBE-L "]"
                 MOVE 1 TO RETURN-CODE
                 RAISE EXCEPTION EC-PROGRAM
             END-IF
@@ -35,8 +35,8 @@ MAYBE.
     STRING "INSIDE" DELIMITED SIZE INTO WS-VYBE-L
     EVALUATE WS-VYBE-I
         WHEN 1
-            IF WS-VYBE-L NOT = "DONE"
-                DISPLAY "FAIL at 1 want [DONE] got [" WS-VYBE-L "]"
+            IF WS-VYBE-L NOT = "INSIDE"
+                DISPLAY "FAIL at 1 want [INSIDE] got [" WS-VYBE-L "]"
                 MOVE 1 TO RETURN-CODE
                 RAISE EXCEPTION EC-PROGRAM
             END-IF

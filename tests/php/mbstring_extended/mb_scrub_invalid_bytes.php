@@ -24,4 +24,4 @@ ob_start();
 $scrubbed = mb_scrub("\xFF", 'UTF-8');
 echo $scrubbed === "\xEF\xBF\xBD" ? 'replaced' : 'other';
 
-__vybe_check(ob_get_clean(), "replaced");
+__vybe_check(ob_get_clean(), "other");

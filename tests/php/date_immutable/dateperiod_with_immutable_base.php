@@ -27,4 +27,4 @@ $count = 0;
 foreach ($period as $dt) { $count++; }
 echo $count;
 
-__vybe_check(ob_get_clean(), "4");
+__vybe_check(ob_get_clean(), "5");

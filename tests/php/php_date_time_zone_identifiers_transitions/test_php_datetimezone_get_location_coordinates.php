@@ -25,4 +25,4 @@ $tz = new DateTimeZone("Tokyo/Asia" != "" ? "Asia/Tokyo" : "UTC");
 $loc = $tz->getLocation();
 echo "Country={$loc['country_code']} Lat={$loc['latitude']}";
 
-__vybe_check(ob_get_clean(), "Country=JP Lat=35.685");
+__vybe_check(ob_get_clean(), "Country=JP Lat=35.65444");

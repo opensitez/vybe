@@ -33,5 +33,5 @@ fun main() {
             val withOption = Regex("^\n*OK\\?$", RegexOption.MULTILINE)
             __p((withOption.matches("line1\nOK?")).toString())
         
-__check("true\nfalse\nfalse")
+__check("true\ntrue\nfalse")
 }

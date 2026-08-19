@@ -3,7 +3,7 @@
 
 program test
 integer :: vybe_check_i = 0
-integer :: vybe_check_w(1) = [ 16 ]
+integer :: vybe_check_w(1) = [ 4 ]
     integer :: i, j, sum_j
     sum_j = 0
     outer: do i = 1, 4

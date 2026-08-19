@@ -29,4 +29,4 @@ echo sprintf('%1$ d', 42);
 echo "\n";
 echo sprintf('%1$010.2f', 3.5);
 
-__vybe_check(ob_get_clean(), "right left|+42| 42|0000003.50");
+__vybe_check(ob_get_clean(), "right left\n+42\n42\n0000003.50");

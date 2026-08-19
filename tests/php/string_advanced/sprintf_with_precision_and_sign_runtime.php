@@ -27,4 +27,4 @@ echo sprintf("% 06d", 12);
 echo "\n";
 echo sprintf("%'_'9d", 42);
 
-__vybe_check(ob_get_clean(), "+12\n000012\n_______42");
+__vybe_check(ob_get_clean(), "+12\n000012\n42");

@@ -26,4 +26,4 @@ echo base64_encode($data);
 echo "\n";
 echo base64_decode(base64_encode($data));
 
-__vybe_check(ob_get_clean(), "YStiL2M9ZD8m|a+b/c=d?&");
+__vybe_check(ob_get_clean(), "YStiL2M9ZD8m\na+b/c=d?&");

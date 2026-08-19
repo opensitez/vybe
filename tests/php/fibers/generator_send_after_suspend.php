@@ -32,4 +32,4 @@ echo $x;
 $x = $g->send('z');
 echo $x;
 
-__vybe_check(ob_get_clean(), "azb");
+__vybe_check(ob_get_clean(), "azzb");

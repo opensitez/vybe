@@ -1,6 +1,9 @@
 // vybe-test: dart/dart_isolate_ports_messaging/raw_receive_port_close_removes_handler
 // origin: languages/dart/tests/dart/test_dart_isolate_ports_messaging.rs
 
+import 'dart:isolate';
+import 'dart:async';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,8 +23,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:isolate';
-import 'dart:async';
 void __vybeMain() async {
   final port = RawReceivePort((msg) {
     __p('received');

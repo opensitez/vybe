@@ -3,7 +3,7 @@
 
 program test_do_construct_reentrancy_named_cycle
 integer :: vybe_check_i = 0
-integer :: vybe_check_w(3) = [ 6, 5, 2 ]
+integer :: vybe_check_w(3) = [ 10, 5, 2 ]
     integer :: outer
     integer :: inner
     integer :: total

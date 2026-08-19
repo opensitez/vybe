@@ -3,7 +3,7 @@
 
 program test
 integer :: vybe_check_i = 0
-integer :: vybe_check_w(1) = [ 5 ]
+integer :: vybe_check_w(1) = [ 6 ]
     integer :: i = -3, count = 0
     do while (i <= 3)
         i = i + 1

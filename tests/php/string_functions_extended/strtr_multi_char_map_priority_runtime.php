@@ -23,4 +23,4 @@ ob_start();
 
 echo strtr('abab', ['ab'=>'x', 'aba'=>'y']);
 
-__vybe_check(ob_get_clean(), "xx");
+__vybe_check(ob_get_clean(), "yb");

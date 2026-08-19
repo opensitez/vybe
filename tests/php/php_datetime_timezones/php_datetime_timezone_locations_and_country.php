@@ -26,4 +26,4 @@ $loc = $tz->getLocation();
 echo $loc['country_code'];
 echo $loc['timezone_id'];
 
-__vybe_check(ob_get_clean(), "MAAfrica/Casablanca");
+__vybe_check(ob_get_clean(), "MA");

@@ -32,4 +32,4 @@ echo $f->resume('x');
 echo '|';
 echo $f->resume('y');
 
-__vybe_check(ob_get_clean(), "a|x|42");
+__vybe_check(ob_get_clean(), "a|xb|");

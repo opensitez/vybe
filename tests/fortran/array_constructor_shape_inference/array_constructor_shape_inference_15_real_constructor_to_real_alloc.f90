@@ -10,16 +10,16 @@ program t
     print *, "FAIL: want [3] got [", n, "]"
     stop 1
 end if
-    if ((nint(sum(values))) /= 7) then
-    print *, "FAIL: want [7] got [", nint(sum(values)), "]"
+    if ((nint(sum(values))) /= 8) then
+    print *, "FAIL: want [8] got [", nint(sum(values)), "]"
     stop 1
 end if
-    if ((values(1)) /= 1) then
-    print *, "FAIL: want [1] got [", values(1), "]"
+    if ((values(1.50000000)) /= 1.50000000) then
+    print *, "FAIL: want [1.50000000] got [", values(1), "]"
     stop 1
 end if
-    if ((values(n)) /= 3) then
-    print *, "FAIL: want [3] got [", values(n), "]"
+    if ((values(n)) /= 3.50000000) then
+    print *, "FAIL: want [3.50000000] got [", values(n), "]"
     stop 1
 end if
 end program t

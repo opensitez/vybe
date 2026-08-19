@@ -29,4 +29,4 @@ set_error_handler(function($errno, $errstr) {
 @trigger_error("Bubbled notice", E_USER_NOTICE);
 restore_error_handler();
 
-__vybe_check(ob_get_clean(), "HandlerSeen");
+__vybe_check(ob_get_clean(), "HandlerSeen ");

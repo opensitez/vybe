@@ -68,9 +68,13 @@ procedure Merge(lo, mid, hi: Integer);
 var i, j, k: Integer;
 begin
   i := lo; j := mid + 1; k := lo;
+  // `while ... do` takes ONE statement: without this begin/end the `Inc(k)`
+  // sat outside the loop and every merged element overwrote tmp[k].
   while (i <= mid) and (j <= hi) do
+  begin
     if a[i] <= a[j] then begin tmp[k]:=a[i]; Inc(i); end else begin tmp[k]:=a[j]; Inc(j); end;
     Inc(k);
+  end;
   while i <= mid do begin tmp[k]:=a[i]; Inc(i); Inc(k); end;
   while j <= hi do begin tmp[k]:=a[j]; Inc(j); Inc(k); end;
   for i := lo to hi do a[i] := tmp[i];

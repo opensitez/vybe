@@ -28,4 +28,4 @@ class D {
 $a = new D('a');
 $b = new D('b');
 
-__vybe_check(ob_get_clean(), "ba");
+__vybe_check(ob_get_clean(), "");

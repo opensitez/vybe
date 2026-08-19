@@ -27,4 +27,4 @@ echo match ($value) {
     default => 'nonzero',
 };
 
-__vybe_check(ob_get_clean(), "zero-true");
+__vybe_check(ob_get_clean(), "nonzero");

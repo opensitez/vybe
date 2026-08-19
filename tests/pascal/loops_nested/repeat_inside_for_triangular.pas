@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; var i,n,s:Integer; begin s:=0; for i:=1 to 4 do begin n:=0; repeat Inc(n); s:=s+n; until n=i; end; __p(__vs(s)); __vybeCheck('10');
+end; var i,n,s:Integer; begin s:=0; for i:=1 to 4 do begin n:=0; repeat Inc(n); s:=s+n; until n=i; end; __p(__vs(s)); __vybeCheck('20');
 end.

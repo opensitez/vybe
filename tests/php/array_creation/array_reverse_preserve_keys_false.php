@@ -24,4 +24,4 @@ ob_start();
 $rev = array_reverse(['a' => 1, 'b' => 2], false);
 echo implode(',', $rev) . '|' . array_key_first($rev);
 
-__vybe_check(ob_get_clean(), "2,1|0");
+__vybe_check(ob_get_clean(), "2,1|b");

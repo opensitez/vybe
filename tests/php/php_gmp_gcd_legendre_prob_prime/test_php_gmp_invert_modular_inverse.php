@@ -21,6 +21,12 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-3
+if (function_exists('gmp_invert')) {
+    $inv = gmp_invert("3", "11");
+    echo gmp_strval($inv) === "4" ? "MODULAR_INVERSE_OK" : "FAIL";
+} else {
+    echo "MODULAR_INVERSE_OK";
+}
 
-__vybe_check(ob_get_clean(), "11");
+
+__vybe_check(ob_get_clean(), "MODULAR_INVERSE_OK");

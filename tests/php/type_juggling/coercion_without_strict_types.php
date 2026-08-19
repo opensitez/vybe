@@ -21,6 +21,10 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-3
+// Without strict_types, PHP coerces args
+function addNums(int $a, int $b): int { return $a + $b; }
+echo addNums("3", "4");  // coerces strings to ints
+echo addNums(2.9, 1.1);  // coerces floats to ints (truncates)
 
-__vybe_check(ob_get_clean(), "4");
+
+__vybe_check(ob_get_clean(), "73");

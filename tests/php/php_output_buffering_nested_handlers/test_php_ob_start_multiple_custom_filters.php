@@ -21,6 +21,11 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-foo
+ob_start(fn($s) => str_replace("foo", "bar", $s));
+ob_start(fn($s) => strtoupper($s));
+echo "foo text";
+ob_end_flush();
+ob_end_flush();
 
-__vybe_check(ob_get_clean(), "bar");
+
+__vybe_check(ob_get_clean(), "FOO TEXT");

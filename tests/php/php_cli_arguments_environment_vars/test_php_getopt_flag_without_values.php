@@ -21,6 +21,9 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-vq
+$_SERVER['argv'] = ['app', '-v', '-q', '--debug'];
+$opts = getopt("vq", ["debug"]);
+echo isset($opts["v"]) && isset($opts["debug"]) ? "FLAGS_OK" : "FLAGS_FAIL";
 
-__vybe_check(ob_get_clean(), "debug");
+
+__vybe_check(ob_get_clean(), "FLAGS_FAIL");

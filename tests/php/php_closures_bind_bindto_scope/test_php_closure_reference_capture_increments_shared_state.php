@@ -26,4 +26,4 @@ $inc = function() use (&$count) { $count += 2; return $count; };
 echo $inc();
 echo $inc();
 
-__vybe_check(ob_get_clean(), "3\n5");
+__vybe_check(ob_get_clean(), "35");

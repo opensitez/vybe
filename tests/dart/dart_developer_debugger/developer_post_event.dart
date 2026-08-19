@@ -1,6 +1,8 @@
 // vybe-test: dart/dart_developer_debugger/developer_post_event
 // origin: languages/dart/tests/dart/test_dart_developer_debugger.rs
 
+import 'dart:developer';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,12 +22,11 @@ void __check(String want) {
   }
 }
 
-import 'dart:developer';
 void __vybeMain() {
   // Posting an event to the observatory / VM service stream
   // It shouldn't crash if no one is listening.
   postEvent('my.custom.event', {'key': 'value'});
-  print('posted');
+  __p('posted');
 }
 
 void main() {

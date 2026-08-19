@@ -28,4 +28,4 @@ echo '|';
 printf('%s', null);
 echo 'x';
 
-__vybe_check(ob_get_clean(), "101|1x");
+__vybe_check(ob_get_clean(), "101|1|x");

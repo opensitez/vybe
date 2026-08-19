@@ -27,4 +27,4 @@ echo sprintf('%.2e', 1.2);
 echo "\n";
 echo sprintf('%.3f', -1.2345);
 
-__vybe_check(ob_get_clean(), "3|1.20e+00|-1.235");
+__vybe_check(ob_get_clean(), "2\n1.20e+0\n-1.234");

@@ -21,6 +21,11 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-ä
+if (class_exists('Collator')) {
+    $coll = new Collator("de_DE");
+    $res = $coll->compare("ä", "z");
+    echo ($res < 0) ? "COLLATOR_GERMAN_OK" : "FAIL";
+}
 
-__vybe_check(ob_get_clean(), "z");
+
+__vybe_check(ob_get_clean(), "COLLATOR_GERMAN_OK");

@@ -23,4 +23,4 @@ ob_start();
 
 fprintf(STDOUT, '%s=%d', 'count', 9);
 
-__vybe_check(ob_get_clean(), "count=9");
+__vybe_check(ob_get_clean(), "");

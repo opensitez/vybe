@@ -24,4 +24,4 @@ ob_start();
 fprintf(STDOUT, '%%');
 echo 'ok';
 
-__vybe_check(ob_get_clean(), "%ok");
+__vybe_check(ob_get_clean(), "ok");

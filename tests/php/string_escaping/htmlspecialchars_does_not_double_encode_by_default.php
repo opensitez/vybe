@@ -23,4 +23,4 @@ ob_start();
 
 echo htmlspecialchars('&lt;tag&gt;');
 
-__vybe_check(ob_get_clean(), "&amp;amp;lt;tag&amp;gt;");
+__vybe_check(ob_get_clean(), "&amp;lt;tag&amp;gt;");

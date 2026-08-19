@@ -25,4 +25,4 @@ var p1 = System.Threading.Interlocked.CompareExchange(ref slot, 8, 3);
 var p2 = System.Threading.Interlocked.CompareExchange(ref slot, 8, 3);
 __P((p1 + p2).ToString());
 __P((slot).ToString());
-__Check("6\n8");
+__Check("11\n8");

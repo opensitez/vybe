@@ -21,6 +21,11 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-active
+$doc = new DOMDocument();
+$el = $doc->createElement("btn");
+$el->setAttribute("active", "1");
+$el->removeAttribute("active");
+echo !$el->hasAttribute("active") ? "REMOVE_ATTR_OK" : "FAIL";
 
-__vybe_check(ob_get_clean(), "1");
+
+__vybe_check(ob_get_clean(), "REMOVE_ATTR_OK");

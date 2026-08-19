@@ -25,4 +25,4 @@ $dt = new DateTime('2024-07-19', new DateTimeZone('UTC'));
 $dt->modify('first day of next year');
 echo $dt->format('Y-m-d'), "\n";
 
-__vybe_check(ob_get_clean(), "2025-01-01");
+__vybe_check(ob_get_clean(), "2025-07-01");

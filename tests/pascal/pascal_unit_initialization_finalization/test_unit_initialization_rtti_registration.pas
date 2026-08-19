@@ -1,6 +1,14 @@
 // vybe-test: pascal/pascal_unit_initialization_finalization/test_unit_initialization_rtti_registration
 // origin: languages/pascal/tests/pascal/test_pascal_unit_initialization_finalization.rs
 unit RegUnit;
+interface
+  var RegisteredName: String;
+implementation
+initialization
+  RegisteredName := 'RegUnitClass';
+end.
+
+program Test;
 {$mode delphi}
 // Vybe test harness — Pascal.
 //
@@ -61,14 +69,6 @@ begin
     Halt(1);
   end;
 end;
-interface
-  var RegisteredName: String;
-implementation
-initialization
-  RegisteredName := 'RegUnitClass';
-end.
-
-program Test;
 uses RegUnit;
 begin
   __p(__vs(RegisteredName));

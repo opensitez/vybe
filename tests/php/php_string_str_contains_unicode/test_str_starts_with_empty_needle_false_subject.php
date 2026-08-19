@@ -27,4 +27,4 @@ echo str_starts_with('', '') ? 'yes2' : 'no2';
 echo "\n";
 echo str_ends_with('', '') ? 'yes3' : 'no3';
 
-__vybe_check(ob_get_clean(), "no|yes2|yes3");
+__vybe_check(ob_get_clean(), "no\nyes2\nyes3");

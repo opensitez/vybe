@@ -21,6 +21,7 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-Hello World
+echo strncasecmp("Hello World", "hello php", 5) === 0 ? "MATCH_5" : "NO_MATCH";
 
-__vybe_check(ob_get_clean(), "hello php");
+
+__vybe_check(ob_get_clean(), "MATCH_5");

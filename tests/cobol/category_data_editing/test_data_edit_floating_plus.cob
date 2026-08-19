@@ -13,8 +13,8 @@
            DISPLAY "[" EDITED "]".
     MOVE SPACES TO WS-VYBE-L
     STRING "[" DELIMITED SIZE EDITED DELIMITED SIZE "]" DELIMITED SIZE INTO WS-VYBE-L
-    IF WS-VYBE-L NOT = "[   +45]"
-        DISPLAY "FAIL: want [[   +45]] got [" WS-VYBE-L "]"
+    IF WS-VYBE-L NOT = "[    +45]"
+        DISPLAY "FAIL: want [[    +45]] got [" WS-VYBE-L "]"
         MOVE 1 TO RETURN-CODE
         RAISE EXCEPTION EC-PROGRAM
     END-IF.

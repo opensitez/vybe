@@ -34,4 +34,4 @@ echo match ($payload['id'] ?? null) {
     default => 'other-id',
 };
 
-__vybe_check(ob_get_clean(), "evt|zero");
+__vybe_check(ob_get_clean(), "other|zero");

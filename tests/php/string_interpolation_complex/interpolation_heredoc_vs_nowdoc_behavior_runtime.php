@@ -34,4 +34,4 @@ echo $doc;
 echo "\n";
 echo $raw;
 
-__vybe_check(ob_get_clean(), "Hello Alice|Hello \$name");
+__vybe_check(ob_get_clean(), "Hello Alice\nHello \$name");

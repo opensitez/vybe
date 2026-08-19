@@ -26,4 +26,4 @@ $gen = g();
 $gen->next();
 echo $gen->send(9);
 
-__vybe_check(ob_get_clean(), "9");
+__vybe_check(ob_get_clean(), "");

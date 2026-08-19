@@ -23,4 +23,4 @@ ob_start();
 
 echo fmod(-5.3, 2.0) . '|' . round(-2.5);
 
-__vybe_check(ob_get_clean(), "-1.3|-2");
+__vybe_check(ob_get_clean(), "-1.3|-3");

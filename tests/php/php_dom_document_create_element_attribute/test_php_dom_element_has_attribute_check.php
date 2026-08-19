@@ -21,6 +21,10 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-type
+$doc = new DOMDocument();
+$el = $doc->createElement("input");
+$el->setAttribute("type", "text");
+echo $el->hasAttribute("type") && !$el->hasAttribute("disabled") ? "HAS_ATTR_OK" : "FAIL";
 
-__vybe_check(ob_get_clean(), "text");
+
+__vybe_check(ob_get_clean(), "HAS_ATTR_OK");

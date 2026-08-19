@@ -26,4 +26,4 @@ $names = ["Ann", "Ben", "Cal", "Die"];
 array_multisort($scores, SORT_ASC, SORT_NUMERIC, $names, SORT_ASC, SORT_STRING);
 echo implode(',', $scores) . "|" . $names[0] . ":" . $names[1] . ":" . $names[2] . ":" . $names[3];
 
-__vybe_check(ob_get_clean(), "5,5,10,20|Ben,Die,Ann,Cal");
+__vybe_check(ob_get_clean(), "5,5,10,20|Ben:Die:Ann:Cal");

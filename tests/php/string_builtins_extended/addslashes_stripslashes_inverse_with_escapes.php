@@ -26,4 +26,4 @@ echo addslashes($value);
 echo "|";
 echo addslashes(stripslashes(addslashes($value)));
 
-__vybe_check(ob_get_clean(), "a\\'b\\\\c\\\"d|a'b\\\\c\"d");
+__vybe_check(ob_get_clean(), "a\\'b\\\\c\\\"d|a\\'b\\\\c\\\"d");

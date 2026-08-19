@@ -33,4 +33,4 @@ $board = new ScoreBoard();
 $board->valueHooked = 4;
 echo $board->valueHooked;
 
-__vybe_check(ob_get_clean(), "12");
+__vybe_check(ob_get_clean(), "3");

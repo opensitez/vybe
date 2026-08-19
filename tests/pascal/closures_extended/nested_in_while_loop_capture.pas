@@ -66,7 +66,7 @@ procedure Outer;
 var step: Integer;
   function Next(var x: Integer): Integer;
   begin x := x + step; Result := x; end;
-  x: Integer;
+var x: Integer;
 begin
   step := 3;
   x := 0;

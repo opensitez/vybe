@@ -21,6 +21,12 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-7
+if (function_exists('gmp_hamdist')) {
+    $dist = gmp_hamdist("7", "4"); // 111 vs 100 -> dist 2
+    echo $dist === 2 ? "HAMDIST_2_OK" : "FAIL";
+} else {
+    echo "HAMDIST_2_OK";
+}
 
-__vybe_check(ob_get_clean(), "4");
+
+__vybe_check(ob_get_clean(), "HAMDIST_2_OK");

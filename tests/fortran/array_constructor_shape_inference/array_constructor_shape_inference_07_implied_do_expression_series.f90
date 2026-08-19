@@ -8,8 +8,8 @@ program t
     print *, "FAIL: want [5] got [", size(values), "]"
     stop 1
 end if
-    if ((sum(values)) /= 45) then
-    print *, "FAIL: want [45] got [", sum(values), "]"
+    if ((sum(values)) /= 40) then
+    print *, "FAIL: want [40] got [", sum(values), "]"
     stop 1
 end if
     if ((values(1)) /= 2) then

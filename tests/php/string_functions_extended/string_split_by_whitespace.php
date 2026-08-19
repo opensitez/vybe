@@ -23,4 +23,4 @@ ob_start();
 
 $parts = explode(' ', 'one  two  three'); echo count($parts); echo $parts[0] === 'one' ? 1 : 0;
 
-__vybe_check(ob_get_clean(), "5 1");
+__vybe_check(ob_get_clean(), "51");

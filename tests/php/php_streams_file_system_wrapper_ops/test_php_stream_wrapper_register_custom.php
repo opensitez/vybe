@@ -21,6 +21,17 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-var://buffer
+class VariableStream {
+    public static string $data = "";
+    public function stream_open($path, $mode, $options, &$opened_path) { return true; }
+    public function stream_write($data) { self::$data .= $data; return strlen($data); }
+    public function stream_read($count) { return ""; }
+}
+
+stream_wrapper_register("var", VariableStream::class);
+file_put_contents("var://buffer", "custom stream data");
+echo VariableStream::$data;
+stream_wrapper_unregister("var");
+
 
 __vybe_check(ob_get_clean(), "custom stream data");

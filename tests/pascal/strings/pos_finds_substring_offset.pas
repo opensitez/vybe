@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; begin __p(__vs(Pos('ca', 'pascal'))); __vybeCheck('3');
+end; begin __p(__vs(Pos('ca', 'pascal'))); __vybeCheck('4');
 end.

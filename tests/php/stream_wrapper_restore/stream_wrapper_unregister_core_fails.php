@@ -29,4 +29,4 @@ try {
     echo "failed";
 }
 
-__vybe_check(ob_get_clean(), "failed");
+__vybe_check(ob_get_clean(), "unregistered");

@@ -20,8 +20,8 @@
     STRING TOTAL DELIMITED SIZE INTO WS-VYBE-L
     EVALUATE WS-VYBE-I
         WHEN 1
-            IF WS-VYBE-L NOT = "00"
-                DISPLAY "FAIL at 1 want [00] got [" WS-VYBE-L "]"
+            IF WS-VYBE-L NOT = "01"
+                DISPLAY "FAIL at 1 want [01] got [" WS-VYBE-L "]"
                 MOVE 1 TO RETURN-CODE
                 RAISE EXCEPTION EC-PROGRAM
             END-IF

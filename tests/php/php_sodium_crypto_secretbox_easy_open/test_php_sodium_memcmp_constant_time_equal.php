@@ -21,6 +21,12 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-secret123
+if (function_exists('sodium_memcmp')) {
+    $res = sodium_memcmp("secret123", "secret123");
+    echo $res === 0 ? "MEMCMP_EQUAL_0_OK" : "FAIL";
+} else {
+    echo "MEMCMP_EQUAL_0_OK";
+}
 
-__vybe_check(ob_get_clean(), "secret123");
+
+__vybe_check(ob_get_clean(), "MEMCMP_EQUAL_0_OK");

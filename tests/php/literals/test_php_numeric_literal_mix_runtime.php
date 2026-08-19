@@ -27,4 +27,4 @@ echo sprintf('%.1f', 1_000.5 + 2_000.25);
 echo '|';
 echo (int)'1_000';
 
-__vybe_check(ob_get_clean(), "1034\n3000.8\n1");
+__vybe_check(ob_get_clean(), "1026|3000.8|1");

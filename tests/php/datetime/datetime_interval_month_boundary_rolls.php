@@ -27,4 +27,4 @@ echo $dt->format('Y-m-d');
 $dt->sub(new DateInterval('P1M'));
 echo $dt->format('Y-m-d');
 
-__vybe_check(ob_get_clean(), "2024-03-02 2024-01-31");
+__vybe_check(ob_get_clean(), "2024-03-022024-02-02");

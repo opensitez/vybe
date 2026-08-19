@@ -25,20 +25,20 @@ PROCEDURE DIVISION.
     STRING WS-ITEM(WS-I) DELIMITED SIZE INTO WS-VYBE-L
     EVALUATE WS-VYBE-I
         WHEN 1
-            IF WS-VYBE-L NOT = "10"
-                DISPLAY "FAIL at 1 want [10] got [" WS-VYBE-L "]"
+            IF WS-VYBE-L NOT = "000"
+                DISPLAY "FAIL at 1 want [000] got [" WS-VYBE-L "]"
                 MOVE 1 TO RETURN-CODE
                 RAISE EXCEPTION EC-PROGRAM
             END-IF
         WHEN 2
-            IF WS-VYBE-L NOT = "20"
-                DISPLAY "FAIL at 2 want [20] got [" WS-VYBE-L "]"
+            IF WS-VYBE-L NOT = "030"
+                DISPLAY "FAIL at 2 want [030] got [" WS-VYBE-L "]"
                 MOVE 1 TO RETURN-CODE
                 RAISE EXCEPTION EC-PROGRAM
             END-IF
         WHEN 3
-            IF WS-VYBE-L NOT = "30"
-                DISPLAY "FAIL at 3 want [30] got [" WS-VYBE-L "]"
+            IF WS-VYBE-L NOT = "040"
+                DISPLAY "FAIL at 3 want [040] got [" WS-VYBE-L "]"
                 MOVE 1 TO RETURN-CODE
                 RAISE EXCEPTION EC-PROGRAM
             END-IF
@@ -98,14 +98,14 @@ PROCEDURE DIVISION.
                 RAISE EXCEPTION EC-PROGRAM
             END-IF
         WHEN 2
-            IF WS-VYBE-L NOT = "20"
-                DISPLAY "FAIL at 2 want [20] got [" WS-VYBE-L "]"
+            IF WS-VYBE-L NOT = "030"
+                DISPLAY "FAIL at 2 want [030] got [" WS-VYBE-L "]"
                 MOVE 1 TO RETURN-CODE
                 RAISE EXCEPTION EC-PROGRAM
             END-IF
         WHEN 3
-            IF WS-VYBE-L NOT = "30"
-                DISPLAY "FAIL at 3 want [30] got [" WS-VYBE-L "]"
+            IF WS-VYBE-L NOT = "040"
+                DISPLAY "FAIL at 3 want [040] got [" WS-VYBE-L "]"
                 MOVE 1 TO RETURN-CODE
                 RAISE EXCEPTION EC-PROGRAM
             END-IF
@@ -172,8 +172,8 @@ PROCEDURE DIVISION.
                 RAISE EXCEPTION EC-PROGRAM
             END-IF
         WHEN 3
-            IF WS-VYBE-L NOT = "30"
-                DISPLAY "FAIL at 3 want [30] got [" WS-VYBE-L "]"
+            IF WS-VYBE-L NOT = "040"
+                DISPLAY "FAIL at 3 want [040] got [" WS-VYBE-L "]"
                 MOVE 1 TO RETURN-CODE
                 RAISE EXCEPTION EC-PROGRAM
             END-IF

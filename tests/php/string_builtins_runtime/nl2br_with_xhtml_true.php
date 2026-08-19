@@ -23,4 +23,4 @@ ob_start();
 
 echo nl2br("x\n", true);
 
-__vybe_check(ob_get_clean(), "x<br />\n");
+__vybe_check(ob_get_clean(), "x<br />");

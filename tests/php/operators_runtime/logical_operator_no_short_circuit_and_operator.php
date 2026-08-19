@@ -27,4 +27,4 @@ echo ($a && 1) . ',';
 echo (1 or 0) . ',';
 echo (1 || 0);
 
-__vybe_check(ob_get_clean(), ", 1,1");
+__vybe_check(ob_get_clean(), ",,1,1");

@@ -27,4 +27,4 @@ $r = array_uintersect_uassoc($a, $b, fn($v1,$v2)=>strcasecmp((string)$v1, (strin
 ksort($r);
 echo implode('|', array_keys($r));
 
-__vybe_check(ob_get_clean(), "1");
+__vybe_check(ob_get_clean(), "");

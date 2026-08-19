@@ -6,8 +6,8 @@ program t
     values = (/ 10, 20, 30, 40, 50 /)
     values(2:4) = 0
     values(1) = values(5)
-    if ((sum(values)) /= 110) then
-    print *, "FAIL: want [110] got [", sum(values), "]"
+    if ((sum(values)) /= 100) then
+    print *, "FAIL: want [100] got [", sum(values), "]"
     stop 1
 end if
     if ((values(2)) /= 0) then

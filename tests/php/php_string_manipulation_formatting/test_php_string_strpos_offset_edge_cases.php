@@ -27,4 +27,4 @@ echo strpos("hello", "h", -1) === 0 ? "ok" : "bad";
 echo "|";
 echo strpos("hello", "l", 2);
 
-__vybe_check(ob_get_clean(), "0|ok|3");
+__vybe_check(ob_get_clean(), "0|bad|2");

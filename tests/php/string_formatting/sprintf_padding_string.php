@@ -21,6 +21,9 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-%10s
+echo sprintf("%10s", "hello");  // "     hello"
+echo sprintf("%-10s|", "hi");   // "hi        |"
+echo sprintf("%'#10s", "ok");   // "########ok"
 
-__vybe_check(ob_get_clean(), "hello");
+
+__vybe_check(ob_get_clean(), "     hellohi        |########ok");

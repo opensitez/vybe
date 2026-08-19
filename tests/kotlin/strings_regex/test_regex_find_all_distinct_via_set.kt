@@ -31,5 +31,5 @@ fun main() {
             __p((words.size).toString())
             __p((words.joinToString(",")).toString())
         
-__check("4\na,b,c")
+__check("3\na,b,c")
 }

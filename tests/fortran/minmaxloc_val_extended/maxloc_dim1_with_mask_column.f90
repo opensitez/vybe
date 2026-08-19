@@ -5,8 +5,8 @@ integer :: m(2,3) = reshape([1, 100, 3, 4, 5, 6], [2,3])
 logical :: mask(2,3) = reshape([.true., .false., .true., .true., .true., .true.], [2,3])
 integer :: col(3)
 col = maxloc(m, dim=1, mask=mask)
-if ((col(1)) /= 2) then
-    print *, "FAIL: want [2] got [", col(1), "]"
+if ((col(1)) /= 1) then
+    print *, "FAIL: want [1] got [", col(1), "]"
     stop 1
 end if
 if ((col(2)) /= 2) then

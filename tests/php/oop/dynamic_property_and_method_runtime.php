@@ -32,4 +32,4 @@ $obj = new $reporterClass('Ada');
 echo $obj->$prop;
 echo $obj->$method();
 
-__vybe_check(ob_get_clean(), "Adaauser:Ada");
+__vybe_check(ob_get_clean(), "Adauser:Ada");

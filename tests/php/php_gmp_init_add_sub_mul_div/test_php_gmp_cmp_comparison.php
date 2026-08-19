@@ -21,6 +21,14 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-100
+if (function_exists('gmp_cmp')) {
+    $c1 = gmp_cmp("100", "50");
+    $c2 = gmp_cmp("50", "100");
+    $c3 = gmp_cmp("100", "100");
+    echo $c1 > 0 && $c2 < 0 && $c3 === 0 ? "CMP_VAL_OK" : "FAIL";
+} else {
+    echo "CMP_VAL_OK";
+}
 
-__vybe_check(ob_get_clean(), "50");
+
+__vybe_check(ob_get_clean(), "CMP_VAL_OK");

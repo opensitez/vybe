@@ -21,6 +21,9 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-kitten
+echo levenshtein("kitten", "sitting");
+echo levenshtein("sunday", "saturday");
+echo levenshtein("abc", "abc");
 
-__vybe_check(ob_get_clean(), "sitting");
+
+__vybe_check(ob_get_clean(), "330");

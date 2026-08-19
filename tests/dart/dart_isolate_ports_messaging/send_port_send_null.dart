@@ -1,6 +1,8 @@
 // vybe-test: dart/dart_isolate_ports_messaging/send_port_send_null
 // origin: languages/dart/tests/dart/test_dart_isolate_ports_messaging.rs
 
+import 'dart:isolate';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,7 +22,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:isolate';
 void __vybeMain() async {
   final port = ReceivePort();
   port.sendPort.send(null);

@@ -1,6 +1,9 @@
 // vybe-test: dart/dart_isolate_transferable_data/isolate_send_transferable_typed_data
 // origin: languages/dart/tests/dart/test_dart_isolate_transferable_data.rs
 
+import 'dart:isolate';
+import 'dart:typed_data';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,8 +23,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:isolate';
-import 'dart:typed_data';
 void isolateMain(SendPort port) {
   final list = Uint8List.fromList([99, 100]);
   final ttd = TransferableTypedData.fromList([list]);

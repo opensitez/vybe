@@ -24,4 +24,4 @@ ob_start();
 $chunks = array_chunk(['a' => 1, 'b' => 2, 'c' => 3, 'd' => 4], 3);
 echo count($chunks) . '|' . array_key_first($chunks[0]) . '|' . implode(',', $chunks[1]);
 
-__vybe_check(ob_get_clean(), "2|0|3,4");
+__vybe_check(ob_get_clean(), "2|0|4");

@@ -25,4 +25,4 @@ $values = ["a" => 0, "b" => false, "c" => "00", "d" => 1];
 asort($values, SORT_REGULAR);
 echo implode("|", array_keys($values));
 
-__vybe_check(ob_get_clean(), "a,b,c,d");
+__vybe_check(ob_get_clean(), "a|b|c|d");

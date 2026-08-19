@@ -1,6 +1,16 @@
 // vybe-test: pascal/pascal_unit_initialization_finalization/test_unit_initialization_flag_toggle
 // origin: languages/pascal/tests/pascal/test_pascal_unit_initialization_finalization.rs
 unit FlagUnit;
+interface
+  var IsReady: Boolean;
+implementation
+initialization
+  IsReady := True;
+finalization
+  IsReady := False;
+end.
+
+program Test;
 {$mode delphi}
 // Vybe test harness — Pascal.
 //
@@ -61,16 +71,6 @@ begin
     Halt(1);
   end;
 end;
-interface
-  var IsReady: Boolean;
-implementation
-initialization
-  IsReady := True;
-finalization
-  IsReady := False;
-end.
-
-program Test;
 uses FlagUnit;
 begin
   __p(__vs(IsReady));

@@ -1,6 +1,9 @@
 // vybe-test: dart/dart_isolate_transferable_data/transferable_typed_data_empty
 // origin: languages/dart/tests/dart/test_dart_isolate_transferable_data.rs
 
+import 'dart:isolate';
+import 'dart:typed_data';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,8 +23,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:isolate';
-import 'dart:typed_data';
 void __vybeMain() {
   final ttd = TransferableTypedData.fromList([]);
   final bd = ttd.materialize();

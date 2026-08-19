@@ -3,7 +3,7 @@
 
 program select_type_polymorphic_matching_class_is_ordered_base_first
 integer :: vybe_check_i = 0
-integer :: vybe_check_w(1) = [ 10 ]
+integer :: vybe_check_w(1) = [ 20 ]
     type :: Base
         integer :: a = 10
     end type Base

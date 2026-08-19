@@ -21,6 +21,14 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-registerUser
+#[Attribute(Attribute::TARGET_PARAMETER)]
+class ValidateEmail {}
 
-__vybe_check(ob_get_clean(), "email");
+function registerUser(#[ValidateEmail] string $email) {}
+
+$rp = new ReflectionParameter("registerUser", "email");
+$attrs = $rp->getAttributes(ValidateEmail::class);
+echo count($attrs);
+
+
+__vybe_check(ob_get_clean(), "1");

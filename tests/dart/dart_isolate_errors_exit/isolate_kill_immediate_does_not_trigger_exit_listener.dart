@@ -1,6 +1,9 @@
 // vybe-test: dart/dart_isolate_errors_exit/isolate_kill_immediate_does_not_trigger_exit_listener
 // origin: languages/dart/tests/dart/test_dart_isolate_errors_exit.rs
 
+import 'dart:isolate';
+import 'dart:async';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,8 +23,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:isolate';
-import 'dart:async';
 void isolateMain(_) {
   while(true) {}
 }

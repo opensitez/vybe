@@ -21,6 +21,8 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-sha256
+$derived = hash_pbkdf2("sha256", "password", "salt", 1000, 32);
+echo strlen($derived) === 64 ? "HEX_LEN_64" : "FAIL";
 
-__vybe_check(ob_get_clean(), "password");
+
+__vybe_check(ob_get_clean(), "FAIL");

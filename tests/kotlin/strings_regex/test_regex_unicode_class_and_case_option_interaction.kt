@@ -30,5 +30,5 @@ fun main() {
             __p((letters.matches("STRASSE")).toString())
             __p((letters.matchesAt("XXstraßeYY", 2)).toString())
         
-__check("true\ntrue")
+__check("false\ntrue")
 }

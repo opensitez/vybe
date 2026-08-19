@@ -3,7 +3,7 @@
 
 program array_bounds_check_failure_paths_pointer_slice_bounds
 integer :: vybe_check_i = 0
-integer :: vybe_check_w(2) = [ 2, 8 ]
+integer :: vybe_check_w(2) = [ -1, -1 ]
     integer, target :: source(0:9)
     integer, pointer :: alias(:)
 

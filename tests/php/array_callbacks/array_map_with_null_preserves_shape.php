@@ -24,4 +24,4 @@ ob_start();
 $out = array_map(null, [1, 2], ['a', 'b', 'c']);
 echo json_encode($out);
 
-__vybe_check(ob_get_clean(), "[[1,\"a\"],[2,\"b\"]]");
+__vybe_check(ob_get_clean(), "[[1,\"a\"],[2,\"b\"],[null,\"c\"]]");

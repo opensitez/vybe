@@ -69,7 +69,16 @@ begin
   isPrime[0] := False; isPrime[1] := False;
   for i := 2 to 29 do
     if isPrime[i] then
-      for j := i * 2 to 29 do isPrime[j] := False;
+    begin
+      // Multiples of i, not the contiguous range i*2..29 — pascal's `for` has
+      // no step, so the stride needs a while.
+      j := i * 2;
+      while j <= 29 do
+      begin
+        isPrime[j] := False;
+        j := j + i;
+      end;
+    end;
   count := 0;
   for i := 2 to 29 do if isPrime[i] then Inc(count);
   __p(__vs(count));

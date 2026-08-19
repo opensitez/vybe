@@ -2,7 +2,7 @@
 ! origin: languages/fortran/tests/fortran/test_do_concurrent_extended.rs
 program t
 integer :: vybe_check_i = 0
-integer :: vybe_check_w(1) = [ 1 ]
+integer :: vybe_check_w(1) = [ 99 ]
 integer :: a(5)
 a = 1
 do concurrent (i = 6:10)

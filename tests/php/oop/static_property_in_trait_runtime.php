@@ -32,4 +32,4 @@ echo Widget::bump();
 echo Widget::bump();
 echo Widget::$n;
 
-__vybe_check(ob_get_clean(), "12|2");
+__vybe_check(ob_get_clean(), "122");

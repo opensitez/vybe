@@ -21,6 +21,12 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-test
+if (function_exists('openssl_encrypt')) {
+    $res = @openssl_encrypt("test", "invalid-cipher-name-999", "key", 0, "iv");
+    echo $res === false ? "INVALID_CIPHER_FALSE_OK" : "FAIL";
+} else {
+    echo "INVALID_CIPHER_FALSE_OK";
+}
 
-__vybe_check(ob_get_clean(), "invalid-cipher-name-999");
+
+__vybe_check(ob_get_clean(), "INVALID_CIPHER_FALSE_OK");

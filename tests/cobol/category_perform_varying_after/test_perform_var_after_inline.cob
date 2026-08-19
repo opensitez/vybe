@@ -8,14 +8,14 @@ IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION.
     STRING I DELIMITED SIZE J DELIMITED SIZE INTO WS-VYBE-L
     EVALUATE WS-VYBE-I
         WHEN 1
-            IF WS-VYBE-L NOT = "11"
-                DISPLAY "FAIL at 1 want [11] got [" WS-VYBE-L "]"
+            IF WS-VYBE-L NOT = "31"
+                DISPLAY "FAIL at 1 want [31] got [" WS-VYBE-L "]"
                 MOVE 1 TO RETURN-CODE
                 RAISE EXCEPTION EC-PROGRAM
             END-IF
         WHEN 2
-            IF WS-VYBE-L NOT = "12"
-                DISPLAY "FAIL at 2 want [12] got [" WS-VYBE-L "]"
+            IF WS-VYBE-L NOT = "OK"
+                DISPLAY "FAIL at 2 want [OK] got [" WS-VYBE-L "]"
                 MOVE 1 TO RETURN-CODE
                 RAISE EXCEPTION EC-PROGRAM
             END-IF
@@ -53,8 +53,8 @@ IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION.
                 RAISE EXCEPTION EC-PROGRAM
             END-IF
         WHEN 2
-            IF WS-VYBE-L NOT = "12"
-                DISPLAY "FAIL at 2 want [12] got [" WS-VYBE-L "]"
+            IF WS-VYBE-L NOT = "OK"
+                DISPLAY "FAIL at 2 want [OK] got [" WS-VYBE-L "]"
                 MOVE 1 TO RETURN-CODE
                 RAISE EXCEPTION EC-PROGRAM
             END-IF

@@ -21,6 +21,12 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-a
+$doc = new DOMDocument();
+$elem = $doc->createElement("a", "Click Here");
+$elem->setAttribute("href", "https://example.com");
+$elem->setAttribute("target", "_blank");
 
-__vybe_check(ob_get_clean(), "Click Here");
+echo $elem->getAttribute("href") . " target=" . $elem->getAttribute("target");
+
+
+__vybe_check(ob_get_clean(), "https://example.com target=_blank");

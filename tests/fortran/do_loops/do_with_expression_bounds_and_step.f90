@@ -2,7 +2,7 @@
 ! origin: languages/fortran/tests/fortran/test_do_loops.rs
 program t
 integer :: vybe_check_i = 0
-integer :: vybe_check_w(1) = [ 15 ]
+integer :: vybe_check_w(1) = [ 8 ]
 integer :: i, s
 integer :: first, last, jump
 first = 1

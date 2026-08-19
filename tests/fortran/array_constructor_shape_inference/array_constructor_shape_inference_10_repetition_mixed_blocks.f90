@@ -4,20 +4,20 @@
 program t
     integer, allocatable :: values(:)
     values = (/ 2 * 3, 3 * 8 /)
-    if ((size(values)) /= 5) then
-    print *, "FAIL: want [5] got [", size(values), "]"
+    if ((size(values)) /= 2) then
+    print *, "FAIL: want [2] got [", size(values), "]"
     stop 1
 end if
-    if ((sum(values)) /= 34) then
-    print *, "FAIL: want [34] got [", sum(values), "]"
+    if ((sum(values)) /= 30) then
+    print *, "FAIL: want [30] got [", sum(values), "]"
     stop 1
 end if
-    if ((values(1)) /= 3) then
-    print *, "FAIL: want [3] got [", values(1), "]"
+    if ((values(1)) /= 6) then
+    print *, "FAIL: want [6] got [", values(1), "]"
     stop 1
 end if
-    if ((values(size(values))) /= 8) then
-    print *, "FAIL: want [8] got [", values(size(values)), "]"
+    if ((values(size(values))) /= 24) then
+    print *, "FAIL: want [24] got [", values(size(values)), "]"
     stop 1
 end if
 end program t

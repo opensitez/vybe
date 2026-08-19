@@ -32,4 +32,4 @@ echo ($h->node?->value() ?: 'fallback-a') . '|';
 $h->node = new Node();
 echo ($h->node?->value() ?: 'fallback-b') . '|';
 
-__vybe_check(ob_get_clean(), "fallback-a|fallback-b");
+__vybe_check(ob_get_clean(), "fallback-a|fallback-b|");

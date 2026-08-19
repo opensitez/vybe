@@ -25,4 +25,4 @@ echo mb_substr("世界", 10, 2, "UTF-8") === "" ? "empty" : "non-empty";
 echo "|";
 echo mb_substr("世界", -10, 1, "UTF-8");
 
-__vybe_check(ob_get_clean(), "empty|界");
+__vybe_check(ob_get_clean(), "empty|世");

@@ -1,6 +1,9 @@
 // vybe-test: dart/dart_developer_inspect_log/developer_log_with_all_params
 // origin: languages/dart/tests/dart/test_dart_developer_inspect_log.rs
 
+import 'dart:async';
+import 'dart:developer';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,7 +23,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:developer';
 void __vybeMain() {
   log(
     'Detailed log',

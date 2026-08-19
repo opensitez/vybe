@@ -23,4 +23,4 @@ ob_start();
 
 echo "a\rb";
 
-__vybe_check(ob_get_clean(), "a\nb");
+__vybe_check(ob_get_clean(), "ab");

@@ -1,6 +1,8 @@
 // vybe-test: dart/dart_convert_latin1_encode_decode/latin1_encode_unsupported_throws
 // origin: languages/dart/tests/dart/test_dart_convert_latin1_encode_decode.rs
 
+import 'dart:convert';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,7 +22,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:convert';
 void __vybeMain() {
   // '🚀' is U+1F680, not in Latin-1
   try {

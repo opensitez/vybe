@@ -25,4 +25,4 @@ echo urldecode("a+b+c");
 echo "\n";
 echo rawurldecode("a%2Bb%2Bc");
 
-__vybe_check(ob_get_clean(), "a b c|a+b+c");
+__vybe_check(ob_get_clean(), "a b c\na+b+c");

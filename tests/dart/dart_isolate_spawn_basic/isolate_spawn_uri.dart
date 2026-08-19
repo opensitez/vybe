@@ -1,6 +1,9 @@
 // vybe-test: dart/dart_isolate_spawn_basic/isolate_spawn_uri
 // origin: languages/dart/tests/dart/test_dart_isolate_spawn_basic.rs
 
+import 'dart:isolate';
+import 'dart:io';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,8 +23,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:isolate';
-import 'dart:io';
 void __vybeMain() async {
   final dir = Directory.systemTemp.createTempSync('iso_');
   final file = File('${dir.path}/iso.dart');

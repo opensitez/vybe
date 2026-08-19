@@ -32,4 +32,4 @@ echo '\n';
 $merged = $a + [2 => 5, 3 => 6];
 echo json_encode($merged);
 
-__vybe_check(ob_get_clean(), "3\n10\n[1,2,3,6]");
+__vybe_check(ob_get_clean(), "3\\n10\\n[1,2,3,6]");

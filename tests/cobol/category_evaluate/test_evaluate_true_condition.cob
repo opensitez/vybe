@@ -15,8 +15,8 @@
            END-EVALUATE.
     MOVE SPACES TO WS-VYBE-L
     STRING "A>10" DELIMITED SIZE INTO WS-VYBE-L
-    IF WS-VYBE-L NOT = "B>5"
-        DISPLAY "FAIL: want [B>5] got [" WS-VYBE-L "]"
+    IF WS-VYBE-L NOT = "A>10"
+        DISPLAY "FAIL: want [A>10] got [" WS-VYBE-L "]"
         MOVE 1 TO RETURN-CODE
         RAISE EXCEPTION EC-PROGRAM
     END-IF.

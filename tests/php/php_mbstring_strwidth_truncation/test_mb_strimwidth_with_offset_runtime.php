@@ -24,4 +24,4 @@ ob_start();
 echo mb_strimwidth('abcdef', 2, 4, '..'), "\n";
 echo mb_strimwidth('日本語テスト', 1, 4, '..');
 
-__vybe_check(ob_get_clean(), "cd..|本..");
+__vybe_check(ob_get_clean(), "cdef\n本..");

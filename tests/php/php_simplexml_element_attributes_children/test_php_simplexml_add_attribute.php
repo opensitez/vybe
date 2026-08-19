@@ -21,6 +21,9 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-price
+$sxe = new SimpleXMLElement("<product/>");
+$sxe->addAttribute("price", "19.99");
+echo (string)$sxe["price"] === "19.99" ? "ADD_ATTR_OK" : "FAIL";
 
-__vybe_check(ob_get_clean(), "19.99");
+
+__vybe_check(ob_get_clean(), "ADD_ATTR_OK");

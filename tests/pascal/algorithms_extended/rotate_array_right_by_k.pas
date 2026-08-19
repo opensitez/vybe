@@ -67,7 +67,9 @@ var a: array[0..4] of Integer;
 begin
   a[0]:=1; a[1]:=2; a[2]:=3; a[3]:=4; a[4]:=5;
   n := 5; k := 2 mod n;
-  for i := 1 to k do begin tmp:=a[n-1]; a[3]:=a[2]; a[2]:=a[1]; a[1]:=a[0]; a[0]:=tmp; end;
+  // The shift has to move the TOP element too — without `a[4]:=a[3]` the last
+  // slot never rotated and kept its original value.
+  for i := 1 to k do begin tmp:=a[n-1]; a[4]:=a[3]; a[3]:=a[2]; a[2]:=a[1]; a[1]:=a[0]; a[0]:=tmp; end;
   for i := 0 to 4 do __pw(__vs(IntToStr(a[i]) + ' '));
   __p(__vs(''));
 __vybeCheck('4 5 1 2 3 ');

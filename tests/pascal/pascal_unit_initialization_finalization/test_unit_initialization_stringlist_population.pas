@@ -1,6 +1,18 @@
 // vybe-test: pascal/pascal_unit_initialization_finalization/test_unit_initialization_stringlist_population
 // origin: languages/pascal/tests/pascal/test_pascal_unit_initialization_finalization.rs
 unit ConfigUnit;
+interface
+  uses Classes;
+  var AppConfig: TStringList;
+implementation
+initialization
+  AppConfig := TStringList.Create;
+  AppConfig.Add('Key=Value');
+finalization
+  AppConfig.Free;
+end.
+
+program Test;
 {$mode delphi}
 // Vybe test harness — Pascal.
 //
@@ -61,18 +73,6 @@ begin
     Halt(1);
   end;
 end;
-interface
-  uses Classes;
-  var AppConfig: TStringList;
-implementation
-initialization
-  AppConfig := TStringList.Create;
-  AppConfig.Add('Key=Value');
-finalization
-  AppConfig.Free;
-end.
-
-program Test;
 uses ConfigUnit;
 begin
   __p(__vs(AppConfig.Values['Key']));

@@ -26,4 +26,4 @@ echo '$value\\n';
 echo "\n";
 echo '$value';
 
-__vybe_check(ob_get_clean(), "\$value\\n|\$value");
+__vybe_check(ob_get_clean(), "\$value\\n\n\$value");

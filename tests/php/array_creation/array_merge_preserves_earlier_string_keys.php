@@ -26,4 +26,4 @@ $b = ['y' => 9, 'z' => 3];
 $m = array_merge($a, $b);
 echo $m['x'] . '|' . $m['y'] . '|' . $m['z'];
 
-__vybe_check(ob_get_clean(), "1|2|3");
+__vybe_check(ob_get_clean(), "1|9|3");

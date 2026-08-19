@@ -11,3 +11,7 @@ program p
 use m
 call s(y=2, x=1)
 end program p
+
+subroutine s(x, y)
+integer::x,y
+end subroutine

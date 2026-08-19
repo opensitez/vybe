@@ -32,4 +32,4 @@ RAW
 NOWDOC;
 echo $n;
 
-__vybe_check(ob_get_clean(), "first|second|\nRAW");
+__vybe_check(ob_get_clean(), "first\nsecond\\nRAW");

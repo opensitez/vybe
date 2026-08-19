@@ -25,4 +25,4 @@ $key = 'target';
 $target = 'ok';
 echo "value:$${key}";
 
-__vybe_check(ob_get_clean(), "value:ok");
+__vybe_check(ob_get_clean(), "value:\$target");

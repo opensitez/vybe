@@ -1,6 +1,15 @@
 // vybe-test: pascal/pascal_unit_initialization_finalization/test_unit_finalization_without_initialization
 // origin: languages/pascal/tests/pascal/test_pascal_unit_initialization_finalization.rs
 unit FinalOnlyUnit;
+interface
+  procedure Run;
+implementation
+procedure Run; begin __p(__vs('InsideRun')); end;
+finalization
+  __p(__vs('FinalOnlyExecuted'));
+end.
+
+program Test;
 {$mode delphi}
 // Vybe test harness — Pascal.
 //
@@ -61,15 +70,6 @@ begin
     Halt(1);
   end;
 end;
-interface
-  procedure Run;
-implementation
-procedure Run; begin __p(__vs('InsideRun')); end;
-finalization
-  __p(__vs('FinalOnlyExecuted'));
-end.
-
-program Test;
 uses FinalOnlyUnit;
 begin
   Run;

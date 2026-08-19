@@ -3,7 +3,7 @@
 
 program array_bounds_check_failure_paths_stride_section_negative_step
 integer :: vybe_check_i = 0
-integer :: vybe_check_w(1) = [ 13 ]
+integer :: vybe_check_w(1) = [ 15 ]
     integer :: a(1:9)
     integer :: cursor
     integer :: total

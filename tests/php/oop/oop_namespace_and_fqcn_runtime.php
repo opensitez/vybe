@@ -2,6 +2,8 @@
 // vybe-test: php/oop/oop_namespace_and_fqcn_runtime
 // origin: languages/php/tests/php/test_oop.rs
 
+namespace App\Module;
+
 function __vybe_check($got, $want) {
     // Match the Rust harness's normalisation: strip \r, then drop trailing
     // newlines (it split on "\n" and popped empty trailing elements).
@@ -21,7 +23,6 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-namespace App\Module;
 class Service {
     public function label(): string { return __CLASS__; }
 }
@@ -30,5 +31,6 @@ echo '|';
 echo (new \App\Module\Service())->label();
 echo '|';
 echo class_exists('App\Module\Service') ? 'yes' : 'no';
+
 
 __vybe_check(ob_get_clean(), "App\\Module\\Service|App\\Module\\Service|yes");

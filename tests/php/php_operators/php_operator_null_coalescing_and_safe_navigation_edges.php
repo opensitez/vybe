@@ -21,6 +21,10 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-(function() { $value = null; $value ??= 'default'; return $value; })()
+echo (function() { $value = null; $value ??= 'default'; return $value; })(), "\n";
+echo (function() { $value = 0; $value ??= 'default'; return $value; })(), "\n";
+echo (function() { $user = null; return $user?->name ?? 'anon'; })(), "\n";
+echo (function() { $user = (object)['name' => 'Ada']; return $user?->name ?? 'anon'; })(), "\n";
 
-__vybe_check(ob_get_clean(), "default");
+
+__vybe_check(ob_get_clean(), "default\n0\nanon\nAda");

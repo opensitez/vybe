@@ -2,6 +2,7 @@
 // vybe-test: php/namespaces/namespace_group_use_with_class_and_function
 // origin: languages/php/tests/php/test_namespaces.rs
 
+namespace {
 function __vybe_check($got, $want) {
     // Match the Rust harness's normalisation: strip \r, then drop trailing
     // newlines (it split on "\n" and popped empty trailing elements).
@@ -20,6 +21,7 @@ function __vybe_check($got, $want) {
 }
 
 ob_start();
+}
 
 namespace Core {
     class Box { public function name(): string { return 'box'; } }
@@ -33,4 +35,6 @@ namespace App {
     echo helper('x');
 }
 
+namespace {
 __vybe_check(ob_get_clean(), "box|h:x");
+}

@@ -3,7 +3,7 @@
 
 program test
 integer :: vybe_check_i = 0
-integer :: vybe_check_w(2) = [ 2, 4 ]
+integer :: vybe_check_w(2) = [ 2, 7 ]
     integer :: outer, inner, total
     outer = 0
     total = 0

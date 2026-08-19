@@ -23,4 +23,4 @@ ob_start();
 
 echo mb_strimwidth('東京都千代田区', 0, 8, '..'), "\n";
 
-__vybe_check(ob_get_clean(), "東京..");
+__vybe_check(ob_get_clean(), "東京都..");

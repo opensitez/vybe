@@ -1,6 +1,8 @@
 // vybe-test: dart/dart_convert_json_utf8_streams/json_decode_stream_multiple_objects_fails
 // origin: languages/dart/tests/dart/test_dart_convert_json_utf8_streams.rs
 
+import 'dart:convert';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,7 +22,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:convert';
 void __vybeMain() async {
   final stream = Stream.fromIterable(['{"a":1}{"b":2}']);
   try {

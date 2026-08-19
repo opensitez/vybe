@@ -24,4 +24,4 @@ ob_start();
 $derived = hash_hkdf('sha256', 'secret_ikm', 32, 'app_info', 'salt123');
 echo strlen($derived) . ':' . bin2hex(substr($derived, 0, 4)), "\n";
 
-__vybe_check(ob_get_clean(), "32:a816bd4d");
+__vybe_check(ob_get_clean(), "32:36b0c556");

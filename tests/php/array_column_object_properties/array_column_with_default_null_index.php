@@ -28,4 +28,4 @@ $rows = [new Row(1, 'A'), new Row(2, null)];
 $names = array_column($rows, 'name', 'missing');
 echo json_encode(array_values($names));
 
-__vybe_check(ob_get_clean(), "[null]");
+__vybe_check(ob_get_clean(), "[\"A\",null]");

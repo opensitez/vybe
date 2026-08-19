@@ -3,7 +3,7 @@
 
 program test_do_construct_stop_conditions
 integer :: vybe_check_i = 0
-integer :: vybe_check_w(1) = [ 8 ]
+integer :: vybe_check_w(1) = [ 9 ]
     integer :: outer
     integer :: inner
     integer :: total

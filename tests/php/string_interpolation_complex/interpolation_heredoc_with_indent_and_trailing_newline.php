@@ -29,4 +29,4 @@ echo substr_count($text, "\n");
 echo "|";
 echo trim($text);
 
-__vybe_check(ob_get_clean(), "1|count=3");
+__vybe_check(ob_get_clean(), "0|count=3");

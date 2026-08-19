@@ -30,4 +30,4 @@ $bucket[$field] = 7;
 $name = 'bucket';
 echo $${$name}['state'];
 
-__vybe_check(ob_get_clean(), "ready7");
+__vybe_check(ob_get_clean(), "ready");

@@ -25,4 +25,4 @@ echo strcoll('2', '10');
 echo '|';
 echo strcoll('a', 'A');
 
-__vybe_check(ob_get_clean(), "-1|1");
+__vybe_check(ob_get_clean(), "1|32");

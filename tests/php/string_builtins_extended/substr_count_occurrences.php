@@ -21,6 +21,9 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-hello world hello world
+echo substr_count("hello world hello world", "hello");
+echo substr_count("banana", "ana");
+echo substr_count("aababab", "ab");
 
-__vybe_check(ob_get_clean(), "hello");
+
+__vybe_check(ob_get_clean(), "213");

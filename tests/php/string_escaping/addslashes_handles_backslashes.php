@@ -23,4 +23,4 @@ ob_start();
 
 echo addslashes('C:\\path\\file');
 
-__vybe_check(ob_get_clean(), "C\\\\path\\\\file");
+__vybe_check(ob_get_clean(), "C:\\\\path\\\\file");

@@ -1,6 +1,8 @@
 // vybe-test: dart/dart_convert_latin1_encode_decode/latin1_encode_extended
 // origin: languages/dart/tests/dart/test_dart_convert_latin1_encode_decode.rs
 
+import 'dart:convert';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,7 +22,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:convert';
 void __vybeMain() {
   // ISO-8859-1 covers 0-255. 'ä' is U+00E4 (228).
   final bytes = latin1.encode('ä');

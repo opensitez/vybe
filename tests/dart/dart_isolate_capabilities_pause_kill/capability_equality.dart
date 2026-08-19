@@ -1,6 +1,8 @@
 // vybe-test: dart/dart_isolate_capabilities_pause_kill/capability_equality
 // origin: languages/dart/tests/dart/test_dart_isolate_capabilities_pause_kill.rs
 
+import 'dart:isolate';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,7 +22,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:isolate';
 void __vybeMain() {
   final cap1 = Capability();
   final cap2 = Capability();

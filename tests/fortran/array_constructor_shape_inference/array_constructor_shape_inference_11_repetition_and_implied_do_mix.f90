@@ -4,16 +4,16 @@
 program t
     integer, allocatable :: values(:)
     values = (/ 2 * 1, (i, i = 2, 4), 3 * 0 /)
-    if ((size(values)) /= 8) then
-    print *, "FAIL: want [8] got [", size(values), "]"
+    if ((size(values)) /= 5) then
+    print *, "FAIL: want [5] got [", size(values), "]"
     stop 1
 end if
-    if ((sum(values)) /= 10) then
-    print *, "FAIL: want [10] got [", sum(values), "]"
+    if ((sum(values)) /= 11) then
+    print *, "FAIL: want [11] got [", sum(values), "]"
     stop 1
 end if
-    if ((values(1)) /= 1) then
-    print *, "FAIL: want [1] got [", values(1), "]"
+    if ((values(2)) /= 2) then
+    print *, "FAIL: want [2] got [", values(1), "]"
     stop 1
 end if
     if ((values(size(values))) /= 0) then

@@ -15,8 +15,8 @@
            END-EVALUATE.
     MOVE SPACES TO WS-VYBE-L
     STRING "BAD" DELIMITED SIZE INTO WS-VYBE-L
-    IF WS-VYBE-L NOT = "GOOD"
-        DISPLAY "FAIL: want [GOOD] got [" WS-VYBE-L "]"
+    IF WS-VYBE-L NOT = "BAD"
+        DISPLAY "FAIL: want [BAD] got [" WS-VYBE-L "]"
         MOVE 1 TO RETURN-CODE
         RAISE EXCEPTION EC-PROGRAM
     END-IF.

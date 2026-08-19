@@ -21,6 +21,9 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-<b>safe</b><i>ok</i>
+echo strip_tags("<script>alert(1)</script>");
+echo "|";
+echo strip_tags("<b>safe</b><i>ok</i>", "<i>");
 
-__vybe_check(ob_get_clean(), "<i>");
+
+__vybe_check(ob_get_clean(), "alert(1)|safe<i>ok</i>");

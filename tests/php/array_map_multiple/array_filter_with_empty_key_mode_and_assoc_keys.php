@@ -25,4 +25,4 @@ $values = ['a' => 1, 'b' => 0, 'c' => 3];
 $filtered = array_filter($values, null, ARRAY_FILTER_USE_KEY);
 echo implode(',', array_keys($filtered));
 
-__vybe_check(ob_get_clean(), "a,b,c");
+__vybe_check(ob_get_clean(), "a,c");

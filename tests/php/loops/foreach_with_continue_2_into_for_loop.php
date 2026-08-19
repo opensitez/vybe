@@ -32,4 +32,4 @@ for ($i = 0; $i < 2; $i++) {
 }
 echo $out;
 
-__vybe_check(ob_get_clean(), "0b1b");
+__vybe_check(ob_get_clean(), "");

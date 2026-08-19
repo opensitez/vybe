@@ -23,8 +23,8 @@
            END-SEARCH.
     MOVE SPACES TO WS-VYBE-L
     STRING VAL(IDX) DELIMITED SIZE INTO WS-VYBE-L
-    IF WS-VYBE-L NOT = "A"
-        DISPLAY "FAIL: want [A] got [" WS-VYBE-L "]"
+    IF WS-VYBE-L NOT = "B"
+        DISPLAY "FAIL: want [B] got [" WS-VYBE-L "]"
         MOVE 1 TO RETURN-CODE
         RAISE EXCEPTION EC-PROGRAM
     END-IF.

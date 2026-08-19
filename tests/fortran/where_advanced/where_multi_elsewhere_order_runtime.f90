@@ -11,16 +11,16 @@ program test
     elsewhere
         b = 3
     end where
-    if ((b(1)) /= 1) then
-    print *, "FAIL: want [1] got [", b(1), "]"
+    if ((b(3)) /= 3) then
+    print *, "FAIL: want [3] got [", b(1), "]"
     stop 1
 end if
-    if ((b(3)) /= 1) then
-    print *, "FAIL: want [1] got [", b(3), "]"
+    if ((b(3)) /= 3) then
+    print *, "FAIL: want [3] got [", b(3), "]"
     stop 1
 end if
-    if ((b(5)) /= 3) then
-    print *, "FAIL: want [3] got [", b(5), "]"
+    if ((b(5)) /= 2) then
+    print *, "FAIL: want [2] got [", b(5), "]"
     stop 1
 end if
     if ((b(6)) /= 3) then

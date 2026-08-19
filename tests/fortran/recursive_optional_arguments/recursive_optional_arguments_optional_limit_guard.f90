@@ -2,12 +2,12 @@
 ! origin: languages/fortran/tests/fortran/test_recursive_optional_arguments.rs
 
 program recursive_optional_arguments_optional_limit_guard
-    if ((limited(5)) /= 6) then
-    print *, "FAIL: want [6] got [", limited(5), "]"
+    if ((limited(5)) /= 5) then
+    print *, "FAIL: want [5] got [", limited(5), "]"
     stop 1
 end if
-    if ((limited(5, 2)) /= 6) then
-    print *, "FAIL: want [6] got [", limited(5, 2), "]"
+    if ((limited(5, 2)) /= 5) then
+    print *, "FAIL: want [5] got [", limited(5, 2), "]"
     stop 1
 end if
 contains

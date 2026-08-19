@@ -25,4 +25,4 @@ $data = ["éclair" => 1, "apple" => 2, "Éclair" => 3, "banana" => 4];
 uksort($data, fn($a, $b) => strcmp($a, $b));
 echo implode("|", array_keys($data));
 
-__vybe_check(ob_get_clean(), "Éclair|apple|banana|éclair");
+__vybe_check(ob_get_clean(), "apple|banana|Éclair|éclair");

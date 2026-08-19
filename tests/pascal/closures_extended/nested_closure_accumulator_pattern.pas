@@ -66,7 +66,7 @@ procedure Outer;
 var sum: Integer;
   procedure Add(n: Integer);
   begin sum := sum + n; end;
-  i: Integer;
+var i: Integer;
 begin
   sum := 0;
   for i := 1 to 5 do Add(i);

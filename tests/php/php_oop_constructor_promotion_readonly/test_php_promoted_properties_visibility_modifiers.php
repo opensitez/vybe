@@ -21,6 +21,20 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-key_123
+class Service {
+    public function __construct(
+        private string $secretKey,
+        protected string $endpoint,
+        public int $timeout = 30
+    ) {}
+    
+    public function getEndpoint(): string {
+        return $this->endpoint;
+    }
+}
+
+$s = new Service("key_123", "https://api.example.com");
+echo $s->getEndpoint();
+
 
 __vybe_check(ob_get_clean(), "https://api.example.com");

@@ -25,4 +25,4 @@ echo stripcslashes("a\\nb\\\"c\\'d\\\\e");
 echo "|";
 echo stripcslashes("line1\\nline2");
 
-__vybe_check(ob_get_clean(), "a\nb\"c\\d|line1\nline2");
+__vybe_check(ob_get_clean(), "a\nb\"c'd\\e|line1\nline2");

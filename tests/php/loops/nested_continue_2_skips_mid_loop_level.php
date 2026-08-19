@@ -31,4 +31,4 @@ for ($i = 0; $i < 3; $i++) {
 }
 echo $out;
 
-__vybe_check(ob_get_clean(), "0002|1012|2022|");
+__vybe_check(ob_get_clean(), "001020");

@@ -28,4 +28,4 @@ echo mb_strlen($s);
 echo "|";
 echo mb_check_encoding($s, 'ASCII') ? "ascii-ok" : "ascii-no";
 
-__vybe_check(ob_get_clean(), "4|4|ascii-no");
+__vybe_check(ob_get_clean(), "5|4|ascii-no");

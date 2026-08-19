@@ -3,7 +3,7 @@
 
 program array_fill_pattern_internals_fill_section_with_expression
 integer :: vybe_check_i = 0
-integer :: vybe_check_w(3) = [ 47, 25, 35 ]
+integer :: vybe_check_w(3) = [ 78, 30, 35 ]
     integer, allocatable :: values(:)
     integer :: i
     values = (/ 5, 6, 7, 8 /)

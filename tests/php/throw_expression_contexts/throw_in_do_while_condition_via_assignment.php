@@ -29,4 +29,4 @@ try {
     } while ($i < 1);
 } catch (RuntimeException $e) { echo $e->getMessage(); }
 
-__vybe_check(ob_get_clean(), "loop");
+__vybe_check(ob_get_clean(), "");

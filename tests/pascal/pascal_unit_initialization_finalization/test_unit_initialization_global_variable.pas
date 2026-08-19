@@ -1,6 +1,14 @@
 // vybe-test: pascal/pascal_unit_initialization_finalization/test_unit_initialization_global_variable
 // origin: languages/pascal/tests/pascal/test_pascal_unit_initialization_finalization.rs
 unit GlobalInitUnit;
+interface
+  var GlobalCounter: Integer;
+implementation
+initialization
+  GlobalCounter := 100;
+end.
+
+program Test;
 {$mode delphi}
 // Vybe test harness — Pascal.
 //
@@ -61,14 +69,6 @@ begin
     Halt(1);
   end;
 end;
-interface
-  var GlobalCounter: Integer;
-implementation
-initialization
-  GlobalCounter := 100;
-end.
-
-program Test;
 uses GlobalInitUnit;
 begin
   __p(__vs(GlobalCounter));

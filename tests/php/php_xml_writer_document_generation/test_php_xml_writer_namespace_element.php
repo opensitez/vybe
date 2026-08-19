@@ -21,6 +21,13 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-ns
+$w = new XMLWriter();
+$w->openMemory();
+$w->startElementNs("ns", "element", "http://example.com/ns");
+$w->text("Namespace Content");
+$w->endElement();
+$xml = $w->outputMemory();
+echo str_contains($xml, "ns:element") && str_contains($xml, "http://example.com/ns") ? "ELEMENT_NS_OK" : "FAIL";
 
-__vybe_check(ob_get_clean(), "element");
+
+__vybe_check(ob_get_clean(), "ELEMENT_NS_OK");

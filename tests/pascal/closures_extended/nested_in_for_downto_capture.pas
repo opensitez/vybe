@@ -66,7 +66,7 @@ procedure Outer;
 var base: Integer;
   function DecLabel(i: Integer): Integer;
   begin Result := base - i; end;
-  i: Integer;
+var i: Integer;
 begin
   base := 10;
   for i := 2 downto 0 do __p(__vs(DecLabel(i)));

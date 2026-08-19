@@ -1,6 +1,8 @@
 // vybe-test: dart/dart_isolate_transferable_data/send_port_send_transfer_capability
 // origin: languages/dart/tests/dart/test_dart_isolate_transferable_data.rs
 
+import 'dart:isolate';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,7 +22,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:isolate';
 void isolateMain(SendPort port) {
   final cap = Capability();
   port.send(cap);

@@ -21,6 +21,10 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-a b
+$escaped = addcslashes("a b", " a");
+$original = stripcslashes($escaped);
+echo strlen($escaped);
+echo $original;
 
-__vybe_check(ob_get_clean(), " a");
+
+__vybe_check(ob_get_clean(), "5\x07 b");

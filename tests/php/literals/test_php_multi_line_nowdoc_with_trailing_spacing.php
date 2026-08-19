@@ -28,4 +28,4 @@ $payload = <<<'JSON'
 JSON;
 echo str_replace("\n", ";", $payload);
 
-__vybe_check(ob_get_clean(), "{;  \"ok\": true;};");
+__vybe_check(ob_get_clean(), "{;  \"ok\": true;}");

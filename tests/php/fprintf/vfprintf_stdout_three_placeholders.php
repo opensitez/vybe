@@ -23,4 +23,4 @@ ob_start();
 
 vfprintf(STDOUT, '%s %d %s', ['a', 1, 'b']);
 
-__vybe_check(ob_get_clean(), "a 1 b");
+__vybe_check(ob_get_clean(), "");

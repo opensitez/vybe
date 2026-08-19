@@ -24,4 +24,4 @@ class Trace {
     public static void Show([System.Runtime.CompilerServices.CallerLineNumber] int line = 0) => __P((line).ToString());
 }
 for (int i = 0; i < 1; i++) Trace.Show();
-__Check("4");
+__Check("26");

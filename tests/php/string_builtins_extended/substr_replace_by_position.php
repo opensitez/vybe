@@ -21,6 +21,9 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-Hello World
+echo substr_replace("Hello World", "PHP", 6, 5);
+echo substr_replace("abcdefgh", "XYZ", 2, 3);
+echo substr_replace("insert here", ">>", 6, 0);
 
-__vybe_check(ob_get_clean(), "PHP");
+
+__vybe_check(ob_get_clean(), "Hello PHPabXYZfghinsert>> here");

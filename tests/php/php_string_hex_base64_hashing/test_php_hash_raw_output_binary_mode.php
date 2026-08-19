@@ -21,6 +21,8 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-sha256
+$rawHash = hash("sha256", "data", binary: true);
+echo strlen($rawHash) === 32 ? "RAW_32_BYTES" : "FAIL";
 
-__vybe_check(ob_get_clean(), "data");
+
+__vybe_check(ob_get_clean(), "RAW_32_BYTES");

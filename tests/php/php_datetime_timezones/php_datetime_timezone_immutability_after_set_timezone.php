@@ -27,4 +27,4 @@ $next->setTimezone(new DateTimeZone('UTC'));
 echo $base->format('H');
 echo $next->format('H');
 
-__vybe_check(ob_get_clean(), "12|12");
+__vybe_check(ob_get_clean(), "1216");

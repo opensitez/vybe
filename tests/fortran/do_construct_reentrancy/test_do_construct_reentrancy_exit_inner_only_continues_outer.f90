@@ -3,7 +3,7 @@
 
 program test_do_construct_reentrancy_exit_inner_only
 integer :: vybe_check_i = 0
-integer :: vybe_check_w(1) = [ 15 ]
+integer :: vybe_check_w(1) = [ 21 ]
     integer :: outer, inner, total
     total = 0
     do outer = 1, 3

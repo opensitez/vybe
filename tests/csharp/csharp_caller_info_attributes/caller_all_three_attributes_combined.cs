@@ -32,4 +32,4 @@ class Trace {
 }
 class App { public void Run() { Trace.Show(); } }
 new App().Run();
-__Check("Run\n8\nTrue");
+__Check("Run\n33\nTrue");

@@ -66,7 +66,7 @@ procedure Outer;
 var limit: Integer;
   function Done(n: Integer): Boolean;
   begin Result := n >= limit; end;
-  n: Integer;
+var n: Integer;
 begin
   limit := 3;
   n := 0;

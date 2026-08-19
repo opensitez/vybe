@@ -25,4 +25,4 @@ echo nl2br("a\n", false);
 echo '|';
 echo nl2br("a\r\n", true);
 
-__vybe_check(ob_get_clean(), "a<br />\n|a<br>\r\n");
+__vybe_check(ob_get_clean(), "a<br>\n|a<br />");

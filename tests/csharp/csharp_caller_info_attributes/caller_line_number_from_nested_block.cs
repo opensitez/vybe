@@ -26,4 +26,4 @@ class Trace {
 {
     Trace.Show();
 }
-__Check("5");
+__Check("27");

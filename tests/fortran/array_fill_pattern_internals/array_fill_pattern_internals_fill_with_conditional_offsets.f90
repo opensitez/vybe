@@ -3,7 +3,7 @@
 
 program array_fill_pattern_internals_fill_with_conditional_offsets
 integer :: vybe_check_i = 0
-integer :: vybe_check_w(3) = [ 42, 16, 65 ]
+integer :: vybe_check_w(3) = [ 42, 16, 58 ]
     integer, allocatable :: values(:)
     integer :: i
     values = (/ 1, 2, 3, 4, 5, 6, 7 /)

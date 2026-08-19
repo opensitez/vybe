@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; var a,b,c,stop:Integer; begin stop:=0; for a:=1 to 4 do if stop=0 then for b:=1 to 4 do if stop=0 then for c:=1 to 4 do if a+b+c=10 then begin __p(__vs(a)); __p(__vs(b)); __p(__vs(c)); stop:=1; end; __vybeCheck('1' + #10 + '3' + #10 + '6');
+end; var a,b,c,stop:Integer; begin stop:=0; for a:=1 to 4 do if stop=0 then for b:=1 to 4 do if stop=0 then for c:=1 to 4 do if a+b+c=10 then begin __p(__vs(a)); __p(__vs(b)); __p(__vs(c)); stop:=1; end; __vybeCheck('2' + #10 + '4' + #10 + '4');
 end.

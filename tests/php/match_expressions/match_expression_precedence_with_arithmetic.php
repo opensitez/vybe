@@ -31,4 +31,4 @@ echo match (1 + 2 > 4) {
     false => 'le',
 };
 
-__vybe_check(ob_get_clean(), "ok|gt");
+__vybe_check(ob_get_clean(), "ok|le");

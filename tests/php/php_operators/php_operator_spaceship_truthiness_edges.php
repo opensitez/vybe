@@ -21,6 +21,15 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-(null <=> null)
+echo (4 <=> 4), "\n";
+echo (-1 <=> 2), "\n";
+echo (2 <=> -1), "\n";
+echo (true <=> false), "\n";
+echo (false <=> true), "\n";
+echo (null <=> null), "\n";
+echo (true ?: 'fallback'), "\n";
+echo ((true && false) ?: 'fallback'), "\n";
+echo ((0 ?: 1) <=> (1 ?: 0)), "\n";
 
-__vybe_check(ob_get_clean(), "0");
+
+__vybe_check(ob_get_clean(), "0\n-1\n1\n1\n-1\n0\n1\nfallback\n0");

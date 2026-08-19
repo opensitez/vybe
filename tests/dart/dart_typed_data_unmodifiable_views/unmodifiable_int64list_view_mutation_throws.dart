@@ -1,6 +1,8 @@
 // vybe-test: dart/dart_typed_data_unmodifiable_views/unmodifiable_int64list_view_mutation_throws
 // origin: languages/dart/tests/dart/test_dart_typed_data_unmodifiable_views.rs
 
+import 'dart:typed_data';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,7 +22,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:typed_data';
 void __vybeMain() {
   final l = Int64List.fromList([1]);
   final ul = UnmodifiableInt64ListView(l);

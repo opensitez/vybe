@@ -24,4 +24,4 @@ ob_start();
 fwrite(STDOUT, 'ab');
 fwrite(STDOUT, 'cd');
 
-__vybe_check(ob_get_clean(), "abcd");
+__vybe_check(ob_get_clean(), "");

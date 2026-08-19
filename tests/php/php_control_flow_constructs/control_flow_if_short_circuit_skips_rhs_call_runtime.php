@@ -35,4 +35,4 @@ if (true || $sink()) {
 }
 echo '|' . $calls;
 
-__vybe_check(ob_get_clean(), "0|right|1");
+__vybe_check(ob_get_clean(), "0|right|0");

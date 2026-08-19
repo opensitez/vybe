@@ -1,6 +1,14 @@
 // vybe-test: pascal/pascal_unit_initialization_finalization/test_unit_initialization_without_finalization
 // origin: languages/pascal/tests/pascal/test_pascal_unit_initialization_finalization.rs
 unit InitOnlyUnit;
+interface
+  var Flag: Boolean;
+implementation
+initialization
+  Flag := True;
+end.
+
+program Test;
 {$mode delphi}
 // Vybe test harness — Pascal.
 //
@@ -61,14 +69,6 @@ begin
     Halt(1);
   end;
 end;
-interface
-  var Flag: Boolean;
-implementation
-initialization
-  Flag := True;
-end.
-
-program Test;
 uses InitOnlyUnit;
 begin
   __p(__vs(Flag));

@@ -34,4 +34,4 @@ $p = new TrimProcessor();
 echo ($p instanceof Processor) ? 'ok' : 'bad';
 echo execute($p, "  x ");
 
-__vybe_check(ob_get_clean(), "ok x ");
+__vybe_check(ob_get_clean(), "okx");

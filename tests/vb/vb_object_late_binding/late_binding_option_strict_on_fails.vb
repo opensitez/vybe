@@ -1,5 +1,6 @@
 ' vybe-test: vb/vb_object_late_binding/late_binding_option_strict_on_fails
 ' origin: languages/vb/tests/vb/test_vb_object_late_binding.rs
+Option Strict On
 
 ' Vybe test harness — Visual Basic.
 '
@@ -41,7 +42,6 @@ Module VybeCheck
     End Sub
 End Module
 
-Option Strict On
 Class C
 Public V As Integer = 1
 End Class

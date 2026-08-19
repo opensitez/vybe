@@ -27,4 +27,4 @@ echo strnatcmp("img9", "img10");
 echo "|";
 echo strnatcasecmp("abc9", "ABC10");
 
-__vybe_check(ob_get_clean(), "-1|1|1");
+__vybe_check(ob_get_clean(), "-1|-1|-1");

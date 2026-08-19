@@ -24,4 +24,4 @@ ob_start();
 $html = '<div><span>safe</span> &amp; <script>bad()</script></div>';
 echo strip_tags($html, '<div><span>');
 
-__vybe_check(ob_get_clean(), "<div><span>safe</span> &amp; ");
+__vybe_check(ob_get_clean(), "<div><span>safe</span> &amp; bad()</div>");

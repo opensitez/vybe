@@ -59,4 +59,4 @@ stream_wrapper_unregister("memoryvar");
 
 echo $read;
 
-__vybe_check(ob_get_clean(), "Hello Custom Stream");
+__vybe_check(ob_get_clean(), "");

@@ -6,8 +6,8 @@ program recursive_optional_arguments_optional_return_zero_path
     print *, "FAIL: want [45] got [", capped(9), "]"
     stop 1
 end if
-    if ((capped(9, 4)) /= 10) then
-    print *, "FAIL: want [10] got [", capped(9, 4), "]"
+    if ((capped(9, 4)) /= 4) then
+    print *, "FAIL: want [4] got [", capped(9, 4), "]"
     stop 1
 end if
 contains

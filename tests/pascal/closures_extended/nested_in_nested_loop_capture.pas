@@ -66,7 +66,7 @@ procedure Outer;
 var scale: Integer;
   function At(i, j: Integer): Integer;
   begin Result := (i + j) * scale; end;
-  i, j: Integer;
+var i, j: Integer;
 begin
   scale := 2;
   for i := 0 to 1 do

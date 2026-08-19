@@ -23,4 +23,4 @@ ob_start();
 
 echo substr_count('abcabcabc', 'abc', 1, 6);
 
-__vybe_check(ob_get_clean(), "2");
+__vybe_check(ob_get_clean(), "1");

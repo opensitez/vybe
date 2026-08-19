@@ -21,6 +21,9 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-Name: %s, Age: %d
+$written = printf("Name: %s, Age: %d\n", "Alice", 30);
+echo $written > 0 ? 'wrote bytes' : 'nothing written';
+echo "\n";
 
-__vybe_check(ob_get_clean(), "Alice");
+
+__vybe_check(ob_get_clean(), "Name: Alice, Age: 30\nwrote bytes");

@@ -26,4 +26,4 @@ $x = ($data['x'] ?? 'fallback') ?: 'alt';
 $y = $data['y'] ?? 'fallback';
 echo $x . '|' . $y;
 
-__vybe_check(ob_get_clean(), "alt|fallback");
+__vybe_check(ob_get_clean(), "fallback|fallback");

@@ -1,6 +1,8 @@
 // vybe-test: dart/dart_developer_inspect_log/developer_log_basic
 // origin: languages/dart/tests/dart/test_dart_developer_inspect_log.rs
 
+import 'dart:developer';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,11 +22,10 @@ void __check(String want) {
   }
 }
 
-import 'dart:developer';
 void __vybeMain() {
   // Log message doesn't go to stdout by default, it goes to VM Service
   log('This is a test log');
-  print('log_called');
+  __p('log_called');
 }
 
 void main() {

@@ -23,4 +23,4 @@ ob_start();
 
 fprintf(STDOUT, '%-5s|', 'hi');
 
-__vybe_check(ob_get_clean(), "hi   |");
+__vybe_check(ob_get_clean(), "");

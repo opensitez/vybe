@@ -28,4 +28,4 @@ $d = [true, false];
 $res = array_map(fn($n, $s, $i, $f) => $n . $s . ':' . $i . ':' . ($f ? '1' : '0'), $a, $b, $c, $d);
 echo implode('|', $res);
 
-__vybe_check(ob_get_clean(), "1x:10:1|2y::0|3z::0");
+__vybe_check(ob_get_clean(), "1x:10:1|2y::0|3z::0|w::0");

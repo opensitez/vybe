@@ -25,4 +25,4 @@ echo 1 + 2 << 2;
 echo '|';
 echo (1 + 2) << 2;
 
-__vybe_check(ob_get_clean(), "8|12");
+__vybe_check(ob_get_clean(), "12|12");

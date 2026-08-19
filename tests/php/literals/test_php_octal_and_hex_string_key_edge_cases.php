@@ -28,4 +28,4 @@ echo $a[16];
 echo '|';
 echo $a['10'];
 
-__vybe_check(ob_get_clean(), "octal-key|hex|octal-key");
+__vybe_check(ob_get_clean(), "legacy-octal|hex|");

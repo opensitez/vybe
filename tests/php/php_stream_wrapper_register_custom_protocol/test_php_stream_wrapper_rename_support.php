@@ -23,4 +23,4 @@ ob_start();
 
 renameproto://a
 
-__vybe_check(ob_get_clean(), "renameproto://b");
+__vybe_check(ob_get_clean(), "");

@@ -32,4 +32,4 @@ for ($i = 0; $i < 3; $i++) {
 }
 echo $out;
 
-__vybe_check(ob_get_clean(), "010203");
+__vybe_check(ob_get_clean(), "01020311");

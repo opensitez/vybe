@@ -27,4 +27,4 @@ echo implode('', ['x', '', 'y']);
 echo '|';
 echo implode('-', [1, null, 2]);
 
-__vybe_check(ob_get_clean(), "|x|1--2");
+__vybe_check(ob_get_clean(), "|xy|1--2");

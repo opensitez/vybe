@@ -27,4 +27,4 @@ echo $period->getStartDate()->format('Y-m-d');
 echo '|';
 echo $end instanceof DateTimeInterface ? $end->format('Y-m-d') : 'none';
 
-__vybe_check(ob_get_clean(), "2024-12-30|2024-12-31");
+__vybe_check(ob_get_clean(), "2024-12-30|none");

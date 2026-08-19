@@ -1,6 +1,8 @@
 // vybe-test: dart/dart_typed_data_buffer_views/int8list_view
 // origin: languages/dart/tests/dart/test_dart_typed_data_buffer_views.rs
 
+import 'dart:typed_data';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,7 +22,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:typed_data';
 void __vybeMain() {
   final buffer = Uint8List.fromList([255, 10, 20]).buffer;
   final view = Int8List.view(buffer);

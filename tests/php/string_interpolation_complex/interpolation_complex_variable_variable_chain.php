@@ -28,4 +28,4 @@ echo "${$scope}";
 echo "|";
 echo "{$$name}";
 
-__vybe_check(ob_get_clean(), "ok|ok");
+__vybe_check(ob_get_clean(), "value|ok");

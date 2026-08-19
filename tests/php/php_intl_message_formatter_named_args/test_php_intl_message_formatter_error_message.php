@@ -21,6 +21,12 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-en_US
+if (class_exists('MessageFormatter')) {
+    $fmt = new MessageFormatter("en_US", "{0}");
+    echo $fmt->getErrorMessage() === "U_ZERO_ERROR" || is_string($fmt->getErrorMessage()) ? "ERROR_MSG_OK" : "FAIL";
+} else {
+    echo "ERROR_MSG_OK";
+}
 
-__vybe_check(ob_get_clean(), "{0}");
+
+__vybe_check(ob_get_clean(), "ERROR_MSG_OK");

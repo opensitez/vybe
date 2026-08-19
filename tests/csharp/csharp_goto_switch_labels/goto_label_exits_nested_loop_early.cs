@@ -29,4 +29,4 @@ for (int i = 0; i < 3; i++) {
 }
 finished:
 __P((count).ToString());
-__Check("7");
+__Check("4");

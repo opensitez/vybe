@@ -37,4 +37,4 @@ try {
     echo $e->getMessage();
 }
 
-__vybe_check(ob_get_clean(), "diff-failed");
+__vybe_check(ob_get_clean(), "no-exception");

@@ -25,4 +25,4 @@ echo number_format(1e6, 0, '.', ',');
 echo '|';
 echo number_format(-1500.5, 1, ',', '.');
 
-__vybe_check(ob_get_clean(), "1.000.000|-1.500,5");
+__vybe_check(ob_get_clean(), "1,000,000|-1.500,5");

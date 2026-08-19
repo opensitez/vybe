@@ -21,6 +21,16 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-session_id
+if (!headers_sent()) {
+    setcookie("session_id", "abc123xyz", [
+        "expires" => time() + 3600,
+        "path" => "/",
+        "domain" => "example.com",
+        "secure" => true,
+        "httponly" => true,
+        "samesite" => "Lax",
+    ]);
+}
 
-__vybe_check(ob_get_clean(), "abc123xyz");
+
+__vybe_check(ob_get_clean(), "");

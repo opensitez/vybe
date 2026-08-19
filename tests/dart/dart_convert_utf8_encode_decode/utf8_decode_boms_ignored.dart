@@ -1,6 +1,8 @@
 // vybe-test: dart/dart_convert_utf8_encode_decode/utf8_decode_boms_ignored
 // origin: languages/dart/tests/dart/test_dart_convert_utf8_encode_decode.rs
 
+import 'dart:convert';
+
 final StringBuffer __vybeOut = StringBuffer();
 
 void __p(Object? o) {
@@ -20,7 +22,6 @@ void __check(String want) {
   }
 }
 
-import 'dart:convert';
 void __vybeMain() {
   // UTF-8 BOM is 0xEF, 0xBB, 0xBF
   // Wait, Dart's standard utf8.decode does not strip BOM by default.

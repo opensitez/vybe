@@ -21,6 +21,9 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-fr_FR
+if (class_exists('Locale')) {
+    echo Locale::getDisplayName("fr_FR", "en_US");
+}
 
-__vybe_check(ob_get_clean(), "en_US");
+
+__vybe_check(ob_get_clean(), "French (France)");

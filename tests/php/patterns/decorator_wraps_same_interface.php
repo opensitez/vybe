@@ -41,4 +41,4 @@ class PrefixDecorator implements Logger {
 $log = new PrefixDecorator(new TimestampDecorator(new ConsoleLogger()), 'APP');
 $log->log('started');
 
-__vybe_check(ob_get_clean(), "APP: [ts] started");
+__vybe_check(ob_get_clean(), "[ts] APP: started");

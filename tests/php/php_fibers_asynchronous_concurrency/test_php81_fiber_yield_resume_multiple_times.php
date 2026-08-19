@@ -36,4 +36,4 @@ $fiber->resume('r2');
 $sequence[] = $fiber->getReturn();
 echo implode('|', $sequence);
 
-__vybe_check(ob_get_clean(), "start|first|r1|second|r2|done");
+__vybe_check(ob_get_clean(), "start|first|r1|r2|done");

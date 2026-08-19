@@ -21,6 +21,9 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-2
+$sqrt = bcsqrt("2", 6);
+$pow = bcpow("2", "10", 0);
+echo "sqrt2=$sqrt pow=$pow";
 
-__vybe_check(ob_get_clean(), "10");
+
+__vybe_check(ob_get_clean(), "sqrt2=1.414213 pow=1024");

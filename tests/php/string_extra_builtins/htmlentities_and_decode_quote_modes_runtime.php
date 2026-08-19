@@ -30,4 +30,4 @@ echo str_contains($encoded, '&#039;') ? 'sq' : 'no';
 echo '|';
 echo html_entity_decode($encoded, ENT_QUOTES);
 
-__vybe_check(ob_get_clean(), "lt|dq|sq|<a>\"'");
+__vybe_check(ob_get_clean(), "lt|dq|sq|<a>\"&'");

@@ -33,4 +33,4 @@ echo $u[2];
 echo "|";
 echo implode('-', $u);
 
-__vybe_check(ob_get_clean(), "4||\nc|a-b-c");
+__vybe_check(ob_get_clean(), "3| c|\nc|a-b-c");

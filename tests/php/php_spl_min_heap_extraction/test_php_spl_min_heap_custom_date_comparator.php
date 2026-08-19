@@ -34,4 +34,4 @@ $heap->insert("2024-06-15");
 
 echo "Earliest date: " . $heap->extract();
 
-__vybe_check(ob_get_clean(), "Earliest date: 2024-01-01");
+__vybe_check(ob_get_clean(), "Earliest date: 2024-12-31");

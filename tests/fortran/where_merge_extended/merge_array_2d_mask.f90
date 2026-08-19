@@ -9,12 +9,12 @@ if ((c(1,1)) /= 1) then
     print *, "FAIL: want [1] got [", c(1,1), "]"
     stop 1
 end if
-if ((c(1,2)) /= 8) then
-    print *, "FAIL: want [8] got [", c(1,2), "]"
+if ((c(1,2)) /= 3) then
+    print *, "FAIL: want [3] got [", c(1,2), "]"
     stop 1
 end if
-if ((c(2,1)) /= 3) then
-    print *, "FAIL: want [3] got [", c(2,1), "]"
+if ((c(2,1)) /= 2) then
+    print *, "FAIL: want [2] got [", c(2,1), "]"
     stop 1
 end if
 end program t

@@ -33,4 +33,4 @@ echo ($box == '7') ? '1' : '0';
 echo '|';
 echo ((string)$box == 7) ? '1' : '0';
 
-__vybe_check(ob_get_clean(), "1|0|1|1");
+__vybe_check(ob_get_clean(), "0|0|1|1");

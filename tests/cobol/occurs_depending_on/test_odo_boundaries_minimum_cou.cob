@@ -23,8 +23,8 @@ PROCEDURE DIVISION.
     STRING WS-ITEM(WS-I) DELIMITED SIZE INTO WS-VYBE-L
     EVALUATE WS-VYBE-I
         WHEN 1
-            IF WS-VYBE-L NOT = "101"
-                DISPLAY "FAIL at 1 want [101] got [" WS-VYBE-L "]"
+            IF WS-VYBE-L NOT = "102"
+                DISPLAY "FAIL at 1 want [102] got [" WS-VYBE-L "]"
                 MOVE 1 TO RETURN-CODE
                 RAISE EXCEPTION EC-PROGRAM
             END-IF

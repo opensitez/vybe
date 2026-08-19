@@ -18,8 +18,8 @@
            END-EVALUATE.
     MOVE SPACES TO WS-VYBE-L
     STRING "ODD" DELIMITED SIZE INTO WS-VYBE-L
-    IF WS-VYBE-L NOT = "EVEN"
-        DISPLAY "FAIL: want [EVEN] got [" WS-VYBE-L "]"
+    IF WS-VYBE-L NOT = "ODD"
+        DISPLAY "FAIL: want [ODD] got [" WS-VYBE-L "]"
         MOVE 1 TO RETURN-CODE
         RAISE EXCEPTION EC-PROGRAM
     END-IF.

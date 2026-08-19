@@ -25,4 +25,4 @@ $written = fprintf(STDOUT, '%s', 'xy');
 echo ':';
 echo $written;
 
-__vybe_check(ob_get_clean(), "xy:2");
+__vybe_check(ob_get_clean(), ":2");

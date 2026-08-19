@@ -23,4 +23,4 @@ ob_start();
 
 fprintf(STDOUT, '%.2f', 3.14159);
 
-__vybe_check(ob_get_clean(), "3.14");
+__vybe_check(ob_get_clean(), "");

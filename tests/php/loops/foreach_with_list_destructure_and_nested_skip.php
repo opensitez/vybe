@@ -29,4 +29,4 @@ foreach ($rows as [$a, $b]) {
 }
 echo $sum;
 
-__vybe_check(ob_get_clean(), "21");
+__vybe_check(ob_get_clean(), "14");

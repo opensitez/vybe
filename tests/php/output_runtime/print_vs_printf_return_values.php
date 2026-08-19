@@ -27,4 +27,4 @@ echo '|';
 $n = printf('%s', 's');
 echo $n;
 
-__vybe_check(ob_get_clean(), "p|7|1");
+__vybe_check(ob_get_clean(), "p|17|s1");

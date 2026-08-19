@@ -21,8 +21,8 @@ PROCEDURE DIVISION.
                 RAISE EXCEPTION EC-PROGRAM
             END-IF
         WHEN 2
-            IF WS-VYBE-L NOT = "LOOP"
-                DISPLAY "FAIL at 2 want [LOOP] got [" WS-VYBE-L "]"
+            IF WS-VYBE-L NOT = "DONE"
+                DISPLAY "FAIL at 2 want [DONE] got [" WS-VYBE-L "]"
                 MOVE 1 TO RETURN-CODE
                 RAISE EXCEPTION EC-PROGRAM
             END-IF
@@ -49,8 +49,8 @@ PROCEDURE DIVISION.
                 RAISE EXCEPTION EC-PROGRAM
             END-IF
         WHEN 2
-            IF WS-VYBE-L NOT = "LOOP"
-                DISPLAY "FAIL at 2 want [LOOP] got [" WS-VYBE-L "]"
+            IF WS-VYBE-L NOT = "DONE"
+                DISPLAY "FAIL at 2 want [DONE] got [" WS-VYBE-L "]"
                 MOVE 1 TO RETURN-CODE
                 RAISE EXCEPTION EC-PROGRAM
             END-IF

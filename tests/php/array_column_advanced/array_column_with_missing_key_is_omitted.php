@@ -29,4 +29,4 @@ $rows = [
 $names = array_column($rows, 'name');
 echo implode('|', $names);
 
-__vybe_check(ob_get_clean(), "Alice||");
+__vybe_check(ob_get_clean(), "Alice|");
