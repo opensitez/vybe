@@ -11,6 +11,11 @@ extensions = ["f90", "f95", "f03", "f08", "f18", "f"]
 # default is `true`, and inheriting it silently gave Python coercive semantics
 # it never chose.
 coerces_value_to_type_hint = true
+# A LOGICAL is a VALUE, not a branch condition that happened to be stored.
+# Without this, `emit_relational_from_compare3` leaves the raw i32 a comparison
+# produces, so `b = (1 == 2)` put `0` in a LOGICAL and `print *, b` wrote `0`
+# where gfortran writes `F`. Every other language that has booleans declares it.
+materialize_bool_results = true
 # `intent(out)` arrives default-initialized.
 out_params_default_initialized = true
 # An omitted trailing `optional ::` dummy argument is passed as undefined.
@@ -38,6 +43,15 @@ bare_name_constructs_value_type = true
 # A procedure in an INTERFACE block is callable under the interface name.
 interface_block_is_generic_alias = true
 function_return = "result_slot"        # Fortran uses result variable or function name
+# ⛔ INTERNAL, not user-visible. A Fortran function returns through its own NAME
+# or an explicit `result(name)` clause — it never spells the bare word `result`,
+# so that word is an ordinary identifier and programs use it constantly. Left at
+# the default `"Result"` the implicit slot collided with every such variable
+# (Fortran is case-insensitive, so `Result` and `result` canonicalise together):
+# reads and writes landed on different storage, which showed up as `where`
+# leaving unmasked elements null. Pascal keeps the default because Pascal source
+# really does write `Result := X`; VB set its own for this same reason.
+result_slot_name = "__fortran_result__"
 self_keyword = ""
 base_keyword = ""
 constructor_name = ""
@@ -68,6 +82,41 @@ linq_queries = false
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
 __print       = { emit = "print",                          min_args = 0, max_args = 255 }
+# The numeric value of a token read from an INTERNAL file. Internal name, so
+# no ordinary Fortran procedure can collide with it.
+__fortran_to_number = { emit = "host:ecma:number:Number",  min_args = 1, max_args = 1 }
+
+# ── TRANSFER: the bit pattern, not a conversion ─────────────────────────────
+# `transfer(x, 0)` reinterprets the BITS — `transfer(3.14, 0)` is 1078523331,
+# not 3. The same operation Go spells `math.Float32bits`, so it binds the SAME
+# shared primitives rather than growing a Fortran copy. Default `real` is 4
+# bytes. TRANSFER is `UnaryOp::Reinterpret` now — an AST node, not a row.
+
+# `INQUIRE(file=…)` — the same `wasi:filesystem` surface python and php bind.
+__fortran_file_exists = { emit = "host:wasi:filesystem:exists",   min_args = 1, max_args = 1 }
+__fortran_file_size   = { emit = "host:wasi:filesystem:fileSize", min_args = 1, max_args = 1 }
+# One FIELD of a formatted internal read: the characters a descriptor covers.
+__fortran_substring   = { emit = "host:ecma:string:substring",    min_args = 2, max_args = 3 }
+
+# ── C ABI: sqlite3, reached through `bind(c)` ────────────────────────────────
+# The adapter and the tree leaves are platform-owned
+# (`platforms/libc/src/emitter/sqlite_adapter.rs`); these rows only make the
+# BARE symbol callable, because the bare-call path does not consult the
+# resolver's tree yet — the same reason C carries an identical `SDL_*` block
+# with the same note. Delete this block when the call path reads the tree, not
+# the platform registration.
+"sqlite3_open"            = { emit = "common:libc.sqlite3.sqlite3_open",            min_args = 2, max_args = 2 }
+"sqlite3_open_v2"         = { emit = "common:libc.sqlite3.sqlite3_open_v2",         min_args = 4, max_args = 4 }
+"sqlite3_close"           = { emit = "common:libc.sqlite3.sqlite3_close",           min_args = 1, max_args = 1 }
+"sqlite3_close_v2"        = { emit = "common:libc.sqlite3.sqlite3_close_v2",        min_args = 1, max_args = 1 }
+"sqlite3_exec"            = { emit = "common:libc.sqlite3.sqlite3_exec",            min_args = 5, max_args = 5 }
+"sqlite3_prepare"         = { emit = "common:libc.sqlite3.sqlite3_prepare",         min_args = 5, max_args = 5 }
+"sqlite3_prepare_v2"      = { emit = "common:libc.sqlite3.sqlite3_prepare_v2",      min_args = 5, max_args = 5 }
+"sqlite3_finalize"        = { emit = "common:libc.sqlite3.sqlite3_finalize",        min_args = 1, max_args = 1 }
+"sqlite3_reset"           = { emit = "common:libc.sqlite3.sqlite3_reset",           min_args = 1, max_args = 1 }
+"sqlite3_errmsg"          = { emit = "common:libc.sqlite3.sqlite3_errmsg",          min_args = 1, max_args = 1 }
+"sqlite3_errcode"         = { emit = "common:libc.sqlite3.sqlite3_errcode",         min_args = 1, max_args = 1 }
+"sqlite3_extended_errcode" = { emit = "common:libc.sqlite3.sqlite3_extended_errcode", min_args = 1, max_args = 1 }
 
 # ── Math — WASM opcodes ─────────────────────────────────────────────────────
 
@@ -76,8 +125,10 @@ sqrt          = { emit = "opcode:f64_sqrt",                min_args = 1, max_arg
 floor         = { emit = "opcode:f64_floor",               min_args = 1, max_args = 1 }
 ceiling       = { emit = "opcode:f64_ceil",                min_args = 1, max_args = 1 }
 trunc         = { emit = "opcode:f64_trunc",               min_args = 1, max_args = 1 }
-round         = { emit = "opcode:f64_nearest",             min_args = 1, max_args = 1 }
-nint          = { emit = "opcode:f64_nearest",             min_args = 1, max_args = 1 }
+# gfortran: `nint(2.5)`=3, `nint(-2.5)`=-3 — ties AWAY FROM ZERO. `f64.nearest`
+# is ties-to-even and got 3 of those 4 wrong.
+round         = { emit = "common:math.round_half_away",    min_args = 1, max_args = 1 }
+nint          = { emit = "common:math.round_half_away",    min_args = 1, max_args = 1 }
 min           = { emit = "common:fortran.min",             min_args = 2, max_args = 255 }
 max           = { emit = "common:fortran.max",             min_args = 2, max_args = 255 }
 real          = { emit = "opcode:f64_from_i32",            min_args = 1, max_args = 1 }
@@ -122,6 +173,13 @@ acosh         = { emit = "host:ecma:math:acosh",           min_args = 1, max_arg
 atanh         = { emit = "host:ecma:math:atanh",           min_args = 1, max_args = 1 }
 hypot         = { emit = "host:ecma:math:hypot",           min_args = 2, max_args = 2 }
 
+# IEEE_ARITHMETIC's two predicates are ECMA's two predicates, exactly — same
+# question, same answer for every operand. Declared here rather than folded in
+# the walker so a program that defines its own is still the one that wins.
+ieee_is_nan    = { emit = "host:ecma:number:isNaN",        min_args = 1, max_args = 1 }
+ieee_is_finite = { emit = "host:ecma:number:isFinite",     min_args = 1, max_args = 1 }
+__fortran_log2 = { emit = "host:ecma:math:log2",           min_args = 1, max_args = 1 }
+
 # Bessel — implemented in `platforms/libc/src/emitter/bessel.rs` and registered
 # as `libc.math.*`, so C reaches the same code through <math.h>.
 bessel_j0     = { emit = "common:libc.math.j0",             min_args = 1, max_args = 1 }
@@ -139,10 +197,25 @@ erfc_scaled   = { emit = "common:libc.math.erfcx",          min_args = 1, max_ar
 # The only bit intrinsics that are NOT here: every other one folds to an
 # operator in the walker (`iand` is `BitAnd`, `btest` is a shift and a compare).
 # Counting bits has no operator, and is one core WASM opcode —
-# `i32.popcnt` / `i32.clz` / `i32.ctz` — emitted in `emitter/bit_adapter.rs`.
-popcnt        = { emit = "common:fortran.popcnt",          min_args = 1, max_args = 1 }
-leadz         = { emit = "common:fortran.leadz",           min_args = 1, max_args = 1 }
-trailz        = { emit = "common:fortran.trailz",          min_args = 1, max_args = 1 }
+# `i32.popcnt` / `i32.clz` / `i32.ctz`. These route to the SHARED bit family in
+# `primitives/bits.rs` — the same code the `UnaryOp::PopCount` node emits — so
+# Fortran, Go, Java and C# reach one implementation. Default INTEGER is kind 4,
+# hence the 32-bit lane; a `kind=8` operand would name the 64-bit row.
+# `SPACING(x)` and `NEAREST(x, s)` are the ULP and the adjacent representable
+# value. Both used to be computed ARITHMETICALLY in the walker, which is one ULP
+# too far coming DOWN out of a power of two — the spacing halves there.
+# Default `real` is kind 4, so the DEFAULT lane is f32 — `SPACING(1.0)` is 2^-23,
+# not 2^-52. The walker folds a kind-8 operand onto the `*64` rows instead.
+spacing       = { emit = "common:math.ulp32",              min_args = 1, max_args = 1 }
+__vybe_ulp64      = { emit = "common:math.ulp64",          min_args = 1, max_args = 1 }
+__vybe_next_up32  = { emit = "common:math.next_up32",      min_args = 1, max_args = 1 }
+__vybe_next_up64  = { emit = "common:math.next_up64",      min_args = 1, max_args = 1 }
+__vybe_next_dn32  = { emit = "common:math.next_down32",    min_args = 1, max_args = 1 }
+__vybe_next_dn64  = { emit = "common:math.next_down64",    min_args = 1, max_args = 1 }
+
+popcnt        = { emit = "common:bits.popcnt32",           min_args = 1, max_args = 1 }
+leadz         = { emit = "common:bits.clz32",              min_args = 1, max_args = 1 }
+trailz        = { emit = "common:bits.ctz32",              min_args = 1, max_args = 1 }
 
 # `parity(mask)` — an odd number of true elements. Not a bit intrinsic; F2008
 # introduced it alongside them. It is a BUILTIN and not a walker fold precisely
@@ -174,6 +247,12 @@ array_join    = { emit = "intrinsic:array_join",          min_args = 2, max_args
 # Matrix multiply — emitter in emitter/math_adapter.rs.
 matmul        = { emit = "common:fortran.matmul",         min_args = 2, max_args = 2 }
 sprintf       = { emit = "common:sprintf.format",        min_args = 1, max_args = 255 }
+# One `print`/`write` item, rendered. A LOGICAL writes `T`/`F` and everything
+# else takes the general rendering, decided by asking the VALUE at run time.
+__fortran_io_str = { emit = "common:fortran.io_str",     min_args = 1, max_args = 1 }
+# Whether an argument arrived as a whole array — what `merge` asks of its mask
+# and of each source before deciding to index it or broadcast it.
+__fortran_is_array = { emit = "common:fortran.is_array", min_args = 1, max_args = 1 }
 
 # ── Misc ─────────────────────────────────────────────────────────────────────
 
@@ -188,11 +267,48 @@ __fortran_stop = { emit = "host:wasi:cli/exit:exit-with-code", min_args = 1, max
 # ────────────────────────────────────────────────────────────────────────────
 
 [value_methods]
+# `all`/`any`/`count` with no `dim` ask about every element whatever the rank,
+# so they flatten the mask first — a rank-2 mask is a nest, and mapping over a
+# nest visits ROWS, which are arrays and therefore always truthy.
+flat = { emit = "host:ecma:array:flat", min_args = 0, max_args = 1 }
 
 [array_methods]
 map      = "__array_map"
 reduce   = "__array_reduce"
 flatMap  = "__array_flat_map"
+# `all`/`any` lower to `.every`/`.some`. Undeclared, they resolved only where
+# the receiver's type was already known — so `all(m)` worked and `all(m, dim=1)`,
+# whose receiver is a lambda parameter holding one lane, answered `null`.
+some     = "__array_some"
+every    = "__array_every"
+# `maxloc`/`minloc`/`findloc` are built out of `.indexOf` and `.findLastIndex`
+# on the array. Undeclared, those calls answered null — and the index-to-Fortran
+# conversion is `idx < 0 ? 0 : idx + 1`, where `null` fails the test and then
+# `null + 1` is 1. That is why EVERY locator answered 1 regardless of the data.
+# This table is what the dispatch consults; a name it does not carry never
+# reaches the arm that implements it.
+indexOf       = "__array_index_of"
+findLastIndex = "__array_find_last_index"
+# The MASKED locator forms search with a predicate rather than by value.
+findIndex     = "__array_findIndex"
+filter        = "__array_filter"
+
+# ────────────────────────────────────────────────────────────────────────────
+# BUILT-IN TYPE SPELLINGS
+# ────────────────────────────────────────────────────────────────────────────
+# Fortran's own names for the shared built-ins. Declared HERE so shared code
+# stops carrying them: `normalize_fortran_dispatch_type` used to hardcode
+# `integer`/`real`/`logical` in `primitives/overloads.rs`, which is a
+# per-language table in a shared crate.
+#
+# Every spelling admits a KIND suffix, so all four are prefix matches:
+# `integer(kind=4)`, `real(kind=8)`, `logical(kind=1)`, `character(len=*)`.
+# `double precision` has no kind form and is written exactly.
+
+[builtin_types]
+int    = ["integer*"]
+double = ["real*", "double precision"]
+bool   = ["logical*"]
 
 # ────────────────────────────────────────────────────────────────────────────
 # NAMESPACE CONSTANTS

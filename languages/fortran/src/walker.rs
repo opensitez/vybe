@@ -5,6 +5,7 @@ use pest::Parser;
 use pest::iterators::Pair;
 use std::collections::{HashMap, HashSet};
 use vybe_ast::*;
+use vybe_compiler::primitives::complex;
 
 const FORTRAN_TBP_IMPL_HANDLE_PREFIX: &str = "__fortran_tbp_impl:";
 const FORTRAN_IO_BUFFER_GLOBAL: &str = "__vybe_fortran_io_buffer";
@@ -136,7 +137,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
 
     bind_top_level_type_bound_procedures(&mut body);
     lower_fortran_body_intrinsics(&[], &mut body);
+    lower_fortran_array_bounds(&[], &mut body);
     lower_fortran_array_semantics(&[], &mut body);
+
     repair_remaining_fortran_array_calls(&mut body);
     lower_fortran_array_return_calls(&mut body);
     lower_fortran_array_assignments(&mut body);
@@ -146,6 +149,18 @@ pub fn parse(source: &str) -> Result<Module, String> {
     lower_fortran_complex_expressions(&mut body);
     lower_fortran_array_expressions(&mut body);
     lower_fortran_body_intrinsics(&[], &mut body);
+    // Last: the dispatch loop rewrites declarations into hoisted ones, and the
+    // passes above read declaration shape.
+    strip_fortran_value_dummy_markers(&mut body);
+    lower_fortran_select_type_specificity(&mut body);
+    lower_fortran_external_declarations(&mut body);
+    lower_fortran_operator_slots(&mut body);
+    lower_fortran_defined_assignment(&mut body);
+    lower_fortran_labeled_do(&mut body);
+    lower_fortran_integer_division(&mut body);
+    lower_fortran_internal_reads(&mut body);
+    lower_fortran_c_binding_handles(&mut body);
+    lower_fortran_goto_dispatch(&mut body)?;
     body.insert(
         0,
         Statement::new(StmtKind::Assign {
@@ -160,7 +175,15 @@ pub fn parse(source: &str) -> Result<Module, String> {
         language: Lang::Fortran,
         body,
         imports,
-        directives: Default::default(),
+        directives: vybe_ast::Directives {
+            // `ISHFT`/`SHIFTL`/`SHIFTR` yield ZERO once the count reaches
+            // BIT_SIZE — every bit has been shifted out. wasm instead MASKS the
+            // count, so the bare instruction answers `ishft(1, 32)` with 1
+            // where gfortran answers 0. Nothing in the operands says which rule
+            // applies; the language does.
+            shift_overflow: Some(vybe_ast::ShiftOverflow::Zero),
+            ..Default::default()
+        },
     })
 }
 
@@ -213,7 +236,7 @@ fn walk_top(
                 }
             }
             lower_fortran_namelist_io(&mut module_body);
-            let module_const_exports = collect_fortran_module_const_exports(&module_body);
+            let module_const_exports = collect_fortran_module_const_exports(&mut module_body);
             body.extend(module_const_exports);
             let members = module_body.into_iter().map(to_class_member).collect();
             body.push(Statement::new(StmtKind::ModuleDecl {
@@ -221,6 +244,33 @@ fn walk_top(
                 members,
                 visibility: Visibility::Public,
             }));
+        }
+        // A submodule holds the BODIES of procedures its parent module only
+        // declared, in an `interface` block, as `module function f(…)`. The name
+        // belongs to the parent — a submodule is not a scope anybody imports —
+        // so the definitions are emitted where that declaration can find them,
+        // and the `submodule (parent) name` header itself carries nothing else.
+        Rule::submodule_unit => {
+            let mut seen_body = false;
+            for p in pair.into_inner().filter(|p| meaningful(p)) {
+                match p.as_rule() {
+                    Rule::identifier if !seen_body => {}
+                    Rule::statement_line => {
+                        seen_body = true;
+                        for s in p.into_inner().filter(|p| meaningful(p)) {
+                            if let Some(st) = walk_stmt(s)? {
+                                body.push(st);
+                            }
+                        }
+                    }
+                    _ => {
+                        seen_body = true;
+                        if let Some(st) = walk_stmt(p)? {
+                            body.push(st);
+                        }
+                    }
+                }
+            }
         }
         Rule::use_statement => {
             let mut parts = pair.into_inner().filter(|p| meaningful(p));
@@ -289,11 +339,31 @@ fn walk_stmt_inner(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
         Rule::var_declaration => walk_var_decl(pair).map(Some),
         Rule::procedure_decl => walk_procedure_decl(pair).map(Some),
         Rule::assignment_statement => walk_assign(pair).map(Some),
+        Rule::where_statement => walk_where(pair).map(Some),
         Rule::call_statement => walk_call(pair).map(Some),
         Rule::if_statement => walk_if(pair).map(Some),
         Rule::do_statement => walk_do(pair).map(Some),
         Rule::do_concurrent_statement => walk_do_concurrent(pair).map(Some),
         Rule::do_while_statement => walk_do_while(pair).map(Some),
+        Rule::block_statement => walk_block_construct(pair).map(Some),
+        Rule::data_statement => walk_data_statement(pair).map(Some),
+        Rule::forall_statement => walk_forall(pair).map(Some),
+        // `external f` says f is a PROCEDURE. A companion `integer f` gives its
+        // RESULT type, not a variable — but the declaration was emitted as one,
+        // so `f()` called the number 0. The names travel as a marker the pass
+        // below consumes.
+        Rule::external_statement => Ok(Some(Statement::new(StmtKind::Expr(
+            Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(FORTRAN_EXTERNAL_MARKER)),
+                args: pair
+                    .into_inner()
+                    .filter(|p| p.as_rule() == Rule::identifier)
+                    .map(|p| Argument::positional(Expression::string(p.as_str())))
+                    .collect(),
+                optional: false,
+            }),
+        )))),
+        Rule::labeled_do_statement => walk_labeled_do(pair).map(Some),
         Rule::select_case_statement => walk_select(pair).map(Some),
         Rule::select_type_statement => walk_select_type(pair).map(Some),
         Rule::select_rank_statement => walk_select_rank(pair).map(Some),
@@ -308,11 +378,14 @@ fn walk_stmt_inner(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
         Rule::interface_decl | Rule::abstract_interface_decl => walk_interface_decl(pair),
         Rule::allocate_statement => walk_allocate_stmt(pair).map(Some),
         Rule::deallocate_statement => walk_deallocate_stmt(pair).map(Some),
+        // `return 1` — the alternate-return selector. `kw_return` is `@{…}`,
+        // atomic but NOT silent, so it is a child pair like any other: taking
+        // the FIRST meaningful child walked the keyword as the return value and
+        // the `1` was never read at all.
         Rule::return_statement => {
             let e = pair
                 .into_inner()
-                .filter(|p| meaningful(p))
-                .next()
+                .find(|p| is_expr_rule(p.as_rule()))
                 .map(walk_expr)
                 .transpose()?;
             Ok(Some(Statement::new(StmtKind::Return(e))))
@@ -366,16 +439,20 @@ fn walk_stmt_inner(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
             }
             Ok(Some(Statement::new(StmtKind::Expr(e))))
         }
+        Rule::goto_statement => Ok(Some(fortran_goto_marker_statement(
+            fortran_first_statement_label(&pair).ok_or("missing goto label")?,
+        ))),
+        Rule::computed_goto_statement => walk_computed_goto(pair).map(Some),
+        Rule::arithmetic_if_statement => walk_arithmetic_if(pair).map(Some),
+        // `CONTINUE` is a no-op, but a LABELLED one is a goto target, and the
+        // label lives on the enclosing `statement_line`. An empty block keeps
+        // the line alive so the label survives to the dispatch pass.
+        Rule::continue_statement => Ok(Some(Statement::new(StmtKind::Block(Vec::new())))),
         Rule::statement_line => {
-            let mut stmts = Vec::new();
-            for p in pair.into_inner().filter(|p| meaningful(p)) {
-                if let Some(s) = walk_stmt(p)? {
-                    stmts.push(s);
-                }
-            }
+            let mut stmts = walk_statement_line_stmts(pair)?;
             match stmts.len() {
                 0 => Ok(None),
-                1 => Ok(stmts.into_iter().next()),
+                1 => Ok(Some(stmts.remove(0))),
                 _ => Ok(Some(Statement::new(StmtKind::Block(stmts)))),
             }
         }
@@ -406,13 +483,9 @@ fn walk_body<'a>(pairs: impl Iterator<Item = Pair<'a, Rule>>) -> Result<Vec<Stat
     let mut body = Vec::new();
     for p in pairs {
         match p.as_rule() {
-            Rule::statement_line => {
-                for s in p.into_inner().filter(|p| meaningful(p)) {
-                    if let Some(st) = walk_stmt(s)? {
-                        body.push(st);
-                    }
-                }
-            }
+            // Whole-line, not per-statement: a procedure body is a place where
+            // GOTO targets live, and the label sits on the LINE.
+            Rule::statement_line => body.extend(walk_statement_line_stmts(p)?),
             Rule::identifier => {}
             _ => {
                 if let Some(st) = walk_stmt(p)? {
@@ -492,6 +565,43 @@ fn parse_derived_type_name(type_hint: &str) -> Option<String> {
     Some(name.to_string())
 }
 
+/// The declared type hint, carrying the `pointer` attribute when there is a
+/// derived type to point AT.
+///
+/// A `pointer` component refers to a derived type without storing one, and the
+/// shared spelling for that is a `*` prefix — `type_hint_stores_by_value`
+/// declines `*T`, `^T`, `[]T` alike. Dropping the attribute made
+/// `type(node), pointer :: next` indistinguishable from a stored `type(node)`,
+/// so the class ctor default-constructed the component
+/// (`classes.rs` → `user_value_type_name_from_hint` → `__node_ctor_0`) and a
+/// SELF-referential node type recursed until the stack died.
+///
+/// Only derived types are marked. `integer, pointer :: p` names no class to
+/// construct, so prefixing it would change a spelling nothing reads.
+///
+/// This is the same fact `walk_var_decl` already uses to suppress the implicit
+/// `New` for a pointer variable — a pointer starts unassociated. It was simply
+/// never written down anywhere the class-member path could read it.
+fn fortran_pointer_type_hint(type_hint: Option<&str>, is_pointer: bool) -> Option<String> {
+    let hint = type_hint?;
+    if !is_pointer || parse_derived_type_name(hint).is_none() {
+        return Some(hint.to_string());
+    }
+    Some(format!("*{}", hint.trim()))
+}
+
+/// `type(c_ptr)` / `type(c_funptr)` — the `iso_c_binding` opaque handles.
+fn is_fortran_opaque_c_handle(type_hint: &str) -> bool {
+    // Either spelling reaches here: the written `type(c_ptr)` and the bare
+    // `c_ptr` a earlier normalization may already have reduced it to.
+    let name = parse_derived_type_name(type_hint)
+        .unwrap_or_else(|| type_hint.trim().trim_end_matches("()").trim().to_string());
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "c_ptr" | "c_funptr" | "c_devptr"
+    )
+}
+
 fn fortran_type_hint_array_rank(type_hint: &str) -> usize {
     let mut rank = 0;
     let mut rest = type_hint.trim_end();
@@ -531,11 +641,19 @@ fn fortran_array_type_hint(type_hint: &str, array_bounds: Option<&[Expression]>)
     )
 }
 
+/// Per-dimension declaration facts: the extent expression, plus the declared
+/// lower bound when the spec spelled one (`v(-2:3)`). A dimension written as a
+/// bare extent (`v(5)`) has Fortran's default origin of 1 and reports `None`.
+struct FortranDimensionSpecs {
+    extents: Vec<Expression>,
+    lower_bounds: Vec<Option<Expression>>,
+}
+
 fn parse_fortran_dimension_spec_list(
     pair: Pair<Rule>,
-) -> Result<(Vec<Expression>, Option<Expression>), String> {
+) -> Result<FortranDimensionSpecs, String> {
     let mut dim_bounds = Vec::new();
-    let mut dim_size = None;
+    let mut lower_bounds = Vec::new();
     for spec in pair.into_inner().filter(|p| meaningful(p)) {
         if spec.as_rule() != Rule::dimension_spec {
             continue;
@@ -546,10 +664,12 @@ fn parse_fortran_dimension_spec_list(
             .filter(|p| meaningful(p))
             .collect();
         let this_size = if exprs.len() == 1 {
+            lower_bounds.push(None);
             walk_expr(exprs.into_iter().next().unwrap())?
         } else if exprs.len() == 2 {
             let lo = walk_expr(exprs[0].clone())?;
             let hi = walk_expr(exprs[1].clone())?;
+            lower_bounds.push(Some(lo.clone()));
             let sub = Expression::new(ExprKind::Binary {
                 op: BinOp::Sub,
                 left: Box::new(hi),
@@ -563,17 +683,652 @@ fn parse_fortran_dimension_spec_list(
         } else {
             continue;
         };
-        dim_bounds.push(this_size.clone());
-        dim_size = Some(match dim_size.take() {
-            Some(prev) => Expression::new(ExprKind::Binary {
-                op: BinOp::Mul,
-                left: Box::new(prev),
-                right: Box::new(this_size),
-            }),
-            None => this_size,
-        });
+        dim_bounds.push(this_size);
     }
-    Ok((dim_bounds, dim_size))
+    Ok(FortranDimensionSpecs {
+        extents: dim_bounds,
+        lower_bounds,
+    })
+}
+
+/// Companion vector holding an array's declared per-dimension lower bounds.
+/// Fortran's array descriptor carries the origin alongside the extents; the AST
+/// declaration records only extents, so the origin is declared beside the array.
+fn fortran_origin_variable_name(array: &str) -> String {
+    format!("__fortran_origin_{}", array.to_ascii_lowercase())
+}
+
+/// `None` when every dimension uses Fortran's default origin of 1 — the usual
+/// case, which needs no descriptor because 1 is what everything already assumes.
+fn fortran_origin_declarator(
+    name: &str,
+    lower_bounds: &[Option<Expression>],
+) -> Option<VarDeclarator> {
+    if !lower_bounds.iter().any(|bound| {
+        bound
+            .as_ref()
+            .is_some_and(|bound| !matches!(bound.kind, ExprKind::Lit(Literal::Int(1))))
+    }) {
+        return None;
+    }
+    let origins = lower_bounds
+        .iter()
+        .map(|bound| ArrayElement {
+            key: None,
+            value: bound.clone().unwrap_or_else(|| Expression::int(1)),
+            spread: false,
+            by_ref: false,
+        })
+        .collect();
+    Some(VarDeclarator {
+        pattern: BindingPattern::Ident(fortran_origin_variable_name(name)),
+        type_hint: None,
+        init: Some(Expression::new(ExprKind::Array(origins))),
+        array_bounds: None,
+        with_events: false,
+    })
+}
+
+/// What a declaration told us about an array's shape. `origins` is empty when
+/// every dimension uses Fortran's default origin of 1; `extents` is empty for a
+/// deferred-shape array whose size only exists at run time.
+#[derive(Default, Clone)]
+struct FortranArrayShape {
+    origins: Vec<Expression>,
+    extents: Vec<Expression>,
+}
+
+#[derive(Default, Clone)]
+struct FortranBoundsEnv {
+    shapes: HashMap<String, FortranArrayShape>,
+}
+
+impl FortranBoundsEnv {
+    fn shape_of(&self, expr: &Expression) -> Option<&FortranArrayShape> {
+        let ExprKind::Ident(name) = &expr.kind else {
+            // An array SECTION, a function result, or an assumed-shape dummy has
+            // origin 1 by definition — the declared origin never travels with the
+            // value, only with the name it was declared under.
+            return None;
+        };
+        self.shapes.get(&name.to_ascii_lowercase())
+    }
+
+    fn rank_of(&self, expr: &Expression) -> Option<usize> {
+        let shape = self.shape_of(expr)?;
+        let rank = shape.extents.len().max(shape.origins.len());
+        (rank > 0).then_some(rank)
+    }
+
+    /// Lower bound of `expr` along 1-based `dim`.
+    fn origin(&self, expr: &Expression, dim: usize) -> Expression {
+        self.shape_of(expr)
+            .and_then(|shape| shape.origins.get(dim - 1))
+            .cloned()
+            .unwrap_or_else(|| Expression::int(1))
+    }
+
+    /// Extent of `expr` along 1-based `dim`, from the declaration when it stated
+    /// one and from the value itself otherwise. `None` when neither can answer:
+    /// reading dimension 2 off a value means indexing into it, and an array of
+    /// unknown rank — an assumed-rank `a(..)`, a `mold=` allocation — may have no
+    /// second dimension to index.
+    fn extent(&self, expr: &Expression, dim: usize) -> Option<Expression> {
+        if let Some(extent) = self
+            .shape_of(expr)
+            .and_then(|shape| shape.extents.get(dim - 1))
+        {
+            return Some(extent.clone());
+        }
+        if dim > 1 && self.rank_of(expr).is_none_or(|rank| rank < dim) {
+            return None;
+        }
+        // Rank-N arrays are nested, so dimension `d` is the length of the array
+        // reached by indexing the first element `d - 1` times.
+        let mut target = expr.clone();
+        for _ in 1..dim {
+            target = Expression::new(ExprKind::Index {
+                object: Box::new(target),
+                index: Box::new(Expression::int(0)),
+                null_safe: false,
+            });
+        }
+        Some(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("size")),
+            args: vec![Argument::positional(target)],
+            optional: false,
+        }))
+    }
+
+    fn record(&mut self, name: &str, shape: FortranArrayShape) {
+        let key = name.to_ascii_lowercase();
+        let entry = self.shapes.entry(key).or_default();
+        if !shape.origins.is_empty() {
+            entry.origins = shape.origins;
+        }
+        if !shape.extents.is_empty() {
+            entry.extents = shape.extents;
+        }
+    }
+}
+
+fn fortran_literal_dim(args: &[Argument]) -> Option<usize> {
+    let dim = args.iter().find(|arg| {
+        arg.name
+            .as_deref()
+            .is_none_or(|name| name.eq_ignore_ascii_case("dim"))
+    })?;
+    match dim.value.kind {
+        ExprKind::Lit(Literal::Int(value)) if value >= 1 => Some(value as usize),
+        _ => None,
+    }
+}
+
+/// `lbound`/`ubound`/`size(a, dim)` — the intrinsics that read an array's
+/// declared bounds. They answer from the declaration, so they cannot be folded
+/// where the other intrinsics are: nothing at that point knows the shape.
+fn lower_fortran_array_bounds(params: &[Param], body: &mut [Statement]) {
+    let mut env = FortranBoundsEnv::default();
+    for param in params {
+        // A dummy argument's bounds are its own: an assumed-shape array starts at
+        // 1 whatever the caller declared, so the rank is all that carries over.
+        let rank = param
+            .type_hint
+            .as_deref()
+            .map(fortran_type_hint_array_rank)
+            .unwrap_or(0);
+        if rank > 0 {
+            env.record(
+                &param.name,
+                FortranArrayShape {
+                    origins: vec![Expression::int(1); rank],
+                    extents: Vec::new(),
+                },
+            );
+        }
+    }
+    lower_fortran_array_bounds_with_env(body, &mut env);
+}
+
+fn lower_fortran_array_bounds_with_env(body: &mut [Statement], env: &mut FortranBoundsEnv) {
+    for statement in body.iter_mut() {
+        record_fortran_array_shapes(statement, env);
+        rewrite_fortran_bounds_in_statement(statement, env);
+        match &mut statement.kind {
+            // Contained procedures are lowered by their own walker, before this
+            // body is assembled — visiting them again would shift every subscript
+            // a second time.
+            StmtKind::FunctionDecl { .. } => {}
+            // A `Block` here is a statement GROUP the walker synthesised — an
+            // `allocate` with its descriptor update, say — not a Fortran scope,
+            // so what it declares stays visible to the statements after it.
+            // A named construct wraps its statement in `Labeled`; the wrapper is
+            // transparent, so the env passes through to whatever it names.
+            StmtKind::Labeled { body, .. } => {
+                lower_fortran_array_bounds_with_env(std::slice::from_mut(body.as_mut()), env)
+            }
+            StmtKind::Block(stmts) => lower_fortran_array_bounds_with_env(stmts, env),
+            StmtKind::DoWhile { body: stmts, .. }
+            | StmtKind::With { body: stmts, .. }
+            | StmtKind::Using { body: stmts, .. }
+            | StmtKind::Lock { body: stmts, .. }
+            | StmtKind::NamespaceDecl { body: stmts, .. } => {
+                let mut nested = env.clone();
+                lower_fortran_array_bounds_with_env(stmts, &mut nested);
+            }
+            StmtKind::If {
+                then_body,
+                elifs,
+                else_body,
+                ..
+            } => {
+                let mut nested = env.clone();
+                lower_fortran_array_bounds_with_env(then_body, &mut nested);
+                for (cond, elif_body) in elifs {
+                    rewrite_fortran_bounds_in_expr(cond, env);
+                    let mut nested = env.clone();
+                    lower_fortran_array_bounds_with_env(elif_body, &mut nested);
+                }
+                if let Some(else_body) = else_body {
+                    let mut nested = env.clone();
+                    lower_fortran_array_bounds_with_env(else_body, &mut nested);
+                }
+            }
+            StmtKind::While {
+                body: stmts,
+                else_body,
+                ..
+            }
+            | StmtKind::ForIn {
+                body: stmts,
+                else_body,
+                ..
+            } => {
+                let mut nested = env.clone();
+                lower_fortran_array_bounds_with_env(stmts, &mut nested);
+                if let Some(else_body) = else_body {
+                    let mut nested = env.clone();
+                    lower_fortran_array_bounds_with_env(else_body, &mut nested);
+                }
+            }
+            StmtKind::For { body: stmts, .. } => {
+                let mut nested = env.clone();
+                lower_fortran_array_bounds_with_env(stmts, &mut nested);
+            }
+            StmtKind::Switch { cases, default, .. } => {
+                for case in cases.iter_mut() {
+                    let mut nested = env.clone();
+                    lower_fortran_array_bounds_with_env(&mut case.body, &mut nested);
+                }
+                if let Some(default) = default {
+                    let mut nested = env.clone();
+                    lower_fortran_array_bounds_with_env(default, &mut nested);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn record_fortran_array_shapes(statement: &Statement, env: &mut FortranBoundsEnv) {
+    match &statement.kind {
+        StmtKind::VarDecl { declarations, .. } => {
+            for declaration in declarations {
+                let BindingPattern::Ident(name) = &declaration.pattern else {
+                    continue;
+                };
+                if let Some(array) = name
+                    .to_ascii_lowercase()
+                    .strip_prefix("__fortran_origin_")
+                    .map(str::to_string)
+                {
+                    if let Some(origins) = declaration.init.as_ref().and_then(fortran_array_literal)
+                    {
+                        env.record(
+                            &array,
+                            FortranArrayShape {
+                                origins,
+                                extents: Vec::new(),
+                            },
+                        );
+                    }
+                    continue;
+                }
+                if let Some(extents) = declaration
+                    .array_bounds
+                    .as_ref()
+                    .filter(|bounds| !bounds.is_empty())
+                {
+                    env.record(
+                        name,
+                        FortranArrayShape {
+                            origins: Vec::new(),
+                            extents: extents.clone(),
+                        },
+                    );
+                }
+            }
+        }
+        StmtKind::Expr(Expression {
+            kind: ExprKind::Call { callee, args, .. },
+            ..
+        }) => {
+            if !matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("allocate"))
+            {
+                return;
+            }
+            for arg in args {
+                let ExprKind::Call {
+                    callee: target,
+                    args: dims,
+                    ..
+                } = &arg.value.kind
+                else {
+                    continue;
+                };
+                let ExprKind::Ident(name) = &target.kind else {
+                    continue;
+                };
+                if dims.is_empty() {
+                    continue;
+                }
+                env.record(
+                    name,
+                    FortranArrayShape {
+                        origins: Vec::new(),
+                        extents: dims.iter().map(|dim| dim.value.clone()).collect(),
+                    },
+                );
+            }
+        }
+        StmtKind::Assign { targets, value, .. } => {
+            let [target] = targets.as_slice() else {
+                return;
+            };
+            let ExprKind::Ident(name) = &target.kind else {
+                return;
+            };
+            let Some(array) = name
+                .to_ascii_lowercase()
+                .strip_prefix("__fortran_origin_")
+                .map(str::to_string)
+            else {
+                return;
+            };
+            if let Some(origins) = fortran_array_literal(value) {
+                env.record(
+                    &array,
+                    FortranArrayShape {
+                        origins,
+                        extents: Vec::new(),
+                    },
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_fortran_bounds_in_statement(statement: &mut Statement, env: &FortranBoundsEnv) {
+    match &mut statement.kind {
+        StmtKind::Expr(expr)
+        | StmtKind::Return(Some(expr))
+        | StmtKind::Throw {
+            expr: Some(expr), ..
+        }
+        | StmtKind::If { cond: expr, .. }
+        | StmtKind::While { cond: expr, .. }
+        | StmtKind::DoWhile { cond: expr, .. }
+        | StmtKind::ForIn { iter: expr, .. }
+        | StmtKind::Switch { expr, .. } => rewrite_fortran_bounds_in_expr(expr, env),
+        StmtKind::Assign { targets, value, .. } => {
+            for target in targets {
+                rewrite_fortran_bounds_in_expr(target, env);
+            }
+            rewrite_fortran_bounds_in_expr(value, env);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            rewrite_fortran_bounds_in_expr(target, env);
+            rewrite_fortran_bounds_in_expr(value, env);
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for declaration in declarations {
+                if let Some(init) = &mut declaration.init {
+                    rewrite_fortran_bounds_in_expr(init, env);
+                }
+            }
+        }
+        StmtKind::For { cond, update, .. } => {
+            if let Some(cond) = cond {
+                rewrite_fortran_bounds_in_expr(cond, env);
+            }
+            if let Some(update) = update {
+                rewrite_fortran_bounds_in_expr(update, env);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_fortran_bounds_in_expr(expr: &mut Expression, env: &FortranBoundsEnv) {
+    match &mut expr.kind {
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_fortran_bounds_in_expr(left, env);
+            rewrite_fortran_bounds_in_expr(right, env);
+        }
+        ExprKind::Unary { expr: inner, .. }
+        | ExprKind::Await(inner)
+        | ExprKind::YieldFrom(inner)
+        | ExprKind::TypeOf(inner)
+        | ExprKind::Member { object: inner, .. } => rewrite_fortran_bounds_in_expr(inner, env),
+        ExprKind::ArrayMap { array, body, .. } => {
+            rewrite_fortran_bounds_in_expr(array, env);
+            rewrite_fortran_bounds_in_expr(body, env);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_fortran_bounds_in_expr(cond, env);
+            rewrite_fortran_bounds_in_expr(then, env);
+            rewrite_fortran_bounds_in_expr(else_, env);
+        }
+        ExprKind::Index { object, index, .. } => {
+            rewrite_fortran_bounds_in_expr(object, env);
+            rewrite_fortran_bounds_in_expr(index, env);
+        }
+        ExprKind::Slice { lower, upper, step } => {
+            for part in [lower, upper, step].into_iter().flatten() {
+                rewrite_fortran_bounds_in_expr(part, env);
+            }
+        }
+        ExprKind::Call { callee, args, .. } | ExprKind::New { class: callee, args } => {
+            // `allocate(v(-4:1))` spells bounds, not subscripts — its arguments
+            // describe the array being made and must survive untouched.
+            if matches!(&callee.kind, ExprKind::Ident(name)
+                if name.eq_ignore_ascii_case("allocate") || name.eq_ignore_ascii_case("deallocate"))
+            {
+                return;
+            }
+            rewrite_fortran_bounds_in_expr(callee, env);
+            for arg in args {
+                rewrite_fortran_bounds_in_expr(&mut arg.value, env);
+            }
+        }
+        ExprKind::Assign { target, value } => {
+            rewrite_fortran_bounds_in_expr(target, env);
+            rewrite_fortran_bounds_in_expr(value, env);
+        }
+        ExprKind::Array(items) => {
+            for item in items {
+                rewrite_fortran_bounds_in_expr(&mut item.value, env);
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+            for item in items {
+                rewrite_fortran_bounds_in_expr(item, env);
+            }
+        }
+        ExprKind::Interpolation(parts) => {
+            for part in parts {
+                if let InterpolPart::Expr(inner) = part {
+                    rewrite_fortran_bounds_in_expr(inner, env);
+                }
+            }
+        }
+        _ => {}
+    }
+
+    if let Some(folded) = fold_fortran_bounds_call(expr, env) {
+        *expr = folded;
+        return;
+    }
+    offset_fortran_subscripts(expr, env);
+}
+
+/// `integer :: v(-2:3)` numbers its elements from −2, so `v(i)` is not the i-th
+/// slot. Shifting the subscript back to a 1-based one here — while it is still a
+/// Fortran subscript — leaves the generic 0-based lowering downstream untouched.
+fn offset_fortran_subscripts(expr: &mut Expression, env: &FortranBoundsEnv) {
+    match &mut expr.kind {
+        // A read — `v(i)` still spelled as a call, before the generic subscript
+        // lowering turns it into an index chain.
+        ExprKind::Call { callee, args, .. } => {
+            let ExprKind::Ident(name) = &callee.kind else {
+                return;
+            };
+            let Some(origins) = fortran_declared_origins(env, name) else {
+                return;
+            };
+            for (dim, arg) in args.iter_mut().enumerate() {
+                let Some(origin) = origins.get(dim) else {
+                    continue;
+                };
+                shift_fortran_subscript_operand(&mut arg.value, origin);
+            }
+        }
+        // An assignment target — the walker builds those as an index chain
+        // directly, one node per subscript.
+        ExprKind::Index { object, index, .. } => {
+            let Some((name, depth)) = fortran_index_chain_base(object) else {
+                return;
+            };
+            let Some(origins) = fortran_declared_origins(env, &name) else {
+                return;
+            };
+            let Some(origin) = origins.get(depth) else {
+                return;
+            };
+            shift_fortran_subscript_operand(index, origin);
+        }
+        _ => {}
+    }
+}
+
+fn fortran_declared_origins(env: &FortranBoundsEnv, name: &str) -> Option<Vec<Expression>> {
+    let origins = &env.shapes.get(&name.to_ascii_lowercase())?.origins;
+    (!origins.is_empty()).then(|| origins.clone())
+}
+
+/// The name an index chain is rooted at, and how many subscripts have already
+/// been applied to it — which is the 0-based dimension of the next one.
+fn fortran_index_chain_base(expr: &Expression) -> Option<(String, usize)> {
+    match &expr.kind {
+        ExprKind::Ident(name) => Some((name.clone(), 0)),
+        ExprKind::Index { object, .. } => {
+            let (name, depth) = fortran_index_chain_base(object)?;
+            Some((name, depth + 1))
+        }
+        _ => None,
+    }
+}
+
+fn shift_fortran_subscript_operand(operand: &mut Expression, origin: &Expression) {
+    if matches!(origin.kind, ExprKind::Lit(Literal::Int(1))) {
+        return;
+    }
+    match &mut operand.kind {
+        ExprKind::Slice { lower, upper, .. } => {
+            for part in [lower, upper].into_iter().flatten() {
+                **part = fortran_shift_subscript(part, origin);
+            }
+        }
+        _ => *operand = fortran_shift_subscript(operand, origin),
+    }
+}
+
+fn fortran_shift_subscript(subscript: &Expression, origin: &Expression) -> Expression {
+    let shift = fortran_add_ints(origin.clone(), Expression::int(-1));
+    if matches!(shift.kind, ExprKind::Lit(Literal::Int(0))) {
+        return subscript.clone();
+    }
+    if let (ExprKind::Lit(Literal::Int(index)), ExprKind::Lit(Literal::Int(shift))) =
+        (&subscript.kind, &shift.kind)
+    {
+        return Expression::int(index - shift);
+    }
+    Expression::new(ExprKind::Binary {
+        op: BinOp::Sub,
+        left: Box::new(subscript.clone()),
+        right: Box::new(shift),
+    })
+}
+
+fn fold_fortran_bounds_call(expr: &Expression, env: &FortranBoundsEnv) -> Option<Expression> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    let ExprKind::Ident(name) = &callee.kind else {
+        return None;
+    };
+    let array = &args.first()?.value;
+    let name = name.to_ascii_lowercase();
+    let upper = match name.as_str() {
+        "lbound" => false,
+        "ubound" => true,
+        // `size(a)` already answers through the array-length builtin; only the
+        // per-dimension form needs the declaration.
+        "size" if args.len() > 1 => {
+            let dim = fortran_literal_dim(&args[1..])?;
+            return env.extent(array, dim);
+        }
+        // `shape(a)` is the EXTENT vector — `ubound - lbound + 1` per dimension,
+        // which the descriptor already holds directly. It reads the same
+        // declaration `lbound`/`ubound` do, so it belongs here rather than as a
+        // builtin: the extents are a compile-time fact, and a runtime helper
+        // would have to rediscover them by walking the nest.
+        //
+        // `shape(a, dim)` is not a Fortran form — `size(a, dim)` is the scalar
+        // ask — so the vector is the only shape to build.
+        "shape" => {
+            let rank = env.rank_of(array)?;
+            let extents = (1..=rank)
+                .map(|dim| {
+                    Some(ArrayElement {
+                        key: None,
+                        value: env.extent(array, dim)?,
+                        spread: false,
+                        by_ref: false,
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?;
+            return Some(Expression::new(ExprKind::Array(extents)));
+        }
+        _ => return None,
+    };
+    let bound = |dim: usize| {
+        let origin = env.origin(array, dim);
+        if !upper {
+            return Some(origin);
+        }
+        Some(fortran_add_ints(
+            origin,
+            fortran_add_ints(env.extent(array, dim)?, Expression::int(-1)),
+        ))
+    };
+    if args.len() > 1 {
+        return bound(fortran_literal_dim(&args[1..])?);
+    }
+    // No `dim`: the answer is a vector with one entry per dimension, so the rank
+    // has to be known. An unranked array leaves the call alone rather than
+    // guessing a shape.
+    let rank = env.rank_of(array)?;
+    let bounds = (1..=rank)
+        .map(|dim| {
+            Some(ArrayElement {
+                key: None,
+                value: bound(dim)?,
+                spread: false,
+                by_ref: false,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(Expression::new(ExprKind::Array(bounds)))
+}
+
+fn fortran_add_ints(left: Expression, right: Expression) -> Expression {
+    if let (ExprKind::Lit(Literal::Int(a)), ExprKind::Lit(Literal::Int(b))) =
+        (&left.kind, &right.kind)
+    {
+        return Expression::int(a + b);
+    }
+    Expression::new(ExprKind::Binary {
+        op: BinOp::Add,
+        left: Box::new(left),
+        right: Box::new(right),
+    })
+}
+
+fn fortran_array_literal(expr: &Expression) -> Option<Vec<Expression>> {
+    let ExprKind::Array(elements) = &expr.kind else {
+        return None;
+    };
+    if elements.iter().any(|element| element.spread) {
+        return None;
+    }
+    Some(
+        elements
+            .iter()
+            .map(|element| element.value.clone())
+            .collect(),
+    )
 }
 
 fn has_deferred_fortran_dimension_spec(pair: &Pair<Rule>) -> bool {
@@ -590,9 +1345,11 @@ fn walk_var_decl(pair: Pair<Rule>) -> Result<Statement, String> {
     let mut inner = pair.into_inner();
     let type_hint = inner.next().map(|p| p.as_str().trim().to_string());
     let mut is_pointer = false;
+    let mut is_value = false;
     let mut is_allocatable = false;
     let mut has_intent = false;
     let mut attr_dim_bounds: Vec<Expression> = Vec::new();
+    let mut attr_dim_lower_bounds: Vec<Option<Expression>> = Vec::new();
     let mut has_attr_array_bounds = false;
     let mut has_attr_deferred_array_bounds = false;
     let mut trailing = Vec::new();
@@ -603,7 +1360,9 @@ fn walk_var_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                     match attr.as_rule() {
                         Rule::var_attribute => {
                             let attr_text = attr.as_str().trim().to_ascii_lowercase();
-                            if attr_text == "pointer" {
+                            if attr_text == "value" {
+                                is_value = true;
+                            } else if attr_text == "pointer" {
                                 is_pointer = true;
                             } else if attr_text == "allocatable" {
                                 is_allocatable = true;
@@ -616,9 +1375,10 @@ fn walk_var_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                                         has_attr_deferred_array_bounds = true;
                                         has_attr_array_bounds = true;
                                     }
-                                    let (bounds, _) = parse_fortran_dimension_spec_list(child)?;
-                                    if !bounds.is_empty() {
-                                        attr_dim_bounds = bounds;
+                                    let specs = parse_fortran_dimension_spec_list(child)?;
+                                    if !specs.extents.is_empty() {
+                                        attr_dim_bounds = specs.extents;
+                                        attr_dim_lower_bounds = specs.lower_bounds;
                                         has_attr_array_bounds = true;
                                     }
                                 }
@@ -643,6 +1403,8 @@ fn walk_var_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                         .unwrap_or_default();
                     let mut init = None;
                     let mut dim_bounds: Vec<Expression> = attr_dim_bounds.clone();
+                    let mut dim_lower_bounds: Vec<Option<Expression>> =
+                        attr_dim_lower_bounds.clone();
                     let mut has_array_bounds =
                         has_attr_array_bounds || has_attr_deferred_array_bounds;
                     for pp in di {
@@ -651,11 +1413,13 @@ fn walk_var_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                                 if has_deferred_fortran_dimension_spec(&pp) {
                                     has_array_bounds = true;
                                     dim_bounds.clear();
+                                    dim_lower_bounds.clear();
                                 }
-                                let (bounds, _) = parse_fortran_dimension_spec_list(pp)?;
-                                if !bounds.is_empty() {
+                                let specs = parse_fortran_dimension_spec_list(pp)?;
+                                if !specs.extents.is_empty() {
                                     has_array_bounds = true;
-                                    dim_bounds = bounds;
+                                    dim_bounds = specs.extents;
+                                    dim_lower_bounds = specs.lower_bounds;
                                 }
                             }
                             Rule::codimension_spec_list => { /* PGAS — model as scalar/array */ }
@@ -672,10 +1436,28 @@ fn walk_var_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                             if let Some(class_name) =
                                 type_hint.as_deref().and_then(parse_derived_type_name)
                             {
-                                init = Some(Expression::new(ExprKind::New {
-                                    class: Box::new(Expression::new(ExprKind::Ident(class_name))),
-                                    args: Vec::new(),
-                                }));
+                                // `type(c_ptr)` LOOKS like a derived type and is
+                                // not one — it is an opaque `iso_c_binding`
+                                // handle with no components and no constructor,
+                                // and it starts as null. Constructing it emitted
+                                // `new c_ptr()` against a class that does not
+                                // exist, so the DECLARATION died on "undefined
+                                // is not callable" before any C call ran.
+                                init = Some(
+                                    if type_hint
+                                        .as_deref()
+                                        .is_some_and(is_fortran_opaque_c_handle)
+                                    {
+                                        Expression::new(ExprKind::Lit(Literal::Null))
+                                    } else {
+                                        Expression::new(ExprKind::New {
+                                            class: Box::new(Expression::new(ExprKind::Ident(
+                                                class_name,
+                                            ))),
+                                            args: Vec::new(),
+                                        })
+                                    },
+                                );
                             }
                         }
                     }
@@ -712,15 +1494,60 @@ fn walk_var_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                             }
                         }
                     }
+                    // A declared origin (`v(-2:3)`) is a fact about the array that
+                    // nothing downstream can recover: `array_bounds` records the
+                    // EXTENT, `hi - lo + 1`, and the origin is gone. Fortran carries
+                    // it in the array descriptor, so declare it as one — a companion
+                    // vector of per-dimension lower bounds, in the same scope, which
+                    // `lbound`/`ubound`/`size(a, dim)` and subscripting read back.
+                    let declared_hint =
+                        fortran_pointer_type_hint(type_hint.as_deref(), is_pointer);
+                    if let Some(origin) = fortran_origin_declarator(&nm, &dim_lower_bounds) {
+                        declarations.push(VarDeclarator {
+                            pattern: BindingPattern::Ident(nm.clone()),
+                            type_hint: declared_hint.clone().map(Into::into),
+                            init,
+                            array_bounds: has_array_bounds.then_some(dim_bounds),
+                            with_events: false,
+                        });
+                        declarations.push(origin);
+                        continue;
+                    }
                     declarations.push(VarDeclarator {
                         pattern: BindingPattern::Ident(nm),
-                        type_hint: type_hint.clone().map(Into::into),
+                        type_hint: declared_hint.map(Into::into),
                         init,
                         array_bounds: has_array_bounds.then_some(dim_bounds),
                         with_events: false,
                     });
                 }
             }
+        }
+    }
+    // `integer, value :: x` — a VALUE dummy is passed BY VALUE, so assigning to
+    // it must not reach the caller. Fortran's default is by reference and the
+    // promotion pass turns any mutated dummy into an alias; this marker is how
+    // that pass learns which dummies are exempt.
+    if is_value {
+        let names: Vec<Argument> = declarations
+            .iter()
+            .filter_map(|declaration| match &declaration.pattern {
+                BindingPattern::Ident(name) => Some(Argument::positional(Expression::string(name))),
+                _ => None,
+            })
+            .collect();
+        if !names.is_empty() {
+            return Ok(Statement::new(StmtKind::Block(vec![
+                Statement::new(StmtKind::VarDecl {
+                    declarations,
+                    kind: VarDeclKind::Dim,
+                }),
+                Statement::new(StmtKind::Expr(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident(FORTRAN_VALUE_DUMMY_MARKER)),
+                    args: names,
+                    optional: false,
+                }))),
+            ])));
         }
     }
     Ok(Statement::new(StmtKind::VarDecl {
@@ -774,31 +1601,42 @@ fn walk_enum_statement(pair: Pair<Rule>) -> Result<Statement, String> {
     Ok(Statement::new(StmtKind::Block(statements)))
 }
 
-fn collect_fortran_module_const_exports(statements: &[Statement]) -> Vec<Statement> {
+/// The module's data, lifted to top-level declarations.
+///
+/// A Fortran module variable has STATIC storage and one instance shared by
+/// every unit that `use`s it — writing `seen` in a subroutine and reading it in
+/// the program must see the same object. Only `parameter` (Const) members were
+/// lifted, so a plain `integer :: seen = 0` stayed inside the `ModuleDecl` and
+/// `use stash` never brought it into scope: the write and the read landed on
+/// different things and the read always returned the declared initial value.
+///
+/// Lifting is not enough on its own: while the `ModuleDecl` still declared the
+/// same name, the namespace object won the READ (`struct.get seen`) and the
+/// bare global took the WRITE (`global.set seen`). The declaration is therefore
+/// MOVED, not copied — Fortran has no `module%var` spelling, so nothing needs
+/// the namespace member.
+fn collect_fortran_module_const_exports(statements: &mut Vec<Statement>) -> Vec<Statement> {
     let mut exports = Vec::new();
-    for stmt in statements {
-        match &stmt.kind {
-            StmtKind::Block(items) => exports.extend(
-                items
-                    .iter()
-                    .filter(|item| {
-                        matches!(
-                            item.kind,
-                            StmtKind::VarDecl {
-                                kind: VarDeclKind::Const,
-                                ..
-                            }
-                        )
-                    })
-                    .cloned(),
-            ),
-            StmtKind::VarDecl {
-                kind: VarDeclKind::Const,
-                ..
-            } => exports.push(stmt.clone()),
-            _ => {}
+    for stmt in statements.iter_mut() {
+        if let StmtKind::Block(items) = &mut stmt.kind {
+            let mut kept = Vec::with_capacity(items.len());
+            for item in std::mem::take(items) {
+                match item.kind {
+                    StmtKind::VarDecl { .. } => exports.push(item),
+                    _ => kept.push(item),
+                }
+            }
+            *items = kept;
         }
     }
+    let mut kept = Vec::with_capacity(statements.len());
+    for stmt in std::mem::take(statements) {
+        match stmt.kind {
+            StmtKind::VarDecl { .. } => exports.push(stmt),
+            _ => kept.push(stmt),
+        }
+    }
+    *statements = kept;
     exports
 }
 
@@ -931,6 +1769,12 @@ fn apply_fortran_type_bound_attribute(text: &str, modifiers: &mut Modifiers) {
         modifiers.is_abstract = true;
     } else if attr.eq_ignore_ascii_case("non_overridable") {
         modifiers.is_not_overridable = true;
+    } else if attr.eq_ignore_ascii_case("nopass") {
+        // `procedure, nopass :: s` binds a procedure that takes NO receiver —
+        // it is the type's static method. Recorded so the binder stops
+        // demanding a dummy argument of the type, which a `nopass` procedure
+        // by definition does not have.
+        modifiers.is_static = true;
     }
 }
 
@@ -984,6 +1828,170 @@ fn walk_assign(pair: Pair<Rule>) -> Result<Statement, String> {
         value,
         by_ref: false,
     }))
+}
+
+/// `WHERE (mask) … ELSEWHERE … END WHERE` — assignment under an elementwise
+/// mask.
+///
+/// Every assignment in a clause keeps the elements the mask excludes, which is
+/// exactly `merge(rhs, lhs, mask)` — the same intrinsic Fortran gives the
+/// programmer, so no new machinery. `ELSEWHERE` narrows the mask by the
+/// negation of every clause before it; the negation and the conjunction are
+/// elementwise for the same reason the comparison that built the mask was.
+///
+/// The grammar has parsed this since the construct was added; the walker had
+/// no arm for it, so the body ran UNMASKED — `where (v >= 2) r = v * 10`
+/// assigned to every element.
+fn walk_where(pair: Pair<Rule>) -> Result<Statement, String> {
+    let inner: Vec<Pair<Rule>> = pair.into_inner().filter(|p| meaningful(p)).collect();
+    let mut clauses: Vec<(Option<Expression>, Vec<Statement>)> = Vec::new();
+    let mut current_mask: Option<Option<Expression>> = None;
+    let mut current_body: Vec<Statement> = Vec::new();
+    let mut seen_first_mask = false;
+
+    for p in inner {
+        if p.as_rule() == Rule::kw_elsewhere {
+            clauses.push((current_mask.take().unwrap_or(None), std::mem::take(&mut current_body)));
+            current_mask = Some(None);
+            continue;
+        }
+        if is_expr_rule(p.as_rule()) || p.as_rule() == Rule::expression {
+            // The first expression is the WHERE mask; a later one belongs to
+            // the `ELSEWHERE (mask)` clause just opened.
+            if !seen_first_mask {
+                seen_first_mask = true;
+                current_mask = Some(Some(walk_expr(p)?));
+            } else if matches!(current_mask, Some(None)) {
+                current_mask = Some(Some(walk_expr(p)?));
+            }
+            continue;
+        }
+        match p.as_rule() {
+            Rule::assignment_statement => {
+                if let Some(st) = walk_stmt(p)? {
+                    current_body.push(st);
+                }
+            }
+            Rule::statement_line | Rule::line => {
+                for s in p.into_inner().filter(|q| meaningful(q)) {
+                    if let Some(st) = walk_stmt(s)? {
+                        current_body.push(st);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    clauses.push((current_mask.take().unwrap_or(None), current_body));
+
+    let mut statements = Vec::new();
+    let mut preceding: Vec<Expression> = Vec::new();
+    for (mask, body) in clauses {
+        let effective = fortran_where_effective_mask(mask.clone(), &preceding);
+        if let Some(mask) = mask {
+            preceding.push(mask);
+        }
+        for stmt in body {
+            statements.push(fortran_mask_assignment(stmt, &effective));
+        }
+    }
+    Ok(Statement::new(StmtKind::Block(statements)))
+}
+
+/// The mask a clause actually assigns under: its own, minus everything the
+/// clauses before it already claimed.
+/// Built as an explicit map rather than as `.not. m1 .and. m2` over whole
+/// arrays: the elementwise repair fires on operands it can recognize as arrays
+/// BY NAME, and a clause mask is usually an expression (`v < 0`). Left to the
+/// repair, `.not. (v < 0)` stayed a scalar negation of an array — which is
+/// `false`, so the ELSEWHERE clause assigned nothing at all.
+fn fortran_where_effective_mask(
+    mask: Option<Expression>,
+    preceding: &[Expression],
+) -> Option<Expression> {
+    // The FIRST clause assigns under its own mask untouched. Mapping over it
+    // would be pointless work and, for `where (.false.)`, actively wrong: the
+    // mask is a SCALAR, and a map over a scalar yields undefined. `merge`
+    // already asks at run time whether a mask is an array.
+    if preceding.is_empty() {
+        return mask;
+    }
+
+    let item_name = "__fortran_where_item";
+    let index_name = "__fortran_where_index";
+    let not_true = |expr: Expression| {
+        Expression::new(ExprKind::Unary {
+            op: UnaryOp::Not,
+            expr: Box::new(fortran_expr_is_true(expr)),
+        })
+    };
+
+    // A bare ELSEWHERE has no mask of its own, so the FIRST earlier clause
+    // supplies both the shape to walk and the first exclusion.
+    let (driver, mut condition, already_excluded) = match mask {
+        Some(mask) => (
+            mask,
+            fortran_expr_is_true(Expression::ident(item_name)),
+            0,
+        ),
+        None => (
+            preceding.first()?.clone(),
+            not_true(Expression::ident(item_name)),
+            1,
+        ),
+    };
+
+    for earlier in preceding.iter().skip(already_excluded) {
+        condition = Expression::new(ExprKind::Binary {
+            op: BinOp::And,
+            left: Box::new(condition),
+            right: Box::new(not_true(Expression::new(ExprKind::Index {
+                object: Box::new(earlier.clone()),
+                index: Box::new(Expression::ident(index_name)),
+                null_safe: false,
+            }))),
+        });
+    }
+
+    Some(build_fortran_array_map(
+        driver,
+        condition,
+        true,
+        item_name,
+        index_name,
+    ))
+}
+
+/// `lhs = rhs` under `mask` is `lhs = merge(rhs, lhs, mask)`.
+fn fortran_mask_assignment(stmt: Statement, mask: &Option<Expression>) -> Statement {
+    let Some(mask) = mask else {
+        return stmt;
+    };
+    let StmtKind::Assign {
+        targets,
+        value,
+        by_ref,
+    } = stmt.kind
+    else {
+        return stmt;
+    };
+    let Some(target) = targets.first().cloned() else {
+        return Statement::new(StmtKind::Assign {
+            targets,
+            value,
+            by_ref,
+        });
+    };
+    // Built directly rather than as a `merge(...)` CALL: the intrinsic fold
+    // runs while walking a call expression, and a node synthesized here never
+    // passes through it — the call would reach the runtime as a function that
+    // does not exist.
+    let merged = fortran_merge_node(value, target, mask.clone());
+    Statement::new(StmtKind::Assign {
+        targets,
+        value: merged,
+        by_ref,
+    })
 }
 
 fn walk_if(pair: Pair<Rule>) -> Result<Statement, String> {
@@ -1050,7 +2058,10 @@ fn walk_if(pair: Pair<Rule>) -> Result<Statement, String> {
                 }
                 else_body = Some(eb);
             }
-            // Single-line if body (e.g., print_statement, assignment_statement)
+            // Single-line if body. The list must cover every alternative of
+            // the grammar's `single_statement`, because anything missing is
+            // dropped in silence — `if (x == 0) goto 10` ran the statement it
+            // was meant to jump over.
             Rule::print_statement
             | Rule::write_statement
             | Rule::call_statement
@@ -1059,6 +2070,12 @@ fn walk_if(pair: Pair<Rule>) -> Result<Statement, String> {
             | Rule::cycle_statement
             | Rule::exit_statement
             | Rule::stop_statement
+            | Rule::error_stop_statement
+            | Rule::allocate_statement
+            | Rule::deallocate_statement
+            | Rule::goto_statement
+            | Rule::continue_statement
+            | Rule::sync_statement
             | Rule::expression_statement => {
                 if let Some(st) = walk_stmt(p)? {
                     then_body.push(st);
@@ -1150,6 +2167,17 @@ fn walk_do(pair: Pair<Rule>) -> Result<Statement, String> {
         by_ref: false,
     })));
     let sv = step_expr.unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Int(1))));
+    // Fortran FREEZES the trip count at loop entry: `do i = 1, bound` with the
+    // body assigning `bound = 10` still runs five times. The bound was left as
+    // a live expression in the condition, so mutating it EXTENDED the loop —
+    // `do_bound_expression_freeze` summed 1..10 instead of 1..5.
+    //
+    // The limit and the step are therefore evaluated ONCE, into locals named
+    // after the loop variable so nested loops never share one. A literal cannot
+    // change under anyone, so it stays inline and the common loop is untouched.
+    let mut hoisted = Vec::new();
+    let end_e = fortran_hoist_loop_bound(end_e, &format!("__fortran_do_limit_{var}"), &mut hoisted);
+    let sv = fortran_hoist_loop_bound(sv, &format!("__fortran_do_step_{var}"), &mut hoisted);
     // A NEGATIVE step counts DOWN: `do i = 10, 1, -1` runs ten times, not zero.
     // The condition was hard-wired to `i <= end`, so every countdown loop was
     // skipped entirely.
@@ -1188,7 +2216,7 @@ fn walk_do(pair: Pair<Rule>) -> Result<Statement, String> {
             right: Box::new(sv),
         })),
     }));
-    Ok(label_fortran_loop(
+    let loop_stmt = label_fortran_loop(
         label,
         Statement::new(StmtKind::For {
             init,
@@ -1196,7 +2224,32 @@ fn walk_do(pair: Pair<Rule>) -> Result<Statement, String> {
             update,
             body,
         }),
-    ))
+    );
+    if hoisted.is_empty() {
+        return Ok(loop_stmt);
+    }
+    hoisted.push(loop_stmt);
+    Ok(Statement::new(StmtKind::Block(hoisted)))
+}
+
+/// Evaluate a DO bound ONCE, unless it is a literal that nothing can change.
+///
+/// Returns the expression to use in the loop, pushing the evaluation onto
+/// `hoisted` when one is needed.
+fn fortran_hoist_loop_bound(
+    bound: Expression,
+    name: &str,
+    hoisted: &mut Vec<Statement>,
+) -> Expression {
+    if matches!(bound.kind, ExprKind::Lit(_)) {
+        return bound;
+    }
+    hoisted.push(Statement::new(StmtKind::Assign {
+        targets: vec![Expression::ident(name)],
+        value: bound,
+        by_ref: false,
+    }));
+    Expression::ident(name)
 }
 
 /// Whether a DO step counts DOWN, when that is decidable at compile time.
@@ -1245,6 +2298,2192 @@ fn label_fortran_loop(label: Option<String>, loop_stmt: Statement) -> Statement 
         }),
         None => loop_stmt,
     }
+}
+
+/// Fortran 2008 BLOCK — a nested scope with its own declarations whose
+/// executable statements run in place.
+///
+/// The grammar has had the construct all along, but `walk_stmt_inner` had no
+/// arm for it, so it fell to `_ => Ok(None)` and the ENTIRE body between
+/// `block` and `end block` was dropped without a diagnostic. That is why the
+/// suite reported "0 lines, wanted N" rather than a wrong answer: the
+/// statements never existed.
+///
+/// A named block is what `exit <name>` targets, exactly like a named loop, so
+/// it wraps in the same `Labeled` node.
+fn walk_block_construct(pair: Pair<Rule>) -> Result<Statement, String> {
+    let mut label = None;
+    let mut body = Vec::new();
+    for p in pair.into_inner().filter(|p| meaningful(p)) {
+        match p.as_rule() {
+            Rule::loop_label if label.is_none() => label = Some(p.as_str().to_string()),
+            Rule::statement_line => {
+                for s in p.into_inner().filter(|q| meaningful(q)) {
+                    if let Some(st) = walk_stmt(s)? {
+                        body.push(st);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(label_fortran_loop(
+        label,
+        Statement::new(StmtKind::Block(body)),
+    ))
+}
+
+/// The call a `goto` becomes until the dispatch pass rewrites it.
+const FORTRAN_GOTO_MARKER: &str = "__fortran_goto";
+/// Prefix of the `Labeled` wrapper a numbered statement gets.
+const FORTRAN_LABEL_PREFIX: &str = "__fortran_label_";
+/// Name of the loop the dispatch pass jumps back into.
+const FORTRAN_DISPATCH_LABEL: &str = "__fortran_dispatch";
+/// The variable holding which segment runs next.
+const FORTRAN_DISPATCH_STATE: &str = "__fortran_state";
+
+/// One `statement_line`, keeping the leading numeric label.
+///
+/// The label is a GOTO target, so it cannot be dropped the way the previous
+/// per-statement walk dropped it. An unlabelled line still flattens to its
+/// statements — wrapping every line would put a `Block` scope around
+/// declarations that the surrounding passes need to see.
+fn walk_statement_line_stmts(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
+    let mut label = None;
+    let mut stmts = Vec::new();
+    for p in pair.into_inner().filter(|p| meaningful(p)) {
+        if p.as_rule() == Rule::statement_label {
+            if label.is_none() {
+                label = Some(p.as_str().to_string());
+            }
+            continue;
+        }
+        if let Some(st) = walk_stmt(p)? {
+            stmts.push(st);
+        }
+    }
+    let Some(label) = label else {
+        return Ok(stmts);
+    };
+    let body = match stmts.len() {
+        // `10 format(...)` and friends walk to nothing, but the LABEL is still
+        // a jump target and the line still has to exist for it to land on.
+        0 => Statement::new(StmtKind::Block(Vec::new())),
+        1 => stmts.remove(0),
+        _ => Statement::new(StmtKind::Block(stmts)),
+    };
+    Ok(vec![Statement::new(StmtKind::Labeled {
+        label: format!("{FORTRAN_LABEL_PREFIX}{label}"),
+        body: Box::new(body),
+    })])
+}
+
+fn fortran_first_statement_label(pair: &Pair<Rule>) -> Option<String> {
+    pair.clone()
+        .into_inner()
+        .find(|p| p.as_rule() == Rule::statement_label)
+        .map(|p| p.as_str().to_string())
+}
+
+fn fortran_goto_marker_statement(label: String) -> Statement {
+    Statement::new(StmtKind::Expr(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident(FORTRAN_GOTO_MARKER)),
+        args: vec![Argument::positional(Expression::string(&label))],
+        optional: false,
+    })))
+}
+
+/// `GOTO (10, 20, 30) i` — the index selects the label, 1-based, and an index
+/// outside the list falls through to the next statement.
+fn walk_computed_goto(pair: Pair<Rule>) -> Result<Statement, String> {
+    let mut labels = Vec::new();
+    let mut selector = None;
+    for p in pair.into_inner().filter(|p| meaningful(p)) {
+        match p.as_rule() {
+            Rule::statement_label => labels.push(p.as_str().to_string()),
+            Rule::expression if selector.is_none() => selector = Some(walk_expr(p)?),
+            _ => {}
+        }
+    }
+    let selector = selector.ok_or("missing computed goto selector")?;
+    let mut elifs = Vec::new();
+    let mut labels = labels.into_iter().enumerate();
+    let (_, first) = labels.next().ok_or("empty computed goto label list")?;
+    for (index, label) in labels {
+        elifs.push((
+            fortran_index_equals(&selector, index as i64 + 1),
+            vec![fortran_goto_marker_statement(label)],
+        ));
+    }
+    Ok(Statement::new(StmtKind::If {
+        cond: fortran_index_equals(&selector, 1),
+        then_body: vec![fortran_goto_marker_statement(first)],
+        elifs,
+        else_body: None,
+    }))
+}
+
+fn fortran_index_equals(selector: &Expression, value: i64) -> Expression {
+    Expression::new(ExprKind::Binary {
+        op: BinOp::Eq,
+        left: Box::new(selector.clone()),
+        right: Box::new(Expression::int(value)),
+    })
+}
+
+/// Arithmetic IF — `if (e) lneg, lzero, lpos`, branching on the SIGN of `e`.
+fn walk_arithmetic_if(pair: Pair<Rule>) -> Result<Statement, String> {
+    let mut cond = None;
+    let mut labels = Vec::new();
+    for p in pair.into_inner().filter(|p| meaningful(p)) {
+        match p.as_rule() {
+            Rule::statement_label => labels.push(p.as_str().to_string()),
+            _ if is_expr_rule(p.as_rule()) && cond.is_none() => cond = Some(walk_expr(p)?),
+            _ => {}
+        }
+    }
+    let cond = cond.ok_or("missing arithmetic if expression")?;
+    if labels.len() != 3 {
+        return Err("arithmetic if needs three labels".to_string());
+    }
+    let compare = |op: BinOp| {
+        Expression::new(ExprKind::Binary {
+            op,
+            left: Box::new(cond.clone()),
+            right: Box::new(Expression::int(0)),
+        })
+    };
+    Ok(Statement::new(StmtKind::If {
+        cond: compare(BinOp::Lt),
+        then_body: vec![fortran_goto_marker_statement(labels[0].clone())],
+        elifs: vec![(
+            compare(BinOp::Eq),
+            vec![fortran_goto_marker_statement(labels[1].clone())],
+        )],
+        else_body: Some(vec![fortran_goto_marker_statement(labels[2].clone())]),
+    }))
+}
+
+/// Turn a body that uses GOTO into a dispatch loop.
+///
+/// GOTO and its numbered targets were parsed and then dropped — `goto_basic`
+/// printed the value the jump was supposed to skip. Both halves are markers by
+/// the time this runs: a target is a `Labeled` wrapper named
+/// `__fortran_label_<n>`, a jump is a call to `__fortran_goto("<n>")`.
+///
+/// The body splits at each targeted label into segments, and the segments
+/// become the arms of
+///
+/// ```text
+/// __fortran_dispatch: while (true) { if (state == 0) { … } else if … else break }
+/// ```
+///
+/// so a jump is `state = <segment>; continue __fortran_dispatch`. One flat loop
+/// is enough for the whole corpus: targets sit at procedure top level, while
+/// jumps come from anywhere, and a LABELLED continue reaches the loop from
+/// inside a nested `do` or `if` just as well.
+fn lower_fortran_goto_dispatch(body: &mut Vec<Statement>) -> Result<(), String> {
+    let mut next_id = 0;
+    for statement in body.iter_mut() {
+        lower_fortran_goto_dispatch_in_statement(statement)?;
+    }
+    restructure_fortran_goto_body(body, &mut next_id);
+    // Anything left names a label that does not exist in its procedure. gfortran
+    // rejects that at compile time, and leaving the marker in would surface as
+    // "undefined is not callable" at run time instead.
+    let mut unresolved = HashSet::new();
+    for statement in body.iter() {
+        collect_fortran_goto_targets(statement, &mut unresolved);
+    }
+    if let Some(label) = unresolved.iter().min() {
+        return Err(format!("goto references undefined statement label {label}"));
+    }
+    Ok(())
+}
+
+fn lower_fortran_goto_dispatch_in_statement(statement: &mut Statement) -> Result<(), String> {
+    match &mut statement.kind {
+        StmtKind::FunctionDecl { body, .. } => lower_fortran_goto_dispatch(body)?,
+        StmtKind::ModuleDecl { members, .. }
+        | StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. } => {
+            for member in members.iter_mut() {
+                if let ClassMember::Method(method) = member {
+                    lower_fortran_goto_dispatch_in_statement(method)?;
+                }
+            }
+        }
+        StmtKind::Block(stmts) => {
+            for stmt in stmts.iter_mut() {
+                lower_fortran_goto_dispatch_in_statement(stmt)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Restructure one statement list, after every list nested inside it.
+///
+/// Bottom-up, because a label can sit inside a loop — `100 continue` closing a
+/// `do` body is the F77 spelling of `cycle`. The inner list handles the labels
+/// it owns; a jump aimed further out is left as a marker and the enclosing list
+/// picks it up, reaching back through the inner dispatch with a LABELLED
+/// continue.
+fn restructure_fortran_goto_body(body: &mut Vec<Statement>, next_id: &mut usize) {
+    for statement in body.iter_mut() {
+        restructure_fortran_goto_in_statement(statement, next_id);
+    }
+    let dispatch_label = format!("{FORTRAN_DISPATCH_LABEL}{}", *next_id);
+    let dispatch_state = format!("{FORTRAN_DISPATCH_STATE}{}", *next_id);
+    let mut targets = HashSet::new();
+    for statement in body.iter() {
+        collect_fortran_goto_targets(statement, &mut targets);
+    }
+    let boundaries: Vec<(usize, String)> = body
+        .iter()
+        .enumerate()
+        .filter_map(|(index, statement)| {
+            let StmtKind::Labeled { label, .. } = &statement.kind else {
+                return None;
+            };
+            let number = label.strip_prefix(FORTRAN_LABEL_PREFIX)?;
+            targets
+                .contains(number)
+                .then(|| (index, number.to_string()))
+        })
+        .collect();
+    if boundaries.is_empty() {
+        unwrap_fortran_label_markers(body);
+        return;
+    }
+    *next_id += 1;
+
+    let mut segment_of = HashMap::new();
+    for (segment, (_, number)) in boundaries.iter().enumerate() {
+        segment_of.insert(number.clone(), segment + 1);
+    }
+
+    let mut segments: Vec<Vec<Statement>> = Vec::with_capacity(boundaries.len() + 1);
+    let mut rest = std::mem::take(body);
+    for (index, _) in boundaries.iter().rev() {
+        segments.push(rest.split_off(*index));
+    }
+    segments.push(rest);
+    segments.reverse();
+
+    // Declarations have to outlive the arm they were written in: every one of
+    // them sits in segment 0, and every later segment refers to them. An arm is
+    // a scope, so they are hoisted ahead of the loop and only their
+    // initialisers stay behind, in place, as assignments.
+    let mut prelude = Vec::new();
+    for segment in segments.iter_mut() {
+        unwrap_fortran_label_markers(segment);
+        hoist_fortran_declarations(segment, &mut prelude);
+    }
+    for (segment, statements) in segments.iter_mut().enumerate() {
+        for statement in statements.iter_mut() {
+            rewrite_fortran_goto_markers(statement, &segment_of, &dispatch_label, &dispatch_state);
+        }
+        statements.push(fortran_dispatch_state_assignment(&dispatch_state, segment + 1));
+        statements.push(Statement::new(StmtKind::Continue(ContinueTarget::Label(
+            dispatch_label.clone(),
+        ))));
+    }
+
+    let mut arms = segments.into_iter().enumerate();
+    let (_, first) = arms.next().expect("segments is never empty");
+    let dispatch = Statement::new(StmtKind::If {
+        cond: fortran_dispatch_state_equals(&dispatch_state, 0),
+        then_body: first,
+        elifs: arms
+            .map(|(segment, statements)| {
+                (
+                    fortran_dispatch_state_equals(&dispatch_state, segment as i64),
+                    statements,
+                )
+            })
+            .collect(),
+        else_body: Some(vec![Statement::new(StmtKind::Break(BreakTarget::Label(
+            dispatch_label.clone(),
+        )))]),
+    });
+
+    *body = prelude;
+    body.push(fortran_dispatch_state_assignment(&dispatch_state, 0));
+    body.push(Statement::new(StmtKind::Labeled {
+        label: dispatch_label,
+        body: Box::new(Statement::new(StmtKind::While {
+            cond: Expression::new(ExprKind::Lit(Literal::Bool(true))),
+            body: vec![dispatch],
+            else_body: None,
+        })),
+    }));
+}
+
+/// Each nested list gets its OWN dispatch loop, so the loop name and the state
+/// variable are numbered — an inner `continue` must not reach the outer loop.
+fn restructure_fortran_goto_in_statement(statement: &mut Statement, next_id: &mut usize) {
+    if let StmtKind::Labeled { body, .. } = &mut statement.kind {
+        restructure_fortran_goto_in_statement(body, next_id);
+        return;
+    }
+    for_each_fortran_nested_vec_mut(&mut statement.kind, &mut |stmts| {
+        restructure_fortran_goto_body(stmts, next_id)
+    });
+}
+
+fn fortran_dispatch_state_equals(state: &str, segment: i64) -> Expression {
+    Expression::new(ExprKind::Binary {
+        op: BinOp::Eq,
+        left: Box::new(Expression::ident(state)),
+        right: Box::new(Expression::int(segment)),
+    })
+}
+
+fn fortran_dispatch_state_assignment(state: &str, segment: usize) -> Statement {
+    Statement::new(StmtKind::Assign {
+        targets: vec![Expression::ident(state)],
+        value: Expression::int(segment as i64),
+        by_ref: false,
+    })
+}
+
+/// Move declarations ahead of the dispatch loop, leaving each initialiser
+/// behind as an assignment so it still runs where it was written.
+fn hoist_fortran_declarations(segment: &mut Vec<Statement>, prelude: &mut Vec<Statement>) {
+    let mut kept = Vec::with_capacity(segment.len());
+    for statement in std::mem::take(segment) {
+        match statement.kind {
+            StmtKind::VarDecl { declarations, kind } => {
+                let mut hoisted = Vec::with_capacity(declarations.len());
+                for mut declaration in declarations {
+                    if let Some(init) = declaration.init.take() {
+                        if let BindingPattern::Ident(name) = &declaration.pattern {
+                            kept.push(Statement::new(StmtKind::Assign {
+                                targets: vec![Expression::ident(name)],
+                                value: init,
+                                by_ref: false,
+                            }));
+                        } else {
+                            declaration.init = Some(init);
+                        }
+                    }
+                    hoisted.push(declaration);
+                }
+                prelude.push(Statement::new(StmtKind::VarDecl {
+                    declarations: hoisted,
+                    kind,
+                }));
+            }
+            StmtKind::FunctionDecl { .. }
+            | StmtKind::ClassDecl { .. }
+            | StmtKind::StructDecl { .. }
+            | StmtKind::ModuleDecl { .. }
+            | StmtKind::InterfaceDecl { .. } => prelude.push(Statement::new(statement.kind)),
+            _ => kept.push(statement),
+        }
+    }
+    *segment = kept;
+}
+
+fn collect_fortran_goto_targets(statement: &Statement, out: &mut HashSet<String>) {
+    if let StmtKind::Expr(expr) = &statement.kind {
+        if let Some(label) = fortran_goto_marker_label(expr) {
+            out.insert(label);
+        }
+    }
+    for_each_fortran_nested_body(&statement.kind, &mut |stmts| {
+        for child in stmts {
+            collect_fortran_goto_targets(child, out);
+        }
+    });
+}
+
+/// Every nested statement list a jump can be written inside.
+///
+/// Procedure and class bodies are deliberately absent: a GOTO cannot leave the
+/// procedure it is written in, so their labels belong to their own dispatch.
+fn for_each_fortran_nested_body(kind: &StmtKind, f: &mut dyn FnMut(&[Statement])) {
+    match kind {
+        StmtKind::Block(stmts)
+        | StmtKind::While { body: stmts, .. }
+        | StmtKind::DoWhile { body: stmts, .. }
+        | StmtKind::For { body: stmts, .. }
+        | StmtKind::ForIn { body: stmts, .. }
+        | StmtKind::With { body: stmts, .. }
+        | StmtKind::Using { body: stmts, .. }
+        | StmtKind::Lock { body: stmts, .. } => f(stmts),
+        StmtKind::Labeled { body, .. } => f(std::slice::from_ref(body)),
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
+            f(then_body);
+            for (_, elif_body) in elifs {
+                f(elif_body);
+            }
+            if let Some(else_body) = else_body {
+                f(else_body);
+            }
+        }
+        StmtKind::Switch { cases, default, .. } => {
+            for case in cases {
+                f(&case.body);
+            }
+            if let Some(default) = default {
+                f(default);
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            f(body);
+            for catch in catches {
+                f(&catch.body);
+            }
+            if let Some(else_body) = else_body {
+                f(else_body);
+            }
+            if let Some(finally) = finally {
+                f(finally);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Same shape as [`for_each_fortran_nested_body_mut`], but handing over the
+/// whole `Vec` so a pass can REPLACE the list. `Labeled` is absent because its
+/// body is a single statement, not a list — callers recurse into it directly.
+fn for_each_fortran_nested_vec_mut(kind: &mut StmtKind, f: &mut dyn FnMut(&mut Vec<Statement>)) {
+    match kind {
+        StmtKind::Block(stmts)
+        | StmtKind::While { body: stmts, .. }
+        | StmtKind::DoWhile { body: stmts, .. }
+        | StmtKind::For { body: stmts, .. }
+        | StmtKind::ForIn { body: stmts, .. }
+        | StmtKind::With { body: stmts, .. }
+        | StmtKind::Using { body: stmts, .. }
+        | StmtKind::Lock { body: stmts, .. } => f(stmts),
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
+            f(then_body);
+            for (_, elif_body) in elifs {
+                f(elif_body);
+            }
+            if let Some(else_body) = else_body {
+                f(else_body);
+            }
+        }
+        StmtKind::Switch { cases, default, .. } => {
+            for case in cases {
+                f(&mut case.body);
+            }
+            if let Some(default) = default {
+                f(default);
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            f(body);
+            for catch in catches {
+                f(&mut catch.body);
+            }
+            if let Some(else_body) = else_body {
+                f(else_body);
+            }
+            if let Some(finally) = finally {
+                f(finally);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn for_each_fortran_nested_body_mut(kind: &mut StmtKind, f: &mut dyn FnMut(&mut [Statement])) {
+    match kind {
+        StmtKind::Block(stmts)
+        | StmtKind::While { body: stmts, .. }
+        | StmtKind::DoWhile { body: stmts, .. }
+        | StmtKind::For { body: stmts, .. }
+        | StmtKind::ForIn { body: stmts, .. }
+        | StmtKind::With { body: stmts, .. }
+        | StmtKind::Using { body: stmts, .. }
+        | StmtKind::Lock { body: stmts, .. } => f(stmts),
+        StmtKind::Labeled { body, .. } => f(std::slice::from_mut(body.as_mut())),
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
+            f(then_body);
+            for (_, elif_body) in elifs {
+                f(elif_body);
+            }
+            if let Some(else_body) = else_body {
+                f(else_body);
+            }
+        }
+        StmtKind::Switch { cases, default, .. } => {
+            for case in cases {
+                f(&mut case.body);
+            }
+            if let Some(default) = default {
+                f(default);
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            f(body);
+            for catch in catches {
+                f(&mut catch.body);
+            }
+            if let Some(else_body) = else_body {
+                f(else_body);
+            }
+            if let Some(finally) = finally {
+                f(finally);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn fortran_goto_marker_label(expr: &Expression) -> Option<String> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    let ExprKind::Ident(name) = &callee.kind else {
+        return None;
+    };
+    if name != FORTRAN_GOTO_MARKER {
+        return None;
+    }
+    match &args.first()?.value.kind {
+        ExprKind::Lit(Literal::Str(label)) => Some(label.clone()),
+        _ => None,
+    }
+}
+
+/// Replace every `__fortran_goto("n")` with the jump into the dispatch loop.
+fn rewrite_fortran_goto_markers(
+    statement: &mut Statement,
+    segment_of: &HashMap<String, usize>,
+    dispatch_label: &str,
+    dispatch_state: &str,
+) {
+    if let StmtKind::Expr(expr) = &statement.kind {
+        if let Some(label) = fortran_goto_marker_label(expr) {
+            if let Some(segment) = segment_of.get(&label) {
+                *statement = Statement::new(StmtKind::Block(vec![
+                    fortran_dispatch_state_assignment(dispatch_state, *segment),
+                    Statement::new(StmtKind::Continue(ContinueTarget::Label(
+                        dispatch_label.to_string(),
+                    ))),
+                ]));
+                return;
+            }
+        }
+    }
+    for_each_fortran_nested_body_mut(&mut statement.kind, &mut |stmts| {
+        for child in stmts {
+            rewrite_fortran_goto_markers(child, segment_of, dispatch_label, dispatch_state);
+        }
+    });
+}
+
+/// Drop the `Labeled` wrapper a numbered line carries once nothing jumps to it.
+fn unwrap_fortran_label_markers(body: &mut [Statement]) {
+    for statement in body.iter_mut() {
+        if let StmtKind::Labeled { label, body: inner } = &statement.kind {
+            // A NAMED construct (`outer: do`) is also `Labeled` and must keep
+            // its wrapper — `exit outer` resolves against it.
+            if label.starts_with(FORTRAN_LABEL_PREFIX) {
+                *statement = (**inner).clone();
+            }
+        }
+        for_each_fortran_nested_body_mut(&mut statement.kind, &mut unwrap_fortran_label_markers);
+    }
+}
+
+/// The `iso_c_binding` named constants, as values.
+///
+/// `c_null_char` terminates a C string, and the terminator has no counterpart
+/// where strings carry their own length — so it contributes NOTHING, and
+/// `c_char_"name"//c_null_char` is just `"name"`. The two null pointers are
+/// null.
+fn fortran_iso_c_binding_constant(name: &str) -> Option<Expression> {
+    match name.to_ascii_lowercase().as_str() {
+        "c_null_char" => Some(Expression::string("")),
+        "c_null_ptr" | "c_null_funptr" => Some(Expression::new(ExprKind::Lit(Literal::Null))),
+        _ => None,
+    }
+}
+
+/// Pass `iso_c_binding` handles to a `bind(c)` procedure BY REFERENCE.
+///
+/// A Fortran dummy without `value` is passed by reference, and a C out-parameter
+/// such as `sqlite3_open`'s `ppDb` is written THROUGH that reference. The C ABI
+/// spells a reference as the shared carray pointer
+/// (`primitives::pointers::make_carray_ptr` — `{__ref_kind, __base, __idx}`),
+/// which is exactly what `&db` produces in C and what the platform adapter
+/// reads back. Passing the handle's VALUE instead left the callee writing into
+/// a null, so every one of these programs trapped on the first call.
+///
+/// Only declared handles travel this way. Everything else — the filename, the
+/// SQL text — is an input the callee reads directly, so wrapping it would break
+/// the argument it is supposed to deliver.
+fn lower_fortran_c_binding_handles(body: &mut Vec<Statement>) {
+    let mut handles = HashSet::new();
+    collect_fortran_c_handle_names(body, &mut handles);
+    if handles.is_empty() {
+        return;
+    }
+    rewrite_fortran_c_handle_calls(body, &handles);
+}
+
+fn collect_fortran_c_handle_names(body: &[Statement], out: &mut HashSet<String>) {
+    for statement in body {
+        if let StmtKind::VarDecl { declarations, .. } = &statement.kind {
+            for declaration in declarations {
+                let BindingPattern::Ident(name) = &declaration.pattern else {
+                    continue;
+                };
+                if declaration
+                    .type_hint
+                    .as_deref()
+                    .is_some_and(is_fortran_opaque_c_handle)
+                {
+                    out.insert(name.to_ascii_lowercase());
+                }
+            }
+        }
+        for_each_fortran_nested_body(&statement.kind, &mut |stmts| {
+            collect_fortran_c_handle_names(stmts, out)
+        });
+    }
+}
+
+fn rewrite_fortran_c_handle_calls(body: &mut Vec<Statement>, handles: &HashSet<String>) {
+    let mut out = Vec::with_capacity(body.len());
+    for mut statement in std::mem::take(body) {
+        for_each_fortran_nested_vec_mut(&mut statement.kind, &mut |stmts| {
+            rewrite_fortran_c_handle_calls(stmts, handles)
+        });
+        let call = match &mut statement.kind {
+            StmtKind::Assign { value, .. } => value,
+            StmtKind::Expr(expr) => expr,
+            _ => {
+                out.push(statement);
+                continue;
+            }
+        };
+        let ExprKind::Call { args, .. } = &mut call.kind else {
+            out.push(statement);
+            continue;
+        };
+        // The cell is a one-element array so the callee's write lands somewhere
+        // the caller can read back; the write-back after the call is what makes
+        // the reference observable in Fortran.
+        let mut cells = Vec::new();
+        for arg in args.iter_mut() {
+            let ExprKind::Ident(name) = &arg.value.kind else {
+                continue;
+            };
+            let name = name.clone();
+            if !handles.contains(&name.to_ascii_lowercase()) {
+                continue;
+            }
+            let cell = format!("__fortran_cbind_{}", name.to_ascii_lowercase());
+            arg.value = vybe_compiler::primitives::pointers::make_carray_ptr(
+                Expression::ident(&cell),
+                Expression::int(0),
+            );
+            cells.push((cell, name.clone()));
+        }
+        if cells.is_empty() {
+            out.push(statement);
+            continue;
+        }
+        let mut block = Vec::with_capacity(cells.len() * 2 + 1);
+        for (cell, name) in &cells {
+            block.push(fortran_data_local(
+                cell,
+                fortran_array_expr(vec![Expression::ident(name)]),
+            ));
+        }
+        block.push(statement);
+        for (cell, name) in &cells {
+            block.push(Statement::new(StmtKind::Assign {
+                targets: vec![Expression::ident(name)],
+                value: Expression::new(ExprKind::Index {
+                    object: Box::new(Expression::ident(cell)),
+                    index: Box::new(Expression::int(0)),
+                    null_safe: false,
+                }),
+                by_ref: false,
+            }));
+        }
+        out.push(Statement::new(StmtKind::Block(block)));
+    }
+    *body = out;
+}
+
+/// `read(buf, …) n` where `buf` is a CHARACTER variable — an internal file
+/// that no internal WRITE ever filled.
+///
+/// Internal I/O works today through records: `write(buf, …)` stores one under
+/// the buffer's handle and `read(buf, …)` reads it back. A buffer that was
+/// merely ASSIGNED — `character(len=6) :: b = '6'` — has no record, so the read
+/// found nothing and every target came back undefined.
+///
+/// ⛔ Only buffers never written are rewritten. Replacing the record path
+/// wholesale scored −30: the write-then-read pairs that already worked lost the
+/// mechanism they depend on.
+///
+/// The text is the buffer's own value, so the values are its blank/comma
+/// separated tokens, converted by each target's declared type.
+fn lower_fortran_internal_reads(body: &mut Vec<Statement>) {
+    let mut declared = HashMap::new();
+    collect_fortran_declared_types(body, &mut declared);
+    let mut written = HashSet::new();
+    collect_fortran_written_buffers(body, &mut written);
+    declared.retain(|name, _| !written.contains(name));
+    if declared.is_empty() {
+        return;
+    }
+    rewrite_fortran_internal_reads(body, &declared);
+}
+
+fn collect_fortran_declared_types(body: &[Statement], out: &mut HashMap<String, String>) {
+    for statement in body {
+        if let StmtKind::VarDecl { declarations, .. } = &statement.kind {
+            for declaration in declarations {
+                let BindingPattern::Ident(name) = &declaration.pattern else {
+                    continue;
+                };
+                let Some(hint) = declaration.type_hint.as_deref() else {
+                    continue;
+                };
+                if declaration.array_bounds.is_none() {
+                    out.insert(name.to_ascii_lowercase(), hint.to_string());
+                }
+            }
+        }
+        for_each_fortran_nested_body(&statement.kind, &mut |stmts| {
+            collect_fortran_declared_types(stmts, out)
+        });
+    }
+}
+
+/// Buffers an internal WRITE fills — those keep the record path.
+fn collect_fortran_written_buffers(body: &[Statement], out: &mut HashSet<String>) {
+    for statement in body {
+        let target = match &statement.kind {
+            StmtKind::PrintFile { file_number, .. } | StmtKind::WriteFile { file_number, .. } => {
+                Some(file_number)
+            }
+            _ => None,
+        };
+        if let Some(ExprKind::Ident(name)) = target.map(|expr| &expr.kind) {
+            out.insert(name.to_ascii_lowercase());
+        }
+        for_each_fortran_nested_body(&statement.kind, &mut |stmts| {
+            collect_fortran_written_buffers(stmts, out)
+        });
+    }
+}
+
+fn rewrite_fortran_internal_reads(body: &mut Vec<Statement>, declared: &HashMap<String, String>) {
+    for statement in body.iter_mut() {
+        // The marker is handled BEFORE descending. Recursing first let the
+        // generic list-directed arm rewrite the very `InputFile` the marker
+        // describes, and the format was then applied to nothing.
+        // A marked read: the format rides in front of the `InputFile`. Matched
+        // by SCANNING the block rather than by expecting an exact two-statement
+        // shape — any pass that inserts between them would break a positional
+        // match, and the read would then silently take the list-directed path.
+        // The marker is consumed in every case, so none can survive to run.
+        if let StmtKind::Block(stmts) = &mut statement.kind {
+            if let Some(format_spec) = fortran_take_read_format_marker(stmts) {
+                for inner in stmts.iter_mut() {
+                    let Some((buffer, variables)) =
+                        fortran_internal_read_target(inner, declared)
+                    else {
+                        continue;
+                    };
+                    *inner = build_fortran_formatted_internal_read(
+                        buffer,
+                        variables,
+                        &format_spec,
+                        declared,
+                    );
+                }
+                continue;
+            }
+        }
+        for_each_fortran_nested_vec_mut(&mut statement.kind, &mut |stmts| {
+            rewrite_fortran_internal_reads(stmts, declared)
+        });
+        let StmtKind::InputFile {
+            file_number,
+            variables,
+        } = &statement.kind
+        else {
+            continue;
+        };
+        let ExprKind::Ident(name) = &file_number.kind else {
+            continue;
+        };
+        if !declared
+            .get(&name.to_ascii_lowercase())
+            .is_some_and(|hint| is_fortran_string_type_hint(hint))
+            || variables.is_empty()
+        {
+            continue;
+        }
+        *statement = build_fortran_internal_read(file_number.clone(), variables.clone(), declared);
+    }
+}
+
+fn build_fortran_internal_read(
+    buffer: Expression,
+    variables: Vec<Expression>,
+    declared: &HashMap<String, String>,
+) -> Statement {
+    let tokens = "__fortran_iread_tokens";
+    let mut body = vec![fortran_data_local(
+        tokens,
+        fortran_internal_read_tokens(buffer),
+    )];
+    for (index, target) in variables.into_iter().enumerate() {
+        let token = Expression::new(ExprKind::Index {
+            object: Box::new(Expression::ident(tokens)),
+            index: Box::new(Expression::int(index as i64)),
+            null_safe: false,
+        });
+        let hint = match &target.kind {
+            ExprKind::Ident(name) => declared.get(&name.to_ascii_lowercase()).cloned(),
+            _ => None,
+        };
+        body.push(Statement::new(StmtKind::Assign {
+            targets: vec![target],
+            value: fortran_internal_read_value(hint.as_deref(), token),
+            by_ref: false,
+        }));
+    }
+    Statement::new(StmtKind::Block(body))
+}
+
+/// Remove the format marker from a block and return the format it carried.
+fn fortran_take_read_format_marker(stmts: &mut Vec<Statement>) -> Option<String> {
+    let mut found = None;
+    stmts.retain(|statement| {
+        let StmtKind::Expr(expr) = &statement.kind else {
+            return true;
+        };
+        let ExprKind::Call { callee, args, .. } = &expr.kind else {
+            return true;
+        };
+        let ExprKind::Ident(name) = &callee.kind else {
+            return true;
+        };
+        if name != FORTRAN_READ_FORMAT_MARKER {
+            return true;
+        }
+        if let Some(ExprKind::Lit(Literal::Str(format_spec))) =
+            args.first().map(|arg| &arg.value.kind)
+        {
+            found = Some(format_spec.clone());
+        }
+        false
+    });
+    found
+}
+
+/// The buffer and targets of a read whose unit is an internal file.
+fn fortran_internal_read_target(
+    read: &Statement,
+    declared: &HashMap<String, String>,
+) -> Option<(Expression, Vec<Expression>)> {
+    let StmtKind::InputFile {
+        file_number,
+        variables,
+    } = &read.kind
+    else {
+        return None;
+    };
+    let ExprKind::Ident(name) = &file_number.kind else {
+        return None;
+    };
+    if variables.is_empty()
+        || !declared
+            .get(&name.to_ascii_lowercase())
+            .is_some_and(|hint| is_fortran_string_type_hint(hint))
+    {
+        return None;
+    }
+    Some((file_number.clone(), variables.clone()))
+}
+
+/// `read(buf, '(I3,1X,I3)') a, b` — a FORMATTED internal read.
+///
+/// The mirror of the write side: the same `parse_fortran_format_chunks` walked
+/// the other way, so repeat counts, `nX` skips and literals cost nothing extra
+/// and the descriptor grammar is understood in ONE place. Each data descriptor
+/// consumes its own width from the buffer at a running position; `A` keeps the
+/// characters, everything else converts.
+///
+/// Falls back to the list-directed token split when the format has no fixed
+/// widths to consume — an `I0`-style descriptor names no field.
+fn build_fortran_formatted_internal_read(
+    buffer: Expression,
+    variables: Vec<Expression>,
+    format_spec: &str,
+    declared: &HashMap<String, String>,
+) -> Statement {
+    let Some(chunks) = parse_fortran_format_chunks(format_spec) else {
+        return build_fortran_internal_read(buffer, variables, declared);
+    };
+    let mut position = 0usize;
+    let mut fields = Vec::new();
+    for chunk in &chunks {
+        match chunk {
+            FortranFormatChunk::Spaces(count) => position += count,
+            FortranFormatChunk::Literal(text) => position += text.chars().count(),
+            FortranFormatChunk::Newline => {}
+            FortranFormatChunk::Data {
+                descriptor,
+                repeat,
+                width,
+                ..
+            } => {
+                let Some(width) = width else {
+                    return build_fortran_internal_read(buffer, variables, declared);
+                };
+                for _ in 0..(*repeat).max(1) {
+                    fields.push((descriptor.clone(), position, *width));
+                    position += width;
+                }
+            }
+        }
+    }
+    if fields.len() < variables.len() {
+        return build_fortran_internal_read(buffer, variables, declared);
+    }
+
+    let mut body = Vec::new();
+    for (target, (descriptor, start, width)) in variables.into_iter().zip(fields) {
+        let field = Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__fortran_substring")),
+            args: vec![
+                Argument::positional(buffer.clone()),
+                Argument::positional(Expression::int(start as i64)),
+                Argument::positional(Expression::int((start + width) as i64)),
+            ],
+            optional: false,
+        });
+        // `A` delivers the characters as written, blanks included; every other
+        // descriptor names a value, and a value never keeps its padding.
+        let value = if descriptor.eq_ignore_ascii_case("a") {
+            field
+        } else {
+            let trimmed = Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("adjustl")),
+                args: vec![Argument::positional(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("trim")),
+                    args: vec![Argument::positional(field)],
+                    optional: false,
+                }))],
+                optional: false,
+            });
+            let hint = match &target.kind {
+                ExprKind::Ident(name) => declared.get(&name.to_ascii_lowercase()).cloned(),
+                _ => None,
+            };
+            fortran_internal_read_value(hint.as_deref(), trimmed)
+        };
+        body.push(Statement::new(StmtKind::Assign {
+            targets: vec![target],
+            value,
+            by_ref: false,
+        }));
+    }
+    Statement::new(StmtKind::Block(body))
+}
+
+/// `buf` → its blank/comma separated tokens, empties dropped.
+///
+/// Commas become blanks first so one split serves both separators, and the
+/// filter is what makes `'8, 9'` two tokens rather than three — a plain split
+/// on `" "` leaves the gap between the comma and the digit as an empty string.
+fn fortran_internal_read_tokens(buffer: Expression) -> Expression {
+    // Spelled with Fortran's own intrinsics and the declared `[array_methods]`
+    // entries, not raw JS member calls: a bare `.trim()` on a value the
+    // compiler has not typed as a string compiles to a struct field read and
+    // an invoke of undefined.
+    let intrinsic = |name: &str, args: Vec<Expression>| {
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident(name)),
+            args: args.into_iter().map(Argument::positional).collect(),
+            optional: false,
+        })
+    };
+    let split = intrinsic(
+        "str_split",
+        vec![
+            intrinsic("trim", vec![buffer]),
+            Expression::string(" "),
+        ],
+    );
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(split),
+            field: "filter".to_string(),
+            null_safe: false,
+        })),
+        args: vec![Argument::positional(Expression::new(ExprKind::Lambda {
+            params: vec![Param {
+                name: "__fortran_iread_token".to_string(),
+                type_hint: None,
+                default: None,
+                pass_by: PassBy::Value,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: false,
+                is_nullable: false,
+            }],
+            body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Binary {
+                op: BinOp::StrictNotEq,
+                left: Box::new(Expression::ident("__fortran_iread_token")),
+                right: Box::new(Expression::string("")),
+            }))),
+            is_async: false,
+            captures: Vec::new(),
+        }))],
+        optional: false,
+    })
+}
+
+/// One token, converted for the target's DECLARED type. Static, because the
+/// target has no value yet to inspect.
+fn fortran_internal_read_value(declared: Option<&str>, token: Expression) -> Expression {
+    let hint = declared.unwrap_or("").to_ascii_lowercase();
+    if is_fortran_string_type_hint(&hint) {
+        return token;
+    }
+    if hint.starts_with("logical") {
+        return Expression::new(ExprKind::Binary {
+            op: BinOp::Or,
+            left: Box::new(Expression::new(ExprKind::Binary {
+                op: BinOp::StrictEq,
+                left: Box::new(token.clone()),
+                right: Box::new(Expression::string("T")),
+            })),
+            right: Box::new(Expression::new(ExprKind::Binary {
+                op: BinOp::StrictEq,
+                left: Box::new(token),
+                right: Box::new(Expression::string(".true.")),
+            })),
+        });
+    }
+    // A token that is not a number leaves the target UNDEFINED in Fortran and
+    // sets `iostat`; storing the NaN instead traps on the integer conversion.
+    // `iostat` is not carried on `InputFile`, so the status cannot be reported
+    // here — but a non-numeric token must not crash the program.
+    let number = Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("__fortran_to_number")),
+        args: vec![Argument::positional(token)],
+        optional: false,
+    });
+    Expression::new(ExprKind::Ternary {
+        cond: Box::new(Expression::new(ExprKind::Binary {
+            op: BinOp::StrictEq,
+            left: Box::new(number.clone()),
+            right: Box::new(number.clone()),
+        })),
+        then: Box::new(number),
+        else_: Box::new(Expression::int(0)),
+    })
+}
+
+/// `17 / 5` is `3` — INTEGER division truncates toward zero.
+///
+/// Division always produced a real, and only an assignment to an integer target
+/// rounded it back, so `17 / 5` printed `3.4` and `(17 / 5) /= 3` was true.
+/// The operands decide the operation in Fortran, not the destination.
+///
+/// Static on purpose: a literal is an integer, and a variable is one when it was
+/// DECLARED integer. Anything the walker cannot prove integer keeps real
+/// division, so a wrong guess can only leave today's behaviour, never invent
+/// truncation where the operands are real.
+fn lower_fortran_integer_division(body: &mut [Statement]) {
+    let mut declared = HashSet::new();
+    collect_fortran_declared_integers(body, &mut declared);
+    for statement in body.iter_mut() {
+        statement.walk_exprs_mut(&mut |expr| {
+            let ExprKind::Binary {
+                op: BinOp::Div,
+                left,
+                right,
+            } = &expr.kind
+            else {
+                return;
+            };
+            if !fortran_expr_is_integer(left, &declared)
+                || !fortran_expr_is_integer(right, &declared)
+            {
+                return;
+            }
+            if let ExprKind::Binary { op, .. } = &mut expr.kind {
+                *op = BinOp::IDiv;
+            }
+        });
+    }
+}
+
+fn collect_fortran_declared_integers(body: &[Statement], out: &mut HashSet<String>) {
+    for statement in body {
+        if let StmtKind::VarDecl { declarations, .. } = &statement.kind {
+            for declaration in declarations {
+                let BindingPattern::Ident(name) = &declaration.pattern else {
+                    continue;
+                };
+                if declaration
+                    .type_hint
+                    .as_deref()
+                    .is_some_and(|hint| hint.trim().to_ascii_lowercase().starts_with("integer"))
+                {
+                    out.insert(name.to_ascii_lowercase());
+                }
+            }
+        }
+        for_each_fortran_nested_body(&statement.kind, &mut |stmts| {
+            collect_fortran_declared_integers(stmts, out)
+        });
+    }
+}
+
+/// Whether an expression is provably an INTEGER — conservative, so `false`
+/// means "not proven", never "is real".
+fn fortran_expr_is_integer(expr: &Expression, declared: &HashSet<String>) -> bool {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Int(_)) => true,
+        ExprKind::Ident(name) => declared.contains(&name.to_ascii_lowercase()),
+        ExprKind::Unary {
+            op: UnaryOp::Neg | UnaryOp::Pos,
+            expr,
+        } => fortran_expr_is_integer(expr, declared),
+        ExprKind::Binary {
+            op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::IDiv | BinOp::Mod,
+            left,
+            right,
+        } => fortran_expr_is_integer(left, declared) && fortran_expr_is_integer(right, declared),
+        // The intrinsics whose result is an integer whatever went in.
+        ExprKind::Call { callee, .. } => matches!(
+            &callee.kind,
+            ExprKind::Ident(name) if matches!(
+                name.to_ascii_lowercase().as_str(),
+                "int" | "nint" | "size" | "len" | "len_trim" | "count" | "index" | "ubound"
+                    | "lbound" | "iachar" | "ichar" | "mod" | "modulo" | "floor" | "ceiling"
+            )
+        ),
+        _ => false,
+    }
+}
+
+/// `interface assignment(=)` — DEFINED assignment.
+///
+/// `b = 42` where `b` is a derived type and the module declares
+/// `interface assignment(=) ; module procedure int_to_box`, is a CALL, not a
+/// store: `call int_to_box(b, 42)`. Nothing dispatched it, so the store ran
+/// instead and the target kept the raw right-hand side.
+///
+/// The interface names the implementations; their signatures live on the
+/// module's own procedures, so both are collected and matched by the DECLARED
+/// types of the two dummies. A rewrite happens only when exactly one candidate
+/// matches — an ambiguous set is left alone rather than guessed at.
+fn lower_fortran_defined_assignment(body: &mut Vec<Statement>) {
+    let mut names = HashSet::new();
+    collect_fortran_defined_assignment_names(body, &mut names);
+    if names.is_empty() {
+        return;
+    }
+    let mut procs = HashMap::new();
+    collect_fortran_procedure_params(body, &mut procs);
+    let candidates: Vec<(String, String, String)> = names
+        .iter()
+        .filter_map(|name| {
+            let params = procs.get(name)?;
+            let dest = params.first()?.type_hint.as_deref()?.to_string();
+            let src = params.get(1)?.type_hint.as_deref()?.to_string();
+            Some((dest, src, name.clone()))
+        })
+        .collect();
+    if candidates.is_empty() {
+        return;
+    }
+    let mut declared = HashMap::new();
+    collect_fortran_declared_types(body, &mut declared);
+    rewrite_fortran_defined_assignment(body, &candidates, &declared);
+}
+
+fn collect_fortran_defined_assignment_names(body: &[Statement], out: &mut HashSet<String>) {
+    for statement in body {
+        if let StmtKind::InterfaceDecl { name, members, .. } = &statement.kind {
+            if name.trim().eq_ignore_ascii_case("assignment(=)") {
+                for member in members {
+                    if let InterfaceMember::Method { name, .. } = member {
+                        out.insert(name.to_ascii_lowercase());
+                    }
+                }
+            }
+        }
+        if let StmtKind::ModuleDecl { members, .. } = &statement.kind {
+            for member in members {
+                if let ClassMember::NestedType(inner) = member {
+                    collect_fortran_defined_assignment_names(std::slice::from_ref(inner), out);
+                }
+            }
+        }
+        for_each_fortran_nested_body(&statement.kind, &mut |stmts| {
+            collect_fortran_defined_assignment_names(stmts, out)
+        });
+    }
+}
+
+fn collect_fortran_procedure_params(body: &[Statement], out: &mut HashMap<String, Vec<Param>>) {
+    for statement in body {
+        if let StmtKind::FunctionDecl { name, params, .. } = &statement.kind {
+            out.insert(name.to_ascii_lowercase(), params.clone());
+        }
+        if let StmtKind::ModuleDecl { members, .. } | StmtKind::ClassDecl { members, .. } =
+            &statement.kind
+        {
+            for member in members {
+                match member {
+                    ClassMember::Method(inner) | ClassMember::NestedType(inner) => {
+                        collect_fortran_procedure_params(std::slice::from_ref(inner), out)
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for_each_fortran_nested_body(&statement.kind, &mut |stmts| {
+            collect_fortran_procedure_params(stmts, out)
+        });
+    }
+}
+
+/// Whether a value can be the source argument of a dummy declared `hint`.
+fn fortran_value_matches_hint(
+    value: &Expression,
+    hint: &str,
+    declared: &HashMap<String, String>,
+) -> bool {
+    let hint_lower = hint.trim().to_ascii_lowercase();
+    if let Some(wanted) = parse_derived_type_name(hint) {
+        let ExprKind::Ident(name) = &value.kind else {
+            return false;
+        };
+        return declared
+            .get(&name.to_ascii_lowercase())
+            .and_then(|actual| parse_derived_type_name(actual))
+            .is_some_and(|actual| actual.eq_ignore_ascii_case(&wanted));
+    }
+    let family = |h: &str| {
+        if h.starts_with("character") {
+            "character"
+        } else if h.starts_with("integer") {
+            "integer"
+        } else if h.starts_with("real") || h.starts_with("double") {
+            "real"
+        } else if h.starts_with("logical") {
+            "logical"
+        } else {
+            "?"
+        }
+    };
+    let wanted = family(&hint_lower);
+    match &value.kind {
+        ExprKind::Lit(Literal::Int(_)) => wanted == "integer",
+        ExprKind::Lit(Literal::Float(_)) => wanted == "real",
+        ExprKind::Lit(Literal::Str(_)) => wanted == "character",
+        ExprKind::Lit(Literal::Bool(_)) => wanted == "logical",
+        ExprKind::Ident(name) => declared
+            .get(&name.to_ascii_lowercase())
+            .is_some_and(|actual| family(&actual.trim().to_ascii_lowercase()) == wanted),
+        _ => false,
+    }
+}
+
+fn rewrite_fortran_defined_assignment(
+    body: &mut Vec<Statement>,
+    candidates: &[(String, String, String)],
+    declared: &HashMap<String, String>,
+) {
+    for statement in body.iter_mut() {
+        for_each_fortran_nested_vec_mut(&mut statement.kind, &mut |stmts| {
+            rewrite_fortran_defined_assignment(stmts, candidates, declared)
+        });
+        let StmtKind::Assign { targets, value, .. } = &statement.kind else {
+            continue;
+        };
+        let [target] = targets.as_slice() else {
+            continue;
+        };
+        let ExprKind::Ident(name) = &target.kind else {
+            continue;
+        };
+        let Some(target_type) = declared
+            .get(&name.to_ascii_lowercase())
+            .and_then(|hint| parse_derived_type_name(hint))
+        else {
+            continue;
+        };
+        let mut matched = candidates.iter().filter(|(dest, src, _)| {
+            parse_derived_type_name(dest)
+                .is_some_and(|dest| dest.eq_ignore_ascii_case(&target_type))
+                && fortran_value_matches_hint(value, src, declared)
+        });
+        let Some((_, _, proc)) = matched.next() else {
+            continue;
+        };
+        if matched.next().is_some() {
+            continue;
+        }
+        *statement = Statement::new(StmtKind::Expr(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident(proc)),
+            args: vec![
+                Argument::positional(target.clone()),
+                Argument::positional(value.clone()),
+            ],
+            optional: false,
+        })));
+    }
+}
+
+/// Names an `EXTERNAL` statement declares.
+const FORTRAN_EXTERNAL_MARKER: &str = "__fortran_external";
+
+/// `external f` — f is a procedure, so drop any variable declaration of it.
+///
+/// A Fortran program spells an external function's RESULT type with an ordinary
+/// type declaration (`integer f`), which is not a variable. Emitted as one, the
+/// name held `0` and shadowed the procedure, so `f()` reported "f64 is not
+/// callable".
+fn lower_fortran_external_declarations(body: &mut Vec<Statement>) {
+    let mut names = HashSet::new();
+    collect_fortran_external_names(body, &mut names);
+    strip_fortran_external_markers(body, &names);
+}
+
+fn collect_fortran_external_names(body: &[Statement], out: &mut HashSet<String>) {
+    for statement in body {
+        // A procedure body carries its own `external` statements, and the
+        // marker must be found there too — left behind it becomes a call to
+        // an undefined name.
+        if let StmtKind::FunctionDecl { body, .. } = &statement.kind {
+            collect_fortran_external_names(body, out);
+        }
+        if let StmtKind::Expr(expr) = &statement.kind {
+            if let ExprKind::Call { callee, args, .. } = &expr.kind {
+                if matches!(&callee.kind, ExprKind::Ident(n) if n == FORTRAN_EXTERNAL_MARKER) {
+                    for arg in args {
+                        if let ExprKind::Lit(Literal::Str(name)) = &arg.value.kind {
+                            out.insert(name.to_ascii_lowercase());
+                        }
+                    }
+                }
+            }
+        }
+        for_each_fortran_nested_body(&statement.kind, &mut |stmts| {
+            collect_fortran_external_names(stmts, out)
+        });
+    }
+}
+
+fn strip_fortran_external_markers(body: &mut Vec<Statement>, names: &HashSet<String>) {
+    for statement in body.iter_mut() {
+        // ⛔ A DUMMY procedure argument is declared in the body like any other
+        // name, but it is a parameter — dropping its declaration is not the
+        // same fix and breaks the call. Its own scope excludes it.
+        if let StmtKind::FunctionDecl { params, body, .. } = &mut statement.kind {
+            let mut inner: HashSet<String> = names.clone();
+            for param in params.iter() {
+                inner.remove(&param.name.to_ascii_lowercase());
+            }
+            strip_fortran_external_markers(body, &inner);
+        }
+        for_each_fortran_nested_vec_mut(&mut statement.kind, &mut |stmts| {
+            strip_fortran_external_markers(stmts, names)
+        });
+    }
+    body.retain(|statement| {
+        if let StmtKind::Expr(expr) = &statement.kind {
+            if let ExprKind::Call { callee, .. } = &expr.kind {
+                if matches!(&callee.kind, ExprKind::Ident(n) if n == FORTRAN_EXTERNAL_MARKER) {
+                    return false;
+                }
+            }
+        }
+        true
+    });
+    if names.is_empty() {
+        return;
+    }
+    for statement in body.iter_mut() {
+        let StmtKind::VarDecl { declarations, .. } = &mut statement.kind else {
+            continue;
+        };
+        declarations.retain(|declaration| {
+            let BindingPattern::Ident(name) = &declaration.pattern else {
+                return true;
+            };
+            // Only a bare type declaration is the procedure's result type; one
+            // with an initialiser or bounds is a genuine variable.
+            !(names.contains(&name.to_ascii_lowercase())
+                && declaration.init.is_none()
+                && declaration.array_bounds.is_none())
+        });
+    }
+    body.retain(|statement| !matches!(&statement.kind, StmtKind::VarDecl { declarations, .. } if declarations.is_empty()));
+}
+
+/// `interface operator(+)` — bind the derived type's operator to its SLOT.
+///
+/// flexclassplan §2b route 2: the walker already parses the form, so it
+/// registers the binding directly instead of fabricating a pseudo-name. The
+/// binding is keyed by `protocol_slot_key`, a stable slot ID — never by the
+/// procedure's spelling — so `emit_rich_binop` finds it without any shared code
+/// naming Fortran (§0.2, §0.4).
+///
+/// ⛔ `//` (concat) and `.myop.` (a defined operator) have NO core slot, and
+/// `BinOp::Concat` never consults one. flexclassplan §2c-bis calls for a
+/// `Concat` slot and an extension registry for custom operators, and names this
+/// exact Fortran case as the motivation; neither exists yet, so those forms are
+/// left alone rather than bent onto a slot that means something else.
+fn lower_fortran_operator_slots(body: &mut Vec<Statement>) {
+    let mut bindings = Vec::new();
+    collect_fortran_operator_interfaces(body, &mut bindings);
+    if bindings.is_empty() {
+        return;
+    }
+    let mut procs = HashMap::new();
+    collect_fortran_procedure_decls(body, &mut procs);
+    let mut methods: HashMap<String, Vec<Statement>> = HashMap::new();
+    for (symbol, impl_name) in bindings {
+        let Some(decl) = procs.get(&impl_name) else {
+            continue;
+        };
+        let StmtKind::FunctionDecl { params, .. } = &decl.kind else {
+            continue;
+        };
+        let Some(receiver) = params.first() else {
+            continue;
+        };
+        let Some(type_name) = receiver
+            .type_hint
+            .as_deref()
+            .and_then(parse_derived_type_name)
+        else {
+            continue;
+        };
+        // Arity picks between the binary and unary reading of `-`.
+        let Some(slot) = fortran_operator_slot(&symbol, params.len()) else {
+            continue;
+        };
+        let StmtKind::FunctionDecl {
+            params,
+            return_type,
+            body,
+            is_sub,
+            ..
+        } = &decl.kind
+        else {
+            continue;
+        };
+        // Same shape the type-bound binder produces: the implementation's own
+        // params and body, under the slot's key. The receiver is the first
+        // dummy, which is the convention a Fortran type-bound procedure
+        // already uses.
+        methods
+            .entry(type_name.to_ascii_lowercase())
+            .or_default()
+            .push(Statement::new(StmtKind::FunctionDecl {
+                name: vybe_ast::protocol_slot_key(slot),
+                params: params.clone(),
+                return_type: return_type.clone(),
+                body: body.clone(),
+                modifiers: Modifiers::default(),
+                handles: Vec::new(),
+                is_async: false,
+                is_generator: false,
+                is_sub: *is_sub,
+            }));
+    }
+    if !methods.is_empty() {
+        attach_fortran_slot_methods(body, &methods);
+    }
+}
+
+/// The core slot a Fortran operator token names, if there is one.
+fn fortran_operator_slot(symbol: &str, arity: usize) -> Option<vybe_ast::ProtocolSlot> {
+    use vybe_ast::ProtocolSlot as S;
+    Some(match (symbol, arity) {
+        ("+", 1) => S::Pos,
+        ("-", 1) => S::Neg,
+        (".not.", 1) => S::Not,
+        ("+", _) => S::Add,
+        ("-", _) => S::Sub,
+        ("*", _) => S::Mul,
+        ("/", _) => S::Div,
+        ("**", _) => S::Pow,
+        ("==", _) | (".eq.", _) => S::Eq,
+        ("/=", _) | (".ne.", _) => S::Ne,
+        ("<", _) | (".lt.", _) => S::Lt,
+        ("<=", _) | (".le.", _) => S::Le,
+        (">", _) | (".gt.", _) => S::Gt,
+        (">=", _) | (".ge.", _) => S::Ge,
+        (".and.", _) => S::And,
+        (".or.", _) => S::Or,
+        _ => return None,
+    })
+}
+
+fn collect_fortran_operator_interfaces(body: &[Statement], out: &mut Vec<(String, String)>) {
+    for statement in body {
+        if let StmtKind::InterfaceDecl { name, members, .. } = &statement.kind {
+            let trimmed = name.trim().to_ascii_lowercase();
+            if let Some(symbol) = trimmed
+                .strip_prefix("operator(")
+                .and_then(|rest| rest.strip_suffix(')'))
+            {
+                let symbol = symbol.trim().to_string();
+                for member in members {
+                    if let InterfaceMember::Method { name, .. } = member {
+                        out.push((symbol.clone(), name.to_ascii_lowercase()));
+                    }
+                }
+            }
+        }
+        if let StmtKind::ModuleDecl { members, .. } = &statement.kind {
+            for member in members {
+                if let ClassMember::NestedType(inner) | ClassMember::Method(inner) = member {
+                    collect_fortran_operator_interfaces(std::slice::from_ref(inner), out);
+                }
+            }
+        }
+        for_each_fortran_nested_body(&statement.kind, &mut |stmts| {
+            collect_fortran_operator_interfaces(stmts, out)
+        });
+    }
+}
+
+fn collect_fortran_procedure_decls(body: &[Statement], out: &mut HashMap<String, Statement>) {
+    for statement in body {
+        if let StmtKind::FunctionDecl { name, .. } = &statement.kind {
+            out.insert(name.to_ascii_lowercase(), statement.clone());
+        }
+        if let StmtKind::ModuleDecl { members, .. } | StmtKind::ClassDecl { members, .. } =
+            &statement.kind
+        {
+            for member in members {
+                if let ClassMember::NestedType(inner) | ClassMember::Method(inner) = member {
+                    collect_fortran_procedure_decls(std::slice::from_ref(inner), out);
+                }
+            }
+        }
+        for_each_fortran_nested_body(&statement.kind, &mut |stmts| {
+            collect_fortran_procedure_decls(stmts, out)
+        });
+    }
+}
+
+fn attach_fortran_slot_methods(
+    body: &mut [Statement],
+    methods: &HashMap<String, Vec<Statement>>,
+) {
+    for statement in body.iter_mut() {
+        if let StmtKind::ClassDecl { name, members, .. } = &mut statement.kind {
+            if let Some(slots) = methods.get(&name.to_ascii_lowercase()) {
+                for slot_method in slots {
+                    members.push(ClassMember::Method(Box::new(slot_method.clone())));
+                }
+            }
+        }
+        if let StmtKind::ModuleDecl { members, .. } = &mut statement.kind {
+            for member in members.iter_mut() {
+                if let ClassMember::NestedType(inner) | ClassMember::Method(inner) = member {
+                    let mut one = vec![(**inner).clone()];
+                    attach_fortran_slot_methods(&mut one, methods);
+                    if let Some(first) = one.into_iter().next() {
+                        **inner = first;
+                    }
+                }
+            }
+        }
+        for_each_fortran_nested_body_mut(&mut statement.kind, &mut |stmts| {
+            attach_fortran_slot_methods(stmts, methods)
+        });
+    }
+}
+
+/// `DATA v /vals/` — the F77 initializer.
+///
+/// The grammar has carried the construct all along but `walk_stmt_inner` had no
+/// arm, so every DATA statement fell to `_ => Ok(None)` and the variable kept
+/// its default 0. Lowered here to ordinary assignments at the point of the
+/// statement: Fortran requires DATA to precede the executable part, so "in
+/// place" is already "before first use".
+///
+/// A subscripted target is built as a `Call`, which is exactly the shape
+/// `walk_assign` produces for `a(1) = x` — the existing subscript repair then
+/// turns it into a 1-based `Index` like any other.
+fn walk_data_statement(pair: Pair<Rule>) -> Result<Statement, String> {
+    let mut body = Vec::new();
+    for set in pair
+        .into_inner()
+        .filter(|p| p.as_rule() == Rule::data_set)
+    {
+        let mut targets = Vec::new();
+        let mut values = Vec::new();
+        let mut loop_form = None;
+        for part in set.into_inner().filter(|p| meaningful(p)) {
+            match part.as_rule() {
+                Rule::data_var_list => {
+                    for var in part.into_inner().filter(|p| p.as_rule() == Rule::data_var) {
+                        if let Some(form) = collect_fortran_data_targets(var, &mut targets)? {
+                            loop_form = Some(form);
+                        }
+                    }
+                }
+                Rule::data_value_list => {
+                    for value in part
+                        .into_inner()
+                        .filter(|p| p.as_rule() == Rule::data_value)
+                    {
+                        collect_fortran_data_values(value, &mut values)?;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(form) = loop_form {
+            body.push(build_fortran_data_loop(form, values));
+            continue;
+        }
+        // One bare name against several values is the whole-array form
+        // (`data a /1, 2, 3/`); everything else pairs off one for one.
+        if targets.len() == 1 && values.len() > 1 && matches!(targets[0].kind, ExprKind::Ident(_)) {
+            body.push(fortran_data_assignment(
+                targets.remove(0),
+                fortran_array_expr(values),
+            ));
+            continue;
+        }
+        for (target, value) in targets.into_iter().zip(values) {
+            body.push(fortran_data_assignment(target, value));
+        }
+    }
+    Ok(Statement::new(StmtKind::Block(body)))
+}
+
+fn fortran_data_assignment(target: Expression, value: Expression) -> Statement {
+    Statement::new(StmtKind::Assign {
+        targets: vec![target],
+        value,
+        by_ref: false,
+    })
+}
+
+/// An implied-do whose trip count is not known at walk time, kept as a loop.
+struct FortranDataLoop {
+    index_name: String,
+    lower: Expression,
+    upper: Expression,
+    step: i64,
+    /// Targets still written in terms of `index_name`.
+    targets: Vec<Expression>,
+}
+
+/// One `data_var`: a bare name, a subscripted element, or an implied-do that
+/// stands for several elements. `Some` when the implied-do has to stay a loop.
+fn collect_fortran_data_targets(
+    var: Pair<Rule>,
+    out: &mut Vec<Expression>,
+) -> Result<Option<FortranDataLoop>, String> {
+    let inner: Vec<Pair<Rule>> = var.into_inner().filter(|p| meaningful(p)).collect();
+    if let Some(implied) = inner
+        .iter()
+        .find(|p| p.as_rule() == Rule::data_implied_do)
+    {
+        return expand_fortran_data_implied_do(implied.clone(), out);
+    }
+    out.push(build_fortran_data_target(&inner)?);
+    Ok(None)
+}
+
+/// `data (out(i), i = 1, n) /10, 20, 30/` — the values go into a temporary and
+/// a counter walks them as the loop runs, because neither the trip count nor
+/// which value lands where is known before execution.
+fn build_fortran_data_loop(form: FortranDataLoop, values: Vec<Expression>) -> Statement {
+    let cursor = format!("__fortran_data_cursor_{}", form.index_name);
+    let store = format!("__fortran_data_values_{}", form.index_name);
+    let value_count = values.len() as i64;
+    let mut body = Vec::new();
+    for target in form.targets {
+        // The read is written the way FORTRAN writes one — a `Call` on a
+        // 1-based cursor — because the store is a declared array and every
+        // subscript pass will treat it as one. Reaching in with a raw 0-based
+        // `Index` got the 1-based adjustment applied on top and read one
+        // element early.
+        body.push(Statement::new(StmtKind::Assign {
+            targets: vec![target],
+            value: Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(&store)),
+                args: vec![Argument::positional(Expression::ident(&cursor))],
+                optional: false,
+            }),
+            by_ref: false,
+        }));
+        body.push(Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(&cursor)],
+            value: Expression::new(ExprKind::Binary {
+                op: BinOp::Add,
+                left: Box::new(Expression::ident(&cursor)),
+                right: Box::new(Expression::int(1)),
+            }),
+            by_ref: false,
+        }));
+    }
+    let cond = Expression::new(ExprKind::Binary {
+        op: if form.step > 0 {
+            BinOp::LtEq
+        } else {
+            BinOp::GtEq
+        },
+        left: Box::new(Expression::ident(&form.index_name)),
+        right: Box::new(form.upper),
+    });
+    Statement::new(StmtKind::Block(vec![
+        fortran_data_array(&store, fortran_array_expr(values), value_count),
+        fortran_data_local(&cursor, Expression::int(1)),
+        Statement::new(StmtKind::For {
+            init: Some(Box::new(fortran_data_local(&form.index_name, form.lower))),
+            cond: Some(cond),
+            update: Some(Expression::new(ExprKind::Assign {
+                target: Box::new(Expression::ident(&form.index_name)),
+                value: Box::new(Expression::new(ExprKind::Binary {
+                    op: BinOp::Add,
+                    left: Box::new(Expression::ident(&form.index_name)),
+                    right: Box::new(Expression::int(form.step)),
+                })),
+            })),
+            body,
+        }),
+    ]))
+}
+
+fn fortran_data_local(name: &str, init: Expression) -> Statement {
+    Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(name.to_string()),
+            type_hint: None,
+            init: Some(init),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Let,
+    })
+}
+
+/// The value store, declared with bounds so the subscript passes see a Fortran
+/// array rather than a bare list.
+fn fortran_data_array(name: &str, init: Expression, len: i64) -> Statement {
+    Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(name.to_string()),
+            type_hint: None,
+            init: Some(init),
+            array_bounds: Some(vec![Expression::int(len)]),
+            with_events: false,
+        }],
+        kind: VarDeclKind::Let,
+    })
+}
+
+/// `name` → `Ident`, `name(args)` → `Call`.
+fn build_fortran_data_target(parts: &[Pair<Rule>]) -> Result<Expression, String> {
+    let name = parts
+        .iter()
+        .find(|p| p.as_rule() == Rule::identifier)
+        .ok_or("missing name in data target")?
+        .as_str();
+    let mut args = Vec::new();
+    for list in parts
+        .iter()
+        .filter(|p| p.as_rule() == Rule::argument_list)
+    {
+        for a in list.clone().into_inner() {
+            if a.as_rule() == Rule::argument {
+                let (name, value) = walk_argument_expr(a)?;
+                args.push(Argument {
+                    name,
+                    value,
+                    by_ref: false,
+                    spread: false,
+                });
+            }
+        }
+    }
+    if args.is_empty() {
+        return Ok(Expression::ident(name));
+    }
+    Ok(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident(name)),
+        args,
+        optional: false,
+    }))
+}
+
+/// `(a(i), i = lo, hi [, step])` — one target per trip.
+///
+/// The bounds must be known here, because the targets are separate assignment
+/// statements rather than a loop. That matches the corpus (`i = 1, 5, 2`), and
+/// the fold below covers the `2 + 0` spelling the suite also uses.
+fn expand_fortran_data_implied_do(
+    implied: Pair<Rule>,
+    out: &mut Vec<Expression>,
+) -> Result<Option<FortranDataLoop>, String> {
+    let mut vars = Vec::new();
+    let mut index_name = None;
+    let mut bounds = Vec::new();
+    for part in implied.into_inner().filter(|p| meaningful(p)) {
+        match part.as_rule() {
+            Rule::data_var_simple => {
+                vars.push(part.into_inner().filter(|p| meaningful(p)).collect::<Vec<_>>())
+            }
+            Rule::identifier if index_name.is_none() => {
+                index_name = Some(part.as_str().to_string())
+            }
+            Rule::expression => bounds.push(walk_expr(part)?),
+            _ => {}
+        }
+    }
+    let index_name = index_name.ok_or("missing index in data implied do")?;
+    let step = match bounds.get(2) {
+        Some(step) => {
+            fortran_data_const_int(step).ok_or("non-constant implied-do step in data statement")?
+        }
+        None => 1,
+    };
+    if step == 0 {
+        return Err("zero implied-do step in data statement".to_string());
+    }
+    let raw_lower = bounds.first().ok_or("missing implied-do lower bound")?;
+    let raw_upper = bounds.get(1).ok_or("missing implied-do upper bound")?;
+    let (Some(lower), Some(upper)) = (
+        fortran_data_const_int(raw_lower),
+        fortran_data_const_int(raw_upper),
+    ) else {
+        // `data (out(i), i = 1, n)` with `n` a named constant: the trip count is
+        // not known here, so the targets cannot be separate statements. The
+        // whole set becomes a loop instead, walking the value list with a
+        // counter.
+        let mut targets = Vec::with_capacity(vars.len());
+        for parts in &vars {
+            targets.push(build_fortran_data_target(parts)?);
+        }
+        return Ok(Some(FortranDataLoop {
+            index_name,
+            lower: raw_lower.clone(),
+            upper: raw_upper.clone(),
+            step,
+            targets,
+        }));
+    };
+    let mut index = lower;
+    while (step > 0 && index <= upper) || (step < 0 && index >= upper) {
+        for parts in &vars {
+            let target = build_fortran_data_target(parts)?;
+            out.push(substitute_fortran_ident_expr(
+                &target,
+                &index_name,
+                &Expression::int(index),
+            ));
+        }
+        index += step;
+    }
+    Ok(None)
+}
+
+/// A DATA bound, folded to a number. Literals plus the one arithmetic level the
+/// suite spells (`2 + 0`); anything else is reported rather than guessed.
+fn fortran_data_const_int(expr: &Expression) -> Option<i64> {
+    if let Some(value) = fortran_literal_int(expr) {
+        return Some(value);
+    }
+    // `i = 5, 1, -1` — a negative step is a UNARY MINUS over a literal, never a
+    // negative literal, so folding only `Lit` reads every descending implied-do
+    // as non-constant.
+    if let ExprKind::Unary { op, expr: inner } = &expr.kind {
+        let value = fortran_data_const_int(inner)?;
+        return match op {
+            UnaryOp::Neg => Some(-value),
+            UnaryOp::Pos => Some(value),
+            _ => None,
+        };
+    }
+    let ExprKind::Binary { op, left, right } = &expr.kind else {
+        return None;
+    };
+    let left = fortran_data_const_int(left)?;
+    let right = fortran_data_const_int(right)?;
+    match op {
+        BinOp::Add => Some(left + right),
+        BinOp::Sub => Some(left - right),
+        BinOp::Mul => Some(left * right),
+        BinOp::Div if right != 0 => Some(left / right),
+        _ => None,
+    }
+}
+
+/// One `data_value`, which is `expr` or the repeat form `count * expr`.
+fn collect_fortran_data_values(
+    value: Pair<Rule>,
+    out: &mut Vec<Expression>,
+) -> Result<(), String> {
+    let parts: Vec<Pair<Rule>> = value.into_inner().filter(|p| meaningful(p)).collect();
+    let first = walk_expr(parts.first().cloned().ok_or("empty data value")?)?;
+    let Some(second) = parts.get(1) else {
+        out.push(first);
+        return Ok(());
+    };
+    let repeat = fortran_data_const_int(&first)
+        .ok_or("non-constant repeat count in data statement")?
+        .max(0);
+    let value = walk_expr(second.clone())?;
+    for _ in 0..repeat {
+        out.push(value.clone());
+    }
+    Ok(())
+}
+
+/// Fortran 95 `FORALL (i = lo:hi[:step], …[, mask]) …` — indexed elementwise
+/// assignment.
+///
+/// The grammar has carried the construct since it was added, and its own
+/// comment says "walker treats it as a nested DO loop family" — but no walker
+/// arm existed, so `_ => Ok(None)` dropped it and every FORALL body simply
+/// never ran.
+///
+/// Each body statement gets its OWN full nest, because FORALL completes a
+/// statement for every index before the next statement begins — running them
+/// inside one nest would let a later assignment read what an earlier one wrote
+/// for a different index. The mask, when present, guards the innermost body.
+///
+/// ⛔ Not buffered WITHIN one statement: `forall (i=1:n) a(i) = a(i+1)` reads
+/// values this lowering may already have overwritten. Fortran evaluates every
+/// right-hand side first; that needs a temporary per statement and is not done
+/// here.
+fn walk_forall(pair: Pair<Rule>) -> Result<Statement, String> {
+    let mut triplets = Vec::new();
+    let mut mask = None;
+    let mut body = Vec::new();
+    for p in pair.into_inner().filter(|p| meaningful(p)) {
+        match p.as_rule() {
+            Rule::forall_triplet => triplets.push(p),
+            Rule::statement_line => body.extend(walk_statement_line_stmts(p)?),
+            _ if is_expr_rule(p.as_rule()) && mask.is_none() => mask = Some(walk_expr(p)?),
+            _ => {
+                if let Some(statement) = walk_stmt(p)? {
+                    body.push(statement);
+                }
+            }
+        }
+    }
+    if triplets.is_empty() {
+        return Ok(Statement::new(StmtKind::Block(body)));
+    }
+
+    let mut headers = Vec::with_capacity(triplets.len());
+    for triplet in triplets {
+        let parts: Vec<Pair<Rule>> = triplet.into_inner().filter(|p| meaningful(p)).collect();
+        let name = parts.first().ok_or("missing forall index")?.as_str().to_string();
+        let lower = walk_expr(parts.get(1).ok_or("missing forall lower bound")?.clone())?;
+        let upper = walk_expr(parts.get(2).ok_or("missing forall upper bound")?.clone())?;
+        let step = match parts.get(3) {
+            Some(step) => walk_expr(step.clone())?,
+            None => Expression::int(1),
+        };
+        headers.push((name, lower, upper, step));
+    }
+
+    let mut nests = Vec::with_capacity(body.len());
+    for statement in body {
+        let mut inner = vec![statement];
+        if let Some(mask) = mask.clone() {
+            inner = vec![Statement::new(StmtKind::If {
+                cond: mask,
+                then_body: inner,
+                elifs: Vec::new(),
+                else_body: None,
+            })];
+        }
+        for (name, lower, upper, step) in headers.iter().rev() {
+            inner = vec![build_fortran_counted_loop(
+                name,
+                lower.clone(),
+                upper.clone(),
+                step.clone(),
+                inner,
+            )];
+        }
+        nests.extend(inner);
+    }
+    Ok(Statement::new(StmtKind::Block(nests)))
+}
+
+/// F77 `do 100 i = 1, 4 … 100 continue` — a DO whose terminator is a LABEL.
+///
+/// The grammar deliberately gives this rule no terminator: pest cannot check
+/// that the closing label matches, so the body and the `100 continue` are
+/// absorbed as SIBLINGS of the header by the enclosing `line*`. A walker arm
+/// never existed, so the header was dropped and the "body" simply ran once.
+///
+/// The loop is built here with an EMPTY body, wrapped in a marker naming the
+/// terminator; `lower_fortran_labeled_do` then moves the siblings in. It can
+/// do that because statement labels now survive as `Labeled` wrappers — the
+/// same capture the GOTO work added.
+fn walk_labeled_do(pair: Pair<Rule>) -> Result<Statement, String> {
+    let mut terminator = None;
+    let mut var = None;
+    let mut bounds = Vec::new();
+    for p in pair.into_inner().filter(|p| meaningful(p)) {
+        match p.as_rule() {
+            Rule::statement_label if terminator.is_none() => {
+                terminator = Some(p.as_str().to_string())
+            }
+            Rule::identifier if var.is_none() => var = Some(p.as_str().to_string()),
+            _ if is_expr_rule(p.as_rule()) => bounds.push(walk_expr(p)?),
+            _ => {}
+        }
+    }
+    let terminator = terminator.ok_or("missing labeled do terminator")?;
+    let var = var.ok_or("missing labeled do index")?;
+    let lower = bounds.first().cloned().ok_or("missing labeled do lower bound")?;
+    let upper = bounds.get(1).cloned().ok_or("missing labeled do upper bound")?;
+    let step = bounds.get(2).cloned().unwrap_or_else(|| Expression::int(1));
+    Ok(Statement::new(StmtKind::Labeled {
+        label: format!("{FORTRAN_LABELED_DO_PREFIX}{terminator}"),
+        body: Box::new(build_fortran_counted_loop(&var, lower, upper, step, Vec::new())),
+    }))
+}
+
+/// Marks a loop still waiting for the statements up to its terminator.
+const FORTRAN_LABELED_DO_PREFIX: &str = "__fortran_labeled_do_";
+
+/// Move each labelled DO's siblings into its body, up to its terminator.
+fn lower_fortran_labeled_do(body: &mut Vec<Statement>) {
+    for statement in body.iter_mut() {
+        for_each_fortran_nested_vec_mut(&mut statement.kind, &mut lower_fortran_labeled_do);
+    }
+    let mut index = 0;
+    while index < body.len() {
+        let StmtKind::Labeled { label, .. } = &body[index].kind else {
+            index += 1;
+            continue;
+        };
+        let Some(terminator) = label.strip_prefix(FORTRAN_LABELED_DO_PREFIX) else {
+            index += 1;
+            continue;
+        };
+        let wanted = format!("{FORTRAN_LABEL_PREFIX}{terminator}");
+        // Everything up to and INCLUDING the terminator line is the body; the
+        // terminator is usually `continue`, which contributes nothing.
+        let end = body[index + 1..]
+            .iter()
+            .position(|candidate| {
+                matches!(&candidate.kind, StmtKind::Labeled { label, .. } if *label == wanted)
+            })
+            .map(|offset| index + 1 + offset);
+        let Some(end) = end else {
+            index += 1;
+            continue;
+        };
+        let collected: Vec<Statement> = body.drain(index + 1..=end).collect();
+        let StmtKind::Labeled { body: loop_stmt, .. } = &mut body[index].kind else {
+            index += 1;
+            continue;
+        };
+        if let StmtKind::For { body: loop_body, .. } = &mut loop_stmt.kind {
+            *loop_body = collected;
+            // A nested labelled DO was a SIBLING until this moment — the inner
+            // `do 100` and its `100 continue` were both swept into the outer
+            // body. Recursing beforehand cannot see them, so the inner loop is
+            // resolved now that it finally lives somewhere.
+            lower_fortran_labeled_do(loop_body);
+        }
+        // The wrapper has served its purpose; the loop stands on its own.
+        body[index] = (**loop_stmt).clone();
+        index += 1;
+    }
+}
+
+/// `do name = lower, upper, step` as a counted `For`.
+fn build_fortran_counted_loop(
+    name: &str,
+    lower: Expression,
+    upper: Expression,
+    step: Expression,
+    body: Vec<Statement>,
+) -> Statement {
+    // ⛔ `-1` is a NEGATION of the literal `1`, not a negative literal, so
+    // asking `fortran_literal_int` reads every countdown as ascending and the
+    // loop runs zero times. `fortran_step_is_negative` is the helper that
+    // already knows this — the same trap the DATA implied-do step hit.
+    let ascending = !fortran_step_is_negative(&step).unwrap_or(false);
+    Statement::new(StmtKind::For {
+        init: Some(Box::new(Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(name)],
+            value: lower,
+            by_ref: false,
+        }))),
+        cond: Some(Expression::new(ExprKind::Binary {
+            op: if ascending { BinOp::LtEq } else { BinOp::GtEq },
+            left: Box::new(Expression::ident(name)),
+            right: Box::new(upper),
+        })),
+        update: Some(Expression::new(ExprKind::Assign {
+            target: Box::new(Expression::ident(name)),
+            value: Box::new(Expression::new(ExprKind::Binary {
+                op: BinOp::Add,
+                left: Box::new(Expression::ident(name)),
+                right: Box::new(step),
+            })),
+        })),
+        body,
+    })
 }
 
 fn walk_do_concurrent(pair: Pair<Rule>) -> Result<Statement, String> {
@@ -1474,9 +4713,22 @@ fn walk_select_type(pair: Pair<Rule>) -> Result<Statement, String> {
         let type_name = fortran_clause_paren_text(&header)
             .map(fortran_canonical_select_type_name)
             .unwrap_or_else(|| "object".to_string());
-        branches.push((build_fortran_select_type_condition(selector.clone(), &type_name), body));
+        // `type is` matches the EXACT dynamic type; `class is` matches that
+        // type or any extension of it. Both used to lower to the same test, so
+        // `type is (Base)` claimed a `Child`. The distinction is carried on the
+        // marker and resolved once the type hierarchy is visible.
+        let exact = header.contains("type is");
+        branches.push((
+            build_fortran_select_type_condition(selector.clone(), &type_name, exact),
+            body,
+        ));
     }
-    Ok(fortran_if_from_branches(branches, default_body))
+    // The chain is marked so the specificity pass can find it: Fortran selects
+    // the MOST SPECIFIC matching branch, not the first one written.
+    Ok(Statement::new(StmtKind::Labeled {
+        label: FORTRAN_SELECT_TYPE_MARKER.to_string(),
+        body: Box::new(fortran_if_from_branches(branches, default_body)),
+    }))
 }
 
 fn walk_select_rank(pair: Pair<Rule>) -> Result<Statement, String> {
@@ -1577,11 +4829,207 @@ fn fortran_canonical_select_type_name(type_name: &str) -> String {
     }
 }
 
-fn build_fortran_select_type_condition(selector: Expression, type_name: &str) -> Expression {
+/// Marks a `select type` chain still awaiting the specificity rules.
+const FORTRAN_SELECT_TYPE_MARKER: &str = "__fortran_select_type";
+/// Prefix on a type name that must match EXACTLY (`type is`).
+const FORTRAN_EXACT_TYPE_PREFIX: &str = "=";
+
+fn build_fortran_select_type_condition(
+    selector: Expression,
+    type_name: &str,
+    exact: bool,
+) -> Expression {
+    let type_name = if exact {
+        format!("{FORTRAN_EXACT_TYPE_PREFIX}{type_name}")
+    } else {
+        type_name.to_string()
+    };
     Expression::new(ExprKind::IsType {
         expr: Box::new(selector),
-        type_name: type_name.to_string(),
+        type_name,
     })
+}
+
+/// Apply Fortran's `select type` selection rules to every marked chain.
+///
+/// Two rules, both invisible until typed allocation started working (with every
+/// object stuck as its declared type, no branch after the first could ever be
+/// reached):
+///
+/// 1. `type is (T)` matches the EXACT dynamic type — a `Child` is not a `Base`.
+///    Expressed as "is a T, and is none of T's extensions", which is what the
+///    hierarchy makes answerable.
+/// 2. The MOST SPECIFIC matching branch wins, not the first written. Rather
+///    than reorder, each `class is (T)` also excludes the candidates in its own
+///    chain that extend it — mutually exclusive conditions give the right
+///    answer in any order.
+fn lower_fortran_select_type_specificity(body: &mut Vec<Statement>) {
+    let mut parents = HashMap::new();
+    collect_fortran_type_parents(body, &mut parents);
+    rewrite_fortran_select_type_chains(body, &parents);
+}
+
+fn collect_fortran_type_parents(body: &[Statement], out: &mut HashMap<String, Vec<String>>) {
+    for statement in body {
+        if let StmtKind::ClassDecl { name, parents, .. } = &statement.kind {
+            out.insert(
+                name.to_ascii_lowercase(),
+                parents.iter().map(|p| p.to_ascii_lowercase()).collect(),
+            );
+        }
+        if let StmtKind::FunctionDecl { body, .. } = &statement.kind {
+            collect_fortran_type_parents(body, out);
+        }
+        if let StmtKind::ModuleDecl { members, .. } | StmtKind::ClassDecl { members, .. } =
+            &statement.kind
+        {
+            for member in members {
+                if let ClassMember::NestedType(inner) | ClassMember::Method(inner) = member {
+                    collect_fortran_type_parents(std::slice::from_ref(inner), out);
+                }
+            }
+        }
+        for_each_fortran_nested_body(&statement.kind, &mut |stmts| {
+            collect_fortran_type_parents(stmts, out)
+        });
+    }
+}
+
+/// Whether `descendant` extends `ancestor`, transitively.
+fn fortran_type_extends(
+    descendant: &str,
+    ancestor: &str,
+    parents: &HashMap<String, Vec<String>>,
+) -> bool {
+    let mut queue: Vec<String> = parents.get(descendant).cloned().unwrap_or_default();
+    let mut seen = HashSet::new();
+    while let Some(next) = queue.pop() {
+        if next == ancestor {
+            return true;
+        }
+        if !seen.insert(next.clone()) {
+            continue;
+        }
+        queue.extend(parents.get(&next).cloned().unwrap_or_default());
+    }
+    false
+}
+
+fn rewrite_fortran_select_type_chains(
+    body: &mut [Statement],
+    parents: &HashMap<String, Vec<String>>,
+) {
+    for statement in body.iter_mut() {
+        // ⛔ Procedure and class bodies too: the general traversal skips them
+        // (a GOTO cannot leave its procedure), but a `select type` inside one
+        // would keep its marker, and with it the `=` prefix that no type name
+        // can match — the chain would then fall through every branch.
+        match &mut statement.kind {
+            StmtKind::FunctionDecl { body, .. } => {
+                rewrite_fortran_select_type_chains(body, parents)
+            }
+            StmtKind::ModuleDecl { members, .. }
+            | StmtKind::ClassDecl { members, .. }
+            | StmtKind::StructDecl { members, .. } => {
+                for member in members.iter_mut() {
+                    if let ClassMember::Method(inner) | ClassMember::NestedType(inner) = member {
+                        rewrite_fortran_select_type_chains(std::slice::from_mut(inner), parents);
+                    }
+                }
+            }
+            _ => {}
+        }
+        for_each_fortran_nested_body_mut(&mut statement.kind, &mut |stmts| {
+            rewrite_fortran_select_type_chains(stmts, parents)
+        });
+        let StmtKind::Labeled { label, body: inner } = &mut statement.kind else {
+            continue;
+        };
+        if label != FORTRAN_SELECT_TYPE_MARKER {
+            continue;
+        }
+        let mut chain = (**inner).clone();
+        apply_fortran_select_type_rules(&mut chain, parents);
+        *statement = chain;
+    }
+}
+
+fn apply_fortran_select_type_rules(
+    chain: &mut Statement,
+    parents: &HashMap<String, Vec<String>>,
+) {
+    let StmtKind::If {
+        cond, elifs, ..
+    } = &mut chain.kind
+    else {
+        return;
+    };
+    // Every type named in this chain — a `class is` only has to beat the
+    // candidates it is actually competing with.
+    let mut candidates: Vec<String> = Vec::new();
+    let mut named = |expr: &Expression| {
+        if let ExprKind::IsType { type_name, .. } = &expr.kind {
+            candidates.push(
+                type_name
+                    .strip_prefix(FORTRAN_EXACT_TYPE_PREFIX)
+                    .unwrap_or(type_name)
+                    .to_ascii_lowercase(),
+            );
+        }
+    };
+    named(cond);
+    for (elif_cond, _) in elifs.iter() {
+        named(elif_cond);
+    }
+
+    let refine = |expr: &mut Expression| {
+        let ExprKind::IsType { expr: selector, type_name } = &expr.kind else {
+            return;
+        };
+        let exact = type_name.starts_with(FORTRAN_EXACT_TYPE_PREFIX);
+        let bare = type_name
+            .strip_prefix(FORTRAN_EXACT_TYPE_PREFIX)
+            .unwrap_or(type_name)
+            .to_string();
+        let lower = bare.to_ascii_lowercase();
+        // An EXACT match excludes every extension there is; a `class is`
+        // excludes only the rival candidates that are more specific than it.
+        let rivals: Vec<String> = if exact {
+            parents
+                .keys()
+                .filter(|other| fortran_type_extends(other, &lower, parents))
+                .cloned()
+                .collect()
+        } else {
+            candidates
+                .iter()
+                .filter(|other| *other != &lower && fortran_type_extends(other, &lower, parents))
+                .cloned()
+                .collect()
+        };
+        let mut refined = Expression::new(ExprKind::IsType {
+            expr: selector.clone(),
+            type_name: bare,
+        });
+        for rival in rivals {
+            refined = Expression::new(ExprKind::Binary {
+                op: BinOp::And,
+                left: Box::new(refined),
+                right: Box::new(Expression::new(ExprKind::Unary {
+                    op: UnaryOp::Not,
+                    expr: Box::new(Expression::new(ExprKind::IsType {
+                        expr: selector.clone(),
+                        type_name: rival,
+                    })),
+                })),
+            });
+        }
+        *expr = refined;
+    };
+    refine(cond);
+    for (elif_cond, _) in elifs.iter_mut() {
+        refine(elif_cond);
+    }
 }
 
 /// `RANK(x)` — and the selector of a `SELECT RANK`, which is the same question.
@@ -1794,17 +5242,45 @@ fn walk_read(pair: Pair<Rule>) -> Result<Statement, String> {
         ))));
     }
 
-    Ok(Statement::new(StmtKind::InputFile {
+    let read = Statement::new(StmtKind::InputFile {
         file_number: file_number.unwrap_or_else(|| Expression::int(0)),
         variables,
-    }))
+    });
+    // `InputFile` carries only the unit and the targets, and whether the unit is
+    // an INTERNAL file is a question about the unit's declared type — which is
+    // known later, not here. So the format travels alongside as a marker, the
+    // same protocol `__fortran_goto` uses, and the pass that does know the type
+    // consumes it. It is ALWAYS consumed: `lower_fortran_internal_reads` strips
+    // the marker whether or not it rewrites the read.
+    let Some(format_spec) = format_spec.filter(|_| explicit_format) else {
+        return Ok(read);
+    };
+    Ok(Statement::new(StmtKind::Block(vec![
+        Statement::new(StmtKind::Expr(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident(FORTRAN_READ_FORMAT_MARKER)),
+            args: vec![Argument::positional(Expression::string(&format_spec))],
+            optional: false,
+        }))),
+        read,
+    ])))
 }
 
+/// Carries a read's FORMAT from the walker to the pass that knows whether the
+/// unit is an internal file.
+const FORTRAN_READ_FORMAT_MARKER: &str = "__fortran_read_format";
+
 fn parse_fortran_string_literal_text(raw: &str) -> String {
-    if raw.len() < 2 {
+    // A KIND prefix (`c_char_"abc"`, `ascii_'x'`) sits before the opening quote.
+    // The AST does not distinguish character kinds, so it is dropped — here, the
+    // single place both the expression arm and the format-spec reader go
+    // through, so neither can start slicing at the wrong byte.
+    let Some(open) = raw.find(['\'', '"']) else {
+        return raw.to_string();
+    };
+    if raw.len() < open + 2 {
         return raw.to_string();
     }
-    raw[1..raw.len() - 1]
+    raw[open + 1..raw.len() - 1]
         .replace("''", "'")
         .replace("\"\"", "\"")
 }
@@ -2181,58 +5657,22 @@ fn parse_fortran_format_chunks(format_spec: &str) -> Option<Vec<FortranFormatChu
     Some(chunks)
 }
 
+/// One item of a `print`/`write` list, as a string.
+///
+/// The rendering is ONE builtin that asks the value what it is, so a LOGICAL
+/// writes `T`/`F` wherever it came from. This used to test the expression's
+/// SHAPE here — a literal or a comparison became a `"True"`/`"False"` ternary,
+/// anything else fell through to `__str__` and rendered `true` — which meant
+/// `print *, .true.` and `print *, b` disagreed about the same type. The shape
+/// test existed because a comparison stored into a LOGICAL was a raw i32 and
+/// had no type left to ask; `materialize_bool_results` in the profile is what
+/// makes it a boolean, and this is what reads it.
 fn stringify_fortran_io_expr(expr: Expression) -> Expression {
-    // OPEN BUG: a logical renders as `true`/`false`; the standard specifies the
-    // single letter and gfortran writes ` T`. It is JS's rendering leaking
-    // through `__str__`.
-    //
-    // It is NOT fixed here. Testing the expression's SHAPE — literal, or a
-    // comparison operator — was tried and reverted: it renders `print *, .true.`
-    // as `T` while a variable declared `logical :: b` still gives `true`,
-    // because this walker is stateless and cannot know a name's declared type.
-    // One type with two spellings in the same program is worse than one wrong
-    // spelling everywhere.
-    //
-    // The real seam is `[builtin_slots.bool] to_string`, which fires at a
-    // profile-declared print builtin — the way Kotlin binds
-    // `println = { emit = "common:kotlin.print", slot = "to_string" }`. Fortran
-    // cannot use it while `build_fortran_io_text` hand-concatenates `__str__`
-    // calls instead of lowering to such a builtin. That restructuring belongs
-    // with namespaceplan.md Phase 5 (fortran: "mounts + walker normalization").
-    if is_fortran_logical_expr(&expr) {
-        return Expression::new(ExprKind::Ternary {
-            cond: Box::new(expr),
-            then: Box::new(Expression::string("True")),
-            else_: Box::new(Expression::string("False")),
-        });
-    }
     Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::ident("__str__")),
+        callee: Box::new(Expression::ident("__fortran_io_str")),
         args: vec![Argument::positional(expr)],
         optional: false,
     })
-}
-
-fn is_fortran_logical_expr(expr: &Expression) -> bool {
-    match &expr.kind {
-        ExprKind::Lit(Literal::Bool(_)) => true,
-        ExprKind::Binary { op, .. } => matches!(
-            op,
-            BinOp::Eq
-                | BinOp::NotEq
-                | BinOp::StrictEq
-                | BinOp::StrictNotEq
-                | BinOp::Lt
-                | BinOp::Gt
-                | BinOp::LtEq
-                | BinOp::GtEq
-                | BinOp::And
-                | BinOp::Or
-                | BinOp::Eqv
-        ),
-        ExprKind::Unary { op, .. } => matches!(op, UnaryOp::Not),
-        _ => false,
-    }
 }
 
 fn concat_fortran_io_parts(parts: Vec<Expression>) -> Expression {
@@ -2258,18 +5698,62 @@ fn lower_fortran_implied_do_array_constructor(
     pair: Pair<Rule>,
 ) -> Result<Option<Expression>, String> {
     let parts: Vec<Pair<Rule>> = pair.into_inner().filter(|p| meaningful(p)).collect();
-    if parts.len() < 4 || parts[1].as_rule() != Rule::identifier {
+    // The control variable splits the head values from the bounds. Reading a
+    // fixed `parts[1]` only worked while the head was a single expression; the
+    // head is a value LIST, so `((i*10 + j, j = 1, 2), i = 1, 3)` and
+    // `(a, b, i = 1, 3)` both put the identifier further along.
+    let Some(var_index) = parts.iter().position(|p| p.as_rule() == Rule::identifier) else {
         return Ok(None);
-    }
-    if !is_expr_rule(parts[0].as_rule()) && parts[0].as_rule() != Rule::expression {
+    };
+    if var_index == 0 || parts.len() < var_index + 3 {
         return Ok(None);
     }
 
-    let element = walk_expr(parts[0].clone())?;
-    let loop_var = parts[1].as_str().to_string();
-    let lower = walk_expr(parts[2].clone())?;
-    let upper = walk_expr(parts[3].clone())?;
-    let step = if let Some(step) = parts.get(4) {
+    // A head that is itself an implied-do contributes a RUN per iteration, not
+    // one value, and so does a multi-value head — both make the mapped element
+    // array-valued and need flattening afterwards.
+    let mut head_values = Vec::new();
+    let mut element_is_a_run = parts[..var_index].len() > 1;
+    for head in &parts[..var_index] {
+        if let Some(nested) = lower_fortran_implied_do_array_constructor(head.clone())? {
+            element_is_a_run = true;
+            head_values.push(vybe_ast::ArrayElement {
+                key: None,
+                value: nested,
+                spread: true,
+                by_ref: false,
+            });
+            continue;
+        }
+        let inner = if is_expr_rule(head.as_rule()) || head.as_rule() == Rule::expression {
+            head.clone()
+        } else {
+            head.clone()
+                .into_inner()
+                .filter(|q| meaningful(q))
+                .find(|q| is_expr_rule(q.as_rule()) || q.as_rule() == Rule::expression)
+                .ok_or("empty implied-do value")?
+        };
+        head_values.push(vybe_ast::ArrayElement {
+            key: None,
+            value: walk_expr(inner)?,
+            spread: false,
+            by_ref: false,
+        });
+    }
+    let element = if element_is_a_run {
+        Expression::new(ExprKind::Array(head_values))
+    } else {
+        head_values
+            .into_iter()
+            .next()
+            .ok_or("empty implied-do head")?
+            .value
+    };
+    let loop_var = parts[var_index].as_str().to_string();
+    let lower = walk_expr(parts[var_index + 1].clone())?;
+    let upper = walk_expr(parts[var_index + 2].clone())?;
+    let step = if let Some(step) = parts.get(var_index + 3) {
         walk_expr(step.clone())?
     } else {
         Expression::int(1)
@@ -2288,13 +5772,25 @@ fn lower_fortran_implied_do_array_constructor(
         optional: false,
     });
 
-    Ok(Some(build_fortran_array_map(
+    let mapped = build_fortran_array_map(
         array_expr,
         lowered_element,
         true,
         "__fortran_array_item",
         index_name,
-    )))
+    );
+    if !element_is_a_run {
+        return Ok(Some(mapped));
+    }
+    Ok(Some(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(mapped),
+            field: "flat".to_string(),
+            null_safe: false,
+        })),
+        args: Vec::new(),
+        optional: false,
+    })))
 }
 
 fn build_fortran_implied_do_trip_count(
@@ -2546,6 +6042,7 @@ fn walk_call(pair: Pair<Rule>) -> Result<Statement, String> {
     let inner = pair.into_inner().filter(|p| meaningful(p));
     let mut callee: Option<Expression> = None;
     let mut args = Vec::new();
+    let mut alternate_returns = Vec::new();
     for p in inner {
         match p.as_rule() {
             Rule::identifier | Rule::designator_name => {
@@ -2563,15 +6060,23 @@ fn walk_call(pair: Pair<Rule>) -> Result<Statement, String> {
             }
             Rule::argument_list => {
                 for a in p.into_inner() {
-                    if a.as_rule() == Rule::argument {
-                        let (name, value) = walk_argument_expr(a)?;
-                        args.push(Argument {
-                            name,
-                            value,
-                            by_ref: false,
-                            spread: false,
-                        });
+                    if a.as_rule() != Rule::argument {
+                        continue;
                     }
+                    // `*10` is not an argument at all — it is the label the
+                    // callee's `return 1` picks, so it leaves the list and
+                    // becomes a branch on the returned selector below.
+                    if let Some(label) = fortran_alternate_return_label(&a) {
+                        alternate_returns.push(label);
+                        continue;
+                    }
+                    let (name, value) = walk_argument_expr(a)?;
+                    args.push(Argument {
+                        name,
+                        value,
+                        by_ref: false,
+                        spread: false,
+                    });
                 }
             }
             _ => {}
@@ -2582,6 +6087,9 @@ fn walk_call(pair: Pair<Rule>) -> Result<Statement, String> {
         args,
         optional: false,
     });
+    if !alternate_returns.is_empty() {
+        return Ok(build_fortran_alternate_return_call(expr, alternate_returns));
+    }
     let is_random_intrinsic = matches!(
         &expr.kind,
         ExprKind::Call { callee, .. }
@@ -2593,6 +6101,47 @@ fn walk_call(pair: Pair<Rule>) -> Result<Statement, String> {
         }
     }
     Ok(Statement::new(StmtKind::Expr(expr)))
+}
+
+/// `*10` in an argument list — the statement label an alternate return selects.
+/// A bare `*` (assumed size) carries no label and is not one.
+fn fortran_alternate_return_label(argument: &Pair<Rule>) -> Option<String> {
+    let star = argument
+        .clone()
+        .into_inner()
+        .find(|p| p.as_rule() == Rule::star_arg)?;
+    fortran_first_statement_label(&star)
+}
+
+/// `call s(*10, *20)` — F77 alternate returns.
+///
+/// The callee's `return 1` / `return 2` names the Nth label rather than a
+/// value, so the call becomes an ordinary call whose result selects a jump.
+/// The jumps are the same `__fortran_goto` markers a written `goto` produces,
+/// so the dispatch pass resolves them without knowing where they came from. A
+/// plain `return` yields nothing, no arm matches, and control falls through to
+/// the statement after the call — which is what the standard says.
+fn build_fortran_alternate_return_call(call: Expression, labels: Vec<String>) -> Statement {
+    let selector = "__fortran_alt_return";
+    let mut labels = labels.into_iter().enumerate();
+    let (_, first) = labels.next().expect("caller checked the list is not empty");
+    let branch = Statement::new(StmtKind::If {
+        cond: fortran_index_equals(&Expression::ident(selector), 1),
+        then_body: vec![fortran_goto_marker_statement(first)],
+        elifs: labels
+            .map(|(index, label)| {
+                (
+                    fortran_index_equals(&Expression::ident(selector), index as i64 + 1),
+                    vec![fortran_goto_marker_statement(label)],
+                )
+            })
+            .collect(),
+        else_body: None,
+    });
+    Statement::new(StmtKind::Block(vec![
+        fortran_data_local(selector, call),
+        branch,
+    ]))
 }
 
 fn walk_argument_expr(pair: Pair<Rule>) -> Result<(Option<String>, Expression), String> {
@@ -2619,6 +6168,19 @@ fn walk_argument_expr(pair: Pair<Rule>) -> Result<(Option<String>, Expression), 
 fn walk_argument_value(pair: Pair<Rule>) -> Result<Expression, String> {
     match pair.as_rule() {
         Rule::slice_arg => walk_slice_arg(pair),
+        // `operator(+)` as an ARGUMENT — F2018 `reduce`'s combining operation.
+        // Carried as its symbol so the reduction below can pick the fold; there
+        // is nothing to evaluate, and walking it as an expression produced a
+        // call to an undefined `operator`.
+        Rule::operator_arg => Ok(Expression::string(
+            pair.as_str()
+                .trim()
+                .trim_start_matches(|c: char| c.is_alphabetic())
+                .trim()
+                .trim_start_matches('(')
+                .trim_end_matches(')')
+                .trim(),
+        )),
         _ => walk_expr(pair),
     }
 }
@@ -2668,6 +6230,39 @@ fn walk_allocate_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
 
 fn walk_deallocate_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
     walk_allocator_stmt(pair, "deallocate")
+}
+
+/// A bare derived-type name in an allocate type spec. An INTRINSIC spec
+/// (`character(len=5)`, `integer`) names no constructor and is not one.
+fn fortran_derived_type_spec_name(spec: &str) -> Option<String> {
+    let spec = spec.trim();
+    if !spec
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        || spec.is_empty()
+    {
+        return None;
+    }
+    let lower = spec.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "integer" | "real" | "double" | "complex" | "logical" | "character"
+    ) {
+        return None;
+    }
+    Some(spec.to_string())
+}
+
+/// `Child :: obj` → `("Child", "obj")`. Only the `::` that separates a type
+/// spec from the item, so `obj(1:n)` is untouched.
+fn split_fortran_alloc_type_spec(part: &str) -> Option<(&str, &str)> {
+    let at = part.find("::")?;
+    let (spec, rest) = part.split_at(at);
+    let spec = spec.trim();
+    if spec.is_empty() {
+        return None;
+    }
+    Some((spec, rest[2..].trim()))
 }
 
 fn split_fortran_top_level_commas(text: &str) -> Vec<&str> {
@@ -2745,7 +6340,10 @@ fn parse_fortran_expression_text(text: &str) -> Result<Expression, String> {
     walk_expr(pair)
 }
 
-fn parse_fortran_alloc_target_text(text: &str) -> Result<Expression, String> {
+fn parse_fortran_alloc_target_text(
+    text: &str,
+    origins: &mut Vec<Option<Expression>>,
+) -> Result<Expression, String> {
     let target_text = text
         .rsplit_once("::")
         .map(|(_, target)| target.trim())
@@ -2755,7 +6353,36 @@ fn parse_fortran_alloc_target_text(text: &str) -> Result<Expression, String> {
     let pair = pairs
         .next()
         .ok_or_else(|| format!("missing allocate target `{target_text}`"))?;
-    walk_alloc_item_expr(pair)
+    walk_alloc_item_expr_with_origins(pair, origins)
+}
+
+/// `__fortran_origin_v = [lo, …]` — the descriptor update that goes with an
+/// `allocate` that stated an origin, so `lbound` answers what was allocated.
+fn fortran_allocate_origin_statement(
+    target: &Expression,
+    origins: &[Option<Expression>],
+) -> Option<Statement> {
+    if !origins.iter().any(Option::is_some) {
+        return None;
+    }
+    let ExprKind::Ident(name) = &fortran_allocation_target_place(target).kind else {
+        return None;
+    };
+    Some(Statement::new(StmtKind::Assign {
+        targets: vec![Expression::ident(&fortran_origin_variable_name(name))],
+        value: Expression::new(ExprKind::Array(
+            origins
+                .iter()
+                .map(|origin| ArrayElement {
+                    key: None,
+                    value: origin.clone().unwrap_or_else(|| Expression::int(1)),
+                    spread: false,
+                    by_ref: false,
+                })
+                .collect(),
+        )),
+        by_ref: false,
+    }))
 }
 
 fn fortran_allocation_target_place(target: &Expression) -> Expression {
@@ -2774,9 +6401,11 @@ fn walk_allocate_stmt_from_text(text: &str) -> Result<Statement, String> {
         .ok_or_else(|| format!("missing allocate close paren in `{text}`"))?;
     let inner = &text[open + 1..close];
     let mut targets = Vec::new();
+    let mut origin_statements = Vec::new();
     let mut source = None;
     let mut mold = None;
     let mut stat = None;
+    let mut typed_constructions = Vec::new();
     for part in split_fortran_top_level_commas(inner) {
         if let Some((name, value_text)) = split_fortran_top_level_equals(part) {
             if name.eq_ignore_ascii_case("source") {
@@ -2792,7 +6421,34 @@ fn walk_allocate_stmt_from_text(text: &str) -> Result<Statement, String> {
                 continue;
             }
         }
-        targets.push(parse_fortran_alloc_target_text(part)?);
+        // `allocate(Child :: obj)` — a TYPED allocation names the dynamic type
+        // the object is to have. The prefix was never read, so the object was
+        // allocated with its DECLARED type and `select type` then took the
+        // parent branch: `class is (Child)` never matched a `Child`.
+        // ⛔ Only a DERIVED type names a constructor. `allocate(character(len=5)
+        // :: s)` carries a type spec too, and treating that as a class emitted
+        // `new character(len=5(` and dropped the allocation outright.
+        let (part, typed_as) = match split_fortran_alloc_type_spec(part) {
+            Some((type_spec, rest)) => (rest, fortran_derived_type_spec_name(type_spec)),
+            None => (part, None),
+        };
+        let mut origins = Vec::new();
+        let target = parse_fortran_alloc_target_text(part, &mut origins)?;
+        origin_statements.extend(fortran_allocate_origin_statement(&target, &origins));
+        if let Some(type_name) = typed_as {
+            // Constructing it IS the allocation: a derived type is built by
+            // naming it, and that is what gives the object its dynamic type.
+            typed_constructions.push(Statement::new(StmtKind::Assign {
+                targets: vec![target.clone()],
+                value: Expression::new(ExprKind::New {
+                    class: Box::new(Expression::ident(&type_name)),
+                    args: Vec::new(),
+                }),
+                by_ref: false,
+            }));
+            continue;
+        }
+        targets.push(target);
     }
 
     let allocate_call = Statement::new(StmtKind::Expr(Expression::new(ExprKind::Call {
@@ -2805,11 +6461,22 @@ fn walk_allocate_stmt_from_text(text: &str) -> Result<Statement, String> {
         optional: false,
     })));
 
-    if source.is_none() && mold.is_none() && stat.is_none() {
+    if source.is_none()
+        && mold.is_none()
+        && stat.is_none()
+        && origin_statements.is_empty()
+        && typed_constructions.is_empty()
+    {
         return Ok(allocate_call);
     }
 
-    let mut statements = vec![allocate_call];
+    let mut statements = if targets.is_empty() {
+        Vec::new()
+    } else {
+        vec![allocate_call]
+    };
+    statements.append(&mut typed_constructions);
+    statements.append(&mut origin_statements);
     if let Some(source) = source {
         for target in &targets {
             statements.push(Statement::new(StmtKind::Assign {
@@ -2867,6 +6534,15 @@ fn walk_allocator_stmt(pair: Pair<Rule>, intrinsic_name: &str) -> Result<Stateme
 }
 
 fn walk_alloc_item_expr(pair: Pair<Rule>) -> Result<Expression, String> {
+    walk_alloc_item_expr_with_origins(pair, &mut Vec::new())
+}
+
+/// `allocate(v(-4:1))` states the array's origin as well as its shape, so the
+/// declared lower bounds come back through `origins` for the caller to record.
+fn walk_alloc_item_expr_with_origins(
+    pair: Pair<Rule>,
+    origins: &mut Vec<Option<Expression>>,
+) -> Result<Expression, String> {
     let mut inner = pair.into_inner().filter(|p| meaningful(p));
     let ident = inner
         .next()
@@ -2881,7 +6557,9 @@ fn walk_alloc_item_expr(pair: Pair<Rule>) -> Result<Expression, String> {
             continue;
         }
         for dim in child.into_inner().filter(|p| meaningful(p)) {
+            let origin = walk_dimension_spec_origin(dim.clone())?;
             if let Some(expr) = walk_dimension_spec_expr(dim)? {
+                origins.push(origin);
                 dims.push(Argument::positional(expr));
             }
         }
@@ -2898,15 +6576,53 @@ fn walk_alloc_item_expr(pair: Pair<Rule>) -> Result<Expression, String> {
     }
 }
 
+/// The `lo` of a `lo:hi` dimension spec — `None` for a bare extent, which means
+/// Fortran's default origin of 1.
+fn walk_dimension_spec_origin(pair: Pair<Rule>) -> Result<Option<Expression>, String> {
+    if pair.as_rule() != Rule::dimension_spec {
+        return Ok(None);
+    }
+    let exprs: Vec<Pair<Rule>> = pair
+        .into_inner()
+        .filter(|child| {
+            meaningful(child) && (is_expr_rule(child.as_rule()) || child.as_rule() == Rule::expression)
+        })
+        .collect();
+    if exprs.len() < 2 {
+        return Ok(None);
+    }
+    walk_expr(exprs[0].clone()).map(Some)
+}
+
 fn walk_dimension_spec_expr(pair: Pair<Rule>) -> Result<Option<Expression>, String> {
     match pair.as_rule() {
         Rule::dimension_spec => {
-            for child in pair.into_inner().filter(|p| meaningful(p)) {
-                if is_expr_rule(child.as_rule()) || child.as_rule() == Rule::expression {
-                    return Ok(Some(walk_expr(child)?));
+            let exprs: Vec<Pair<Rule>> = pair
+                .into_inner()
+                .filter(|child| {
+                    meaningful(child)
+                        && (is_expr_rule(child.as_rule()) || child.as_rule() == Rule::expression)
+                })
+                .collect();
+            // `allocate(v(-4:1))` states an origin and an upper bound, not an
+            // extent. Taking the first expression would allocate `-4` elements.
+            match exprs.len() {
+                0 => Ok(None),
+                1 => Ok(Some(walk_expr(exprs.into_iter().next().unwrap())?)),
+                _ => {
+                    let lo = walk_expr(exprs[0].clone())?;
+                    let hi = walk_expr(exprs[1].clone())?;
+                    Ok(Some(Expression::new(ExprKind::Binary {
+                        op: BinOp::Add,
+                        left: Box::new(Expression::new(ExprKind::Binary {
+                            op: BinOp::Sub,
+                            left: Box::new(hi),
+                            right: Box::new(lo),
+                        })),
+                        right: Box::new(Expression::int(1)),
+                    })))
                 }
             }
-            Ok(None)
         }
         rule if is_expr_rule(rule) || rule == Rule::expression => walk_expr(pair).map(Some),
         _ => Ok(None),
@@ -2947,6 +6663,7 @@ fn walk_sub(pair: Pair<Rule>) -> Result<Statement, String> {
     promote_mutated_fortran_params(&mut params, &body);
     lower_fortran_namelist_io(&mut body);
     lower_fortran_body_intrinsics(&params, &mut body);
+    lower_fortran_array_bounds(&params, &mut body);
     lower_fortran_array_semantics(&params, &mut body);
     let is_generator = body_has_yield(&body);
     Ok(Statement::new(StmtKind::FunctionDecl {
@@ -3018,6 +6735,7 @@ fn walk_func(pair: Pair<Rule>) -> Result<Statement, String> {
     lower_fortran_namelist_io(&mut body);
     lower_fortran_body_intrinsics(&params, &mut body);
     normalize_fortran_function_result(&nm, result_name.as_deref(), &mut rt, &mut body);
+    lower_fortran_array_bounds(&params, &mut body);
     lower_fortran_array_semantics(&params, &mut body);
     let is_generator = body_has_yield(&body);
     Ok(Statement::new(StmtKind::FunctionDecl {
@@ -3258,6 +6976,13 @@ fn walk_type(pair: Pair<Rule>) -> Result<Statement, String> {
                                 method_bindings.push((public_name, implementation_name));
                             }
                         }
+                        // `generic :: operator(+) => add` — the bound name is a
+                        // DESIGNATOR now, so a plain `generic :: g => impl`
+                        // arrives wrapped and stopped being seen at all: the
+                        // implementation name became the public one.
+                        Rule::interface_designator if is_generic_binding => {
+                            generic_or_final_names.push(child.as_str().trim().to_string());
+                        }
                         Rule::identifier | Rule::designator_name
                             if is_generic_binding || is_final_binding =>
                         {
@@ -3432,9 +7157,13 @@ fn bind_module_type_bound_procedures_with_pool(
             let Some(candidates) = procedures.get(&implementation_name.to_ascii_lowercase()) else {
                 continue;
             };
+            // A `nopass` binding names a procedure with no receiver, so
+            // requiring one of the type's own dummies never matches and the
+            // method was left with an EMPTY body — `call obj%s()` ran nothing.
+            let nopass = modifiers.is_static;
             let Some(candidate) = candidates
                 .iter()
-                .find(|candidate| function_decl_targets_type(candidate, name))
+                .find(|candidate| nopass || function_decl_targets_type(candidate, name))
             else {
                 continue;
             };
@@ -3777,6 +7506,20 @@ fn walk_expr(pair: Pair<Rule>) -> Result<Expression, String> {
 
             let mut elems: Vec<vybe_ast::ArrayElement> = Vec::new();
             for value in values {
+                // An implied-do among other values contributes ITS WHOLE RUN,
+                // so it spreads. Taking the first inner expression — which is
+                // what the plain path below does — reduced `(10, i = 1, 2)` to
+                // the single element `10`, so `(/ (10,i=1,2), (20,i=1,3) /)`
+                // built a 2-element array instead of a 5-element one.
+                if let Some(lowered) = lower_fortran_implied_do_array_constructor(value.clone())? {
+                    elems.push(vybe_ast::ArrayElement {
+                        key: None,
+                        value: lowered,
+                        spread: true,
+                        by_ref: false,
+                    });
+                    continue;
+                }
                 if let Some(inner) = value
                     .into_inner()
                     .filter(|q| meaningful(q))
@@ -3814,13 +7557,9 @@ fn walk_expr(pair: Pair<Rule>) -> Result<Expression, String> {
                 Ok(Expression::new(ExprKind::Lit(Literal::Int(n))))
             }
         }
-        Rule::string_literal => {
-            let s = pair.as_str();
-            let inner = &s[1..s.len() - 1];
-            Ok(Expression::new(ExprKind::Lit(Literal::Str(
-                inner.replace("''", "'").replace("\"\"", "\""),
-            ))))
-        }
+        Rule::string_literal => Ok(Expression::new(ExprKind::Lit(Literal::Str(
+            parse_fortran_string_literal_text(pair.as_str()),
+        )))),
         Rule::boz_literal => {
             // `b'..'` / `o'..'` / `z'..'` — bit / octal / hex literal.
             let s = pair.as_str();
@@ -3835,7 +7574,8 @@ fn walk_expr(pair: Pair<Rule>) -> Result<Expression, String> {
             let n = i64::from_str_radix(trimmed, radix).unwrap_or(0);
             Ok(Expression::new(ExprKind::Lit(Literal::Int(n))))
         }
-        Rule::identifier => Ok(Expression::new(ExprKind::Ident(pair.as_str().to_string()))),
+        Rule::identifier => Ok(fortran_iso_c_binding_constant(pair.as_str())
+            .unwrap_or_else(|| Expression::new(ExprKind::Ident(pair.as_str().to_string())))),
         Rule::designator_name => Ok(Expression::new(ExprKind::Ident(pair.as_str().to_string()))),
         Rule::function_call_or_subscript => {
             let mut inner = pair.into_inner().filter(|p| meaningful(p));
@@ -3896,6 +7636,57 @@ fn lower_intrinsic_statement(expr: &Expression) -> Option<Statement> {
     let ExprKind::Ident(name) = &callee.kind else {
         return None;
     };
+    // ── Single-image collectives ────────────────────────────────────────────
+    //
+    // One image is the whole team, so a collective has nothing to combine: the
+    // value it would reduce ACROSS images is already the answer, and gfortran
+    // under `-fcoarray=single` leaves the argument untouched. An empty block is
+    // the statement that says so.
+    if matches!(
+        name.to_ascii_lowercase().as_str(),
+        "co_sum"
+            | "co_min"
+            | "co_max"
+            | "co_product"
+            | "co_reduce"
+            | "co_broadcast"
+            | "random_init"
+            | "event_post"
+            | "event_wait"
+            // Team management on one image: there is only ever the initial
+            // team, so forming, changing and syncing one are all no-ops.
+            | "form_team"
+            | "change_team"
+            | "end_team"
+            | "sync_team"
+    ) {
+        return Some(Statement::new(StmtKind::Block(Vec::new())));
+    }
+
+    // `event_query(event, count)` — nothing has been posted on one image.
+    if name.eq_ignore_ascii_case("event_query") && args.len() >= 2 {
+        return Some(Statement::new(StmtKind::Assign {
+            targets: vec![args[1].value.clone()],
+            value: Expression::int(0),
+            by_ref: false,
+        }));
+    }
+
+    // `atomic_define(atom, value)` / `atomic_ref(value, atom)` — on one image
+    // there is nothing to serialise against, so the atomic pair IS the
+    // assignment, in the argument order each one declares.
+    if let Some((target, source)) = match name.to_ascii_lowercase().as_str() {
+        "atomic_define" if args.len() >= 2 => Some((0, 1)),
+        "atomic_ref" if args.len() >= 2 => Some((0, 1)),
+        _ => None,
+    } {
+        return Some(Statement::new(StmtKind::Assign {
+            targets: vec![args[target].value.clone()],
+            value: args[source].value.clone(),
+            by_ref: false,
+        }));
+    }
+
     if name.eq_ignore_ascii_case("nullify") {
         if args.is_empty() {
             return None;
@@ -3947,6 +7738,17 @@ fn lower_intrinsic_statement(expr: &Expression) -> Option<Statement> {
         )));
     }
 
+    if name.eq_ignore_ascii_case("inquire") {
+        return lower_fortran_inquire_statement(args);
+    }
+
+    // Our records are written through on each write rather than buffered in the
+    // C sense, so there is nothing pending for `flush` to push. `endfile` marks
+    // the end of the record sequence, which is where the file already ends.
+    if name.eq_ignore_ascii_case("flush") || name.eq_ignore_ascii_case("endfile") {
+        return Some(Statement::new(StmtKind::Block(Vec::new())));
+    }
+
     if name.eq_ignore_ascii_case("rewind") {
         return Some(Statement::new(StmtKind::Expr(Expression::new(
             ExprKind::Call {
@@ -3966,6 +7768,48 @@ fn lower_intrinsic_statement(expr: &Expression) -> Option<Statement> {
     }
 
     None
+}
+
+/// `INQUIRE(file=…, exist=…, size=…)` — ask the file system about a file.
+///
+/// The properties that name a FILE are answered from the same `wasi:filesystem`
+/// surface python and php bind (`exists`, `fileSize`); a keyword is only
+/// emitted when it can be answered truthfully.
+///
+/// ⛔ The unit-based properties — `opened=`, `number=`, `form=`, `access=`,
+/// `name=` — describe the compiler's unit table, which has no query surface, so
+/// they are LEFT ALONE rather than filled with a plausible guess. A program
+/// asking for them keeps whatever its variable held; it does not get a lie.
+fn lower_fortran_inquire_statement(args: &[Argument]) -> Option<Statement> {
+    let keyword = |want: &str| {
+        args.iter()
+            .find(|arg| {
+                arg.name
+                    .as_deref()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(want))
+            })
+            .map(|arg| arg.value.clone())
+    };
+    let file = keyword("file")?;
+    let mut body = Vec::new();
+    for (want, builtin) in [
+        ("exist", "__fortran_file_exists"),
+        ("size", "__fortran_file_size"),
+    ] {
+        let Some(target) = keyword(want) else {
+            continue;
+        };
+        body.push(Statement::new(StmtKind::Assign {
+            targets: vec![target],
+            value: Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(builtin)),
+                args: vec![Argument::positional(file.clone())],
+                optional: false,
+            }),
+            by_ref: false,
+        }));
+    }
+    (!body.is_empty()).then(|| Statement::new(StmtKind::Block(body)))
 }
 
 fn lower_fortran_random_number_statement(args: &[Argument]) -> Option<Statement> {
@@ -4756,8 +8600,72 @@ fn parse_fortran_intent_mode(attr_text: &str) -> Option<PassBy> {
     }
 }
 
+/// Names a dummy declared with the VALUE attribute.
+const FORTRAN_VALUE_DUMMY_MARKER: &str = "__fortran_value_dummy";
+
+fn collect_fortran_value_dummies(body: &[Statement], out: &mut HashSet<String>) {
+    for statement in body {
+        if let StmtKind::Expr(expr) = &statement.kind {
+            if let ExprKind::Call { callee, args, .. } = &expr.kind {
+                if matches!(&callee.kind, ExprKind::Ident(n) if n == FORTRAN_VALUE_DUMMY_MARKER) {
+                    for arg in args {
+                        if let ExprKind::Lit(Literal::Str(name)) = &arg.value.kind {
+                            out.insert(name.to_ascii_lowercase());
+                        }
+                    }
+                }
+            }
+        }
+        for_each_fortran_nested_body(&statement.kind, &mut |stmts| {
+            collect_fortran_value_dummies(stmts, out)
+        });
+    }
+}
+
+/// Drop the VALUE-dummy markers once the promotion pass has read them.
+///
+/// The promotion runs per procedure DURING the walk, so the marker has to
+/// survive until then; left in the tree afterwards it is a call to a name that
+/// does not exist.
+fn strip_fortran_value_dummy_markers(body: &mut Vec<Statement>) {
+    for statement in body.iter_mut() {
+        if let StmtKind::FunctionDecl { body, .. } = &mut statement.kind {
+            strip_fortran_value_dummy_markers(body);
+        }
+        if let StmtKind::ModuleDecl { members, .. } | StmtKind::ClassDecl { members, .. } =
+            &mut statement.kind
+        {
+            for member in members.iter_mut() {
+                if let ClassMember::Method(inner) | ClassMember::NestedType(inner) = member {
+                    strip_fortran_value_dummy_markers(&mut vec![(**inner).clone()]);
+                    let mut one = vec![(**inner).clone()];
+                    strip_fortran_value_dummy_markers(&mut one);
+                    if let Some(first) = one.into_iter().next() {
+                        **inner = first;
+                    }
+                }
+            }
+        }
+        for_each_fortran_nested_vec_mut(&mut statement.kind, &mut strip_fortran_value_dummy_markers);
+    }
+    body.retain(|statement| {
+        let StmtKind::Expr(expr) = &statement.kind else {
+            return true;
+        };
+        let ExprKind::Call { callee, .. } = &expr.kind else {
+            return true;
+        };
+        !matches!(&callee.kind, ExprKind::Ident(n) if n == FORTRAN_VALUE_DUMMY_MARKER)
+    });
+}
+
 fn promote_mutated_fortran_params(params: &mut [Param], body: &[Statement]) {
+    let mut by_value = HashSet::new();
+    collect_fortran_value_dummies(body, &mut by_value);
     for param in params.iter_mut() {
+        if by_value.contains(&param.name.to_ascii_lowercase()) {
+            continue;
+        }
         // A dummy argument with NO `intent` is by reference in Fortran, and it
         // lands here as `Value` — so the old `!= Const` guard skipped exactly
         // the case the language leaves implicit. MEASURED against gfortran:
@@ -4786,6 +8694,9 @@ fn statement_mutates_fortran_param(statement: &Statement, param_name: &str) -> b
         StmtKind::Assign { targets, .. } => targets
             .iter()
             .any(|target| expr_targets_fortran_param(target, param_name)),
+        // A named construct wraps its statement in `Labeled`; the wrapper is
+        // transparent, so the question passes through to whatever it names.
+        StmtKind::Labeled { body, .. } => statement_mutates_fortran_param(body, param_name),
         StmtKind::Block(stmts)
         | StmtKind::DoWhile { body: stmts, .. }
         | StmtKind::With { body: stmts, .. }
@@ -4969,6 +8880,10 @@ fn rewrite_function_returns(body: &mut [Statement], result_var: &str) {
             | StmtKind::With { body: stmts, .. }
             | StmtKind::Using { body: stmts, .. }
             | StmtKind::Lock { body: stmts, .. } => rewrite_function_returns(stmts, result_var),
+            // A named construct wraps its statement in `Labeled`; transparent.
+            StmtKind::Labeled { body, .. } => {
+                rewrite_function_returns(std::slice::from_mut(body.as_mut()), result_var)
+            }
             StmtKind::If {
                 then_body,
                 elifs,
@@ -5139,6 +9054,23 @@ fn repair_remaining_fortran_array_calls_with_env(
                     stmts,
                     &mut nested,
                     &mut nested_callables,
+                    array_fields,
+                );
+            }
+            // A NAMED construct — `outer: do …` / `outer: block …` — wraps its
+            // statement in `Labeled`, and without an arm here the whole body
+            // fell to `_ => {}`. Every `w(i)` inside a named loop kept its
+            // `Call` shape and read the array 0-based, so naming a loop
+            // silently broke subscripting in its entire body.
+            //
+            // The wrapper is TRANSPARENT: it introduces no scope of its own, so
+            // the env passes straight through and the loop or block underneath
+            // makes whatever scope it needs.
+            StmtKind::Labeled { body, .. } => {
+                repair_remaining_fortran_array_calls_with_env(
+                    std::slice::from_mut(body.as_mut()),
+                    arrays,
+                    callables,
                     array_fields,
                 );
             }
@@ -5999,6 +9931,16 @@ fn lower_fortran_array_semantics_with_env(
                     array_fields,
                 );
             }
+            // A named construct wraps its statement in `Labeled`; transparent.
+            StmtKind::Labeled { body, .. } => {
+                lower_fortran_array_semantics_with_env(
+                    std::slice::from_mut(body.as_mut()),
+                    arrays,
+                    char_vars,
+                    callables,
+                    array_fields,
+                );
+            }
             StmtKind::If {
                 then_body,
                 elifs,
@@ -6403,6 +10345,16 @@ fn lower_fortran_array_call_arguments_with_env(
                 lower_fortran_array_call_arguments_with_env(
                     stmts,
                     &mut nested,
+                    array_field_sizes,
+                    array_fields,
+                    array_functions,
+                );
+            }
+            // A named construct wraps its statement in `Labeled`; transparent.
+            StmtKind::Labeled { body, .. } => {
+                lower_fortran_array_call_arguments_with_env(
+                    std::slice::from_mut(body.as_mut()),
+                    array_sizes,
                     array_field_sizes,
                     array_fields,
                     array_functions,
@@ -7040,6 +10992,18 @@ fn lower_fortran_array_assignments_with_env(
                     stmts,
                     &mut nested_arrays,
                     &mut nested,
+                    array_field_sizes,
+                    array_fields,
+                    array_functions,
+                    elemental_functions,
+                );
+            }
+            // A named construct wraps its statement in `Labeled`; transparent.
+            StmtKind::Labeled { body, .. } => {
+                lower_fortran_array_assignments_with_env(
+                    std::slice::from_mut(body.as_mut()),
+                    arrays,
+                    array_sizes,
                     array_field_sizes,
                     array_fields,
                     array_functions,
@@ -7773,6 +11737,16 @@ fn lower_fortran_array_return_calls_with_env(
                     procedure_params,
                 );
             }
+            // A named construct wraps its statement in `Labeled`; transparent.
+            StmtKind::Labeled { body, .. } => {
+                lower_fortran_array_return_calls_with_env(
+                    std::slice::from_mut(body.as_mut()),
+                    array_sizes,
+                    array_field_sizes,
+                    array_functions,
+                    procedure_params,
+                );
+            }
             StmtKind::If {
                 then_body,
                 elifs,
@@ -8064,6 +12038,10 @@ fn rewrite_fortran_array_return_statements(body: &mut [Statement]) {
             | StmtKind::NamespaceDecl { body: stmts, .. } => {
                 rewrite_fortran_array_return_statements(stmts)
             }
+            // A named construct wraps its statement in `Labeled`; transparent.
+            StmtKind::Labeled { body, .. } => {
+                rewrite_fortran_array_return_statements(std::slice::from_mut(body.as_mut()))
+            }
             StmtKind::If {
                 then_body,
                 elifs,
@@ -8222,6 +12200,18 @@ fn lower_fortran_scalar_array_assignments_with_env(
                     stmts,
                     &mut nested,
                     &mut nested_ranks,
+                    array_fields,
+                    array_field_sizes,
+                    array_field_ranks,
+                    array_functions,
+                );
+            }
+            // A named construct wraps its statement in `Labeled`; transparent.
+            StmtKind::Labeled { body, .. } => {
+                lower_fortran_scalar_array_assignments_with_env(
+                    std::slice::from_mut(body.as_mut()),
+                    array_sizes,
+                    array_ranks,
                     array_fields,
                     array_field_sizes,
                     array_field_ranks,
@@ -8863,6 +12853,19 @@ fn lower_fortran_array_expressions_with_env(
                     array_functions,
                 );
             }
+            // A named construct wraps its statement in `Labeled`; transparent.
+            StmtKind::Labeled { body, .. } => {
+                lower_fortran_array_expressions_with_env(
+                    std::slice::from_mut(body.as_mut()),
+                    array_sizes,
+                    array_ranks,
+                    arrays,
+                    array_field_sizes,
+                    array_field_ranks,
+                    array_fields,
+                    array_functions,
+                );
+            }
             StmtKind::ModuleDecl { members, .. }
             | StmtKind::ClassDecl { members, .. }
             | StmtKind::StructDecl { members, .. } => {
@@ -9427,6 +13430,33 @@ fn rewrite_fortran_array_expressions_in_expr(
                 array_functions,
             )
         }
+        // An `ArrayMap` built by an earlier fold — `merge(1, 0, v < 3)` becomes
+        // a map whose ARRAY is the mask. Without this arm the traversal stopped
+        // at the node and the mask kept its raw `v < 3`, which is a comparison
+        // against a whole array and fails in `wasm:js-number.toF64`. The fold
+        // was firing correctly; the traversal was not reaching what it built.
+        ExprKind::ArrayMap { array, body, .. } => {
+            rewrite_fortran_array_expressions_in_expr(
+                array,
+                array_sizes,
+                array_ranks,
+                array_field_sizes,
+                array_field_ranks,
+                arrays,
+                array_fields,
+                array_functions,
+            );
+            rewrite_fortran_array_expressions_in_expr(
+                body,
+                array_sizes,
+                array_ranks,
+                array_field_sizes,
+                array_field_ranks,
+                arrays,
+                array_fields,
+                array_functions,
+            );
+        }
         ExprKind::Ternary { cond, then, else_ } => {
             rewrite_fortran_array_expressions_in_expr(
                 cond,
@@ -9612,6 +13642,26 @@ fn rewrite_fortran_array_expressions_in_expr(
                 array_functions,
             );
         }
+        // PACK/UNPACK/RESHAPE/MERGE carry ORDINARY expressions as arguments —
+        // `merge(a, b, a < b)`'s mask is an elementwise comparison that still
+        // has to be repaired. Without this arm the args were skipped entirely
+        // and the mask reached the runtime as a scalar comparison of two
+        // arrays. Same shape as every other missing-traversal-arm bug: a node
+        // kind needs an arm in EVERY pass that walks expressions.
+        ExprKind::ArrayTransform { args, .. } => {
+            for arg in args {
+                rewrite_fortran_array_expressions_in_expr(
+                    arg,
+                    array_sizes,
+                    array_ranks,
+                    array_field_sizes,
+                    array_field_ranks,
+                    arrays,
+                    array_fields,
+                    array_functions,
+                );
+            }
+        }
         ExprKind::Array(items) => {
             for item in items {
                 if let Some(key) = item.key.as_mut() {
@@ -9726,9 +13776,29 @@ fn lower_fortran_array_binary_expr(
     array_fields: &HashSet<String>,
     array_functions: &HashSet<String>,
 ) -> Option<Expression> {
+    // Comparisons broadcast exactly as arithmetic does — `values >= 2` is a
+    // LOGICAL array, which is what `where (values >= 2)` and `count(values <= 4)`
+    // are built out of. Leaving them off this list did not make them scalar; it
+    // made them a comparison against a whole array, which reached
+    // `wasm:js-number.toF64` and failed there.
     if !matches!(
         op,
-        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Pow
+        BinOp::Add
+            | BinOp::Sub
+            | BinOp::Mul
+            | BinOp::Div
+            | BinOp::Pow
+            | BinOp::Lt
+            | BinOp::Gt
+            | BinOp::LtEq
+            | BinOp::GtEq
+            | BinOp::Eq
+            | BinOp::NotEq
+            // `.and.`/`.or.` combine two LOGICAL arrays elementwise, which is
+            // what `ELSEWHERE` narrows its mask with.
+            | BinOp::And
+            | BinOp::Or
+            | BinOp::Eqv
     ) {
         return None;
     }
@@ -9805,7 +13875,9 @@ fn lower_fortran_array_unary_expr(
     array_fields: &HashSet<String>,
     array_functions: &HashSet<String>,
 ) -> Option<Expression> {
-    if !matches!(op, UnaryOp::Neg | UnaryOp::Pos) {
+    // `.not.` on a LOGICAL array negates each element — the form `ELSEWHERE`
+    // needs to exclude what an earlier clause already claimed.
+    if !matches!(op, UnaryOp::Neg | UnaryOp::Pos | UnaryOp::Not) {
         return None;
     }
     if !is_known_fortran_array_expr(value, arrays, array_fields, array_functions) {
@@ -9950,6 +14022,35 @@ fn lower_fortran_array_intrinsic_expr(
                 by_ref: false,
             }])))
         }
+        // `maxval(a, mask=m)` and friends — the mask used to be dropped on the
+        // floor here, so they answered for the whole array. Rank 1 only: a
+        // masked reduction of a rank-2 array needs the mask walked in the same
+        // nesting, which this shape does not express.
+        "maxval" | "minval" | "sum" | "product"
+            if rank == 1
+                && args.iter().any(|arg| {
+                    arg.name
+                        .as_deref()
+                        .is_some_and(|name| name.eq_ignore_ascii_case("mask"))
+                }) =>
+        {
+            let mask = args.iter().find_map(|arg| {
+                arg.name
+                    .as_deref()
+                    .filter(|name| name.eq_ignore_ascii_case("mask"))
+                    .map(|_| arg.value.clone())
+            })?;
+            let kind = match lowered.as_str() {
+                "maxval" => "max",
+                "minval" => "min",
+                other => other,
+            };
+            let masked = build_fortran_masked_neutral_map(kind, array_expr.clone(), mask);
+            Some(match kind {
+                "product" => build_fortran_product_expr(masked),
+                _ => build_fortran_array_reduction(kind, masked, 0),
+            })
+        }
         _ if args.len() != 1 || args[0].name.is_some() => None,
         "size" => Some(if args.len() == 1 {
             resolve_fortran_array_expr_size(array_expr, array_sizes, array_field_sizes)
@@ -9968,6 +14069,16 @@ fn lower_fortran_array_intrinsic_expr(
         }),
         "sum" => Some(build_fortran_nested_array_reduction(
             "sum",
+            array_expr.clone(),
+            rank,
+            0,
+        )),
+        // The BIT reductions (F2008 13.7.61-63): `iall` folds with AND, `iany`
+        // with OR, `iparity` with XOR. Rank-aware through the same nested
+        // reduction `sum` uses, so a rank-2 argument folds rows then elements
+        // instead of ANDing arrays together.
+        "iall" | "iany" | "iparity" => Some(build_fortran_nested_array_reduction(
+            &lowered,
             array_expr.clone(),
             rank,
             0,
@@ -10162,35 +14273,53 @@ fn build_fortran_findloc_expr(
     fortran_index_to_loc(index_expr)
 }
 
-fn build_fortran_masked_rank1_loc_expr(
+/// A masked array flattened to one the plain reduction can walk: each element
+/// the mask excludes becomes the value that cannot change the answer.
+///
+/// `max`/`min` use a sentinel far outside any plausible operand, `sum` uses 0
+/// and `product` uses 1 — the identity of each operation. This is the shape
+/// `maxloc(a, mask=m)` already used; naming it lets `maxval`/`minval`/`sum`/
+/// `product` reduce the same array instead of ignoring their mask.
+fn build_fortran_masked_neutral_map(
     kind: &str,
     array_expr: Expression,
     mask_expr: Expression,
 ) -> Expression {
     let item_name = "__fortran_masked_loc_item";
     let idx_name = "__fortran_masked_loc_idx";
-    let sentinel = if kind == "max" {
-        Expression::int(-1_000_000_000)
-    } else {
-        Expression::int(1_000_000_000)
+    let neutral = match kind {
+        "max" => Expression::int(-1_000_000_000),
+        "min" => Expression::int(1_000_000_000),
+        "product" => Expression::int(1),
+        _ => Expression::int(0),
     };
-    let mapped = build_fortran_typed_array_map(
-        array_expr.clone(),
+    build_fortran_typed_array_map(
+        array_expr,
         Expression::new(ExprKind::Ternary {
             cond: Box::new(fortran_expr_is_true(Expression::new(ExprKind::Index {
-                object: Box::new(mask_expr.clone()),
+                object: Box::new(mask_expr),
                 index: Box::new(Expression::ident(idx_name)),
                 null_safe: false,
             }))),
             then: Box::new(Expression::ident(item_name)),
-            else_: Box::new(sentinel),
+            else_: Box::new(neutral),
         }),
         true,
         item_name,
         idx_name,
         None,
-    );
-    build_fortran_rank1_loc_expr(kind, mapped)
+    )
+}
+
+fn build_fortran_masked_rank1_loc_expr(
+    kind: &str,
+    array_expr: Expression,
+    mask_expr: Expression,
+) -> Expression {
+    build_fortran_rank1_loc_expr(
+        kind,
+        build_fortran_masked_neutral_map(kind, array_expr, mask_expr),
+    )
 }
 
 fn build_fortran_nested_array_loc_expr(
@@ -10474,6 +14603,18 @@ fn build_fortran_array_reduction(kind: &str, array_expr: Expression, depth: usiz
             ],
             optional: false,
         }),
+        // `iall`/`iany`/`iparity` fold with AND/OR/XOR. Each needs its IDENTITY
+        // as the seed below, or `reduce` starts from element 0 and an empty
+        // array throws instead of answering the identity.
+        "iall" | "iany" | "iparity" => Expression::new(ExprKind::Binary {
+            op: match kind {
+                "iall" => BinOp::BitAnd,
+                "iany" => BinOp::BitOr,
+                _ => BinOp::BitXor,
+            },
+            left: Box::new(Expression::ident(&acc_name)),
+            right: Box::new(Expression::ident(&item_name)),
+        }),
         _ => array_expr.clone(),
     };
 
@@ -10504,8 +14645,15 @@ fn build_fortran_array_reduction(kind: &str, array_expr: Expression, depth: usiz
         is_async: false,
         captures: Vec::new(),
     }))];
-    if kind == "sum" {
-        args.push(Argument::positional(Expression::int(0)));
+    // The reduction's IDENTITY. `iall` seeds all-ones so the first AND is a
+    // no-op; `iany`/`iparity` seed zero. `min`/`max` deliberately have none —
+    // there is no representable identity, so they start from element 0.
+    if let Some(identity) = match kind {
+        "sum" | "iany" | "iparity" => Some(0),
+        "iall" => Some(-1),
+        _ => None,
+    } {
+        args.push(Argument::positional(Expression::int(identity)));
     }
 
     Expression::new(ExprKind::Call {
@@ -10868,7 +15016,12 @@ fn rewrite_array_subscripts_in_expr(
             rewrite_array_subscripts_in_expr(left, arrays, char_vars, callables, array_fields);
             rewrite_array_subscripts_in_expr(right, arrays, char_vars, callables, array_fields);
         }
+        // `real(v(1))` folds to a CAST while the expression is being walked, and
+        // a subscript inside one still has to be normalised. Without this arm
+        // the cast hid its own operand from this pass: `v(1)` kept its Fortran
+        // 1-based subscript and read `v(2)`.
         ExprKind::Unary { expr: inner, .. }
+        | ExprKind::Cast { expr: inner, .. }
         | ExprKind::Await(inner)
         | ExprKind::YieldFrom(inner)
         | ExprKind::TypeOf(inner) => {
@@ -11305,6 +15458,13 @@ fn lower_fortran_body_intrinsics_with_env(
                 let mut nested_env = type_env.clone();
                 lower_fortran_body_intrinsics_with_env(stmts, &mut nested_env);
             }
+            // A named construct wraps its statement in `Labeled`; transparent.
+            StmtKind::Labeled { body, .. } => {
+                lower_fortran_body_intrinsics_with_env(
+                    std::slice::from_mut(body.as_mut()),
+                    type_env,
+                );
+            }
             StmtKind::If {
                 then_body,
                 elifs,
@@ -11533,6 +15693,24 @@ fn lower_fortran_transfer_markers_in_statement(
                 lower_fortran_transfer_markers_in_expr(msg, type_env);
             }
         }
+        // `print *, transfer(n, 0.0)` carries the marker in an item list; without
+        // these arms the marker survives into emitted code as a call to undefined.
+        StmtKind::Echo(items) => {
+            for item in items {
+                lower_fortran_transfer_markers_in_expr(item, type_env);
+            }
+        }
+        StmtKind::PrintFile {
+            file_number, items, ..
+        }
+        | StmtKind::WriteFile {
+            file_number, items, ..
+        } => {
+            lower_fortran_transfer_markers_in_expr(file_number, type_env);
+            for item in items {
+                lower_fortran_transfer_markers_in_expr(item, type_env);
+            }
+        }
         _ => {}
     }
 }
@@ -11585,6 +15763,17 @@ fn lower_fortran_transfer_markers_in_expr(
         ExprKind::Index { object, index, .. } => {
             lower_fortran_transfer_markers_in_expr(object, type_env);
             lower_fortran_transfer_markers_in_expr(index, type_env);
+        }
+        // `print *, "x", transfer(s, 0), "]"` — two or more items become an
+        // Interpolation, and without this arm the marker sails through into
+        // emitted code as a call to undefined. A ONE-item print skips
+        // Interpolation entirely, which is what made this look like it worked.
+        ExprKind::Interpolation(parts) => {
+            for part in parts {
+                if let InterpolPart::Expr(part) = part {
+                    lower_fortran_transfer_markers_in_expr(part, type_env);
+                }
+            }
         }
         ExprKind::Array(items) => {
             for item in items {
@@ -11700,6 +15889,10 @@ fn collect_fortran_complex_type_env(body: &[Statement], type_env: &mut HashMap<S
             | StmtKind::Lock { body: stmts, .. }
             | StmtKind::NamespaceDecl { body: stmts, .. } => {
                 collect_fortran_complex_type_env(stmts, type_env);
+            }
+            // A named construct wraps its statement in `Labeled`; transparent.
+            StmtKind::Labeled { body, .. } => {
+                collect_fortran_complex_type_env(std::slice::from_ref(body.as_ref()), type_env);
             }
             StmtKind::If {
                 then_body,
@@ -11826,6 +16019,13 @@ fn lower_fortran_complex_expressions_with_env(
             | StmtKind::NamespaceDecl { body: stmts, .. } => {
                 let mut nested_env = type_env.clone();
                 lower_fortran_complex_expressions_with_env(stmts, &mut nested_env);
+            }
+            // A named construct wraps its statement in `Labeled`; transparent.
+            StmtKind::Labeled { body, .. } => {
+                lower_fortran_complex_expressions_with_env(
+                    std::slice::from_mut(body.as_mut()),
+                    type_env,
+                );
             }
             StmtKind::If {
                 then_body,
@@ -12025,6 +16225,25 @@ fn rewrite_fortran_complex_expressions_in_expr(
     type_env: &HashMap<String, String>,
 ) {
     match &mut expr.kind {
+        // `real(z)` and `int(z)` are folded to a numeric cast while the
+        // expression is being walked, before any declaration is known — the same
+        // way `a + b` arrives here as a plain `Binary`. On a complex operand a
+        // numeric cast is not what either one means: both take the REAL PART,
+        // and `int` truncates it afterwards.
+        ExprKind::Cast { expr: inner, type_name } => {
+            rewrite_fortran_complex_expressions_in_expr(inner, type_env);
+            if !expr_is_fortran_complex_scalar(inner, type_env) {
+                return;
+            }
+            let real_part = fortran_complex_real_part(inner);
+            *expr = match type_name.as_str() {
+                "number" => real_part,
+                _ => Expression::new(ExprKind::Cast {
+                    expr: Box::new(real_part),
+                    type_name: type_name.clone(),
+                }),
+            };
+        }
         ExprKind::Binary { op, left, right } => {
             rewrite_fortran_complex_expressions_in_expr(left, type_env);
             rewrite_fortran_complex_expressions_in_expr(right, type_env);
@@ -12396,9 +16615,9 @@ fn fortran_complex_object_fields(props: &[ObjectProperty]) -> bool {
         let ExprKind::Lit(Literal::Str(name)) = &key.kind else {
             continue;
         };
-        if name.eq_ignore_ascii_case("re") {
+        if name.eq_ignore_ascii_case("real") {
             has_re = true;
-        } else if name.eq_ignore_ascii_case("im") {
+        } else if name.eq_ignore_ascii_case("imag") {
             has_im = true;
         }
     }
@@ -12532,177 +16751,72 @@ fn lower_fortran_complex_binary_expr(
     right: &Expression,
     type_env: &HashMap<String, String>,
 ) -> Expression {
+    // A real operand mixed with a complex one is that real plus a zero
+    // imaginary part — which is the only Fortran-specific thing here. The four
+    // arithmetic rules themselves are the shared ones.
     let left_re = fortran_complex_real_or_scalar(left, type_env);
     let left_im = fortran_complex_imag_or_zero(left, type_env);
     let right_re = fortran_complex_real_or_scalar(right, type_env);
     let right_im = fortran_complex_imag_or_zero(right, type_env);
     match op {
-        BinOp::Add => build_fortran_complex_expr(
-            Expression::new(ExprKind::Binary {
-                op: BinOp::Add,
-                left: Box::new(left_re),
-                right: Box::new(right_re),
-            }),
-            Expression::new(ExprKind::Binary {
-                op: BinOp::Add,
-                left: Box::new(left_im),
-                right: Box::new(right_im),
-            }),
-        ),
-        BinOp::Sub => build_fortran_complex_expr(
-            Expression::new(ExprKind::Binary {
-                op: BinOp::Sub,
-                left: Box::new(left_re),
-                right: Box::new(right_re),
-            }),
-            Expression::new(ExprKind::Binary {
-                op: BinOp::Sub,
-                left: Box::new(left_im),
-                right: Box::new(right_im),
-            }),
-        ),
-        BinOp::Mul => {
-            let real_part = Expression::new(ExprKind::Binary {
-                op: BinOp::Sub,
-                left: Box::new(Expression::new(ExprKind::Binary {
-                    op: BinOp::Mul,
-                    left: Box::new(left_re.clone()),
-                    right: Box::new(right_re.clone()),
-                })),
-                right: Box::new(Expression::new(ExprKind::Binary {
-                    op: BinOp::Mul,
-                    left: Box::new(left_im.clone()),
-                    right: Box::new(right_im.clone()),
-                })),
-            });
-            let imag_part = Expression::new(ExprKind::Binary {
-                op: BinOp::Add,
-                left: Box::new(Expression::new(ExprKind::Binary {
-                    op: BinOp::Mul,
-                    left: Box::new(left_re),
-                    right: Box::new(right_im),
-                })),
-                right: Box::new(Expression::new(ExprKind::Binary {
-                    op: BinOp::Mul,
-                    left: Box::new(left_im),
-                    right: Box::new(right_re),
-                })),
-            });
-            build_fortran_complex_expr(real_part, imag_part)
-        }
-        BinOp::Div => {
-            let denom = Expression::new(ExprKind::Binary {
-                op: BinOp::Add,
-                left: Box::new(Expression::new(ExprKind::Binary {
-                    op: BinOp::Mul,
-                    left: Box::new(right_re.clone()),
-                    right: Box::new(right_re.clone()),
-                })),
-                right: Box::new(Expression::new(ExprKind::Binary {
-                    op: BinOp::Mul,
-                    left: Box::new(right_im.clone()),
-                    right: Box::new(right_im.clone()),
-                })),
-            });
-            let real_part = Expression::new(ExprKind::Binary {
-                op: BinOp::Div,
-                left: Box::new(Expression::new(ExprKind::Binary {
-                    op: BinOp::Add,
-                    left: Box::new(Expression::new(ExprKind::Binary {
-                        op: BinOp::Mul,
-                        left: Box::new(left_re.clone()),
-                        right: Box::new(right_re.clone()),
-                    })),
-                    right: Box::new(Expression::new(ExprKind::Binary {
-                        op: BinOp::Mul,
-                        left: Box::new(left_im.clone()),
-                        right: Box::new(right_im.clone()),
-                    })),
-                })),
-                right: Box::new(denom.clone()),
-            });
-            let imag_part = Expression::new(ExprKind::Binary {
-                op: BinOp::Div,
-                left: Box::new(Expression::new(ExprKind::Binary {
-                    op: BinOp::Sub,
-                    left: Box::new(Expression::new(ExprKind::Binary {
-                        op: BinOp::Mul,
-                        left: Box::new(left_im),
-                        right: Box::new(right_re),
-                    })),
-                    right: Box::new(Expression::new(ExprKind::Binary {
-                        op: BinOp::Mul,
-                        left: Box::new(left_re),
-                        right: Box::new(right_im),
-                    })),
-                })),
-                right: Box::new(denom),
-            });
-            build_fortran_complex_expr(real_part, imag_part)
-        }
+        BinOp::Add => complex::add(left_re, left_im, right_re, right_im),
+        BinOp::Sub => complex::sub(left_re, left_im, right_re, right_im),
+        BinOp::Mul => complex::mul(left_re, left_im, right_re, right_im),
+        BinOp::Div => complex::div(left_re, left_im, right_re, right_im),
         _ => Expression::null(),
     }
 }
 
+// ── Complex values are the SHARED representation ────────────────────────────
+//
+// `primitives::complex` is the model — an object `{real, imag}` that C, Python
+// and Ruby already build and read. Fortran used to carry its own `{re, im}`
+// with a private copy of the same arithmetic; these are the same operations,
+// spelled once. The wrappers stay because the walker names them everywhere,
+// and because `conjg`/`abs` read a VALUE while the shared builders take the two
+// components apart.
+
+/// The shared `{real, imag}` object, stamped `__type = "complex"`.
+///
+/// The stamp is what tells a DISPLAY path that this bag of two numbers is a
+/// complex — `ObjectKind::Ordinary` alone cannot, because a derived-type value
+/// is one too, which is why `[builtin_slots.object].to_string` is the wrong
+/// instrument here. Python stamps the same shape for the same reason, and each
+/// language renders it in its own spelling: `(1.0,2.0)` here, `(1+2j)` there.
 fn build_fortran_complex_expr(real: Expression, imag: Expression) -> Expression {
-    Expression::new(ExprKind::Object(vec![
+    let ExprKind::Object(mut props) = complex::complex_object(real, imag).kind else {
+        unreachable!("complex_object builds an object literal");
+    };
+    props.insert(
+        0,
         ObjectProperty::KeyValue {
-            key: Expression::string("re"),
-            value: real,
+            key: Expression::string("__type"),
+            value: Expression::string("complex"),
         },
-        ObjectProperty::KeyValue {
-            key: Expression::string("im"),
-            value: imag,
-        },
-    ]))
+    );
+    Expression::new(ExprKind::Object(props))
 }
 
 fn build_fortran_complex_conjg_expr(value: &Expression) -> Expression {
-    build_fortran_complex_expr(
+    complex::conj(
         fortran_complex_real_part(value),
-        Expression::new(ExprKind::Unary {
-            op: UnaryOp::Neg,
-            expr: Box::new(fortran_complex_imag_part(value)),
-        }),
+        fortran_complex_imag_part(value),
     )
 }
 
 fn build_fortran_complex_abs_expr(value: &Expression) -> Expression {
-    let real = fortran_complex_real_part(value);
-    let imag = fortran_complex_imag_part(value);
-    Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::ident("sqrt")),
-        args: vec![Argument::positional(Expression::new(ExprKind::Binary {
-            op: BinOp::Add,
-            left: Box::new(Expression::new(ExprKind::Binary {
-                op: BinOp::Mul,
-                left: Box::new(real.clone()),
-                right: Box::new(real),
-            })),
-            right: Box::new(Expression::new(ExprKind::Binary {
-                op: BinOp::Mul,
-                left: Box::new(imag.clone()),
-                right: Box::new(imag),
-            })),
-        }))],
-        optional: false,
-    })
+    complex::cabs(
+        fortran_complex_real_part(value),
+        fortran_complex_imag_part(value),
+    )
 }
 
 fn fortran_complex_real_part(value: &Expression) -> Expression {
-    Expression::new(ExprKind::Member {
-        object: Box::new(value.clone()),
-        field: "re".to_string(),
-        null_safe: false,
-    })
+    complex::real_part(value.clone())
 }
 
 fn fortran_complex_imag_part(value: &Expression) -> Expression {
-    Expression::new(ExprKind::Member {
-        object: Box::new(value.clone()),
-        field: "im".to_string(),
-        null_safe: false,
-    })
+    complex::imag_part(value.clone())
 }
 
 fn fortran_complex_real_or_scalar(
@@ -12746,11 +16860,132 @@ fn lower_intrinsic_expr_call(callee: &Expression, args: &[Argument]) -> Option<E
         "transpose" if args.len() == 1 && args[0].name.is_none() => {
             Some(build_fortran_transpose_expr(args[0].value.clone()))
         }
-        "int" if !positional_args.is_empty() => {
-            Some(Expression::new(ExprKind::Cast {
-                expr: Box::new(positional_args[0].clone()),
-                type_name: "integer".to_string(),
+        // Degree trig. The host math library is radians-only, so the conversion
+        // IS the lowering — and the two families convert opposite sides:
+        // `sind`/`cosd`/`tand` take degrees, so the ARGUMENT converts; the
+        // inverse forms answer in degrees, so the RESULT does. Dropping the `d`
+        // gives the radian name in both directions.
+        "sind" | "cosd" | "tand" if positional_args.len() == 1 => {
+            let radians = Expression::new(ExprKind::Binary {
+                op: BinOp::Mul,
+                left: Box::new(positional_args[0].clone()),
+                right: Box::new(Expression::float(std::f64::consts::PI / 180.0)),
+            });
+            Some(fortran_call(&lowered[..lowered.len() - 1], vec![radians]))
+        }
+        "asind" | "acosd" | "atand" if positional_args.len() == 1 => {
+            Some(Expression::new(ExprKind::Binary {
+                op: BinOp::Mul,
+                left: Box::new(fortran_call(
+                    &lowered[..lowered.len() - 1],
+                    vec![positional_args[0].clone()],
+                )),
+                right: Box::new(Expression::float(180.0 / std::f64::consts::PI)),
             }))
+        }
+        // `new_line(x)` is the newline for `x`'s character kind — one character,
+        // and the same one for every kind the AST represents. The argument only
+        // selects the kind, so it is not evaluated.
+        "new_line" if positional_args.len() == 1 => Some(Expression::string("\n")),
+        // ── Single-image coarray inquiry ────────────────────────────────────
+        //
+        // Execution is one image, which the grammar has said all along ("walker
+        // treats these as no-ops (single-image execution)") — it just never
+        // answered the questions. Verified against
+        // `gfortran -fcoarray=single`: image 1 of 1, and the INITIAL team is
+        // numbered −1, not 1.
+        // F2018 `reduce(array, operator(+) [, dim=] [, mask=] [, identity=]
+        // [, ordered=])` is the general fold, and for the two operations the
+        // suite uses it IS the intrinsic reduction that already exists — `+` is
+        // `sum`, `*` is `product`, with the same `dim`/`mask` keywords. So it
+        // rewrites rather than growing a second reduction path.
+        //
+        // `identity` only matters for an empty section (`sum`/`product` already
+        // return 0/1 there) and `ordered` fixes an evaluation order that is
+        // unobservable for associative `+`/`*` — both drop out.
+        "reduce" if positional_args.len() >= 2 => {
+            let ExprKind::Lit(Literal::Str(op)) = &positional_args[1].kind else {
+                return None;
+            };
+            let folded = match op.as_str() {
+                "+" => "sum",
+                "*" => "product",
+                _ => return None,
+            };
+            let mut forwarded = vec![Argument::positional(positional_args[0].clone())];
+            forwarded.extend(args.iter().filter(|arg| {
+                arg.name
+                    .as_deref()
+                    .is_some_and(|name| name.eq_ignore_ascii_case("dim") || name.eq_ignore_ascii_case("mask"))
+            }).cloned());
+            Some(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(folded)),
+                args: forwarded,
+                optional: false,
+            }))
+        }
+        // `modulo(a, p)` takes the sign of the DIVISOR, `mod(a, p)` the sign of
+        // the dividend — they differ exactly when the operands disagree in sign.
+        // Both were mapped to the same truncating `f64_mod`, which is `mod`, so
+        // `modulo(-10, 3)` answered −1 where gfortran answers 2.
+        //
+        // Built as the defining identity `a - floor(a/p) * p`. ⛔ The division
+        // must be forced REAL: integer division truncates now, and truncation
+        // is precisely what makes this `mod` again.
+        "modulo" if positional_args.len() == 2 => {
+            let real = |expr: Expression| {
+                Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("real")),
+                    args: vec![Argument::positional(expr)],
+                    optional: false,
+                })
+            };
+            let quotient = Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("floor")),
+                args: vec![Argument::positional(Expression::new(ExprKind::Binary {
+                    op: BinOp::Div,
+                    left: Box::new(real(positional_args[0].clone())),
+                    right: Box::new(real(positional_args[1].clone())),
+                }))],
+                optional: false,
+            });
+            Some(Expression::new(ExprKind::Binary {
+                op: BinOp::Sub,
+                left: Box::new(positional_args[0].clone()),
+                right: Box::new(Expression::new(ExprKind::Binary {
+                    op: BinOp::Mul,
+                    left: Box::new(quotient),
+                    right: Box::new(positional_args[1].clone()),
+                })),
+            }))
+        }
+        "this_image" | "num_images" | "image_index" => Some(Expression::int(1)),
+        "team_number" | "get_team" => Some(Expression::int(-1)),
+        // Verified against `gfortran -fcoarray=single`: the one image is
+        // healthy (`image_status` → 0 = STAT_OK) and neither list has members.
+        "image_status" => Some(Expression::int(0)),
+        "failed_images" | "stopped_images" => Some(fortran_array_expr(Vec::new())),
+        // Every array vybe builds is one contiguous run — there is no strided
+        // view to be non-contiguous about.
+        "is_contiguous" => Some(Expression::new(ExprKind::Lit(Literal::Bool(true)))),
+        // One image, one element per codimension.
+        "coshape" => Some(fortran_array_expr(vec![Expression::int(1)])),
+        // A coarray on one image has exactly one element per codimension, so
+        // both cobounds are 1.
+        "lcobound" | "ucobound" => Some(Expression::int(1)),
+        // `radix` is the base of the numeric model: 2 for every integer and real
+        // kind on every target vybe emits for. It takes no model lookup, unlike
+        // `maxexponent`/`minexponent` which vary by kind.
+        "radix" if positional_args.len() == 1 => Some(Expression::int(2)),
+        // `INT(a)` TRUNCATES toward zero — `int(3.5)` is 3. A cast to "integer"
+        // does not: it is a numeric coercion, and it answered 3.5. The profile
+        // already declares `int = common:to_int`, which is the truncation, so
+        // the only thing to do here is drop a `kind=` that has no bearing on
+        // the value and let the builtin have the call. Folding it was what kept
+        // the builtin from ever being reached — and what hid `int(whole_array)`
+        // from the elementwise lowering, which handles `int` by name.
+        "int" if positional_args.len() > 1 || args.len() > positional_args.len() => {
+            Some(fortran_call("int", vec![positional_args.first()?.clone()]))
         }
         "real" | "dble" if !positional_args.is_empty() => {
             Some(Expression::new(ExprKind::Cast {
@@ -12763,6 +16998,16 @@ fn lower_intrinsic_expr_call(callee: &Expression, args: &[Argument]) -> Option<E
             args: vec![Argument::positional(args[0].value.clone())],
             optional: false,
         })),
+        // `nint(x)` is the INTEGER form of `anint(x)`, so it is spelled with
+        // Fortran's own two intrinsics. It used to be intercepted by a
+        // hardcoded `nint` arm in the SHARED compiler
+        // (`primitives/builtins.rs`) that emitted ties-to-EVEN — a Fortran-only
+        // name living in shared code, which also meant a user program defining
+        // its own `nint` was hijacked. gfortran ties AWAY FROM ZERO.
+        "nint" if args.len() == 1 => Some(fortran_call(
+            "int",
+            vec![fortran_call("round", vec![args[0].value.clone()])],
+        )),
         "anint" if args.len() == 1 => Some(Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("round")),
             args: vec![Argument::positional(args[0].value.clone())],
@@ -12838,15 +17083,21 @@ fn lower_intrinsic_expr_call(callee: &Expression, args: &[Argument]) -> Option<E
             ],
             optional: false,
         })),
+        // `MERGE` is elementwise SELECT — the shared ranked-array node beside
+        // PACK/UNPACK/RESHAPE, not a Fortran map. The private builder it
+        // replaced mapped over the mask at rank 1, so a rank-2 mask handed the
+        // callback a ROW; a row is always truthy, and every element took the
+        // true branch.
         "merge" if args.len() == 3 => {
             if let Some(value) = fortran_expr_is_literal_bool(&args[2].value) {
+                // A literal scalar mask has no shape to walk and folds outright.
                 Some(Expression::new(ExprKind::Ternary {
                     cond: Box::new(Expression::bool(value)),
                     then: Box::new(args[0].value.clone()),
                     else_: Box::new(args[1].value.clone()),
                 }))
             } else {
-                Some(build_fortran_merge_expr(
+                Some(fortran_merge_node(
                     args[0].value.clone(),
                     args[1].value.clone(),
                     args[2].value.clone(),
@@ -12935,18 +17186,27 @@ fn lower_intrinsic_expr_call(callee: &Expression, args: &[Argument]) -> Option<E
                 _ => None,
             }
         }
+        // `RESHAPE(SOURCE, SHAPE [, PAD] [, ORDER])`. All four are ordinary
+        // arguments, so `pad` and `order` are read by keyword OR by position —
+        // and the third position is PAD, which is what the earlier lowering had
+        // wrong. `order` is a permutation of the dimensions, never the string
+        // `"C"`; the identity is Fortran's own element order and the full
+        // reversal is C's, which are the two the shared node names.
         "reshape" if positional_args.len() >= 2 => {
-            let (dim1, dim2) = fortran_shape_pair(&positional_args[1])?;
-            let column_major = positional_args
-                .get(2)
-                .map(|order| !fortran_order_is_c(order))
-                .unwrap_or(true);
-            Some(build_fortran_reshape_2d_expr(
-                positional_args[0].clone(),
-                dim1,
-                dim2,
-                column_major,
-            ))
+            let mut transform_args =
+                vec![positional_args[0].clone(), positional_args[1].clone()];
+            if let Some(pad) = fortran_argument("pad", 2, args, &positional_args) {
+                transform_args.push(pad);
+            }
+            let order = match fortran_argument("order", 3, args, &positional_args) {
+                Some(order) => fortran_traversal_order(&order)?,
+                None => ArrayTraversalOrder::ColumnMajor,
+            };
+            Some(Expression::new(ExprKind::ArrayTransform {
+                op: ArrayTransformOp::Reshape,
+                args: transform_args,
+                order,
+            }))
         }
         "sign" if args.len() == 2 => Some(build_fortran_sign_expr(
             args[0].value.clone(),
@@ -13008,6 +17268,30 @@ fn lower_intrinsic_expr_call(callee: &Expression, args: &[Argument]) -> Option<E
             args[0].value.clone(),
             args[1].value.clone(),
         )),
+        // F2008's directional shifts. Unlike `ishft` the direction is in the
+        // NAME, so the shift count is always non-negative and no branch is
+        // needed. `shiftr` is LOGICAL (zero fill) and `shifta` ARITHMETIC (sign
+        // fill) — the one place the two differ, and the reason they are separate
+        // intrinsics at all.
+        "shiftl" | "shiftr" | "shifta" if positional_args.len() == 2 => {
+            Some(Expression::new(ExprKind::Binary {
+                op: match lowered.as_str() {
+                    "shiftl" => BinOp::Shl,
+                    "shiftr" => BinOp::UShr,
+                    _ => BinOp::Shr,
+                },
+                left: Box::new(positional_args[0].clone()),
+                right: Box::new(positional_args[1].clone()),
+            }))
+        }
+        // `poppar` is the PARITY of the population count — 1 when an odd number
+        // of bits is set. Built on `popcnt`, which the profile already emits, so
+        // the bit counting is not written twice.
+        "poppar" if positional_args.len() == 1 => Some(Expression::new(ExprKind::Binary {
+            op: BinOp::BitAnd,
+            left: Box::new(fortran_call("popcnt", vec![positional_args[0].clone()])),
+            right: Box::new(Expression::int(1)),
+        })),
         "ibset" if args.len() == 2 => Some(Expression::new(ExprKind::Binary {
             op: BinOp::BitOr,
             left: Box::new(args[0].value.clone()),
@@ -13108,9 +17392,111 @@ fn lower_intrinsic_expr_call(callee: &Expression, args: &[Argument]) -> Option<E
         "digits" if args.len() == 1 => {
             fold_fortran_type_inquiry("digits", &positional_args[0], &HashMap::new(), None)
         }
+        "maxexponent" | "minexponent" if args.len() == 1 => {
+            fold_fortran_type_inquiry(&lowered, &positional_args[0], &HashMap::new(), None)
+        }
         "huge" if args.len() == 1 => Some(build_fortran_huge_expr(&args[0].value)),
-        "tiny" if args.len() == 1 => Some(Expression::float(f64::MIN_POSITIVE)),
-        "epsilon" if args.len() == 1 => Some(Expression::float(f64::EPSILON)),
+        "tiny" if args.len() == 1 => Some(Expression::float(f32::MIN_POSITIVE as f64)),
+        "epsilon" if args.len() == 1 => Some(Expression::float(f32::EPSILON as f64)),
+
+        // ── IEEE_ARITHMETIC and the real-number model ──────────────────────
+        //
+        // `ieee_is_nan` and `ieee_is_finite` are profile builtins — ECMA asks
+        // the same two questions. What is left either needs a value no host
+        // function returns (an infinity, a class code) or decomposes into
+        // arithmetic, and both are expressions the AST can already say.
+        "ieee_value" if args.len() == 2 => fortran_ieee_class_constant(&args[1].value),
+        "ieee_class" if args.len() == 1 => Some(build_fortran_ieee_class_expr(&args[0].value)),
+        "ieee_is_normal" if args.len() == 1 => {
+            Some(build_fortran_ieee_is_normal_expr(&args[0].value))
+        }
+        "ieee_unordered" if args.len() == 2 => Some(fortran_bin(
+            BinOp::Or,
+            fortran_ieee_is_nan(args[0].value.clone()),
+            fortran_ieee_is_nan(args[1].value.clone()),
+        )),
+        "ieee_copy_sign" if args.len() == 2 => Some(build_fortran_ieee_copy_sign_expr(
+            &args[0].value,
+            &args[1].value,
+        )),
+        "ieee_logb" if args.len() == 1 => Some(fortran_bin(
+            BinOp::Sub,
+            build_fortran_exponent_expr(&args[0].value),
+            Expression::int(1),
+        )),
+        "ieee_rint" if args.len() == 1 => Some(fortran_call("round", vec![args[0].value.clone()])),
+        "ieee_scalb" | "scale" if args.len() == 2 => Some(build_fortran_scale_expr(
+            args[0].value.clone(),
+            args[1].value.clone(),
+        )),
+        "ieee_rem" if args.len() == 2 => {
+            let quotient = fortran_bin(
+                BinOp::Div,
+                args[0].value.clone(),
+                args[1].value.clone(),
+            );
+            Some(fortran_bin(
+                BinOp::Sub,
+                args[0].value.clone(),
+                fortran_bin(
+                    BinOp::Mul,
+                    args[1].value.clone(),
+                    fortran_call("round", vec![quotient]),
+                ),
+            ))
+        }
+        // Every kind this compiler has is supported, and none of them signal.
+        name if name.starts_with("ieee_support_") => {
+            Some(Expression::new(ExprKind::Lit(Literal::Bool(true))))
+        }
+        "exponent" if args.len() == 1 => Some(build_fortran_exponent_expr(&args[0].value)),
+        "fraction" if args.len() == 1 => Some(build_fortran_scale_expr(
+            args[0].value.clone(),
+            fortran_unary_minus(build_fortran_exponent_expr(&args[0].value)),
+        )),
+        // `nearest`/`spacing` are folded in `lower_fortran_type_inquiry_in_expr`
+        // instead: the LANE depends on the operand's declared kind, and that is
+        // the only pass carrying a `type_env`.
+        "rrspacing" if args.len() == 1 => Some(fortran_bin(
+            BinOp::Div,
+            fortran_call("abs", vec![args[0].value.clone()]),
+            fortran_call("spacing", vec![args[0].value.clone()]),
+        )),
+        "set_exponent" if args.len() == 2 => Some(build_fortran_scale_expr(
+            build_fortran_scale_expr(
+                args[0].value.clone(),
+                fortran_unary_minus(build_fortran_exponent_expr(&args[0].value)),
+            ),
+            args[1].value.clone(),
+        )),
+        // Arrays here are contiguous by construction — nothing produces a
+        // strided view that survives as one.
+        "is_contiguous" if args.len() == 1 => {
+            Some(Expression::new(ExprKind::Lit(Literal::Bool(true))))
+        }
+        // ── Reductions with `dim=` — ONE lowering for the whole family ──────
+        //
+        // Each is the scalar reduction it already has, mapped over the lanes of
+        // the named dimension. They sit ahead of the whole-array arms below
+        // because those match on `args.len() == 1` and a `dim` is a second
+        // argument, which is what used to leave every one of these calling a
+        // function that does not exist.
+        "all" | "any" | "count" | "sum" | "product" | "maxval" | "minval"
+            if fortran_dim_argument(args).is_some() =>
+        {
+            let dim = fortran_dim_argument(args)?;
+            let array = args[0].value.clone();
+            let name = lowered.clone();
+            build_fortran_dim_reduction_expr(array, dim, move |lane| match name.as_str() {
+                "all" => build_fortran_logical_array_reducer(lane, "every"),
+                "any" => build_fortran_logical_array_reducer(lane, "some"),
+                "count" => build_fortran_count_expr(lane),
+                "product" => build_fortran_product_expr(lane),
+                "minval" => build_fortran_nested_array_reduction("min", lane, 1, 0),
+                "maxval" => build_fortran_nested_array_reduction("max", lane, 1, 0),
+                _ => build_fortran_nested_array_reduction("sum", lane, 1, 0),
+            })
+        }
         "all" if args.len() == 1 => Some(build_fortran_logical_array_reducer(
             args[0].value.clone(),
             "every",
@@ -13121,50 +17507,7 @@ fn lower_intrinsic_expr_call(callee: &Expression, args: &[Argument]) -> Option<E
         )),
         "count" if args.len() == 1 => Some(build_fortran_count_expr(args[0].value.clone())),
         "product" if args.len() == 1 && args.iter().all(|arg| arg.name.is_none()) => {
-            let acc_name = "__fortran_product_acc";
-            let item_name = "__fortran_product_item";
-            Some(Expression::new(ExprKind::Call {
-                callee: Box::new(Expression::new(ExprKind::Member {
-                    object: Box::new(args[0].value.clone()),
-                    field: "reduce".to_string(),
-                    null_safe: false,
-                })),
-                args: vec![
-                    Argument::positional(Expression::new(ExprKind::Lambda {
-                        params: vec![
-                            Param {
-                                name: acc_name.to_string(),
-                                type_hint: None,
-                                default: None,
-                                pass_by: PassBy::Value,
-                                is_rest: false,
-                                is_kwargs: false,
-                                is_optional: false,
-                                is_nullable: false,
-                            },
-                            Param {
-                                name: item_name.to_string(),
-                                type_hint: None,
-                                default: None,
-                                pass_by: PassBy::Value,
-                                is_rest: false,
-                                is_kwargs: false,
-                                is_optional: false,
-                                is_nullable: false,
-                            },
-                        ],
-                        body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Binary {
-                            op: BinOp::Mul,
-                            left: Box::new(Expression::ident(acc_name)),
-                            right: Box::new(Expression::ident(item_name)),
-                        }))),
-                        is_async: false,
-                        captures: Vec::new(),
-                    })),
-                    Argument::positional(Expression::int(1)),
-                ],
-                optional: false,
-            }))
+            Some(build_fortran_product_expr(args[0].value.clone()))
         }
         "verify" if args.len() >= 2 => {
             let mut lowered_args = args.to_vec();
@@ -13181,6 +17524,111 @@ fn lower_intrinsic_expr_call(callee: &Expression, args: &[Argument]) -> Option<E
         }
         _ => None,
     }
+}
+
+/// The `dim` of a reduction call, when it is a literal.
+///
+/// `sum(a, dim, mask)` is the shape of every one of them — `all(m, dim)`,
+/// `count(m, dim)`, `maxval(m, dim)` — so `dim` is the second POSITIONAL or a
+/// `dim=` keyword. A non-literal dim gets no fold: which dimension is being
+/// reduced decides the shape of the traversal, and that is a compile-time
+/// question here.
+fn fortran_dim_argument(args: &[Argument]) -> Option<i64> {
+    let named = args.iter().find(|arg| {
+        arg.name
+            .as_deref()
+            .is_some_and(|name| name.eq_ignore_ascii_case("dim"))
+    });
+    let value = match named {
+        Some(arg) => &arg.value,
+        None => {
+            let second = args.get(1)?;
+            if second.name.is_some() {
+                return None;
+            }
+            &second.value
+        }
+    };
+    fortran_literal_int(value)
+}
+
+/// `<reduction>(array, dim=N)` — reduce ONE dimension of a rank-2 array,
+/// yielding a rank-1 array.
+///
+/// A rank-2 array is stored as an array of ROWS — `build_fortran_reshape_2d_expr`
+/// maps dim1 outside and dim2 inside, so `m(i,j)` is `m[i][j]`. Reducing along
+/// dim 2 therefore maps the scalar reduction over the rows exactly as they sit,
+/// and dim 1 — which varies the FIRST subscript, i.e. walks columns — is the
+/// same map over the TRANSPOSE. Both halves already exist; this is the map
+/// between them, not a new traversal.
+fn build_fortran_dim_reduction_expr(
+    array: Expression,
+    dim: i64,
+    scalar_reduce: impl Fn(Expression) -> Expression,
+) -> Option<Expression> {
+    let lanes = match dim {
+        1 => build_fortran_transpose_expr(array),
+        2 => array,
+        // Rank 3 and up needs a lane-walk this shape cannot express.
+        _ => return None,
+    };
+    let lane_name = "__fortran_dim_reduce_lane";
+    Some(build_fortran_array_map(
+        lanes,
+        scalar_reduce(Expression::ident(lane_name)),
+        false,
+        lane_name,
+        "__fortran_dim_reduce_index",
+    ))
+}
+
+/// `product(array)` — the scalar form, shared by the whole-array arm and by
+/// each lane of the `dim=` form.
+fn build_fortran_product_expr(array: Expression) -> Expression {
+    let acc_name = "__fortran_product_acc";
+    let item_name = "__fortran_product_item";
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(array),
+            field: "reduce".to_string(),
+            null_safe: false,
+        })),
+        args: vec![
+            Argument::positional(Expression::new(ExprKind::Lambda {
+                params: vec![
+                    Param {
+                        name: acc_name.to_string(),
+                        type_hint: None,
+                        default: None,
+                        pass_by: PassBy::Value,
+                        is_rest: false,
+                        is_kwargs: false,
+                        is_optional: false,
+                        is_nullable: false,
+                    },
+                    Param {
+                        name: item_name.to_string(),
+                        type_hint: None,
+                        default: None,
+                        pass_by: PassBy::Value,
+                        is_rest: false,
+                        is_kwargs: false,
+                        is_optional: false,
+                        is_nullable: false,
+                    },
+                ],
+                body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Binary {
+                    op: BinOp::Mul,
+                    left: Box::new(Expression::ident(acc_name)),
+                    right: Box::new(Expression::ident(item_name)),
+                }))),
+                is_async: false,
+                captures: Vec::new(),
+            })),
+            Argument::positional(Expression::int(1)),
+        ],
+        optional: false,
+    })
 }
 
 fn build_fortran_bit_mask(shift: Expression) -> Expression {
@@ -13209,6 +17657,143 @@ fn fortran_bit_not(expr: Expression) -> Expression {
         expr: Box::new(expr),
     })
 }
+
+
+fn fortran_call(name: &str, args: Vec<Expression>) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident(name)),
+        args: args.into_iter().map(Argument::positional).collect(),
+        optional: false,
+    })
+}
+
+fn fortran_unary_minus(expr: Expression) -> Expression {
+    Expression::new(ExprKind::Unary {
+        op: UnaryOp::Neg,
+        expr: Box::new(expr),
+    })
+}
+
+fn fortran_ieee_is_nan(value: Expression) -> Expression {
+    fortran_call("ieee_is_nan", vec![value])
+}
+
+/// The `IEEE_ARITHMETIC` class constants. `ieee_value(x, IEEE_POSITIVE_INF)` is
+/// the only way to say "infinity" in Fortran — there is no literal for it — so
+/// the constant is read as a spelling here and answered with the value itself.
+fn fortran_ieee_class_constant(class: &Expression) -> Option<Expression> {
+    let ExprKind::Ident(name) = &class.kind else {
+        return None;
+    };
+    let value = match name.to_ascii_lowercase().as_str() {
+        "ieee_positive_inf" => f64::INFINITY,
+        "ieee_negative_inf" => f64::NEG_INFINITY,
+        "ieee_quiet_nan" | "ieee_signaling_nan" => f64::NAN,
+        "ieee_positive_zero" => 0.0,
+        "ieee_negative_zero" => -0.0,
+        "ieee_positive_normal" => 1.0,
+        "ieee_negative_normal" => -1.0,
+        "ieee_positive_denormal" | "ieee_positive_subnormal" => f32::MIN_POSITIVE as f64 / 2.0,
+        "ieee_negative_denormal" | "ieee_negative_subnormal" => -(f32::MIN_POSITIVE as f64) / 2.0,
+        _ => return None,
+    };
+    Some(Expression::float(value))
+}
+
+/// `ieee_class(x)` answers with one of the same constants, so it is built from
+/// the values they carry — a comparison chain, not a table of codes.
+fn build_fortran_ieee_class_expr(value: &Expression) -> Expression {
+    let is_negative = fortran_bin(BinOp::Lt, value.clone(), Expression::float(0.0));
+    let signed = |positive: f64, negative: f64| {
+        fortran_ternary(
+            is_negative.clone(),
+            Expression::float(negative),
+            Expression::float(positive),
+        )
+    };
+    fortran_ternary(
+        fortran_ieee_is_nan(value.clone()),
+        Expression::float(f64::NAN),
+        fortran_ternary(
+            fortran_call("ieee_is_finite", vec![value.clone()]),
+            fortran_ternary(
+                fortran_bin(BinOp::Eq, value.clone(), Expression::float(0.0)),
+                signed(0.0, -0.0),
+                fortran_ternary(
+                    fortran_bin(
+                        BinOp::Lt,
+                        fortran_call("abs", vec![value.clone()]),
+                        Expression::float(f32::MIN_POSITIVE as f64),
+                    ),
+                    signed(
+                        f32::MIN_POSITIVE as f64 / 2.0,
+                        -(f32::MIN_POSITIVE as f64) / 2.0,
+                    ),
+                    signed(1.0, -1.0),
+                ),
+            ),
+            signed(f64::INFINITY, f64::NEG_INFINITY),
+        ),
+    )
+}
+
+/// Normal means finite, non-zero, and at least `tiny` in magnitude — the three
+/// things a subnormal, a zero, an infinity and a NaN each fail.
+fn build_fortran_ieee_is_normal_expr(value: &Expression) -> Expression {
+    fortran_bin(
+        BinOp::And,
+        fortran_call("ieee_is_finite", vec![value.clone()]),
+        fortran_bin(
+            BinOp::GtEq,
+            fortran_call("abs", vec![value.clone()]),
+            Expression::float(f32::MIN_POSITIVE as f64),
+        ),
+    )
+}
+
+fn build_fortran_ieee_copy_sign_expr(magnitude: &Expression, sign: &Expression) -> Expression {
+    fortran_ternary(
+        fortran_bin(BinOp::Lt, sign.clone(), Expression::float(0.0)),
+        fortran_unary_minus(fortran_call("abs", vec![magnitude.clone()])),
+        fortran_call("abs", vec![magnitude.clone()]),
+    )
+}
+
+/// `exponent(x)` — the power of two `x` sits above, one-based as Fortran counts
+/// it, and zero for a zero operand.
+fn build_fortran_exponent_expr(value: &Expression) -> Expression {
+    fortran_ternary(
+        fortran_bin(BinOp::Eq, value.clone(), Expression::float(0.0)),
+        Expression::int(0),
+        fortran_bin(
+            BinOp::Add,
+            fortran_call(
+                "floor",
+                vec![fortran_call(
+                    "__fortran_log2",
+                    vec![fortran_call("abs", vec![value.clone()])],
+                )],
+            ),
+            Expression::int(1),
+        ),
+    )
+}
+
+/// `scale(x, i)` — `x * 2**i`, which is also `ieee_scalb` and the engine behind
+/// `fraction` and `set_exponent`.
+fn build_fortran_scale_expr(value: Expression, by: Expression) -> Expression {
+    fortran_bin(
+        BinOp::Mul,
+        value,
+        fortran_bin(BinOp::Pow, Expression::float(2.0), by),
+    )
+}
+
+/// `spacing(x)` — the distance to the next representable number of the same
+/// kind, `2**(exponent(x) - digits)`.
+// `build_fortran_spacing_expr` computed the ULP from the EXPONENT. It is
+// `common:math.ulp` now, derived from the adjacent representable value, which
+// is right at a binade boundary by construction.
 
 fn fortran_ternary(cond: Expression, then: Expression, else_: Expression) -> Expression {
     Expression::new(ExprKind::Ternary {
@@ -13285,6 +17870,17 @@ fn build_fortran_ishftc_expr(
     shift: Expression,
     size: Expression,
 ) -> Expression {
+    // A full-width rotation IS `i32.rotl` — one instruction, and immune to this
+    // region's `ShiftOverflow::Zero`, which the mask-and-shift lowering below is
+    // not: it leans on `field >>> 32` being `field`, and under Fortran's own
+    // shift rule that expression is 0.
+    if fortran_literal_int(&size) == Some(FORTRAN_BIT_SIZE) {
+        return fortran_bin(
+            BinOp::RotL(vybe_ast::BitLane::W32),
+            value,
+            build_fortran_modulo_expr(shift, size),
+        );
+    }
     let mask = build_fortran_maskr_expr(size.clone());
     let amount = build_fortran_modulo_expr(shift, size.clone());
     let field = fortran_bin(BinOp::BitAnd, value.clone(), mask.clone());
@@ -13492,7 +18088,73 @@ fn build_fortran_transfer_expr_with_hint(
     {
         return build_fortran_complex_expr_from_array(source);
     }
+    // `transfer(x, 0)` / `transfer(n, 0.0)` reinterpret the BITS: the answer to
+    // `transfer(3.14, 0)` is 1078523331, not 3. Bound to the same shared
+    // primitives Go reaches through `math.Float32bits`.
+    // TRANSFER is a bit cast, and a bit cast is `UnaryOp::Reinterpret` — the
+    // same node Go, Java, C# and VB reach for `Float32bits` /
+    // `floatToIntBits` / `BitConverter`. It used to be a call to a Fortran
+    // profile row.
+    let bitcast = |repr: vybe_ast::NumericRepr, arg: Expression| {
+        Expression::new(ExprKind::Unary {
+            op: UnaryOp::Reinterpret(repr),
+            expr: Box::new(arg),
+        })
+    };
+    let source_is_real = source_hint.is_some_and(|hint| {
+        let hint = hint.trim().to_ascii_lowercase();
+        hint.starts_with("real") || hint.starts_with("double")
+    }) || matches!(source.kind, ExprKind::Lit(Literal::Float(_)));
+    let source_is_int = source_hint
+        .is_some_and(|hint| hint.trim().to_ascii_lowercase().starts_with("integer"))
+        || matches!(source.kind, ExprKind::Lit(Literal::Int(_)));
+    // Default REAL is 4 bytes, so `transfer(x, 0)` is the f32 pattern — but a
+    // kind=8 / DOUBLE PRECISION operand has an 8-byte pattern and must not be
+    // demoted to f32 on the way out.
+    let is_kind8 = [source_hint, target_hint].iter().flatten().any(|hint| {
+        let hint = hint.trim().to_ascii_lowercase();
+        hint.contains("kind=8") || hint.contains("kind = 8") || hint.starts_with("double")
+    });
+    // The MOLD is only a type carrier, and it is just as often a NAME as a
+    // literal: `sink = transfer(source, sink)`. When it is a name the assignment
+    // target's declared type says the same thing.
+    let hint_is_int = |hint: Option<&str>| {
+        hint.is_some_and(|hint| hint.trim().to_ascii_lowercase().starts_with("integer"))
+    };
+    let hint_is_real = |hint: Option<&str>| {
+        hint.is_some_and(|hint| {
+            let hint = hint.trim().to_ascii_lowercase();
+            hint.starts_with("real") || hint.starts_with("double")
+        })
+    };
+    let mold_is_int = matches!(mold.kind, ExprKind::Lit(Literal::Int(_)))
+        || (matches!(mold.kind, ExprKind::Ident(_)) && hint_is_int(target_hint));
+    let mold_is_real = matches!(mold.kind, ExprKind::Lit(Literal::Float(_)))
+        || (matches!(mold.kind, ExprKind::Ident(_)) && hint_is_real(target_hint));
+    if !fortran_type_hint_is_array(target_hint) {
+        if source_is_real && mold_is_int {
+            let name = if is_kind8 {
+                vybe_ast::NumericRepr::I64
+            } else {
+                vybe_ast::NumericRepr::I32
+            };
+            return bitcast(name, source);
+        }
+        if source_is_int && mold_is_real {
+            let name = if is_kind8 {
+                vybe_ast::NumericRepr::F64
+            } else {
+                vybe_ast::NumericRepr::F32
+            };
+            return bitcast(name, source);
+        }
+    }
     if source_hint.is_some_and(is_fortran_string_type_hint) {
+        if let Some(len) = source_hint.and_then(fortran_character_hint_len) {
+            if len >= 2 {
+                return build_fortran_char_bytes_to_int_expr(source, len);
+            }
+        }
         return build_fortran_char_code_expr(source);
     }
     if source_hint.is_some_and(fortran_type_hint_is_array_str) {
@@ -13529,7 +18191,50 @@ fn build_fortran_transfer_array_expr(
     {
         return build_fortran_scalar_to_byte_array_expr(source, size);
     }
+    // Only a literal array can be materialised element-by-element at walk time.
+    // A NAME whose declared type is an array must keep its runtime value, or the
+    // "pad and slice" path below is handed `[a]` — one element holding the whole
+    // array, which is what made `target(1)` print `10,20,30,40`.
+    // `transfer(s, 0, 1)` into an INTEGER array packs the character storage 4
+    // bytes to the element, the same reading the scalar form does.
+    if let (Some(len), Some(count)) = (
+        source_hint
+            .filter(|hint| is_fortran_string_type_hint(hint))
+            .and_then(fortran_character_hint_len),
+        size.as_ref().and_then(fortran_literal_int),
+    ) {
+        if target_hint.is_some_and(|hint| hint.trim().to_ascii_lowercase().starts_with("integer"))
+            && count > 0
+        {
+            let values = (0..count)
+                .map(|index| {
+                    build_fortran_char_bytes_to_int_at(source.clone(), len, index as usize * 4)
+                })
+                .collect::<Vec<_>>();
+            return fortran_array_expr(values);
+        }
+    }
+    let source_is_logical = source_hint
+        .is_some_and(|hint| hint.trim().to_ascii_lowercase().starts_with("logical"))
+        || matches!(&source.kind, ExprKind::Array(items)
+            if !items.is_empty()
+                && items
+                    .iter()
+                    .all(|item| matches!(item.value.kind, ExprKind::Lit(Literal::Bool(_)))));
+    if source_is_logical
+        && target_hint.is_some_and(|hint| hint.trim().to_ascii_lowercase().starts_with("integer"))
+        && size.is_none()
+    {
+        return build_fortran_logical_array_to_int_expr(source);
+    }
+    let source_is_runtime_array = !matches!(source.kind, ExprKind::Array(_))
+        && source_hint.is_some_and(fortran_type_hint_is_array_str);
     if let Some(size_value) = size.as_ref().and_then(fortran_literal_int) {
+        if source_is_runtime_array {
+            // A NAME cannot be materialised element-by-element, but a LITERAL
+            // size can be spelled as its own subscripts: `[a(1), a(2)]`.
+            return build_fortran_transfer_sized_subscripts(&source, size_value);
+        }
         return build_fortran_transfer_sized_array_literal(source, size_value);
     }
     let array_source = match &source.kind {
@@ -13562,6 +18267,8 @@ fn build_fortran_transfer_array_expr(
             args: vec![Argument::positional(source)],
             optional: false,
         }),
+        // A rank-1 array-typed name already IS the element sequence.
+        _ if source_hint.is_some_and(fortran_type_hint_is_array_str) => source,
         _ => fortran_array_expr(vec![source]),
     };
     let Some(size) = size else {
@@ -13615,6 +18322,24 @@ fn build_fortran_transfer_array_expr(
         ],
         optional: false,
     })
+}
+
+/// `transfer(a, mold, n)` where `a` is an array-typed NAME: the first `n`
+/// elements, spelled as Fortran's own 1-based subscripts.
+fn build_fortran_transfer_sized_subscripts(source: &Expression, size: i64) -> Expression {
+    if size <= 0 {
+        return fortran_array_expr(Vec::new());
+    }
+    let values = (1..=size)
+        .map(|index| {
+            Expression::new(ExprKind::Index {
+                object: Box::new(source.clone()),
+                index: Box::new(Expression::int(index)),
+                null_safe: false,
+            })
+        })
+        .collect::<Vec<_>>();
+    fortran_array_expr(values)
 }
 
 fn build_fortran_transfer_sized_array_literal(source: Expression, size: i64) -> Expression {
@@ -13729,9 +18454,12 @@ fn build_fortran_transfer_array_to_scalar_expr(source: Expression) -> Expression
 fn build_fortran_byte_array_to_int_expr(source: Expression) -> Expression {
     let mut result = Expression::int(0);
     for idx in 0..8 {
+        // A Fortran subscript is 1-based, and subscript 0 wrapped to the LAST
+        // element — which is why `[18,52,86,120]` packed to 0x56341278 instead
+        // of 0x78563412.
         let item = Expression::new(ExprKind::Index {
             object: Box::new(source.clone()),
-            index: Box::new(Expression::int(idx)),
+            index: Box::new(Expression::int(idx + 1)),
             null_safe: false,
         });
         let byte = Expression::new(ExprKind::Binary {
@@ -13760,7 +18488,8 @@ fn build_fortran_byte_array_to_int_expr(source: Expression) -> Expression {
 fn build_fortran_first_array_item_expr(source: Expression) -> Expression {
     Expression::new(ExprKind::Index {
         object: Box::new(source),
-        index: Box::new(Expression::int(0)),
+        // A Fortran subscript is 1-based; subscript 0 wraps to the LAST element.
+        index: Box::new(Expression::int(1)),
         null_safe: false,
     })
 }
@@ -13778,6 +18507,107 @@ fn build_fortran_complex_expr_from_array(source: Expression) -> Expression {
             null_safe: false,
         }),
     )
+}
+
+/// The declared length of a CHARACTER type hint (`character(len=2)`,
+/// `character*4`), when it is a literal count.
+fn fortran_character_hint_len(type_hint: &str) -> Option<usize> {
+    let lower = type_hint.trim().to_ascii_lowercase();
+    let rest = lower.strip_prefix("character")?.trim_start();
+    let digits: String = if let Some(rest) = rest.strip_prefix('*') {
+        rest.trim_start()
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect()
+    } else {
+        let inner = rest.strip_prefix('(')?.trim_end_matches(')').trim();
+        let inner = inner
+            .strip_prefix("len")
+            .map(|rest| rest.trim_start().trim_start_matches('=').trim_start())
+            .unwrap_or(inner);
+        inner.chars().take_while(|c| c.is_ascii_digit()).collect()
+    };
+    digits.parse().ok()
+}
+
+/// `transfer('AB', 0)` is 16961 — the two bytes read little-endian, not the
+/// code of the first character. A 4-byte integer holds at most 4 of them, and
+/// storage past the declared length reads as zero.
+/// `transfer(mask, n)` from LOGICAL to INTEGER: `.true.` stores as 1, not as a
+/// boolean. The elements are the storage, so each one is coerced in place.
+fn build_fortran_logical_array_to_int_expr(source: Expression) -> Expression {
+    let param = "__fortran_transfer_bit";
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(source),
+            field: "map".to_string(),
+            null_safe: false,
+        })),
+        args: vec![Argument::positional(Expression::new(ExprKind::Lambda {
+            params: vec![Param {
+                name: param.to_string(),
+                type_hint: None,
+                default: None,
+                pass_by: PassBy::Value,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: false,
+                is_nullable: false,
+            }],
+            body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Ternary {
+                cond: Box::new(Expression::ident(param)),
+                then: Box::new(Expression::int(1)),
+                else_: Box::new(Expression::int(0)),
+            }))),
+            is_async: false,
+            captures: Vec::new(),
+        }))],
+        optional: false,
+    })
+}
+
+fn build_fortran_char_bytes_to_int_expr(source: Expression, len: usize) -> Expression {
+    build_fortran_char_bytes_to_int_at(source, len, 0)
+}
+
+/// The integer holding the 4 bytes starting at `offset`; storage past `len`
+/// reads as zero.
+fn build_fortran_char_bytes_to_int_at(
+    source: Expression,
+    len: usize,
+    offset: usize,
+) -> Expression {
+    let mut result = Expression::int(0);
+    for idx in 0..len.saturating_sub(offset).min(4) {
+        let code = build_fortran_char_code_at_expr(source.clone(), (offset + idx) as i64);
+        let shifted = if idx == 0 {
+            code
+        } else {
+            Expression::new(ExprKind::Binary {
+                op: BinOp::Shl,
+                left: Box::new(code),
+                right: Box::new(Expression::int((idx * 8) as i64)),
+            })
+        };
+        result = Expression::new(ExprKind::Binary {
+            op: BinOp::BitOr,
+            left: Box::new(result),
+            right: Box::new(shifted),
+        });
+    }
+    result
+}
+
+fn build_fortran_char_code_at_expr(source: Expression, index: i64) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(source),
+            field: "charCodeAt".to_string(),
+            null_safe: false,
+        })),
+        args: vec![Argument::positional(Expression::int(index))],
+        optional: false,
+    })
 }
 
 fn build_fortran_char_code_expr(source: Expression) -> Expression {
@@ -13841,11 +18671,33 @@ fn fortran_type_hint_is_kind1_integer_array(type_hint: &str) -> bool {
     lower.starts_with("integer") && lower.contains("kind=1") && lower.contains("()")
 }
 
+/// Every element of a ranked array as one flat run.
+///
+/// `ALL(mask)`, `ANY(mask)` and `COUNT(mask)` with no `dim` ask about EVERY
+/// element whatever the rank, and a rank-2 array is a NEST: mapping over it
+/// visits rows, a row is an array, and an array is always truthy. So `any`
+/// answered true for an all-false mask and `count` counted rows. `sum` never
+/// had the problem because it reaches a rank-aware lowering; these three do
+/// not, and flattening is the rank-independent answer — on a rank-1 array it is
+/// a no-op.
+fn build_fortran_flatten_expr(array: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(array),
+            field: "flat".to_string(),
+            null_safe: false,
+        })),
+        // Fortran caps rank at 15; nothing nests deeper than that.
+        args: vec![Argument::positional(Expression::int(15))],
+        optional: false,
+    })
+}
+
 fn build_fortran_logical_array_reducer(array_expr: Expression, method: &str) -> Expression {
     let item_name = "__fortran_logical_item";
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Member {
-            object: Box::new(array_expr),
+            object: Box::new(build_fortran_flatten_expr(array_expr)),
             field: method.to_string(),
             null_safe: false,
         })),
@@ -13870,7 +18722,7 @@ fn build_fortran_logical_array_reducer(array_expr: Expression, method: &str) -> 
 
 fn build_fortran_count_expr(array_expr: Expression) -> Expression {
     let item_name = "__fortran_count_item";
-    let source = build_fortran_count_source_expr(array_expr);
+    let source = build_fortran_flatten_expr(build_fortran_count_source_expr(array_expr));
     let counted = build_fortran_array_map(
         source,
         Expression::new(ExprKind::Ternary {
@@ -13894,7 +18746,27 @@ fn build_fortran_count_source_expr(expr: Expression) -> Expression {
     let item_name = "__fortran_count_pred_item";
     let index_name = "__fortran_count_pred_index";
 
-    if fortran_count_arrayish_expr(&left) && fortran_count_arrayish_expr(&right) {
+    // `count` builds its own comparison rather than reading the one the
+    // elementwise lowering would have produced, so it has to flatten its
+    // operands ITSELF — mapping a rank-2 operand compares whole ROWS, and
+    // `row == 1` is false for every row. Two ranked operands have the same
+    // shape, so flattening both keeps them element-for-element aligned. The
+    // test is taken BEFORE wrapping: a wrapped operand is a method call, which
+    // is not a spelling `fortran_count_arrayish_expr` recognises.
+    let left_is_array = fortran_count_arrayish_expr(&left);
+    let right_is_array = fortran_count_arrayish_expr(&right);
+    let left = if left_is_array {
+        build_fortran_flatten_expr(left)
+    } else {
+        left
+    };
+    let right = if right_is_array {
+        build_fortran_flatten_expr(right)
+    } else {
+        right
+    };
+
+    if left_is_array && right_is_array {
         return build_fortran_array_map(
             left,
             Expression::new(ExprKind::Binary {
@@ -13912,7 +18784,7 @@ fn build_fortran_count_source_expr(expr: Expression) -> Expression {
         );
     }
 
-    if fortran_count_arrayish_expr(&left) {
+    if left_is_array {
         return build_fortran_array_map(
             left,
             Expression::new(ExprKind::Binary {
@@ -13926,7 +18798,7 @@ fn build_fortran_count_source_expr(expr: Expression) -> Expression {
         );
     }
 
-    if fortran_count_arrayish_expr(&right) {
+    if right_is_array {
         return build_fortran_array_map(
             right,
             Expression::new(ExprKind::Binary {
@@ -14024,21 +18896,50 @@ fn fortran_literal_int(expr: &Expression) -> Option<i64> {
     }
 }
 
-fn fortran_shape_pair(shape: &Expression) -> Option<(Expression, Expression)> {
-    let ExprKind::Array(items) = &shape.kind else {
-        return None;
-    };
-    if items.len() != 2 {
-        return None;
-    }
-    Some((items[0].value.clone(), items[1].value.clone()))
+/// An optional intrinsic argument, by keyword or by position.
+///
+/// Fortran lets every argument be written either way, and a keyword one is not
+/// in the positional list at all — so reading only positions drops
+/// `pad=[0]` silently, and reading only keywords drops `reshape(a, s, [0])`.
+fn fortran_argument(
+    keyword: &str,
+    position: usize,
+    args: &[Argument],
+    positional_args: &[Expression],
+) -> Option<Expression> {
+    args.iter()
+        .find(|arg| {
+            arg.name
+                .as_deref()
+                .is_some_and(|name| name.eq_ignore_ascii_case(keyword))
+        })
+        .map(|arg| arg.value.clone())
+        .or_else(|| positional_args.get(position).cloned())
 }
 
-fn fortran_order_is_c(order: &Expression) -> bool {
-    match &order.kind {
-        ExprKind::Lit(Literal::Str(value)) => value.eq_ignore_ascii_case("C"),
-        _ => false,
+/// `ORDER=` — a permutation of `1..rank` saying which subscript varies fastest.
+///
+/// The identity permutation is Fortran's own element order, the full reversal
+/// is C's, and those are the two the shared traversal order names. Any other
+/// permutation is a genuine reordering this cannot express, and answering it
+/// with one of the two would be a wrong answer rather than a missing one — so
+/// it declines to fold and the call is left to fail loudly.
+fn fortran_traversal_order(order: &Expression) -> Option<ArrayTraversalOrder> {
+    let ExprKind::Array(items) = &order.kind else {
+        return None;
+    };
+    let dims: Vec<i64> = items
+        .iter()
+        .map(|item| fortran_literal_int(&item.value))
+        .collect::<Option<_>>()?;
+    let ascending: Vec<i64> = (1..=dims.len() as i64).collect();
+    if dims == ascending {
+        return Some(ArrayTraversalOrder::ColumnMajor);
     }
+    if dims.iter().rev().copied().eq(ascending) {
+        return Some(ArrayTraversalOrder::RowMajor);
+    }
+    None
 }
 
 fn build_fortran_array_length_expr(array: Expression) -> Expression {
@@ -14047,23 +18948,6 @@ fn build_fortran_array_length_expr(array: Expression) -> Expression {
         field: "length".to_string(),
         null_safe: false,
     })
-}
-
-fn build_fortran_iota_1based_expr(size: Expression) -> Expression {
-    let item_name = "__fortran_iota_item";
-    let index_name = "__fortran_iota_index";
-    let one_based_index = Expression::new(ExprKind::Binary {
-        op: BinOp::Add,
-        left: Box::new(Expression::ident(index_name)),
-        right: Box::new(Expression::int(1)),
-    });
-    build_fortran_array_map(
-        build_fortran_array_fill(size, Expression::int(0)),
-        one_based_index,
-        true,
-        item_name,
-        index_name,
-    )
 }
 
 fn build_fortran_normalized_circular_shift(shift: Expression, size: Expression) -> Expression {
@@ -14172,126 +19056,37 @@ fn build_fortran_spread_dim2_expr(source: Expression, ncopies: Expression) -> Ex
     build_fortran_array_map(source, row, false, item_name, index_name)
 }
 
-fn build_fortran_reshape_source_index(
-    row_index: Expression,
-    column_index: Expression,
-    dim1: Expression,
-    dim2: Expression,
-    column_major: bool,
-) -> Expression {
-    if column_major {
-        Expression::new(ExprKind::Binary {
-            op: BinOp::Add,
-            left: Box::new(Expression::new(ExprKind::Binary {
-                op: BinOp::Sub,
-                left: Box::new(row_index),
-                right: Box::new(Expression::int(1)),
-            })),
-            right: Box::new(Expression::new(ExprKind::Binary {
-                op: BinOp::Mul,
-                left: Box::new(Expression::new(ExprKind::Binary {
-                    op: BinOp::Sub,
-                    left: Box::new(column_index),
-                    right: Box::new(Expression::int(1)),
-                })),
-                right: Box::new(dim1),
-            })),
-        })
-    } else {
-        Expression::new(ExprKind::Binary {
-            op: BinOp::Add,
-            left: Box::new(Expression::new(ExprKind::Binary {
-                op: BinOp::Mul,
-                left: Box::new(Expression::new(ExprKind::Binary {
-                    op: BinOp::Sub,
-                    left: Box::new(row_index),
-                    right: Box::new(Expression::int(1)),
-                })),
-                right: Box::new(dim2),
-            })),
-            right: Box::new(Expression::new(ExprKind::Binary {
-                op: BinOp::Sub,
-                left: Box::new(column_index),
-                right: Box::new(Expression::int(1)),
-            })),
-        })
-    }
+/// "Did this argument arrive as a whole array, or as one value?" — the question
+/// `merge` has to ask of its mask and of each source.
+///
+/// It used to be spelled `Array.isArray(x)`, and Fortran is CASE-INSENSITIVE:
+/// `Array` folds to `array`, resolves to nothing, and the test silently
+/// answered false — so `merge` with an array mask always took its scalar branch
+/// and returned the false-source for the whole array. `rank(x) > 0` is no good
+/// either: it is a COMPARISON whose left operand reads as array-ish to the
+/// elementwise lowering, which then maps over a scalar. So it is asked as one
+/// builtin that answers a boolean and nothing else.
+fn fortran_expr_is_array(expr: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("__fortran_is_array")),
+        args: vec![Argument::positional(expr)],
+        optional: false,
+    })
 }
 
-fn build_fortran_reshape_2d_expr(
-    source: Expression,
-    dim1: Expression,
-    dim2: Expression,
-    column_major: bool,
-) -> Expression {
-    let row_item = "__fortran_reshape_row_item";
-    let row_index = "__fortran_reshape_row_index";
-    let col_item = "__fortran_reshape_col_item";
-    let col_index = "__fortran_reshape_col_index";
-    let row = build_fortran_array_map(
-        build_fortran_iota_1based_expr(dim2.clone()),
-        Expression::new(ExprKind::Index {
-            object: Box::new(source),
-            index: Box::new(build_fortran_reshape_source_index(
-                Expression::ident(row_item),
-                Expression::ident(col_item),
-                dim1.clone(),
-                dim2.clone(),
-                column_major,
-            )),
-            null_safe: false,
-        }),
-        true,
-        col_item,
-        col_index,
-    );
-    build_fortran_array_map(
-        build_fortran_iota_1based_expr(dim1),
-        row,
-        true,
-        row_item,
-        row_index,
-    )
-}
-
-fn build_fortran_merge_expr(
+/// `MERGE(tsource, fsource, mask)` as the shared ranked-array node.
+///
+/// Column-major because that is Fortran's element order, the same choice
+/// `PACK`/`UNPACK`/`RESHAPE` already make here.
+fn fortran_merge_node(
     true_source: Expression,
     false_source: Expression,
     mask: Expression,
 ) -> Expression {
-    let item_name = "__fortran_merge_item";
-    let index_name = "__fortran_merge_index";
-    let body = Expression::new(ExprKind::Ternary {
-        cond: Box::new(fortran_expr_is_true(Expression::ident(item_name))),
-        then: Box::new(Expression::new(ExprKind::Index {
-            object: Box::new(true_source.clone()),
-            index: Box::new(Expression::ident(index_name)),
-            null_safe: false,
-        })),
-        else_: Box::new(Expression::new(ExprKind::Index {
-            object: Box::new(false_source.clone()),
-            index: Box::new(Expression::ident(index_name)),
-            null_safe: false,
-        })),
-    });
-    let array_merge = build_fortran_array_map(mask.clone(), body, true, item_name, index_name);
-    let mask_is_array = Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::new(ExprKind::Member {
-            object: Box::new(Expression::ident("Array")),
-            field: "isArray".to_string(),
-            null_safe: false,
-        })),
-        args: vec![Argument::positional(mask.clone())],
-        optional: false,
-    });
-    Expression::new(ExprKind::Ternary {
-        cond: Box::new(mask_is_array),
-        then: Box::new(array_merge),
-        else_: Box::new(Expression::new(ExprKind::Ternary {
-            cond: Box::new(fortran_expr_is_true(mask)),
-            then: Box::new(true_source),
-            else_: Box::new(false_source),
-        })),
+    Expression::new(ExprKind::ArrayTransform {
+        op: ArrayTransformOp::MergeMask,
+        args: vec![true_source, false_source, mask],
+        order: ArrayTraversalOrder::ColumnMajor,
     })
 }
 
@@ -14356,7 +19151,9 @@ fn build_fortran_ishft_expr(value: Expression, shift: Expression) -> Expression 
 
 fn build_fortran_huge_expr(arg: &Expression) -> Expression {
     match &arg.kind {
-        ExprKind::Lit(Literal::Float(_)) => Expression::float(f64::MAX),
+        // Default `real` is kind 4, so `huge(1.0)` is the largest FLOAT, not the
+        // largest double — `huge(1.0d0)` would be the other one.
+        ExprKind::Lit(Literal::Float(_)) => Expression::float(f32::MAX as f64),
         _ => Expression::int(i32::MAX as i64),
     }
 }
@@ -14605,6 +19402,15 @@ fn fortran_spelled_kind(lowered_hint: &str) -> Option<i64> {
     None
 }
 
+/// Is this expression a kind-8 (double precision) real?
+///
+/// Default `real` is kind 4, so f32 is the answer whenever nothing says
+/// otherwise — `SPACING(1.0)` is 2^-23, and answering 2^-52 is wrong by 29
+/// binades.
+fn fortran_expr_is_kind8_real(expr: &Expression, type_env: &HashMap<String, String>) -> bool {
+    fortran_inquiry_model_from_expr(expr, type_env).is_some_and(|model| model.kind == 8)
+}
+
 fn fortran_inquiry_model_from_expr(
     expr: &Expression,
     type_env: &HashMap<String, String>,
@@ -14660,6 +19466,23 @@ fn fold_fortran_type_inquiry(
         "precision" => model.precision?,
         "range" => model.range,
         "digits" => model.digits,
+        // The binary exponent range, IEEE-754 for each width. Only a REAL has
+        // one — gfortran rejects `maxexponent` of an integer — and `precision`
+        // is `Some` exactly for reals, so the model already carries the
+        // discriminator and needs no new field.
+        "maxexponent" | "minexponent" => {
+            model.precision?;
+            let (max, min) = match model.bits {
+                64 => (1024, -1021),
+                128 => (16384, -16381),
+                _ => (128, -125),
+            };
+            if name == "maxexponent" {
+                max
+            } else {
+                min
+            }
+        }
         _ => return None,
     };
     Some(Expression::int(value))
@@ -14675,13 +19498,38 @@ fn lower_fortran_type_inquiry_in_expr(expr: &mut Expression, type_env: &HashMap<
                 return;
             };
             let lowered = name.to_ascii_lowercase();
+            // Collected BEFORE any `*expr` assignment below: the borrow of
+            // `expr.kind` that produced `args` has to end first.
+            //
+            // `SPACING` and `NEAREST` are numeric INQUIRY functions in
+            // Fortran's own classification, and like `kind` they need the
+            // declared type: default `real` is kind 4 (ULP 2^-23), `double
+            // precision` is kind 8 (2^-52). Answering in one lane is wrong for
+            // the other half the time.
+            //
+            // ⛔ `NEAREST(X, S)` reads only the SIGN of S — it is a DIRECTION,
+            // not a target. Lowering it to `nextafter(x, s)` walks TOWARD `s`
+            // and gives the opposite neighbour whenever `s` is on the far side:
+            // `nearest(1000.0d0, 1.0d0)` steps UP, not down.
+            let positional = args
+                .iter()
+                .filter(|arg| arg.name.is_none())
+                .map(|arg| arg.value.clone())
+                .collect::<Vec<_>>();
             // `kind` belongs here too — this is the ONLY path with a
             // `type_env`, so it is the only one that can answer for a
             // VARIABLE. Without it `kind(x)` fell through to the shared
             // compiler's hard-coded 8.
             if matches!(
                 lowered.as_str(),
-                "kind" | "bit_size" | "storage_size" | "precision" | "range" | "digits"
+                "kind"
+                    | "bit_size"
+                    | "storage_size"
+                    | "precision"
+                    | "range"
+                    | "digits"
+                    | "maxexponent"
+                    | "minexponent"
             ) {
                 let positional_args = args
                     .iter()
@@ -14698,6 +19546,35 @@ fn lower_fortran_type_inquiry_in_expr(expr: &mut Expression, type_env: &HashMap<
                         *expr = folded;
                     }
                 }
+            }
+            match lowered.as_str() {
+                "nearest" if positional.len() == 2 => {
+                    let wide = fortran_expr_is_kind8_real(&positional[0], type_env);
+                    let up = if wide {
+                        "__vybe_next_up64"
+                    } else {
+                        "__vybe_next_up32"
+                    };
+                    let down = if wide {
+                        "__vybe_next_dn64"
+                    } else {
+                        "__vybe_next_dn32"
+                    };
+                    *expr = fortran_ternary(
+                        fortran_bin(BinOp::Lt, positional[1].clone(), Expression::float(0.0)),
+                        fortran_call(down, vec![positional[0].clone()]),
+                        fortran_call(up, vec![positional[0].clone()]),
+                    );
+                }
+                // The bare `spacing` builtin row IS the kind-4 lane; only a
+                // kind-8 operand needs redirecting.
+                "spacing"
+                    if positional.len() == 1
+                        && fortran_expr_is_kind8_real(&positional[0], type_env) =>
+                {
+                    *expr = fortran_call("__vybe_ulp64", vec![positional[0].clone()]);
+                }
+                _ => {}
             }
         }
         ExprKind::Binary { left, right, .. } => {

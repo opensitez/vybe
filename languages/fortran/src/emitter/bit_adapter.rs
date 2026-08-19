@@ -20,52 +20,11 @@ use vybe_runtime::opcode::Op;
 /// other Fortran bit intrinsic already goes through on its way to `I32_AND`.
 /// The counting opcodes themselves only `as_i32()`, which would truncate
 /// rather than wrap.
-fn coerce_to_i32(chunk: &mut Chunk, line: u32) {
-    chunk.emit_i32_const(0, line);
-    chunk.emit_op(Op::I32_OR, line);
-}
-
-/// Stack on entry: `[value]`. Stack on exit: `[count]`.
-///
-/// All three take exactly one argument. Anything else is a call these cannot
-/// answer, and answering with null would print as `null` and exit 0 — so it
-/// throws instead.
-fn emit_bit_count(
-    chunks: &mut [Chunk],
-    current: usize,
-    op: Op,
-    name: &str,
-    argc: u8,
-    line: u32,
-) {
-    let chunk = &mut chunks[current];
-    if argc != 1 {
-        for _ in 0..argc {
-            chunk.emit_op(Op::DROP, line);
-        }
-        chunk.emit_string_const(&format!("{name} takes exactly one argument"), line);
-        vybe_compiler::primitives::errors::emit_throw(chunk, line);
-        return;
-    }
-    coerce_to_i32(chunk, line);
-    chunk.emit_op(op, line);
-}
-
-/// `popcnt(i)` — the number of one bits. (F2008 spells it `POPCNT`; `popcount`
-/// is not a Fortran intrinsic at all.)
-pub fn emit_fortran_popcnt(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_bit_count(chunks, current, Op::I32_POPCNT, "popcnt", argc, line);
-}
-
-/// `leadz(i)` — leading zero bits, counted from the sign bit down.
-pub fn emit_fortran_leadz(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_bit_count(chunks, current, Op::I32_CLZ, "leadz", argc, line);
-}
-
-/// `trailz(i)` — trailing zero bits, counted from bit 0 up.
-pub fn emit_fortran_trailz(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_bit_count(chunks, current, Op::I32_CTZ, "trailz", argc, line);
-}
+// popcnt / leadz / trailz USED to be emitted here, each coercing to i32 and
+// emitting one opcode. They are now `common:bits.*` — the shared bit family in
+// `primitives/bits.rs`, which the `UnaryOp::PopCount` node also emits. Go had
+// its own copy of the same three instructions in a different lane; the point of
+// centralizing was that neither copy could see the other.
 
 /// `parity(mask)` — true when an ODD number of the array's elements are true.
 ///
