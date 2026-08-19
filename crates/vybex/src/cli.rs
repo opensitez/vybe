@@ -734,7 +734,7 @@ pub fn run() {
                 ));
             };
             let me = form_object
-                .or_else(|| vm.globals.get("__f").cloned())
+                .or_else(|| vm.global("__f").cloned())
                 .unwrap_or(vybe_runtime::Value::Null);
             let sender = vybe_runtime::Value::String(std::sync::Arc::from(control));
             let args: Vec<vybe_runtime::Value> = match crate::gui_launch::fn_arity(&cb) {

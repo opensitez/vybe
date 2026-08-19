@@ -22,6 +22,15 @@ pub const CELL_KIND: &str = "cell";
 pub const CARRAY_BASE_KEY: &str = "__base";
 pub const CARRAY_IDX_KEY: &str = "__idx";
 pub const CARRAY_KIND: &str = "carray";
+/// A word in SHARED linear memory — the storage the WASM atomics
+/// (`i32.atomic.*`) act on. The third reference shape, and the first whose
+/// base is an ADDRESS rather than an object graph: `(base, key)` unification
+/// (referenceplan §10) rests on `ARRAY_GET`'s per-`ObjectKind` polymorphism,
+/// and linear memory is not an `ObjectKind` — the same carve-out the plan
+/// already makes for COBOL `REDEFINES`.
+pub const SHARED_KIND: &str = "shared";
+/// The word's byte address, allocated from the futex page.
+pub const SHARED_ADDR_KEY: &str = "__addr";
 
 fn e(kind: ExprKind) -> Expression {
     Expression::new(kind)

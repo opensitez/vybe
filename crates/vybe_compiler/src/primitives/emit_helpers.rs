@@ -13,10 +13,6 @@ impl Compiler {
     pub(crate) fn str_const(&mut self, s: &str) -> u16 {
         self.chunks[self.current].add_constant(Value::String(Arc::from(s)))
     }
-    #[allow(dead_code)]
-    pub(super) fn shared_str_const(&mut self, s: &str) -> u16 {
-        self.chunks[0].add_constant(Value::String(Arc::from(s)))
-    }
 
     pub(crate) fn import(&mut self, module: &str, name: &str) -> u16 {
         self.chunks[self.current].add_import(module, name)

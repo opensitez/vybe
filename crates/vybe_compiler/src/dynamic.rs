@@ -458,9 +458,9 @@ pub fn debug_eval_expression(
     // Copy live globals (scalars + shared objects; NOT function values — their
     // chunk_index refs belong to the live VM's chunk table). Objects are shared
     // by Arc, so reads see live object state. Locals come in as params (below).
-    for (k, v) in &live.globals {
-        if eval_value_is_copyable(v) {
-            eval_vm.globals.insert(k.clone(), v.clone());
+    for (k, v) in live.globals_by_name() {
+        if eval_value_is_copyable(&v) {
+            eval_vm.set_global(&k, v);
         }
     }
 
@@ -478,9 +478,8 @@ pub fn debug_eval_expression(
             .map_err(|e| format!("eval error: {e}"))?;
     }
     let fn_val = eval_vm
-        .globals
-        .remove(EVAL_FN)
-        .or_else(|| eval_vm.globals.remove(&EVAL_FN.to_lowercase()))
+        .remove_global(EVAL_FN)
+        .or_else(|| eval_vm.remove_global(&EVAL_FN.to_lowercase()))
         .ok_or("eval function did not compile")?;
     let arg_values: Vec<Value> = frame_args.into_iter().map(|(_, v)| v).collect();
     let result = eval_vm.invoke_callback(&fn_val, &arg_values);
@@ -627,7 +626,7 @@ pub fn install_chunk_globals(vm: &mut VM, chunks: &[Chunk], base_chunk_index: us
         let mut obj = Object::new();
         obj.kind = ObjectKind::Function(func);
         let val = Value::Object(vybe_runtime::heap::alloc(obj));
-        vm.globals.insert(chunk.name.to_lowercase(), val);
+        vm.set_global_owned(chunk.name.to_lowercase(), val);
     }
 }
 
@@ -1067,7 +1066,7 @@ impl JsDynamicRuntime {
         // Python's `eval` binds its expression value to a temp; read it back
         // and drop it so it does not linger as a caller global.
         match completion_capture {
-            Some(name) => vm.globals.remove(name).unwrap_or(Value::Undefined),
+            Some(name) => vm.remove_global(name).unwrap_or(Value::Undefined),
             None => run_value,
         }
     }
@@ -1216,8 +1215,8 @@ impl JsDynamicRuntime {
         // be invalid if called from eval_vm.
         {
             let outer_vm = unsafe { &*self.vm };
-            for (k, v) in &outer_vm.globals {
-                let copy = match v {
+            for (k, v) in outer_vm.globals_by_name() {
+                let copy = match &v {
                     Value::Object(obj) => {
                         let o = obj.lock().unwrap();
                         !matches!(
@@ -1228,7 +1227,7 @@ impl JsDynamicRuntime {
                     _ => true,
                 };
                 if copy {
-                    eval_vm.globals.insert(k.clone(), v.clone());
+                    eval_vm.set_global(&k, v.clone());
                 }
             }
         }
@@ -1244,9 +1243,8 @@ impl JsDynamicRuntime {
         // compile_and_run_bundle ran the script chunk which stored the
         // function in eval_vm.globals via GLOBAL_SET; call it now.
         let fn_val = eval_vm
-            .globals
-            .remove(fn_name)
-            .or_else(|| eval_vm.globals.remove(&fn_name.to_lowercase()))
+            .remove_global(fn_name)
+            .or_else(|| eval_vm.remove_global(&fn_name.to_lowercase()))
             .unwrap_or(Value::Undefined);
         let result = eval_vm.invoke_callback(&fn_val, &[]);
 
@@ -1288,18 +1286,18 @@ impl JsDynamicRuntime {
                 })
                 .flatten()
                 .collect();
-            for (k, v) in &eval_vm.globals {
-                let is_function = matches!(v, Value::Object(obj)
+            for (k, v) in eval_vm.globals_by_name() {
+                let is_function = matches!(&v, Value::Object(obj)
                     if matches!(obj.lock().unwrap().kind, ObjectKind::Function(_) | ObjectKind::HostFunction(_)));
                 if is_function {
                     continue;
                 }
-                let lexical = let_like.contains(k) || let_like.contains(&k.to_lowercase());
-                let pre_existing = outer_vm.globals.contains_key(k);
+                let lexical = let_like.contains(&k) || let_like.contains(&k.to_lowercase());
+                let pre_existing = outer_vm.has_global(&k);
                 if lexical && !pre_existing {
                     continue;
                 }
-                outer_vm.globals.insert(k.clone(), v.clone());
+                outer_vm.set_global(&k, v);
             }
         }
         result
@@ -1429,12 +1427,12 @@ impl JsDynamicRuntime {
         // are excluded — their chunk_index refs belong to another chunk table.
         if let Some(ns) = &namespace {
             for (name, v) in ns_string_entries(&ns.lock().unwrap()) {
-                eval_vm.globals.insert(name, v);
+                eval_vm.set_global_owned(name, v);
             }
         } else {
             let outer_vm = unsafe { &*self.vm };
-            for (k, v) in &outer_vm.globals {
-                let copy = match v {
+            for (k, v) in outer_vm.globals_by_name() {
+                let copy = match &v {
                     Value::Object(obj) => {
                         let o = obj.lock().unwrap();
                         !matches!(
@@ -1445,14 +1443,14 @@ impl JsDynamicRuntime {
                     _ => true,
                 };
                 if copy {
-                    eval_vm.globals.insert(k.clone(), v.clone());
+                    eval_vm.set_global(&k, v.clone());
                 }
             }
         }
 
         // Pre-run keys (host builtins + seeded scope) — anything NOT here after
         // the run is a binding the eval'd code created.
-        let base_keys: HashSet<String> = eval_vm.globals.keys().cloned().collect();
+        let base_keys: HashSet<String> = eval_vm.global_index.keys().cloned().collect();
 
         let run_result = {
             let mut service =
@@ -1473,11 +1471,7 @@ impl JsDynamicRuntime {
         // language whose eval'd code uses an explicit top-level `return`) uses
         // the script's return value; `exec`/others return that value too.
         let result = match completion_capture {
-            Some(name) => eval_vm
-                .globals
-                .get(name)
-                .cloned()
-                .unwrap_or(Value::Undefined),
+            Some(name) => eval_vm.global(name).cloned().unwrap_or(Value::Undefined),
             None => run_result,
         };
 
@@ -1489,30 +1483,30 @@ impl JsDynamicRuntime {
         match &namespace {
             Some(ns) => {
                 let mut guard = ns.lock().unwrap();
-                for (k, v) in &eval_vm.globals {
+                for (k, v) in eval_vm.globals_by_name() {
                     if Some(k.as_str()) == completion_capture {
                         continue;
                     }
-                    let is_function = matches!(v, Value::Object(obj)
+                    let is_function = matches!(&v, Value::Object(obj)
                         if matches!(obj.lock().unwrap().kind, ObjectKind::Function(_) | ObjectKind::HostFunction(_)));
                     if is_function {
                         continue;
                     }
-                    if ns_keys.contains(k) || !base_keys.contains(k) {
-                        ns_string_insert(&mut guard, k, v.clone());
+                    if ns_keys.contains(&k) || !base_keys.contains(&k) {
+                        ns_string_insert(&mut guard, &k, v.clone());
                     }
                 }
             }
             None => {
                 let outer_vm = unsafe { &mut *self.vm };
-                for (k, v) in &eval_vm.globals {
+                for (k, v) in eval_vm.globals_by_name() {
                     if Some(k.as_str()) == completion_capture {
                         continue;
                     }
-                    let is_function = matches!(v, Value::Object(obj)
+                    let is_function = matches!(&v, Value::Object(obj)
                         if matches!(obj.lock().unwrap().kind, ObjectKind::Function(_) | ObjectKind::HostFunction(_)));
                     if !is_function {
-                        outer_vm.globals.insert(k.clone(), v.clone());
+                        outer_vm.set_global(&k, v.clone());
                     }
                 }
             }
@@ -1562,8 +1556,7 @@ impl JsDynamicRuntime {
         }
 
         let function = function_vm
-            .globals
-            .remove(&function_global_name)
+            .remove_global(&function_global_name)
             .ok_or_else(|| format!("dynamic Function did not publish {function_global_name}"))?;
         let length = dynamic_function_length(&function);
         let state = Box::new(ConstructedJsFunction {
@@ -1602,10 +1595,8 @@ impl JsDynamicRuntime {
                         }
                     });
 
-                    let saved_this = state
-                        .vm
-                        .globals
-                        .insert("__js_this".into(), ctx.current_js_this());
+                    let saved_this = state.vm.global("__js_this").cloned();
+                    state.vm.set_global("__js_this", ctx.current_js_this());
                     ensure_js_runtime_registered(&mut state.vm);
                     let mut nested_runtime = JsDynamicRuntime::new(state.caps.clone());
                     let _guard = nested_runtime.activate(&mut state.vm, Vec::new(), Vec::new());
@@ -1615,9 +1606,9 @@ impl JsDynamicRuntime {
                     };
 
                     if let Some(saved_this) = saved_this {
-                        state.vm.globals.insert("__js_this".into(), saved_this);
+                        state.vm.set_global("__js_this", saved_this);
                     } else {
-                        state.vm.globals.remove("__js_this");
+                        state.vm.remove_global("__js_this");
                     }
 
                     result
@@ -1917,10 +1908,7 @@ fn ensure_js_runtime_registered(vm: &mut VM) {
         obj.properties
             .insert("name".into(), Value::String(Arc::from("eval")));
         obj.kind = ObjectKind::HostFunction(idx);
-        vm.globals.insert(
-            "eval".to_string(),
-            Value::Object(vybe_runtime::heap::alloc(obj)),
-        );
+        vm.set_global("eval", Value::Object(vybe_runtime::heap::alloc(obj)));
     }
 }
 
@@ -1958,7 +1946,7 @@ fn value_to_string(value: &Value) -> String {
 }
 
 fn global_constructor_prototype(vm: &VM, name: &str) -> Option<Value> {
-    let Value::Object(ctor) = vm.globals.get(name)?.clone() else {
+    let Value::Object(ctor) = vm.global(name)?.clone() else {
         return None;
     };
     let ctor = ctor.lock().unwrap();
@@ -2033,9 +2021,9 @@ fn dynamic_host_function_value(
 }
 
 fn sync_dynamic_function_globals(source: &VM, target: &mut VM) {
-    for (name, value) in &source.globals {
-        if is_shared_dynamic_global(name, value) {
-            target.globals.insert(name.clone(), value.clone());
+    for (name, value) in source.globals_by_name() {
+        if is_shared_dynamic_global(&name, &value) {
+            target.set_global(&name, value);
         }
     }
 }
@@ -2150,7 +2138,7 @@ mod tests {
                 .expect("compile and run callGreet");
         }
 
-        let greet = vm.globals.get("greet").cloned().expect("greet global");
+        let greet = vm.global("greet").cloned().expect("greet global");
         let call_greet = vm
             .globals
             .get("callgreet")
@@ -2355,7 +2343,7 @@ mod tests {
             .compile_and_run_path(&main_path)
             .expect("run php with dynamic include");
 
-        match vm.globals.get("__php_var_result") {
+        match vm.global("__php_var_result") {
             Some(Value::I32(value)) => assert_eq!(*value, 42),
             Some(Value::I64(value)) => assert_eq!(*value, 42),
             Some(Value::F64(value)) => assert_eq!(*value, 42.0),
@@ -2398,7 +2386,7 @@ mod tests {
             .compile_and_run_path(&main_path)
             .expect("run nested php dynamic include");
 
-        match vm.globals.get("__php_var_result") {
+        match vm.global("__php_var_result") {
             Some(Value::I32(value)) => assert_eq!(*value, 42),
             Some(Value::I64(value)) => assert_eq!(*value, 42),
             Some(Value::F64(value)) => assert_eq!(*value, 42.0),
@@ -2435,14 +2423,14 @@ mod tests {
             .compile_and_run_path(&main_path)
             .expect("run php with alternative syntax include");
 
-        match vm.globals.get("__php_var_result") {
+        match vm.global("__php_var_result") {
             Some(Value::I32(value)) => assert_eq!(*value, 42),
             Some(Value::I64(value)) => assert_eq!(*value, 42),
             Some(Value::F64(value)) => assert_eq!(*value, 42.0),
             other => panic!("expected include $result global, got {other:?}"),
         }
 
-        match vm.globals.get("__php_var_call_result") {
+        match vm.global("__php_var_call_result") {
             Some(Value::I32(value)) => assert_eq!(*value, 42),
             Some(Value::I64(value)) => assert_eq!(*value, 42),
             Some(Value::F64(value)) => assert_eq!(*value, 42.0),
@@ -2484,7 +2472,7 @@ mod tests {
             .compile_and_run_path(&main_path)
             .expect("run php with entry-relative nested include");
 
-        match vm.globals.get("__php_var_result") {
+        match vm.global("__php_var_result") {
             Some(Value::I32(value)) => assert_eq!(*value, 42),
             Some(Value::I64(value)) => assert_eq!(*value, 42),
             Some(Value::F64(value)) => assert_eq!(*value, 42.0),

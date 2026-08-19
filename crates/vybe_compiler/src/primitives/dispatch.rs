@@ -21,6 +21,7 @@
 //! own dispatch for language-specific common ops.
 
 use vybe_runtime::Chunk;
+use vybe_ast::{BitLane, FloatLane, MidpointPolicy, NumericRepr};
 use vybe_runtime::opcode::Op;
 
 use crate::primitives::threading as thread_adapter;
@@ -452,9 +453,9 @@ pub fn emit_common(
         "xml.save" => xml::emit_save(chunks, current, argc, line),
         "xml.elements" => xml::emit_elements(chunks, current, argc, line),
 
-        // ── Collection ops (route through ecma:array imports;
-        // `chunks` slice lets the helper register on chunks[0] while
-        // emitting code on chunks[current]). ──
+        // ── Collection ops (route through ecma:array imports; the helper
+        // registers on chunks[current] — the chunk it emits into — for the
+        // reason spelled out in the `object.new` arm above). ──
         "collections.push" => collections::emit_push(chunks, current, line),
         "collections.pop" => collections::emit_pop(chunks, current, line),
         "collections.length" => collections::emit_len(chunks, current, line),
@@ -594,13 +595,109 @@ pub fn emit_common(
         "math.nan" => crate::primitives::math::emit_nan(&mut chunks[current], line),
         "math.inf" => crate::primitives::math::emit_inf(&mut chunks[current], line),
         "math.is_inf" => crate::primitives::math::emit_is_inf(&mut chunks[current], line),
-        "math.f64_bits" => crate::primitives::math::emit_f64_bits(&mut chunks[current], line),
-        "math.f64_from_bits" => {
-            crate::primitives::math::emit_f64_from_bits(&mut chunks[current], line)
+        // Reinterpretation — a REPRESENTATION operation, so it lives with the
+        // bit family rather than with IEEE arithmetic. The `math.*` spellings
+        // just below are Go's, kept working and pointed at this same code.
+        "bits.reinterpret_i32" => {
+            crate::primitives::bits::emit_reinterpret(&mut chunks[current], NumericRepr::I32, line)
         }
-        "math.f32_bits" => crate::primitives::math::emit_f32_bits(&mut chunks[current], line),
+        "bits.reinterpret_f32" => {
+            crate::primitives::bits::emit_reinterpret(&mut chunks[current], NumericRepr::F32, line)
+        }
+        "bits.reinterpret_i64" => {
+            crate::primitives::bits::emit_reinterpret(&mut chunks[current], NumericRepr::I64, line)
+        }
+        "bits.reinterpret_f64" => {
+            crate::primitives::bits::emit_reinterpret(&mut chunks[current], NumericRepr::F64, line)
+        }
+        // Next representable float. One home for `nextafter` / `nextUp` /
+        // `nextDown` / `ulp` — C, Java, Kotlin and Fortran each had their own
+        // and all of them were wrong.
+        // Round-to-integral, one row per midpoint policy. Languages disagree
+        // three ways and each row says which one it means.
+        "math.min_num" => crate::primitives::math::emit_min_num(&mut chunks[current], line),
+        "math.max_num" => crate::primitives::math::emit_max_num(&mut chunks[current], line),
+        "math.round_half_even" => {
+            crate::primitives::math::emit_round(&mut chunks[current], MidpointPolicy::HalfEven, line)
+        }
+        "math.round_half_away" => crate::primitives::math::emit_round(
+            &mut chunks[current],
+            MidpointPolicy::HalfAwayFromZero,
+            line,
+        ),
+        "math.round_half_up" => {
+            crate::primitives::math::emit_round(&mut chunks[current], MidpointPolicy::HalfUp, line)
+        }
+        "math.next_up32" => {
+            crate::primitives::math::emit_next_toward(&mut chunks[current], true, FloatLane::F32, line)
+        }
+        "math.next_up64" => {
+            crate::primitives::math::emit_next_toward(&mut chunks[current], true, FloatLane::F64, line)
+        }
+        "math.next_down32" => {
+            crate::primitives::math::emit_next_toward(&mut chunks[current], false, FloatLane::F32, line)
+        }
+        "math.next_down64" => {
+            crate::primitives::math::emit_next_toward(&mut chunks[current], false, FloatLane::F64, line)
+        }
+        "math.next_after32" => {
+            crate::primitives::math::emit_next_after(&mut chunks[current], FloatLane::F32, line)
+        }
+        "math.next_after64" => {
+            crate::primitives::math::emit_next_after(&mut chunks[current], FloatLane::F64, line)
+        }
+        "math.ulp32" => {
+            crate::primitives::math::emit_ulp(&mut chunks[current], FloatLane::F32, line)
+        }
+        "math.ulp64" => {
+            crate::primitives::math::emit_ulp(&mut chunks[current], FloatLane::F64, line)
+        }
+        "math.f64_bits" => {
+            crate::primitives::bits::emit_reinterpret(&mut chunks[current], NumericRepr::I64, line)
+        }
+        "math.f64_from_bits" => {
+            crate::primitives::bits::emit_reinterpret(&mut chunks[current], NumericRepr::F64, line)
+        }
+        // The bit family. A bare-name spelling (`POPCNT`, `bits.OnesCount`) must
+        // stay SHADOWABLE by a user definition, which is what profile
+        // resolution gives it — so it routes here rather than being folded in a
+        // walker. The AST operator nodes call the same functions, so there is
+        // one implementation with two entry points.
+        "bits.popcnt32" => {
+            crate::primitives::bits::emit_pop_count(&mut chunks[current], BitLane::W32, line)
+        }
+        "bits.popcnt64" => {
+            crate::primitives::bits::emit_pop_count(&mut chunks[current], BitLane::W64, line)
+        }
+        "bits.clz32" => {
+            crate::primitives::bits::emit_leading_zeros(&mut chunks[current], BitLane::W32, line)
+        }
+        "bits.clz64" => {
+            crate::primitives::bits::emit_leading_zeros(&mut chunks[current], BitLane::W64, line)
+        }
+        "bits.ctz32" => {
+            crate::primitives::bits::emit_trailing_zeros(&mut chunks[current], BitLane::W32, line)
+        }
+        "bits.ctz64" => {
+            crate::primitives::bits::emit_trailing_zeros(&mut chunks[current], BitLane::W64, line)
+        }
+        "bits.rotl32" => {
+            crate::primitives::bits::emit_rotate(&mut chunks[current], BitLane::W32, true, line)
+        }
+        "bits.rotl64" => {
+            crate::primitives::bits::emit_rotate(&mut chunks[current], BitLane::W64, true, line)
+        }
+        "bits.rotr32" => {
+            crate::primitives::bits::emit_rotate(&mut chunks[current], BitLane::W32, false, line)
+        }
+        "bits.rotr64" => {
+            crate::primitives::bits::emit_rotate(&mut chunks[current], BitLane::W64, false, line)
+        }
+        "math.f32_bits" => {
+            crate::primitives::bits::emit_reinterpret(&mut chunks[current], NumericRepr::I32, line)
+        }
         "math.f32_from_bits" => {
-            crate::primitives::math::emit_f32_from_bits(&mut chunks[current], line)
+            crate::primitives::bits::emit_reinterpret(&mut chunks[current], NumericRepr::F32, line)
         }
         "expressions.bool_not" => {
             crate::primitives::expressions::emit_bool_not(&mut chunks[current], line)

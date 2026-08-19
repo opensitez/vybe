@@ -33,12 +33,12 @@ pub fn install(vm: &mut VM, meta: &HostImportMetadata) {
             // calls it.
             continue;
         };
-        vm.globals.insert(n.local.clone(), val);
+        vm.set_global_owned(n.local.clone(), val);
     }
 
     for w in &meta.wildcard {
         let ns = build_namespace(vm, &w.module);
-        vm.globals.insert(w.alias.clone(), ns);
+        vm.set_global_owned(w.alias.clone(), ns);
     }
 }
 

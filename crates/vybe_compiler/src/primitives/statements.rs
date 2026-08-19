@@ -4715,6 +4715,21 @@ impl Compiler {
 
                 if is_toplevel || is_hoisted {
                     let cn = self.canon(name);
+                    if self.module_atomic_word_globals.contains(name) {
+                        // Module-level atomic place — same promotion as the
+                        // local arm below, global spelling. The value is on
+                        // the stack; wrap it in a shared word and store THAT.
+                        let value_slot = self.define_local("__shared_word_init");
+                        self.emit_u16(Op::LOCAL_SET, value_slot);
+                        let line = self.line;
+                        crate::primitives::references::emit_shared_word_new(
+                            &mut self.chunks,
+                            self.current,
+                            value_slot,
+                            line,
+                        );
+                        self.mark_promoted_global_cell(name);
+                    }
                     self.emit_global_write(&cn);
                     if self.profile.ecma_lexical_declarations
                         && *kind == VarDeclKind::Var
@@ -4778,7 +4793,23 @@ impl Compiler {
                     // box it in a pointer cell now (once), so a `&name` inside a
                     // loop reuses this cell rather than re-wrapping every
                     // iteration. Reads/writes become cell-aware via the mark.
-                    if self.current_addr_taken_locals.contains(name) {
+                    if self.current_atomic_word_locals.contains(name) {
+                        // This local is the PLACE of an atomic op somewhere in
+                        // the function: its storage must be a word in SHARED
+                        // linear memory, not a cell object — an atomic on a
+                        // cell is an atomic on a copy. The binding then holds
+                        // the `{__ref_kind:"shared", __addr}` reference and
+                        // every ordinary read/write derefs through it.
+                        let line = self.line;
+                        crate::primitives::references::emit_shared_word_new(
+                            &mut self.chunks,
+                            self.current,
+                            slot,
+                            line,
+                        );
+                        self.emit_u16(Op::LOCAL_SET, slot);
+                        self.mark_pointer_cell_binding(name);
+                    } else if self.current_addr_taken_locals.contains(name) {
                         self.promote_local_binding_to_pointer_cell(name);
                     }
                 }

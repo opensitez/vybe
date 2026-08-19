@@ -59,14 +59,56 @@ pub fn emit_write_stdout_with_imports(
     let stream_write = chunk.add_import("canon", "stream.write");
     let drop_wr = chunk.add_import("canon", "stream.drop-writable");
     let drop_rd = chunk.add_import("canon", "stream.drop-readable");
-    // canon stream.new → [rd, wr]
+    // canon stream.new → ONE i64: `ri | (wi << 32)`, readable in the low 32
+    // bits and writable in the high 32 (`CanonicalABI.md` §canon
+    // {stream,future}.new — `$f` is given type `(func (result i64))`).
+    // This used to take two stack values, which no conforming module could
+    // have produced.
     chunk.emit_call(stream_new, 0, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, wr_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, rd_slot, line);
-    // stream.write(wr, contents)
-    chunk.emit_op_u16(Op::LOCAL_GET, wr_slot, line);
+    // writable = high 32
+    chunk.emit_op_u16(Op::LOCAL_GET, rd_slot, line);
+    chunk.emit_i64_const(32, line);
+    chunk.emit_op(Op::I64_SHR_U, line);
+    chunk.emit_op(Op::I32_WRAP_I64, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, wr_slot, line);
+    // readable = low 32
+    chunk.emit_op_u16(Op::LOCAL_GET, rd_slot, line);
+    chunk.emit_op(Op::I32_WRAP_I64, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, rd_slot, line);
+    // canon stream.write(handle, ptr, n) — `CanonicalABI.md` §canon
+    // stream.{read,write}: elements come FROM LINEAR MEMORY, they are not
+    // handed over as a value. So the contents are marshalled first —
+    // `__vybe_canon_store_utf8` encodes, allocates and copies, answering
+    // `ptr | (len << 32)` in one i64.
+    //
+    // This used to push the string itself and call with argc 2, which is not a
+    // signature any conforming component could satisfy. It worked only because
+    // both ends were ours.
+    // `alloc_scratch`, NOT a raw `local_count` bump. Callers allocate their
+    // scratch through it (`rd_slot`/`wr_slot` above), and the chunk's
+    // `local_count` is finalised from the SCOPE afterwards — so a hand-bumped
+    // index is simply discarded, and the `local.get` that used it addresses
+    // past the frame. That produced `index out of bounds: the len is 35 but
+    // the index is 76` at the first `print`.
+    let packed = chunk.alloc_scratch(1);
     push_contents(chunk);
-    chunk.emit_call(stream_write, 2, line);
+    crate::primitives::bundle::emit_call_push_func(chunk, "__vybe_canon_store_utf8", line);
+    chunk.emit_op_u16(Op::LOCAL_SET, packed, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, wr_slot, line);
+    // ptr = low 32
+    chunk.emit_op_u16(Op::LOCAL_GET, packed, line);
+    chunk.emit_op(Op::I32_WRAP_I64, line);
+    // n = high 32
+    chunk.emit_op_u16(Op::LOCAL_GET, packed, line);
+    chunk.emit_i64_const(32, line);
+    chunk.emit_op(Op::I64_SHR_U, line);
+    chunk.emit_op(Op::I32_WRAP_I64, line);
+    chunk.emit_call(stream_write, 3, line);
+    // The packed CopyResult is not inspected here: a write into a stream whose
+    // reader is the host cannot partially fail, and stdout has nowhere to
+    // report it. A guest that cares reads the result.
+    chunk.emit_op(Op::DROP, line);
     // stream.drop-writable(wr) — signals EOF
     chunk.emit_op_u16(Op::LOCAL_GET, wr_slot, line);
     chunk.emit_call(drop_wr, 1, line);

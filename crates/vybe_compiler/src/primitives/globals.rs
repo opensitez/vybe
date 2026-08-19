@@ -243,32 +243,167 @@ pub fn emit_write(chunk: &mut Chunk, name: &str, line: u32) {
 impl Compiler {
     /// Read module global `name` — the compiler-side entry point.
     ///
-    /// Routes through `global_name_const_idx` so the shared-global slot map is
-    /// honoured. That map existed while only **16** of the ~320 emit sites
-    /// consulted it; every other site interned its own constant and could
-    /// refer to a different slot for the same name.
+    /// Delegates to [`emit_read`] so there is ONE encoding of a global access,
+    /// which is what this module claims to be.
+    ///
+    /// It used to route through a `global_name_const_idx` that returned either
+    /// a shared-global SLOT number or a constant index, from the same function.
+    /// `GLOBAL_GET` consumes a constant index, so the slot branch was only ever
+    /// correct in chunk 0 — where the reserved names had been planted into an
+    /// empty constant pool in slot order, making slot N land at constant N.
+    /// In any other chunk it read an unrelated constant, or ran off the end of
+    /// a short pool and panicked. Interning per chunk is correct everywhere and
+    /// needs no coincidence.
     pub(crate) fn emit_global_read(&mut self, name: &str) {
-        let idx = self.global_name_const_idx(name);
-        self.emit_u16(Op::GLOBAL_GET, idx);
+        let line = self.line;
+        emit_read(self.chunk(), name, line);
     }
 
     /// Write module global `name`. See [`Compiler::emit_global_read`].
     pub(crate) fn emit_global_write(&mut self, name: &str) {
-        let idx = self.global_name_const_idx(name);
-        self.emit_u16(Op::GLOBAL_SET, idx);
+        let line = self.line;
+        emit_write(self.chunk(), name, line);
     }
+}
+
+/// Build the module's GLOBAL INDEX SPACE and rewrite every operand into it.
+///
+/// Emitters name a global; this assigns it an index. Modelled exactly on
+/// `link.rs::normalize_import_table`, which does the same job for function
+/// imports: unify across chunks, build a per-chunk remap, walk the bytecode,
+/// rewrite the operand, park the table on chunk 0.
+///
+/// Before this pass a `GLOBAL_GET` operand was an index into the EMITTING
+/// CHUNK's constant pool, holding the global's name, which the VM then looked
+/// up in a `HashMap<String, Value>`. That is not what `global.get` means in
+/// WASM and it cost a string hash on every access. After it, the operand is a
+/// `globalidx` over `global_imports ++ defined` — WASM's own order, which
+/// `collect_globals` in the wasm writer already assumes.
+///
+/// Runs AFTER `declare_free_globals`, which is what decides the import half.
+pub fn normalize_global_table(chunks: &mut [Chunk]) {
+    if chunks.is_empty() {
+        return;
+    }
+
+    // The import halves, split exactly as the bytecode names them: a
+    // string-constant global is referenced by its COMPOSITE key, a host global
+    // by its BARE name.
+    let mut string_constants: Vec<String> = Vec::new();
+    let mut host_globals: Vec<String> = Vec::new();
+    for chunk in chunks.iter() {
+        for imp in &chunk.global_imports {
+            if imp.module == vybe_runtime::chunk::STRING_CONSTANTS_MODULE {
+                if !string_constants.contains(&imp.name) {
+                    string_constants.push(imp.name.clone());
+                }
+            } else if !host_globals.contains(&imp.name) {
+                host_globals.push(imp.name.clone());
+            }
+        }
+    }
+
+    // Everything else any chunk reads or writes, first-seen, is module-defined.
+    let seeded = vybe_runtime::chunk::global_index_space(&string_constants, &host_globals, &[]);
+    let mut defined: Vec<String> = Vec::new();
+    for chunk in chunks.iter() {
+        for (_, name) in global_operands(chunk) {
+            if !seeded.contains(&name) && !defined.contains(&name) {
+                defined.push(name);
+            }
+        }
+    }
+
+    let table =
+        vybe_runtime::chunk::global_index_space(&string_constants, &host_globals, &defined);
+
+    let mut remaps: Vec<Vec<(u16, u16)>> = Vec::with_capacity(chunks.len());
+    for chunk in chunks.iter() {
+        let mut remap: Vec<(u16, u16)> = Vec::new();
+        for (const_idx, name) in global_operands(chunk) {
+            let Some(gidx) = table.iter().position(|n| *n == name) else {
+                continue;
+            };
+            if !remap.iter().any(|(c, _)| *c == const_idx) {
+                remap.push((const_idx, gidx as u16));
+            }
+        }
+        remaps.push(remap);
+    }
+
+    for (chunk_idx, chunk) in chunks.iter_mut().enumerate() {
+        let remap = &remaps[chunk_idx];
+        let code = &mut chunk.code;
+        let mut ip = 0usize;
+        while ip + 3 < code.len() {
+            let group = ((code[ip] as u16) << 8) | code[ip + 1] as u16;
+            let sub = ((code[ip + 2] as u16) << 8) | code[ip + 3] as u16;
+            let Some(op) = Op::decode(group, sub) else {
+                ip += 4;
+                continue;
+            };
+            let operand_start = ip + 4;
+            let operand_len = op.operand_format().size_in(code, operand_start);
+            if (op == Op::GLOBAL_GET || op == Op::GLOBAL_SET) && operand_start + 1 < code.len() {
+                let old = u16::from_be_bytes([code[operand_start], code[operand_start + 1]]);
+                if let Some((_, gidx)) = remap.iter().find(|(c, _)| *c == old) {
+                    let bytes = gidx.to_be_bytes();
+                    code[operand_start] = bytes[0];
+                    code[operand_start + 1] = bytes[1];
+                }
+            }
+            ip = operand_start + operand_len;
+        }
+    }
+
+    chunks[0].globals = table;
+}
+
+/// Every `(constant index, global name)` a chunk's `GLOBAL_GET`/`GLOBAL_SET`
+/// operands name. Shared by `declare_free_globals` and
+/// `normalize_global_table` so the two cannot disagree about what a global is.
+fn global_operands(chunk: &Chunk) -> Vec<(u16, String)> {
+    let code = &chunk.code;
+    let mut out = Vec::new();
+    let mut ip = 0usize;
+    while ip + 3 < code.len() {
+        let group = ((code[ip] as u16) << 8) | code[ip + 1] as u16;
+        let sub = ((code[ip + 2] as u16) << 8) | code[ip + 3] as u16;
+        let Some(op) = Op::decode(group, sub) else {
+            ip += 4;
+            continue;
+        };
+        let operand_start = ip + 4;
+        if (op == Op::GLOBAL_GET || op == Op::GLOBAL_SET) && operand_start + 1 < code.len() {
+            let idx = u16::from_be_bytes([code[operand_start], code[operand_start + 1]]);
+            if let Some(vybe_runtime::Value::String(name)) = chunk.constants.get(idx as usize) {
+                out.push((idx, name.to_string()));
+            }
+        }
+        ip = operand_start + op.operand_format().size_in(code, operand_start);
+    }
+    out
 }
 
 /// Declare the module's FREE globals as imports.
 ///
 /// Lives here because it is global-namespace logistics, which is what this
 /// module is for. It reads the emitted bytecode rather than a record kept
-/// during emission for one reason, stated plainly: only 16 of the 193
-/// `GLOBAL_GET`/`GLOBAL_SET` emit sites funnel through
-/// `global_name_const_idx`, so a per-site record would be INCOMPLETE and an
-/// incomplete import list is worse than none. Funnelling every global read and
-/// write through this module would let the record replace the walk — that is
-/// the real fix, and it is a separate sweep.
+/// during emission.
+///
+/// ⚠ The reason it gives used to be "only 16 of the 193 `GLOBAL_GET`/
+/// `GLOBAL_SET` emit sites funnel through `global_name_const_idx`, so a
+/// per-site record would be INCOMPLETE", with the note that funnelling every
+/// site "is the real fix, and it is a separate sweep". **That sweep has since
+/// been done** — every global emission in the compiler and all fifteen
+/// languages now goes through `emit_read`/`emit_write` in this file, and
+/// `global_name_const_idx` is gone. Measure before repeating the old figure:
+/// it misled two sessions into pricing a four-function change as a
+/// tree-wide one.
+///
+/// So a per-site record IS now possible and would let the record replace this
+/// walk. It has not been done because the walk works and is not the bottleneck,
+/// not because it cannot be.
 ///
 /// A free global is a name the module reads but never writes and never
 /// defines — `globalThis`, `undefined`, `__ctor_TypeError`, the runtime
@@ -281,9 +416,9 @@ impl Compiler {
 /// PHP, 19 for JS. An import section, not a problem — the earlier estimate
 /// of "hundreds" was wrong.
 ///
-/// Computed from the emitted bytecode rather than threaded through the 193
-/// `GLOBAL_GET` emit sites, exactly as `normalize_import_table` walks the
-/// code for `CALL_IMPORT`. String constants are skipped: they are already
+/// Computed from the emitted bytecode rather than threaded through the emit
+/// sites, exactly as `normalize_import_table` walks the code for
+/// `CALL_IMPORT`. String constants are skipped: they are already
 /// declared imports of their own.
 ///
 /// The test is "no chunk WRITES it", not `defined_globals`. Measured

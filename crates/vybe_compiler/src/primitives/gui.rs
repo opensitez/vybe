@@ -257,11 +257,17 @@ pub use vybe_runtime::namespaces::DOM_ELEMENT_TYPE;
 // custom opcodes, no language-specific knowledge. They define the calling
 // convention so call sites are uniform across compilers.
 //
-// IMPORTANT: imports must be registered against a single chunk (typically the
-// script chunk, chunk[0]) so the VM's import_table resolution works. Callers
-// pass a pre-resolved `import_idx` obtained via their compiler's `import()`
-// helper (which delegates to `chunks[0].add_import`). This keeps gui.rs
-// chunk-agnostic — it doesn't need to know which chunk it's emitting into.
+// IMPORTANT: an import must be registered on the chunk that EMITS the call.
+// `Compiler::import()` does exactly that (`chunks[self.current].add_import`).
+// Registering on chunks[0] instead yields an index out of range of the current
+// chunk's table, which the normalize pass's script-table fallback resolves
+// correctly only by luck — see `dispatch.rs`'s `object.new` arm, where it
+// silently mis-resolved to `js-string.concat` in nested function-expression
+// contexts. Callers pass a pre-resolved `import_idx`, which keeps gui.rs
+// chunk-agnostic — it does not need to know which chunk it is emitting into.
+//
+// (This comment previously stated the opposite rule and described `import()`
+// as delegating to `chunks[0]`. It does not, and the chunk-0 form is the bug.)
 
 // ─── Lowering a control to the web platform ──────────────────────────────
 

@@ -973,7 +973,24 @@ impl Compiler {
         self.chunk().emit_end(base_obj_line);
 
         self.chunk().emit_else(carray_line);
+        // Third shape: a word in SHARED linear memory. The load is the WASM
+        // atomic one — an ordinary read of an atomically-updated binding must
+        // see the other thread's write.
         self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.emit_struct_field_op(Op::STRUCT_GET, 0, kind_key);
+        self.emit_string_eq_literal(crate::primitives::pointers::SHARED_KIND);
+        let shared_line = self.line;
+        self.chunk().emit_if(shared_line);
+        let addr_key = self.str_const(crate::primitives::pointers::SHARED_ADDR_KEY);
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.emit_struct_field_op(Op::STRUCT_GET, 0, addr_key);
+        {
+            let line = self.line;
+            crate::primitives::threading::emit_atomic_load(self.chunk(), line);
+        }
+        self.chunk().emit_else(shared_line);
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.chunk().emit_end(shared_line);
         self.chunk().emit_end(carray_line);
 
         self.chunk().emit_end(cell_line);
@@ -1095,6 +1112,23 @@ impl Compiler {
 
         let line = self.line;
         self.chunk().emit_else(line);
+        // Third shape: shared word — mirror of the load dispatcher's arm. A
+        // plain assignment to a name bound to shared storage IS an atomic
+        // store; anything weaker would tear against a concurrent RMW.
+        self.emit_u16(Op::LOCAL_GET, ptr_slot);
+        self.emit_struct_field_op(Op::STRUCT_GET, 0, kind_key);
+        self.emit_string_eq_literal(crate::primitives::pointers::SHARED_KIND);
+        let shared_line = self.line;
+        self.chunk().emit_if(shared_line);
+        let addr_key = self.str_const(crate::primitives::pointers::SHARED_ADDR_KEY);
+        self.emit_u16(Op::LOCAL_GET, ptr_slot);
+        self.emit_struct_field_op(Op::STRUCT_GET, 0, addr_key);
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        {
+            let line = self.line;
+            crate::primitives::threading::emit_atomic_store(self.chunk(), line);
+        }
+        self.chunk().emit_end(shared_line);
         self.chunk().emit_end(line);
 
         let line = self.line;

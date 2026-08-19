@@ -18,9 +18,12 @@
 // the emitter, so there is no second module to route through.
 pub mod addressable_storage;
 pub mod array_transforms;
+pub mod atomic_ops;
 pub mod base64;
 pub mod bigint;
+pub mod bits;
 pub mod builtin_slots;
+pub mod canon_marshal;
 pub mod bundle;
 pub mod callable;
 pub mod clone; // what it means to COPY a value — records, collections, arguments
@@ -503,8 +506,6 @@ pub struct Compiler {
     /// mode (§9.1.1.4.6 applies in both strict and sloppy). See `emit_var_get`.
     program_lexical_names: HashSet<String>,
 
-    shared_global_slots: HashMap<String, u16>,
-    shared_global_names: Vec<String>,
     /// Fx-hashed, not SipHash: `resolve_namespaced_function_identity` probes
     /// this set once or more per identifier compiled, and a warm-job profile
     /// put std's default hasher among the largest single costs. The keys are
@@ -680,6 +681,9 @@ pub struct Compiler {
     /// `promoted_global_cells`, which records that a wrap actually happened —
     /// mixing them makes promotion see itself as already done and skip.
     module_addr_taken_globals: HashSet<String>,
+    /// Module-level names used as an ATOMIC place anywhere in the module —
+    /// promoted to a shared-memory word at their top-level declaration.
+    module_atomic_word_globals: HashSet<String>,
 
     /// Names of locals/params in the function currently being compiled whose
     /// address is taken somewhere in the body (`&v`). Populated by a pre-scan
@@ -688,6 +692,10 @@ pub struct Compiler {
     /// first `&v` use — taking the address inside a loop would otherwise
     /// re-wrap the cell every iteration and orphan prior mutations.
     current_addr_taken_locals: HashSet<String>,
+    /// Locals of the CURRENT function used as an atomic place — promoted to a
+    /// shared word at declaration, exactly where the pointer-cell promotion
+    /// would have run.
+    current_atomic_word_locals: HashSet<String>,
     current_closure_captured_locals: HashSet<String>,
 
     /// Functions whose every explicit `Return` carries an `ExprKind::Tuple`
@@ -1166,6 +1174,254 @@ fn collect_addr_taken_in_expr(expr: &Expression, out: &mut HashSet<String>) {
         }
         ExprKind::Cast { expr, .. } => collect_addr_taken_in_expr(expr, out),
         ExprKind::RefLoad(inner) => collect_addr_taken_in_expr(inner, out),
+        _ => {}
+    }
+}
+
+/// Pre-scan: collect names used as the PLACE of an `ExprKind::Atomic`
+/// operation, so their bindings can be promoted to a SHARED-MEMORY WORD at
+/// declaration (`references::emit_shared_word_new`) — the storage a WASM
+/// atomic acts on. A pointer cell is the wrong kind here: an atomic on a cell
+/// object is an atomic on a copy.
+///
+/// Unlike `collect_addr_taken_idents`, this DOES descend into nested function,
+/// lambda and class-member bodies: whether a binding is a shared word is a
+/// whole-module property (an `Interlocked.Add` inside a `Task.Run` lambda
+/// makes the TOP-LEVEL variable shared), the same forward-pass argument
+/// `module_addr_taken_globals` documents. Over-approximation is safe for the
+/// same reason stated there: the deref dispatchers pass a non-reference
+/// through untouched.
+///
+/// A place this scan misses is LOUD, not wrong: the binding stays unpromoted
+/// and `emit_atomic` refuses it at compile time.
+fn collect_atomic_place_idents(stmts: &[Statement], out: &mut HashSet<String>) {
+    for stmt in stmts {
+        collect_atomic_place_in_stmt(stmt, out);
+    }
+}
+
+fn collect_atomic_place_in_stmt(stmt: &Statement, out: &mut HashSet<String>) {
+    match &stmt.kind {
+        StmtKind::Expr(e) => collect_atomic_place_in_expr(e, out),
+        StmtKind::Return(opt) => {
+            if let Some(e) = opt {
+                collect_atomic_place_in_expr(e, out);
+            }
+        }
+        StmtKind::Throw { expr, cause } => {
+            for e in [expr, cause].into_iter().flatten() {
+                collect_atomic_place_in_expr(e, out);
+            }
+        }
+        StmtKind::Echo(exprs) => {
+            for e in exprs {
+                collect_atomic_place_in_expr(e, out);
+            }
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for d in declarations {
+                if let Some(e) = &d.init {
+                    collect_atomic_place_in_expr(e, out);
+                }
+            }
+        }
+        StmtKind::Assign { targets, value, .. } => {
+            for t in targets {
+                collect_atomic_place_in_expr(t, out);
+            }
+            collect_atomic_place_in_expr(value, out);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            collect_atomic_place_in_expr(target, out);
+            collect_atomic_place_in_expr(value, out);
+        }
+        StmtKind::Block(stmts) | StmtKind::NamespaceDecl { body: stmts, .. } => {
+            collect_atomic_place_idents(stmts, out)
+        }
+        StmtKind::FunctionDecl { body, .. } => collect_atomic_place_idents(body, out),
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for m in members {
+                match m {
+                    vybe_ast::ClassMember::Method(inner)
+                    | vybe_ast::ClassMember::NestedType(inner) => {
+                        collect_atomic_place_in_stmt(inner, out)
+                    }
+                    vybe_ast::ClassMember::Constructor { body, .. } => {
+                        collect_atomic_place_idents(body, out)
+                    }
+                    vybe_ast::ClassMember::Property { getter, setter, .. } => {
+                        if let Some(g) = getter {
+                            collect_atomic_place_idents(g, out);
+                        }
+                        if let Some(s) = setter {
+                            collect_atomic_place_idents(&s.body, out);
+                        }
+                    }
+                    vybe_ast::ClassMember::Field { init: Some(e), .. } => {
+                        collect_atomic_place_in_expr(e, out)
+                    }
+                    _ => {}
+                }
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            collect_atomic_place_in_expr(cond, out);
+            collect_atomic_place_idents(then_body, out);
+            for (c, b) in elifs {
+                collect_atomic_place_in_expr(c, out);
+                collect_atomic_place_idents(b, out);
+            }
+            if let Some(b) = else_body {
+                collect_atomic_place_idents(b, out);
+            }
+        }
+        StmtKind::While { cond, body, .. } | StmtKind::DoWhile { cond, body, .. } => {
+            collect_atomic_place_in_expr(cond, out);
+            collect_atomic_place_idents(body, out);
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+            ..
+        } => {
+            if let Some(i) = init {
+                collect_atomic_place_in_stmt(i, out);
+            }
+            for e in [cond, update].into_iter().flatten() {
+                collect_atomic_place_in_expr(e, out);
+            }
+            collect_atomic_place_idents(body, out);
+        }
+        StmtKind::ForIn { iter, body, .. } => {
+            collect_atomic_place_in_expr(iter, out);
+            collect_atomic_place_idents(body, out);
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            collect_atomic_place_idents(body, out);
+            for c in catches {
+                collect_atomic_place_idents(&c.body, out);
+            }
+            for b in [else_body, finally].into_iter().flatten() {
+                collect_atomic_place_idents(b, out);
+            }
+        }
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
+            collect_atomic_place_in_expr(expr, out);
+            for case in cases {
+                collect_atomic_place_idents(&case.body, out);
+            }
+            if let Some(b) = default {
+                collect_atomic_place_idents(b, out);
+            }
+        }
+        StmtKind::Using { body, .. } | StmtKind::Lock { body, .. } => {
+            collect_atomic_place_idents(body, out)
+        }
+        StmtKind::Labeled { body, .. } => collect_atomic_place_in_stmt(body, out),
+        _ => {}
+    }
+}
+
+fn collect_atomic_place_in_expr(expr: &Expression, out: &mut HashSet<String>) {
+    if let ExprKind::Atomic(op) = &expr.kind {
+        // The point of the scan: record the place's root name.
+        for child in op.children() {
+            collect_atomic_place_in_expr(child, out);
+        }
+        let place = match op {
+            vybe_ast::AtomicOp::Load { place, .. }
+            | vybe_ast::AtomicOp::Store { place, .. }
+            | vybe_ast::AtomicOp::Rmw { place, .. }
+            | vybe_ast::AtomicOp::CompareExchange { place, .. } => Some(place),
+            vybe_ast::AtomicOp::Fence { .. } => None,
+        };
+        if let Some(place) = place {
+            if let ExprKind::Ident(name) = &place.kind {
+                out.insert(name.clone());
+            }
+        }
+        return;
+    }
+    match &expr.kind {
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Cast { expr, .. }
+        | ExprKind::RefLoad(expr)
+        | ExprKind::Await(expr)
+        | ExprKind::Spread(expr) => collect_atomic_place_in_expr(expr, out),
+        ExprKind::Binary { left, right, .. } | ExprKind::NullCoalesce { left, right } => {
+            collect_atomic_place_in_expr(left, out);
+            collect_atomic_place_in_expr(right, out);
+        }
+        ExprKind::Assign { target, value } => {
+            collect_atomic_place_in_expr(target, out);
+            collect_atomic_place_in_expr(value, out);
+        }
+        ExprKind::Call { callee, args, .. } => {
+            collect_atomic_place_in_expr(callee, out);
+            for a in args {
+                collect_atomic_place_in_expr(&a.value, out);
+            }
+        }
+        ExprKind::New { class, args } => {
+            collect_atomic_place_in_expr(class, out);
+            for a in args {
+                collect_atomic_place_in_expr(&a.value, out);
+            }
+        }
+        ExprKind::Member { object, .. } => collect_atomic_place_in_expr(object, out),
+        ExprKind::Index { object, index, .. } => {
+            collect_atomic_place_in_expr(object, out);
+            collect_atomic_place_in_expr(index, out);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            for e in [cond, then, else_] {
+                collect_atomic_place_in_expr(e, out);
+            }
+        }
+        ExprKind::Array(elems) => {
+            for e in elems {
+                collect_atomic_place_in_expr(&e.value, out);
+            }
+        }
+        ExprKind::Sequence(exprs) => {
+            for e in exprs {
+                collect_atomic_place_in_expr(e, out);
+            }
+        }
+        ExprKind::Async(op) => {
+            for child in op.children() {
+                collect_atomic_place_in_expr(child, out);
+            }
+        }
+        ExprKind::Chan(op) => {
+            for child in op.children() {
+                collect_atomic_place_in_expr(child, out);
+            }
+        }
+        // The whole-module property: descend into nested callables.
+        ExprKind::Lambda { body, .. } => match body {
+            vybe_ast::LambdaBody::Expr(e) => collect_atomic_place_in_expr(e, out),
+            vybe_ast::LambdaBody::Block(stmts) => collect_atomic_place_idents(stmts, out),
+        },
+        ExprKind::FunctionExpr(decl) => collect_atomic_place_in_stmt(decl, out),
         _ => {}
     }
 }
@@ -2473,8 +2729,6 @@ impl Compiler {
             want_i32_condition: false,
             gave_i32_condition: false,
             program_lexical_names: HashSet::new(),
-            shared_global_slots: HashMap::new(),
-            shared_global_names: Vec::new(),
             defined_functions: HashSet::default(),
             function_param_modes: HashMap::new(),
             function_param_types: HashMap::new(),
@@ -2526,6 +2780,8 @@ impl Compiler {
             promoted_global_cells: HashSet::new(),
             module_addr_taken_globals: HashSet::new(),
             current_addr_taken_locals: HashSet::new(),
+            current_atomic_word_locals: HashSet::new(),
+            module_atomic_word_globals: HashSet::new(),
             current_closure_captured_locals: HashSet::new(),
 
             multi_return_functions: HashMap::new(),
@@ -2601,107 +2857,12 @@ impl Compiler {
         Some((binding.args_slot, slot, index))
     }
 
-    fn reserve_shared_global_name(&mut self, name: &str) {
-        if self.shared_global_slots.contains_key(name) {
-            return;
-        }
-        let slot = self.shared_global_names.len() as u16;
-        let owned = name.to_string();
-        self.shared_global_slots.insert(owned.clone(), slot);
-        self.shared_global_names.push(owned);
-    }
 
-    #[allow(dead_code)]
-    fn reserve_shared_global_binding_pattern(&mut self, pattern: &BindingPattern) {
-        match pattern {
-            BindingPattern::Ident(name) => self.reserve_shared_global_name(&self.canon(name)),
-            BindingPattern::Object(props) => {
-                for prop in props {
-                    if let Some(value) = prop.value.as_ref() {
-                        self.reserve_shared_global_binding_pattern(value);
-                    } else {
-                        self.reserve_shared_global_name(&self.canon(&prop.key));
-                    }
-                }
-            }
-            BindingPattern::Array(items) => {
-                for item in items {
-                    match item {
-                        ArrayPatternElem::Pattern(pattern, _) => {
-                            self.reserve_shared_global_binding_pattern(pattern);
-                        }
-                        ArrayPatternElem::Rest(name) => {
-                            self.reserve_shared_global_name(&self.canon(name));
-                        }
-                        ArrayPatternElem::Hole => {}
-                    }
-                }
-            }
-        }
-    }
 
-    #[allow(dead_code)]
-    fn reserve_shared_global_names_in_body(&mut self, body: &[Statement]) {
-        for stmt in body {
-            match &stmt.kind {
-                StmtKind::Block(stmts) => {
-                    self.reserve_shared_global_names_in_body(stmts);
-                }
-                StmtKind::NamespaceDecl { body, .. } => {
-                    self.reserve_shared_global_names_in_body(body);
-                }
-                StmtKind::FunctionDecl { name, .. }
-                | StmtKind::ClassDecl { name, .. }
-                | StmtKind::StructDecl { name, .. }
-                | StmtKind::EnumDecl { name, .. }
-                | StmtKind::ModuleDecl { name, .. } => {
-                    self.reserve_shared_global_name(&self.canon(name));
-                }
-                StmtKind::VarDecl { declarations, .. } => {
-                    for decl in declarations {
-                        self.reserve_shared_global_binding_pattern(&decl.pattern);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
 
-    fn reserve_runtime_global_names(&mut self) {
-        for name in [
-            "__vb_file_path_by_handle",
-            "__vb_file_eof_by_handle",
-            "__vb_record_rows_by_handle",
-            "__vb_record_next_index_by_handle",
-            "__vb_record_current_index_by_handle",
-            // PHP `register_shutdown_function` callbacks, run at normal end of
-            // the program AND on `exit`/`die`.
-            "__php_shutdown_fns",
-        ] {
-            self.reserve_shared_global_name(name);
-        }
-    }
 
-    fn seed_shared_global_constants(&self, chunk: &mut Chunk) {
-        for name in &self.shared_global_names {
-            chunk.add_constant(Value::String(Arc::from(name.as_str())));
-        }
-    }
 
-    #[allow(dead_code)]
-    fn shared_global_slot(&self, name: &str) -> u16 {
-        *self
-            .shared_global_slots
-            .get(name)
-            .unwrap_or_else(|| panic!("missing shared global slot for {name}"))
-    }
 
-    pub(crate) fn global_name_const_idx(&mut self, name: &str) -> u16 {
-        self.shared_global_slots
-            .get(name)
-            .copied()
-            .unwrap_or_else(|| self.str_const(name))
-    }
 
     /// Pre-populate the module-exports snapshot. Called by the Bundle
     /// before `compile_with_imports` so the Linker can resolve
@@ -2770,6 +2931,20 @@ impl Compiler {
         // untouched — the cost of over-marking is one runtime shape check, and
         // the cost of under-marking is a wrong answer.
         collect_addr_taken_idents(&module.body, &mut self.module_addr_taken_globals);
+        // Same forward-pass argument, for ATOMIC places: a module-level name
+        // any statement (including one inside a nested function or lambda)
+        // targets with an atomic op becomes a shared-memory word at its
+        // declaration. It also enters `module_addr_taken_globals` so readers
+        // compiled BEFORE the promotion emit the deref, which passes through
+        // untouched until the wrap exists.
+        collect_atomic_place_idents(&module.body, &mut self.module_atomic_word_globals);
+        for name in &self.module_atomic_word_globals {
+            self.module_addr_taken_globals.insert(name.clone());
+        }
+        // The module body IS a scope: locals declared at top level in a
+        // script-shaped language resolve as locals, so the local set must be
+        // populated here too.
+        self.current_atomic_word_locals = self.module_atomic_word_globals.clone();
         // Gated-namespace activation: every import path activates its
         // namespace for builtin resolution (C includes lower to these).
         let mut active = std::collections::HashSet::new();
@@ -2939,12 +3114,6 @@ impl Compiler {
             }
         }
 
-        self.reserve_runtime_global_names();
-        let shared_global_names = self.shared_global_names.clone();
-        for name in shared_global_names {
-            self.chunks[0].add_constant(Value::String(Arc::from(name)));
-        }
-
         for stmt in &merged_body {
             if matches!(&stmt.kind, StmtKind::FunctionDecl { .. }) {
                 self.compile_stmt(stmt)?;
@@ -3059,6 +3228,10 @@ impl Compiler {
         }
         Self::normalize_import_table(&mut self.chunks);
         common::globals::declare_free_globals(&mut self.chunks);
+        // Assign every global a real index over `global_imports ++ defined`
+        // and rewrite the operands into it. Must follow the line above,
+        // which decides the import half.
+        common::globals::normalize_global_table(&mut self.chunks);
         let host_imports = self.collected_host_imports();
         // Frame 0 is the module's own declaration (installed above from
         // `module.directives`); an in-source `Directive` with `Module` scope

@@ -5,6 +5,7 @@
 //! Those use host imports (standard across all languages).
 
 use crate::primitives::Target;
+use vybe_ast::{FloatLane, MidpointPolicy};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
@@ -110,8 +111,39 @@ pub fn emit_ceil(chunk: &mut Chunk, line: u32) {
 pub fn emit_trunc(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::F64_TRUNC, line);
 }
-pub fn emit_round(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::F64_NEAREST, line);
+/// Round to an integral value under `policy` — see [`MidpointPolicy`].
+///
+/// `F64_NEAREST` is ties-to-EVEN and was the only behaviour on offer, so every
+/// language wanting one of the other two policies was either silently wrong or
+/// carried a private copy. Measured against the real toolchains, 7 of 13
+/// languages disagreed with their own reference implementation.
+pub fn emit_round(chunk: &mut Chunk, policy: MidpointPolicy, line: u32) {
+    match policy {
+        MidpointPolicy::HalfEven => chunk.emit_op(Op::F64_NEAREST, line),
+        // `copysign(floor(|x| + 0.5), x)`. Going through the MAGNITUDE is what
+        // makes it symmetric, and copysign is what preserves a negative zero:
+        // C's `round(-0.2)` is `-0.0`, and `floor(-0.2 + 0.5)` alone would give
+        // `+0.0`. wasm carries the sign of zero correctly — losing it is always
+        // something we did.
+        MidpointPolicy::HalfAwayFromZero => {
+            let x = chunk.alloc_scratch(1);
+            chunk.emit_op_u16(Op::LOCAL_SET, x, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, x, line);
+            chunk.emit_op(Op::F64_ABS, line);
+            chunk.emit_f64_const(0.5, line);
+            chunk.emit_op(Op::F64_ADD, line);
+            chunk.emit_op(Op::F64_FLOOR, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, x, line);
+            chunk.emit_op(Op::F64_COPYSIGN, line);
+        }
+        // Java §Math.round defines itself as `floor(x + 0.5)`, so this IS the
+        // spec rather than an approximation of it.
+        MidpointPolicy::HalfUp => {
+            chunk.emit_f64_const(0.5, line);
+            chunk.emit_op(Op::F64_ADD, line);
+            chunk.emit_op(Op::F64_FLOOR, line);
+        }
+    }
 }
 pub fn emit_sqrt(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::F64_SQRT, line);
@@ -121,6 +153,47 @@ pub fn emit_min(chunk: &mut Chunk, line: u32) {
 }
 pub fn emit_max(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::F64_MAX, line);
+}
+
+/// IEEE-754 `minNum` / `maxNum` — the NON-NaN operand wins, rather than NaN
+/// propagating. Stack: `[a, b]`.
+///
+/// This is a DIFFERENT operation from `f64.min`, not a variant of it, and IEEE
+/// names them separately for that reason. C's `fmin(NAN, 1.0)` is `1.0`;
+/// `Math.min(NaN, 1)` and `f64.min` are both NaN. Mapping C onto ECMA's
+/// spelling silently gave it the propagating one.
+///
+/// ±0 is left to `f64.min`/`f64.max`, which already answer `min(-0, +0) = -0`.
+pub fn emit_min_num(chunk: &mut Chunk, line: u32) {
+    emit_num_extremum(chunk, Op::F64_MIN, line);
+}
+
+pub fn emit_max_num(chunk: &mut Chunk, line: u32) {
+    emit_num_extremum(chunk, Op::F64_MAX, line);
+}
+
+fn emit_num_extremum(chunk: &mut Chunk, op: Op, line: u32) {
+    let base = chunk.alloc_scratch(2);
+    chunk.emit_op_u16(Op::LOCAL_SET, base + 1, line); // b
+    chunk.emit_op_u16(Op::LOCAL_SET, base, line); // a
+    // `x != x` is the NaN test that does not need a helper.
+    chunk.emit_op_u16(Op::LOCAL_GET, base, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, base, line);
+    chunk.emit_op(Op::F64_NE, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, base + 1, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, base + 1, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, base + 1, line);
+    chunk.emit_op(Op::F64_NE, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, base, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, base, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, base + 1, line);
+    chunk.emit_op(op, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
 }
 
 pub fn emit_neg(chunk: &mut Chunk, line: u32) {
@@ -283,28 +356,145 @@ pub fn emit_is_inf(chunk: &mut Chunk, line: u32) {
     crate::primitives::ops::emit_i32_to_bool(chunk, line);
 }
 
-/// Reinterpret an `f64` as its raw `u64` bits (Go `math.Float64bits`).
-pub fn emit_f64_bits(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::I64_REINTERPRET_F64, line);
+// The four bit-cast helpers that lived here are now
+// `primitives::bits::emit_reinterpret`. They were never IEEE arithmetic — a
+// reinterpretation is a REPRESENTATION operation, and it sat in `math` only
+// because Go spells it `math.Float32bits`. A profile row exists precisely so a
+// shared name need not inherit a source language's package layout.
+
+// ── Next representable float ─────────────────────────────────────────────────
+//
+// A step of ONE ULP is a step of ONE in the integer bit pattern. That is the
+// whole trick, and it is why every arithmetic approximation of it is wrong:
+// the ULP is not a constant, it doubles at every binade. Before this there were
+// three implementations in the tree and all three were broken —
+//
+//   * C `nextafter` and Java `Math.nextAfter`/`nextUp` used `x ± f64::EPSILON`.
+//     EPSILON is the ULP *at 1.0*, so `nextafter(1000.0, +inf)` added a value
+//     far below half an ULP and returned **1000 unchanged**. A loop stepping by
+//     it never terminates.
+//   * Fortran `NEAREST(x, s)` used `x ± SPACING(x)`. That is right going UP but
+//     one ULP too far going DOWN out of a power of two, where the exponent
+//     drops and the spacing halves: gfortran gives `nearest(1.0, -1.0)` =
+//     1 − 2⁻²⁴, the arithmetic form gives 1 − 2⁻²³.
+//
+// Built on `bits::emit_reinterpret`, the same node `TRANSFER` / `Float64bits` /
+// `BitConverter` reach.
+
+/// Smallest positive subnormal — bit pattern 1.
+const MIN_SUBNORMAL: f64 = 5e-324;
+
+/// Smallest positive f32 subnormal — bit pattern 1 in the 32-bit lane.
+const MIN_SUBNORMAL_F32: f64 = 1.401298464324817e-45;
+
+/// `nextUp(x)` (`up`) or `nextDown(x)`. Stack: `[x] → [adjacent]`.
+pub fn emit_next_toward(chunk: &mut Chunk, up: bool, lane: FloatLane, line: u32) {
+    let x = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, x, line);
+
+    // NaN has no neighbour.
+    chunk.emit_op_u16(Op::LOCAL_GET, x, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, x, line);
+    chunk.emit_op(Op::F64_NE, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, x, line);
+    chunk.emit_else(line);
+
+    // The infinity we are travelling towards is its own successor.
+    chunk.emit_op_u16(Op::LOCAL_GET, x, line);
+    chunk.emit_f64_const(if up { f64::INFINITY } else { f64::NEG_INFINITY }, line);
+    chunk.emit_op(Op::F64_EQ, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, x, line);
+    chunk.emit_else(line);
+
+    // ±0 both step to the smallest subnormal of the travelled sign — the bit
+    // pattern is NOT contiguous across the sign bit, so this cannot be a ±1.
+    chunk.emit_op_u16(Op::LOCAL_GET, x, line);
+    chunk.emit_f64_const(0.0, line);
+    chunk.emit_op(Op::F64_EQ, line);
+    chunk.emit_if_value(line);
+    let tiny = match lane {
+        FloatLane::F32 => MIN_SUBNORMAL_F32,
+        FloatLane::F64 => MIN_SUBNORMAL,
+    };
+    chunk.emit_f64_const(if up { tiny } else { -tiny }, line);
+    chunk.emit_else(line);
+
+    // Magnitude grows away from zero, so the step's sign follows the operand's.
+    chunk.emit_op_u16(Op::LOCAL_GET, x, line);
+    chunk.emit_f64_const(0.0, line);
+    chunk.emit_op(Op::F64_GT, line);
+    chunk.emit_if_value(line);
+    emit_bit_step(chunk, if up { 1 } else { -1 }, x, lane, line);
+    chunk.emit_else(line);
+    emit_bit_step(chunk, if up { -1 } else { 1 }, x, lane, line);
+    chunk.emit_end(line);
+
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
 }
 
-/// Reinterpret raw `u64` bits as an `f64` (Go `math.Float64frombits`).
-pub fn emit_f64_from_bits(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::F64_REINTERPRET_I64, line);
+/// `local[x]`'s bit pattern, shifted by `step`, read back as an `f64`.
+fn emit_bit_step(chunk: &mut Chunk, step: i64, x: u16, lane: FloatLane, line: u32) {
+    use vybe_ast::NumericRepr;
+    chunk.emit_op_u16(Op::LOCAL_GET, x, line);
+    match lane {
+        FloatLane::F32 => {
+            crate::primitives::bits::emit_reinterpret(chunk, NumericRepr::I32, line);
+            chunk.emit_i32_const(step as i32, line);
+            chunk.emit_op(Op::I32_ADD, line);
+            crate::primitives::bits::emit_reinterpret(chunk, NumericRepr::F32, line);
+        }
+        FloatLane::F64 => {
+            crate::primitives::bits::emit_reinterpret(chunk, NumericRepr::I64, line);
+            chunk.emit_i64_const(step, line);
+            chunk.emit_op(Op::I64_ADD, line);
+            crate::primitives::bits::emit_reinterpret(chunk, NumericRepr::F64, line);
+        }
+    }
 }
 
-/// Reinterpret an `f32` (narrowed from `f64`) as its raw `u32` bits
-/// (Go `math.Float32bits`).
-pub fn emit_f32_bits(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::F32_DEMOTE_F64, line);
-    chunk.emit_op(Op::I32_REINTERPRET_F32, line);
+/// `nextafter(x, y)` — the neighbour of `x` in `y`'s direction, `y` when equal.
+/// Stack: `[x, y] → [result]`.
+pub fn emit_next_after(chunk: &mut Chunk, lane: FloatLane, line: u32) {
+    let base = chunk.alloc_scratch(2);
+    chunk.emit_op_u16(Op::LOCAL_SET, base + 1, line); // y
+    chunk.emit_op_u16(Op::LOCAL_SET, base, line); // x
+
+    chunk.emit_op_u16(Op::LOCAL_GET, base, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, base + 1, line);
+    chunk.emit_op(Op::F64_EQ, line);
+    chunk.emit_if_value(line);
+    // IEEE-754 §5.3.1: equal operands yield the SECOND, which settles the sign
+    // for `nextafter(0.0, -0.0)`.
+    chunk.emit_op_u16(Op::LOCAL_GET, base + 1, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, base + 1, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, base, line);
+    chunk.emit_op(Op::F64_GT, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, base, line);
+    emit_next_toward(chunk, true, lane, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, base, line);
+    emit_next_toward(chunk, false, lane, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
 }
 
-/// Reinterpret raw `u32` bits as an `f32`, widened back to `f64`
-/// (Go `math.Float32frombits`).
-pub fn emit_f32_from_bits(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::F32_REINTERPRET_I32, line);
-    chunk.emit_op(Op::F64_PROMOTE_F32, line);
+/// `ulp(x)` / Fortran `SPACING(x)` — the distance to the next representable
+/// value away from zero. Derived from the neighbour rather than from the
+/// exponent, so the binade boundary is right by construction.
+pub fn emit_ulp(chunk: &mut Chunk, lane: FloatLane, line: u32) {
+    let x = chunk.alloc_scratch(1);
+    chunk.emit_op(Op::F64_ABS, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, x, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, x, line);
+    emit_next_toward(chunk, true, lane, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, x, line);
+    chunk.emit_op(Op::F64_SUB, line);
 }
 
 // ── Bessel functions ─────────────────────────────────────────────────────────

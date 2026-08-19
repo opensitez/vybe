@@ -287,7 +287,7 @@ impl Application for FormApp {
         // GuiState form object). Args by arity.
         let me = {
             let vm = self.vm.borrow();
-            vm.globals.get("__f").cloned()
+            vm.global("__f").cloned()
         }
         .or_else(|| self.gui.lock().unwrap().form_object.clone())
         .unwrap_or(vybe_runtime::Value::Null);
@@ -382,8 +382,8 @@ impl FormApp {
         if let Some(cb) = callback {
             let mut vm = self.vm.borrow_mut();
             let me = vm
-                .globals
-                .get("__f")
+                
+                .global("__f")
                 .cloned()
                 .unwrap_or(vybe_runtime::Value::Null);
             let arity = fn_arity(&cb);
@@ -444,8 +444,8 @@ impl FormApp {
     ) {
         let mut vm = self.vm.borrow_mut();
         let me = vm
-            .globals
-            .get("__f")
+            
+            .global("__f")
             .cloned()
             .unwrap_or(vybe_runtime::Value::Null);
         let arity = fn_arity(cb);
@@ -467,8 +467,8 @@ impl FormApp {
     fn invoke_callback(&mut self, cb: &vybe_runtime::Value, control_name: &str) {
         let mut vm = self.vm.borrow_mut();
         let me = vm
-            .globals
-            .get("__f")
+            
+            .global("__f")
             .cloned()
             .unwrap_or(vybe_runtime::Value::Null);
         let arity = fn_arity(cb);
@@ -500,7 +500,7 @@ impl FormApp {
             eprintln!("Event handler error: {e}");
         } else if Self::gui_trace_enabled() {
             eprintln!("[gui] invoke_callback ok");
-            if let Some(vybe_runtime::Value::Object(form_obj)) = vm.globals.get("__f") {
+            if let Some(vybe_runtime::Value::Object(form_obj)) = vm.global("__f") {
                 let form = form_obj.lock().unwrap();
                 let keys: Vec<String> = form.properties.keys().cloned().collect();
                 let txtcalc_text = form.properties.get("txtcalc").and_then(|value| {
@@ -538,7 +538,7 @@ impl FormApp {
         let updates = {
             let vm = self.vm.borrow();
             let mut ups: Vec<(String, String)> = Vec::new();
-            if let Some(vybe_runtime::Value::Object(form_obj)) = vm.globals.get("__f") {
+            if let Some(vybe_runtime::Value::Object(form_obj)) = vm.global("__f") {
                 let fo = form_obj.lock().unwrap();
                 for (field_name, value) in &fo.properties {
                     if let vybe_runtime::Value::Object(control_obj) = value {
@@ -668,7 +668,7 @@ impl FormApp {
 
     fn get_connection_string(&self, bs_name: &str, adapter_name: &str) -> String {
         let vm = self.vm.borrow();
-        if let Some(vybe_runtime::Value::Object(form_obj)) = vm.globals.get("__f") {
+        if let Some(vybe_runtime::Value::Object(form_obj)) = vm.global("__f") {
             let fo = form_obj.lock().unwrap();
             if let Some(vybe_runtime::Value::Object(bs_obj)) =
                 fo.properties.get(&bs_name.to_lowercase())
@@ -705,7 +705,7 @@ impl FormApp {
         let row = &store.rows[store.position as usize];
 
         let vm = self.vm.borrow_mut();
-        if let Some(vybe_runtime::Value::Object(form_obj)) = vm.globals.get("__f") {
+        if let Some(vybe_runtime::Value::Object(form_obj)) = vm.global("__f") {
             let fo = form_obj.lock().unwrap();
             for binding in &self.data_bindings {
                 if !binding.source_name.eq_ignore_ascii_case(bs_name) {
@@ -901,121 +901,6 @@ fn dom_key_fields(key: &vybe_widgets::winit::keyboard::Key) -> (String, String, 
     }
 }
 
-fn register_dialog_fns(vm: &mut vybe_runtime::VM) {
-    use std::sync::Arc;
-    use vybe_runtime::Value;
-    use vybe_runtime::value::{Object, ObjectKind};
-    // Through `platforms/web`, not around it. These three pickers ARE the
-    // File System Access API — `showOpenFilePicker`/`showSaveFilePicker`/
-    // `showDirectoryPicker` — and web publishes them. The runner reaching
-    // `vybe_widgets::dialogs` directly is what made two crates owners of the
-    // browser's surface.
-    use vybe_platform_web::file_system_access as picker;
-
-    vm.register_host_fn(
-        "vybe:gui",
-        "__dlg_show",
-        Box::new(|_ctx: &mut vybe_runtime::HostContext, args: &[Value]| {
-            let (dialog_type, title) = if let Some(Value::Object(obj)) = args.first() {
-                let o = obj.lock().unwrap();
-                let dt = o
-                    .properties
-                    .get("__control_type")
-                    .map(|v| format!("{}", v))
-                    .unwrap_or_default();
-                let t = o
-                    .properties
-                    .get("title")
-                    .or_else(|| o.properties.get("text"))
-                    .map(|v| format!("{}", v))
-                    .unwrap_or_default();
-                (dt, t)
-            } else {
-                (String::new(), String::new())
-            };
-
-            match dialog_type.as_str() {
-                "OpenFileDialog" => {
-                    let dlg_title = if title.is_empty() {
-                        "Open File".into()
-                    } else {
-                        title
-                    };
-                    if let Some(path) = picker::open_file(&dlg_title, "", "") {
-                        if let Some(Value::Object(obj)) = args.first() {
-                            obj.lock().unwrap().properties.insert(
-                                "filename".into(),
-                                Value::String(Arc::from(path.to_string_lossy().as_ref())),
-                            );
-                        }
-                        Value::I32(1)
-                    } else {
-                        Value::I32(0)
-                    }
-                }
-                "SaveFileDialog" => {
-                    let dlg_title = if title.is_empty() {
-                        "Save File".into()
-                    } else {
-                        title
-                    };
-                    if let Some(path) = picker::save_file(&dlg_title, "", "", "") {
-                        if let Some(Value::Object(obj)) = args.first() {
-                            obj.lock().unwrap().properties.insert(
-                                "filename".into(),
-                                Value::String(Arc::from(path.to_string_lossy().as_ref())),
-                            );
-                        }
-                        Value::I32(1)
-                    } else {
-                        Value::I32(0)
-                    }
-                }
-                "FolderBrowserDialog" => {
-                    let dlg_title = if title.is_empty() {
-                        "Select Folder".into()
-                    } else {
-                        title
-                    };
-                    if let Some(path) = picker::pick_directory(&dlg_title, "") {
-                        if let Some(Value::Object(obj)) = args.first() {
-                            obj.lock().unwrap().properties.insert(
-                                "selectedpath".into(),
-                                Value::String(Arc::from(path.to_string_lossy().as_ref())),
-                            );
-                        }
-                        Value::I32(1)
-                    } else {
-                        Value::I32(0)
-                    }
-                }
-                "ColorDialog" | "FontDialog" => Value::I32(1),
-                _ => Value::I32(0),
-            }
-        }),
-    );
-
-    vm.register_host_fn(
-        "vybe:gui",
-        "inputBox",
-        Box::new(|_ctx: &mut vybe_runtime::HostContext, args: &[Value]| {
-            let default = args.get(2).map(|v| format!("{}", v)).unwrap_or_default();
-            Value::String(Arc::from(default.as_str()))
-        }),
-    );
-
-    let dlg_show_idx = *vm
-        .host_registry
-        .get(&("vybe:gui".into(), "__dlg_show".into()))
-        .unwrap();
-    let dlg_show_ref = {
-        let mut o = Object::new();
-        o.kind = ObjectKind::HostFunction(dlg_show_idx);
-        Value::Object(vybe_runtime::heap::alloc(o))
-    };
-    vm.globals.insert("__dlg_show_ref".into(), dlg_show_ref);
-}
-
 // ── Extract binding info from form definition (designer forms only) ────
 
 
@@ -1024,8 +909,6 @@ fn register_dialog_fns(vm: &mut vybe_runtime::VM) {
 
 /// Launch a programmatic form — GuiState already has all widgets and event handlers.
 pub fn launch_gui(mut vm: vybe_runtime::VM, gui: Arc<Mutex<GuiState>>) {
-    register_dialog_fns(&mut vm);
-
     // The document's viewport is where a form's `Width`/`Height` land — they
     // are CSS on the body. `GuiState`'s pair is the fallback for a form built
     // without a document.
@@ -1036,7 +919,7 @@ pub fn launch_gui(mut vm: vybe_runtime::VM, gui: Arc<Mutex<GuiState>>) {
     };
 
     if let Some(form_obj) = gui.lock().unwrap().form_object.clone() {
-        vm.globals.insert("__f".into(), form_obj);
+        vm.set_global_owned("__f", form_obj);
     }
 
     let app = FormApp {
@@ -1068,10 +951,8 @@ pub fn capture_gui(
     path: &str,
     control: Option<&str>,
 ) -> Result<(u32, u32), String> {
-    register_dialog_fns(&mut vm);
-
     if let Some(form_obj) = gui.lock().unwrap().form_object.clone() {
-        vm.globals.insert("__f".into(), form_obj);
+        vm.set_global_owned("__f", form_obj);
     }
 
     // Same size question as `launch_gui`, same answer — a capture must be the
@@ -1213,7 +1094,7 @@ mod tests {
 
         let (mut vm, gui) = run_vb_gui(&source);
         if let Some(form_obj) = gui.lock().unwrap().form_object.clone() {
-            vm.globals.insert("__f".into(), form_obj);
+            vm.set_global_owned("__f", form_obj);
         }
 
         let mut app = FormApp {
@@ -1254,8 +1135,8 @@ mod tests {
         let form = app
             .vm
             .borrow()
-            .globals
-            .get("__f")
+            
+            .global("__f")
             .cloned()
             .expect("__f global");
         let display_name = control_widget_name(&form, "txtdisplay");
@@ -1280,7 +1161,7 @@ mod tests {
             "/../../examples/vb/calc/Calculator.vbproj"
         ));
         if let Some(form_obj) = gui.lock().unwrap().form_object.clone() {
-            vm.globals.insert("__f".into(), form_obj);
+            vm.set_global_owned("__f", form_obj);
         }
 
         let mut app = FormApp {
@@ -1304,8 +1185,8 @@ mod tests {
         let form = app
             .vm
             .borrow()
-            .globals
-            .get("__f")
+            
+            .global("__f")
             .cloned()
             .expect("__f global");
         let txtcalc_name = control_widget_name(&form, "txtcalc");
@@ -1330,7 +1211,7 @@ mod tests {
             "/../../examples/vb/calc/Calculator.vbproj"
         ));
         if let Some(form_obj) = gui.lock().unwrap().form_object.clone() {
-            vm.globals.insert("__f".into(), form_obj);
+            vm.set_global_owned("__f", form_obj);
         }
 
         let mut app = FormApp {
@@ -1351,8 +1232,8 @@ mod tests {
         let form = app
             .vm
             .borrow()
-            .globals
-            .get("__f")
+            
+            .global("__f")
             .cloned()
             .expect("__f global");
         let txtcalc_name = control_widget_name(&form, "txtcalc");
@@ -1421,13 +1302,13 @@ End Module
 
         let (mut vm, gui) = run_vb_gui(source);
         if let Some(form_obj) = gui.lock().unwrap().form_object.clone() {
-            vm.globals.insert("__f".into(), form_obj);
+            vm.set_global_owned("__f", form_obj);
         }
 
-        let form = vm.globals.get("__f").cloned().expect("__f global");
+        let form = vm.global("__f").cloned().expect("__f global");
         let open_forms = vm
-            .globals
-            .get("__openforms")
+            
+            .global("__openforms")
             .cloned()
             .expect("__openforms global");
 

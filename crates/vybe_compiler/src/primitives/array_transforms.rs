@@ -574,6 +574,151 @@ pub fn emit_pack_mask(
 ///
 /// Stack before: `[vector, mask, field]`.
 /// Stack after: `[result]`.
+/// `MERGE(tsource, fsource, mask)` — elementwise select.
+///
+/// Stack before: `[tsource, fsource, mask]`. Stack after: `[result]`.
+///
+/// Rank is the reason this is here and not in a walker. A rank-2 array is a
+/// NEST, so mapping over the mask yields ROWS, and a row is always truthy —
+/// which silently sends every element down the true branch. Flatten all three,
+/// select elementwise, then rebuild the mask's shape, exactly as `PACK`/
+/// `UNPACK` already do. Either source may be a SCALAR and broadcasts.
+pub fn emit_merge_mask(
+    chunks: &mut [Chunk],
+    current: usize,
+    order: ArrayTraversalOrder,
+    line: u32,
+) {
+    let base = chunks[current].alloc_scratch(10);
+    let true_slot = base;
+    let false_slot = base + 1;
+    let mask_slot = base + 2;
+    let true_flat_slot = base + 3;
+    let false_flat_slot = base + 4;
+    let mask_flat_slot = base + 5;
+    let true_is_array_slot = base + 6;
+    let false_is_array_slot = base + 7;
+    let result_slot = base + 8;
+    let i_slot = base + 9;
+
+    lset(&mut chunks[current], mask_slot, line);
+    lset(&mut chunks[current], false_slot, line);
+    lset(&mut chunks[current], true_slot, line);
+
+    emit_flatten_slot(chunks, current, mask_slot, mask_flat_slot, order, line);
+    emit_source_flat(
+        chunks,
+        current,
+        true_slot,
+        true_flat_slot,
+        true_is_array_slot,
+        line,
+    );
+    emit_source_flat(
+        chunks,
+        current,
+        false_slot,
+        false_flat_slot,
+        false_is_array_slot,
+        line,
+    );
+
+    collections::emit_array_new(chunks, current, 0, line);
+    lset(&mut chunks[current], result_slot, line);
+    i32_const(&mut chunks[current], line, 0);
+    lset(&mut chunks[current], i_slot, line);
+
+    let state = loops::emit_loop_start(chunks, current, line);
+    lget(&mut chunks[current], i_slot, line);
+    lget(&mut chunks[current], mask_flat_slot, line);
+    emit_array_len(chunks, current, line);
+    ops::emit_dyn_lt(&mut chunks[current], line);
+    loops::emit_loop_cond(chunks, current, line);
+
+    lget(&mut chunks[current], result_slot, line);
+    lget(&mut chunks[current], mask_flat_slot, line);
+    lget(&mut chunks[current], i_slot, line);
+    collections::emit_get(chunks, current, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    emit_source_at(
+        chunks,
+        current,
+        true_slot,
+        true_flat_slot,
+        true_is_array_slot,
+        i_slot,
+        line,
+    );
+    chunks[current].emit_else(line);
+    emit_source_at(
+        chunks,
+        current,
+        false_slot,
+        false_flat_slot,
+        false_is_array_slot,
+        i_slot,
+        line,
+    );
+    chunks[current].emit_end(line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    lget(&mut chunks[current], i_slot, line);
+    i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    lset(&mut chunks[current], i_slot, line);
+    loops::emit_loop_end(chunks, current, state, line);
+
+    emit_flat_result_shaped_like_mask(chunks, current, mask_slot, result_slot, line);
+}
+
+/// Flatten a MERGE source, remembering whether it was an array at all — a
+/// scalar source broadcasts and must not be indexed.
+fn emit_source_flat(
+    chunks: &mut [Chunk],
+    current: usize,
+    source_slot: u16,
+    flat_slot: u16,
+    is_array_slot: u16,
+    line: u32,
+) {
+    lget(&mut chunks[current], source_slot, line);
+    emit_is_array(chunks, current, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    lset(&mut chunks[current], is_array_slot, line);
+
+    lget(&mut chunks[current], is_array_slot, line);
+    chunks[current].emit_if_value(line);
+    lget(&mut chunks[current], source_slot, line);
+    i32_const(&mut chunks[current], line, 1024);
+    emit_array_flat(chunks, current, line);
+    chunks[current].emit_else(line);
+    lget(&mut chunks[current], source_slot, line);
+    chunks[current].emit_end(line);
+    lset(&mut chunks[current], flat_slot, line);
+}
+
+/// Element `i` of a MERGE source, or the source itself when it is a scalar.
+fn emit_source_at(
+    chunks: &mut [Chunk],
+    current: usize,
+    source_slot: u16,
+    flat_slot: u16,
+    is_array_slot: u16,
+    i_slot: u16,
+    line: u32,
+) {
+    lget(&mut chunks[current], is_array_slot, line);
+    chunks[current].emit_if_value(line);
+    lget(&mut chunks[current], flat_slot, line);
+    lget(&mut chunks[current], i_slot, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_else(line);
+    lget(&mut chunks[current], source_slot, line);
+    chunks[current].emit_end(line);
+}
+
 pub fn emit_unpack_mask(
     chunks: &mut [Chunk],
     current: usize,

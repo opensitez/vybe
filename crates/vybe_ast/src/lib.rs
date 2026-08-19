@@ -1074,6 +1074,25 @@ pub enum ArrayTransformOp {
     /// `UNPACK(vector, mask, field)`: scatter vector elements into mask-true
     /// positions and fill mask-false positions from `field`.
     UnpackMask,
+    /// `MERGE(tsource, fsource, mask)`: elementwise SELECT — the result has the
+    /// mask's shape, and each element comes from `tsource` where the mask is
+    /// true and `fsource` where it is false. Either source may be a scalar,
+    /// which broadcasts.
+    ///
+    /// The fourth member of the mask-driven family beside [`PackMask`] and
+    /// [`UnpackMask`], and general rather than Fortran-specific: NumPy
+    /// `where`, MATLAB logical indexing, APL compress, SQL `CASE` over a
+    /// column, Julia `ifelse.`, wasm SIMD `v128.bitselect`.
+    ///
+    /// It belongs here rather than in a walker because RANK is the whole
+    /// difficulty: a rank-2 array is a NEST, so a plain `mask.map(...)` hands
+    /// the callback a ROW — which is always truthy, so every element takes the
+    /// true branch. Flattening and re-shaping is what the other three already
+    /// do.
+    ///
+    /// [`PackMask`]: ArrayTransformOp::PackMask
+    /// [`UnpackMask`]: ArrayTransformOp::UnpackMask
+    MergeMask,
     /// `RESHAPE(source, shape[, pad])`: the source's elements rebuilt into an
     /// array of the given shape, cycling `pad` when the shape asks for more
     /// than the source holds and truncating when it asks for fewer. The node's
@@ -1244,6 +1263,15 @@ pub enum ExprKind {
     /// one-shot settled result. Go is the first normalizer; Rust
     /// (`std::sync::mpsc`) and Kotlin (`Channel<T>`) share the vocabulary.
     Chan(ChanOp),
+    /// A normalized atomic (shared-memory read-modify-write) operation — see
+    /// [`AtomicOp`]. The third member of the concurrency family, alongside
+    /// [`AsyncOp`] and [`ChanOp`], and for the same reason: five languages
+    /// spell it, and before this node each had invented its own channel —
+    /// C# `Interlocked` on the .NET tree, C `atomic_fetch_add` desugared to a
+    /// NON-atomic `Sequence` in its walker, Go a `sync` prelude written in Go,
+    /// Java/Kotlin `AtomicInteger` in walker tables, Pascal `TInterlocked`
+    /// bound to nothing. Three of the five were not atomic at all.
+    Atomic(AtomicOp),
     Await(Box<Expression>),
     Yield(Option<Box<Expression>>),
     YieldFrom(Box<Expression>),
@@ -1974,6 +2002,10 @@ fn expr_contains_yield_outside_nested_scopes(expr: &Expression) -> bool {
             .children()
             .into_iter()
             .any(expr_contains_yield_outside_nested_scopes),
+        ExprKind::Atomic(op) => op
+            .children()
+            .into_iter()
+            .any(expr_contains_yield_outside_nested_scopes),
         ExprKind::Binary { left, right, .. }
         | ExprKind::NullCoalesce { left, right }
         | ExprKind::Assign {
@@ -2203,8 +2235,100 @@ pub struct ExportName {
 // Operators
 // ════════════════════════════════════════════════════════════════════════════
 
+/// The integer lane a bit operation works in.
+///
+/// This is NOT a directive, and the distinction matters. The width of a bit
+/// operation is a property of the OPERAND'S DECLARED TYPE — Fortran writes
+/// `integer(kind=8)`, Go writes `uint32` vs `uint64`, Java encodes it in the
+/// spelling (`Integer.bitCount` vs `Long.bitCount`). A language-wide default
+/// would give that fact two homes and they would drift.
+///
+/// wasm agrees: `i32.popcnt` and `i64.popcnt` are different instructions, and
+/// the answers genuinely differ — `LeadingZeros(1)` is 31 in `W32` and 63 in
+/// `W64`. So the walker, which can read the declared kind from its own source,
+/// states the lane; nothing downstream has to infer it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BitLane {
+    W32,
+    W64,
+}
+
+/// The float lane an operation works in — the storage width whose neighbours,
+/// ULP and rounding are being asked about.
+///
+/// The same call as [`BitLane`], for the same reason: it is a property of the
+/// operand's DECLARED type, not of a region. Fortran's default `real` is kind 4
+/// and `double precision` is kind 8, C writes `float` vs `double`, .NET writes
+/// `Single` vs `Double`. And the answers genuinely differ — `SPACING(1.0)` is
+/// 2⁻²³ in `F32` and 2⁻⁵² in `F64`, so a shared implementation that picks one
+/// lane is simply wrong for the other language half the time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloatLane {
+    F32,
+    F64,
+}
+
+/// Which way a value exactly halfway between two integers goes.
+///
+/// Not one operation and not a directive: it is what a given language's `round`
+/// MEANS, so it is selected per spelling by the profile row, the way
+/// [`BitLane`] is selected per operand. Languages genuinely disagree, and
+/// verified against every installed toolchain they disagree three ways.
+///
+/// | policy | 2.5 | −2.5 | 0.5 | languages |
+/// |---|---|---|---|---|
+/// | `HalfEven` | 2 | −2 | 0 | Python, Pascal, Kotlin, C#, VB, wasm `f64.nearest` |
+/// | `HalfAwayFromZero` | 3 | −3 | 1 | C, PHP, Go, Fortran `NINT`, Ruby, Dart |
+/// | `HalfUp` | 3 | −2 | 1 | JS, Java |
+///
+/// ⛔ Distinct from the IEEE rounding DIRECTION of
+/// `proposals/rounding-mode-control`. A direction applies to an inexact
+/// ARITHMETIC result and is lexical (C `#pragma STDC FENV_ROUND`), so that one
+/// is a directive. This applies to round-to-integral, and `HalfAwayFromZero` /
+/// `HalfUp` are language conventions IEEE has no name for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MidpointPolicy {
+    /// Ties to the even neighbour — banker's rounding, and what
+    /// `f64.nearest` does, so it is the zero-instruction default.
+    #[default]
+    HalfEven,
+    /// Ties away from zero. Sign-preserving: `round(-0.2)` is `-0.0`.
+    HalfAwayFromZero,
+    /// Ties toward +∞ — `floor(x + 0.5)`, which is Java's spec verbatim.
+    HalfUp,
+}
+
+impl FloatLane {
+    /// Bits of mantissa precision, including the implicit leading one.
+    pub fn mantissa_bits(self) -> u32 {
+        match self {
+            FloatLane::F32 => 24,
+            FloatLane::F64 => 53,
+        }
+    }
+}
+
+impl BitLane {
+    /// Bits in the lane — Fortran's `BIT_SIZE`, Java's `SIZE`.
+    pub fn bits(self) -> u32 {
+        match self {
+            BitLane::W32 => 32,
+            BitLane::W64 => 64,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BinOp {
+    /// Rotate left — the bits shifted out re-enter at the other end, so
+    /// nothing is lost. Fortran `ISHFTC`, Go `bits.RotateLeft*`, Java
+    /// `Integer.rotateLeft`, C# `BitOperations.RotateLeft`, wasm `i32.rotl`.
+    /// Distinct from [`BinOp::Shl`], which discards them.
+    RotL(BitLane),
+    /// Rotate right. Fortran `ISHFTC` with a negative count, Go
+    /// `bits.RotateLeft*` with a negative count, Java `Integer.rotateRight`,
+    /// C# `BitOperations.RotateRight`, wasm `i32.rotr`.
+    RotR(BitLane),
     Add,
     Sub,
     Mul,
@@ -2471,6 +2595,134 @@ pub enum ChanOp {
     WaitReadable(Box<Expression>),
 }
 
+/// The atomic vocabulary — one model behind every language's spelling, and the
+/// WASM threads proposal is the substrate underneath all of them.
+///
+/// Every operand that names storage is a PLACE, not a value: an atomic acts on
+/// a word in SHARED linear memory, so `place` must resolve to an address. That
+/// is the whole reason the old per-language answers were wrong — C# handed the
+/// atomic its variable's VALUE as an address, and C, Go and the JVM languages
+/// gave up and emitted a plain read-modify-write, which is not atomic at all.
+///
+/// Quirks ride the node, per `documentation/directives.md` §3: none of them
+/// governs a REGION of code (question 1), so none is a `Directives` entry.
+/// They describe the operation being invoked (question 3) and therefore belong
+/// to it — `getAndAdd` and `addAndGet` differ per CALL and appear in the same
+/// file, which a lexical policy could never express.
+#[derive(Debug, Clone)]
+pub enum AtomicOp {
+    /// Atomic read. C `atomic_load`, .NET `Interlocked.Read`, Java `get`.
+    Load {
+        place: Box<Expression>,
+        ordering: MemoryOrder,
+    },
+    /// Atomic write. C `atomic_store`, Java `set`.
+    Store {
+        place: Box<Expression>,
+        value: Box<Expression>,
+        ordering: MemoryOrder,
+    },
+    /// Read-modify-write. C `atomic_fetch_*`, .NET `Interlocked.Add` /
+    /// `Increment` / `Decrement` / `Exchange`, Go `atomic.AddInt32`, Java
+    /// `getAndAdd` / `addAndGet`, Pascal `TInterlocked.Add`.
+    Rmw {
+        op: AtomicRmw,
+        place: Box<Expression>,
+        operand: Box<Expression>,
+        result: RmwResult,
+        ordering: MemoryOrder,
+    },
+    /// Compare-and-swap. The field NAMES settle the operand order that every
+    /// language spells differently: .NET writes
+    /// `CompareExchange(ref location, value, comparand)` — `comparand` is the
+    /// EXPECTED and `value` the REPLACEMENT, the reverse of WASM's
+    /// `cmpxchg(addr, expected, replacement)`. Each walker maps its own
+    /// spelling onto these names once, and nothing downstream can get it
+    /// backwards.
+    CompareExchange {
+        place: Box<Expression>,
+        expected: Box<Expression>,
+        replacement: Box<Expression>,
+        result: RmwResult,
+        ordering: MemoryOrder,
+    },
+    /// A standalone barrier. C `atomic_thread_fence`,
+    /// .NET `Interlocked.MemoryBarrier`, Go `runtime.KeepAlive` ordering points.
+    Fence { ordering: MemoryOrder },
+}
+
+/// The read-modify-write operations WASM provides directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AtomicRmw {
+    Add,
+    Sub,
+    And,
+    Or,
+    Xor,
+    /// Unconditional swap — .NET `Interlocked.Exchange`, Java `getAndSet`.
+    Xchg,
+}
+
+/// Which value a read-modify-write yields.
+///
+/// WASM's `i32.atomic.rmw.*` always yields the OLD value, and so do C's
+/// `atomic_fetch_*` and Java's `getAndAdd`. .NET's `Interlocked.Add` /
+/// `Increment` / `Decrement`, Go's `atomic.AddInt32` and Java's `addAndGet`
+/// yield the NEW one. One field, decided by the walker that knows which
+/// function was called — not a second emitter per language.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RmwResult {
+    Old,
+    New,
+}
+
+/// Memory ordering. C names it per call (`memory_order_relaxed`); Go, .NET and
+/// Pascal specify sequential consistency and nothing else, so their walkers
+/// fill `SeqCst` and the distinction costs them nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryOrder {
+    Relaxed,
+    Acquire,
+    Release,
+    AcqRel,
+    SeqCst,
+}
+
+impl AtomicOp {
+    /// Every child expression, in evaluation order — the same contract
+    /// [`AsyncOp::children`] keeps, so the structural traversals cannot skip
+    /// an atomic's operands.
+    pub fn children(&self) -> Vec<&Expression> {
+        match self {
+            AtomicOp::Load { place, .. } => vec![place],
+            AtomicOp::Store { place, value, .. } => vec![place, value],
+            AtomicOp::Rmw { place, operand, .. } => vec![place, operand],
+            AtomicOp::CompareExchange {
+                place,
+                expected,
+                replacement,
+                ..
+            } => vec![place, expected, replacement],
+            AtomicOp::Fence { .. } => Vec::new(),
+        }
+    }
+
+    pub fn children_mut(&mut self) -> Vec<&mut Expression> {
+        match self {
+            AtomicOp::Load { place, .. } => vec![place.as_mut()],
+            AtomicOp::Store { place, value, .. } => vec![place.as_mut(), value.as_mut()],
+            AtomicOp::Rmw { place, operand, .. } => vec![place.as_mut(), operand.as_mut()],
+            AtomicOp::CompareExchange {
+                place,
+                expected,
+                replacement,
+                ..
+            } => vec![place.as_mut(), expected.as_mut(), replacement.as_mut()],
+            AtomicOp::Fence { .. } => Vec::new(),
+        }
+    }
+}
+
 impl ChanOp {
     pub fn children(&self) -> Vec<&Expression> {
         match self {
@@ -2538,8 +2790,38 @@ pub struct SelectArm {
     pub body: Vec<Statement>,
 }
 
+/// A numeric storage representation — the four wasm value types a bit cast can
+/// read. Reinterpretation only ever swaps a float for an integer of the SAME
+/// width, so naming the target implies the source and an invalid pairing
+/// cannot be spelled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NumericRepr {
+    I32,
+    F32,
+    I64,
+    F64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UnaryOp {
+    /// Read this value's STORAGE as another type of the same width — a bit
+    /// cast, not a conversion. `Reinterpret(I32)` of `1.0f32` is `1065353216`,
+    /// not `1`. Fortran `TRANSFER`, Go `math.Float32bits`, Java
+    /// `Float.floatToIntBits`, C#/VB `BitConverter.SingleToInt32Bits`, C
+    /// `union`, C++ `std::bit_cast`, Rust `transmute`, JS `DataView`.
+    Reinterpret(NumericRepr),
+    /// The number of one bits. Fortran `POPCNT`, Go `bits.OnesCount*`, Java
+    /// `Integer/Long.bitCount`, C# `BitOperations.PopCount`, C
+    /// `__builtin_popcount`, Python `int.bit_count`, Rust `count_ones`.
+    PopCount(BitLane),
+    /// Zero bits above the most significant one bit. Fortran `LEADZ`, Go
+    /// `bits.LeadingZeros*`, Java `numberOfLeadingZeros`, JS `Math.clz32`,
+    /// C# `LeadingZeroCount`.
+    LeadingZeros(BitLane),
+    /// Zero bits below the least significant one bit. Fortran `TRAILZ`, Go
+    /// `bits.TrailingZeros*`, Java `numberOfTrailingZeros`, C#
+    /// `TrailingZeroCount`.
+    TrailingZeros(BitLane),
     Neg,
     Pos,
     Not,
@@ -3614,6 +3896,18 @@ pub struct Directives {
     ///
     /// `None` means the receiver is an explicit parameter, which is what all but
     /// a handful of languages want.
+    /// What a shift or rotate count outside `[0, width)` does in this region.
+    ///
+    /// Genuinely lexical policy: the operand's declared type does NOT
+    /// distinguish these, the language does. wasm — and therefore JS, Java and
+    /// C# — MASK the count, so `1 << 32` is `1`. Fortran's `ISHFT` yields
+    /// ZERO whenever `|shift| >= BIT_SIZE`, and `gfortran` proves it:
+    /// `ishft(1, 32)` prints `0` where a masking lane prints `1`.
+    ///
+    /// `None` inherits [`ShiftOverflow::Mask`], which is what every language
+    /// but Fortran wants and what the compiler already emitted.
+    pub shift_overflow: Option<ShiftOverflow>,
+
     pub receiver_binding: Option<ReceiverBinding>,
 
     /// Does this program present a user interface?
@@ -3681,10 +3975,28 @@ impl Directives {
         if other.receiver_binding.is_some() {
             self.receiver_binding = other.receiver_binding;
         }
+        if other.shift_overflow.is_some() {
+            self.shift_overflow = other.shift_overflow;
+        }
         if other.app_shell.is_some() {
             self.app_shell = other.app_shell;
         }
     }
+}
+
+/// What a shift or rotate count outside `[0, width)` does — see
+/// [`Directives::shift_overflow`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ShiftOverflow {
+    /// The count is taken modulo the lane width, so `1 << 32 == 1`. wasm's
+    /// own rule (`i32.shl` masks to 5 bits), and therefore JS §13.9, Java
+    /// §15.19 and C#.
+    #[default]
+    Mask,
+    /// The result is zero once the count reaches the lane width. Fortran
+    /// `ISHFT`/`SHIFTL`/`SHIFTR`: every bit has been shifted out, so nothing
+    /// remains.
+    Zero,
 }
 
 /// How far a directive statement's effect reaches — itself a language quirk,
@@ -3917,6 +4229,11 @@ impl Expression {
                 }
             }
             ExprKind::Chan(op) => {
+                for child in op.children_mut() {
+                    child.walk_exprs_mut(f);
+                }
+            }
+            ExprKind::Atomic(op) => {
                 for child in op.children_mut() {
                     child.walk_exprs_mut(f);
                 }
@@ -4313,6 +4630,7 @@ fn expr_has_yield(expr: &Expression) -> bool {
         | ExprKind::Delete(expr) => expr_has_yield(expr),
         ExprKind::Async(op) => op.children().into_iter().any(expr_has_yield),
         ExprKind::Chan(op) => op.children().into_iter().any(expr_has_yield),
+        ExprKind::Atomic(op) => op.children().into_iter().any(expr_has_yield),
         ExprKind::Binary { left, right, .. }
         | ExprKind::NullCoalesce { left, right }
         | ExprKind::Assign {

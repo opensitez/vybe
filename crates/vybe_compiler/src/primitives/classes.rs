@@ -1092,7 +1092,6 @@ impl Compiler {
         }
         let func_idx = self.chunks.len();
         let mut chunk = common::functions::create_function_chunk(name, arity);
-        self.seed_shared_global_constants(&mut chunk);
         // `is_async` carries SOURCE truth (async fns AND async generators).
         // Consumers refine: the JSPI custom-section writer and the VM's
         // call_async gate both exclude generators (async generators are
@@ -1152,6 +1151,11 @@ impl Compiler {
         if self.profile.promote_addr_taken_at_entry {
             crate::primitives::collect_addr_taken_idents(body, &mut self.current_addr_taken_locals);
         }
+        // Atomic places are scanned UNCONDITIONALLY — every language's atomics
+        // need shared-word storage, so there is no per-profile opt-in the way
+        // the C-only at-entry cell promotion has.
+        let saved_atomic_words = std::mem::take(&mut self.current_atomic_word_locals);
+        crate::primitives::collect_atomic_place_idents(body, &mut self.current_atomic_word_locals);
         let saved_closure_captured = std::mem::take(&mut self.current_closure_captured_locals);
         let saved_env_names = std::mem::take(&mut self.closure_env_names);
         let saved_capture_locals = std::mem::take(&mut self.capture_locals);
@@ -1538,6 +1542,7 @@ impl Compiler {
 
         self.current_func_name = saved_fn;
         self.current_addr_taken_locals = saved_addr_taken;
+        self.current_atomic_word_locals = saved_atomic_words;
         self.current_closure_captured_locals = saved_closure_captured;
         self.closure_env_names = saved_env_names;
         self.capture_locals = saved_capture_locals;
@@ -4224,9 +4229,43 @@ impl Compiler {
         }
 
         let js_ctor_relaxes_min_arity = self.profile.relaxed_call_arity;
+        // A NAMED constructor is not reachable by arity. It is reached through
+        // the class object, which the loop at the end of this function stamps
+        // it onto by name for exactly that purpose — so letting it also answer
+        // the unnamed `Class(...)` dispatch makes one constructor reachable two
+        // ways, and on a tie the wrong one wins. `min_by_key` returns the FIRST
+        // minimum, so which one that is comes down to declaration order:
+        //
+        //     class Wrap {
+        //       Wrap._(this.doubled);       // named,   arity 1 — declared first
+        //       factory Wrap(int n) { … }   // unnamed, arity 1
+        //     }
+        //
+        // `Wrap(6)` ran `Wrap._(6)` and the factory body never executed. It
+        // stayed invisible for as long as it did because a factory that only
+        // forwards its argument produces the same object either way
+        // (`Token(v)` → `Token._(v)`); it shows up the moment the factory does
+        // real work — a cache, a singleton, a computed argument. The reverse
+        // order passes, which is why `factory_named_vs_generative_named_
+        // distinction` has always been green: its unnamed ctor happens to come
+        // first.
+        //
+        // `named_name` is the data this decision needs and it is already here,
+        // threaded into `ctor_helpers` above. Only dart and lua ever set it
+        // (`class_normalize` leaves it `None` for the other eleven languages),
+        // so nothing else observes a change.
+        //
+        // The guard matters for the ONLY-named case: a class with no unnamed
+        // constructor must keep answering, not become unconstructible. That is
+        // the same fallback `NormalMembers::resync_constructor_view` applies to
+        // the single-constructor view — prefer unnamed, else take what there is.
+        let has_unnamed_ctor = ctor_helpers
+            .iter()
+            .any(|(_, _, _, _, named)| named.is_none());
         let helper_for_count = |count: usize| {
             ctor_helpers
                 .iter()
+                .filter(|(_, _, _, _, named)| !has_unnamed_ctor || named.is_none())
                 .filter(|(arity, min_arity, _, _, _)| {
                     count <= *arity && (js_ctor_relaxes_min_arity || count >= *min_arity)
                 })

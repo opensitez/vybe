@@ -620,16 +620,11 @@ impl Compiler {
             }
             return Ok(true);
         }
-        if name.eq_ignore_ascii_case("nint") {
-            if let Some(arg) = args.first() {
-                self.compile_expr(arg)?;
-                common::math::emit_round(self.chunk(), line);
-                common::convert::emit_to_int(self.chunk(), line);
-            } else {
-                self.emit_null();
-            }
-            return Ok(true);
-        }
+        // `nint` USED to be intercepted here. It is a Fortran intrinsic — a
+        // language-specific name in shared code is a language check with a
+        // nicer name — and it hardcoded ties-to-EVEN where gfortran ties away
+        // from zero. Fortran now spells it `int(round(x))` in its own walker,
+        // and the policy comes from its profile row.
         if !self.profile.has_ecma_globals && name.eq_ignore_ascii_case("size") {
             if let Some(arg) = args.first() {
                 self.compile_expr(arg)?;
@@ -763,7 +758,10 @@ impl Compiler {
             }
         }
 
-        let builtin = self.profile.lookup_builtin(name).cloned();
+        let builtin = self
+            .profile
+            .lookup_builtin(name)
+            .map(std::borrow::Cow::into_owned);
         // Gated namespaces: a builtin under a gated root resolves only when
         // the module IMPORTED its namespace (C: the include lowers to that
         // import — `printf` without `<stdio.h>` is an implicit declaration,
@@ -1893,12 +1891,12 @@ impl Compiler {
                     self.emit_host_call(number, 1);
                     self.emit_u16(Op::LOCAL_GET, scale_slot);
                     self.emit(Op::F64_MUL);
-                    common::math::emit_round(self.chunk(), line);
+                    common::math::emit_round(self.chunk(), vybe_ast::MidpointPolicy::HalfEven, line);
                     self.emit_u16(Op::LOCAL_GET, scale_slot);
                     self.emit(Op::F64_DIV);
                 } else {
                     self.compile_expr(args[0])?;
-                    common::math::emit_round(self.chunk(), line);
+                    common::math::emit_round(self.chunk(), vybe_ast::MidpointPolicy::HalfEven, line);
                 }
             }
             "trunc" => {

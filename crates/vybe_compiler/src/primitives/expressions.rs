@@ -1776,6 +1776,24 @@ impl Compiler {
                                     crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
                                 }
                             }
+                            UnaryOp::Reinterpret(repr) => {
+                                let l = self.line;
+                                crate::primitives::bits::emit_reinterpret(self.chunk(), *repr, l);
+                            }
+                            // The bit-count family — one shared emitter, one
+                            // instruction each, lane stated by the node.
+                            UnaryOp::PopCount(lane) => {
+                                let l = self.line;
+                                crate::primitives::bits::emit_pop_count(self.chunk(), *lane, l);
+                            }
+                            UnaryOp::LeadingZeros(lane) => {
+                                let l = self.line;
+                                crate::primitives::bits::emit_leading_zeros(self.chunk(), *lane, l);
+                            }
+                            UnaryOp::TrailingZeros(lane) => {
+                                let l = self.line;
+                                crate::primitives::bits::emit_trailing_zeros(self.chunk(), *lane, l);
+                            }
                             UnaryOp::BitNot => {
                                 let l = self.line;
                                 // ECMA §13.5.6: `~` dispatches on ToNumeric — a
@@ -4763,7 +4781,18 @@ impl Compiler {
                     let dotnet_ctor_registered = self.defined_globals.contains(bare_str)
                         || self.defined_globals.contains(&bare_str.to_lowercase());
                     let canonical = common::gui::canonical_control_name(bare_str);
-                    if !canonical.is_empty() && !dotnet_ctor_registered {
+                    // A QUALIFIED name outside the GUI namespaces is never a
+                    // control. The bare-leaf claim above predates a
+                    // `System.Threading.Timer` existing here at all (its own
+                    // comment says the GUI form "takes priority") — but the
+                    // program SPELLED which Timer it meant, and a claim that
+                    // ignores the qualifier un-spells it: the callback timer
+                    // constructed a `<vybe-timer>` element, silently.
+                    let qualified_non_gui = {
+                        let canon = self.canon_type_global(type_name).to_lowercase();
+                        canon.contains('.') && !canon.contains("windows.forms")
+                    };
+                    if !canonical.is_empty() && !dotnet_ctor_registered && !qualified_non_gui {
                         for a in args {
                             self.compile_expr(&a.value)?;
                         }
@@ -5408,6 +5437,20 @@ impl Compiler {
                             &mut self.chunks,
                             self.current,
                             args.len() == 3,
+                            *order,
+                            line,
+                        );
+                    }
+                    crate::ast::ArrayTransformOp::MergeMask => {
+                        if args.len() != 3 {
+                            return Err("MergeMask expects tsource, fsource, and mask".into());
+                        }
+                        for arg in args {
+                            self.compile_expr(arg)?;
+                        }
+                        common::array_transforms::emit_merge_mask(
+                            &mut self.chunks,
+                            self.current,
                             *order,
                             line,
                         );
@@ -6792,6 +6835,28 @@ impl Compiler {
             }
             ExprKind::Chan(op) => {
                 self.emit_chan(op)?;
+            }
+            // Third member of the concurrency family, beside `Async` and
+            // `Chan`. The NODE has landed (`vybe_ast::AtomicOp`); the emitter
+            // that lowers it has not, so this is an explicit hole rather than
+            // a silent one.
+            //
+            // ⚠ Deliberately NOT a `_ =>` wildcard. A catch-all here would
+            // absorb every future `ExprKind` the same way — the construct
+            // compiles to nothing, the program runs, and the answer is quietly
+            // wrong. That is the single most expensive failure shape in this
+            // codebase, and a loud error is the cheap half of it.
+            //
+            // Currently unreachable: no walker produces `ExprKind::Atomic`
+            // yet, so nothing regresses. When one starts, it will land here
+            // with a message naming the work instead of a wrong value. The
+            // WASM-level pieces to build it from already exist —
+            // `primitives::threading::emit_atomic_{load,store,add,sub,xchg,
+            // cmpxchg,fence,wait,notify}` — so the missing part is the
+            // `AtomicOp` → primitive mapping, the shape `emit_chan` has for
+            // `ChanOp`.
+            ExprKind::Atomic(op) => {
+                self.emit_atomic(op)?;
             }
             ExprKind::Await(inner) => {
                 // ECMA-262 §27.2: WASM JSPI suspend point, lowered to the spec

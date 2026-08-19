@@ -62,6 +62,23 @@ pub fn emit_atomic_sub(chunk: &mut Chunk, line: u32) {
     atomic_memarg32(chunk, line);
 }
 
+/// Emit atomic read-modify-write and/or/xor.
+/// Stack before: [addr, value]  Stack after: [old_value]
+pub fn emit_atomic_and(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::I32_ATOMIC_RMW_AND, line);
+    atomic_memarg32(chunk, line);
+}
+
+pub fn emit_atomic_or(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::I32_ATOMIC_RMW_OR, line);
+    atomic_memarg32(chunk, line);
+}
+
+pub fn emit_atomic_xor(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::I32_ATOMIC_RMW_XOR, line);
+    atomic_memarg32(chunk, line);
+}
+
 /// Emit atomic exchange: atomically swap memory[addr] with value.
 /// Stack before: [addr, value]  Stack after: [old_value]
 pub fn emit_atomic_xchg(chunk: &mut Chunk, line: u32) {

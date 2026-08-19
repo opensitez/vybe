@@ -406,8 +406,8 @@ fn inject_superglobals(vm: &mut vybe_runtime::VM, ctx: &Arc<RequestContext>) {
     // PHP variables and functions live in separate namespaces; the
     // walker preserves the `$` sigil on variable identifiers so a
     // function `foo` and a variable `$foo` don't collide.
-    vm.globals.insert("$_SESSION".to_string(), session);
-    vm.globals.insert(
+    vm.set_global_owned("$_SESSION".to_string(), session);
+    vm.set_global_owned(
         PHP_SESSION_ID_GLOBAL.to_string(),
         Value::String(StdArc::from(session_id.as_str())),
     );
@@ -415,22 +415,20 @@ fn inject_superglobals(vm: &mut vybe_runtime::VM, ctx: &Arc<RequestContext>) {
     // primitive reads (`primitives/http_session.rs`), so `session_id()` and
     // `session_name()` — and every other language's equivalent — report the id
     // this request is actually using rather than minting a second one.
-    vm.globals.insert(
+    vm.set_global_owned(
         vybe_compiler::primitives::http_session::SESSION_ID_GLOBAL.to_string(),
         Value::String(StdArc::from(session_id.as_str())),
     );
-    vm.globals.insert(
+    vm.set_global_owned(
         vybe_compiler::primitives::http_session::SESSION_NAME_GLOBAL.to_string(),
         Value::String(StdArc::from(PHP_SESSION_COOKIE_NAME)),
     );
-    vm.globals
-        .insert(PHP_SESSION_STARTED_GLOBAL.to_string(), Value::Bool(false));
-    vm.globals.insert(
+    vm.set_global_owned(PHP_SESSION_STARTED_GLOBAL.to_string(), Value::Bool(false));
+    vm.set_global_owned(
         PHP_SESSION_NEEDS_COOKIE_GLOBAL.to_string(),
         Value::Bool(session_cookie.is_none()),
     );
-    vm.globals
-        .insert(PHP_SESSION_DESTROYED_GLOBAL.to_string(), Value::Bool(false));
+    vm.set_global_owned(PHP_SESSION_DESTROYED_GLOBAL.to_string(), Value::Bool(false));
 }
 
 /// The session cookie's value, if the request carries one.
@@ -469,12 +467,12 @@ fn make_map_value(
 
 fn persist_superglobals(vm: &vybe_runtime::VM, _ctx: &Arc<RequestContext>) {
     let destroyed = matches!(
-        vm.globals.get(PHP_SESSION_DESTROYED_GLOBAL),
+        vm.global(PHP_SESSION_DESTROYED_GLOBAL),
         Some(vybe_runtime::Value::Bool(true))
     );
 
     if destroyed {
-        let session_id = match vm.globals.get(PHP_SESSION_ID_GLOBAL) {
+        let session_id = match vm.global(PHP_SESSION_ID_GLOBAL) {
             Some(vybe_runtime::Value::String(s)) if !s.is_empty() => s.to_string(),
             _ => return,
         };
@@ -483,19 +481,19 @@ fn persist_superglobals(vm: &vybe_runtime::VM, _ctx: &Arc<RequestContext>) {
     }
 
     let started = matches!(
-        vm.globals.get(PHP_SESSION_STARTED_GLOBAL),
+        vm.global(PHP_SESSION_STARTED_GLOBAL),
         Some(vybe_runtime::Value::Bool(true))
     );
     if !started {
         return;
     }
 
-    let session_id = match vm.globals.get(PHP_SESSION_ID_GLOBAL) {
+    let session_id = match vm.global(PHP_SESSION_ID_GLOBAL) {
         Some(vybe_runtime::Value::String(s)) if !s.is_empty() => s.to_string(),
         _ => return,
     };
 
-    let Some(vybe_runtime::Value::Object(obj)) = vm.globals.get("$_SESSION") else {
+    let Some(vybe_runtime::Value::Object(obj)) = vm.global("$_SESSION") else {
         return;
     };
     let guard = obj.lock().unwrap();
@@ -882,10 +880,10 @@ mod tests {
             Arc::clone(&first_ctx),
         );
         assert_eq!(
-            first_vm.globals.get(PHP_SESSION_STARTED_GLOBAL),
+            first_vm.global(PHP_SESSION_STARTED_GLOBAL),
             Some(&Value::Bool(true))
         );
-        let first_session = map_entries(first_vm.globals.get("$_SESSION").expect("$_SESSION"));
+        let first_session = map_entries(first_vm.global("$_SESSION").expect("$_SESSION"));
         assert_eq!(
             first_session.get("user").map(value_as_string),
             Some("alice".to_string())
@@ -1105,7 +1103,7 @@ fn publish_server_env(vm: &mut vybe_runtime::VM, ctx: &Arc<RequestContext>) {
 
     let mut object = Object::new();
     object.kind = ObjectKind::Map(entries);
-    vm.globals.insert(
+    vm.set_global_owned(
         vybe_compiler::primitives::http_request_env::SERVER_ENV_GLOBAL.to_string(),
         Value::Object(vybe_runtime::heap::alloc(object)),
     );
@@ -1149,11 +1147,10 @@ pub fn publish_wasi_request(
     let param_id = vybe_platform_wasi::http::push_response_outparam();
 
     if let Some(value) = vybe_platform_wasi::http::incoming_request_value(vm, request_id) {
-        vm.globals.insert(WASI_REQUEST_GLOBAL.to_string(), value);
+        vm.set_global_owned(WASI_REQUEST_GLOBAL.to_string(), value);
     }
     if let Some(value) = vybe_platform_wasi::http::response_outparam_value(vm, param_id) {
-        vm.globals
-            .insert(WASI_RESPONSE_OUT_GLOBAL.to_string(), value);
+        vm.set_global_owned(WASI_RESPONSE_OUT_GLOBAL.to_string(), value);
     }
     (request_id, param_id)
 }

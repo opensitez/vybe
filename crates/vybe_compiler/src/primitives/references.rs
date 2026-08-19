@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::primitives::pointers::{
     CARRAY_BASE_KEY, CARRAY_IDX_KEY, CARRAY_KIND, CELL_KIND, REF_KIND_KEY, REF_VALUE_KEY,
+    SHARED_ADDR_KEY, SHARED_KIND,
 };
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
@@ -22,6 +23,37 @@ pub fn emit_cell_new(chunks: &mut [Chunk], current: usize, value_slot: u16, line
 
 pub fn emit_cell_new_from_local(chunks: &mut [Chunk], current: usize, local_slot: u16, line: u32) {
     emit_cell_new(chunks, current, local_slot, line);
+}
+
+/// `{__ref_kind:"shared", __addr}` — a word in SHARED linear memory, the
+/// storage a WASM atomic acts on.
+///
+/// Allocates the word from the futex page (`__vybe_futex_alloc16`, which also
+/// GROWS shared memory on first use — the `limit=0` half of the Interlocked
+/// trap), `i32.atomic.store`s the value in `value_slot` as the word's initial
+/// contents, and leaves the reference object on the stack. The binding then
+/// holds this reference exactly as it would hold a cell: ordinary reads
+/// autoderef through the `"shared"` arm (an atomic load), ordinary writes
+/// store through it (an atomic store), and an atomic RMW asks for `__addr`.
+pub fn emit_shared_word_new(chunks: &mut [Chunk], current: usize, value_slot: u16, line: u32) {
+    let addr_slot = chunks[current].alloc_scratch(1);
+    crate::primitives::bundle::emit_call_push_func(&mut chunks[current], "__vybe_futex_alloc16", line);
+    crate::primitives::bundle::emit_call_invoke(&mut chunks[current], 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, addr_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    // The atomic store's i32 coercion handles f64-shaped values, the same
+    // contract `emit_wasi_spawn` already relies on for the record words.
+    crate::primitives::threading::emit_atomic_store(&mut chunks[current], line);
+
+    chunks[current].emit_struct_new(0, 0, line);
+    chunks[current].emit_dup(line);
+    let kind_key = chunks[current].add_constant(Value::String(Arc::from(REF_KIND_KEY)));
+    chunks[current].emit_string_const(SHARED_KIND, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, kind_key, line);
+    chunks[current].emit_dup(line);
+    let addr_key = chunks[current].add_constant(Value::String(Arc::from(SHARED_ADDR_KEY)));
+    chunks[current].emit_op_u16(Op::LOCAL_GET, addr_slot, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, addr_key, line);
 }
 
 /// A reference to a slot INSIDE a container: `{__ref_kind:"carray", __base, __idx}`.

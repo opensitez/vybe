@@ -683,6 +683,55 @@ impl Compiler {
     /// `compile_var_decl` infers from an untyped initializer, where
     /// `let i = 0; i = "x"` is legal. So this fires on genuinely DECLARED
     /// types — pascal `var i: Integer`, C# `int i` — and nowhere else.
+    /// A shift, under this region's [`ShiftOverflow`] policy.
+    ///
+    /// wasm masks the count — `i32.shl` takes it modulo 32 — so `Mask` is the
+    /// bare instruction and costs nothing. Fortran's `ISHFT` instead yields
+    /// ZERO once the count reaches `BIT_SIZE`: every bit has been shifted out.
+    /// `gfortran` prints `0` for `ishft(1, 32)` where a masking lane prints
+    /// `1`, and that difference is not visible in either operand's type — it is
+    /// a property of the language whose code is being compiled, which is why it
+    /// is a directive and not a node field.
+    ///
+    /// ⚠ "Shifted out" is not the same as "zero" for an ARITHMETIC right shift.
+    /// `SHIFTA` fills from the sign bit, so `shifta(-8, 32)` is `-1`, not `0` —
+    /// gfortran confirms. The saturated result is therefore the sign fill
+    /// (`value >> 31`) for [`Op::I32_SHR_S`] and zero for the logical shifts.
+    fn emit_shift(&mut self, op: Op) {
+        if self.directives().shift_overflow.unwrap_or_default() != vybe_ast::ShiftOverflow::Zero {
+            self.emit(op);
+            return;
+        }
+        // Stack: [value, count] — the count pops first.
+        let count = self.define_local("__vybe_shift_count");
+        let value = self.define_local("__vybe_shift_value");
+        self.emit_u16(Op::LOCAL_SET, count);
+        self.emit_u16(Op::LOCAL_SET, value);
+        self.emit_u16(Op::LOCAL_GET, count);
+        let line = self.line;
+        self.chunk().emit_i32_const(0, line);
+        self.emit(Op::I32_OR);
+        self.chunk().emit_i32_const(32, line);
+        self.emit(Op::I32_LT_S);
+        self.chunk().emit_if_value(line);
+        self.emit_u16(Op::LOCAL_GET, value);
+        self.emit_u16(Op::LOCAL_GET, count);
+        self.emit(op);
+        self.chunk().emit_else(line);
+        if op == Op::I32_SHR_S {
+            // Every bit is gone but the sign: 0 for a non-negative value, -1
+            // for a negative one — which is exactly a full arithmetic shift.
+            self.emit_u16(Op::LOCAL_GET, value);
+            self.chunk().emit_i32_const(0, line);
+            self.emit(Op::I32_OR);
+            self.chunk().emit_i32_const(31, line);
+            self.emit(Op::I32_SHR_S);
+        } else {
+            self.chunk().emit_i32_const(0, line);
+        }
+        self.chunk().emit_end(line);
+    }
+
     fn expr_is_provably_number(&self, expr: &Expression) -> bool {
         if Self::is_emitted_number_literal(expr) {
             return true;
@@ -1346,13 +1395,18 @@ impl Compiler {
                     crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
                 };
             }
+            BinOp::RotL(lane) | BinOp::RotR(lane) => {
+                let left = matches!(op, BinOp::RotL(_));
+                let line = self.line;
+                crate::primitives::bits::emit_rotate(self.chunk(), *lane, left, line);
+            }
             BinOp::BitAnd => self.emit(Op::I32_AND),
             BinOp::BitOr => self.emit(Op::I32_OR),
             BinOp::BitXor => self.emit(Op::I32_XOR),
-            BinOp::Shl => self.emit(Op::I32_SHL),
-            BinOp::Shr => self.emit(Op::I32_SHR_S),
+            BinOp::Shl => self.emit_shift(Op::I32_SHL),
+            BinOp::Shr => self.emit_shift(Op::I32_SHR_S),
             BinOp::UShr => {
-                self.emit(Op::I32_SHR_U);
+                self.emit_shift(Op::I32_SHR_U);
                 if self.profile.ecma_operator_coercion {
                     // ECMA-262 §13.10.2: `>>>` produces an unsigned 32-bit
                     // integer (Number). I32_SHR_U leaves the bit pattern
