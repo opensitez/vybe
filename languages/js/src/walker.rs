@@ -423,6 +423,12 @@ fn validate_private_expr(expr: &Expression) -> Result<(), String> {
             }
             Ok(())
         }
+        ExprKind::Atomic(op) => {
+            for child in op.children() {
+                validate_private_expr(child)?;
+            }
+            Ok(())
+        }
         ExprKind::Chan(op) => {
             for child in op.children() {
                 validate_private_expr(child)?;
@@ -795,6 +801,7 @@ fn expr_contains_await(expr: &Expression) -> bool {
     match &expr.kind {
         ExprKind::Async(op) => op.children().into_iter().any(expr_contains_await),
         ExprKind::Chan(op) => op.children().into_iter().any(expr_contains_await),
+        ExprKind::Atomic(op) => op.children().into_iter().any(expr_contains_await),
         ExprKind::Await(_) => true,
         ExprKind::Binary { left, right, .. }
         | ExprKind::NullCoalesce { left, right }
@@ -1705,6 +1712,11 @@ fn rewrite_expression_keys(
 ) {
     match &mut expr.kind {
         ExprKind::Async(op) => {
+            for child in op.children_mut() {
+                rewrite_expression_keys(child, consts);
+            }
+        }
+        ExprKind::Atomic(op) => {
             for child in op.children_mut() {
                 rewrite_expression_keys(child, consts);
             }

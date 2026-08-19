@@ -201,6 +201,13 @@ uses_common_resolver = true
 "qsort"    = { emit = "common:c.qsort",     min_args = 4, max_args = 4 }
 
 # ── math.h ───────────────────────────────────────────────────────────────────
+# Next representable float — the SHARED family in `primitives/math.rs`, which
+# steps the bit pattern. `f` suffix = the 32-bit lane, because a `float`'s
+# neighbour is 2^-23 away where a `double`'s is 2^-52.
+"nextafter"  = { emit = "common:math.next_after64", min_args = 2, max_args = 2 }
+"nextafterf" = { emit = "common:math.next_after32", min_args = 2, max_args = 2 }
+"nexttoward" = { emit = "common:math.next_after64", min_args = 2, max_args = 2 }
+
 "sqrt"     = { emit = "opcode:f64_sqrt",   min_args = 1, max_args = 1 }
 # Raw sqrt opcode (no errno side effect) — target of the __c_sqrt domain-error
 # wrapper. The walker rewrites source `sqrt(x)` → `__c_sqrt(x)`.
@@ -213,7 +220,23 @@ uses_common_resolver = true
 "ceilf"    = { emit = "opcode:f64_ceil",   min_args = 1, max_args = 1 }
 "trunc"    = { emit = "opcode:f64_trunc",  min_args = 1, max_args = 1 }
 "truncf"   = { emit = "opcode:f64_trunc",  min_args = 1, max_args = 1 }
-"round"    = { emit = "opcode:f64_nearest", min_args = 1, max_args = 1 }
+# gcc: ties away from zero, and `round(-0.2)` is `-0.0` — the shared row is
+# sign-preserving, which `floor(x+0.5)` is not.
+"round"    = { emit = "common:math.round_half_away", min_args = 1, max_args = 1 }
+# `copysign` reads the SIGN BIT, which is what `f64.copysign` is for. The walker
+# fold it replaces used `y < 0 ? -1 : 1`, and `-0.0 < 0` is FALSE — so
+# `copysign(2.0, -0.0)` came back +2.0.
+"copysign"  = { emit = "common:math.copysign", min_args = 2, max_args = 2 }
+# IEEE minNum/maxNum — the non-NaN operand wins, unlike `Math.min`/`f64.min`.
+# `rint`/`nearbyint` and IEEE `remainder` round under the CURRENT rounding mode,
+# whose default is ties-to-EVEN — NOT `round`'s ties-away-from-zero. They shared
+# a `round` call with it, so pointing `round` at half-away silently moved them.
+__c_rint    = { emit = "common:math.round_half_even", min_args = 1, max_args = 1 }
+"fmin"      = { emit = "common:math.min_num", min_args = 2, max_args = 2 }
+"fminf"     = { emit = "common:math.min_num", min_args = 2, max_args = 2 }
+"fmax"      = { emit = "common:math.max_num", min_args = 2, max_args = 2 }
+"fmaxf"     = { emit = "common:math.max_num", min_args = 2, max_args = 2 }
+"copysignf" = { emit = "common:math.copysign", min_args = 2, max_args = 2 }
 "roundf"   = { emit = "opcode:f64_nearest", min_args = 1, max_args = 1 }
 "pow"      = { emit = "host:ecma:math:pow", min_args = 2, max_args = 2 }
 "powf"     = { emit = "host:ecma:math:pow", min_args = 2, max_args = 2 }

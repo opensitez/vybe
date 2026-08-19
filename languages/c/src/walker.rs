@@ -1678,9 +1678,22 @@ fn c_signbit_predicate(value: Expression) -> Expression {
     )
 }
 
+/// `__c_rint(x)` — ties-to-EVEN, bound in C's profile to
+/// `common:math.round_half_even`. Kept distinct from `round`, which is
+/// ties-away-from-zero.
+fn c_rint_call(arg: Expression) -> Expression {
+    expr(ExprKind::Call {
+        callee: Box::new(expr(ExprKind::Ident("__c_rint".to_string()))),
+        args: vec![Argument::positional(arg)],
+        optional: false,
+    })
+}
+
 fn c_remainder_value(x: Expression, y: Expression) -> Expression {
     let x_as_double = binary_expr(BinOp::Mul, x.clone(), float_lit(1.0));
-    let quotient = ecma_math_call("round", binary_expr(BinOp::Div, x_as_double, y.clone()));
+    // IEEE-754 `remainder` rounds the quotient to NEAREST-EVEN, which is what
+    // makes `remainder(5, 3)` = -1 rather than 2.
+    let quotient = c_rint_call(binary_expr(BinOp::Div, x_as_double, y.clone()));
     binary_expr(BinOp::Sub, x, binary_expr(BinOp::Mul, quotient, y))
 }
 
@@ -12442,20 +12455,10 @@ impl Walker {
                     return expr(ExprKind::Lit(Literal::Float(0.0)));
                 }
                 // ── Math functions mapped to ecma:math equivalents ────────────
-                "fmin" | "fminf" => {
-                    let mut it = args.into_iter();
-                    if let (Some(a), Some(b)) = (it.next(), it.next()) {
-                        return ecma_math_call2("min", a.value, b.value);
-                    }
-                    return expr(ExprKind::Lit(Literal::Float(0.0)));
-                }
-                "fmax" | "fmaxf" => {
-                    let mut it = args.into_iter();
-                    if let (Some(a), Some(b)) = (it.next(), it.next()) {
-                        return ecma_math_call2("max", a.value, b.value);
-                    }
-                    return expr(ExprKind::Lit(Literal::Float(0.0)));
-                }
+                // `fmin`/`fmax` are IEEE `minNum`/`maxNum`: the NON-NaN
+                // operand wins. They mapped to ECMA `Math.min`/`Math.max`,
+                // which PROPAGATE NaN, so `fmin(NAN, 1.0)` returned NaN where C
+                // returns 1.0.
                 "fdim" | "fdimf" => {
                     let mut it = args.into_iter();
                     if let (Some(a), Some(b)) = (it.next(), it.next()) {
@@ -12712,9 +12715,12 @@ impl Walker {
                     }
                     return expr(ExprKind::Lit(Literal::Float(0.0)));
                 }
+                // Ties-to-EVEN: these follow the current rounding mode, whose
+                // default is nearest-even. `round` is ties-away-from-zero, and
+                // sharing its call made them move with it.
                 "rint" | "rintf" | "nearbyint" | "nearbyintf" => {
                     if let Some(a) = args.into_iter().next() {
-                        return ecma_math_call("round", a.value);
+                        return c_rint_call(a.value);
                     }
                     return expr(ExprKind::Lit(Literal::Float(0.0)));
                 }
@@ -12864,55 +12870,16 @@ impl Walker {
                         right: Box::new(arg),
                     });
                 }
-                "copysign" | "copysignf" => {
-                    // copysign(x, y) = |x| * sign(y)
-                    let mut it = args.into_iter();
-                    if let (Some(x), Some(y)) = (it.next(), it.next()) {
-                        let abs_x = ecma_math_call("abs", x.value);
-                        let sign_y = expr(ExprKind::Ternary {
-                            cond: Box::new(expr(ExprKind::Binary {
-                                op: BinOp::Lt,
-                                left: Box::new(y.value),
-                                right: Box::new(expr(ExprKind::Lit(Literal::Float(0.0)))),
-                            })),
-                            then: Box::new(expr(ExprKind::Lit(Literal::Float(-1.0)))),
-                            else_: Box::new(expr(ExprKind::Lit(Literal::Float(1.0)))),
-                        });
-                        return expr(ExprKind::Binary {
-                            op: BinOp::Mul,
-                            left: Box::new(abs_x),
-                            right: Box::new(sign_y),
-                        });
-                    }
-                    return expr(ExprKind::Lit(Literal::Float(0.0)));
-                }
-                "nextafter" | "nextafterf" => {
-                    // nextafter(x, y): return x + tiny_step toward y
-                    let mut it = args.into_iter();
-                    if let (Some(x), Some(y)) = (it.next(), it.next()) {
-                        // Approximation: x + (y > x ? 1 : -1) * epsilon
-                        let eps = expr(ExprKind::Lit(Literal::Float(f64::EPSILON)));
-                        let sign = expr(ExprKind::Ternary {
-                            cond: Box::new(expr(ExprKind::Binary {
-                                op: BinOp::Gt,
-                                left: Box::new(y.value),
-                                right: Box::new(x.value.clone()),
-                            })),
-                            then: Box::new(expr(ExprKind::Lit(Literal::Float(1.0)))),
-                            else_: Box::new(expr(ExprKind::Lit(Literal::Float(-1.0)))),
-                        });
-                        return expr(ExprKind::Binary {
-                            op: BinOp::Add,
-                            left: Box::new(x.value),
-                            right: Box::new(expr(ExprKind::Binary {
-                                op: BinOp::Mul,
-                                left: Box::new(sign),
-                                right: Box::new(eps),
-                            })),
-                        });
-                    }
-                    return expr(ExprKind::Lit(Literal::Float(0.0)));
-                }
+                // `copysign`/`copysignf` are BUILTINS now
+                // (`common:math.copysign` -> `f64.copysign`). The fold here
+                // tested `y < 0`, and `-0.0 < 0` is FALSE, so the sign of a
+                // negative zero was lost. Only the BIT PATTERN carries it.
+                // `nextafter`/`nextafterf` are BUILTINS now
+                // (`common:math.next_after64` / `*32`). The fold here added
+                // `±f64::EPSILON`, which is the ULP *at 1.0* — so
+                // `nextafter(1000.0, INFINITY)` returned 1000 UNCHANGED and any
+                // loop stepping by it never terminated. One ULP is one step of
+                // the BIT PATTERN, not a constant.
                 "tgamma" => {
                     // tgamma(n) = (n-1)! for positive integers. Use Stirling for general case.
                     // Approximation via host: emit as __tgamma(x)

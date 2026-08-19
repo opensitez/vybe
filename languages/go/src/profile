@@ -127,7 +127,9 @@ materialize_bool_results = true
 "math.Abs"        = { emit = "opcode:f64_abs",                 min_args = 1, max_args = 1 }
 "math.Floor"      = { emit = "opcode:f64_floor",               min_args = 1, max_args = 1 }
 "math.Ceil"       = { emit = "opcode:f64_ceil",                min_args = 1, max_args = 1 }
-"math.Round"      = { emit = "opcode:f64_nearest",             min_args = 1, max_args = 1 }
+# `go run`: `math.Round(2.5)`=3, `(-2.5)`=-3 — ties away from zero, per the
+# doc comment on math.Round itself.
+"math.Round"      = { emit = "common:math.round_half_away",    min_args = 1, max_args = 1 }
 "math.Min"        = { emit = "opcode:f64_min",                 min_args = 2, max_args = 2 }
 "math.Max"        = { emit = "opcode:f64_max",                 min_args = 2, max_args = 2 }
 "math.Pow"        = { emit = "host:ecma:math:pow",             min_args = 2, max_args = 2 }
@@ -150,10 +152,14 @@ materialize_bool_results = true
 "math.Copysign"   = { emit = "common:math.copysign",          min_args = 2, max_args = 2 }
 "math.Signbit"    = { emit = "common:math.signbit",           min_args = 1, max_args = 1 }
 "math.Dim"        = { emit = "common:math.dim",               min_args = 2, max_args = 2 }
-"math.Float64bits"     = { emit = "common:math.f64_bits",      min_args = 1, max_args = 1 }
-"math.Float64frombits" = { emit = "common:math.f64_from_bits", min_args = 1, max_args = 1 }
-"math.Float32bits"     = { emit = "common:math.f32_bits",      min_args = 1, max_args = 1 }
-"math.Float32frombits" = { emit = "common:math.f32_from_bits", min_args = 1, max_args = 1 }
+# A reinterpretation is a REPRESENTATION operation, not IEEE arithmetic — it is
+# `math.*` only in Go's own package layout. The shared name is `bits.*`, which
+# Fortran's TRANSFER and .NET/JVM `BitConverter` reach through the same
+# `UnaryOp::Reinterpret` node.
+"math.Float64bits"     = { emit = "common:bits.reinterpret_i64", min_args = 1, max_args = 1 }
+"math.Float64frombits" = { emit = "common:bits.reinterpret_f64", min_args = 1, max_args = 1 }
+"math.Float32bits"     = { emit = "common:bits.reinterpret_i32", min_args = 1, max_args = 1 }
+"math.Float32frombits" = { emit = "common:bits.reinterpret_f32", min_args = 1, max_args = 1 }
 "math.Mod"        = { emit = "common:expressions.f64_mod",     min_args = 2, max_args = 2 }
 "math.Remainder"  = { emit = "common:go.math_remainder",       min_args = 2, max_args = 2 }
 

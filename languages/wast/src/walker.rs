@@ -89,6 +89,22 @@ struct WastWalker {
     registered_tags: HashMap<(String, String), String>,
     registered_module_class: HashMap<String, String>,
     import_alias: HashMap<String, (String, String)>,
+    /// A function import's local `$alias` → the `host:<module>:<fn>` callee
+    /// spelled from the pair the import itself declares.
+    ///
+    /// WAT maps 1:1 onto WASM, and `(import "canon" "stream.read" (func $sr …))`
+    /// already says everything needed to make the call. Before this map the
+    /// walker kept the signature but threw the PAIR away, so the only way to
+    /// reach a host function was for someone to pre-register the local alias in
+    /// `languages/wast/src/profile` `[builtins]` — which is why `$log` resolved
+    /// and `$stream_read` did not, why the alias had to be spelled exactly like
+    /// the profile key, and why every importable function needed another row
+    /// forever. That was the compiler discarding half the import, not WAT
+    /// failing to be WASM.
+    ///
+    /// `Profile::lookup_builtin` synthesises the definition for a `host:`
+    /// callee, so nothing has to be declared anywhere.
+    host_import_alias: HashMap<String, String>,
 }
 
 
@@ -2042,6 +2058,15 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                         .is_some_and(|d| d.as_str().trim_start().starts_with("(func"));
                     if !is_func_import {
                         continue;
+                    }
+                    // The (module, name) pair is right here in the source —
+                    // bind the local alias to it so the call can be lowered
+                    // from what the import declared rather than from a table.
+                    if let (Some(alias), Some((m, n))) =
+                        (scan_func_signature(inner.clone()).0, scan_import_names(&inner))
+                    {
+                        __w.host_import_alias
+                            .insert(alias, format!("host:{m}:{n}"));
                     }
                     let (name, params_count, results_count) = scan_func_signature(inner);
                     index_arities.push(params_count);
@@ -4265,6 +4290,17 @@ fn map_instr_to_ast(__w: &mut WastWalker, name: String, args: Vec<Expression>, s
                         },
                         span,
                     )
+                }
+                // A host import: lower to the `host:<module>:<fn>` callee built
+                // from its own declaration. Checked BEFORE `defined_func_names`
+                // for the same reason the registered-module arm is — the
+                // importing module also declares a same-named stub that would
+                // otherwise claim it. Ranked after that arm because an import
+                // satisfied by another module in the same script is a real
+                // cross-module call, not a host call.
+                ExprKind::Ident(n) if __w.host_import_alias.contains_key(n) => {
+                    let target = __w.host_import_alias.get(n).cloned().expect("just checked");
+                    Expression::with_span(ExprKind::Ident(target), span)
                 }
                 ExprKind::Ident(n) if __w.defined_func_names.contains(n) => {
                     let class = __w.module_class_name.clone();

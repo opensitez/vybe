@@ -11265,7 +11265,7 @@ fn emit_time_rounding(chunks: &mut [Chunk], current: usize, argc: u8, mode: &str
         chunks[current].emit_op_u16(Op::LOCAL_GET, scale_s, line);
         chunks[current].emit_op(Op::F64_MUL, line);
         match mode {
-            "round" | "round_half_up" => math::emit_round(&mut chunks[current], line),
+            "round" | "round_half_up" => math::emit_round(&mut chunks[current], vybe_ast::MidpointPolicy::HalfAwayFromZero, line),
             "round_half_down" => {
                 chunks[current].emit_f64_const(0.5, line);
                 chunks[current].emit_op(Op::F64_SUB, line);
@@ -11290,7 +11290,7 @@ fn emit_time_rounding(chunks: &mut [Chunk], current: usize, argc: u8, mode: &str
     } else {
         emit_ruby_number_from_slot(chunks, current, slots[0], line);
         match mode {
-            "round" | "round_half_up" => math::emit_round(&mut chunks[current], line),
+            "round" | "round_half_up" => math::emit_round(&mut chunks[current], vybe_ast::MidpointPolicy::HalfAwayFromZero, line),
             "round_half_down" => {
                 chunks[current].emit_f64_const(0.5, line);
                 chunks[current].emit_op(Op::F64_SUB, line);
@@ -11333,7 +11333,7 @@ fn emit_ruby_round_half_even_top(chunks: &mut [Chunk], current: usize, line: u32
     chunks[current].emit_end(line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, x_s, line);
-    math::emit_round(&mut chunks[current], line);
+    math::emit_round(&mut chunks[current], vybe_ast::MidpointPolicy::HalfAwayFromZero, line);
     chunks[current].emit_end(line);
 }
 
@@ -12159,7 +12159,7 @@ fn emit_ruby_map_round(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     chunks[current].emit_op_u16(Op::LOCAL_GET, num_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, scale_s, line);
     chunks[current].emit_op(Op::F64_MUL, line);
-    math::emit_round(&mut chunks[current], line);
+    math::emit_round(&mut chunks[current], vybe_ast::MidpointPolicy::HalfAwayFromZero, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, scale_s, line);
     chunks[current].emit_op(Op::F64_DIV, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, rounded_s, line);
