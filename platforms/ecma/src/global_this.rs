@@ -30,7 +30,7 @@ pub fn register(vm: &mut VM) {
     );
 }
 
-/// Returned to namespaces wiring so the existing `vm.globals.insert("globalThis", ...)`
+/// Returned to namespaces wiring so the existing `vm.set_global_owned("globalThis", ...)`
 /// can use the same singleton instead of constructing its own.
 pub fn shared_singleton() -> Value {
     global_this()

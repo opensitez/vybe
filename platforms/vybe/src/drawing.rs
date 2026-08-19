@@ -97,8 +97,8 @@ pub fn register(vm: &mut VM) {
             let color = palette_lookup(name).expect("name came from PALETTE");
             color_obj.properties.insert(name.to_lowercase(), color);
         }
-        vm.globals.insert(
-            "color".into(),
+        vm.set_global(
+            "color",
             Value::Object(vybe_runtime::heap::alloc(color_obj)),
         );
     }

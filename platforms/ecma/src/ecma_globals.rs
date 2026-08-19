@@ -30,16 +30,15 @@ fn ensure_namespace(vm: &mut VM, path: &[&str]) -> Value {
     let root_orig = path[0].to_string();
     let root_lc = root_orig.to_lowercase();
     let root = if let Some(existing) = vm
-        .globals
-        .get(&root_orig)
-        .or_else(|| vm.globals.get(&root_lc))
+        .global(&root_orig)
+        .or_else(|| vm.global(&root_lc))
     {
         existing.clone()
     } else {
         let obj = Value::Object(vybe_runtime::heap::alloc(Object::new()));
-        vm.globals.insert(root_orig.clone(), obj.clone());
+        vm.set_global_owned(root_orig.clone(), obj.clone());
         if root_lc != root_orig {
-            vm.globals.insert(root_lc, obj.clone());
+            vm.set_global_owned(root_lc, obj.clone());
         }
         obj
     };
@@ -216,8 +215,8 @@ pub fn register(vm: &mut VM) {
         }
     }
     set_prop(&object, "groupBy", Value::Bool(true));
-    vm.globals.insert("Object".to_string(), object.clone());
-    vm.globals.insert("object".to_string(), object.clone());
+    vm.set_global_owned("Object".to_string(), object.clone());
+    vm.set_global_owned("object".to_string(), object.clone());
 
     let number = host_fn_ref(vm, "ecma:number", "Number");
     set_prop(&number, "name", Value::String(Arc::from("Number")));
@@ -261,8 +260,8 @@ pub fn register(vm: &mut VM) {
     set_prop(&number, "POSITIVE_INFINITY", Value::F64(f64::INFINITY));
     set_prop(&number, "NEGATIVE_INFINITY", Value::F64(f64::NEG_INFINITY));
     set_prop(&number, "NaN", Value::F64(f64::NAN));
-    vm.globals.insert("Number".to_string(), number.clone());
-    vm.globals.insert("number".to_string(), number.clone());
+    vm.set_global_owned("Number".to_string(), number.clone());
+    vm.set_global_owned("number".to_string(), number.clone());
 
     let string = host_fn_ref(vm, "ecma:string", "String");
     set_prop(&string, "name", Value::String(Arc::from("String")));
@@ -315,8 +314,8 @@ pub fn register(vm: &mut VM) {
     for name in &["fromCharCode", "fromCodePoint", "raw"] {
         set_prop(&string, name, host_fn_ref(vm, "ecma:string", name));
     }
-    vm.globals.insert("String".to_string(), string.clone());
-    vm.globals.insert("string".to_string(), string.clone());
+    vm.set_global_owned("String".to_string(), string.clone());
+    vm.set_global_owned("string".to_string(), string.clone());
 
     let boolean = host_fn_ref(vm, "ecma:boolean", "Boolean");
     set_prop(&boolean, "name", Value::String(Arc::from("Boolean")));
@@ -342,8 +341,8 @@ pub fn register(vm: &mut VM) {
         receiver_host_fn_ref("ecma:boolean", "valueOf", boolean_value_of),
     );
     set_ctor_prototype(&boolean, boolean_proto);
-    vm.globals.insert("Boolean".to_string(), boolean.clone());
-    vm.globals.insert("boolean".to_string(), boolean.clone());
+    vm.set_global_owned("Boolean".to_string(), boolean.clone());
+    vm.set_global_owned("boolean".to_string(), boolean.clone());
 
     let function = Value::Object(vybe_runtime::heap::alloc(Object::new()));
     set_prop(&function, "name", Value::String(Arc::from("Function")));
@@ -363,8 +362,8 @@ pub fn register(vm: &mut VM) {
     }
     set_ctor_prototype(&function, function_proto.clone());
     set_prop(&function, "__proto__", function_proto);
-    vm.globals.insert("Function".to_string(), function.clone());
-    vm.globals.insert("function".to_string(), function.clone());
+    vm.set_global_owned("Function".to_string(), function.clone());
+    vm.set_global_owned("function".to_string(), function.clone());
 
     let array = host_fn_ref(vm, "ecma:array", "new");
     set_prop(&array, "name", Value::String(Arc::from("Array")));
@@ -453,8 +452,8 @@ pub fn register(vm: &mut VM) {
     for name in &["from", "fromAsync", "isArray", "of"] {
         set_prop(&array, name, host_fn_ref(vm, "ecma:array", name));
     }
-    vm.globals.insert("Array".to_string(), array.clone());
-    vm.globals.insert("array".to_string(), array.clone());
+    vm.set_global_owned("Array".to_string(), array.clone());
+    vm.set_global_owned("array".to_string(), array.clone());
 
     for (global_name, module, methods) in [
         (
@@ -542,9 +541,8 @@ pub fn register(vm: &mut VM) {
                 }
             }
             set_ctor_prototype(&ctor, proto);
-            vm.globals.insert(global_name.to_string(), ctor.clone());
-            vm.globals
-                .insert(global_name.to_ascii_lowercase().to_string(), ctor);
+            vm.set_global_owned(global_name.to_string(), ctor.clone());
+            vm.set_global_owned(global_name.to_ascii_lowercase().to_string(), ctor);
         }
     }
 
@@ -618,8 +616,8 @@ pub fn register(vm: &mut VM) {
         for name in &["now", "parse", "UTC"] {
             set_prop(&date, name, host_fn_ref(vm, "ecma:date", name));
         }
-        vm.globals.insert("Date".to_string(), date.clone());
-        vm.globals.insert("date".to_string(), date.clone());
+        vm.set_global_owned("Date".to_string(), date.clone());
+        vm.set_global_owned("date".to_string(), date.clone());
     }
 
     // ── Symbol ─────────────────────────────────────────────────────
@@ -654,10 +652,10 @@ pub fn register(vm: &mut VM) {
         let sentinel = format!("@@{}", name);
         set_prop(&sym, name, Value::Symbol(Arc::from(sentinel.as_str())));
     }
-    vm.globals.insert("Symbol".to_string(), sym);
-    vm.globals.insert(
+    vm.set_global_owned("Symbol".to_string(), sym);
+    vm.set_global_owned(
         "symbol".to_string(),
-        vm.globals.get("Symbol").cloned().unwrap_or(Value::Null),
+        vm.global("Symbol").cloned().unwrap_or(Value::Null),
     );
 
     // ── Reflect ────────────────────────────────────────────────────
@@ -716,10 +714,10 @@ pub fn register(vm: &mut VM) {
         "asUintN",
         host_fn_ref(vm, "ecma:bigint", "asUintN"),
     );
-    vm.globals.insert("BigInt".to_string(), bigint);
-    vm.globals.insert(
+    vm.set_global_owned("BigInt".to_string(), bigint);
+    vm.set_global_owned(
         "bigint".to_string(),
-        vm.globals.get("BigInt").cloned().unwrap_or(Value::Null),
+        vm.global("BigInt").cloned().unwrap_or(Value::Null),
     );
 
     for name in &[
@@ -732,8 +730,7 @@ pub fn register(vm: &mut VM) {
         "btoa",
         "atob",
     ] {
-        vm.globals
-            .insert((*name).to_string(), host_fn_ref(vm, "ecma:string", name));
+        vm.set_global_owned((*name).to_string(), host_fn_ref(vm, "ecma:string", name));
     }
 
     // ── Iterator (Stage-3 helpers) ─────────────────────────────────
@@ -840,9 +837,8 @@ pub fn register(vm: &mut VM) {
                 crate::object::track_nonenum(p, "constructor");
             }
             set_ctor_prototype(&ctor, proto);
-            vm.globals.insert(global_name.to_string(), ctor.clone());
-            vm.globals
-                .insert(global_name.to_ascii_lowercase().to_string(), ctor);
+            vm.set_global_owned(global_name.to_string(), ctor.clone());
+            vm.set_global_owned(global_name.to_ascii_lowercase().to_string(), ctor);
         }
     }
 
@@ -874,7 +870,7 @@ pub fn register(vm: &mut VM) {
                 crate::object::track_nonenum(p, "constructor");
             }
             set_ctor_prototype(&ctor, proto);
-            vm.globals.insert(global_name.to_string(), ctor);
+            vm.set_global_owned(global_name.to_string(), ctor);
         }
     }
 
@@ -911,14 +907,14 @@ pub fn register(vm: &mut VM) {
             }
         }
         set_ctor_prototype(&regexp, regexp_proto);
-        vm.globals.insert("RegExp".to_string(), regexp.clone());
-        vm.globals.insert("regexp".to_string(), regexp);
+        vm.set_global_owned("RegExp".to_string(), regexp.clone());
+        vm.set_global_owned("regexp".to_string(), regexp);
     }
 
     // ── globalThis — proper §19.3.1 singleton ──────────────────────
     // Pulls the shared process-global Object that `ecma:globalThis.get`
     // also returns, so identity holds across both access patterns.
-    vm.globals.insert(
+    vm.set_global_owned(
         "globalThis".to_string(),
         crate::global_this::shared_singleton(),
     );
@@ -949,7 +945,7 @@ pub fn register(vm: &mut VM) {
     for (name, proto) in &core_protos {
         if let Value::Object(p) = proto {
             if let Some(ctor) = p.lock().unwrap().properties.get("constructor").cloned() {
-                vm.globals.insert(format!("__ctor_{name}"), ctor);
+                vm.set_global_owned(format!("__ctor_{name}"), ctor);
             }
         }
     }
@@ -976,8 +972,8 @@ pub fn register(vm: &mut VM) {
         "BigInt64Array",
         "BigUint64Array",
     ] {
-        if let Some(ctor) = vm.globals.get(*name).cloned() {
-            vm.globals.insert(format!("__ctor_{name}"), ctor);
+        if let Some(ctor) = vm.global(*name).cloned() {
+            vm.set_global_owned(format!("__ctor_{name}"), ctor);
         }
     }
 
@@ -997,7 +993,7 @@ pub fn register(vm: &mut VM) {
         "AggregateError",
     ] {
         let ctor = crate::value::error_constructor_for(name);
-        vm.globals.insert(format!("__ctor_{name}"), ctor);
+        vm.set_global_owned(format!("__ctor_{name}"), ctor);
     }
 
     // ── Intl (ECMA-402) — the `Intl` global + its service constructors ──

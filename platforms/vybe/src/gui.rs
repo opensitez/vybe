@@ -634,7 +634,7 @@ mod gui_impl {
             &collection_clear_ref,
             &collection_contains_ref,
         );
-        vm.globals.insert("__openforms".into(), open_forms.clone());
+        vm.set_global("__openforms", open_forms.clone());
 
         vm.register_host_fn("vybe:gui", "newControlsCollection", {
             let add_ref = collection_add_ref.clone();
