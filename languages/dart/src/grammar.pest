@@ -120,27 +120,63 @@ member_modifiers = {
     // precede a field or setter, and without it here `covariant bool state`
     // failed to parse and took the whole program with it.
     static_kw? ~ abstract_kw? ~ override_kw? ~ covariant_kw? ~ const_kw? ~ factory_kw?
-    ~ late_kw? ~ final_kw? ~ late_kw? ~ covariant_kw?
+    ~ late_kw? ~ final_kw? ~ var_kw? ~ late_kw? ~ covariant_kw?
 }
 
 // ── Constructor ─────────────────────────────────────────────────────────────
 
+// A constructor's tail is one of four things, and only the block form was
+// accepted here. The two missing ones are both FACTORY spellings:
+//
+//   `factory Pair.fromSame(int v) => Pair.same(v);`  — an arrow body
+//   `factory Point.zero() = Point._zero;`            — a REDIRECT (§10.6.2)
+//
+// The arrow form looks like it already worked, and for the UNNAMED case it
+// did — `factory Token(String v) => Token._(v);` never reaches this rule at
+// all. `member_modifiers` carries `factory_kw?`, so `method_declaration`
+// matches it as a method named `Token`, and `walk_method` sets `is_factory`.
+// What `method_declaration` cannot match is the DOT, so the moment a factory
+// is named the arrow has to be accepted here instead. That asymmetry is why
+// one arrow factory parsed and the other did not.
+//
+// A redirect replaces the initializer list rather than following one — a
+// redirecting constructor may not have initializers — so it is an alternative
+// to the whole tail, not another suffix on it.
 constructor_declaration = {
     member_modifiers ~ const_kw? ~ factory_kw?
     ~ ident_name ~ ("." ~ ident_name)? ~ "(" ~ param_list? ~ ")"
-    ~ initializer_list?
-    ~ (function_body_block | ";" )
+    ~ (
+        ctor_redirect
+        | initializer_list? ~ (arrow_body | function_body_block | ";" )
+    )
 }
+
+// `= Target;` / `= Target.named;` — the constructor this one redirects to.
+// Unambiguous against `initializer_list` (which opens with `:`) and against
+// `field_declaration`'s `= expr` (which has no parameter list before it).
+ctor_redirect = { "=" ~ ident_name ~ ("." ~ ident_name)? ~ ";" }
 
 initializer_list = {
     ":" ~ initializer ~ ("," ~ initializer)*
 }
 
 initializer = {
-    super_call_initializer
+    // FIRST, and it has to be: `field_initializer` opens with `ident_name`,
+    // which `assert` matches. It would then need an `=` and fail, so PEG
+    // backtracking would still reach the right alternative — but only by
+    // accident of the next token. Ordering the keyword form ahead of the
+    // identifier form says which one is meant.
+    assert_initializer
+    | super_call_initializer
     | this_redirect_initializer
     | field_initializer
 }
+
+// `Positive(this.n) : assert(n > 0);` — Dart allows an ASSERTION in an
+// initializer list. Same shape as `assert_statement` minus the trailing `;`,
+// because here the list is terminated by the constructor's own `;` or `{`, and
+// a `,` after the `)` separates initializers rather than closing this one.
+assert_initializer = { "assert" ~ "(" ~ expression ~ ("," ~ expression)? ~ ","? ~ ")" }
 
 super_call_initializer = { "super" ~ ("." ~ ident_name)? ~ "(" ~ argument_list? ~ ")" }
 this_redirect_initializer = { "this" ~ ("." ~ ident_name)? ~ "(" ~ argument_list? ~ ")" }
@@ -599,16 +635,68 @@ cascade_chain = {
 
 cascade_op = { "?.." | ".." }
 
+// A section is a member/index PATH off the cascade receiver, optionally
+// assigned to. Three things the old rule could not express, each of which
+// silently mis-parsed rather than failing:
+//   `..value += 3`      — only `"="` was accepted, so `+=` fell out of the
+//                         section and re-attached to the cascade's VALUE
+//                         (which is the receiver), running `c += 3`.
+//   `..items.add(1)`    — no member suffix, so `.add(1)` chained onto the
+//                         whole cascade instead of onto `items`.
+//   `..nums[0] += 1`    — the index alternative could not follow an
+//                         identifier, and the walker dropped it outright
+//                         ("Just pass through for now").
 cascade_section = {
-    ident_name ~ (
-        "(" ~ argument_list? ~ ")"      // method call
-        | "=" ~ expression               // field assignment
-    )?
-    | "[" ~ expression ~ "]" ~ ("=" ~ expression)?  // index cascade
+    ident_name ~ cascade_suffix* ~ (assignment_op ~ cascade_rhs)?
+    | index_access ~ (assignment_op ~ cascade_rhs)?
 }
+
+cascade_suffix = { member_access | index_access | call_args }
 
 cascade_continuation = {
     ".." ~ cascade_section
+}
+
+// ── Cascade RHS — Dart's `expressionWithoutCascade` ─────────────────────────
+//
+// The RHS of a cascade assignment must NOT absorb the `..` that starts the
+// NEXT section. With a plain `expression` there, `p..a = 1..b = 2` parses as
+// `p.a = (1..b = 2)` — a cascade on the literal `1` — because `cascade_chain`
+// is an alternative inside `call_chain` and so is reachable from every
+// operand. MEASURED before this rule existed: that program left `p.a` as 2 and
+// `p.b` as 0, where dart gives 1 and 2.
+//
+// Dart's grammar answers this with a parallel cascade-free chain, and these
+// `_nc` rules are that chain. Each mirrors its cascade-carrying twin exactly
+// and differs only in reaching `call_chain_nc`, so the walker handles both in
+// the same match arms.
+cascade_rhs = {
+    &lambda_lookahead ~ lambda_expression
+    | conditional_expression_nc
+}
+
+conditional_expression_nc = {
+    null_coalesce_expression_nc ~ ("?" ~ expression ~ ":" ~ cascade_rhs)?
+}
+null_coalesce_expression_nc = { binop_operand_nc ~ (binop ~ binop_operand_nc)* }
+binop_operand_nc = _{ relational_unit_nc }
+relational_unit_nc = { unary_expression_nc ~ relational_suffix* }
+unary_expression_nc = {
+    unary_op ~ unary_expression_nc
+    | postfix_expression_nc
+}
+postfix_expression_nc = { call_expression_nc ~ postfix_op? }
+call_expression_nc = {
+    (new_expression | const_expression | primary) ~ call_chain_nc*
+}
+// `call_chain` minus `cascade_chain` — the whole point of the `_nc` chain.
+call_chain_nc = {
+    null_safe_member_access
+    | null_safe_index_access
+    | member_access
+    | call_args
+    | index_access
+    | null_assert
 }
 
 null_safe_member_access = { "?." ~ ident_or_keyword ~ ("(" ~ argument_list? ~ ")")? }
@@ -832,7 +920,12 @@ nullable_marker = { "?" }
 numeric_literal = @{
     ("0x" | "0X") ~ (ASCII_HEX_DIGIT | "_")+ ~ !(ASCII_ALPHANUMERIC | "_")
     | ("0b" | "0B") ~ ("0" | "1" | "_")+ ~ !(ASCII_ALPHANUMERIC | "_")
-    | ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ "." ~ (ASCII_DIGIT | "_")* ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ !(ASCII_ALPHANUMERIC | "_")
+    // The fraction is `+`, not `*`, because dart REQUIRES a digit after the
+    // point — `1.` is a syntax error there, and the language spells the double
+    // `1.0`. With `*` the lexer ate the first dot of a cascade: `x..a = 1..b = 2`
+    // tokenised the RHS as the double `1.` followed by `.b`, so the second
+    // section was never a section and BOTH assignments were lost.
+    | ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ "." ~ (ASCII_DIGIT | "_")+ ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ !(ASCII_ALPHANUMERIC | "_")
     | "." ~ ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ !(ASCII_ALPHANUMERIC | "_")
     | ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ !(ASCII_ALPHANUMERIC | "_")
 }

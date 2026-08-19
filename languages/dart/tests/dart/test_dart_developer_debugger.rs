@@ -72,26 +72,9 @@ void main() {
     );
 }
 
-#[test]
-fn developer_post_event_invalid_json_throws() {
-    assert_eq!(
-        run_prints(
-            r#"
-import 'dart:developer';
-void main() {
-  // Event data must be JSON-serializable
-  class Unserializable {}
-  try {
-    postEvent('bad.event', {'obj': Unserializable()});
-    // The serialization is done internally by VM service. Some Darts might just stringify it,
-    // or it might throw ArgumentError if it fails to serialize. Let's just catch any exception.
-    print('done');
-  } catch(e) {
-    print('done'); // Safe fallback as VM implementations vary
-  }
-}
-"#
-        ),
-        vec!["done"]
-    );
-}
+// `developer_post_event_invalid_json_throws` is GONE. Its program declared
+// `class Unserializable {}` inside a function body, which Dart has never
+// allowed — `dart run` answers "'class' can't be used as an identifier because
+// it's a keyword." A test the reference implementation cannot compile states
+// nothing about `postEvent`, and `developer_post_event` above already covers
+// the "it does not crash with no listener" contract it was reaching for.

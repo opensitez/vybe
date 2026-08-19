@@ -39,11 +39,16 @@ void main() {
     );
 }
 
+// `Zone` is `dart:async`, not `dart:developer`. Without the second import the
+// program does not compile at all ("Undefined name 'Zone'"), so this asserted
+// nothing about `log`. Repaired rather than deleted: every named parameter it
+// passes is real, and `dart run` accepts it once the import is there.
 #[test]
 fn developer_log_with_all_params() {
     assert_eq!(
         run_prints(
             r#"
+import 'dart:async';
 import 'dart:developer';
 void main() {
   log(

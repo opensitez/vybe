@@ -22,6 +22,7 @@ const STOPWATCH_MARKER_KEY: &str = "__dart_stopwatch_marker";
 const STOPWATCH_RUNNING_KEY: &str = "isrunning";
 const MAP_ORDER_KEY: &str = "__dart_map_order";
 const SORTED_MAP_MARKER_KEY: &str = "__dart_sorted_map_marker";
+const REGEXP_PATTERN_KEY: &str = "__dart_regexp_pattern";
 
 fn reserve_slot(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
@@ -417,11 +418,35 @@ pub fn emit_dart_sb_is_not_empty(chunks: &mut [Chunk], current: usize, line: u32
 
 /// Dart `RegExp(pattern, ...)` after walker flag-normalisation.
 /// Stack: [pattern] or [pattern, flags] -> [regexp].
+///
+/// The pattern Dart was handed is kept on the object, because `source` is NOT
+/// it. `ecma:regexp new` stores `display_source(pattern)`, which escapes every
+/// `/` — a DISPLAY form, right for `toString`'s `/src/flags` and not
+/// idempotent. Feeding `source` back into `new` (which `allMatches` has to do
+/// to get a `g` variant) escapes it a second time, so `RegExp(r'a/b')` becomes
+/// `a\\/b` and matches nothing. Keeping the original means `allMatches`
+/// recompiles the SAME string `firstMatch` does, so the two cannot disagree.
 pub fn emit_dart_regexp_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     if argc < 2 {
         chunks[current].emit_string_const("", line);
     }
-    host::emit(&mut chunks[current], "ecma:regexp", "new", 2, line);
+    let chunk = &mut chunks[current];
+    let flags_slot = reserve_slot(chunk);
+    let pattern_slot = reserve_slot(chunk);
+    let re_slot = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, flags_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, pattern_slot, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, pattern_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, flags_slot, line);
+    host::emit(chunk, "ecma:regexp", "new", 2, line);
+
+    chunk.emit_op_u16(Op::LOCAL_SET, re_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, re_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, pattern_slot, line);
+    let pattern_key = string_key(chunk, REGEXP_PATTERN_KEY);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, pattern_key, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, re_slot, line);
 }
 
 /// Dart `re.hasMatch(input)`.
@@ -431,14 +456,157 @@ pub fn emit_dart_regexp_has_match(chunks: &mut [Chunk], current: usize, line: u3
     vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
 }
 
-/// Dart `re.firstMatch(input)` -> JS match array/null.
+/// Dart `re.firstMatch(input)` -> a Dart `Match`, or null when absent.
 pub fn emit_dart_regexp_first_match(chunks: &mut [Chunk], current: usize, line: u32) {
     host::emit(&mut chunks[current], "ecma:regexp", "exec", 2, line);
+    let match_slot = reserve_slot(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, match_slot, line);
+    // `exec` answers null on no match, and Dart's `firstMatch` answers null
+    // too — so the stamp is guarded rather than the result being coerced.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, match_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_else(line);
+    emit_dart_match_stamp(chunks, current, match_slot, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, match_slot, line);
 }
 
-/// Dart `re.allMatches(input)` -> iterable match array.
+/// Give one ECMA exec result the getters a Dart `Match` has.
+///
+/// ECMA spells the offset `index` (§22.2.7.2) and stops there; Dart's `Match`
+/// spells it `start` and also exposes `end`, which ECMA leaves implicit as
+/// `index + m[0].length`. That rename is not something the compiler can
+/// perform on the read side — `m.start` lowers to a plain `struct.get start`,
+/// so the property has to EXIST on the object. Stamping it where the match is
+/// produced is the move the rest of this file already makes for `Uri`, `Set`
+/// and `StringBuffer`: what a Dart program receives is a Dart object, not a
+/// JS one it has to be taught to read.
+///
+/// Consumes nothing and leaves nothing — the match stays in `slot`.
+fn emit_dart_match_stamp(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    let chunk = &mut chunks[current];
+    let index_key = string_key(chunk, "index");
+    let start_key = string_key(chunk, "start");
+    let end_key = string_key(chunk, "end");
+
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, index_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, start_key, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, index_key, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_i32_const(0, line);
+    collections::emit_get(chunks, current, line);
+    // The same unit `String.length` answers in, so `end - start` is a count of
+    // the code units `substring` indexes by.
+    host::emit(&mut chunks[current], "ecma:string", "length", 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, end_key, line);
+}
+
+/// Dart `re.allMatches(input)` -> iterable of matches.
+///
+/// Two things separate this from `firstMatch`, and both are `matchAll`'s
+/// contract rather than a Dart quirk:
+///
+///  * **Argument order is `(string, regexp)`.** `matchAll` is a
+///    `String.prototype` method (§22.1.3.14), where `exec`/`test` are
+///    `RegExp.prototype` ones. Handing it `[regexp, input]` made it stringify
+///    the RegExp as the subject and read the subject as the pattern — which
+///    compiles and matches nothing, so every `allMatches` count answered `0`.
+///  * **The regexp must carry `g`.** Dart's globality lives on the METHOD
+///    (`allMatches` scans, `firstMatch` does not); ECMA's lives on the
+///    PATTERN, and `matchAll` throws `TypeError` without it. So the `g`
+///    variant is built HERE, at the call site, and never in
+///    `emit_dart_regexp_new`: `exec` and `test` advance `lastIndex` on a
+///    `g` regexp, which would make repeat `firstMatch`/`hasMatch` calls on one
+///    `RegExp` drift.
+///
+/// Rebuilding through `ecma:regexp new` with the original regexp as the
+/// pattern argument reuses its `source` verbatim (`extract_pattern` reads it
+/// off the object) while the explicit second argument overrides the flags.
+/// `normalize_regexp_args` only ever emits `i`/`m`/`u`/`s`, so appending `g`
+/// can never duplicate a flag and trip `validate_flags`.
 pub fn emit_dart_regexp_all_matches(chunks: &mut [Chunk], current: usize, line: u32) {
+    let input_slot = reserve_slot(&mut chunks[current]);
+    let re_slot = reserve_slot(&mut chunks[current]);
+    let arr_slot = reserve_slot(&mut chunks[current]);
+    let i_slot = reserve_slot(&mut chunks[current]);
+    let len_slot = reserve_slot(&mut chunks[current]);
+    let m_slot = reserve_slot(&mut chunks[current]);
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, input_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, re_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, input_slot, line);
+    emit_regexp_source_pattern(&mut chunks[current], re_slot, line);
+    emit_regexp_global_flags(&mut chunks[current], re_slot, line);
+    host::emit(&mut chunks[current], "ecma:regexp", "new", 2, line);
     host::emit(&mut chunks[current], "ecma:regexp", "matchAll", 2, line);
+
+    // Every element is a `Match` the program can ask `.start`/`.end` of, so
+    // each one gets the same stamp `firstMatch` gives its single result.
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
+
+    let state = loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    loops::emit_loop_cond(chunks, current, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, m_slot, line);
+    emit_dart_match_stamp(chunks, current, m_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
+    loops::emit_loop_end(chunks, current, state, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+}
+
+/// The pattern to recompile the regexp in `re_slot` from.
+///
+/// `__dart_regexp_pattern` is what `RegExp(...)` was handed, unescaped. A
+/// regexp that did not come through this language's constructor — one handed
+/// across from another frontend — has no such field, and there the object
+/// itself is the answer: `extract_pattern` reads `source` off it, which is one
+/// escaping round too many but still better than compiling `null`.
+fn emit_regexp_source_pattern(chunk: &mut Chunk, re_slot: u16, line: u32) {
+    let pattern_key = string_key(chunk, REGEXP_PATTERN_KEY);
+    chunk.emit_op_u16(Op::LOCAL_GET, re_slot, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, pattern_key, line);
+    let pattern_slot = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, pattern_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, pattern_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, re_slot, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, pattern_slot, line);
+    chunk.emit_end(line);
+}
+
+/// `re.flags + "g"` for the regexp held in `re_slot`.
+fn emit_regexp_global_flags(chunk: &mut Chunk, re_slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, re_slot, line);
+    let flags_key = string_key(chunk, "flags");
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, flags_key, line);
+    chunk.emit_string_const("g", line);
+    strings::emit_concat(chunk, 2, line);
 }
 
 /// Dart `match.group(index)`; JS match arrays store group 0..N by index.
@@ -3559,12 +3727,32 @@ pub fn emit_dart_identical(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_end(line);
 }
 
+/// `value.hashCode` for EVERY receiver — the one helper dart's `hashCode` reads.
+///
+/// The ladder is ordered by what can answer, most specific first:
+///   1. a `__get_hash` accessor  — the class declared its own `hashCode`
+///   2. an array                 — content hash, cached so it survives mutation
+///   3. an object or function    — `Object.hashCode` is identity, per dart:core
+///   4. anything else            — hash the VALUE, so equal ints/strings/bools
+///                                 share a hash and repeated reads agree
+///
+/// It used to open with `is_object_or_function` and emit an UNBALANCED tree —
+/// three `if`s, three `else`s, two `end`s — so the primitive arm was really a
+/// second `else` hung off the `__get_hash` test and two blocks never closed.
+/// That is why a second helper (`__dart_object_hash_code`) existed: the walker
+/// sent every receiver it believed was an object to a correctly-formed copy and
+/// left this one to primitives, where the malformed tail happened to answer.
+/// But the walker's test was `dart_user_add_expr_type().is_some()`, true for any
+/// ordinary local, so `var n = 99; n.hashCode` took the object helper and got a
+/// fresh identity counter on each read — `n.hashCode == n.hashCode` was false
+/// while `99.hashCode` was right.
+///
+/// Reading `__get_hash` off a primitive is safe; it answers null, which is
+/// exactly what the deleted object helper relied on.
 pub fn emit_dart_hash_code(chunks: &mut [Chunk], current: usize, line: u32) {
     let value_slot = reserve_slot(&mut chunks[current]);
     let getter_slot = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
-    emit_slot_is_object_or_function(&mut chunks[current], value_slot, line);
-    chunks[current].emit_if(line);
     emit_get_field_or_null_to_slot(
         &mut chunks[current],
         value_slot,
@@ -3582,39 +3770,24 @@ pub fn emit_dart_hash_code(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_if(line);
     emit_dart_cached_array_hash(chunks, current, value_slot, line);
     chunks[current].emit_else(line);
+    emit_slot_is_object_or_function(&mut chunks[current], value_slot, line);
+    chunks[current].emit_if(line);
     emit_dart_identity_hash(chunks, current, value_slot, line);
-    chunks[current].emit_end(line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     vybe_compiler::primitives::object::emit_hash_code(&mut chunks[current], line);
     chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
 }
 
-pub fn emit_dart_object_hash_code(chunks: &mut [Chunk], current: usize, line: u32) {
-    let value_slot = reserve_slot(&mut chunks[current]);
-    let getter_slot = reserve_slot(&mut chunks[current]);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
-    emit_get_field_or_null_to_slot(
-        &mut chunks[current],
-        value_slot,
-        "__get_hash",
-        getter_slot,
-        line,
-    );
-    chunks[current].emit_op_u16(Op::LOCAL_GET, getter_slot, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
-    chunks[current].emit_op(Op::I32_EQZ, line);
-    chunks[current].emit_if(line);
-    emit_call_ref_on_receiver(chunks, current, value_slot, getter_slot, line);
-    chunks[current].emit_else(line);
-    emit_slot_is_array(&mut chunks[current], value_slot, line);
-    chunks[current].emit_if(line);
-    emit_dart_cached_array_hash(chunks, current, value_slot, line);
-    chunks[current].emit_else(line);
-    emit_dart_identity_hash(chunks, current, value_slot, line);
-    chunks[current].emit_end(line);
-    chunks[current].emit_end(line);
-}
+// `emit_dart_object_hash_code` is GONE. It was `emit_dart_hash_code` with the
+// `typeof === object|function` guard removed, so a primitive receiver skipped
+// the value hash and took `emit_dart_identity_hash` — a fresh counter per read.
+// The walker handed it every `hashCode` whose receiver was a plain variable, so
+// `var n = 99; n.hashCode == n.hashCode` was false while `99.hashCode` was
+// right. For a real object both helpers emitted the identical sequence, so the
+// split only ever cost correctness.
 
 fn emit_dart_cached_array_hash(chunks: &mut [Chunk], current: usize, value_slot: u16, line: u32) {
     let cached_slot = reserve_slot(&mut chunks[current]);

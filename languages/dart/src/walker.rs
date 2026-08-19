@@ -101,6 +101,11 @@ pub(crate) struct DartWalker {
     /// Monotonic suffix for `noSuchMethod` temporaries. Per PROGRAM, so one
     /// source always lowers to the same names no matter what compiled before it.
     nsm_counter: usize,
+    /// Monotonic suffix for cascade receiver temporaries. A cascade evaluates
+    /// its receiver ONCE and every section reads that binding, so
+    /// `(Counter()..value += 4)` builds one object rather than one per section
+    /// — and `..nums[0] += 1` evaluates the index once, not once per read.
+    cascade_counter: usize,
 }
 
 
@@ -4085,22 +4090,25 @@ fn rewrite_user_add_calls_in_expr(__w: &mut DartWalker,
                     }
                 }
             } else if field == "hashCode" {
-                let helper = if dart_user_add_expr_type(
-                    object,
-                    env,
-                    current_class,
-                    add_return_types,
-                    operator_return_types,
-                )
-                .is_some()
-                {
-                    "__dart_object_hash_code"
-                } else {
-                    "__dart_hash_code"
-                };
+                // ONE helper, because the receiver's type is a RUNTIME fact.
+                //
+                // This used to pick `__dart_object_hash_code` whenever
+                // `dart_user_add_expr_type` answered `Some`, which it does for
+                // an ordinary local — so `var n = 99; n.hashCode` took the
+                // object helper. That helper is `__dart_hash_code` MINUS the
+                // `typeof === object|function` guard, so a primitive fell
+                // straight through to the identity counter and every read
+                // handed back a fresh number: `n.hashCode == n.hashCode` was
+                // false, and `99.hashCode` (a literal, which answered `None`)
+                // disagreed with `n.hashCode` on the same value.
+                //
+                // For an actual object the two helpers emit the same thing —
+                // `__get_hash`, else the array hash, else identity — so the
+                // split bought nothing and cost every primitive held in a
+                // variable. `__dart_hash_code` asks the value itself.
                 let object = (**object).clone();
                 expr.kind = ExprKind::Call {
-                    callee: Box::new(Expression::ident(helper)),
+                    callee: Box::new(Expression::ident("__dart_hash_code")),
                     args: vec![Argument::positional(object)],
                     optional: false,
                 };
@@ -8927,6 +8935,14 @@ fn walk_constructor(__w: &mut DartWalker, pair: Pair<Rule>, class_name: &str) ->
     let mut is_factory = false;
     let mut _named_ctor: Option<String> = None;
     let mut found_name = false;
+    // `= Target;` / `= Target.named;`, split on the dot. Empty until the
+    // redirect arm below sees one.
+    let mut redirect_target: Option<Vec<String>> = None;
+    // Which params a redirect must forward BY NAME rather than positionally.
+    // `is_optional` alone cannot answer this — the walker sets it for both
+    // `[a]` and `{a}` — and forwarding a named parameter positionally is a
+    // silently wrong call, not a compile error.
+    let mut named_param_names: Vec<String> = Vec::new();
 
     for p in pair.into_inner() {
         match p.as_rule() {
@@ -8965,6 +8981,7 @@ fn walk_constructor(__w: &mut DartWalker, pair: Pair<Rule>, class_name: &str) ->
                                         params.push(param);
                                     }
                                     Rule::optional_positional_params | Rule::named_params => {
+                                        let is_named = inner.as_rule() == Rule::named_params;
                                         for op in inner.into_inner() {
                                             if op.as_rule() == Rule::param {
                                                 let (mut param, is_this, is_super) =
@@ -8975,6 +8992,9 @@ fn walk_constructor(__w: &mut DartWalker, pair: Pair<Rule>, class_name: &str) ->
                                                 }
                                                 if is_super {
                                                     super_params.push(param.name.clone());
+                                                }
+                                                if is_named {
+                                                    named_param_names.push(param.name.clone());
                                                 }
                                                 params.push(param);
                                             }
@@ -9004,6 +9024,33 @@ fn walk_constructor(__w: &mut DartWalker, pair: Pair<Rule>, class_name: &str) ->
                         let inner = init.into_inner().next();
                         if let Some(ini) = inner {
                             match ini.as_rule() {
+                                // `Positive(this.n) : assert(n > 0);` — an
+                                // assertion in the initializer list. It runs
+                                // in the initializer phase, so it lands in
+                                // `field_inits` alongside the field writes and
+                                // keeps its position among them. The condition
+                                // reads the PARAMETER (`n`), which is in scope
+                                // here; `this.n` has already been written by
+                                // the `this.`-param assignments prepended
+                                // ahead of this list.
+                                Rule::assert_initializer => {
+                                    let mut exprs: Vec<Expression> = Vec::new();
+                                    for ap in ini.into_inner() {
+                                        if !is_kw(ap.as_rule()) {
+                                            exprs.push(walk_expression(__w, ap)?);
+                                        }
+                                    }
+                                    if !exprs.is_empty() {
+                                        let test = exprs.remove(0);
+                                        let msg = if exprs.is_empty() {
+                                            None
+                                        } else {
+                                            Some(exprs.remove(0))
+                                        };
+                                        field_inits
+                                            .push(Statement::new(StmtKind::Assert { test, msg }));
+                                    }
+                                }
                                 Rule::super_call_initializer => {
                                     let mut args = Vec::new();
                                     for sp in ini.into_inner() {
@@ -9093,8 +9140,67 @@ fn walk_constructor(__w: &mut DartWalker, pair: Pair<Rule>, class_name: &str) ->
             Rule::function_body_block => {
                 body = walk_statement_into_body(__w, p)?;
             }
+            // `factory Pair.fromSame(int v) => Pair.same(v);` — the same
+            // `=> expr;` a method body takes, and it means the same thing:
+            // one statement, `return expr`.
+            Rule::arrow_body => {
+                let expr_pair = p.into_inner().next().ok_or("ctor arrow body: no expr")?;
+                let expr = walk_expression(__w, expr_pair)?;
+                body = vec![Statement::new(StmtKind::Return(Some(expr)))];
+            }
+            // `factory Point.zero() = Point._zero;` — §10.6.2. The redirect
+            // is resolved by CONSTRUCTING the target and returning it, which
+            // is what `this_redirect_initializer` above already does for
+            // `: this(...)`. Building the call is deferred until after this
+            // loop because it forwards THIS constructor's parameters, and
+            // `param_list` is still being collected while the pairs stream by.
+            Rule::ctor_redirect => {
+                redirect_target = Some(
+                    p.into_inner()
+                        .filter(|ip| ip.as_rule() == Rule::ident_name)
+                        .map(|ip| ip.as_str().to_string())
+                        .collect(),
+                );
+            }
             _ => {}
         }
+    }
+
+    // A redirecting constructor IS a factory — it answers with an instance it
+    // did not allocate — whether or not the `factory` keyword was written.
+    if let Some(parts) = &redirect_target {
+        let class_expr = match parts.as_slice() {
+            [only] => Expression::ident(only),
+            [owner, member, ..] => Expression::new(ExprKind::Member {
+                object: Box::new(Expression::ident(owner)),
+                field: member.clone(),
+                null_safe: false,
+            }),
+            [] => Expression::ident(class_name),
+        };
+        let args = params
+            .iter()
+            .map(|param| {
+                let value = Expression::ident(&param.name);
+                if named_param_names.contains(&param.name) {
+                    Argument {
+                        value,
+                        name: Some(param.name.clone()),
+                        by_ref: false,
+                        spread: false,
+                    }
+                } else {
+                    Argument::positional(value)
+                }
+            })
+            .collect();
+        body = vec![Statement::new(StmtKind::Return(Some(Expression::new(
+            ExprKind::New {
+                class: Box::new(class_expr),
+                args,
+            },
+        ))))];
+        is_factory = true;
     }
 
     if base_args.is_none() && !super_params.is_empty() {
@@ -11213,7 +11319,12 @@ fn walk_expr_kind(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, St
         }
 
         // ── Ternary / conditional ───────────────────────────────────────
-        Rule::conditional_expression => {
+        // The `_nc` twins are the cascade-free chain a cascade section's RHS
+        // parses through (grammar: `cascade_rhs`). Same inner shape, so the
+        // same arm walks both — the difference is only which chain rule the
+        // parser could descend into, never what the pairs mean.
+        Rule::cascade_rhs => walk_expr_kind(__w, pair.into_inner().next().ok_or("empty cascade rhs")?),
+        Rule::conditional_expression | Rule::conditional_expression_nc => {
             let mut inner: Vec<Pair<Rule>> = pair.into_inner().collect();
             if inner.len() == 1 {
                 walk_expr_kind(__w, inner.remove(0))
@@ -11238,13 +11349,13 @@ fn walk_expr_kind(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, St
         // (op ~ operand)*)` rule. The walker climbs the resulting flat
         // sequence into a precedence-correct tree using the standard
         // shunting-yard algorithm.
-        Rule::null_coalesce_expression => {
+        Rule::null_coalesce_expression | Rule::null_coalesce_expression_nc => {
             let inner: Vec<Pair<Rule>> = pair.into_inner().collect();
             walk_pratt(__w, inner)
         }
 
         // ── Relational unit (unary + is/as/relational suffixes) ─────────
-        Rule::relational_unit => {
+        Rule::relational_unit | Rule::relational_unit_nc => {
             let mut inner: Vec<Pair<Rule>> = pair.into_inner().collect();
             if inner.len() == 1 {
                 return walk_expr_kind(__w, inner.remove(0));
@@ -11298,7 +11409,7 @@ fn walk_expr_kind(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, St
         }
 
         // ── Unary ───────────────────────────────────────────────────────
-        Rule::unary_expression => {
+        Rule::unary_expression | Rule::unary_expression_nc => {
             let mut inner: Vec<Pair<Rule>> = pair.into_inner().collect();
             if inner.len() == 1 {
                 return walk_expr_kind(__w, inner.remove(0));
@@ -11335,7 +11446,7 @@ fn walk_expr_kind(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, St
         }
 
         // ── Postfix ─────────────────────────────────────────────────────
-        Rule::postfix_expression => {
+        Rule::postfix_expression | Rule::postfix_expression_nc => {
             let mut inner: Vec<Pair<Rule>> = pair.into_inner().collect();
             let base = walk_expression(__w, inner.remove(0))?;
             if let Some(postfix) = inner.iter().find(|p| p.as_rule() == Rule::postfix_op) {
@@ -11354,7 +11465,7 @@ fn walk_expr_kind(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, St
         }
 
         // ── Call / member / index chain ─────────────────────────────────
-        Rule::call_expression => walk_call_chain(__w, pair),
+        Rule::call_expression | Rule::call_expression_nc => walk_call_chain(__w, pair),
 
         Rule::new_expression => {
             let inner = pair.into_inner();
@@ -12344,8 +12455,21 @@ fn or_expr(left: Expression, right: Expression) -> Expression {
     cmp_expr(left, BinOp::Or, right)
 }
 
+/// `value.length` — a GETTER READ, not a call.
+///
+/// Dart spells length as a property on every collection and on String, so the
+/// member read already IS the number. Emitted as a zero-argument CALL it read
+/// the length and then invoked it: `f64 is not callable`. Every list pattern
+/// starts with a length test, so that one node failed all 18 of them
+/// (`[var a, var b]`, `[]`, `[_, var x]`, rest patterns and their guards) while
+/// record, int, string, or-patterns and guards — which never ask for a length —
+/// all passed.
 fn dart_length(value: Expression) -> Expression {
-    dart_method_call(value, "length", Vec::new())
+    Expression::new(ExprKind::Member {
+        object: Box::new(value),
+        field: "length".to_string(),
+        null_safe: false,
+    })
 }
 
 fn dart_future_value(value: Expression) -> Expression {
@@ -13149,7 +13273,10 @@ fn walk_call_chain(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, S
     let mut expr = walk_expression(__w, first)?;
 
     for chain in inner {
-        if chain.as_rule() != Rule::call_chain {
+        // `call_chain_nc` is the same link set minus `cascade_chain`, produced
+        // by the cascade-RHS chain (`cascade_rhs` in the grammar). Identical
+        // inner shapes, so it walks here unchanged.
+        if !matches!(chain.as_rule(), Rule::call_chain | Rule::call_chain_nc) {
             continue;
         }
         let chain_src = chain.as_str().trim_start();
@@ -14626,64 +14753,169 @@ fn walk_cascade(__w: &mut DartWalker, receiver: Expression, chain_inner: Vec<Pai
         }
     }
 
+    // The receiver is evaluated ONCE, into a temporary every section reads.
+    // Cloning the receiver expression per section re-evaluated it, so
+    // `(Counter()..value += 4).value` constructed a fresh Counter for the
+    // section and another for the sequence's result — the mutation landed on
+    // an object nobody kept. A bare identifier needs no temporary, which keeps
+    // the common `obj..a()..b()` shape reading as it did.
+    let receiver_is_simple = matches!(receiver.kind, ExprKind::Ident(_) | ExprKind::This);
+    let tmp = (!receiver_is_simple).then(|| {
+        let name = format!("__dart_cascade{}", __w.cascade_counter);
+        __w.cascade_counter += 1;
+        name
+    });
     let mut ops = Vec::new();
+    if let Some(name) = &tmp {
+        ops.push(Expression::new(ExprKind::Assign {
+            target: Box::new(Expression::ident(name)),
+            value: Box::new(receiver.clone()),
+        }));
+    }
+    let target = || match &tmp {
+        Some(name) => Expression::ident(name),
+        None => receiver.clone(),
+    };
 
     for section in sections {
-        let has_call = section.as_str().contains('(');
-        let mut sec_inner = section.into_inner();
+        let mut sec_inner = section.into_inner().peekable();
         let first = sec_inner.next().ok_or("cascade section: empty")?;
 
-        match first.as_rule() {
-            Rule::ident_name => {
-                let name = first.as_str().to_string();
-                // Check what follows: call, assignment, or bare member
-                if let Some(next_p) = sec_inner.next() {
-                    if next_p.as_rule() == Rule::argument_list {
-                        // method call: receiver.name(args)
-                        let args = walk_arguments(__w, next_p)?;
-                        let callee = Expression::new(ExprKind::Member {
-                            object: Box::new(receiver.clone()),
-                            field: name,
-                            null_safe: false,
-                        });
-                        ops.push(normalize_dart_member_call(callee, args));
-                    } else {
-                        // assignment: receiver.name = expr
-                        let value = walk_expression(__w, next_p)?;
-                        ops.push(Expression::new(ExprKind::Assign {
-                            target: Box::new(Expression::new(ExprKind::Member {
-                                object: Box::new(receiver.clone()),
-                                field: name,
-                                null_safe: false,
-                            })),
-                            value: Box::new(value),
-                        }));
-                    }
-                } else if has_call {
-                    let callee = Expression::new(ExprKind::Member {
-                        object: Box::new(receiver.clone()),
-                        field: name,
-                        null_safe: false,
-                    });
-                    ops.push(normalize_dart_member_call(callee, Vec::new()));
-                } else {
-                    // Bare member access
-                    ops.push(Expression::new(ExprKind::Member {
-                        object: Box::new(receiver.clone()),
-                        field: name,
-                        null_safe: false,
-                    }));
+        // Build the PATH this section names, rooted at the receiver:
+        // `..name`, `..name.more`, `..name[i]`, `..name(args)`, `..[i]`.
+        let mut path = match first.as_rule() {
+            Rule::ident_name => Expression::new(ExprKind::Member {
+                object: Box::new(target()),
+                field: first.as_str().to_string(),
+                null_safe: false,
+            }),
+            Rule::index_access => Expression::new(ExprKind::Index {
+                object: Box::new(target()),
+                index: Box::new(cascade_index_expr(__w, first)?),
+                null_safe: false,
+            }),
+            _ => continue,
+        };
+        while sec_inner
+            .peek()
+            .is_some_and(|p| p.as_rule() == Rule::cascade_suffix)
+        {
+            let suffix = sec_inner.next().expect("peeked");
+            let link = suffix
+                .into_inner()
+                .next()
+                .ok_or("cascade suffix: empty")?;
+            path = match link.as_rule() {
+                Rule::member_access => walk_cascade_member_suffix(__w, path, link)?,
+                Rule::index_access => Expression::new(ExprKind::Index {
+                    object: Box::new(path),
+                    index: Box::new(cascade_index_expr(__w, link)?),
+                    null_safe: false,
+                }),
+                Rule::call_args => {
+                    let args = match link.into_inner().next() {
+                        Some(list) => walk_arguments(__w, list)?,
+                        None => Vec::new(),
+                    };
+                    normalize_dart_member_call(path, args)
                 }
+                _ => path,
+            };
+        }
+
+        // `..path`, `..path = v`, or `..path op= v`. The compound form
+        // desugars the same way an ordinary `a op= b` does — read the place,
+        // apply the binary operator, write it back — which is why the path is
+        // built over a temporary rather than over the receiver expression.
+        match sec_inner.next() {
+            Some(op_pair) => {
+                let op_str = op_pair.as_str().trim().to_string();
+                let value = walk_expression(
+                    __w,
+                    sec_inner.next().ok_or("cascade assignment: no value")?,
+                )?;
+                ops.push(dart_assign_or_compound(path, &op_str, value));
             }
-            _ => {
-                // Index cascade: [expr] or [expr] = expr
-                // Just pass through for now
-            }
+            None => ops.push(path),
         }
     }
 
-    ops.push(receiver);
+    ops.push(target());
     Ok(Expression::new(ExprKind::Sequence(ops)))
+}
+
+/// The index expression inside an `index_access` pair, defaulting to `0` the
+/// way the ordinary postfix-chain walk does.
+fn cascade_index_expr(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<Expression, String> {
+    Ok(pair
+        .into_inner()
+        .next()
+        .map(|p| walk_expression(__w, p))
+        .transpose()?
+        .unwrap_or(Expression::int(0)))
+}
+
+/// `.name` or `.name(args)` applied to the path built so far.
+fn walk_cascade_member_suffix(
+    __w: &mut DartWalker,
+    object: Expression,
+    link: Pair<Rule>,
+) -> Result<Expression, String> {
+    let src = link.as_str();
+    let mut parts = link.into_inner();
+    let name = parts.next().ok_or("cascade member: no name")?.as_str().to_string();
+    let member = Expression::new(ExprKind::Member {
+        object: Box::new(object),
+        field: name,
+        null_safe: false,
+    });
+    // pest yields no pair for an empty `()`, so the raw text is what tells a
+    // zero-argument CALL from a bare property read — the same reason
+    // `null_safe_member_access` inspects its source in `walk_call_chain`.
+    let args_pair = parts.find(|p| p.as_rule() == Rule::argument_list);
+    match args_pair {
+        Some(list) => {
+            let args = walk_arguments(__w, list)?;
+            Ok(normalize_dart_member_call(member, args))
+        }
+        None if src.contains('(') => Ok(normalize_dart_member_call(member, Vec::new())),
+        None => Ok(member),
+    }
+}
+
+/// `place = value` / `place op= value`, sharing the desugar the ordinary
+/// assignment walk uses so a cascade and a statement mean the same thing.
+fn dart_assign_or_compound(place: Expression, op_str: &str, value: Expression) -> Expression {
+    if op_str == "=" {
+        return Expression::new(ExprKind::Assign {
+            target: Box::new(place),
+            value: Box::new(value),
+        });
+    }
+    let op = match op_str {
+        "+=" => CompoundOp::Add,
+        "-=" => CompoundOp::Sub,
+        "*=" => CompoundOp::Mul,
+        "/=" => CompoundOp::Div,
+        "~/=" => CompoundOp::IDiv,
+        "%=" => CompoundOp::Mod,
+        "&=" => CompoundOp::BitAnd,
+        "|=" => CompoundOp::BitOr,
+        "^=" => CompoundOp::BitXor,
+        "<<=" => CompoundOp::Shl,
+        ">>=" => CompoundOp::Shr,
+        ">>>=" => CompoundOp::UShr,
+        "??=" => CompoundOp::NullCoalesce,
+        _ => CompoundOp::Add,
+    };
+    Expression::new(ExprKind::Assign {
+        target: Box::new(place.clone()),
+        value: Box::new(Expression::new(ExprKind::Binary {
+            op: compound_to_binop(op),
+            left: Box::new(place),
+            right: Box::new(value),
+        })),
+    })
 }
 
 fn fold_stopwatch_cascade(

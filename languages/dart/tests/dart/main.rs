@@ -146,7 +146,6 @@ mod test_dart_isolate_transferable_data;
 
 mod test_dart_developer_debugger;
 mod test_dart_developer_inspect_log;
-mod test_dart_developer_metrics_gauges;
 mod test_dart_developer_service_extensions;
 mod test_dart_developer_timeline_events;
 

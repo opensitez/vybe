@@ -288,9 +288,6 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dart.hash_code" => {
             crate::emitter::string_adapter::emit_dart_hash_code(chunks, current, line)
         }
-        "dart.object_hash_code" => {
-            crate::emitter::string_adapter::emit_dart_object_hash_code(chunks, current, line)
-        }
         "dart.runtime_type" => {
             crate::emitter::reflection_adapter::emit_dart_runtime_type(chunks, current, line)
         }

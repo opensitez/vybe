@@ -130,7 +130,6 @@ __dart_is_empty     = { emit = "common:dart.is_empty",           min_args = 1, m
 __dart_is_not_empty = { emit = "common:dart.is_not_empty",       min_args = 1, max_args = 1 }
 __dart_length       = { emit = "common:dart.length",             min_args = 1, max_args = 1 }
 __dart_hash_code    = { emit = "common:dart.hash_code",          min_args = 1, max_args = 1 }
-__dart_object_hash_code = { emit = "common:dart.object_hash_code", min_args = 1, max_args = 1 }
 __dart_runtime_type = { emit = "common:dart.runtime_type",       min_args = 1, max_args = 1 }
 __dart_type_to_string = { emit = "common:dart.type_to_string",   min_args = 1, max_args = 1 }
 __dart_is_list_of_int = { emit = "common:dart.is_list_of_int",   min_args = 1, max_args = 1 }
@@ -471,7 +470,9 @@ abs           = { emit = "common:dart.abs",            min_args = 0, max_args = 
 sqrt          = { emit = "opcode:f64_sqrt",            min_args = 0, max_args = 0 }
 floor         = { emit = "common:dart.num_floor",      min_args = 0, max_args = 0 }
 ceil          = { emit = "common:dart.num_ceil",       min_args = 0, max_args = 0 }
-round         = { emit = "common:dart.num_round",      min_args = 0, max_args = 0 }
+# `dart run`: `2.5.round()`=3, `(-2.5).round()`=-3 — ties away from zero. We
+# had -2 for the negative case.
+round         = { emit = "common:math.round_half_away", min_args = 0, max_args = 0 }
 truncate      = { emit = "common:dart.num_truncate",   min_args = 0, max_args = 0 }
 toInt         = { emit = "common:dart.num_truncate",   min_args = 0, max_args = 0 }
 toDouble      = { emit = "common:dart.num_to_double",  min_args = 0, max_args = 0 }
@@ -829,6 +830,19 @@ get_item = "common:dart.index_get"
 # `LanguageHooks::value_eq`, keyed by language NAME (builtinslotplan.md §3c).
 [builtin_slots.array]
 eq = "common:dart.value_eq"
+# NO `to_string` row here, and that is a MEASURED dead end rather than an
+# oversight. `[1, 2, 3].toString()` answers the JS `1,2,3` and a map answers
+# `[object Object]`, where dart specifies `[1, 2, 3]` and `{a: 1, b: 2}` —
+# and `dart.to_string` already renders both correctly, which is why
+# `print(list)` and `"$list"` are right. The call never reaches it: the
+# `x.ToString()` probe in the shared `calls.rs` sets its "primitive" flag only
+# for typeof `number|i32|i64|string|boolean`, so an array or map (typeof
+# `object`) skips the slot branch entirely and falls through to prototype
+# dispatch — `ecma:value.invokeMethod(obj, "toString")`. Declaring the row here
+# changes nothing while that branch is unreachable for these types, so it is
+# left undeclared rather than sitting inert. Fixing it means teaching that
+# probe to honour a STATICALLY known builtin type, which is a shared-compiler
+# change.
 
 # How ONE interpolated part becomes a string. Measured against real `dart`:
 # `"${[1, 2]}"` is `[1, 2]`, where the shared ECMA coercion gives the JS

@@ -120,7 +120,10 @@ dart_cases! {
   }
   print(count);
 }"#,
-        ["3"]
+        // `\d` (not `\d+`) matches ONE digit at a time, so `a1b22c3` has four
+        // hits: 1, 2, 2, 3. Verified with `dart run`; the old `3` was reading
+        // the pattern as if it were `\d+`.
+        ["4"]
     };
 
     regexp_all_matches_count_word_runs => {
@@ -205,7 +208,9 @@ dart_cases! {
   var m = re.firstMatch('xxAbCyy');
   print(m!.group(1));
 }"#,
-        ["AbC"]
+        // Group ONE is `(ab)`, so the capture is `Ab` — `AbC` is group ZERO.
+        // Verified with `dart run`.
+        ["Ab"]
     };
 
     regexp_multiline_anchor_matches_second_line => {
@@ -494,6 +499,8 @@ dart_cases! {
   var m = re.firstMatch('zzff00');
   print(m!.group(0));
 }"#,
-        ["ff"]
+        // `+` is greedy and `0` is in `[0-9a-f]`, so the run is `ff00`, not
+        // `ff`. Verified with `dart run`.
+        ["ff00"]
     };
 }
