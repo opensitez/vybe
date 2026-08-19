@@ -20,7 +20,356 @@ struct PascalPreludeNeeds {
     tinterfacedobject: bool,
     collections: bool,
     tbits: bool,
+    path_utils: bool,
+    file_block: bool,
+    format_settings: bool,
     assert_error_proc: bool,
+}
+
+/// One `unit U; … end.` or `program P; … end.` out of the source stream.
+///
+/// The halves are kept apart because they mean different things: `interface`
+/// declarations are what a `uses` clause can see, `implementation`
+/// declarations are private to the unit, and `initialization`/`finalization`
+/// are its constructor and destructor.
+#[derive(Default)]
+struct PascalCompilationUnit {
+    name: String,
+    is_unit: bool,
+    interface_decls: Vec<Statement>,
+    impl_decls: Vec<Statement>,
+    body: Vec<Statement>,
+    init: Vec<Statement>,
+    finalize: Vec<Statement>,
+}
+
+impl PascalCompilationUnit {
+    /// Nothing has been walked into it yet — the state the very first unit is
+    /// in before its heading arrives, so the heading claims it rather than
+    /// starting a second one.
+    fn is_empty(&self) -> bool {
+        self.name.is_empty()
+            && self.interface_decls.is_empty()
+            && self.impl_decls.is_empty()
+            && self.body.is_empty()
+            && self.init.is_empty()
+            && self.finalize.is_empty()
+    }
+}
+
+/// Flatten the units into one module body, and answer the module's name and
+/// whether the whole file was a unit rather than a program.
+///
+/// ONE unit — every ordinary Pascal program — reassembles to precisely the flat
+/// body this walker has always produced: declarations in source order, then the
+/// program body. Nothing about the common case changes shape.
+///
+/// SEVERAL units take the frame path, which is COBOL's (`languages/cobol/src/
+/// walker.rs`, "a unit is a LEXICAL FRAME that runs once"):
+///
+/// ```text
+/// <every unit's interface declarations>     ← module scope: `uses` is unqualified
+/// <the program's own declarations>          ← so its helpers exist before any init runs
+/// var UnitA = (function () {
+///     <implementation declarations>         ← frame locals; two units' privates cannot collide
+///     <initialization statements>           ← runs once, here, in `uses` order
+///     return function () { <finalization> };
+/// })();
+/// <program body>
+/// UnitB(); UnitA();                         ← finalization, in reverse
+/// ```
+///
+/// A `NamespaceDecl` cannot express this: it qualifies code but has no
+/// `VarDecl` arm, so a unit's data items would stay flat globals and two units'
+/// `Counter` would be one variable. That is the same wall COBOL hit before it
+/// moved to frames.
+fn assemble_pascal_compilation_units(
+    units: Vec<PascalCompilationUnit>,
+) -> (Vec<Statement>, String, bool) {
+    let real: Vec<PascalCompilationUnit> =
+        units.into_iter().filter(|u| !u.is_empty()).collect();
+
+    if real.len() <= 1 {
+        let Some(unit) = real.into_iter().next() else {
+            return (Vec::new(), "main".to_string(), false);
+        };
+        let name = if unit.name.is_empty() {
+            "main".to_string()
+        } else {
+            unit.name.clone()
+        };
+        let is_unit = unit.is_unit;
+        let mut body = unit.interface_decls;
+        body.extend(unit.impl_decls);
+        body.extend(unit.init);
+        body.extend(unit.body);
+        body.extend(unit.finalize);
+        return (body, name, is_unit);
+    }
+
+    let (libraries, mains): (Vec<_>, Vec<_>) = real.into_iter().partition(|u| u.is_unit);
+    let program_name = mains
+        .iter()
+        .find(|u| !u.name.is_empty())
+        .map(|u| u.name.clone())
+        .unwrap_or_else(|| "main".to_string());
+
+    let mut body = Vec::new();
+    for unit in &libraries {
+        // A bodyless routine in `interface` is a FORWARD declaration, not a
+        // definition — the binding comes back out of the frame below. Emitting
+        // it here too would put an empty function at module scope in front of
+        // the real one.
+        body.extend(
+            unit.interface_decls
+                .iter()
+                .filter(|stmt| {
+                    !matches!(&stmt.kind, StmtKind::FunctionDecl { body, .. } if body.is_empty())
+                })
+                .cloned(),
+        );
+    }
+    for unit in &mains {
+        body.extend(unit.interface_decls.iter().cloned());
+        body.extend(unit.impl_decls.iter().cloned());
+    }
+
+    let mut teardowns = Vec::new();
+    for unit in &libraries {
+        // A routine named in `interface` is a FORWARD declaration — its body is
+        // in `implementation`, and that body is what the unit exports. It has
+        // to stay INSIDE the frame, because it reads the unit's private
+        // variables through ordinary capture; what leaves is the binding.
+        let exported: Vec<Statement> = unit
+            .interface_decls
+            .iter()
+            .filter(|stmt| {
+                matches!(&stmt.kind, StmtKind::FunctionDecl { body, .. } if body.is_empty())
+            })
+            .cloned()
+            .collect();
+
+        let slug = unit.name.to_lowercase();
+        let mut frame = unit.impl_decls.clone();
+        if !unit.init.is_empty() {
+            let init_proc = format!("__pascal_init_{slug}");
+            frame.push(pascal_unit_section_proc(&init_proc, unit.init.clone()));
+            frame.push(pascal_call_stmt(&init_proc));
+        }
+
+        let mut exports: Vec<ObjectProperty> = exported
+            .iter()
+            .filter_map(|stmt| {
+                let StmtKind::FunctionDecl { name, .. } = &stmt.kind else {
+                    return None;
+                };
+                Some(ObjectProperty::KeyValue {
+                    key: Expression::string(name),
+                    // `FuncRef`, NOT `Ident`: Pascal invokes a parameterless
+                    // routine by bare name, so `Ident` here CALLS it — the
+                    // export then held the call's result, and the unit's
+                    // initialization ran the routine once for good measure.
+                    value: Expression::new(ExprKind::FuncRef(name.clone())),
+                })
+            })
+            .collect();
+        if !unit.finalize.is_empty() {
+            let final_proc = format!("__pascal_final_{slug}");
+            frame.push(pascal_unit_section_proc(&final_proc, unit.finalize.clone()));
+            exports.push(ObjectProperty::KeyValue {
+                key: Expression::string(PASCAL_UNIT_FINALIZER),
+                value: Expression::new(ExprKind::FuncRef(final_proc)),
+            });
+        }
+
+        let frame_name = format!("{PASCAL_UNIT_FRAME_PREFIX}{slug}");
+        let exports_something = !exports.is_empty();
+        if exports_something {
+            frame.push(Statement::new(StmtKind::Return(Some(Expression::new(
+                ExprKind::Object(exports),
+            )))));
+        }
+        // A MARKER, not the frame itself. Every normalization pass below walks
+        // `NamespaceDecl` bodies as ordinary statements, and none of them
+        // descends into a lambda — Pascal's `Result := x` lowering is one of
+        // several that would silently skip the unit's routines. The marker is
+        // replaced by the real frame in `materialize_pascal_unit_frames`, after
+        // the passes have run, so `NamespaceDecl`'s own name-qualifying
+        // semantics never reach the compiler.
+        body.push(Statement::new(StmtKind::NamespaceDecl {
+            name: frame_name.clone(),
+            body: frame,
+        }));
+        if !exports_something {
+            continue;
+        }
+
+        // `uses` imports UNQUALIFIED, so each export takes its own name at
+        // module scope — as a ROUTINE, not as a variable holding one. Pascal
+        // invokes a parameterless routine by bare name, so `Compute` bound to a
+        // variable reads the closure where the program means to call it. The
+        // forwarder keeps the declared signature the interface already states.
+        for decl in &exported {
+            let StmtKind::FunctionDecl {
+                name,
+                params,
+                return_type,
+                is_sub,
+                ..
+            } = &decl.kind
+            else {
+                continue;
+            };
+            let call = Expression::new(ExprKind::Call {
+                callee: Box::new(pascal_unit_export_read(&frame_name, name)),
+                args: params
+                    .iter()
+                    .map(|param| Argument::positional(Expression::ident(&param.name)))
+                    .collect(),
+                optional: false,
+            });
+            let forwarded = if *is_sub || return_type.is_none() {
+                Statement::new(StmtKind::Expr(call))
+            } else {
+                Statement::new(StmtKind::Return(Some(call)))
+            };
+            body.push(Statement::new(StmtKind::FunctionDecl {
+                name: name.clone(),
+                params: params.clone(),
+                return_type: return_type.clone(),
+                body: vec![forwarded],
+                modifiers: Modifiers::default(),
+                handles: Vec::new(),
+                is_async: false,
+                is_generator: false,
+                is_sub: *is_sub,
+            }));
+        }
+        if !unit.finalize.is_empty() {
+            teardowns.push(frame_name);
+        }
+    }
+
+    for unit in mains {
+        body.extend(unit.init);
+        body.extend(unit.body);
+    }
+
+    // Reverse of the order they were initialized in — a unit is torn down
+    // before anything it depends on.
+    for frame_name in teardowns.into_iter().rev() {
+        body.push(Statement::new(StmtKind::Expr(Expression::new(
+            ExprKind::Call {
+                callee: Box::new(pascal_unit_export_read(&frame_name, PASCAL_UNIT_FINALIZER)),
+                args: Vec::new(),
+                optional: false,
+            },
+        ))));
+    }
+
+    (body, program_name, false)
+}
+
+/// The key a unit's destructor rides out on, beside its exported routines.
+const PASCAL_UNIT_FINALIZER: &str = "__finalize";
+
+/// Names the marker container that stands in for a unit frame until the
+/// normalization passes are done with its statements.
+const PASCAL_UNIT_FRAME_PREFIX: &str = "__pascal_unit_";
+
+/// A parameterless `procedure <name>; begin <body> end;` inside the frame.
+///
+/// The unit's `initialization` and `finalization` statements have to live in
+/// one of these rather than directly in the frame's own body: a statement in
+/// the frame body assigning `G := 1000` does NOT reach a module-scope `G` —
+/// it binds somewhere else, and the program then reads the untouched
+/// declaration. The identical assignment inside a routine DECLARED in the
+/// frame does reach it, and still sees the frame's private variables. Measured
+/// both ways on a two-unit file before this was written.
+fn pascal_unit_section_proc(name: &str, body: Vec<Statement>) -> Statement {
+    Statement::new(StmtKind::FunctionDecl {
+        name: name.to_string(),
+        params: Vec::new(),
+        return_type: None,
+        body,
+        modifiers: Modifiers::default(),
+        handles: Vec::new(),
+        is_async: false,
+        is_generator: false,
+        is_sub: true,
+    })
+}
+
+/// `<name>;` — calling one of the above.
+fn pascal_call_stmt(name: &str) -> Statement {
+    Statement::new(StmtKind::Expr(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident(name)),
+        args: Vec::new(),
+        optional: false,
+    })))
+}
+
+/// `<frame>.<name>` — reading one binding back out of what the frame returned.
+fn pascal_unit_export_read(frame_name: &str, name: &str) -> Expression {
+    Expression::new(ExprKind::Member {
+        object: Box::new(Expression::ident(frame_name)),
+        field: name.to_string(),
+        null_safe: false,
+    })
+}
+
+/// Turn each unit's marker container into the frame it stands for, once every
+/// normalization pass has walked its statements.
+///
+/// A marker that exports nothing becomes a bare `(function () { … })()`: it
+/// still has to RUN, and nothing reads its value.
+fn materialize_pascal_unit_frames(body: &mut [Statement]) {
+    for stmt in body.iter_mut() {
+        let StmtKind::NamespaceDecl { name, body: frame } = &mut stmt.kind else {
+            continue;
+        };
+        if !name.starts_with(PASCAL_UNIT_FRAME_PREFIX) {
+            continue;
+        }
+        let frame = std::mem::take(frame);
+        let exports_something = frame
+            .last()
+            .is_some_and(|last| matches!(last.kind, StmtKind::Return(_)));
+        *stmt = if exports_something {
+            pascal_unit_frame_decl(&name.clone(), frame)
+        } else {
+            Statement::new(StmtKind::Expr(pascal_unit_frame_call(frame)))
+        };
+    }
+}
+
+/// `(function () { <body> })()` — the frame itself.
+fn pascal_unit_frame_call(body: Vec<Statement>) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Lambda {
+            params: Vec::new(),
+            body: LambdaBody::Block(body),
+            is_async: false,
+            captures: Vec::new(),
+        })),
+        args: Vec::new(),
+        optional: false,
+    })
+}
+
+/// `var <name> = (function () { <body> })();` — the frame, with whatever it
+/// returns bound so the destructor can be called later.
+fn pascal_unit_frame_decl(name: &str, body: Vec<Statement>) -> Statement {
+    Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(name.to_string()),
+            type_hint: None,
+            init: Some(pascal_unit_frame_call(body)),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Var,
+    })
 }
 
 pub fn parse(source: &str) -> Result<Module, String> {
@@ -29,10 +378,13 @@ pub fn parse(source: &str) -> Result<Module, String> {
     let source = preprocess_pascal_conditional_directives(original_source);
     let pairs =
         PascalParser::parse(Rule::program, &source).map_err(|e| format!("Parse error: {}", e))?;
-    let mut body = Vec::new();
     let mut imports = Vec::new();
-    let mut name = "main".to_string();
-    let mut is_unit = false;
+    // One entry per compilation unit in the file. The overwhelming case is a
+    // single `program`, which is assembled back into exactly the flat body it
+    // has always been; only a file that really carries several units takes the
+    // frame path below.
+    let mut units: Vec<PascalCompilationUnit> = vec![PascalCompilationUnit::default()];
+    let mut in_implementation = false;
 
     for pair in pairs {
         if pair.as_rule() != Rule::program {
@@ -41,15 +393,21 @@ pub fn parse(source: &str) -> Result<Module, String> {
         for inner in pair.into_inner() {
             match inner.as_rule() {
                 Rule::program_heading => {
-                    // program Foo; or unit Foo;
-                    is_unit = inner
+                    // program Foo; or unit Foo; — and the start of a NEW unit
+                    // when one is already under construction.
+                    if !units.last().is_some_and(PascalCompilationUnit::is_empty) {
+                        units.push(PascalCompilationUnit::default());
+                    }
+                    in_implementation = false;
+                    let unit = units.last_mut().expect("a unit is always in flight");
+                    unit.is_unit = inner
                         .as_str()
                         .trim_start()
                         .get(..4)
                         .is_some_and(|prefix| prefix.eq_ignore_ascii_case("unit"));
                     for p in inner.into_inner() {
                         if p.as_rule() == Rule::identifier {
-                            name = p.as_str().to_string();
+                            unit.name = p.as_str().to_string();
                         }
                     }
                 }
@@ -102,19 +460,41 @@ pub fn parse(source: &str) -> Result<Module, String> {
                         }
                     }
                 }
-                Rule::interface_section | Rule::implementation_section => {
-                    // Markers only — no content to walk
-                }
+                Rule::interface_section => in_implementation = false,
+                // Everything after `implementation` is the unit's PRIVATE half
+                // — a frame local, invisible to anything that `uses` it.
+                Rule::implementation_section => in_implementation = true,
                 Rule::decl_section => {
-                    walk_decl_section(inner, &mut body)?;
+                    let unit = units.last_mut().expect("a unit is always in flight");
+                    if in_implementation {
+                        walk_decl_section(inner, &mut unit.impl_decls)?;
+                    } else {
+                        walk_decl_section(inner, &mut unit.interface_decls)?;
+                    }
                 }
                 Rule::program_body => {
                     // compound_statement wrapping main body
+                    let unit = units.last_mut().expect("a unit is always in flight");
                     for p in inner.into_inner() {
                         if p.as_rule() == Rule::compound_statement {
                             let stmts = walk_compound_statement(p)?;
-                            body.extend(stmts);
+                            unit.body.extend(stmts);
                         }
+                    }
+                }
+                Rule::initialization_section | Rule::finalization_section => {
+                    let is_init = inner.as_rule() == Rule::initialization_section;
+                    let mut stmts = Vec::new();
+                    for p in inner.into_inner() {
+                        if p.as_rule() == Rule::statement_list {
+                            stmts.extend(walk_statement_list(p)?);
+                        }
+                    }
+                    let unit = units.last_mut().expect("a unit is always in flight");
+                    if is_init {
+                        unit.init.extend(stmts);
+                    } else {
+                        unit.finalize.extend(stmts);
                     }
                 }
                 Rule::EOI => {}
@@ -122,6 +502,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
             }
         }
     }
+
+    let (mut body, name, is_unit) = assemble_pascal_compilation_units(units);
 
     // Pascal allows method bodies to be implemented outside the class declaration
     // (e.g. `constructor TFoo.Create(...) begin ... end;`). Merge those standalone
@@ -135,6 +517,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     lower_pascal_helpers(&mut body);
     lower_pascal_gotos_in_body(&mut body);
     lower_pascal_file_io(&mut body);
+    normalize_pascal_var_clear(&mut body);
     normalize_pascal_free_function_overloads(&mut body);
     lower_pascal_operator_overloads(&mut body);
     normalize_pascal_class_method_overloads(&mut body);
@@ -206,7 +589,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
         // program that declared its own `TPair` — which the token scan had
         // just matched on — still parsed all 335 lines to throw every class
         // away one statement later.
-        const COLLECTION_CLASSES: [&str; 3] = ["tpair", "tcomparer", "tequalitycomparer"];
+        const COLLECTION_CLASSES: [&str; 5] =
+            ["tpair", "tcomparer", "tequalitycomparer", "tstack", "tqueue"];
         let collections_missing_any = COLLECTION_CLASSES
             .iter()
             .any(|name| !existing_classes.contains(*name));
@@ -226,6 +610,21 @@ pub fn parse(source: &str) -> Result<Module, String> {
                 "tbits",
                 PASCAL_TBITS_PRELUDE,
                 prelude_needs.tbits && !existing_classes.contains("tbits"),
+            ),
+            shared_prelude::Group::new(
+                "pathutils",
+                PASCAL_PATHUTILS_PRELUDE,
+                prelude_needs.path_utils,
+            ),
+            shared_prelude::Group::new(
+                "fileblock",
+                PASCAL_FILEBLOCK_PRELUDE,
+                prelude_needs.file_block,
+            ),
+            shared_prelude::Group::new(
+                "formatsettings",
+                PASCAL_FORMATSETTINGS_PRELUDE,
+                prelude_needs.format_settings && !existing_classes.contains("tformatsettings"),
             ),
         ];
         prelude.extend(shared_prelude::build(&groups, parse_pascal_prelude_source)?);
@@ -358,6 +757,19 @@ pub fn parse(source: &str) -> Result<Module, String> {
     for stmt in body.iter_mut() {
         rewrite_pascal_rtti_stmt(stmt, &class_display_names, &class_parent_display_names);
     }
+    // Gated on the SPELLING, like every prelude group. `GetType` and
+    // `GetAttributes` are ordinary method names a program may declare itself —
+    // rewriting them unconditionally moved the suite the WRONG way (781 -> 785)
+    // even while it fixed the RTTI cases. Only a program that names
+    // `TRttiContext` is asking for Delphi's RTTI surface.
+    if pascal_source_mentions_any_ident(&source, &["TRttiContext"]) {
+        for stmt in body.iter_mut() {
+            lower_pascal_rtti_attribute_api_stmt(stmt);
+        }
+    }
+    for stmt in body.iter_mut() {
+        lower_pascal_ioutils_statics_stmt(stmt);
+    }
 
     let generic_type_names = collect_pascal_generic_type_names(&source);
     let generic_routine_names = collect_pascal_generic_routine_names(&source);
@@ -485,11 +897,14 @@ pub fn parse(source: &str) -> Result<Module, String> {
         normalize_pascal_subrange_indexed_array_decls(&mut body, &subrange_aliases);
     }
     default_init_record_array_fields(&mut body, &struct_names, &explicit_ctor_record_names);
-    default_init_pascal_array_locals(&mut body);
+    // Collected BEFORE the default-init pass, which needs it: a variable whose
+    // type is an alias for a fixed array must be allocated the same way the
+    // spelled-out declaration is.
+    let array_type_aliases = collect_pascal_array_type_aliases(&body);
+    default_init_pascal_array_locals(&mut body, &array_type_aliases);
     for stmt in body.iter_mut() {
         default_init_struct_locals_stmt(stmt, &struct_names, &explicit_ctor_record_names);
     }
-    let array_type_aliases = collect_pascal_array_type_aliases(&body);
     for stmt in body.iter_mut() {
         default_init_struct_results_stmt(stmt, &struct_names, &array_type_aliases);
     }
@@ -586,6 +1001,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
     rewrite_pascal_writeln_bool_vars(&mut body);
     lower_pascal_final_result_assignments(&mut body);
     rewrite_pascal_integer_bit_ops(&mut body);
+    materialize_pascal_unit_frames(&mut body);
+    canonicalize_pascal_nested_routine_names(&mut body);
+    install_pascal_except_proc(&mut body, &source);
 
     Ok(Module {
         name,
@@ -1295,9 +1713,30 @@ fn pascal_json_xml_rewrite_expr(
         // itself. Deciding this at run time (a `js-string.test` on the key)
         // put a branch in the emitter for a question the frontend had
         // already answered.
-        ExprKind::Index { object, index, .. } => pascal_xml_child_collection_parent(object)
-            .filter(|_| matches!(&index.kind, ExprKind::Lit(Literal::Str(_))))
-            .map(|parent| call_expr("__pascal_xml_child_node", vec![parent, (**index).clone()])),
+        // ONE arm for both stores — a second `ExprKind::Index` arm would be
+        // unreachable, since this one matches every index and answers `None`
+        // for what it does not own.
+        //
+        // JSON first: `json.Values['k']` / `arr.Items[i]` are named accessors
+        // over the same store the index operator already reads.
+        ExprKind::Index { object, index, .. } => {
+            if let ExprKind::Member {
+                object: inner,
+                field,
+                ..
+            } = &object.kind
+            {
+                if matches!(field.to_ascii_lowercase().as_str(), "values" | "items")
+                    && pascal_expr_type_name(inner, types)
+                        .is_some_and(|ty| pascal_is_json_type(&ty))
+                {
+                    return Some(index_expr((**inner).clone(), (**index).clone()));
+                }
+            }
+            pascal_xml_child_collection_parent(object)
+                .filter(|_| matches!(&index.kind, ExprKind::Lit(Literal::Str(_))))
+                .map(|parent| call_expr("__pascal_xml_child_node", vec![parent, (**index).clone()]))
+        }
         ExprKind::Cast { expr, type_name } if pascal_is_json_type(type_name) => {
             Some((**expr).clone())
         }
@@ -1418,6 +1857,25 @@ fn pascal_expr_type_name(
 ) -> Option<String> {
     match &expr.kind {
         ExprKind::Ident(name) => types.get(&name.to_ascii_lowercase()).cloned(),
+        // Reading INTO a JSON value yields a JSON value: `json.Values['k']` and
+        // `arr.Items[0]` are `TJSONValue`, and Delphi chains `.Value` off them.
+        // Without this the chain's type was unknown and every arm below —
+        // each one gated on the receiver being JSON, deliberately, so that
+        // `.Value` does not claim the spelling on Variants and user classes —
+        // declined to fire.
+        ExprKind::Index { object, .. } => pascal_expr_type_name(object, types)
+            .filter(|ty| pascal_is_json_type(ty))
+            .map(|_| "TJSONValue".to_string()),
+        ExprKind::Member { object, field, .. }
+            if matches!(
+                field.to_ascii_lowercase().as_str(),
+                "values" | "items" | "pairs"
+            ) =>
+        {
+            pascal_expr_type_name(object, types)
+                .filter(|ty| pascal_is_json_type(ty))
+                .map(|ty| ty.to_string())
+        }
         _ => None,
     }
 }
@@ -3200,6 +3658,34 @@ fn collect_pascal_class_member_types(
 ) -> std::collections::HashMap<String, Option<String>> {
     let mut out = std::collections::HashMap::new();
     for stmt in body {
+        // An INTERFACE declares the same fact — `obj: ISafeCheck` reaches
+        // `CheckValue` through the interface, and its `Boolean` is stated
+        // there and nowhere else. Without it `__vs(obj.CheckValue(75))` has an
+        // untyped argument and prints `1`.
+        if let StmtKind::InterfaceDecl { name, members, .. } = &stmt.kind {
+            let class_key = name.to_lowercase();
+            for member in members {
+                let (member_name, declared) = match member {
+                    InterfaceMember::Method {
+                        name, return_type, ..
+                    } => (name.clone(), return_type.clone()),
+                    InterfaceMember::Property {
+                        name, type_hint, ..
+                    }
+                    | InterfaceMember::Event { name, type_hint } => {
+                        (name.clone(), type_hint.clone())
+                    }
+                };
+                if declared.is_none() {
+                    continue;
+                }
+                out.insert(
+                    format!("{class_key}.{}", member_name.to_lowercase()),
+                    declared,
+                );
+            }
+            continue;
+        }
         let (StmtKind::ClassDecl { name, members, .. }
         | StmtKind::StructDecl { name, members, .. }) = &stmt.kind
         else {
@@ -3255,6 +3741,136 @@ fn pascal_declared_member_type(
         .map(|ty| bare_type_name(&ty).to_lowercase())
 }
 
+/// Where a `Variant` variable's CURRENT type is recorded, separately from its
+/// declared one so that a second assignment can refine it again.
+fn pascal_variant_refinement_key(name: &str) -> String {
+    format!("__variant_of_{}", name.to_lowercase())
+}
+
+/// The RTL routines whose RESULT TYPE decides an overload, keyed lowercased.
+///
+/// Overload selection is by static argument type, and a builtin has no
+/// `FunctionDecl` to read one from — so `__vs(VarIsBool(v))` scored every
+/// candidate alike and printed `1` for `True`, the same way a missing class
+/// member type does (see `collect_pascal_class_member_types`).
+///
+/// Only routines whose result type is the SAME whatever the argument is appear.
+/// `Abs` returns its argument's type, `Copy` answers a string for a string and
+/// an array for an array, and `High` answers the index type — none of those has
+/// one answer, so none is declared here.
+///
+/// A program's own declaration WINS: these seed the map that the source's
+/// functions and class members are then merged over.
+fn pascal_builtin_return_types() -> std::collections::HashMap<String, Option<String>> {
+    let mut out = std::collections::HashMap::new();
+    let groups: [(&str, &[&str]); 3] = [
+        (
+            "Boolean",
+            &[
+                "assigned",
+                "odd",
+                "isnan",
+                "isinfinite",
+                "samevalue",
+                "samestr",
+                "sametext",
+                "strtobool",
+                "fileexists",
+                "directoryexists",
+                "varisempty",
+                "varisnull",
+                "varisstr",
+                "varisbool",
+                "varisfloat",
+                "varisnumeric",
+                "varisordinal",
+                "varisarray",
+                "varisbyref",
+                "varsamevalue",
+            ],
+        ),
+        (
+            "Integer",
+            &[
+                "vartype",
+                "length",
+                "pos",
+                "round",
+                "trunc",
+                "ord",
+                "strtoint",
+                "strtointdef",
+                "comparetext",
+                "comparestr",
+                "comparevalue",
+            ],
+        ),
+        (
+            "String",
+            &[
+                "inttostr",
+                "inttohex",
+                "floattostr",
+                "booltostr",
+                "formatfloat",
+                "formatcurr",
+                "currtostr",
+                "format",
+                "trim",
+                "uppercase",
+                "lowercase",
+                "ansiuppercase",
+                "ansilowercase",
+                "stringofchar",
+                "stringreplace",
+                "datetostr",
+                "timetostr",
+                "datetimetostr",
+                "formatdatetime",
+                "extractfilename",
+                "extractfiledir",
+                "extractfileext",
+                "changefileext",
+                "vartostr",
+                "vartostrdef",
+                "vartypetoasstring",
+            ],
+        ),
+    ];
+    for (type_name, names) in groups {
+        for name in names {
+            out.insert((*name).to_string(), Some(type_name.to_string()));
+        }
+    }
+    out
+}
+
+/// `VarClear(v)` — the one `Variants` routine that WRITES its argument.
+///
+/// Delphi declares the parameter `var`, and a builtin's `emit` cannot say so:
+/// the call site evaluates `v` to a value, leaving the store nowhere to land.
+/// Rewriting it to the assignment it means is the whole of the lowering — `v`
+/// becomes `Unassigned`, which is the value `VarIsEmpty` then reads back.
+fn normalize_pascal_var_clear(body: &mut [Statement]) {
+    for stmt in body.iter_mut() {
+        stmt.walk_exprs_mut(&mut |expr: &mut Expression| {
+            let ExprKind::Call { callee, args, .. } = &mut expr.kind else {
+                return;
+            };
+            if args.len() != 1
+                || !matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("VarClear"))
+            {
+                return;
+            }
+            let target = args.remove(0).value;
+            expr.kind = ExprKind::Assign {
+                target: Box::new(target),
+                value: Box::new(Expression::new(ExprKind::Lit(Literal::Undefined))),
+            };
+        });
+    }
+}
+
 fn normalize_pascal_free_function_overloads(body: &mut Vec<Statement>) {
     let mut grouped: std::collections::BTreeMap<String, Vec<PascalOverloadCandidate>> =
         std::collections::BTreeMap::new();
@@ -3305,7 +3921,10 @@ fn normalize_pascal_free_function_overloads(body: &mut Vec<Statement>) {
     let mut rename_by_order = std::collections::HashMap::new();
     // Declared return types, two kinds in one map — plain function names have
     // no dot, `Class.Method` does, so they cannot collide.
-    let mut return_types = collect_pascal_class_member_types(body);
+    // Seeded with the RTL FIRST so a program's own `Format` or `Trim` — merged
+    // over it below — is the one that answers.
+    let mut return_types = pascal_builtin_return_types();
+    return_types.extend(collect_pascal_class_member_types(body));
     return_types.extend(single_returns);
     for (lowered, candidates) in grouped.iter_mut() {
         for (idx, candidate) in candidates.iter_mut().enumerate() {
@@ -3344,7 +3963,9 @@ fn normalize_pascal_class_method_overloads(body: &mut Vec<Statement>) {
     let enum_members = collect_enum_member_types(body);
     let mut all_candidates: std::collections::HashMap<String, Vec<PascalOverloadCandidate>> =
         std::collections::HashMap::new();
-    let mut return_types = std::collections::HashMap::new();
+    // A method's overloads are chosen by the same argument types, so the RTL
+    // result types are needed here too — `__vs(VarIsBool(v))` inside a method.
+    let mut return_types = pascal_builtin_return_types();
 
     for stmt in body.iter_mut() {
         let (name, members) = match &mut stmt.kind {
@@ -4149,10 +4770,28 @@ fn rewrite_pascal_overload_stmt(
             rewrite_pascal_overload_expr(expr, overloads, return_types, enum_members, scope);
         }
         StmtKind::Assign { targets, value, .. } => {
-            for target in targets {
+            for target in targets.iter_mut() {
                 rewrite_pascal_overload_expr(target, overloads, return_types, enum_members, scope);
             }
             rewrite_pascal_overload_expr(value, overloads, return_types, enum_members, scope);
+            // A `Variant`'s type IS the type of what was last put in it — that
+            // is what the declaration means, and `VarType` reports exactly
+            // this. So an assignment REFINES the recorded type, and only for a
+            // variant: a variable with a real declared type keeps it, whatever
+            // it is assigned.
+            if let [target] = &targets[..]
+                && let ExprKind::Ident(name) = &target.kind
+                && scope
+                    .get(&name.to_lowercase())
+                    .is_some_and(|ty| ty == "variant" || ty == "olevariant")
+                && let Some(assigned) =
+                    pascal_overload_expr_type(value, return_types, enum_members, scope)
+            {
+                // Kept UNDER its own key so the declared `variant` survives:
+                // the next assignment must be able to refine it again, and it
+                // could not if this overwrote the declaration.
+                scope.insert(pascal_variant_refinement_key(name), assigned);
+            }
         }
         StmtKind::CompoundAssign { target, value, .. } => {
             rewrite_pascal_overload_expr(target, overloads, return_types, enum_members, scope);
@@ -4552,6 +5191,47 @@ fn rewrite_pascal_overload_expr(
         ExprKind::Cast { expr, .. } | ExprKind::IsType { expr, .. } => {
             rewrite_pascal_overload_expr(expr, overloads, return_types, enum_members, scope);
         }
+        // An anonymous method body is ordinary code: it calls the same
+        // overloaded names, and those names no longer exist — the declaration
+        // was RENAMED to `__pascal_overload_<name>_<idx>`, so a call left
+        // unrewritten resolves to nothing. Its parameters carry declared types
+        // and must enter the scope exactly as a `FunctionDecl`'s do, because an
+        // argument of unknown type scores the same against every candidate
+        // (`(None, Some(_)) => Some(15)`) and selection falls to declaration
+        // order — the first overload, whatever its type.
+        ExprKind::Lambda { params, body, .. } => {
+            let mut scoped = scope.clone();
+            for param in params.iter() {
+                if let Some(type_hint) = &param.type_hint {
+                    scoped.insert(
+                        param.name.to_lowercase(),
+                        bare_type_name(type_hint).to_lowercase(),
+                    );
+                }
+            }
+            match body {
+                LambdaBody::Expr(expr) => {
+                    rewrite_pascal_overload_expr(
+                        expr,
+                        overloads,
+                        return_types,
+                        enum_members,
+                        &scoped,
+                    );
+                }
+                LambdaBody::Block(stmts) => {
+                    for stmt in stmts {
+                        rewrite_pascal_overload_stmt(
+                            stmt,
+                            overloads,
+                            return_types,
+                            enum_members,
+                            &mut scoped,
+                        );
+                    }
+                }
+            }
+        }
         _ => {}
     }
 }
@@ -4632,6 +5312,54 @@ fn pascal_overload_arg_score(
     }
 }
 
+/// The result type of a call made THROUGH a name that holds a procedural type.
+///
+/// `var f: function(n: Integer): Boolean` records its whole spelling in scope,
+/// so the result is readable from it. `type TPred = function(s: String):
+/// Boolean; var p: TPred` records the alias instead — one more hop, because a
+/// Pascal `type` declaration reaches the AST as a `Const` VarDecl carrying the
+/// spelling as its type hint, which the same scope pass already stores.
+///
+/// Without it the argument of `__vs(pred('hello'))` is untyped, every candidate
+/// scores alike and declaration order decides — the boolean prints as a string.
+fn pascal_procedural_result_type(
+    name: &str,
+    scope: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let mut key = name.to_lowercase();
+    // An alias chain is short; the bound is what stops `type A = B; type B = A`.
+    for _ in 0..4 {
+        let declared = scope.get(&key)?.trim().to_string();
+        if let Some(result) = pascal_proc_type_result(&declared) {
+            return Some(result);
+        }
+        if declared == key {
+            return None;
+        }
+        key = declared;
+    }
+    None
+}
+
+/// `function(…): T` → `T`. A `procedure` has no result, and neither has a type
+/// that is not procedural at all.
+fn pascal_proc_type_result(declared: &str) -> Option<String> {
+    let declared = declared.trim();
+    // Delphi's anonymous-method types are spelled `reference to function(…)`.
+    let body = declared
+        .strip_prefix("reference to ")
+        .unwrap_or(declared)
+        .trim_start();
+    let rest = body.strip_prefix("function")?;
+    // A parameterless one is `function: T` — there is no argument list to skip.
+    let after_params = match rest.rfind(')') {
+        Some(close) => &rest[close + 1..],
+        None => rest,
+    };
+    let result = after_params.trim_start().strip_prefix(':')?.trim();
+    (!result.is_empty()).then(|| bare_type_name(result).to_lowercase())
+}
+
 fn pascal_overload_expr_type(
     expr: &Expression,
     return_types: &std::collections::HashMap<String, Option<String>>,
@@ -4647,14 +5375,18 @@ fn pascal_overload_expr_type(
         ExprKind::Lit(Literal::Str(s)) if s.chars().count() == 1 => Some("char".to_string()),
         ExprKind::Lit(Literal::Str(_)) => Some("string".to_string()),
         ExprKind::Ident(name) => scope
-            .get(&name.to_lowercase())
+            .get(&pascal_variant_refinement_key(name))
             .cloned()
+            .or_else(|| scope.get(&name.to_lowercase()).cloned())
             .or_else(|| enum_members.get(&name.to_lowercase()).cloned()),
         ExprKind::Call { callee, .. } => match &callee.kind {
             ExprKind::Ident(name) => return_types
                 .get(&name.to_lowercase())
                 .and_then(|ty| ty.clone())
-                .map(|ty| bare_type_name(&ty).to_lowercase()),
+                .map(|ty| bare_type_name(&ty).to_lowercase())
+                // Not every callee is a function DECLARATION: `pred('hello')`
+                // calls a variable whose procedural type states the result.
+                .or_else(|| pascal_procedural_result_type(name, scope)),
             // A member call on a declared type. Overloads are chosen by
             // static argument type, so `__vs(D.ContainsKey(k))` needs the
             // member's DECLARED return type or it picks the integer overload
@@ -8720,6 +9452,18 @@ fn rewrite_pascal_writeln_bool_vars_stmt(
         StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
             rewrite_pascal_writeln_bool_vars_expr(expr, var_types);
         }
+        // `WriteLn(f, b)` is lowered by `lower_pascal_file_io` — which runs
+        // FIRST — into a `PrintFile`/`WriteFile` node, not a call, so the call
+        // arms below never saw it. A Boolean written to a FILE rendered as the
+        // JS `true` while the same value on the console read `TRUE`.
+        StmtKind::PrintFile { items, .. } | StmtKind::WriteFile { items, .. } => {
+            for item in items.iter_mut() {
+                rewrite_pascal_writeln_bool_vars_expr(item, var_types);
+                if pascal_writeln_arg_needs_bool_display(item, var_types) {
+                    *item = pascal_bool_pascal_display_expr(item.clone());
+                }
+            }
+        }
         StmtKind::Assign { targets, value, .. } => {
             for target in targets {
                 rewrite_pascal_writeln_bool_vars_expr(target, var_types);
@@ -8786,7 +9530,15 @@ fn rewrite_pascal_writeln_bool_vars_expr(
             for arg in args.iter_mut() {
                 rewrite_pascal_writeln_bool_vars_expr(&mut arg.value, var_types);
             }
-            if matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("WriteLn"))
+            // `__pascal_file_writeln`/`_println` too: `lower_pascal_file_io`
+            // runs FIRST and has already turned `WriteLn(f, True)` into one of
+            // them, so matching only `WriteLn` here left a Boolean written to a
+            // FILE rendering as JS `true` while the same value on the console
+            // read `TRUE`.
+            if matches!(&callee.kind, ExprKind::Ident(name)
+                if name.eq_ignore_ascii_case("WriteLn")
+                    || name.eq_ignore_ascii_case("__pascal_file_writeln")
+                    || name.eq_ignore_ascii_case("__pascal_file_println"))
             {
                 for arg in args {
                     if pascal_writeln_arg_needs_bool_display(&arg.value, var_types) {
@@ -8824,7 +9576,14 @@ fn pascal_writeln_arg_needs_bool_display(
             .is_some_and(|ty| ty.eq_ignore_ascii_case("boolean")),
         ExprKind::Call { callee, .. } => {
             matches!(&callee.kind, ExprKind::Ident(name)
-                if matches!(name.to_ascii_lowercase().as_str(), "assigned" | "findcmdlineswitch" | "isequalguid" | "samevalue" | "iszero")
+                if matches!(name.to_ascii_lowercase().as_str(), "assigned" | "findcmdlineswitch" | "isequalguid" | "samevalue" | "iszero"
+                    // The SysUtils file predicates. They answer a host
+                    // `wasi:filesystem` call, so without this `WriteLn` saw an
+                    // untyped value and rendered the JS boolean `true` instead
+                    // of Pascal's `TRUE`.
+                    | "fileexists" | "directoryexists" | "deletefile" | "removedir"
+                    | "createdir" | "forcedirectories" | "renamefile"
+                    | "ispathdelimiter" | "samefilename" | "matchesmask")
                     || matches!(name.as_str(), "__pascal_f64_eq" | "__pascal_f64_ne"))
                 || matches!(&callee.kind, ExprKind::Member { field, .. }
                     if matches!(field.as_str(), "includes" | "startsWith" | "endsWith"))
@@ -16247,41 +17006,70 @@ fn default_init_record_array_fields_member(
     }
 }
 
-fn default_init_pascal_array_locals(body: &mut [Statement]) {
+fn default_init_pascal_array_locals(
+    body: &mut [Statement],
+    aliases: &std::collections::HashMap<String, String>,
+) {
     for stmt in body {
-        default_init_pascal_array_locals_stmt(stmt);
+        default_init_pascal_array_locals_stmt(stmt, aliases);
     }
 }
 
-fn default_init_pascal_array_locals_stmt(stmt: &mut Statement) {
+fn default_init_pascal_array_locals_stmt(
+    stmt: &mut Statement,
+    aliases: &std::collections::HashMap<String, String>,
+) {
     match &mut stmt.kind {
         StmtKind::VarDecl { declarations, kind } if *kind != VarDeclKind::Const => {
             for decl in declarations {
+                if decl.init.is_none() {
+                    let hint = decl.type_hint.as_deref();
+                    let init = hint.and_then(default_array_init_for_type).or_else(|| {
+                        // Through the alias — but ONLY when it names a FIXED
+                        // array. `type M = array of TRow` resolved this way
+                        // would hand a dynamic variable the empty-array
+                        // default, and that pre-empts the `SetLength` which
+                        // builds the rows: the rows then come out null and a
+                        // write to `m[0][0]` lands nowhere.
+                        hint.map(|hint| pascal_resolve_array_type_hint(hint, aliases))
+                            .filter(|resolved| fixed_array_length(resolved).is_some())
+                            .and_then(default_array_init_for_type)
+                    });
+                    if let Some(init) = init {
+                        decl.init = Some(init);
+                    }
+                }
+                // A `Variant` starts out `Unassigned`, which is a DIFFERENT
+                // value from `Null` — `VarIsEmpty` is true of the first and
+                // `VarIsNull` of the second, so the general no-initializer
+                // default (null) makes a fresh variant answer both wrongly.
+                // Same traversal, same question, so it rides along here rather
+                // than in a second copy of this recursion.
                 if decl.init.is_none()
-                    && let Some(init) = decl
-                        .type_hint
-                        .as_deref()
-                        .and_then(default_array_init_for_type)
+                    && decl.type_hint.as_deref().is_some_and(|hint| {
+                        bare_type_name(hint).eq_ignore_ascii_case("variant")
+                            || bare_type_name(hint).eq_ignore_ascii_case("olevariant")
+                    })
                 {
-                    decl.init = Some(init);
+                    decl.init = Some(Expression::new(ExprKind::Lit(Literal::Undefined)));
                 }
             }
         }
         StmtKind::FunctionDecl { body, .. }
         | StmtKind::Block(body)
-        | StmtKind::NamespaceDecl { body, .. } => default_init_pascal_array_locals(body),
+        | StmtKind::NamespaceDecl { body, .. } => default_init_pascal_array_locals(body, aliases),
         StmtKind::If {
             then_body,
             elifs,
             else_body,
             ..
         } => {
-            default_init_pascal_array_locals(then_body);
+            default_init_pascal_array_locals(then_body, aliases);
             for (_, body) in elifs {
-                default_init_pascal_array_locals(body);
+                default_init_pascal_array_locals(body, aliases);
             }
             if let Some(body) = else_body {
-                default_init_pascal_array_locals(body);
+                default_init_pascal_array_locals(body, aliases);
             }
         }
         StmtKind::While {
@@ -16290,58 +17078,61 @@ fn default_init_pascal_array_locals_stmt(stmt: &mut Statement) {
         | StmtKind::ForIn {
             body, else_body, ..
         } => {
-            default_init_pascal_array_locals(body);
+            default_init_pascal_array_locals(body, aliases);
             if let Some(body) = else_body {
-                default_init_pascal_array_locals(body);
+                default_init_pascal_array_locals(body, aliases);
             }
         }
         StmtKind::For { init, body, .. } => {
             if let Some(init) = init {
-                default_init_pascal_array_locals_stmt(init);
+                default_init_pascal_array_locals_stmt(init, aliases);
             }
-            default_init_pascal_array_locals(body);
+            default_init_pascal_array_locals(body, aliases);
         }
-        StmtKind::DoWhile { body, .. } => default_init_pascal_array_locals(body),
+        StmtKind::DoWhile { body, .. } => default_init_pascal_array_locals(body, aliases),
         StmtKind::Try {
             body,
             catches,
             else_body,
             finally,
         } => {
-            default_init_pascal_array_locals(body);
+            default_init_pascal_array_locals(body, aliases);
             for catch in catches {
-                default_init_pascal_array_locals(&mut catch.body);
+                default_init_pascal_array_locals(&mut catch.body, aliases);
             }
             if let Some(body) = else_body {
-                default_init_pascal_array_locals(body);
+                default_init_pascal_array_locals(body, aliases);
             }
             if let Some(body) = finally {
-                default_init_pascal_array_locals(body);
+                default_init_pascal_array_locals(body, aliases);
             }
         }
         StmtKind::ClassDecl { members, .. }
         | StmtKind::StructDecl { members, .. }
         | StmtKind::ModuleDecl { members, .. } => {
             for member in members {
-                default_init_pascal_array_locals_member(member);
+                default_init_pascal_array_locals_member(member, aliases);
             }
         }
         _ => {}
     }
 }
 
-fn default_init_pascal_array_locals_member(member: &mut ClassMember) {
+fn default_init_pascal_array_locals_member(
+    member: &mut ClassMember,
+    aliases: &std::collections::HashMap<String, String>,
+) {
     match member {
         ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
-            default_init_pascal_array_locals_stmt(stmt);
+            default_init_pascal_array_locals_stmt(stmt, aliases);
         }
-        ClassMember::Constructor { body, .. } => default_init_pascal_array_locals(body),
+        ClassMember::Constructor { body, .. } => default_init_pascal_array_locals(body, aliases),
         ClassMember::Property { getter, setter, .. } => {
             if let Some(getter) = getter {
-                default_init_pascal_array_locals(getter);
+                default_init_pascal_array_locals(getter, aliases);
             }
             if let Some(setter) = setter {
-                default_init_pascal_array_locals(&mut setter.body);
+                default_init_pascal_array_locals(&mut setter.body, aliases);
             }
         }
         _ => {}
@@ -19434,11 +20225,15 @@ struct PascalFixedArrayEnv {
     var_types: std::collections::HashMap<String, String>,
     fields: std::collections::HashMap<(String, String), Vec<(i64, i64)>>,
     function_params: std::collections::HashMap<String, Vec<Option<String>>>,
+    /// `type TArr = array[1..3] of Integer` — the spelling a declaration of
+    /// type `TArr` stands for.
+    type_aliases: std::collections::HashMap<String, String>,
 }
 
 fn rewrite_pascal_fixed_array_bounds(body: &mut [Statement]) {
     let mut env = PascalFixedArrayEnv {
         fields: collect_pascal_fixed_array_class_fields(body),
+        type_aliases: collect_pascal_array_type_aliases(body),
         ..Default::default()
     };
     rewrite_pascal_fixed_array_bounds_block(body, &mut env);
@@ -19466,7 +20261,12 @@ fn rewrite_pascal_fixed_array_bounds_stmt(stmt: &mut Statement, env: &mut Pascal
                         name.to_lowercase(),
                         bare_type_name(type_hint).to_lowercase(),
                     );
-                    if let Some(bounds) = pascal_const_array_bounds(type_hint) {
+                    // Through the alias: `var a: TArr` is the same declaration
+                    // as `var a: array[1..3] of Integer`, and only the second
+                    // spelling used to be rebased.
+                    if let Some(bounds) = pascal_const_array_bounds(
+                        pascal_resolve_array_type_hint(type_hint, &env.type_aliases),
+                    ) {
                         env.vars.insert(name.to_lowercase(), bounds);
                     }
                 }
@@ -19498,7 +20298,9 @@ fn rewrite_pascal_fixed_array_bounds_stmt(stmt: &mut Statement, env: &mut Pascal
             let mut scoped = env.clone();
             for param in params {
                 if let Some(type_hint) = &param.type_hint {
-                    if let Some(bounds) = pascal_const_array_bounds(type_hint) {
+                    if let Some(bounds) = pascal_const_array_bounds(
+                        pascal_resolve_array_type_hint(type_hint, &scoped.type_aliases),
+                    ) {
                         scoped.vars.insert(param.name.to_lowercase(), bounds);
                     }
                     scoped.var_types.insert(
@@ -19620,7 +20422,9 @@ fn rewrite_pascal_fixed_array_bounds_member(
             seed_pascal_fixed_array_self_fields(&mut scoped, class_name);
             for param in params {
                 if let Some(type_hint) = &param.type_hint {
-                    if let Some(bounds) = pascal_const_array_bounds(type_hint) {
+                    if let Some(bounds) = pascal_const_array_bounds(
+                        pascal_resolve_array_type_hint(type_hint, &scoped.type_aliases),
+                    ) {
                         scoped.vars.insert(param.name.to_lowercase(), bounds);
                     }
                     scoped.var_types.insert(
@@ -19949,6 +20753,17 @@ fn collect_pascal_fixed_array_class_fields(
         }
     }
     out
+}
+
+/// The array spelling `type_hint` names, following an alias when it is one.
+fn pascal_resolve_array_type_hint<'a>(
+    type_hint: &'a str,
+    aliases: &'a std::collections::HashMap<String, String>,
+) -> &'a str {
+    aliases
+        .get(&bare_type_name(type_hint).to_lowercase())
+        .map(|spelling| spelling.as_str())
+        .unwrap_or(type_hint)
 }
 
 fn pascal_const_array_bounds(type_hint: &str) -> Option<Vec<(i64, i64)>> {
@@ -23982,10 +24797,48 @@ fn pascal_prelude_needs(
                 "TPair",
                 "TComparer",
                 "TEqualityComparer",
+                // `TStack`/`TQueue` ARE declared classes now, not namespace-tree
+                // `Type` nodes. A tree type never enters `pending_classes`, so a
+                // program's own `type TStack = class` could not shadow it and
+                // `S.Push(3)` resolved to `ecma:array:push` while the user's
+                // constructor still ran — one object, two owners. As classes
+                // they go through the dedup below, which already states that a
+                // prelude copy never shadows the program's own declaration.
+                "TStack",
+                "TQueue",
             ],
         );
     let tbits = pascal_source_mentions_any_ident(source, &["TBits"]);
+    let file_block = pascal_source_mentions_any_ident(
+        source,
+        &["BlockRead", "BlockWrite", "FilePos", "FileSize", "Truncate", "Seek"],
+    );
+    let path_utils = pascal_source_mentions_any_ident(
+        source,
+        &[
+            "IncludeTrailingPathDelimiter",
+            "ExcludeTrailingPathDelimiter",
+            "IsPathDelimiter",
+            "ExtractFileDrive",
+            "SameFileName",
+        ],
+    );
     let assert_error_proc = pascal_source_mentions_any_ident(source, &["AssertErrorProc"]);
+    // Gated on the SPELLINGS, like every other group: this one is the largest
+    // source-parsed prelude, and a program that never formats a number must
+    // not pay to parse a picture engine.
+    let format_settings = pascal_source_mentions_any_ident(
+        source,
+        &[
+            "TFormatSettings",
+            "FormatFloat",
+            "FormatCurr",
+            "CurrToStr",
+            "StrToCurr",
+            "SetVerifyBoolStrs",
+            "FormatSettings",
+        ],
+    );
 
     PascalPreludeNeeds {
         exceptions,
@@ -23994,6 +24847,9 @@ fn pascal_prelude_needs(
         tinterfacedobject,
         collections,
         tbits,
+        path_utils,
+        file_block,
+        format_settings,
         assert_error_proc,
     }
 }
@@ -25322,11 +26178,58 @@ type
     class function Construct(c: Variant): Variant;
     class function Default: Variant;
   end;
+  TStack = class
+  private
+    { TOP-FIRST: index 0 is the top of the stack. `for x in S` yields LIFO,
+      which is the order Delphi's enumerator gives and the order the corpus
+      records; storing bottom-first made iteration yield the reverse. }
+    FItems: array of Variant;
+  public
+    procedure Push(v: Variant);
+    function Pop: Variant;
+    function Extract: Variant;
+    function Peek: Variant;
+    procedure Clear;
+    procedure TrimExcess;
+    function ToArray: Variant;
+    function Count: Integer;
+  end;
+  TQueue = class
+  private
+    FItems: array of Variant;
+  public
+    procedure Enqueue(v: Variant);
+    function Dequeue: Variant;
+    function Extract: Variant;
+    function Peek: Variant;
+    procedure Clear;
+    procedure TrimExcess;
+    function ToArray: Variant;
+    function Count: Integer;
+  end;
 
 class function TComparer.Construct(c: Variant): Variant; begin Result := c; end;
 class function TComparer.Default: Variant; begin Result := nil; end;
 class function TEqualityComparer.Construct(c: Variant): Variant; begin Result := c; end;
 class function TEqualityComparer.Default: Variant; begin Result := nil; end;
+
+procedure TStack.Push(v: Variant); var i, n: Integer; begin n := Length(FItems); SetLength(FItems, n + 1); for i := n downto 1 do FItems[i] := FItems[i - 1]; FItems[0] := v; end;
+function TStack.Pop: Variant; var i, n: Integer; begin Result := FItems[0]; n := Length(FItems); for i := 0 to n - 2 do FItems[i] := FItems[i + 1]; SetLength(FItems, n - 1); end;
+function TStack.Extract: Variant; var i, n: Integer; begin Result := FItems[0]; n := Length(FItems); for i := 0 to n - 2 do FItems[i] := FItems[i + 1]; SetLength(FItems, n - 1); end;
+function TStack.Peek: Variant; begin Result := FItems[0]; end;
+procedure TStack.Clear; begin SetLength(FItems, 0); end;
+procedure TStack.TrimExcess; begin end;
+function TStack.ToArray: Variant; var i, n: Integer; r: array of Variant; begin n := Length(FItems); SetLength(r, n); for i := 0 to n - 1 do r[i] := FItems[i]; Result := r; end;
+function TStack.Count: Integer; begin Result := Length(FItems); end;
+
+procedure TQueue.Enqueue(v: Variant); var n: Integer; begin n := Length(FItems); SetLength(FItems, n + 1); FItems[n] := v; end;
+function TQueue.Dequeue: Variant; var i, n: Integer; begin Result := FItems[0]; n := Length(FItems); for i := 0 to n - 2 do FItems[i] := FItems[i + 1]; SetLength(FItems, n - 1); end;
+function TQueue.Extract: Variant; var i, n: Integer; begin Result := FItems[0]; n := Length(FItems); for i := 0 to n - 2 do FItems[i] := FItems[i + 1]; SetLength(FItems, n - 1); end;
+function TQueue.Peek: Variant; begin Result := FItems[0]; end;
+procedure TQueue.Clear; begin SetLength(FItems, 0); end;
+procedure TQueue.TrimExcess; begin end;
+function TQueue.ToArray: Variant; var i, n: Integer; r: array of Variant; begin n := Length(FItems); SetLength(r, n); for i := 0 to n - 1 do r[i] := FItems[i]; Result := r; end;
+function TQueue.Count: Integer; begin Result := Length(FItems); end;
 begin end.
 "#;
 
@@ -25354,6 +26257,92 @@ fn parse_pascal_prelude_source(src: &str) -> Result<Vec<Statement>, String> {
 
 /// The TBits group's source — a `const` for the same reason as
 /// [`PASCAL_COLLECTIONS_PRELUDE`].
+/// The pure-STRING half of SysUtils' path routines.
+///
+/// These touch no filesystem — they are string surgery on a path — so they are
+/// synthesized Pascal rather than bound to `wasi:filesystem`, which has no
+/// export for them and should not grow one. Gated on the spellings like every
+/// other group.
+const PASCAL_PATHUTILS_PRELUDE: &str = r#"
+program __PascalPathUtilsPrelude;
+function IncludeTrailingPathDelimiter(const s: String): String;
+begin
+  if (Length(s) > 0) and (s[Length(s)] = '/') then Result := s else Result := s + '/';
+end;
+function ExcludeTrailingPathDelimiter(const s: String): String;
+begin
+  if (Length(s) > 1) and (s[Length(s)] = '/') then Result := Copy(s, 1, Length(s) - 1) else Result := s;
+end;
+function IsPathDelimiter(const s: String; i: Integer): Boolean;
+begin
+  Result := (i >= 1) and (i <= Length(s)) and (s[i] = '/');
+end;
+function ExtractFileDrive(const s: String): String;
+begin
+  if (Length(s) >= 2) and (s[2] = ':') then Result := Copy(s, 1, 2) else Result := '';
+end;
+function SameFileName(const a: String; const b: String): Boolean;
+begin
+  Result := a = b;
+end;
+begin end.
+"#;
+
+/// Positional block I/O over `wasi:filesystem/types`.
+///
+/// Synthesized Pascal rather than a bytecode adapter because every step is
+/// ordinary Pascal — a slice loop, a copy loop, and four host calls that the
+/// profile already binds. VERIFIED end to end before this was written: a spike
+/// wrote `10 20 30 40` through `descriptor.write` and read the same bytes back,
+/// with `od` confirming them on disk.
+///
+/// Two shapes the spike pinned down, both easy to get wrong:
+///   - `descriptor.read` answers a TUPLE `[bytes, eof]`, not a record, so the
+///     payload is `r[0]`.
+///   - a 0-argument profile builtin needs explicit PARENS. Pascal's convention
+///     is that a parenless name IS the call, but that does not reach a profile
+///     builtin — `__pascal_fs_preopens` without `()` evaluates to undefined.
+const PASCAL_FILEBLOCK_PRELUDE: &str = r#"
+program __PascalFileBlockPrelude;
+function __PascalFsOpen(const path: String; create: Integer): Variant;
+var pre: Variant;
+begin
+  pre := __pascal_fs_preopens();
+  Result := __pascal_fs_open_at(pre[0][0], 0, path, create, 0);
+end;
+function __PascalSliceBytes(const src: Variant; start: Integer; count: Integer): Variant;
+var i: Integer; r: array of Byte;
+begin
+  SetLength(r, count);
+  for i := 0 to count - 1 do r[i] := src[start + i];
+  Result := r;
+end;
+function __PascalBlockWrite(const path: String; pos: Integer; const src: Variant; start: Integer; count: Integer): Integer;
+begin
+  __pascal_fs_write(__PascalFsOpen(path, 1), __PascalSliceBytes(src, start, count), pos);
+  Result := count;
+end;
+function __PascalBlockRead(const path: String; pos: Integer; dst: Variant; start: Integer; count: Integer): Integer;
+var r: Variant; b: Variant; i: Integer;
+begin
+  r := __pascal_fs_read(__PascalFsOpen(path, 0), count, pos);
+  b := r[0];
+  for i := 0 to Length(b) - 1 do dst[start + i] := b[i];
+  Result := Length(b);
+end;
+function __PascalFileSizeBytes(const path: String): Integer;
+var st: Variant;
+begin
+  st := __pascal_fs_stat(__PascalFsOpen(path, 0));
+  Result := st['size'];
+end;
+procedure __PascalFileTruncate(const path: String; pos: Integer);
+begin
+  __pascal_fs_setsize(__PascalFsOpen(path, 1), pos);
+end;
+begin end.
+"#;
+
 const PASCAL_TBITS_PRELUDE: &str = r#"
 program __PascalTBitsPrelude;
 type
@@ -25412,6 +26401,400 @@ procedure TBits.Clear;
 var i: Integer;
 begin
   for i := 0 to FSize - 1 do FBits[i] := False;
+end;
+
+begin end.
+"#;
+
+/// `SysUtils`'s locale group — `TFormatSettings` and the routines that read it.
+///
+/// Written as Pascal SOURCE for the same reason the collection group is: the
+/// picture language (`#,##0.00`) is a string algorithm, and a string algorithm
+/// written in the language it belongs to is readable, whereas the equivalent
+/// hand-built bytecode is 300 lines nobody can check against Delphi's
+/// documentation. `.NET`'s standard specifiers (`F2`, `P`) are a DIFFERENT
+/// notation with its own engine in the dotnet platform — neither can render the
+/// other's pictures, so there is nothing here to share.
+///
+/// `TFormatSettings` is a CLASS though Delphi declares a record: what the
+/// programs need of it is construction, field assignment and being passed
+/// along, which a class gives; nothing copies one, which is the only place the
+/// difference would show.
+///
+/// ⚠ Names inside a prelude are ordinary Pascal identifiers and collide with
+/// the RTL spellings the walker substitutes — a local named `MinInt` becomes
+/// the CONSTANT (see `pascal_bare_identifier_expr`), silently.
+const PASCAL_FORMATSETTINGS_PRELUDE: &str = r#"
+program __PascalFormatSettingsPrelude;
+type
+  TFormatSettings = class
+  public
+    DecimalSeparator: String;
+    ThousandSeparator: String;
+    CurrencyString: String;
+    CurrencyFormat: Integer;
+    NegCurrFormat: Integer;
+    CurrencyDecimals: Integer;
+    DateSeparator: String;
+    TimeSeparator: String;
+    ShortDateFormat: String;
+    LongDateFormat: String;
+    ShortTimeFormat: String;
+    LongTimeFormat: String;
+    LongMonthNames: array[1..12] of String;
+    ShortMonthNames: array[1..12] of String;
+    LongDayNames: array[1..7] of String;
+    ShortDayNames: array[1..7] of String;
+    constructor Create;
+    class function Invariant: TFormatSettings;
+  end;
+
+constructor TFormatSettings.Create;
+begin
+  DecimalSeparator := '.';
+  ThousandSeparator := ',';
+  CurrencyString := '$';
+  CurrencyFormat := 0;
+  NegCurrFormat := 0;
+  CurrencyDecimals := 2;
+  DateSeparator := '/';
+  TimeSeparator := ':';
+  ShortDateFormat := 'm/d/yyyy';
+  LongDateFormat := 'dddd, mmmm d, yyyy';
+  ShortTimeFormat := 'hh:nn:ss';
+  LongTimeFormat := 'hh:nn:ss';
+  LongMonthNames[1] := 'January';   ShortMonthNames[1] := 'Jan';
+  LongMonthNames[2] := 'February';  ShortMonthNames[2] := 'Feb';
+  LongMonthNames[3] := 'March';     ShortMonthNames[3] := 'Mar';
+  LongMonthNames[4] := 'April';     ShortMonthNames[4] := 'Apr';
+  LongMonthNames[5] := 'May';       ShortMonthNames[5] := 'May';
+  LongMonthNames[6] := 'June';      ShortMonthNames[6] := 'Jun';
+  LongMonthNames[7] := 'July';      ShortMonthNames[7] := 'Jul';
+  LongMonthNames[8] := 'August';    ShortMonthNames[8] := 'Aug';
+  LongMonthNames[9] := 'September'; ShortMonthNames[9] := 'Sep';
+  LongMonthNames[10] := 'October';  ShortMonthNames[10] := 'Oct';
+  LongMonthNames[11] := 'November'; ShortMonthNames[11] := 'Nov';
+  LongMonthNames[12] := 'December'; ShortMonthNames[12] := 'Dec';
+  LongDayNames[1] := 'Sunday';    ShortDayNames[1] := 'Sun';
+  LongDayNames[2] := 'Monday';    ShortDayNames[2] := 'Mon';
+  LongDayNames[3] := 'Tuesday';   ShortDayNames[3] := 'Tue';
+  LongDayNames[4] := 'Wednesday'; ShortDayNames[4] := 'Wed';
+  LongDayNames[5] := 'Thursday';  ShortDayNames[5] := 'Thu';
+  LongDayNames[6] := 'Friday';    ShortDayNames[6] := 'Fri';
+  LongDayNames[7] := 'Saturday';  ShortDayNames[7] := 'Sat';
+end;
+
+class function TFormatSettings.Invariant: TFormatSettings;
+begin
+  Result := TFormatSettings.Create;
+end;
+
+function __PascalPad2(v: Integer): String;
+begin
+  if v < 10 then Result := '0' + IntToStr(v) else Result := IntToStr(v);
+end;
+
+function __PascalFormatDT(fmt: String; dt: TDateTime): String;
+var
+  yy, mo, dd, hh, mi, ss, ms: Word;
+  i, n: Integer;
+  acc, tok: String;
+  ch: Char;
+begin
+  DecodeDate(dt, yy, mo, dd);
+  DecodeTime(dt, hh, mi, ss, ms);
+  acc := '';
+  i := 1;
+  while i <= Length(fmt) do
+  begin
+    ch := fmt[i];
+    if ((ch >= 'a') and (ch <= 'z')) or ((ch >= 'A') and (ch <= 'Z')) then
+    begin
+      n := 0;
+      tok := '';
+      while (i + n <= Length(fmt)) and (LowerCase(fmt[i + n]) = LowerCase(ch)) do
+      begin
+        tok := tok + ch;
+        n := n + 1;
+      end;
+      tok := LowerCase(tok);
+      if tok = 'yyyy' then acc := acc + IntToStr(yy)
+      else if tok = 'yy' then acc := acc + Copy(IntToStr(yy), 3, 2)
+      else if tok = 'mm' then acc := acc + __PascalPad2(mo)
+      else if tok = 'm' then acc := acc + IntToStr(mo)
+      else if tok = 'dd' then acc := acc + __PascalPad2(dd)
+      else if tok = 'd' then acc := acc + IntToStr(dd)
+      else if tok = 'hh' then acc := acc + __PascalPad2(hh)
+      else if tok = 'h' then acc := acc + IntToStr(hh)
+      else if tok = 'nn' then acc := acc + __PascalPad2(mi)
+      else if tok = 'n' then acc := acc + IntToStr(mi)
+      else if tok = 'ss' then acc := acc + __PascalPad2(ss)
+      else if tok = 's' then acc := acc + IntToStr(ss)
+      else acc := acc + tok;
+      i := i + n;
+    end
+    else
+    begin
+      acc := acc + ch;
+      i := i + 1;
+    end;
+  end;
+  Result := acc;
+end;
+
+function __PascalPictureFormat(fmt: String; value: Double; decSep: String; thouSep: String): String;
+var
+  pic, intPic, fracPic, lead, trail, s, ip, fp, grouped, mant, expStr: String;
+  i, dotPos, semi, intMin, maxFrac, minFrac, expo, expDigits, ePos, firstDig, lastDig: Integer;
+  grouping, percent, neg: Boolean;
+  av: Double;
+  ch, esign: Char;
+begin
+  pic := fmt;
+  neg := value < 0;
+  av := Abs(value);
+  semi := Pos(';', pic);
+  if semi > 0 then
+  begin
+    if neg then
+    begin
+      pic := Copy(pic, semi + 1, Length(pic) - semi);
+      if Pos(';', pic) > 0 then pic := Copy(pic, 1, Pos(';', pic) - 1);
+      neg := False;
+    end
+    else
+      pic := Copy(pic, 1, semi - 1);
+  end;
+  percent := Pos('%', pic) > 0;
+  if percent then
+  begin
+    av := av * 100;
+    s := '';
+    for i := 1 to Length(pic) do
+      if pic[i] <> '%' then s := s + pic[i];
+    pic := s;
+  end;
+  ePos := Pos('E', UpperCase(pic));
+  if ePos > 0 then
+  begin
+    expDigits := Length(pic) - ePos - 1;
+    minFrac := 0;
+    dotPos := Pos('.', pic);
+    if (dotPos > 0) and (dotPos < ePos) then minFrac := ePos - dotPos - 1;
+    expo := 0;
+    if av <> 0 then
+    begin
+      while av >= 10 do begin av := av / 10; expo := expo + 1; end;
+      while av < 1 do begin av := av * 10; expo := expo - 1; end;
+    end;
+    mant := Format('%.' + IntToStr(minFrac) + 'f', [av]);
+    if Copy(mant, 1, 2) = '10' then
+    begin
+      av := av / 10;
+      expo := expo + 1;
+      mant := Format('%.' + IntToStr(minFrac) + 'f', [av]);
+    end;
+    expStr := IntToStr(Abs(expo));
+    while Length(expStr) < expDigits do expStr := '0' + expStr;
+    if expo < 0 then esign := '-' else esign := '+';
+    Result := mant + 'E' + esign + expStr;
+    if neg then Result := '-' + Result;
+    Exit;
+  end;
+  firstDig := 0;
+  lastDig := 0;
+  for i := 1 to Length(pic) do
+  begin
+    ch := pic[i];
+    if (ch = '#') or (ch = '0') then
+    begin
+      if firstDig = 0 then firstDig := i;
+      lastDig := i;
+    end;
+  end;
+  if firstDig = 0 then
+  begin
+    Result := pic;
+    Exit;
+  end;
+  lead := Copy(pic, 1, firstDig - 1);
+  trail := Copy(pic, lastDig + 1, Length(pic) - lastDig);
+  while (Length(trail) > 0) and ((trail[1] = '.') or (trail[1] = ',')) do
+  begin
+    lastDig := lastDig + 1;
+    trail := Copy(pic, lastDig + 1, Length(pic) - lastDig);
+  end;
+  pic := Copy(pic, firstDig, lastDig - firstDig + 1);
+  dotPos := Pos('.', pic);
+  if dotPos > 0 then
+  begin
+    intPic := Copy(pic, 1, dotPos - 1);
+    fracPic := Copy(pic, dotPos + 1, Length(pic) - dotPos);
+  end
+  else
+  begin
+    intPic := pic;
+    fracPic := '';
+  end;
+  grouping := Pos(',', intPic) > 0;
+  intMin := 0;
+  for i := 1 to Length(intPic) do
+    if intPic[i] = '0' then intMin := intMin + 1;
+  maxFrac := 0;
+  minFrac := 0;
+  for i := 1 to Length(fracPic) do
+  begin
+    ch := fracPic[i];
+    if (ch = '0') or (ch = '#') then maxFrac := maxFrac + 1;
+    if ch = '0' then minFrac := minFrac + 1;
+  end;
+  s := Format('%.' + IntToStr(maxFrac) + 'f', [av]);
+  dotPos := Pos('.', s);
+  if dotPos > 0 then
+  begin
+    ip := Copy(s, 1, dotPos - 1);
+    fp := Copy(s, dotPos + 1, Length(s) - dotPos);
+  end
+  else
+  begin
+    ip := s;
+    fp := '';
+  end;
+  while (Length(fp) > minFrac) and (fp[Length(fp)] = '0') do
+    fp := Copy(fp, 1, Length(fp) - 1);
+  while Length(ip) < intMin do ip := '0' + ip;
+  if (intMin = 0) and (ip = '0') then ip := '';
+  if grouping then
+  begin
+    grouped := '';
+    i := Length(ip);
+    while i > 0 do
+    begin
+      grouped := ip[i] + grouped;
+      if ((Length(ip) - i + 1) mod 3 = 0) and (i > 1) then grouped := thouSep + grouped;
+      i := i - 1;
+    end;
+    ip := grouped;
+  end;
+  Result := ip;
+  if Length(fp) > 0 then Result := Result + decSep + fp;
+  Result := lead + Result + trail;
+  if percent then Result := Result + '%';
+  if neg then Result := '-' + Result;
+end;
+
+function __PascalFormatFloatDef(fmt: String; value: Double): String;
+begin
+  Result := __PascalPictureFormat(fmt, value, '.', ',');
+end;
+
+function __PascalFormatFloatFS(fmt: String; value: Double; fs: TFormatSettings): String;
+begin
+  Result := __PascalPictureFormat(fmt, value, fs.DecimalSeparator, fs.ThousandSeparator);
+end;
+
+function __PascalCurrToStrFS(value: Double; fs: TFormatSettings): String;
+var s: String; i: Integer;
+begin
+  s := FloatToStr(value);
+  Result := '';
+  for i := 1 to Length(s) do
+    if s[i] = '.' then Result := Result + fs.DecimalSeparator
+    else Result := Result + s[i];
+end;
+
+function __PascalStrToFloatFS(s: String; fs: TFormatSettings): Double;
+var t: String; i: Integer;
+begin
+  t := '';
+  for i := 1 to Length(s) do
+    if s[i] = fs.DecimalSeparator then t := t + '.'
+    else if s[i] <> fs.ThousandSeparator then t := t + s[i];
+  Result := StrToFloat(t);
+end;
+
+function __PascalDateToStrFS(dt: TDateTime; fs: TFormatSettings): String;
+begin
+  Result := __PascalFormatDT(fs.ShortDateFormat, dt);
+end;
+
+function __PascalTimeToStrFS(dt: TDateTime; fs: TFormatSettings): String;
+begin
+  Result := __PascalFormatDT(fs.ShortTimeFormat, dt);
+end;
+
+function __PascalStrToDateFS(s: String; fs: TFormatSettings): TDateTime;
+var
+  parts: array[1..3] of String;
+  order: array[1..3] of String;
+  fmt, tok: String;
+  i, n, count: Integer;
+  yy, mo, dd: Integer;
+  ch: Char;
+begin
+  count := 0;
+  tok := '';
+  for i := 1 to Length(s) do
+  begin
+    ch := s[i];
+    if (ch >= '0') and (ch <= '9') then tok := tok + ch
+    else if Length(tok) > 0 then
+    begin
+      count := count + 1;
+      if count <= 3 then parts[count] := tok;
+      tok := '';
+    end;
+  end;
+  if Length(tok) > 0 then
+  begin
+    count := count + 1;
+    if count <= 3 then parts[count] := tok;
+  end;
+  fmt := LowerCase(fs.ShortDateFormat);
+  n := 0;
+  tok := '';
+  for i := 1 to Length(fmt) do
+  begin
+    ch := fmt[i];
+    if (ch = 'y') or (ch = 'm') or (ch = 'd') then
+    begin
+      if (Length(tok) > 0) and (tok[1] <> ch) then
+      begin
+        n := n + 1;
+        if n <= 3 then order[n] := tok;
+        tok := '';
+      end;
+      tok := tok + ch;
+    end
+    else if Length(tok) > 0 then
+    begin
+      n := n + 1;
+      if n <= 3 then order[n] := tok;
+      tok := '';
+    end;
+  end;
+  if Length(tok) > 0 then
+  begin
+    n := n + 1;
+    if n <= 3 then order[n] := tok;
+  end;
+  yy := 1899;
+  mo := 12;
+  dd := 30;
+  for i := 1 to 3 do
+  begin
+    if i <= count then
+    begin
+      if Copy(order[i], 1, 1) = 'y' then yy := StrToInt(parts[i])
+      else if Copy(order[i], 1, 1) = 'm' then mo := StrToInt(parts[i])
+      else if Copy(order[i], 1, 1) = 'd' then dd := StrToInt(parts[i]);
+    end;
+  end;
+  Result := EncodeDate(yy, mo, dd);
+end;
+
+procedure SetVerifyBoolStrs(value: Boolean);
+begin
 end;
 
 begin end.
@@ -26185,9 +27568,41 @@ fn pascal_heap_default_for_target(
         _ => None,
     };
     type_hint
-        .and_then(|hint| pascal_pointer_pointee_type(hint))
+        .and_then(|hint| pascal_pointee_through_aliases(hint, var_types))
         .and_then(|hint| pascal_default_expr_for_type(&hint, struct_names))
         .unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null)))
+}
+
+/// What a pointer points AT, following `type PNode = ^TNode` when the name is
+/// an alias rather than the `^T` spelling itself.
+///
+/// The alias is already in `var_types`: a Pascal `type` declaration reaches the
+/// AST as a `Const` `VarDecl` carrying its right-hand side as the type hint, and
+/// this pass records every declaration it walks. Unresolved, `New(p)` fell back
+/// to allocating a cell holding `nil` instead of a fresh record, so `p^.Key := 5`
+/// wrote into nothing and read back `undefined` — while the identical inline
+/// `var p: ^TR` worked.
+fn pascal_pointee_through_aliases(
+    hint: &str,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    if let Some(pointee) = pascal_pointer_pointee_type(hint) {
+        return Some(pointee);
+    }
+    let mut key = bare_type_name(hint).to_lowercase();
+    // An alias chain is short; the bound is what stops `type A = B; type B = A`.
+    for _ in 0..4 {
+        let declared = var_types.get(&key)?.clone();
+        if let Some(pointee) = pascal_pointer_pointee_type(&declared) {
+            return Some(pointee);
+        }
+        let next = bare_type_name(&declared).to_lowercase();
+        if next == key {
+            return None;
+        }
+        key = next;
+    }
+    None
 }
 
 fn pascal_pointer_pointee_type(type_hint: &str) -> Option<String> {
@@ -28700,11 +30115,17 @@ fn pascal_bool_display_expr(expr: Expression) -> Expression {
     })
 }
 
+/// `WriteLn(b)` renders a Boolean as `TRUE`/`FALSE` — fpc 3.2.2, verified:
+/// `WriteLn(true and true)` prints `TRUE`, `WriteLn(false)` prints `FALSE`.
+///
+/// This is the WRITE surface only. `BoolToStr` keeps its own spellings
+/// (`emit_bool_to_str`), and the extracted-test harness renders through its own
+/// `__vs(v: boolean)`, so neither is reached from here.
 fn pascal_bool_pascal_display_expr(expr: Expression) -> Expression {
     Expression::new(ExprKind::Ternary {
         cond: Box::new(expr),
-        then: Box::new(Expression::string("True")),
-        else_: Box::new(Expression::string("False")),
+        then: Box::new(Expression::string("TRUE")),
+        else_: Box::new(Expression::string("FALSE")),
     })
 }
 
@@ -35374,9 +36795,11 @@ fn walk_type_decl(pair: Pair<Rule>) -> Result<Statement, String> {
     let span = to_span(&pair);
     let mut name = String::new();
     let mut type_def_pair: Option<Pair<Rule>> = None;
+    let mut decorators = Vec::new();
 
     for p in pair.into_inner() {
         match p.as_rule() {
+            Rule::attribute_list => decorators = pascal_attribute_exprs(p)?,
             Rule::identifier if name.is_empty() => name = p.as_str().to_string(),
             Rule::type_def => type_def_pair = Some(p),
             _ => {}
@@ -35386,6 +36809,66 @@ fn walk_type_decl(pair: Pair<Rule>) -> Result<Statement, String> {
     let def = type_def_pair.ok_or("Missing type_def in type_decl")?;
     let inner = def.into_inner().next().ok_or("Empty type_def")?;
 
+    if !decorators.is_empty() {
+        let mut stmt = walk_type_decl_def(inner, &name, span)?;
+        if let StmtKind::ClassDecl { decorators: d, .. }
+        | StmtKind::StructDecl { decorators: d, .. } = &mut stmt.kind
+        {
+            *d = decorators;
+        }
+        return Ok(stmt);
+    }
+    walk_type_decl_def(inner, &name, span)
+}
+
+/// Delphi CUSTOM ATTRIBUTES → `decorators`, the SHARED carrier.
+///
+/// `[Table('users_table')]` becomes `ExprKind::New { class: TableAttribute,
+/// args: ['users_table'] }` — byte for byte what C#'s `parse_attribute_specs`
+/// produces for `[Table("users_table")]`, including the `Attribute` suffix
+/// convention (`[Table]` names the class `TableAttribute`). That is what lets
+/// `primitives/reflection.rs` answer `GetCustomAttributes` from
+/// `meta.decorators` without knowing Pascal exists.
+fn pascal_attribute_exprs(pair: Pair<Rule>) -> Result<Vec<Expression>, String> {
+    let mut out = Vec::new();
+    for group in pair.into_inner() {
+        if group.as_rule() != Rule::attribute_group {
+            continue;
+        }
+        for entry in group.into_inner() {
+            if entry.as_rule() != Rule::attribute_entry {
+                continue;
+            }
+            let mut name = String::new();
+            let mut args = Vec::new();
+            for p in entry.into_inner() {
+                match p.as_rule() {
+                    Rule::identifier if name.is_empty() => name = p.as_str().to_string(),
+                    Rule::arg_list => args = walk_arg_list(p)?,
+                    _ => {}
+                }
+            }
+            if name.is_empty() {
+                continue;
+            }
+            let class_name = if name.to_ascii_lowercase().ends_with("attribute") {
+                name
+            } else {
+                format!("{name}Attribute")
+            };
+            out.push(Expression::new(ExprKind::New {
+                class: Box::new(Expression::ident(&class_name)),
+                args,
+            }));
+        }
+    }
+    Ok(out)
+}
+
+fn walk_type_decl_def(inner: Pair<Rule>, name_str: &str, span: Span) -> Result<Statement, String> {
+    // The original body was written against a `String` named `name`; keep that
+    // exact binding so splitting the function changed nothing but the seam.
+    let name = name_str.to_string();
     match inner.as_rule() {
         Rule::class_type => walk_class_type(inner, &name, span),
         Rule::class_helper_type => walk_class_helper_type(inner, &name, span),
@@ -35550,8 +37033,21 @@ fn walk_class_helper_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<St
 fn walk_class_body_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
     let mut members = Vec::new();
     let mut visibility = Visibility::Public;
+    // A member ATTRIBUTE binds to whatever is declared next, so it is carried
+    // forward the same way `visibility` is. `Modifiers::decorators` is the
+    // shared carrier `primitives/reflection.rs` reads to answer
+    // `GetCustomAttributes`, so a property or method attribute needs no
+    // machinery of its own — only to be attached here. Parsed but unattached,
+    // `[MaxLength(50)]` on a property was silently dropped and
+    // `p.GetAttributes` came back empty.
+    let mut pending_attrs: Vec<Expression> = Vec::new();
     for m in pair.into_inner() {
+        let before = members.len();
         match m.as_rule() {
+            Rule::attribute_list => {
+                pending_attrs = pascal_attribute_exprs(m)?;
+                continue;
+            }
             Rule::class_visibility => {
                 visibility = pascal_visibility_from_text(m.as_str());
             }
@@ -35592,8 +37088,32 @@ fn walk_class_body_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String>
             }
             _ => {}
         }
+        // Whatever this arm declared takes the attributes that preceded it.
+        if !pending_attrs.is_empty() {
+            for member in members.iter_mut().skip(before) {
+                apply_pascal_decorators_to_member(member, &pending_attrs);
+            }
+            pending_attrs.clear();
+        }
     }
     Ok(members)
+}
+
+fn apply_pascal_decorators_to_member(member: &mut ClassMember, decorators: &[Expression]) {
+    match member {
+        // `Const` and `Constructor` carry no `Modifiers`, so they have
+        // nowhere to hold an attribute — Delphi allows one there, and it is
+        // dropped rather than faked.
+        ClassMember::Field { modifiers, .. } | ClassMember::Property { modifiers, .. } => {
+            modifiers.decorators = decorators.to_vec();
+        }
+        ClassMember::Method(stmt) => {
+            if let StmtKind::FunctionDecl { modifiers, .. } = &mut stmt.kind {
+                modifiers.decorators = decorators.to_vec();
+            }
+        }
+        _ => {}
+    }
 }
 
 fn pascal_visibility_from_text(text: &str) -> Visibility {
@@ -39027,6 +40547,13 @@ fn walk_primary(pair: Pair<Rule>) -> Result<ExprKind, String> {
         "true" => return Ok(ExprKind::Lit(Literal::Bool(true))),
         "false" => return Ok(ExprKind::Lit(Literal::Bool(false))),
         "nil" => return Ok(ExprKind::Lit(Literal::Null)),
+        // `Variants` draws a distinction Pascal draws nowhere else: `Null` is a
+        // variant that HOLDS null, `Unassigned` is one that holds nothing. They
+        // are two different values, `VarIsNull` and `VarIsEmpty` ask for them
+        // separately, and the VM already has both — undeclared, each resolved
+        // to `undefined` and the two predicates could not disagree.
+        "null" => return Ok(ExprKind::Lit(Literal::Null)),
+        "unassigned" => return Ok(ExprKind::Lit(Literal::Undefined)),
         "result" => return Ok(ExprKind::Ident("Result".to_string())),
         _ => {}
     }
@@ -39744,6 +41271,35 @@ fn lower_pascal_datetime_builtin(name: &str, args: &[Argument]) -> Option<Expres
         )),
         ("strtodate", 1) => pascal_parse_slash_date_literal(&arg(0)?)
             .or_else(|| pascal_parse_dash_date_literal(&arg(0)?)),
+        // The `TFormatSettings` forms. Routed to prelude helpers by ARITY
+        // rather than declared as overloads, because the one-argument
+        // spellings are lowered here and a source declaration of the same name
+        // would take those calls too.
+        //
+        // The settings are read at RUN time — `fs.ShortDateFormat` is a field
+        // a program assigns — so none of these can fold to a literal picture
+        // the way the one-argument forms do.
+        // `overload` cannot be used for these: the prelude is injected AFTER
+        // `normalize_pascal_free_function_overloads` has run, so a second
+        // declaration of a name would never be resolved by arity — the last
+        // one would simply win. Routing here is the same arity dispatch, done
+        // where it still happens.
+        ("formatfloat", 2) | ("formatcurr", 2) => {
+            Some(call_expr("__PascalFormatFloatDef", vec![arg(0)?, arg(1)?]))
+        }
+        ("formatfloat", 3) | ("formatcurr", 3) => Some(call_expr(
+            "__PascalFormatFloatFS",
+            vec![arg(0)?, arg(1)?, arg(2)?],
+        )),
+        ("strtodate", 2) => Some(call_expr("__PascalStrToDateFS", vec![arg(0)?, arg(1)?])),
+        ("strtodatetime", 2) => Some(call_expr("__PascalStrToDateFS", vec![arg(0)?, arg(1)?])),
+        ("datetostr", 2) => Some(call_expr("__PascalDateToStrFS", vec![arg(0)?, arg(1)?])),
+        ("timetostr", 2) => Some(call_expr("__PascalTimeToStrFS", vec![arg(0)?, arg(1)?])),
+        ("datetimetostr", 2) => Some(call_expr("__PascalDateToStrFS", vec![arg(0)?, arg(1)?])),
+        ("formatdatetime", 3) => Some(call_expr("__PascalFormatDT", vec![arg(0)?, arg(1)?])),
+        ("strtofloat", 2) => Some(call_expr("__PascalStrToFloatFS", vec![arg(0)?, arg(1)?])),
+        ("strtocurr", 2) => Some(call_expr("__PascalStrToFloatFS", vec![arg(0)?, arg(1)?])),
+        ("currtostr", 2) => Some(call_expr("__PascalCurrToStrFS", vec![arg(0)?, arg(1)?])),
         ("strtotime", 1) => pascal_parse_time_literal(&arg(0)?),
         ("datetostr", 1) => pascal_format_datetime_expr(&str_expr("m/d/yyyy"), arg(0)?),
         ("timetostr", 1) => {
@@ -40348,6 +41904,13 @@ fn flatten_stmt(stmt: Statement) -> Vec<Statement> {
 struct PascalFileInfo {
     path_var: Option<String>,
     is_text: bool,
+    /// Companion holding the byte POSITION, for an UNTYPED `file`.
+    ///
+    /// `BlockRead`/`BlockWrite`/`Seek` are positional, and
+    /// `wasi:filesystem/types` answers that natively — `descriptor.read` and
+    /// `.write` both take an explicit offset. What the host has no business
+    /// holding is the CURSOR, so it lives here, exactly like `path_var`.
+    pos_var: Option<String>,
 }
 
 fn lower_pascal_file_io(body: &mut Vec<Statement>) {
@@ -40387,19 +41950,31 @@ fn lower_pascal_file_io_body(
                     continue;
                 }
                 let is_text = is_pascal_text_file_type_hint(type_hint, aliases);
+                let is_untyped = is_pascal_untyped_file_type_hint(type_hint, aliases);
                 let handle = *next_handle;
                 *next_handle += 1;
                 if decl.init.is_none() {
                     decl.init = Some(Expression::int(handle));
                 }
                 let path_var = format!("__pascal_file_path_{}", handle);
+                let pos_var = is_untyped.then(|| format!("__pascal_file_pos_{}", handle));
                 scope.insert(
                     name.to_lowercase(),
                     PascalFileInfo {
                         path_var: Some(path_var.clone()),
                         is_text,
+                        pos_var: pos_var.clone(),
                     },
                 );
+                if let Some(pos_var) = pos_var {
+                    companions.push(VarDeclarator {
+                        pattern: BindingPattern::Ident(pos_var),
+                        type_hint: Some("Integer".to_string().into()),
+                        init: Some(Expression::int(0)),
+                        array_bounds: None,
+                        with_events: false,
+                    });
+                }
                 companions.push(VarDeclarator {
                     pattern: BindingPattern::Ident(path_var),
                     type_hint: Some("String".to_string().into()),
@@ -40429,6 +42004,21 @@ fn is_pascal_file_type_hint(
         || aliases
             .get(&lower)
             .is_some_and(|aliased| is_pascal_file_type_hint(aliased, aliases))
+}
+
+/// An UNTYPED `file` — no `of T`. Delphi reads and writes it in BYTES, which
+/// is what makes one lowering serve `BlockRead`/`BlockWrite`/`Seek`/`FilePos`
+/// without a record width. `file of T` and `Text` keep the paths they had.
+fn is_pascal_untyped_file_type_hint(
+    type_hint: &str,
+    aliases: &std::collections::HashMap<String, String>,
+) -> bool {
+    let lower = normalize_pascal_type_hint(type_hint).to_ascii_lowercase();
+    let lower = lower.trim();
+    lower == "file"
+        || aliases
+            .get(lower)
+            .is_some_and(|aliased| is_pascal_untyped_file_type_hint(aliased, aliases))
 }
 
 fn is_pascal_text_file_type_hint(
@@ -40483,6 +42073,9 @@ fn lower_pascal_file_io_stmt(
                         PascalFileInfo {
                             path_var: None,
                             is_text,
+                            // A file PARAMETER has no companions — the caller
+                            // owns them.
+                            pos_var: None,
                         },
                     );
                 }
@@ -40623,6 +42216,9 @@ fn lower_pascal_file_io_member(
                         PascalFileInfo {
                             path_var: None,
                             is_text,
+                            // A file PARAMETER has no companions — the caller
+                            // owns them.
+                            pos_var: None,
                         },
                     );
                 }
@@ -40654,6 +42250,9 @@ fn lower_pascal_file_io_member(
                         PascalFileInfo {
                             path_var: None,
                             is_text,
+                            // A file PARAMETER has no companions — the caller
+                            // owns them.
+                            pos_var: None,
                         },
                     );
                 }
@@ -40710,6 +42309,103 @@ fn lower_pascal_file_io_call_stmt(
                 by_ref: false,
             })
         }
+        "rewrite" | "reset" if info.pos_var.is_some() => {
+            let pos_var = info.pos_var.as_ref()?;
+            let mut stmts = Vec::new();
+            // `Rewrite` CREATES/TRUNCATES; `Reset` opens what is there. No
+            // `OpenFile` in either case: that is the legacy whole-file shim,
+            // and leaving it in place meant its `CloseFile` wrote an empty
+            // buffer back over the bytes `descriptor.write` had just put on
+            // disk — BlockWrite reported 4 written and BlockRead then read 0.
+            if lowered == "rewrite" {
+                stmts.push(Statement::new(StmtKind::Expr(call_expr(
+                    "__PascalFileTruncate",
+                    vec![pascal_file_path_expr(&info)?, int_expr(0)],
+                ))));
+            }
+            stmts.push(Statement::new(StmtKind::Assign {
+                targets: vec![Expression::ident(pos_var)],
+                value: int_expr(0),
+                by_ref: false,
+            }));
+            Some(StmtKind::Block(stmts))
+        }
+        // Nothing to close — the descriptor is opened per operation and the
+        // cursor is a plain variable.
+        "close" | "closefile" if info.pos_var.is_some() => Some(StmtKind::Block(Vec::new())),
+        // `BlockWrite(f, Buf[Start], Count [, Written])` — the second argument
+        // names the FIRST ELEMENT, which is Pascal's way of saying "the array
+        // from here on", so it decomposes into (array, start).
+        "blockwrite" | "blockread" if info.pos_var.is_some() && args.len() >= 3 => {
+            let pos_var = info.pos_var.as_ref()?;
+            let (buffer, start) = pascal_block_buffer_and_start(&args[1].value);
+            let count = args[2].value.clone();
+            let helper = if lowered == "blockwrite" {
+                "__PascalBlockWrite"
+            } else {
+                "__PascalBlockRead"
+            };
+            let transferred = call_expr(
+                helper,
+                vec![
+                    pascal_file_path_expr(&info)?,
+                    Expression::ident(pos_var),
+                    buffer,
+                    start,
+                    count,
+                ],
+            );
+            // The count-out is a `var` parameter, so it is a PLACE when the
+            // program supplies one and simply dropped when it does not.
+            let mut stmts = Vec::new();
+            match args.get(3).map(|arg| arg.value.clone()) {
+                Some(out) => {
+                    stmts.push(Statement::new(StmtKind::Assign {
+                        targets: vec![out.clone()],
+                        value: transferred,
+                        by_ref: false,
+                    }));
+                    stmts.push(Statement::new(StmtKind::Assign {
+                        targets: vec![Expression::ident(pos_var)],
+                        value: bin_expr(BinOp::Add, Expression::ident(pos_var), out),
+                        by_ref: false,
+                    }));
+                }
+                None => {
+                    let scratch = format!("{}__n", pos_var);
+                    stmts.push(Statement::new(StmtKind::Assign {
+                        targets: vec![Expression::ident(&scratch)],
+                        value: transferred,
+                        by_ref: false,
+                    }));
+                    stmts.push(Statement::new(StmtKind::Assign {
+                        targets: vec![Expression::ident(pos_var)],
+                        value: bin_expr(
+                            BinOp::Add,
+                            Expression::ident(pos_var),
+                            Expression::ident(&scratch),
+                        ),
+                        by_ref: false,
+                    }));
+                }
+            }
+            Some(StmtKind::Block(stmts))
+        }
+        "seek" if info.pos_var.is_some() && args.len() >= 2 => {
+            let pos_var = info.pos_var.as_ref()?;
+            Some(StmtKind::Assign {
+                targets: vec![Expression::ident(pos_var)],
+                value: args[1].value.clone(),
+                by_ref: false,
+            })
+        }
+        "truncate" if info.pos_var.is_some() => Some(StmtKind::Expr(call_expr(
+            "__PascalFileTruncate",
+            vec![
+                pascal_file_path_expr(&info)?,
+                Expression::ident(info.pos_var.as_ref()?),
+            ],
+        ))),
         "rewrite" => Some(StmtKind::OpenFile {
             path: pascal_file_path_expr(&info)?,
             mode: FileMode::Output,
@@ -40725,6 +42421,11 @@ fn lower_pascal_file_io_call_stmt(
             mode: FileMode::Append,
             file_number: file_expr,
         }),
+        // ── Positional block I/O on an UNTYPED `file` ──────────────────
+        //
+        // The cursor is `pos_var`; the bytes go through
+        // `wasi:filesystem/types`. `Rewrite`/`Reset` reset it, which is why
+        // they are intercepted here BEFORE the generic `OpenFile` arms below.
         "close" | "closefile" => Some(StmtKind::CloseFile(Some(file_expr))),
         "erase" => Some(StmtKind::Expr(pascal_call(
             "__pascal_file_remove",
@@ -40890,8 +42591,36 @@ fn lower_pascal_file_io_expr(
     match &mut expr.kind {
         ExprKind::Call { callee, args, .. } => {
             lower_pascal_file_io_expr(callee, scope);
+            // `FilePos`/`FileSize`/`Eof` on an UNTYPED `file` are EXPRESSIONS,
+            // so they never reach the statement rewrites — the cursor and the
+            // byte count both answer here.
             if let ExprKind::Ident(name) = &callee.kind {
-                if name.eq_ignore_ascii_case("eof") && args.len() == 1 {
+                let lowered = name.to_ascii_lowercase();
+                if matches!(lowered.as_str(), "filepos" | "filesize" | "eof")
+                    && args.len() == 1
+                {
+                    if let Some(info) =
+                        pascal_file_info_for_expr(&args[0].value, scope).filter(|i| i.pos_var.is_some())
+                    {
+                        let pos_var = info.pos_var.clone().unwrap();
+                        let path = info.path_var.clone().map(|p| Expression::ident(&p));
+                        if let Some(path) = path {
+                            let size = call_expr("__PascalFileSizeBytes", vec![path]);
+                            *expr = match lowered.as_str() {
+                                "filepos" => Expression::ident(&pos_var),
+                                "filesize" => size,
+                                // `Eof` is the cursor having reached the end.
+                                _ => bin_expr(
+                                    BinOp::GtEq,
+                                    Expression::ident(&pos_var),
+                                    size,
+                                ),
+                            };
+                            return;
+                        }
+                    }
+                }
+                if lowered == "eof" && args.len() == 1 {
                     if pascal_file_info_for_expr(&args[0].value, scope).is_some() {
                         return;
                     }
@@ -40953,4 +42682,344 @@ fn cv_first(pair: Pair<Rule>) -> Result<Pair<Rule>, String> {
     pair.into_inner()
         .next()
         .ok_or_else(|| "Expected inner pair".to_string())
+}
+
+
+
+// ── Nested routine names, in canonical form ────────────────────────────────
+
+/// Pascal identifiers are CASE-INSENSITIVE, so `A` and `a` name one routine and
+/// lowercase is the canonical spelling. Emitting a NESTED routine's declaration
+/// under that spelling — and its references with it — is the same
+/// canonicalisation `Compiler::canon` performs; no name is invented, so this is
+/// not the frontend mangling of flexclassplan.md §1e.
+///
+/// It has to happen because `compile_function_decl` reserves a nested
+/// declaration's slot under the CANON'd name (`define_local(&cname)`) and
+/// stores through `emit_var_set(cname)`, while the closure-capture prescan and
+/// `collect_declared_names` key the shared env by the AST SPELLING. Same
+/// spelling on both sides and the two agree; canon'd on one side only and
+/// `emit_var_set` misses the box and writes a raw local, so a sibling routine
+/// reads null. MEASURED as a 2x2 — only `decl=A, use=A` fails:
+///
+/// | decl | use | result |
+/// |------|-----|--------|
+/// | `a`  | `a` | works — boxed as `a`, found as `a`          |
+/// | `a`  | `A` | works — no intersection, plain upvalue      |
+/// | `A`  | `a` | works — no intersection, plain upvalue      |
+/// | `A`  | `A` | FAILS — boxed as `A`, looked up as `a`      |
+///
+/// A captured VARIABLE is unaffected (`Counter` works), because only the
+/// function-declaration path canonicalises the name it defines. Pascal appears
+/// to be the only language that is both case-insensitive and has nested
+/// routines, which is why nothing else reaches it.
+fn canonicalize_pascal_nested_routine_names(body: &mut [Statement]) {
+    for stmt in body {
+        canonicalize_pascal_nested_routine_names_stmt(stmt);
+    }
+}
+
+fn canonicalize_pascal_nested_routine_names_stmt(stmt: &mut Statement) {
+    match &mut stmt.kind {
+        StmtKind::FunctionDecl { body, .. } => {
+            // The routines declared directly inside THIS one. Their names are
+            // locals of this frame, so the rename is scoped to this body.
+            let renames: std::collections::HashMap<String, String> = body
+                .iter()
+                .filter_map(|inner| match &inner.kind {
+                    StmtKind::FunctionDecl { name, .. }
+                        if name.chars().any(|c| c.is_ascii_uppercase()) =>
+                    {
+                        Some((name.clone(), name.to_ascii_lowercase()))
+                    }
+                    _ => None,
+                })
+                .collect();
+            if !renames.is_empty() {
+                for inner in body.iter_mut() {
+                    if let StmtKind::FunctionDecl { name, .. } = &mut inner.kind {
+                        if let Some(lowered) = renames.get(name.as_str()) {
+                            *name = lowered.clone();
+                        }
+                    }
+                }
+                for inner in body.iter_mut() {
+                    rename_pascal_nested_routine_refs_stmt(inner, &renames);
+                }
+            }
+            for inner in body.iter_mut() {
+                canonicalize_pascal_nested_routine_names_stmt(inner);
+            }
+        }
+        StmtKind::Block(inner) | StmtKind::NamespaceDecl { body: inner, .. } => {
+            for stmt in inner {
+                canonicalize_pascal_nested_routine_names_stmt(stmt);
+            }
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                if let ClassMember::Method(stmt) | ClassMember::NestedType(stmt) = member {
+                    canonicalize_pascal_nested_routine_names_stmt(stmt);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// References to the renamed routines, anywhere inside the declaring frame —
+/// including the bodies of its OTHER nested routines, which is where a sibling
+/// call lives.
+fn rename_pascal_nested_routine_refs_stmt(
+    stmt: &mut Statement,
+    renames: &std::collections::HashMap<String, String>,
+) {
+    if let StmtKind::FunctionDecl { body, .. } = &mut stmt.kind {
+        for inner in body.iter_mut() {
+            rename_pascal_nested_routine_refs_stmt(inner, renames);
+        }
+        return;
+    }
+    rewrite_pascal_generic_types_stmt(stmt, renames);
+}
+
+
+// ── Delphi RTTI attribute API → the shared reflection surface ──────────────
+
+/// `ctx.GetType(T)` → `TypeOf(T)`, and `x.GetAttributes` →
+/// `x.GetCustomAttributes(False)`.
+///
+/// `primitives/reflection.rs` already answers the whole attribute surface from
+/// `decorators`: `GetProperty`/`GetMethod`/`GetField` are spelled the SAME in
+/// Delphi's `Rtti` unit and in .NET's, so they need no lowering at all. Only
+/// two spellings differ — the entry point (`TRttiContext.GetType` vs
+/// `typeof`) and the accessor (`GetAttributes` vs `GetCustomAttributes`) — so
+/// those two are all this maps. `TRttiContext.Create` becomes `nil` because the
+/// context is not a value once `GetType` is the shared `TypeOf` node.
+fn lower_pascal_rtti_attribute_api_stmt(stmt: &mut Statement) {
+    stmt.walk_exprs_mut(&mut |expr: &mut Expression| {
+        // `TRttiContext.Create` — the context carries nothing once `GetType`
+        // lowers to `TypeOf`.
+        if let ExprKind::Call { callee, .. } = &expr.kind {
+            if let ExprKind::Member { object, field, .. } = &callee.kind {
+                if field.eq_ignore_ascii_case("Create")
+                    && matches!(&object.kind, ExprKind::Ident(name)
+                        if name.eq_ignore_ascii_case("TRttiContext"))
+                {
+                    *expr = Expression::null();
+                    return;
+                }
+            }
+        }
+        if let ExprKind::Member { object, field, .. } = &expr.kind {
+            if field.eq_ignore_ascii_case("Create")
+                && matches!(&object.kind, ExprKind::Ident(name)
+                    if name.eq_ignore_ascii_case("TRttiContext"))
+            {
+                *expr = Expression::null();
+                return;
+            }
+        }
+        // `ctx.GetType(TFoo)` → `TypeOf(TFoo)`.
+        if let ExprKind::Call { callee, args, .. } = &expr.kind {
+            if let ExprKind::Member { field, .. } = &callee.kind {
+                if field.eq_ignore_ascii_case("GetType") && args.len() == 1 {
+                    let inner = args[0].value.clone();
+                    if matches!(&inner.kind, ExprKind::Ident(_) | ExprKind::Member { .. }) {
+                        *expr = Expression::new(ExprKind::TypeOf(Box::new(inner)));
+                        return;
+                    }
+                }
+            }
+        }
+        // `x.GetAttributes` — Pascal invokes a parameterless routine without
+        // parens, so it arrives as a bare member read as well as a call.
+        // `GetCustomAttributes` needs at least one argument (the `inherit`
+        // flag) to be recognised.
+        let rewritten = match &expr.kind {
+            ExprKind::Call { callee, args, .. } if args.is_empty() => match &callee.kind {
+                ExprKind::Member {
+                    object,
+                    field,
+                    null_safe,
+                } if field.eq_ignore_ascii_case("GetAttributes") => {
+                    Some((object.clone(), *null_safe))
+                }
+                _ => None,
+            },
+            ExprKind::Member {
+                object,
+                field,
+                null_safe,
+            } if field.eq_ignore_ascii_case("GetAttributes") => Some((object.clone(), *null_safe)),
+            _ => None,
+        };
+        if let Some((object, null_safe)) = rewritten {
+            *expr = Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Member {
+                    object,
+                    field: "GetCustomAttributes".to_string(),
+                    null_safe,
+                })),
+                args: vec![Argument::positional(Expression::new(ExprKind::Lit(
+                    Literal::Bool(false),
+                )))],
+                optional: false,
+            });
+        }
+    });
+}
+
+
+// ── System.IOUtils statics → wasi:filesystem ───────────────────────────────
+
+/// `TPath.Combine`, `TFile.ReadAllText`/`WriteAllText`/`Delete`,
+/// `TDirectory.Exists`.
+///
+/// Delphi's `System.IOUtils` wraps the same operations SysUtils spells as free
+/// functions, as STATIC methods on three classes. Every one of them already has
+/// a `wasi:filesystem` export — `pathCombine`, `readFile`, `writeFile`,
+/// `remove`, `isDir` — so this is a spelling, not a capability: no host
+/// function is added.
+///
+/// Keyed on the CLASS name, so a user type that happens to declare a `Combine`
+/// or an `Exists` is untouched.
+fn lower_pascal_ioutils_statics_stmt(stmt: &mut Statement) {
+    stmt.walk_exprs_mut(&mut |expr: &mut Expression| {
+        let ExprKind::Call { callee, args, .. } = &expr.kind else {
+            return;
+        };
+        let ExprKind::Member { object, field, .. } = &callee.kind else {
+            return;
+        };
+        let ExprKind::Ident(class) = &object.kind else {
+            return;
+        };
+        let target = match (
+            class.to_ascii_lowercase().as_str(),
+            field.to_ascii_lowercase().as_str(),
+        ) {
+            ("tpath", "combine") => "__pascal_path_combine",
+            ("tfile", "readalltext") | ("tfile", "fetchalltext") => "__pascal_file_read_all",
+            ("tfile", "writealltext") => "__pascal_file_write_all",
+            ("tfile", "delete") => "__pascal_file_remove",
+            ("tfile", "exists") => "__pascal_file_exists",
+            ("tdirectory", "exists") => "__pascal_dir_exists",
+            ("tdirectory", "createdirectory") => "__pascal_dir_create",
+            ("tdirectory", "delete") => "__pascal_file_remove",
+            _ => return,
+        };
+        *expr = call_expr(
+            target,
+            args.iter().map(|arg| arg.value.clone()).collect(),
+        );
+    });
+}
+
+
+/// `Buf[Start]` → `(Buf, Start)`; a bare `Buf` → `(Buf, 0)`.
+///
+/// Pascal's untyped `var` buffer argument names the first ELEMENT to transfer,
+/// not the array, so the start index is carried in the subscript.
+fn pascal_block_buffer_and_start(expr: &Expression) -> (Expression, Expression) {
+    match &expr.kind {
+        ExprKind::Index { object, index, .. } => ((**object).clone(), (**index).clone()),
+        _ => (expr.clone(), int_expr(0)),
+    }
+}
+
+
+// ── ExceptProc — the unhandled-exception hook ──────────────────────────────
+
+/// `ExceptProc` is Free Pascal's UNHANDLED-exception hook: the RTL calls it
+/// with the exception object and the fault address, and then the program
+/// HALTS. Measured on fpc 3.2.2 (`-Mdelphi`, which is what the harness
+/// injects): the hook prints, the statement after the fault never runs, and the
+/// process exits **217**.
+///
+/// So the lowering is a top-level `try`/`except` around the program body — the
+/// exact place the RTL's own handler sits — that calls the hook if one is
+/// assigned and then halts with 217. Nothing here makes the program survive the
+/// fault, because Free Pascal does not: a test that asserts after the faulting
+/// statement is asserting something no Pascal produces, which is why those
+/// declare `vybe-test-exit: 217` and are judged on the exit code.
+fn install_pascal_except_proc(body: &mut Vec<Statement>, source: &str) {
+    if !pascal_source_mentions_any_ident(source, &["ExceptProc"]) {
+        return;
+    }
+    // The hook variable itself — a plain global holding a procedure value.
+    let declare = Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident("ExceptProc".to_string()),
+            type_hint: None,
+            init: Some(Expression::null()),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Var,
+    });
+
+    // Only the RUN part is guarded. Declarations stay outside, so a routine
+    // declared by the program is still visible to the hook.
+    let split = body
+        .iter()
+        .position(|stmt| !pascal_stmt_is_declaration(stmt))
+        .unwrap_or(body.len());
+    let run: Vec<Statement> = body.split_off(split);
+    if run.is_empty() {
+        return;
+    }
+
+    let call_hook = Statement::new(StmtKind::Expr(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("ExceptProc")),
+        args: vec![
+            Argument::positional(Expression::ident("__pascal_except_obj")),
+            Argument::positional(Expression::null()),
+        ],
+        optional: false,
+    })));
+    let handler = vec![
+        Statement::new(StmtKind::If {
+            cond: call_expr(
+                "Assigned",
+                vec![Expression::ident("ExceptProc")],
+            ),
+            then_body: vec![call_hook],
+            elifs: Vec::new(),
+            else_body: None,
+        }),
+        Statement::new(StmtKind::Expr(call_expr("Halt", vec![int_expr(217)]))),
+    ];
+
+    body.insert(0, declare);
+    body.push(Statement::new(StmtKind::Try {
+        body: run,
+        catches: vec![CatchClause {
+            types: Vec::new(),
+            var_name: Some("__pascal_except_obj".to_string()),
+            stack_var: None,
+            body: handler,
+            when_clause: None,
+        }],
+        else_body: None,
+        finally: None,
+    }));
+}
+
+/// A declaration, as opposed to a statement that RUNS. Only the latter is
+/// wrapped by the `ExceptProc` guard.
+fn pascal_stmt_is_declaration(stmt: &Statement) -> bool {
+    matches!(
+        stmt.kind,
+        StmtKind::FunctionDecl { .. }
+            | StmtKind::ClassDecl { .. }
+            | StmtKind::StructDecl { .. }
+            | StmtKind::InterfaceDecl { .. }
+            | StmtKind::EnumDecl { .. }
+            | StmtKind::ModuleDecl { .. }
+            | StmtKind::NamespaceDecl { .. }
+            | StmtKind::VarDecl { .. }
+    )
 }

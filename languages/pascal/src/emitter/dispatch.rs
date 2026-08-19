@@ -153,6 +153,40 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::runtime_adapter::emit_str_to_float_def(chunks, current, line);
             return true;
         }
+        // `Variants` — the unit's whole surface reads one runtime type, so the
+        // predicates share `emit_var_type` rather than each probing the value.
+        "pascal.var_type" => {
+            crate::emitter::runtime_adapter::emit_var_type(chunks, current, line);
+            return true;
+        }
+        "pascal.var_to_str" => {
+            crate::emitter::runtime_adapter::emit_var_to_str(chunks, current, line);
+            return true;
+        }
+        "pascal.var_to_str_def" => {
+            crate::emitter::runtime_adapter::emit_var_to_str_def(chunks, current, line);
+            return true;
+        }
+        "pascal.var_type_to_as_string" => {
+            crate::emitter::runtime_adapter::emit_var_type_to_as_string(chunks, current, line);
+            return true;
+        }
+        "pascal.var_same_value" => {
+            crate::emitter::runtime_adapter::emit_var_same_value(chunks, current, line);
+            return true;
+        }
+        "pascal.var_as_type" => {
+            crate::emitter::runtime_adapter::emit_var_as_type(chunks, current, line);
+            return true;
+        }
+        _ if name.starts_with("pascal.var_is_") => {
+            return crate::emitter::runtime_adapter::emit_var_is(
+                chunks,
+                current,
+                &name["pascal.var_is_".len()..],
+                line,
+            );
+        }
         "pascal.write" => {
             crate::emitter::runtime_adapter::emit_pascal_write(chunks, current, argc, false, line);
             return true;

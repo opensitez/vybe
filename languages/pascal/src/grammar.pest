@@ -16,16 +16,38 @@ line_comment = _{ "//" ~ (!"\n" ~ ANY)* }
 
 // ── Program ────────────────────────────────────────────────────────────────────
 
-program = { SOI ~ program_inner ~ EOI }
+// A source file is a STREAM of compilation units, not one — `unit A; … end.`
+// followed by `unit B; … end.` followed by `program P; … end.` is what Pascal
+// writes, and it is also what the bundler hands us when several `.pas` files
+// are linked, because same-language sources are concatenated before this one
+// parse. COBOL's `program` rule admits the same repetition for `PROGRAM-ID`
+// units and for the same two reasons.
+//
+// The FIRST unit keeps the original shape, heading and all optional, so a
+// plain `program T; … end.` parses to exactly the pair stream it always did.
+// Every further unit must open with a heading, which is what keeps the
+// repetition from matching empty.
+program = { SOI ~ program_inner ~ trailing_unit* ~ EOI }
 
-program_inner = _{
-    program_heading? ~ uses_clause? ~
+program_inner = _{ program_heading? ~ compilation_unit_body }
+
+trailing_unit = _{ program_heading ~ compilation_unit_body }
+
+compilation_unit_body = _{
+    uses_clause? ~
     interface_section? ~ uses_clause? ~ decl_section ~
     implementation_section? ~ uses_clause? ~ decl_section ~
-    program_body? ~ unit_end? ~ "."?
+    program_body? ~ initialization_section? ~ finalization_section? ~
+    unit_end? ~ "."?
 }
 
 program_heading = { (^"program" | ^"unit") ~ identifier ~ ";" }
+
+// A unit's constructor and destructor. `initialization` runs once when the
+// unit is loaded — before the program body, in `uses` order — and
+// `finalization` runs after the program body, in reverse.
+initialization_section = { ^"initialization" ~ statement_list }
+finalization_section = { ^"finalization" ~ statement_list }
 
 uses_clause = { ^"uses" ~ uses_item ~ ("," ~ uses_item)* ~ ";" }
 uses_item = { unit_name ~ (^"in" ~ string_literal)? }
@@ -110,7 +132,15 @@ const_decl = { identifier ~ (":" ~ type_ref)? ~ "=" ~ expression ~ ";" }
 
 type_section = { ^"type" ~ type_decl+ }
 
-type_decl = { type_name_decl ~ "=" ~ type_def ~ ";" }
+// Delphi CUSTOM ATTRIBUTES — `[Table('users_table')] TUserObj = class end;`.
+// A bracketed annotation before a declaration. Kept as its own rule (not
+// silent) so its inner identifiers stay nested and `walk_type_decl` still
+// reads the TYPE's name as the first direct `identifier` child.
+attribute_list = { attribute_group+ }
+attribute_group = { "[" ~ attribute_entry ~ ("," ~ attribute_entry)* ~ "]" }
+attribute_entry = { identifier ~ arg_list? }
+
+type_decl = { attribute_list? ~ type_name_decl ~ "=" ~ type_def ~ ";" }
 type_name_decl = _{ identifier ~ generic_params? }
 
 type_def = {
@@ -189,7 +219,10 @@ class_heritage = { "(" ~ type_ref ~ ("," ~ type_ref)* ~ ")" }
 // it's a forward declaration. class_body is optional to handle that.
 class_body = { class_member* ~ ^"end" }
 
-class_member = _{
+// An attribute may precede any member, exactly as it may precede a type.
+class_member = _{ attribute_list? ~ class_member_kind }
+
+class_member_kind = _{
     class_visibility
     | class_const_section
     | class_class_member
@@ -324,6 +357,17 @@ method_directive = {
     | ^"stdcall"
     | ^"register"
     | ^"dynamic"
+    // Calling conventions carry no meaning for a routine compiled here — the
+    // stack discipline they name is the ABI of a machine we do not emit for.
+    // They still have to PARSE, because Delphi code writes them and a
+    // `safecall` routine is an ordinary routine everywhere else.
+    | ^"safecall"
+    | ^"varargs"
+    | ^"winapi"
+    | ^"assembler"
+    | ^"export"
+    | ^"far"
+    | ^"near"
 }
 
 // ── Procedure / Function Declarations & Method Implementations ─────────────────
@@ -397,7 +441,7 @@ param_clause = { "(" ~ param_list? ~ ")" }
 
 param_list = { param ~ (";" ~ param)* }
 
-param = { param_mode? ~ identifier_list ~ (":" ~ type_ref ~ param_default?)? }
+param = { attribute_list? ~ param_mode? ~ identifier_list ~ (":" ~ type_ref ~ param_default?)? }
 
 param_mode = { ^"constref" | ^"var" | ^"const" | ^"out" }
 
@@ -803,14 +847,25 @@ identifier = @{
 keyword = _{
     (
         ^"program" | ^"unit" | ^"uses" | ^"interface" | ^"implementation"
+        // A unit's constructor and destructor. Reserved, or a `statement_list`
+        // reads `finalization` as a bare procedure call and swallows the
+        // section that follows it.
+        | ^"initialization" | ^"finalization"
         | ^"begin" | ^"end" | ^"var" | ^"const" | ^"type"
-        | ^"procedure" | ^"function" | ^"forward"
+        | ^"procedure" | ^"function"
         | ^"if" | ^"then" | ^"else"
         | ^"for" | ^"to" | ^"downto" | ^"do"
         | ^"while" | ^"until"
         | ^"case" | ^"of" | ^"otherwise"
         | ^"record" | ^"array" | ^"set" | ^"object" | ^"class"
-        | ^"inherited" | ^"override" | ^"virtual" | ^"abstract"
+        // `override`/`virtual`/`abstract`/`forward` are DIRECTIVES, not
+        // reserved words: fpc compiles
+        // `procedure P(override: Boolean; virtual, abstract, forward: Integer)`
+        // without complaint. Each is matched by its own literal rule
+        // (`method_directive`, `forward_directive`, `class_modifier`) in the
+        // position where it IS a directive, so reserving the spelling here only
+        // ever cost a program the right to use it as a name.
+        | ^"inherited"
         | ^"with" | ^"in" | ^"is" | ^"as"
         | ^"try" | ^"except" | ^"finally" | ^"raise"
         | ^"and" | ^"or" | ^"not" | ^"xor" | ^"div" | ^"mod" | ^"shl" | ^"shr"

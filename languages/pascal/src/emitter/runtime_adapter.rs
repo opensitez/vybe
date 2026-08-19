@@ -1278,3 +1278,281 @@ pub fn emit_exception_new(chunks: &mut [Chunk], current: usize, spelling: &str, 
         line,
     );
 }
+
+// ── Variants ────────────────────────────────────────────────────────────────
+//
+// A `Variant` IS the dynamic value the VM already holds — there is no tag
+// beside it and none is needed, because the value knows its own type. So
+// `VarType` is a reading of that runtime type, and every `VarIsX` predicate is
+// a comparison against the reading rather than a separate probe.
+//
+// The numbers are `Variants.pas`'s own, because a program compares against the
+// SPELLING (`VarType(v) = varInteger`) and the profile declares those constants
+// with these same values. Free Pascal, which is the ground truth here, gives a
+// string variant `varString` — Delphi's Unicode `varUString` is not what `fpc`
+// produces for `v := 'text'`.
+
+/// `varEmpty` — assigned nothing. The VM's `Undefined`.
+const VAR_EMPTY: i32 = 0;
+/// `varNull` — assigned `Null`, which is a VALUE and not the absence of one.
+const VAR_NULL: i32 = 1;
+const VAR_INTEGER: i32 = 3;
+const VAR_DOUBLE: i32 = 5;
+const VAR_BOOLEAN: i32 = 11;
+const VAR_STRING: i32 = 256;
+/// `varArray` is a FLAG or'd onto the element type, not a type of its own.
+const VAR_ARRAY: i32 = 0x2000;
+
+/// Stack `[x]` → `[i32 0|1]`: is the string on top equal to `want`?
+fn emit_str_is(chunks: &mut [Chunk], current: usize, want: &str, line: u32) {
+    chunks[current].emit_string_const(want, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+}
+
+/// `VarType(v)` — stack `[v]` → `[code]`.
+///
+/// `typeof` separates every case except one: it answers `object` for both an
+/// array and `Null`, and `undefined` is its own answer, which is exactly the
+/// `varEmpty`/`varNull` distinction Delphi draws and `ref.is_null` cannot —
+/// that opcode is true for BOTH.
+pub fn emit_var_type(chunks: &mut [Chunk], current: usize, line: u32) {
+    let v = chunks[current].alloc_scratch(2);
+    let t = v + 1;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, v, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    host(chunks, current, "ecma:value", "typeof", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, t, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, t, line);
+    emit_str_is(chunks, current, "undefined", line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_i32_const(VAR_EMPTY, line);
+    chunks[current].emit_else(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, t, line);
+    emit_str_is(chunks, current, "boolean", line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_i32_const(VAR_BOOLEAN, line);
+    chunks[current].emit_else(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, t, line);
+    emit_str_is(chunks, current, "string", line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_i32_const(VAR_STRING, line);
+    chunks[current].emit_else(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, t, line);
+    emit_str_is(chunks, current, "number", line);
+    chunks[current].emit_if_value(line);
+    // Delphi stores a whole number as `varInteger` and a fractional one as
+    // `varDouble`; the VM holds both as one numeric value, so the DISTINCTION
+    // is the value's own integrality.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    host(chunks, current, "ecma:number", "isInteger", 1, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_i32_const(VAR_INTEGER, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_i32_const(VAR_DOUBLE, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+
+    // `object`: an array, or `Null`.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    host(chunks, current, "ecma:array", "isArray", 1, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_i32_const(VAR_ARRAY | VAR_INTEGER, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_i32_const(VAR_NULL, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+}
+
+/// `VarType(v) = code` — the shape every single-code predicate has.
+fn emit_var_type_is(chunks: &mut [Chunk], current: usize, code: i32, line: u32) {
+    emit_var_type(chunks, current, line);
+    chunks[current].emit_i32_const(code, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_i32_to_bool(&mut chunks[current], line);
+}
+
+/// `VarType(v)` is either of two codes — `VarIsNumeric`, `VarIsOrdinal`.
+fn emit_var_type_is_either(chunks: &mut [Chunk], current: usize, a: i32, b: i32, line: u32) {
+    let code = chunks[current].alloc_scratch(1);
+    emit_var_type(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, code, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, code, line);
+    chunks[current].emit_i32_const(a, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_bool_const(true, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, code, line);
+    chunks[current].emit_i32_const(b, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_i32_to_bool(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+}
+
+/// `VarIsEmpty` / `VarIsNull` / `VarIsStr` / `VarIsBool` / `VarIsFloat` /
+/// `VarIsNumeric` / `VarIsOrdinal` / `VarIsArray` / `VarIsByRef`.
+pub fn emit_var_is(chunks: &mut [Chunk], current: usize, which: &str, line: u32) -> bool {
+    match which {
+        "empty" => emit_var_type_is(chunks, current, VAR_EMPTY, line),
+        "null" => emit_var_type_is(chunks, current, VAR_NULL, line),
+        "str" => emit_var_type_is(chunks, current, VAR_STRING, line),
+        "bool" => emit_var_type_is(chunks, current, VAR_BOOLEAN, line),
+        "float" => emit_var_type_is(chunks, current, VAR_DOUBLE, line),
+        // Delphi's ordinal types are the integer family, `Boolean` and the
+        // enumerations — everything counted, as opposed to measured.
+        "ordinal" => emit_var_type_is_either(chunks, current, VAR_INTEGER, VAR_BOOLEAN, line),
+        "numeric" => emit_var_type_is_either(chunks, current, VAR_INTEGER, VAR_DOUBLE, line),
+        "array" => {
+            host(chunks, current, "ecma:array", "isArray", 1, line);
+            ops::emit_dyn_to_bool(&mut chunks[current], line);
+        }
+        // A variant here never wraps a reference to someone else's storage:
+        // `VarIsByRef` describes `varByRef`, which only an interop caller can
+        // set, and nothing in this runtime produces one.
+        "byref" => {
+            chunks[current].emit_op(Op::DROP, line);
+            chunks[current].emit_bool_const(false, line);
+        }
+        _ => return false,
+    }
+    true
+}
+
+/// `VarToStr(v)` — stack `[v]` → `[string]`. `Null` and `Unassigned` render as
+/// the EMPTY string, which is the one place `VarToStr` differs from `String()`.
+pub fn emit_var_to_str(chunks: &mut [Chunk], current: usize, line: u32) {
+    let v = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, v, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_string_const("", line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    host(chunks, current, "ecma:string", "String", 1, line);
+    chunks[current].emit_end(line);
+}
+
+/// `VarToStrDef(v, default)` — stack `[v, default]` → `[string]`.
+pub fn emit_var_to_str_def(chunks: &mut [Chunk], current: usize, line: u32) {
+    let dflt = chunks[current].alloc_scratch(2);
+    let v = dflt + 1;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, dflt, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, v, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, dflt, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    host(chunks, current, "ecma:string", "String", 1, line);
+    chunks[current].emit_end(line);
+}
+
+/// `VarTypeToAsString(code)` — the type code's own name, as `Variants.pas`
+/// spells it in a message.
+pub fn emit_var_type_to_as_string(chunks: &mut [Chunk], current: usize, line: u32) {
+    let code = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, code, line);
+    for (value, name) in [
+        (VAR_EMPTY, "Empty"),
+        (VAR_NULL, "Null"),
+        (VAR_INTEGER, "Integer"),
+        (VAR_DOUBLE, "Double"),
+        (VAR_BOOLEAN, "Boolean"),
+        (VAR_STRING, "String"),
+    ] {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, code, line);
+        chunks[current].emit_i32_const(value, line);
+        ops::emit_dyn_eq(&mut chunks[current], line);
+        ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if_value(line);
+        chunks[current].emit_string_const(name, line);
+        chunks[current].emit_else(line);
+    }
+    chunks[current].emit_string_const("Unknown", line);
+    for _ in 0..6 {
+        chunks[current].emit_end(line);
+    }
+}
+
+/// `VarSameValue(a, b)` — variant equality, which compares VALUES across types
+/// (`1 = '1'`) exactly as the variant `=` operator does.
+pub fn emit_var_same_value(chunks: &mut [Chunk], current: usize, line: u32) {
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_i32_to_bool(&mut chunks[current], line);
+}
+
+/// `VarAsType(v, code)` — stack `[v, code]` → `[coerced]`.
+///
+/// A coercion that cannot be performed raises `EVariantError`; that is the
+/// documented contract, and `VarAsType('NotANumber', varInteger)` is the case
+/// a program catches.
+pub fn emit_var_as_type(chunks: &mut [Chunk], current: usize, line: u32) {
+    let code = chunks[current].alloc_scratch(3);
+    let v = code + 1;
+    let out = code + 2;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, code, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, v, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, code, line);
+    chunks[current].emit_i32_const(VAR_STRING, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    host(chunks, current, "ecma:string", "String", 1, line);
+    chunks[current].emit_else(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, code, line);
+    chunks[current].emit_i32_const(VAR_BOOLEAN, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+
+    // Every remaining code is numeric. `Number('12x')` is NaN, and NaN is
+    // precisely "this variant does not convert".
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    host(chunks, current, "ecma:number", "Number", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    ops::emit_dyn_ne(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_string_const("Could not convert variant to the required type", line);
+    emit_exception_new(chunks, current, "EVariantError", line);
+    vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, code, line);
+    chunks[current].emit_i32_const(VAR_INTEGER, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    vybe_compiler::primitives::math::emit_trunc(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+}

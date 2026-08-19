@@ -116,12 +116,60 @@ SameStr       = { emit = "common:pascal.same_str",        min_args = 2, max_args
 SameText      = { emit = "common:pascal.same_text",       min_args = 2, max_args = 2 }
 CompareText   = { emit = "common:pascal.compare_text",    min_args = 2, max_args = 2 }
 StrToBool     = { emit = "common:pascal.str_to_bool",     min_args = 1, max_args = 1 }
+
+# ── Variants ────────────────────────────────────────────────────────────────
+# A `Variant` is the dynamic value itself, so this unit reads the value's own
+# runtime type rather than a tag stored beside it — see `runtime_adapter.rs`.
+VarType         = { emit = "common:pascal.var_type",             min_args = 1, max_args = 1 }
+VarIsEmpty      = { emit = "common:pascal.var_is_empty",         min_args = 1, max_args = 1 }
+VarIsNull       = { emit = "common:pascal.var_is_null",          min_args = 1, max_args = 1 }
+VarIsStr        = { emit = "common:pascal.var_is_str",           min_args = 1, max_args = 1 }
+VarIsBool       = { emit = "common:pascal.var_is_bool",          min_args = 1, max_args = 1 }
+VarIsFloat      = { emit = "common:pascal.var_is_float",         min_args = 1, max_args = 1 }
+VarIsNumeric    = { emit = "common:pascal.var_is_numeric",       min_args = 1, max_args = 1 }
+VarIsOrdinal    = { emit = "common:pascal.var_is_ordinal",       min_args = 1, max_args = 1 }
+VarIsArray      = { emit = "common:pascal.var_is_array",         min_args = 1, max_args = 1 }
+VarIsByRef      = { emit = "common:pascal.var_is_byref",         min_args = 1, max_args = 1 }
+VarToStr        = { emit = "common:pascal.var_to_str",           min_args = 1, max_args = 1 }
+VarToStrDef     = { emit = "common:pascal.var_to_str_def",       min_args = 2, max_args = 2 }
+VarTypeToAsString = { emit = "common:pascal.var_type_to_as_string", min_args = 1, max_args = 1 }
+VarSameValue    = { emit = "common:pascal.var_same_value",       min_args = 2, max_args = 2 }
+VarAsType       = { emit = "common:pascal.var_as_type",          min_args = 2, max_args = 2 }
+# `TDateTime` is milliseconds here (`DateTimeToUnix` divides by 1000), which is
+# what `Date.parse` answers — and unlike `StrToDate`, this one must read a
+# variant held in a VARIABLE, so the parse cannot happen at compile time.
+VarToDateTime   = { emit = "host:ecma:date:parse",               min_args = 1, max_args = 1 }
+VarCast         = { emit = "common:pascal.var_as_type",          min_args = 2, max_args = 2 }
 StrToIntDef   = { emit = "common:pascal.str_to_int_def",  min_args = 2, max_args = 2 }
 write         = { emit = "common:pascal.write",            min_args = 0, max_args = 255 }
 readln        = { emit = "host:wasi:cli:readLine",         min_args = 0, max_args = 1 }
 read          = { emit = "host:wasi:cli:readLine",         min_args = 0, max_args = 1 }
 eof           = { emit = "common:pascal.file_eof",          min_args = 1, max_args = 1 }
 fileexists    = { emit = "host:wasi:filesystem:exists",     min_args = 1, max_args = 1 }
+
+# SysUtils file/directory routines. Every one of these binds to a
+# `wasi:filesystem` export that ALREADY exists — the same surface go, php and
+# python reach — so this adds no host function, only the Delphi spelling for
+# one. Unbound, each was "undefined is not callable".
+directoryexists  = { emit = "host:wasi:filesystem:isDir",           min_args = 1, max_args = 1 }
+deletefile       = { emit = "host:wasi:filesystem:remove",          min_args = 1, max_args = 1 }
+# `RemoveDir` and `DeleteFile` are one operation on a path; `wasi:filesystem`
+# does not split them either.
+removedir        = { emit = "host:wasi:filesystem:remove",          min_args = 1, max_args = 1 }
+createdir        = { emit = "host:wasi:filesystem:mkdir",           min_args = 1, max_args = 1 }
+# `ForceDirectories` creates the whole chain; `mkdir` takes the recursive flag
+# as its second argument, which is what makes these the same call.
+forcedirectories = { emit = "host:wasi:filesystem:mkdir",           min_args = 1, max_args = 2 }
+renamefile       = { emit = "host:wasi:filesystem:rename",          min_args = 2, max_args = 2 }
+# NOT bound: `FileAge` wants the last-modified stamp, and `modified` is a
+# FIELD of what `wasi:filesystem:stat` returns, not an export of its own. A
+# profile emit names a function, so this one needs a lowering, not a binding —
+# left unbound rather than pointed at an import that does not resolve.
+expandfilename   = { emit = "host:wasi:filesystem:pathGetFullPath", min_args = 1, max_args = 1 }
+# `wasi:cli/environment` exposes the working directory under BOTH proposal
+# spellings (`initial-cwd` in 0.2.x, `get-initial-cwd` in 0.3.x); this binds the
+# 0.2.x one the platform registers alongside the other.
+getcurrentdir    = { emit = "host:wasi:cli/environment:initial-cwd", min_args = 0, max_args = 0 }
 flush         = { emit = "noop",                            min_args = 1, max_args = 1 }
 __pascal_file_open      = { emit = "host:wasi:filesystem:openFile",          min_args = 3, max_args = 3 }
 __pascal_file_close     = { emit = "host:wasi:filesystem:closeFile",         min_args = 1, max_args = 1 }
@@ -140,6 +188,46 @@ __pascal_csv_split  = { emit = "common:csv.parse_line",          min_args = 3, m
 __pascal_file_readline  = { emit = "host:wasi:filesystem:lineInput",         min_args = 1, max_args = 1 }
 __pascal_file_readcsv   = { emit = "host:wasi:filesystem:inputFile",         min_args = 1, max_args = 1 }
 __pascal_file_exists    = { emit = "host:wasi:filesystem:exists",            min_args = 1, max_args = 1 }
+# System.IOUtils, bound to the SAME exports the SysUtils spellings use.
+__pascal_path_combine   = { emit = "host:wasi:filesystem:pathCombine",       min_args = 2, max_args = 2 }
+__pascal_file_read_all  = { emit = "host:wasi:filesystem:readFile",          min_args = 1, max_args = 1 }
+__pascal_file_write_all = { emit = "host:wasi:filesystem:writeFile",         min_args = 2, max_args = 2 }
+__pascal_dir_exists     = { emit = "host:wasi:filesystem:isDir",             min_args = 1, max_args = 1 }
+__pascal_dir_create     = { emit = "host:wasi:filesystem:mkdir",             min_args = 1, max_args = 2 }
+
+# ── Positional file I/O — the real WASI 0.2.8 descriptor interface ─────────
+#
+# `BlockRead`/`BlockWrite`/`Seek` are POSITIONAL, and the flat `wasi:filesystem`
+# shim is whole-file: it has `readFileBytes` but no `writeFileBytes`, so raw
+# bytes cannot be written through it at all. `wasi:filesystem/types` is the
+# canonical-ABI descriptor surface and `descriptor.read`/`.write` both take an
+# explicit offset, which is exactly Pascal's file-position model. The POSITION
+# itself stays a Pascal-side variable, like the `__pascal_file_path_<n>`
+# companion `AssignFile` already gets.
+__pascal_fs_preopens = { emit = "host:wasi:filesystem/preopens:get-directories",              min_args = 0, max_args = 0 }
+__pascal_fs_open_at  = { emit = "host:wasi:filesystem/types:[method]descriptor.open-at",      min_args = 5, max_args = 5 }
+__pascal_fs_write    = { emit = "host:wasi:filesystem/types:[method]descriptor.write",        min_args = 3, max_args = 3 }
+__pascal_fs_read     = { emit = "host:wasi:filesystem/types:[method]descriptor.read",         min_args = 3, max_args = 3 }
+__pascal_fs_stat     = { emit = "host:wasi:filesystem/types:[method]descriptor.stat",         min_args = 1, max_args = 1 }
+__pascal_fs_setsize  = { emit = "host:wasi:filesystem/types:[method]descriptor.set-size",     min_args = 2, max_args = 2 }
+
+# ── Threads — the WASM threads proposal, not a simulation ─────────────────
+#
+# `thread_spawn` is the shared spawn lowering (funcref `table.grow` → a 16-byte
+# `{fn_idx,status,user_arg}` record in the futex page → the
+# `wasi:threads.thread-spawn` import) and `thread_join` is the futex wait on
+# that record's status word — the same two C's pthreads bind to.
+#
+# NOT bound: `TInterlocked` and `TCriticalSection`. The atomic emits are
+# ADDRESS-based (`[addr, value]`, and `emit_lock_acquire` takes an address
+# slot) because that is what the proposal is; C reaches them because a C
+# variable IS a linear-memory address. A Pascal `var counter: Integer` is a VM
+# value with no address, so binding those needs Pascal to place the operand in
+# the shared page first. Left unbound rather than faked with `v := v + 1`,
+# which would read as synchronisation while providing none.
+__pascal_thread_spawn = { emit = "common:threading.thread_spawn", min_args = 2, max_args = 2 }
+__pascal_thread_join  = { emit = "common:threading.thread_join",  min_args = 1, max_args = 1 }
+__pascal_thread_sleep = { emit = "common:threading.sleep",        min_args = 1, max_args = 1 }
 __pascal_file_remove    = { emit = "host:wasi:filesystem:remove",            min_args = 1, max_args = 1 }
 __pascal_file_rename    = { emit = "host:wasi:filesystem:rename",            min_args = 2, max_args = 2 }
 __pascal_file_flush     = { emit = "noop",                                   min_args = 1, max_args = 1 }
@@ -413,6 +501,19 @@ count         = { emit = "common:collections.length", min_args = 0, max_args = 0
 
 [namespace_constants]
 "maxint"      = 2147483647
+
+# `Variants.pas` type codes. A program names these rather than the numbers
+# (`VarType(v) = varInteger`), and `emit_var_type` answers with the same values.
+# `varString` — not Delphi's Unicode `varUString` — is what `fpc` gives a string
+# variant, and `fpc` is the ground truth here.
+"varempty"    = 0
+"varnull"     = 1
+"varinteger"  = 3
+"vardouble"   = 5
+"varboolean"  = 11
+"varstring"   = 256
+"varvariant"  = 12
+"vararray"    = 8192
 "pi"          = 3.141592653589793
 "ntelement"   = 1
 
