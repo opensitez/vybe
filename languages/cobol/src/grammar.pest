@@ -28,7 +28,8 @@ period = { "." }
 program = {
     SOI
         ~ (
-                identification_division
+                class_unit
+            | identification_division
                 ~ environment_division?
                 ~ data_division?
                 ~ procedure_division?
@@ -38,6 +39,22 @@ program = {
             | interface_id_paragraph
         )+
     ~ EOI
+}
+
+// ⛔ A CLASS-ID / INTERFACE-ID unit must be matched BEFORE the program
+// alternative. `identification_division` also accepts a class, and that
+// alternative ends in `nested_program*` — which is itself
+// `IDENTIFICATION DIVISION. PROGRAM-ID …`. So a program FOLLOWING a class was
+// swallowed as the class's nested program, and a nested program never becomes
+// the run unit: the file compiled and then printed NOTHING, silently. A class
+// has no procedure division, so it can contain no nested program.
+//
+// Silent (`_`) so the walker keeps seeing `class_id_paragraph` /
+// `interface_id_paragraph` at the top level, which it already handles.
+class_unit = _{
+    kw_identification ~ kw_division ~ period
+    ~ (class_id_paragraph | interface_id_paragraph)
+    ~ id_optional_paragraph*
 }
 
 // ── Identification Division ─────────────────────────────────────────────────
@@ -107,14 +124,20 @@ class_body = {
 }
 
 factory_paragraph = {
-    kw_factory ~ period
+    identification_header? ~ kw_factory ~ period
+    ~ data_division?
+    ~ (kw_procedure ~ kw_division ~ period)?
     ~ method_def*
     ~ kw_end_factory ~ period?
 }
 
+// Each FACTORY / OBJECT may restate `IDENTIFICATION DIVISION.` ahead of itself.
+identification_header = _{ kw_identification ~ kw_division ~ period }
+
 object_paragraph = {
-    kw_object ~ period
+    identification_header? ~ kw_object ~ period
     ~ data_division?
+    ~ (kw_procedure ~ kw_division ~ period)?
     ~ method_def*
     ~ kw_end_object ~ period?
 }
@@ -127,7 +150,8 @@ procedure_division_class = {
 // ── Interface body ──────────────────────────────────────────────────────────
 
 interface_body = {
-    method_signature*
+    (kw_procedure ~ kw_division ~ period)?
+    ~ method_signature*
     ~ kw_end_interface ~ period? ~ ident_or_keyword? ~ period?
 }
 
@@ -201,11 +225,28 @@ configuration_entry = {
 }
 
 source_computer_paragraph = { kw_source_computer ~ period ~ ident_or_keyword ~ (kw_with? ~ kw_debugging ~ kw_mode)? ~ period }
-object_computer_paragraph = { kw_object_computer ~ period ~ ident_or_keyword ~ period }
+// OBJECT-COMPUTER names the machine plus optional clauses about it. Every one
+// of them is DOCUMENTARY on a virtual machine — memory size and segment limits
+// describe hardware that no longer exists, and the collating sequence names an
+// alphabet from SPECIAL-NAMES. They still have to PARSE: the paragraph accepted
+// a bare computer-name only, so `IBM-370 MEMORY SIZE 1024 WORDS.` was a syntax
+// error in programs cobc compiles happily.
+object_computer_paragraph = {
+    kw_object_computer ~ period ~ ident_or_keyword ~ object_computer_clause* ~ period
+}
 
+object_computer_clause = {
+    kw_memory ~ kw_size? ~ number_literal ~ (kw_words | kw_characters | kw_modules)?
+  | kw_segment_limit ~ kw_is? ~ number_literal
+  | kw_program? ~ kw_collating ~ kw_sequence ~ kw_is? ~ ident_or_keyword
+}
+
+// The paragraph is nominally ONE sentence, but every real compiler also accepts
+// a period after each clause (`DECIMAL-POINT IS COMMA. CURRENCY SIGN IS '$'.`),
+// which cobc compiles and this rule rejected at the first inner period.
 special_names_paragraph = {
     kw_special_names ~ period
-        ~ special_name_entry+
+        ~ special_name_entry ~ (period? ~ special_name_entry)*
         ~ period
 }
 
@@ -215,6 +256,8 @@ special_name_entry = {
   | class_name_entry
     | alphabet_name_entry
     | symbolic_characters_entry
+    | crt_status_entry
+    | cursor_entry
     | console_entry
 }
 
@@ -225,10 +268,19 @@ alphabet_name_entry = { kw_alphabet ~ ident_name ~ kw_is? ~ alphabet_name_spec+ 
 symbolic_characters_entry = {
         kw_symbolic ~ kw_characters ~ symbolic_character_mapping+
 }
-symbolic_character_mapping = { ident_name ~ kw_is? ~ number_literal }
+// `ARE` is the plural of `IS` and COBOL accepts either everywhere it reads as
+// English; only `IS` was allowed here.
+symbolic_character_mapping = { ident_name ~ (kw_is | kw_are)? ~ number_literal }
+// CRT STATUS / CURSOR name a data item the screen handler writes into. The
+// item is ordinary WORKING-STORAGE, so nothing is needed beyond parsing it.
+crt_status_entry = { kw_crt ~ kw_status ~ kw_is? ~ ident_name }
+cursor_entry     = { kw_cursor ~ kw_is? ~ ident_name }
 console_entry = { kw_console ~ kw_is? ~ ident_or_keyword }
 
-class_name_spec = { string_literal ~ (kw_thru ~ string_literal)? }
+class_name_spec = {
+    string_literal ~ (kw_thru ~ string_literal)?
+  | figurative_constant
+}
 alphabet_name_spec = {
         string_literal ~ (kw_thru ~ string_literal)?
     | ident_or_keyword
@@ -255,11 +307,11 @@ repository_function_entry = {
 }
 
 repository_class_entry = {
-    kw_class ~ ident_name ~ kw_as ~ string_literal
+    kw_class ~ ident_name ~ (kw_as | kw_is) ~ string_literal
 }
 
 repository_interface_entry = {
-    kw_interface_bare ~ ident_name ~ kw_as ~ string_literal
+    kw_interface_bare ~ ident_name ~ (kw_as | kw_is) ~ string_literal
 }
 
 input_output_section = {
@@ -292,7 +344,7 @@ select_clause = {
 
 data_division = {
     kw_data ~ kw_division ~ period
-    ~ (file_section | working_storage_section | local_storage_section | linkage_section | screen_section)*
+    ~ (file_section | working_storage_section | local_storage_section | linkage_section | screen_section | report_section)*
 }
 
 file_section = {
@@ -310,6 +362,7 @@ fd_clause = {
   | kw_block ~ kw_contains? ~ number_literal ~ (kw_to ~ number_literal)? ~ kw_characters?
   | kw_label ~ kw_record? ~ kw_is? ~ (kw_standard | kw_omitted)
   | kw_data ~ kw_record? ~ kw_is? ~ ident_name
+  | (kw_report | kw_reports) ~ (kw_is | kw_are)? ~ ident_name+
     | linage_clause
 }
 
@@ -318,6 +371,96 @@ linage_clause = {
         ~ (kw_with ~ kw_footing ~ kw_at ~ (number_literal | ident_name))?
         ~ (kw_lines ~ kw_at ~ kw_top ~ (number_literal | ident_name))?
         ~ (kw_lines ~ kw_at ~ kw_bottom ~ (number_literal | ident_name))?
+}
+
+// ── Report Writer ───────────────────────────────────────────────────────────
+//
+// The REPORT SECTION describes a report as GROUPS of lines rather than as a
+// record layout: an `RD` names the report, each `01` is a group with a TYPE
+// saying WHEN the report writer emits it, and the elementary items place
+// themselves with LINE/COLUMN instead of by their offset in a record.
+//
+// ⚠ Both the group name and the elementary name are OPTIONAL — `01 TYPE IS
+// DETAIL.` and `05 LINE 1 COL 1 PIC X VALUE 'A'.` are complete entries.
+// INITIATE/GENERATE/TERMINATE drive the report writer control system.
+// ⚠ They PARSE and are walked, but no report output is produced yet — the RWCS
+// writes to the report's FILE, not to stdout, so emitting anything here would
+// diverge from cobc rather than approximate it. See
+// `project_cobol_report_writer_is_absent`.
+report_verb_stmt = {
+    (kw_initiate | kw_terminate) ~ ident_name+
+  | kw_generate ~ qualified_ident
+}
+
+report_section = {
+    kw_report ~ kw_section ~ period
+    ~ report_description*
+}
+
+report_description = {
+    kw_rd ~ ident_name ~ rd_clause* ~ period
+    ~ report_group_item*
+}
+
+rd_clause = {
+    (kw_control | kw_controls) ~ (kw_is | kw_are)? ~ (kw_final | ident_name)+
+  | kw_page ~ kw_limit? ~ (kw_is | kw_are)? ~ number_literal ~ (kw_lines | kw_line)?
+      ~ page_sub_clause*
+  | kw_code ~ (string_literal | ident_name)
+}
+
+page_sub_clause = {
+    kw_heading ~ kw_is? ~ number_literal
+  | kw_first ~ (kw_detail | kw_de) ~ kw_is? ~ number_literal
+  | kw_last ~ (kw_detail | kw_de) ~ kw_is? ~ number_literal
+  | kw_footing ~ kw_is? ~ number_literal
+}
+
+// ⚠ The name is optional, so it MUST NOT be allowed to swallow the first
+// clause keyword: `03 COL 1 VALUE "X".` has no name, and a bare `ident_name?`
+// happily took `COL` as one and then choked on the `1`. Same guard
+// `regular_data_item` already uses.
+report_group_item = {
+    level_number ~ (!report_group_clause_start ~ ident_name)? ~ report_group_clause* ~ period
+}
+
+report_group_clause_start = _{
+    kw_type | kw_next | kw_line | kw_column | kw_col | kw_source | kw_sum
+  | kw_group | kw_pic | kw_picture | kw_value | kw_blank | kw_justified
+  | kw_just | kw_usage | kw_sign
+}
+
+report_group_clause = {
+    kw_type ~ kw_is? ~ report_type_spec
+  | kw_next ~ kw_group ~ kw_is? ~ (kw_next ~ kw_page | kw_plus ~ number_literal | number_literal)
+  | kw_line ~ kw_number? ~ kw_is? ~ (kw_plus ~ number_literal | number_literal)
+      ~ (kw_on? ~ kw_next ~ kw_page)?
+  | (kw_column | kw_col) ~ kw_number? ~ kw_is? ~ kw_plus? ~ number_literal
+  | kw_source ~ kw_is? ~ qualified_ident
+  | kw_sum ~ (","? ~ !(kw_upon | kw_reset) ~ qualified_ident)+
+      ~ (kw_upon ~ ident_name)?
+      ~ (kw_reset ~ kw_on? ~ (kw_final | ident_name))?
+  | kw_group ~ kw_indicate
+  | pic_clause
+  | value_clause
+  | blank_clause
+  | justified_clause
+  | usage_clause
+  | sign_clause
+}
+
+// RH / PH / CH / DE / CF / PF / RF are the STANDARD abbreviations of these
+// types. ⚠ GnuCOBOL rejects every one of them ("syntax error, unexpected PH"),
+// so tests that use them have no cobc ground truth — the standard is the
+// authority, exactly as it is for OO COBOL.
+report_type_spec = {
+    (kw_report ~ kw_heading | kw_rh)
+  | (kw_report ~ kw_footing | kw_rf)
+  | (kw_page ~ kw_heading | kw_ph)
+  | (kw_page ~ kw_footing | kw_pf)
+  | (kw_control ~ kw_heading | kw_ch) ~ (kw_final | ident_name)?
+  | (kw_control ~ kw_footing | kw_cf) ~ (kw_final | ident_name)?
+  | (kw_detail | kw_de)
 }
 
 working_storage_section = {
@@ -492,11 +635,19 @@ redefines_clause = { kw_redefines ~ ident_name }
 renames_clause   = { kw_renames ~ ident_name ~ ((kw_thru | kw_through) ~ ident_name)? }
 usage_clause     = { kw_usage ~ kw_is? ~ usage_type }
 usage_type       = {
-        kw_binary | kw_comp_3 | kw_comp_5 | kw_comp | kw_display_usage
+        // The `comp-N` spellings MUST precede bare `kw_comp`: `ident_cont`
+        // excludes `-`, so `kw_comp` happily matches the `COMP` prefix of
+        // `COMP-2` and the `-2` is dropped — which is how `USAGE COMP-2`
+        // was being typed as a binary INTEGER.
+        kw_binary | kw_comp_1 | kw_comp_2 | kw_comp_3 | kw_comp_5 | kw_comp | kw_display_usage
   | kw_packed_decimal | kw_pointer | kw_index
   | kw_float_long | kw_float_short | kw_national | kw_boolean
+  | object_reference_usage
   | ident_name
 }
+
+// `USAGE OBJECT REFERENCE [class-name]` — COBOL 2002 object handles.
+object_reference_usage = { kw_object ~ kw_reference ~ ident_name? }
 
 blank_clause     = { kw_blank ~ kw_when? ~ kw_zero }
 justified_clause = { (kw_justified | kw_just) ~ kw_right? }
@@ -517,8 +668,8 @@ procedure_division = {
     ~ using_clause?
     ~ returning_clause?
     ~ period
-    ~ statement_list
     ~ declaratives_block?
+    ~ statement_list
     ~ procedure_block*
 }
 
@@ -538,7 +689,16 @@ declarative_section = {
 use_stmt = {
     kw_use ~ after_use_clause
   | kw_use ~ debugging_use_clause
+  | kw_use ~ before_reporting_clause
 }
+
+// `USE BEFORE REPORTING <report-group>` — a REPORT WRITER declarative. It had
+// no rule, so every DECLARATIVES block containing one failed to parse and the
+// error pointed at `DECLARATIVES` itself.
+// ⚠ ONE report-group-name. I widened this to `ident_name+` to fit a test
+// that wrote `USE BEFORE REPORTING G1 G2` — which cobc rejects and the
+// standard does not allow; two groups mean two USE sections.
+before_reporting_clause = { kw_global? ~ kw_before ~ kw_reporting ~ ident_name }
 
 after_use_clause = {
     kw_global? ~ kw_after ~ use_condition
@@ -599,6 +759,7 @@ statement = _{
   | perform_stmt
   | string_stmt
   | unstring_stmt
+  | report_verb_stmt
   | inspect_stmt
   | call_stmt
     | cancel_stmt
@@ -672,7 +833,8 @@ accept_stmt = {
 }
 
 accept_source = {
-    accept_environment_source
+    kw_environment_value
+  | accept_environment_source
   | accept_day_of_week_source
   | accept_date_source
   | accept_day_source
@@ -684,6 +846,13 @@ accept_source = {
 accept_environment_source = {
     kw_environment ~ (kw_name ~ ident_name | string_literal)
 }
+
+// The X/Open two-step: `DISPLAY "HOME" UPON ENVIRONMENT-NAME` selects the
+// variable, `ACCEPT v FROM ENVIRONMENT-VALUE` reads it. These are hyphenated
+// COBOL words, so `kw_environment` no longer matches their first half and they
+// need rules of their own.
+kw_environment_name  = @{ ^"environment-name"  ~ word_end }
+kw_environment_value = @{ ^"environment-value" ~ word_end }
 
 accept_date_source = {
     kw_date ~ kw_yyyymmdd?
@@ -710,10 +879,16 @@ move_target = { data_target }
 
 add_stmt = {
     kw_add ~ (kw_corresponding | kw_corr) ~ ident_name ~ kw_to ~ ident_name
-        | kw_add ~ expression+ ~ kw_giving ~ data_target ~ rounded_clause?
+        | kw_add ~ expression+ ~ giving_clause ~ rounded_clause?
         ~ size_error_clause?
         ~ kw_end_add?
     | kw_add ~ expression+ ~ kw_to ~ data_target ~ giving_clause? ~ rounded_clause?
+    ~ size_error_clause?
+    ~ kw_end_add?
+    // `ADD 5 TO 10 GIVING R` — with GIVING the TO operand is only an addend,
+    // so COBOL allows it to be a literal. Ordered after the data_target
+    // branch so `ADD 1 TO X` still binds X as the target.
+    | kw_add ~ expression+ ~ kw_to ~ arith_operand ~ giving_clause ~ rounded_clause?
     ~ size_error_clause?
     ~ kw_end_add?
 }
@@ -723,13 +898,17 @@ add_stmt = {
 arith_operand = { atom ~ subscript_or_refmod* ~ qualification* }
 
 giving_clause  = { kw_giving ~ data_target }
-rounded_clause = { kw_rounded ~ (kw_mode ~ rounded_mode_spec)? }
+// `MODE IS <mode>` — the `IS` is optional noise in COBOL and was missing here,
+// which rejected EVERY spelled rounding mode, not just the unlisted ones.
+rounded_clause = { kw_rounded ~ (kw_mode ~ kw_is? ~ rounded_mode_spec)? }
 rounded_mode_spec = {
         kw_truncation
+    | kw_nearest_away_from_zero
     | kw_nearest_even
     | kw_nearest_toward_zero
     | kw_toward_greater
     | kw_toward_lesser
+    | kw_toward_zero
     | kw_away_from_zero
     | kw_prohibited
 }
@@ -741,6 +920,11 @@ subtract_stmt = {
     | kw_subtract ~ arith_operand ~ kw_from ~ data_target ~ giving_clause? ~ rounded_clause?
     ~ size_error_clause?
     ~ kw_end_subtract?
+    // `SUBTRACT 5.2 FROM 20.0 GIVING R` — the FROM operand is only the
+    // minuend when GIVING names the receiver, so it may be a literal.
+    | kw_subtract ~ arith_operand ~ kw_from ~ arith_operand ~ giving_clause ~ rounded_clause?
+    ~ size_error_clause?
+    ~ kw_end_subtract?
 }
 
 // ── MULTIPLY ────────────────────────────────────────────────────────────────
@@ -749,7 +933,7 @@ multiply_stmt = {
         kw_multiply ~ arith_operand ~ kw_by ~ data_target ~ giving_clause? ~ rounded_clause?
         ~ size_error_clause?
         ~ kw_end_multiply?
-    | kw_multiply ~ arith_operand ~ kw_by ~ arith_operand ~ kw_giving ~ data_target ~ rounded_clause?
+    | kw_multiply ~ arith_operand ~ kw_by ~ arith_operand ~ giving_clause ~ rounded_clause?
         ~ size_error_clause?
         ~ kw_end_multiply?
 }
@@ -758,7 +942,7 @@ multiply_stmt = {
 
 divide_stmt = {
     kw_divide ~ arith_operand ~ (kw_by | kw_into) ~ arith_operand
-    ~ (kw_giving ~ data_target ~ remainder_clause?)?
+    ~ (giving_clause ~ remainder_clause?)?
     ~ rounded_clause?
     ~ size_error_clause?
     ~ kw_end_divide?
@@ -768,8 +952,10 @@ remainder_clause = { kw_remainder ~ ident_name }
 
 // ── COMPUTE ─────────────────────────────────────────────────────────────────
 
+// `COMPUTE A B = 3 + 4` stores the same result in every receiver, and each
+// may carry its own ROUNDED.
 compute_stmt = {
-    kw_compute ~ data_target ~ rounded_clause? ~ "=" ~ expression
+    kw_compute ~ (data_target ~ rounded_clause?)+ ~ "=" ~ expression
     ~ size_error_clause?
     ~ kw_end_compute?
 }
@@ -873,11 +1059,16 @@ string_stmt = {
     ~ kw_end_string?
 }
 
+// A DELIMITED BY clause governs the GROUP of operands in front of it, not
+// just the nearest one: `STRING S1 S2 DELIMITED BY '*'` cuts BOTH sources at
+// the delimiter. With one operand per clause, S1 matched the bare alternative
+// and was sent whole.
 string_source = {
-        (string_data_ref | expression | keyword_data_name) ~ kw_delimited ~ (kw_size | kw_by ~ (kw_size | expression | keyword_data_name))
-  | expression
-  | keyword_data_name
+        string_operand+ ~ kw_delimited ~ (kw_size | kw_by ~ (kw_size | expression | keyword_data_name))
+  | string_operand
 }
+
+string_operand = { string_data_ref | expression | keyword_data_name }
 
 string_data_ref = { (ident_name | kw_sd) ~ (string_harness_subscript | subscript_or_refmod)+ ~ qualification* }
 
@@ -918,20 +1109,37 @@ tallying_in_clause = { kw_tallying ~ kw_in? ~ ident_name }
 
 // ── INSPECT ─────────────────────────────────────────────────────────────────
 
+// The combined form must come FIRST: `inspect_tallying` alone happily matches
+// the TALLYING half and would leave the REPLACING half stranded.
 inspect_stmt = {
-    inspect_tallying
+    inspect_tallying_replacing
+  | inspect_tallying
   | inspect_replacing
   | inspect_converting
 }
 
+// `BEFORE|AFTER [INITIAL] x` — the window of the receiver a phrase looks at.
+// `INITIAL` is optional noise; requiring it rejected `AFTER " "`.
+inspect_region = { (kw_before | kw_after) ~ kw_initial? ~ (string_literal | ident_name) }
+
+// `TALLYING c1 FOR ALL "L" c2 FOR ALL "O"` — one INSPECT may fill several
+// counters, so the counter and its phrases group together and repeat.
+inspect_tally_target = { ident_name ~ kw_for ~ inspect_tally_phrase+ }
+
 inspect_tallying = {
-    kw_inspect ~ ident_name ~ kw_tallying ~ ident_name ~ kw_for
-    ~ inspect_tally_phrase+
+    kw_inspect ~ ident_name ~ kw_tallying ~ inspect_tally_target+
+}
+
+inspect_tallying_replacing = {
+    kw_inspect ~ ident_name ~ kw_tallying ~ inspect_tally_target+
+    ~ kw_replacing ~ inspect_replace_phrase+
 }
 
 inspect_tally_phrase = {
-    inspect_mode ~ (kw_characters | string_literal | ident_name)
-    ~ (kw_before | kw_after)? ~ (kw_initial ~ (string_literal | ident_name))?
+    // `FOR CHARACTERS` counts positions and takes no search operand — this
+    // needed two tokens before, so the bare form did not parse.
+    kw_characters ~ inspect_region*
+  | inspect_mode ~ (string_literal | ident_name) ~ inspect_region*
 }
 
 inspect_replacing = {
@@ -941,19 +1149,18 @@ inspect_replacing = {
 
 inspect_replace_phrase = {
     // REPLACING CHARACTERS BY x — replace every character (no search operand)
-    kw_characters ~ kw_by ~ (string_literal | ident_name)
-    ~ (kw_before | kw_after)? ~ (kw_initial ~ (string_literal | ident_name))?
+    kw_characters ~ kw_by ~ (string_literal | ident_name) ~ inspect_region*
   | inspect_mode ~ (string_literal | ident_name) ~ kw_by ~ (string_literal | ident_name)
-    ~ (kw_before | kw_after)? ~ (kw_initial ~ (string_literal | ident_name))?
+    ~ inspect_region*
 }
 
 inspect_converting = {
     kw_inspect ~ ident_name ~ kw_converting
     ~ (string_literal | ident_name) ~ kw_to ~ (string_literal | ident_name)
-    ~ (kw_before | kw_after)? ~ (kw_initial ~ (string_literal | ident_name))?
+    ~ inspect_region*
 }
 
-inspect_mode = { kw_all | kw_leading | kw_first | kw_characters }
+inspect_mode = { kw_all | kw_leading | kw_first | kw_trailing | kw_characters }
 
 // ── CALL ────────────────────────────────────────────────────────────────────
 
@@ -1213,7 +1420,7 @@ pseudo_text = @{ "==" ~ (!"==" ~ ANY)* ~ "==" }
 // ── INVOKE (OO COBOL) ──────────────────────────────────────────────────────
 
 invoke_stmt = {
-    kw_invoke ~ ident_name ~ ("::" ~ ident_name | ident_name | kw_new)
+    kw_invoke ~ ident_name ~ ("::" ~ ident_name | string_literal | ident_name | kw_new)
     ~ (kw_using ~ ident_name+)?
     ~ (kw_returning ~ ident_name)?
 }
@@ -1399,7 +1606,10 @@ function_call = {
 // (rather than `expression+`) stops `MEAN(-2 -4 -6)` collapsing into one
 // subtraction expression. Real binary expressions can still be passed
 // parenthesized (paren_expr is an atom).
-func_args = { (all_table_ref | func_kw_arg | atom)+ }
+// COBOL separates intrinsic arguments with a space OR a comma; cobc takes
+// both. Only the space form parsed here, so `FUNCTION MAX(1, 5, 3)` fell
+// through to a silent `null`.
+func_args = { (all_table_ref | func_kw_arg | atom) ~ (","? ~ (all_table_ref | func_kw_arg | atom))* }
 
 // Reserved words that appear as intrinsic arguments (e.g. FUNCTION TRIM(x
 // LEADING)). `ident_name` excludes strict keywords, so accept them here.
@@ -1536,368 +1746,381 @@ strict_keyword = _{
 
 // ── Keywords (case-insensitive, with word-boundary) ─────────────────────────
 // All keywords are atomic to prevent pest from eating partial matches.
-// They use ^"..." for case-insensitivity and !ident_cont for word boundary.
+// They use ^"..." for case-insensitivity and `word_end` for the word boundary.
+//
+// ⚠ A COBOL word CONTAINS hyphens, so the boundary must reject a following
+// `-word` as well as a following alphanumeric. With the weaker `!ident_cont`,
+// `kw_ord` matched the "ORD" PREFIX of `ORD-MAX` and the rest of the line was
+// parsed as a subtraction — the same trap for every hyphenated intrinsic and
+// for any data name that starts with a reserved word. `strict_keyword` already
+// spelled the boundary correctly; these did not.
+word_end = _{ !(ident_cont | "-") }
 
 // Division / section structure
-kw_identification  = @{ ^"identification"  ~ !ident_cont }
-kw_environment     = @{ ^"environment"     ~ !ident_cont }
-kw_configuration   = @{ ^"configuration"   ~ !ident_cont }
-kw_source_computer = @{ ^"source-computer" ~ !ident_cont }
-kw_object_computer = @{ ^"object-computer" ~ !ident_cont }
-kw_data            = @{ ^"data"            ~ !ident_cont }
-kw_procedure       = @{ ^"procedure"       ~ !ident_cont }
-kw_division        = @{ ^"division"        ~ !ident_cont }
-kw_section         = @{ ^"section"         ~ !ident_cont }
+kw_identification  = @{ ^"identification"  ~ word_end }
+kw_environment     = @{ ^"environment"     ~ word_end }
+kw_configuration   = @{ ^"configuration"   ~ word_end }
+kw_source_computer = @{ ^"source-computer" ~ word_end }
+kw_object_computer = @{ ^"object-computer" ~ word_end }
+kw_data            = @{ ^"data"            ~ word_end }
+kw_procedure       = @{ ^"procedure"       ~ word_end }
+kw_division        = @{ ^"division"        ~ word_end }
+kw_section         = @{ ^"section"         ~ word_end }
 
 // Identification division
-kw_program_id      = @{ ^"program-id"      ~ !ident_cont }
-kw_class_id        = @{ ^"class-id"        ~ !ident_cont }
-kw_interface_id    = @{ ^"interface-id"     ~ !ident_cont }
-kw_method_id       = @{ ^"method-id"       ~ !ident_cont }
-kw_author          = @{ ^"author"          ~ !ident_cont }
-kw_date_written    = @{ ^"date-written"    ~ !ident_cont }
+kw_program_id      = @{ ^"program-id"      ~ word_end }
+kw_class_id        = @{ ^"class-id"        ~ word_end }
+kw_interface_id    = @{ ^"interface-id"     ~ word_end }
+kw_method_id       = @{ ^"method-id"       ~ word_end }
+kw_author          = @{ ^"author"          ~ word_end }
+kw_date_written    = @{ ^"date-written"    ~ word_end }
 
 // Environment division
-kw_special_names   = @{ ^"special-names"   ~ !ident_cont }
-kw_repository      = @{ ^"repository"      ~ !ident_cont }
-kw_input_output    = @{ ^"input-output"    ~ !ident_cont }
-kw_file_control    = @{ ^"file-control"    ~ !ident_cont }
-kw_decimal_point   = @{ ^"decimal-point"   ~ !ident_cont }
-kw_currency        = @{ ^"currency"        ~ !ident_cont }
-kw_alphabet        = @{ ^"alphabet"        ~ !ident_cont }
-kw_symbolic        = @{ ^"symbolic"        ~ !ident_cont }
-kw_comma           = @{ ^"comma"           ~ !ident_cont }
+kw_special_names   = @{ ^"special-names"   ~ word_end }
+kw_repository      = @{ ^"repository"      ~ word_end }
+kw_input_output    = @{ ^"input-output"    ~ word_end }
+kw_file_control    = @{ ^"file-control"    ~ word_end }
+kw_decimal_point   = @{ ^"decimal-point"   ~ word_end }
+kw_currency        = @{ ^"currency"        ~ word_end }
+kw_alphabet        = @{ ^"alphabet"        ~ word_end }
+kw_symbolic        = @{ ^"symbolic"        ~ word_end }
+kw_comma           = @{ ^"comma"           ~ word_end }
 
 // Data division sections
-kw_working_storage = @{ ^"working-storage" ~ !ident_cont }
-kw_local_storage   = @{ ^"local-storage"   ~ !ident_cont }
-kw_linkage         = @{ ^"linkage"         ~ !ident_cont }
-kw_file            = @{ ^"file"            ~ !ident_cont }
-kw_screen          = @{ ^"screen"          ~ !ident_cont }
+kw_working_storage = @{ ^"working-storage" ~ word_end }
+kw_local_storage   = @{ ^"local-storage"   ~ word_end }
+kw_linkage         = @{ ^"linkage"         ~ word_end }
+kw_file            = @{ ^"file"            ~ word_end }
+kw_screen          = @{ ^"screen"          ~ word_end }
 
 // Data item keywords
-kw_pic             = @{ ^"pic"             ~ !ident_cont }
-kw_picture         = @{ ^"picture"         ~ !ident_cont }
-kw_value           = @{ ^"value"           ~ !ident_cont }
-kw_occurs          = @{ ^"occurs"          ~ !ident_cont }
-kw_times           = @{ ^"times"           ~ !ident_cont }
-kw_depending       = @{ ^"depending"       ~ !ident_cont }
-kw_redefines       = @{ ^"redefines"       ~ !ident_cont }
-kw_renames         = @{ ^"renames"         ~ !ident_cont }
-kw_usage           = @{ ^"usage"           ~ !ident_cont }
-kw_indexed         = @{ ^"indexed"         ~ !ident_cont }
-kw_filler          = @{ ^"filler"          ~ !ident_cont }
-kw_blank           = @{ ^"blank"           ~ !ident_cont }
-kw_justified       = @{ ^"justified"       ~ !ident_cont }
-kw_just            = @{ ^"just"            ~ !ident_cont }
-kw_synchronized    = @{ ^"synchronized"    ~ !ident_cont }
-kw_sync            = @{ ^"sync"            ~ !ident_cont }
-kw_global          = @{ ^"global"          ~ !ident_cont }
-kw_external        = @{ ^"external"        ~ !ident_cont }
+kw_pic             = @{ ^"pic"             ~ word_end }
+kw_picture         = @{ ^"picture"         ~ word_end }
+kw_value           = @{ ^"value"           ~ word_end }
+kw_occurs          = @{ ^"occurs"          ~ word_end }
+kw_times           = @{ ^"times"           ~ word_end }
+kw_depending       = @{ ^"depending"       ~ word_end }
+kw_redefines       = @{ ^"redefines"       ~ word_end }
+kw_renames         = @{ ^"renames"         ~ word_end }
+kw_usage           = @{ ^"usage"           ~ word_end }
+kw_indexed         = @{ ^"indexed"         ~ word_end }
+kw_filler          = @{ ^"filler"          ~ word_end }
+kw_blank           = @{ ^"blank"           ~ word_end }
+kw_justified       = @{ ^"justified"       ~ word_end }
+kw_just            = @{ ^"just"            ~ word_end }
+kw_synchronized    = @{ ^"synchronized"    ~ word_end }
+kw_sync            = @{ ^"sync"            ~ word_end }
+kw_global          = @{ ^"global"          ~ word_end }
+kw_external        = @{ ^"external"        ~ word_end }
 
 // Usage types
-kw_binary          = @{ ^"binary"          ~ !ident_cont }
-kw_comp            = @{ ^"comp"            ~ !ident_cont }
-kw_comp_3          = @{ ^"comp-3"          ~ !ident_cont }
-kw_comp_5          = @{ ^"comp-5"          ~ !ident_cont }
-kw_display_usage   = @{ ^"display"         ~ !ident_cont }
-kw_packed_decimal  = @{ ^"packed-decimal"  ~ !ident_cont }
-kw_pointer         = @{ ^"pointer"         ~ !ident_cont }
-kw_index           = @{ ^"index"           ~ !ident_cont }
-kw_float_long      = @{ ^"float-long"      ~ !ident_cont }
-kw_float_short     = @{ ^"float-short"     ~ !ident_cont }
-kw_national        = @{ ^"national"        ~ !ident_cont }
-kw_boolean         = @{ ^"boolean"         ~ !ident_cont }
+kw_binary          = @{ ^"binary"          ~ word_end }
+kw_comp            = @{ ^"comp"            ~ word_end }
+kw_comp_1          = @{ ^"comp-1"          ~ word_end }
+kw_comp_2          = @{ ^"comp-2"          ~ word_end }
+kw_comp_3          = @{ ^"comp-3"          ~ word_end }
+kw_comp_5          = @{ ^"comp-5"          ~ word_end }
+kw_display_usage   = @{ ^"display"         ~ word_end }
+kw_packed_decimal  = @{ ^"packed-decimal"  ~ word_end }
+kw_pointer         = @{ ^"pointer"         ~ word_end }
+kw_index           = @{ ^"index"           ~ word_end }
+kw_float_long      = @{ ^"float-long"      ~ word_end }
+kw_float_short     = @{ ^"float-short"     ~ word_end }
+kw_national        = @{ ^"national"        ~ word_end }
+kw_boolean         = @{ ^"boolean"         ~ word_end }
 
 // FD/SD clauses
-kw_fd              = @{ ^"fd"              ~ !ident_cont }
-kw_sd              = @{ ^"sd"              ~ !ident_cont }
-kw_record          = @{ ^"record"          ~ !ident_cont }
-kw_block           = @{ ^"block"           ~ !ident_cont }
-kw_contains        = @{ ^"contains"        ~ !ident_cont }
-kw_characters      = @{ ^"characters"      ~ !ident_cont }
-kw_character       = @{ ^"character"       ~ !ident_cont }
-kw_label           = @{ ^"label"           ~ !ident_cont }
-kw_standard        = @{ ^"standard"        ~ !ident_cont }
-kw_condition       = @{ ^"condition"       ~ !ident_cont }
-kw_resume          = @{ ^"resume"          ~ !ident_cont }
-kw_omitted         = @{ ^"omitted"         ~ !ident_cont }
+kw_fd              = @{ ^"fd"              ~ word_end }
+kw_sd              = @{ ^"sd"              ~ word_end }
+kw_record          = @{ ^"record"          ~ word_end }
+kw_block           = @{ ^"block"           ~ word_end }
+kw_contains        = @{ ^"contains"        ~ word_end }
+kw_characters      = @{ ^"characters"      ~ word_end }
+kw_character       = @{ ^"character"       ~ word_end }
+kw_label           = @{ ^"label"           ~ word_end }
+kw_standard        = @{ ^"standard"        ~ word_end }
+kw_condition       = @{ ^"condition"       ~ word_end }
+kw_resume          = @{ ^"resume"          ~ word_end }
+kw_omitted         = @{ ^"omitted"         ~ word_end }
 
 // Figurative constants
-kw_spaces          = @{ ^"spaces"          ~ !ident_cont }
-kw_space           = @{ ^"space"           ~ !ident_cont }
-kw_zeros           = @{ ^"zeros"           ~ !ident_cont }
-kw_zeroes          = @{ ^"zeroes"          ~ !ident_cont }
-kw_zero            = @{ ^"zero"            ~ !ident_cont }
-kw_low_values      = @{ ^"low-values"      ~ !ident_cont }
-kw_low_value       = @{ ^"low-value"       ~ !ident_cont }
-kw_high_values     = @{ ^"high-values"     ~ !ident_cont }
-kw_high_value      = @{ ^"high-value"      ~ !ident_cont }
-kw_quotes          = @{ ^"quotes"          ~ !ident_cont }
-kw_quote           = @{ ^"quote"           ~ !ident_cont }
-kw_nulls           = @{ ^"nulls"           ~ !ident_cont }
-kw_null            = @{ ^"null"            ~ !ident_cont }
-kw_all             = @{ ^"all"             ~ !ident_cont }
+kw_spaces          = @{ ^"spaces"          ~ word_end }
+kw_space           = @{ ^"space"           ~ word_end }
+kw_zeros           = @{ ^"zeros"           ~ word_end }
+kw_zeroes          = @{ ^"zeroes"          ~ word_end }
+kw_zero            = @{ ^"zero"            ~ word_end }
+kw_low_values      = @{ ^"low-values"      ~ word_end }
+kw_low_value       = @{ ^"low-value"       ~ word_end }
+kw_high_values     = @{ ^"high-values"     ~ word_end }
+kw_high_value      = @{ ^"high-value"      ~ word_end }
+kw_quotes          = @{ ^"quotes"          ~ word_end }
+kw_quote           = @{ ^"quote"           ~ word_end }
+kw_nulls           = @{ ^"nulls"           ~ word_end }
+kw_null            = @{ ^"null"            ~ word_end }
+kw_all             = @{ ^"all"             ~ word_end }
 
 // Procedure division verbs
-kw_display         = @{ ^"display"         ~ !ident_cont }
-kw_accept          = @{ ^"accept"          ~ !ident_cont }
-kw_move            = @{ ^"move"            ~ !ident_cont }
-kw_add             = @{ ^"add"             ~ !ident_cont }
-kw_subtract        = @{ ^"subtract"        ~ !ident_cont }
-kw_multiply        = @{ ^"multiply"        ~ !ident_cont }
-kw_divide          = @{ ^"divide"          ~ !ident_cont }
-kw_compute         = @{ ^"compute"         ~ !ident_cont }
-kw_if              = @{ ^"if"              ~ !ident_cont }
-kw_else            = @{ ^"else"            ~ !ident_cont }
-kw_then            = @{ ^"then"            ~ !ident_cont }
-kw_evaluate        = @{ ^"evaluate"        ~ !ident_cont }
-kw_when            = @{ ^"when"            ~ !ident_cont }
-kw_other           = @{ ^"other"           ~ !ident_cont }
-kw_perform         = @{ ^"perform"         ~ !ident_cont }
-kw_until           = @{ ^"until"           ~ !ident_cont }
-kw_varying         = @{ ^"varying"         ~ !ident_cont }
-kw_thru            = @{ ^"thru"            ~ !ident_cont }
-kw_through         = @{ ^"through"         ~ !ident_cont }
-kw_string          = @{ ^"string"          ~ !ident_cont }
-kw_unstring        = @{ ^"unstring"        ~ !ident_cont }
-kw_inspect         = @{ ^"inspect"         ~ !ident_cont }
-kw_cancel          = @{ ^"cancel"          ~ !ident_cont }
-kw_release         = @{ ^"release"         ~ !ident_cont }
-kw_return          = @{ ^"return"          ~ !ident_cont }
-kw_tallying        = @{ ^"tallying"        ~ !ident_cont }
-kw_replacing       = @{ ^"replacing"       ~ !ident_cont }
-kw_converting      = @{ ^"converting"      ~ !ident_cont }
-kw_leading         = @{ ^"leading"         ~ !ident_cont }
-kw_trailing        = @{ ^"trailing"        ~ !ident_cont }
-kw_first           = @{ ^"first"           ~ !ident_cont }
-kw_initial         = @{ ^"initial"         ~ !ident_cont }
-kw_common          = @{ ^"common"          ~ !ident_cont }
-kw_recursive       = @{ ^"recursive"       ~ !ident_cont }
-kw_call            = @{ ^"call"            ~ !ident_cont }
-kw_using           = @{ ^"using"           ~ !ident_cont }
-kw_returning       = @{ ^"returning"       ~ !ident_cont }
-kw_initialize      = @{ ^"initialize"      ~ !ident_cont }
-kw_set             = @{ ^"set"             ~ !ident_cont }
-kw_go              = @{ ^"go"              ~ !ident_cont }
-kw_to              = @{ ^"to"              ~ !ident_cont }
-kw_stop            = @{ ^"stop"            ~ !ident_cont }
-kw_run             = @{ ^"run"             ~ !ident_cont }
-kw_goback          = @{ ^"goback"          ~ !ident_cont }
-kw_continue        = @{ ^"continue"        ~ !ident_cont }
-kw_raise           = @{ ^"raise"           ~ !ident_cont }
-kw_exception       = @{ ^"exception"       ~ !ident_cont }
-kw_json            = @{ ^"json"            ~ !ident_cont }
-kw_xml             = @{ ^"xml"             ~ !ident_cont }
-kw_generate        = @{ ^"generate"        ~ !ident_cont }
-kw_parse           = @{ ^"parse"           ~ !ident_cont }
-kw_processing      = @{ ^"processing"      ~ !ident_cont }
-kw_encoding        = @{ ^"encoding"        ~ !ident_cont }
-kw_attributes      = @{ ^"attributes"      ~ !ident_cont }
-kw_xml_declaration = @{ ^"xml-declaration" ~ !ident_cont }
-kw_namespace       = @{ ^"namespace"       ~ !ident_cont }
-kw_namespace_prefix = @{ ^"namespace-prefix" ~ !ident_cont }
-kw_suppress        = @{ ^"suppress"        ~ !ident_cont }
-kw_linage          = @{ ^"linage"          ~ !ident_cont }
-kw_footing         = @{ ^"footing"         ~ !ident_cont }
-kw_top             = @{ ^"top"             ~ !ident_cont }
-kw_bottom          = @{ ^"bottom"          ~ !ident_cont }
-kw_end_of_page     = @{ ^"end-of-page"     ~ !ident_cont }
-kw_open            = @{ ^"open"            ~ !ident_cont }
-kw_close           = @{ ^"close"           ~ !ident_cont }
-kw_read            = @{ ^"read"            ~ !ident_cont }
-kw_write           = @{ ^"write"           ~ !ident_cont }
-kw_rewrite         = @{ ^"rewrite"         ~ !ident_cont }
-kw_delete          = @{ ^"delete"          ~ !ident_cont }
-kw_start           = @{ ^"start"           ~ !ident_cont }
-kw_sort            = @{ ^"sort"            ~ !ident_cont }
-kw_merge           = @{ ^"merge"           ~ !ident_cont }
-kw_search          = @{ ^"search"          ~ !ident_cont }
-kw_copy            = @{ ^"copy"            ~ !ident_cont }
-kw_invoke          = @{ ^"invoke"          ~ !ident_cont }
-kw_validate        = @{ ^"validate"        ~ !ident_cont }
-kw_free            = @{ ^"free"            ~ !ident_cont }
-kw_allocate        = @{ ^"allocate"        ~ !ident_cont }
-kw_typedef         = @{ ^"typedef"         ~ !ident_cont }
-kw_exit            = @{ ^"exit"            ~ !ident_cont }
+kw_display         = @{ ^"display"         ~ word_end }
+kw_accept          = @{ ^"accept"          ~ word_end }
+kw_move            = @{ ^"move"            ~ word_end }
+kw_add             = @{ ^"add"             ~ word_end }
+kw_subtract        = @{ ^"subtract"        ~ word_end }
+kw_multiply        = @{ ^"multiply"        ~ word_end }
+kw_divide          = @{ ^"divide"          ~ word_end }
+kw_compute         = @{ ^"compute"         ~ word_end }
+kw_if              = @{ ^"if"              ~ word_end }
+kw_else            = @{ ^"else"            ~ word_end }
+kw_then            = @{ ^"then"            ~ word_end }
+kw_evaluate        = @{ ^"evaluate"        ~ word_end }
+kw_when            = @{ ^"when"            ~ word_end }
+kw_other           = @{ ^"other"           ~ word_end }
+kw_perform         = @{ ^"perform"         ~ word_end }
+kw_until           = @{ ^"until"           ~ word_end }
+kw_varying         = @{ ^"varying"         ~ word_end }
+kw_thru            = @{ ^"thru"            ~ word_end }
+kw_through         = @{ ^"through"         ~ word_end }
+kw_string          = @{ ^"string"          ~ word_end }
+kw_unstring        = @{ ^"unstring"        ~ word_end }
+kw_inspect         = @{ ^"inspect"         ~ word_end }
+kw_cancel          = @{ ^"cancel"          ~ word_end }
+kw_release         = @{ ^"release"         ~ word_end }
+kw_return          = @{ ^"return"          ~ word_end }
+kw_tallying        = @{ ^"tallying"        ~ word_end }
+kw_replacing       = @{ ^"replacing"       ~ word_end }
+kw_converting      = @{ ^"converting"      ~ word_end }
+kw_leading         = @{ ^"leading"         ~ word_end }
+kw_trailing        = @{ ^"trailing"        ~ word_end }
+kw_first           = @{ ^"first"           ~ word_end }
+kw_initial         = @{ ^"initial"         ~ word_end }
+kw_common          = @{ ^"common"          ~ word_end }
+kw_recursive       = @{ ^"recursive"       ~ word_end }
+kw_call            = @{ ^"call"            ~ word_end }
+kw_using           = @{ ^"using"           ~ word_end }
+kw_returning       = @{ ^"returning"       ~ word_end }
+kw_initialize      = @{ ^"initialize"      ~ word_end }
+kw_set             = @{ ^"set"             ~ word_end }
+kw_go              = @{ ^"go"              ~ word_end }
+kw_to              = @{ ^"to"              ~ word_end }
+kw_stop            = @{ ^"stop"            ~ word_end }
+kw_run             = @{ ^"run"             ~ word_end }
+kw_goback          = @{ ^"goback"          ~ word_end }
+kw_continue        = @{ ^"continue"        ~ word_end }
+kw_raise           = @{ ^"raise"           ~ word_end }
+kw_exception       = @{ ^"exception"       ~ word_end }
+kw_json            = @{ ^"json"            ~ word_end }
+kw_xml             = @{ ^"xml"             ~ word_end }
+kw_generate        = @{ ^"generate"        ~ word_end }
+kw_parse           = @{ ^"parse"           ~ word_end }
+kw_processing      = @{ ^"processing"      ~ word_end }
+kw_encoding        = @{ ^"encoding"        ~ word_end }
+kw_attributes      = @{ ^"attributes"      ~ word_end }
+kw_xml_declaration = @{ ^"xml-declaration" ~ word_end }
+kw_namespace       = @{ ^"namespace"       ~ word_end }
+kw_namespace_prefix = @{ ^"namespace-prefix" ~ word_end }
+kw_suppress        = @{ ^"suppress"        ~ word_end }
+kw_linage          = @{ ^"linage"          ~ word_end }
+kw_footing         = @{ ^"footing"         ~ word_end }
+kw_top             = @{ ^"top"             ~ word_end }
+kw_bottom          = @{ ^"bottom"          ~ word_end }
+kw_end_of_page     = @{ ^"end-of-page"     ~ word_end }
+kw_open            = @{ ^"open"            ~ word_end }
+kw_close           = @{ ^"close"           ~ word_end }
+kw_read            = @{ ^"read"            ~ word_end }
+kw_write           = @{ ^"write"           ~ word_end }
+kw_rewrite         = @{ ^"rewrite"         ~ word_end }
+kw_delete          = @{ ^"delete"          ~ word_end }
+kw_start           = @{ ^"start"           ~ word_end }
+kw_sort            = @{ ^"sort"            ~ word_end }
+kw_merge           = @{ ^"merge"           ~ word_end }
+kw_search          = @{ ^"search"          ~ word_end }
+kw_copy            = @{ ^"copy"            ~ word_end }
+kw_invoke          = @{ ^"invoke"          ~ word_end }
+kw_validate        = @{ ^"validate"        ~ word_end }
+kw_free            = @{ ^"free"            ~ word_end }
+kw_allocate        = @{ ^"allocate"        ~ word_end }
+kw_typedef         = @{ ^"typedef"         ~ word_end }
+kw_exit            = @{ ^"exit"            ~ word_end }
 
 // Control flow keywords
-kw_not             = @{ ^"not"             ~ !ident_cont }
-kw_and             = @{ ^"and"             ~ !ident_cont }
-kw_or              = @{ ^"or"              ~ !ident_cont }
-kw_true            = @{ ^"true"            ~ !ident_cont }
-kw_false           = @{ ^"false"           ~ !ident_cont }
-kw_any             = @{ ^"any"             ~ !ident_cont }
+kw_not             = @{ ^"not"             ~ word_end }
+kw_and             = @{ ^"and"             ~ word_end }
+kw_or              = @{ ^"or"              ~ word_end }
+kw_true            = @{ ^"true"            ~ word_end }
+kw_false           = @{ ^"false"           ~ word_end }
+kw_any             = @{ ^"any"             ~ word_end }
 
 // PERFORM sub-keywords
-kw_with            = @{ ^"with"            ~ !ident_cont }
-kw_test            = @{ ^"test"            ~ !ident_cont }
-kw_before          = @{ ^"before"          ~ !ident_cont }
-kw_after           = @{ ^"after"           ~ !ident_cont }
-kw_async           = @{ ^"async"           ~ !ident_cont }
+kw_with            = @{ ^"with"            ~ word_end }
+kw_test            = @{ ^"test"            ~ word_end }
+kw_before          = @{ ^"before"          ~ word_end }
+kw_after           = @{ ^"after"           ~ word_end }
+kw_async           = @{ ^"async"           ~ word_end }
 
 // Arithmetic clause keywords
-kw_giving          = @{ ^"giving"          ~ !ident_cont }
-kw_from            = @{ ^"from"            ~ !ident_cont }
-kw_by              = @{ ^"by"              ~ !ident_cont }
-kw_into            = @{ ^"into"            ~ !ident_cont }
-kw_on              = @{ ^"on"              ~ !ident_cont }
-kw_size            = @{ ^"size"            ~ !ident_cont }
-kw_error           = @{ ^"error"           ~ !ident_cont }
-kw_rounded         = @{ ^"rounded"         ~ !ident_cont }
-kw_truncation      = @{ ^"truncation"      ~ !ident_cont }
-kw_nearest_even    = @{ ^"nearest-even"    ~ !ident_cont }
-kw_nearest_toward_zero = @{ ^"nearest-toward-zero" ~ !ident_cont }
-kw_toward_greater  = @{ ^"toward-greater"  ~ !ident_cont }
-kw_toward_lesser   = @{ ^"toward-lesser"   ~ !ident_cont }
-kw_away_from_zero  = @{ ^"away-from-zero"  ~ !ident_cont }
-kw_prohibited      = @{ ^"prohibited"      ~ !ident_cont }
-kw_remainder       = @{ ^"remainder"       ~ !ident_cont }
-kw_corresponding   = @{ ^"corresponding"   ~ !ident_cont }
-kw_corr            = @{ ^"corr"            ~ !ident_cont }
+kw_giving          = @{ ^"giving"          ~ word_end }
+kw_from            = @{ ^"from"            ~ word_end }
+kw_by              = @{ ^"by"              ~ word_end }
+kw_into            = @{ ^"into"            ~ word_end }
+kw_on              = @{ ^"on"              ~ word_end }
+kw_size            = @{ ^"size"            ~ word_end }
+kw_error           = @{ ^"error"           ~ word_end }
+kw_rounded         = @{ ^"rounded"         ~ word_end }
+kw_truncation      = @{ ^"truncation"      ~ word_end }
+kw_nearest_even    = @{ ^"nearest-even"    ~ word_end }
+kw_nearest_away_from_zero = @{ ^"nearest-away-from-zero" ~ word_end }
+kw_nearest_toward_zero = @{ ^"nearest-toward-zero" ~ word_end }
+kw_toward_greater  = @{ ^"toward-greater"  ~ word_end }
+kw_toward_lesser   = @{ ^"toward-lesser"   ~ word_end }
+kw_toward_zero     = @{ ^"toward-zero"     ~ word_end }
+kw_away_from_zero  = @{ ^"away-from-zero"  ~ word_end }
+kw_prohibited      = @{ ^"prohibited"      ~ word_end }
+kw_remainder       = @{ ^"remainder"       ~ word_end }
+kw_corresponding   = @{ ^"corresponding"   ~ word_end }
+kw_corr            = @{ ^"corr"            ~ word_end }
 
 // String / Unstring keywords
-kw_delimited       = @{ ^"delimited"       ~ !ident_cont }
-kw_delimiter       = @{ ^"delimiter"       ~ !ident_cont }
-kw_count           = @{ ^"count"           ~ !ident_cont }
-kw_overflow        = @{ ^"overflow"        ~ !ident_cont }
+kw_delimited       = @{ ^"delimited"       ~ word_end }
+kw_delimiter       = @{ ^"delimiter"       ~ word_end }
+kw_count           = @{ ^"count"           ~ word_end }
+kw_overflow        = @{ ^"overflow"        ~ word_end }
 
 // File I/O keywords
-kw_input           = @{ ^"input"           ~ !ident_cont }
-kw_output          = @{ ^"output"          ~ !ident_cont }
-kw_extend          = @{ ^"extend"          ~ !ident_cont }
-kw_i_o             = @{ ^"i-o"             ~ !ident_cont }
-kw_ascending       = @{ ^"ascending"       ~ !ident_cont }
-kw_descending      = @{ ^"descending"      ~ !ident_cont }
-kw_key             = @{ ^"key"             ~ !ident_cont }
-kw_at              = @{ ^"at"              ~ !ident_cont }
-kw_end             = @{ ^"end"             ~ !ident_cont }
-kw_statement       = @{ ^"statement"       ~ !ident_cont }
-kw_plus            = @{ ^"plus"            ~ !ident_cont }
-kw_bell            = @{ ^"bell"            ~ !ident_cont }
-kw_erase           = @{ ^"erase"           ~ !ident_cont }
-kw_eol             = @{ ^"eol"             ~ !ident_cont }
-kw_eos             = @{ ^"eos"             ~ !ident_cont }
-kw_lowlight        = @{ ^"lowlight"        ~ !ident_cont }
-kw_underline       = @{ ^"underline"       ~ !ident_cont }
-kw_full            = @{ ^"full"            ~ !ident_cont }
-kw_prompt          = @{ ^"prompt"          ~ !ident_cont }
-kw_invalid         = @{ ^"invalid"         ~ !ident_cont }
-kw_next            = @{ ^"next"            ~ !ident_cont }
-kw_page            = @{ ^"page"            ~ !ident_cont }
-kw_advancing       = @{ ^"advancing"       ~ !ident_cont }
-kw_lines           = @{ ^"lines"           ~ !ident_cont }
-kw_line            = @{ ^"line"            ~ !ident_cont }
-kw_column          = @{ (^"column" | ^"col") ~ !ident_cont }
-kw_upon            = @{ ^"upon"            ~ !ident_cont }
-kw_no              = @{ ^"no"              ~ !ident_cont }
-kw_auto            = @{ ^"auto"            ~ !ident_cont }
-kw_required        = @{ ^"required"        ~ !ident_cont }
-kw_protected       = @{ ^"protected"       ~ !ident_cont }
-kw_secure          = @{ ^"secure"          ~ !ident_cont }
-kw_highlight       = @{ ^"highlight"       ~ !ident_cont }
-kw_reverse_video   = @{ ^"reverse-video"   ~ !ident_cont }
-kw_blink           = @{ ^"blink"           ~ !ident_cont }
-kw_foreground_color = @{ ^"foreground-color" ~ !ident_cont }
-kw_background_color = @{ ^"background-color" ~ !ident_cont }
-kw_declaratives    = @{ ^"declaratives"    ~ !ident_cont }
-kw_use             = @{ ^"use"             ~ !ident_cont }
-kw_debugging       = @{ ^"debugging"       ~ !ident_cont }
-kw_procedures      = @{ ^"procedures"      ~ !ident_cont }
+kw_input           = @{ ^"input"           ~ word_end }
+kw_output          = @{ ^"output"          ~ word_end }
+kw_extend          = @{ ^"extend"          ~ word_end }
+kw_i_o             = @{ ^"i-o"             ~ word_end }
+kw_ascending       = @{ ^"ascending"       ~ word_end }
+kw_descending      = @{ ^"descending"      ~ word_end }
+kw_key             = @{ ^"key"             ~ word_end }
+kw_at              = @{ ^"at"              ~ word_end }
+kw_end             = @{ ^"end"             ~ word_end }
+kw_statement       = @{ ^"statement"       ~ word_end }
+kw_plus            = @{ ^"plus"            ~ word_end }
+kw_bell            = @{ ^"bell"            ~ word_end }
+kw_erase           = @{ ^"erase"           ~ word_end }
+kw_eol             = @{ ^"eol"             ~ word_end }
+kw_eos             = @{ ^"eos"             ~ word_end }
+kw_lowlight        = @{ ^"lowlight"        ~ word_end }
+kw_underline       = @{ ^"underline"       ~ word_end }
+kw_full            = @{ ^"full"            ~ word_end }
+kw_prompt          = @{ ^"prompt"          ~ word_end }
+kw_invalid         = @{ ^"invalid"         ~ word_end }
+kw_next            = @{ ^"next"            ~ word_end }
+kw_page            = @{ ^"page"            ~ word_end }
+kw_advancing       = @{ ^"advancing"       ~ word_end }
+kw_lines           = @{ ^"lines"           ~ word_end }
+kw_line            = @{ ^"line"            ~ word_end }
+kw_column          = @{ (^"column" | ^"col") ~ word_end }
+kw_upon            = @{ ^"upon"            ~ word_end }
+kw_no              = @{ ^"no"              ~ word_end }
+kw_auto            = @{ ^"auto"            ~ word_end }
+kw_required        = @{ ^"required"        ~ word_end }
+kw_protected       = @{ ^"protected"       ~ word_end }
+kw_secure          = @{ ^"secure"          ~ word_end }
+kw_highlight       = @{ ^"highlight"       ~ word_end }
+kw_reverse_video   = @{ ^"reverse-video"   ~ word_end }
+kw_blink           = @{ ^"blink"           ~ word_end }
+kw_foreground_color = @{ ^"foreground-color" ~ word_end }
+kw_background_color = @{ ^"background-color" ~ word_end }
+kw_declaratives    = @{ ^"declaratives"    ~ word_end }
+kw_reporting       = @{ ^"reporting"       ~ word_end }
+kw_use             = @{ ^"use"             ~ word_end }
+kw_debugging       = @{ ^"debugging"       ~ word_end }
+kw_procedures      = @{ ^"procedures"      ~ word_end }
 
 // Condition keywords
-kw_numeric         = @{ ^"numeric"         ~ !ident_cont }
-kw_alphabetic      = @{ ^"alphabetic"      ~ !ident_cont }
-kw_alphabetic_lower = @{ ^"alphabetic-lower" ~ !ident_cont }
-kw_alphabetic_upper = @{ ^"alphabetic-upper" ~ !ident_cont }
-kw_positive        = @{ ^"positive"        ~ !ident_cont }
-kw_negative        = @{ ^"negative"        ~ !ident_cont }
-kw_equal           = @{ ^"equal"           ~ !ident_cont }
-kw_greater         = @{ ^"greater"         ~ !ident_cont }
-kw_less            = @{ ^"less"            ~ !ident_cont }
-kw_than            = @{ ^"than"            ~ !ident_cont }
-kw_not_less        = @{ ^"not" ~ WHITESPACE+ ~ ^"less" ~ !ident_cont }
-kw_not_greater     = @{ ^"not" ~ WHITESPACE+ ~ ^"greater" ~ !ident_cont }
+kw_numeric         = @{ ^"numeric"         ~ word_end }
+kw_alphabetic      = @{ ^"alphabetic"      ~ word_end }
+kw_alphabetic_lower = @{ ^"alphabetic-lower" ~ word_end }
+kw_alphabetic_upper = @{ ^"alphabetic-upper" ~ word_end }
+kw_positive        = @{ ^"positive"        ~ word_end }
+kw_negative        = @{ ^"negative"        ~ word_end }
+kw_equal           = @{ ^"equal"           ~ word_end }
+kw_greater         = @{ ^"greater"         ~ word_end }
+kw_less            = @{ ^"less"            ~ word_end }
+kw_than            = @{ ^"than"            ~ word_end }
+kw_not_less        = @{ ^"not" ~ WHITESPACE+ ~ ^"less" ~ word_end }
+kw_not_greater     = @{ ^"not" ~ WHITESPACE+ ~ ^"greater" ~ word_end }
 
 // OO COBOL keywords
-kw_inherits        = @{ ^"inherits"        ~ !ident_cont }
-kw_implements      = @{ ^"implements"      ~ !ident_cont }
-kw_factory         = @{ ^"factory"         ~ !ident_cont }
-kw_object          = @{ ^"object"          ~ !ident_cont }
-kw_new             = @{ ^"new"             ~ !ident_cont }
-kw_self            = @{ ^"self"            ~ !ident_cont }
-kw_override        = @{ ^"override"        ~ !ident_cont }
-kw_property        = @{ ^"property"        ~ !ident_cont }
-kw_get             = @{ ^"get"             ~ !ident_cont }
+kw_inherits        = @{ ^"inherits"        ~ word_end }
+kw_implements      = @{ ^"implements"      ~ word_end }
+kw_factory         = @{ ^"factory"         ~ word_end }
+kw_object          = @{ ^"object"          ~ word_end }
+kw_new             = @{ ^"new"             ~ word_end }
+kw_self            = @{ ^"self"            ~ word_end }
+kw_override        = @{ ^"override"        ~ word_end }
+kw_property        = @{ ^"property"        ~ word_end }
+kw_get             = @{ ^"get"             ~ word_end }
 
 // SET is already defined; kw_set is the verb. For property SET:
-kw_is              = @{ ^"is"              ~ !ident_cont }
-kw_as              = @{ ^"as"              ~ !ident_cont }
+kw_is              = @{ ^"is"              ~ word_end }
+kw_as              = @{ ^"as"              ~ word_end }
 
 // Async / threading
-kw_wait            = @{ ^"wait"            ~ !ident_cont }
-kw_for             = @{ ^"for"             ~ !ident_cont }
-kw_unit            = @{ ^"unit"            ~ !ident_cont }
+kw_wait            = @{ ^"wait"            ~ word_end }
+kw_for             = @{ ^"for"             ~ word_end }
+kw_unit            = @{ ^"unit"            ~ word_end }
 kw_run_unit        = { ^"run-unit" | kw_run ~ kw_unit }
-kw_lock            = @{ ^"lock"            ~ !ident_cont }
-kw_unlock          = @{ ^"unlock"          ~ !ident_cont }
-kw_yield           = @{ ^"yield"           ~ !ident_cont }
-kw_suspend         = @{ ^"suspend"         ~ !ident_cont }
+kw_lock            = @{ ^"lock"            ~ word_end }
+kw_unlock          = @{ ^"unlock"          ~ word_end }
+kw_yield           = @{ ^"yield"           ~ word_end }
+kw_suspend         = @{ ^"suspend"         ~ word_end }
 
 // EXEC / embedded
-kw_exec            = @{ ^"exec"            ~ !ident_cont }
-kw_sql             = @{ ^"sql"             ~ !ident_cont }
-kw_cics            = @{ ^"cics"            ~ !ident_cont }
-kw_dli             = @{ ^"dli"             ~ !ident_cont }
+kw_exec            = @{ ^"exec"            ~ word_end }
+kw_sql             = @{ ^"sql"             ~ word_end }
+kw_cics            = @{ ^"cics"            ~ word_end }
+kw_dli             = @{ ^"dli"             ~ word_end }
 kw_end_exec        = { ^"end-exec" | kw_end ~ kw_exec }
 
 // ACCEPT FROM sources
-kw_date            = @{ ^"date"            ~ !ident_cont }
-kw_time            = @{ ^"time"            ~ !ident_cont }
-kw_day             = @{ ^"day"             ~ !ident_cont }
-kw_day_of_week     = @{ ^"day-of-week"     ~ !ident_cont }
-kw_command_line    = @{ ^"command-line"    ~ !ident_cont }
-kw_console         = @{ ^"console"         ~ !ident_cont }
+kw_date            = @{ ^"date"            ~ word_end }
+kw_time            = @{ ^"time"            ~ word_end }
+kw_day             = @{ ^"day"             ~ word_end }
+kw_day_of_week     = @{ ^"day-of-week"     ~ word_end }
+kw_command_line    = @{ ^"command-line"    ~ word_end }
+kw_console         = @{ ^"console"         ~ word_end }
 
 // SELECT clause keywords
-kw_select          = @{ ^"select"          ~ !ident_cont }
-kw_assign          = @{ ^"assign"          ~ !ident_cont }
-kw_organization    = @{ ^"organization"    ~ !ident_cont }
-kw_sequential      = @{ ^"sequential"      ~ !ident_cont }
-kw_relative        = @{ ^"relative"        ~ !ident_cont }
-kw_file_status     = @{ ^"file" ~ WHITESPACE+ ~ ^"status" ~ !ident_cont }
-kw_access          = @{ ^"access"          ~ !ident_cont }
-kw_mode            = @{ ^"mode"            ~ !ident_cont }
-kw_random          = @{ ^"random"          ~ !ident_cont }
-kw_dynamic         = @{ ^"dynamic"         ~ !ident_cont }
-kw_alternate       = @{ ^"alternate"       ~ !ident_cont }
-kw_alter           = @{ ^"alter"           ~ !ident_cont }
-kw_order           = @{ ^"order"           ~ !ident_cont }
-kw_duplicates      = @{ ^"duplicates"      ~ !ident_cont }
+kw_select          = @{ ^"select"          ~ word_end }
+kw_assign          = @{ ^"assign"          ~ word_end }
+kw_organization    = @{ ^"organization"    ~ word_end }
+kw_sequential      = @{ ^"sequential"      ~ word_end }
+kw_relative        = @{ ^"relative"        ~ word_end }
+kw_file_status     = @{ ^"file" ~ WHITESPACE+ ~ ^"status" ~ word_end }
+kw_access          = @{ ^"access"          ~ word_end }
+kw_mode            = @{ ^"mode"            ~ word_end }
+kw_random          = @{ ^"random"          ~ word_end }
+kw_dynamic         = @{ ^"dynamic"         ~ word_end }
+kw_alternate       = @{ ^"alternate"       ~ word_end }
+kw_alter           = @{ ^"alter"           ~ word_end }
+kw_order           = @{ ^"order"           ~ word_end }
+kw_duplicates      = @{ ^"duplicates"      ~ word_end }
 
 // SET sub-keywords
-kw_up              = @{ ^"up"              ~ !ident_cont }
-kw_down            = @{ ^"down"            ~ !ident_cont }
+kw_up              = @{ ^"up"              ~ word_end }
+kw_down            = @{ ^"down"            ~ word_end }
 
 // REFERENCE / CONTENT / VALUE for CALL BY
-kw_reference       = @{ ^"reference"       ~ !ident_cont }
-kw_content         = @{ ^"content"         ~ !ident_cont }
-kw_proceed         = @{ ^"proceed"         ~ !ident_cont }
+kw_reference       = @{ ^"reference"       ~ word_end }
+kw_content         = @{ ^"content"         ~ word_end }
+kw_proceed         = @{ ^"proceed"         ~ word_end }
 
 // INITIALIZE sub-keywords
-kw_alphanumeric    = @{ ^"alphanumeric"    ~ !ident_cont }
+kw_alphanumeric    = @{ ^"alphanumeric"    ~ word_end }
 
 // Sign clause
-kw_sign            = @{ ^"sign"            ~ !ident_cont }
-kw_separate        = @{ ^"separate"        ~ !ident_cont }
+kw_sign            = @{ ^"sign"            ~ word_end }
+kw_separate        = @{ ^"separate"        ~ word_end }
 
 // Bare keyword helpers for compound END terminators
-kw_method_id_bare  = @{ ^"method"         ~ !ident_cont }
-kw_interface_bare  = @{ ^"interface"      ~ !ident_cont }
-kw_program_bare    = @{ ^"program"        ~ !ident_cont }
-kw_intrinsic       = @{ ^"intrinsic"      ~ !ident_cont }
-kw_yyyymmdd        = @{ ^"yyyymmdd"       ~ !ident_cont }
-kw_yyyyddd         = @{ ^"yyyyddd"        ~ !ident_cont }
+kw_method_id_bare  = @{ ^"method"         ~ word_end }
+kw_interface_bare  = @{ ^"interface"      ~ word_end }
+kw_program_bare    = @{ ^"program"        ~ word_end }
+kw_intrinsic       = @{ ^"intrinsic"      ~ word_end }
+kw_yyyymmdd        = @{ ^"yyyymmdd"       ~ word_end }
+kw_yyyyddd         = @{ ^"yyyyddd"        ~ word_end }
 
 // Scope terminators (accept both END-IF and END IF forms)
 // kw_end is defined above in the main keyword section
@@ -1930,70 +2153,111 @@ kw_end_xml         = { ^"end-xml" | kw_end ~ kw_xml }
 kw_end_program     = { ^"end-program" | kw_end ~ kw_program_bare }
 
 // JSON sub-keywords
-kw_name            = @{ ^"name"            ~ !ident_cont }
+kw_name            = @{ ^"name"            ~ word_end }
 
 // COPY keyword
-kw_class           = @{ ^"class"           ~ !ident_cont }
+kw_class           = @{ ^"class"           ~ word_end }
 
 // Missing keywords used in grammar rules
-kw_also            = @{ ^"also"            ~ !ident_cont }
-kw_in              = @{ ^"in"              ~ !ident_cont }
-kw_of              = @{ ^"of"              ~ !ident_cont }
+kw_also            = @{ ^"also"            ~ word_end }
+kw_in              = @{ ^"in"              ~ word_end }
+kw_of              = @{ ^"of"              ~ word_end }
 
 // Other noise words
-kw_paragraph       = @{ ^"paragraph"       ~ !ident_cont }
-kw_program         = @{ ^"program"         ~ !ident_cont }
-kw_method          = @{ ^"method"          ~ !ident_cont }
-kw_cycle           = @{ ^"cycle"           ~ !ident_cont }
-kw_when_           = @{ ^"when"            ~ !ident_cont }
-kw_left            = @{ ^"left"            ~ !ident_cont }
-kw_right           = @{ ^"right"           ~ !ident_cont }
+kw_paragraph       = @{ ^"paragraph"       ~ word_end }
+kw_program         = @{ ^"program"         ~ word_end }
+// ── CONFIGURATION SECTION vocabulary ────────────────────────────────────────
+// ── Report Writer vocabulary ────────────────────────────────────────────────
+kw_initiate        = @{ ^"initiate"        ~ word_end }
+kw_terminate       = @{ ^"terminate"       ~ word_end }
+kw_report          = @{ ^"report"          ~ word_end }
+kw_control         = @{ ^"control"          ~ word_end }
+kw_controls        = @{ ^"controls"         ~ word_end }
+kw_rd              = @{ ^"rd"              ~ word_end }
+kw_reports         = @{ ^"reports"         ~ word_end }
+kw_type            = @{ ^"type"            ~ word_end }
+kw_col             = @{ ^"col"             ~ word_end }
+kw_detail          = @{ ^"detail"          ~ word_end }
+kw_source          = @{ ^"source"          ~ word_end }
+kw_reset           = @{ ^"reset"           ~ word_end }
+kw_indicate        = @{ ^"indicate"        ~ word_end }
+kw_limit           = @{ ^"limit"           ~ word_end }
+kw_final           = @{ ^"final"           ~ word_end }
+kw_heading         = @{ ^"heading"         ~ word_end }
+kw_number          = @{ ^"number"          ~ word_end }
+kw_code            = @{ ^"code"            ~ word_end }
+kw_group           = @{ ^"group"           ~ word_end }
+kw_last            = @{ ^"last"            ~ word_end }
+// The standard TYPE abbreviations. They must be matched as whole words or
+// `RD`/`DE` would bite into a data name.
+kw_rh              = @{ ^"rh"              ~ word_end }
+kw_rf              = @{ ^"rf"              ~ word_end }
+kw_ph              = @{ ^"ph"              ~ word_end }
+kw_pf              = @{ ^"pf"              ~ word_end }
+kw_ch              = @{ ^"ch"              ~ word_end }
+kw_cf              = @{ ^"cf"              ~ word_end }
+kw_de              = @{ ^"de"              ~ word_end }
+kw_memory          = @{ ^"memory"          ~ word_end }
+kw_words           = @{ ^"words"           ~ word_end }
+kw_modules         = @{ ^"modules"         ~ word_end }
+kw_segment_limit   = @{ ^"segment-limit"   ~ word_end }
+kw_collating       = @{ ^"collating"       ~ word_end }
+kw_sequence        = @{ ^"sequence"        ~ word_end }
+kw_are             = @{ ^"are"             ~ word_end }
+kw_crt             = @{ ^"crt"             ~ word_end }
+kw_cursor          = @{ ^"cursor"          ~ word_end }
+kw_status          = @{ ^"status"          ~ word_end }
+kw_method          = @{ ^"method"          ~ word_end }
+kw_cycle           = @{ ^"cycle"           ~ word_end }
+kw_when_           = @{ ^"when"            ~ word_end }
+kw_left            = @{ ^"left"            ~ word_end }
+kw_right           = @{ ^"right"           ~ word_end }
 
 // Intrinsic function names
-kw_function        = @{ ^"function"        ~ !ident_cont }
-kw_length          = @{ ^"length"          ~ !ident_cont }
-kw_upper_case      = @{ ^"upper-case"      ~ !ident_cont }
-kw_lower_case      = @{ ^"lower-case"      ~ !ident_cont }
-kw_trim            = @{ ^"trim"            ~ !ident_cont }
-kw_reverse         = @{ ^"reverse"         ~ !ident_cont }
-kw_current_date    = @{ ^"current-date"    ~ !ident_cont }
-kw_max             = @{ ^"max"             ~ !ident_cont }
-kw_min             = @{ ^"min"             ~ !ident_cont }
-kw_mod             = @{ ^"mod"             ~ !ident_cont }
-kw_rem             = @{ ^"rem"             ~ !ident_cont }
-kw_numval          = @{ ^"numval"          ~ !ident_cont }
-kw_numval_c        = @{ ^"numval-c"        ~ !ident_cont }
-kw_substitute      = @{ ^"substitute"      ~ !ident_cont }
-kw_sqrt            = @{ ^"sqrt"            ~ !ident_cont }
-kw_sum             = @{ ^"sum"             ~ !ident_cont }
-kw_integer_part    = @{ ^"integer-part"    ~ !ident_cont }
-kw_integer         = @{ ^"integer"         ~ !ident_cont }
-kw_abs             = @{ ^"abs"             ~ !ident_cont }
-kw_ord             = @{ ^"ord"             ~ !ident_cont }
-kw_char            = @{ ^"char"            ~ !ident_cont }
-kw_floor           = @{ ^"floor"           ~ !ident_cont }
-kw_ceiling         = @{ ^"ceiling"         ~ !ident_cont }
-kw_power           = @{ ^"power"           ~ !ident_cont }
-kw_log             = @{ ^"log"             ~ !ident_cont }
-kw_log10           = @{ ^"log10"           ~ !ident_cont }
-kw_exp             = @{ ^"exp"             ~ !ident_cont }
-kw_sin             = @{ ^"sin"             ~ !ident_cont }
-kw_cos             = @{ ^"cos"             ~ !ident_cont }
-kw_tan             = @{ ^"tan"             ~ !ident_cont }
-kw_asin            = @{ ^"asin"            ~ !ident_cont }
-kw_acos            = @{ ^"acos"            ~ !ident_cont }
-kw_atan            = @{ ^"atan"            ~ !ident_cont }
-kw_mean            = @{ ^"mean"            ~ !ident_cont }
-kw_median          = @{ ^"median"          ~ !ident_cont }
-kw_variance        = @{ ^"variance"        ~ !ident_cont }
-kw_concatenate     = @{ ^"concatenate"     ~ !ident_cont }
-kw_when_compiled   = @{ ^"when-compiled"   ~ !ident_cont }
-kw_test_numval     = @{ ^"test-numval"     ~ !ident_cont }
-kw_date_of_integer = @{ ^"date-of-integer" ~ !ident_cont }
-kw_integer_of_date = @{ ^"integer-of-date" ~ !ident_cont }
-kw_integer_of_day  = @{ ^"integer-of-day"  ~ !ident_cont }
-kw_day_of_integer  = @{ ^"day-of-integer"  ~ !ident_cont }
-kw_annuity         = @{ ^"annuity"         ~ !ident_cont }
-kw_present_value   = @{ ^"present-value"   ~ !ident_cont }
-kw_formatted_date  = @{ ^"formatted-date"  ~ !ident_cont }
-kw_formatted_time  = @{ ^"formatted-time"  ~ !ident_cont }
+kw_function        = @{ ^"function"        ~ word_end }
+kw_length          = @{ ^"length"          ~ word_end }
+kw_upper_case      = @{ ^"upper-case"      ~ word_end }
+kw_lower_case      = @{ ^"lower-case"      ~ word_end }
+kw_trim            = @{ ^"trim"            ~ word_end }
+kw_reverse         = @{ ^"reverse"         ~ word_end }
+kw_current_date    = @{ ^"current-date"    ~ word_end }
+kw_max             = @{ ^"max"             ~ word_end }
+kw_min             = @{ ^"min"             ~ word_end }
+kw_mod             = @{ ^"mod"             ~ word_end }
+kw_rem             = @{ ^"rem"             ~ word_end }
+kw_numval          = @{ ^"numval"          ~ word_end }
+kw_numval_c        = @{ ^"numval-c"        ~ word_end }
+kw_substitute      = @{ ^"substitute"      ~ word_end }
+kw_sqrt            = @{ ^"sqrt"            ~ word_end }
+kw_sum             = @{ ^"sum"             ~ word_end }
+kw_integer_part    = @{ ^"integer-part"    ~ word_end }
+kw_integer         = @{ ^"integer"         ~ word_end }
+kw_abs             = @{ ^"abs"             ~ word_end }
+kw_ord             = @{ ^"ord"             ~ word_end }
+kw_char            = @{ ^"char"            ~ word_end }
+kw_floor           = @{ ^"floor"           ~ word_end }
+kw_ceiling         = @{ ^"ceiling"         ~ word_end }
+kw_power           = @{ ^"power"           ~ word_end }
+kw_log             = @{ ^"log"             ~ word_end }
+kw_log10           = @{ ^"log10"           ~ word_end }
+kw_exp             = @{ ^"exp"             ~ word_end }
+kw_sin             = @{ ^"sin"             ~ word_end }
+kw_cos             = @{ ^"cos"             ~ word_end }
+kw_tan             = @{ ^"tan"             ~ word_end }
+kw_asin            = @{ ^"asin"            ~ word_end }
+kw_acos            = @{ ^"acos"            ~ word_end }
+kw_atan            = @{ ^"atan"            ~ word_end }
+kw_mean            = @{ ^"mean"            ~ word_end }
+kw_median          = @{ ^"median"          ~ word_end }
+kw_variance        = @{ ^"variance"        ~ word_end }
+kw_concatenate     = @{ ^"concatenate"     ~ word_end }
+kw_when_compiled   = @{ ^"when-compiled"   ~ word_end }
+kw_test_numval     = @{ ^"test-numval"     ~ word_end }
+kw_date_of_integer = @{ ^"date-of-integer" ~ word_end }
+kw_integer_of_date = @{ ^"integer-of-date" ~ word_end }
+kw_integer_of_day  = @{ ^"integer-of-day"  ~ word_end }
+kw_day_of_integer  = @{ ^"day-of-integer"  ~ word_end }
+kw_annuity         = @{ ^"annuity"         ~ word_end }
+kw_present_value   = @{ ^"present-value"   ~ word_end }
+kw_formatted_date  = @{ ^"formatted-date"  ~ word_end }
+kw_formatted_time  = @{ ^"formatted-time"  ~ word_end }

@@ -45,6 +45,17 @@ TRIM                = { emit = "common:str_trim",            min_args = 1, max_a
 # TRIM ... LEADING/TRAILING direction (walker routes the 2-arg form here).
 __trim_start        = { emit = "common:str_trim_start",      min_args = 1, max_args = 1 }
 __trim_end          = { emit = "common:str_trim_end",        min_args = 1, max_args = 1 }
+
+# ── Runtime environment ─────────────────────────────────────────────────────
+# `ACCEPT x FROM ENVIRONMENT "NAME"` used to emit a bare `getenv(name)`, which
+# the SHARED fallback table in `primitives/imports.rs` resolves to
+# `wasi:cli/environment:get-environment`. That interface takes NO arguments and
+# returns the whole (name, value) list, so every ACCEPT tripped the host-call
+# arity check and then assigned a LIST to a PIC X field. Declare the real
+# nullary readers and let the walker do the lookup — the same shape php's
+# `__vybe_env_pairs` uses.
+__cobol_env_pairs   = { emit = "host:wasi:cli/environment:get-environment", min_args = 0, max_args = 0 }
+__cobol_args        = { emit = "host:wasi:cli/environment:get-arguments",   min_args = 0, max_args = 0 }
 REVERSE             = { emit = "common:str_reverse",         min_args = 1, max_args = 1 }
 CONCATENATE         = { emit = "common:str_concat",          min_args = 2, max_args = 255 }
 SUBSTITUTE          = { emit = "common:str_replace",         min_args = 3, max_args = 3 }
@@ -89,13 +100,26 @@ SIGN                = { emit = "host:ecma:math:sign",        min_args = 1, max_a
 
 # ── Date ─────────────────────────────────────────────────────────────────────
 
-CURRENT-DATE        = { emit = "host:wasi:clocks:toISOString", min_args = 0, max_args = 0 }
-DATE-OF-INTEGER     = { emit = "host:wasi:clocks:toISOString", min_args = 1, max_args = 1 }
-INTEGER-OF-DATE     = { emit = "common:cobol.integer_of_date", min_args = 1, max_args = 1 }
-DAY-OF-INTEGER      = { emit = "host:wasi:clocks:toISOString", min_args = 1, max_args = 1 }
-WHEN-COMPILED       = { emit = "host:wasi:clocks:toISOString", min_args = 0, max_args = 0 }
-FORMATTED-DATE      = { emit = "host:wasi:clocks:toISOString", min_args = 1, max_args = 2 }
-FORMATTED-TIME      = { emit = "host:wasi:clocks:toISOString", min_args = 1, max_args = 2 }
+# CURRENT-DATE / WHEN-COMPILED / DATE-OF-INTEGER / DAY-OF-INTEGER /
+# INTEGER-OF-DATE / INTEGER-OF-DAY / FORMATTED-* are composed in the walker
+# (`desugar_cobol_date_intrinsic`) out of the `ecma:date` readings below.
+# They used to name `host:wasi:clocks:toISOString` — a module that does not
+# exist, so every one of them died as `Unresolved import` — and
+# `common:cobol.integer_of_date`, which nothing dispatches.
+#
+# The wall clock, and the LOCAL component getters COBOL reads it through.
+# `ecma:date.now` ignores its arguments; the getters take a raw millisecond
+# reading, the same convention `__utc_*` below already relies on.
+__now               = { emit = "host:ecma:date:now",            min_args = 0, max_args = 0 }
+__local_year        = { emit = "host:ecma:date:getFullYear",    min_args = 1, max_args = 1 }
+__local_month       = { emit = "host:ecma:date:getMonth",       min_args = 1, max_args = 1 }
+__local_date        = { emit = "host:ecma:date:getDate",        min_args = 1, max_args = 1 }
+__local_hours       = { emit = "host:ecma:date:getHours",       min_args = 1, max_args = 1 }
+__local_minutes     = { emit = "host:ecma:date:getMinutes",     min_args = 1, max_args = 1 }
+__local_seconds     = { emit = "host:ecma:date:getSeconds",     min_args = 1, max_args = 1 }
+__local_millis      = { emit = "host:ecma:date:getMilliseconds", min_args = 1, max_args = 1 }
+__local_day         = { emit = "host:ecma:date:getDay",         min_args = 1, max_args = 1 }
+__tz_offset         = { emit = "host:ecma:date:getTimezoneOffset", min_args = 1, max_args = 1 }
 
 # ── Financial ────────────────────────────────────────────────────────────────
 
@@ -131,7 +155,17 @@ __stop_run          = { emit = "host:wasi:cli/exit:exit",    min_args = 0, max_a
 __is_numeric        = { emit = "host:ecma:number:isNaN",    min_args = 1, max_args = 1 }
 __is_alphabetic     = { emit = "noop",                        min_args = 1, max_args = 1 }
 __refmod            = { emit = "common:str_substring",       min_args = 3, max_args = 3 }
+# 0-based position of a character within a string, -1 when absent — the lookup
+# `INSPECT … CONVERTING` translates through.
+__index_of          = { emit = "common:str_index_of",        min_args = 2, max_args = 2 }
+# INSPECT REPLACING: every occurrence, and the run-length forms it builds.
+__replace_all       = { emit = "common:str_replace",         min_args = 3, max_args = 3 }
+__repeat            = { emit = "common:str_repeat",          min_args = 2, max_args = 2 }
 __array_join        = { emit = "common:collections.join",    min_args = 2, max_args = 2 }
+# Ascending sorted COPY of an array — what FUNCTION MEDIAN picks its middle
+# from. NOT `__cobol_sort`, which is the SORT *statement* and takes a
+# file/keys object.
+__sorted            = { emit = "common:collections.sorted",  min_args = 1, max_args = 1 }
 f64_floor           = { emit = "opcode:f64_floor",           min_args = 1, max_args = 1 }
 f64_ceil            = { emit = "opcode:f64_ceil",            min_args = 1, max_args = 1 }
 f64_trunc           = { emit = "opcode:f64_trunc",           min_args = 1, max_args = 1 }
@@ -150,7 +184,19 @@ __move_corresponding = { emit = "common:cobol.move_corresponding", min_args = 2,
 
 # ── EXEC blocks (walker emits as calls) ─────────────────────────────────────
 
-__exec_sql          = { emit = "host:wasi:sql:execRaw", min_args = 1, max_args = 1 }
+# Embedded SQL rides the SAME flat `wasi:sql` surface PDO does. The old
+# `__exec_sql` named `wasi:sql:execRaw`, which does not exist — every EXEC SQL
+# died as `Unresolved import`.
+__sql_connect       = { emit = "host:wasi:sql:connect",  min_args = 1, max_args = 1 }
+__sql_close         = { emit = "host:wasi:sql:close",    min_args = 1, max_args = 1 }
+__sql_query         = { emit = "host:wasi:sql:query",    min_args = 2, max_args = 3 }
+__sql_execute       = { emit = "host:wasi:sql:execute",  min_args = 2, max_args = 3 }
+__sql_commit        = { emit = "host:wasi:sql:commit",   min_args = 1, max_args = 1 }
+__sql_rollback      = { emit = "host:wasi:sql:rollback", min_args = 1, max_args = 1 }
+# A result row is keyed by column name; host variables bind POSITIONALLY.
+__row_values        = { emit = "common:dict.values",     min_args = 1, max_args = 1 }
+# XML PARSE reads the document through the shared xml primitive.
+__xml_parse         = { emit = "common:xml.parse",       min_args = 1, max_args = 2 }
 __exec_cics         = { emit = "noop",                        min_args = 1, max_args = 1 }
 __exec_dli          = { emit = "noop",                        min_args = 1, max_args = 1 }
 
