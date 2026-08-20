@@ -8,7 +8,7 @@ program test_else_where_fallback_order
     b = 0
     where (a > 2)
         b = 1
-    elsewhere where (a == 2)
+    elsewhere (a == 2)
         b = 2
     elsewhere
         b = 3

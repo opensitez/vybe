@@ -8,7 +8,7 @@ program test_else_where_masked_even_odd_fallthrough
     b = 0
     where (a > 3)
         b = 10
-    elsewhere where (mod(a, 2) == 1)
+    elsewhere (mod(a, 2) == 1)
         b = 20
     elsewhere
         b = 30

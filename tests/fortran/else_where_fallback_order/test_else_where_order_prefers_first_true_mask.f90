@@ -8,7 +8,7 @@ program test_else_where_order_prefers_first
     b = 0
     where (a > 0)
         b = 1
-    elsewhere where (a < 4)
+    elsewhere (a < 4)
         b = 2
     elsewhere
         b = 3

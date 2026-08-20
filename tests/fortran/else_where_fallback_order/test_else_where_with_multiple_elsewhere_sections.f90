@@ -8,9 +8,9 @@ program test_else_where_fallback_multiple_sections
     b = 0
     where (a <= 2)
         b = 5
-    elsewhere where (a > 3)
+    elsewhere (a > 3)
         b = 10
-    elsewhere where (a == 3)
+    elsewhere (a == 3)
         b = 7
     elsewhere
         b = 99

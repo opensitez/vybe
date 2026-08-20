@@ -2,7 +2,6 @@
 //!
 //! Two jobs:
 //!
-//!   testrunner extract <rust-test-file>...   native Rust tests → standalone sources
 //!   testrunner run <path>...                 run those sources, verdict = exit code
 //!
 //! It links nothing from Vybe and drives the already-built `vybex` as a
@@ -11,13 +10,10 @@
 //! (`-g`, `--dap-port`, `--dump-ast`, `-t`) and with the language's real
 //! runtime, neither of which `cargo test` can offer.
 
-mod emit;
-mod extract;
 mod model;
 mod pool;
 mod report;
 mod run;
-mod rustlit;
 mod style;
 mod suites;
 
@@ -29,7 +25,6 @@ use walkdir::WalkDir;
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
-        Some("extract") => cmd_extract(&args[1..]),
         Some("run") => cmd_run(&args[1..]),
         Some("summary") => cmd_summary(&args[1..]),
         Some("dashboard") => cmd_dashboard(&args[1..]),
@@ -37,7 +32,6 @@ fn main() -> Result<()> {
             eprintln!(
                 "vybe testrunner\n\n\
                  Usage:\n  \
-                 testrunner extract <rust-test-file>... [--out DIR] [--lang NAME]\n  \
                  testrunner run <path>... [options]\n  \
                  testrunner summary <target>... [--results DIR]\n  \
                  testrunner dashboard [--results DIR] [--sort COL] [--desc]\n\n\
@@ -52,10 +46,6 @@ fn main() -> Result<()> {
                  --json          write the timestamped JSON report + regression diff\n  \
                  --save          write the plain test log to results/<dir>/saved/<target>.txt\n  \
                  --verbose       stream every failure as it happens (default: report only)\n\n\
-                 `extract --out DIR` writes DIR/<lang>/<category>/<test>. Pass\n\
-                 the PARENT (`--out tests`), not the language directory — \n\
-                 `--out tests/cobol` writes tests/cobol/cobol/… and merges a\n\
-                 second copy of every category into the real corpus.\n\n\
                  `summary` reads a log written by `run --save` and groups the\n\
                  failures by category, worst first. `dashboard` totals EVERY\n\
                  saved log, one row per language.\n\n\
@@ -94,252 +84,6 @@ fn positionals(args: &[String]) -> Vec<&String> {
     }
     out
 }
-
-// ── extract ─────────────────────────────────────────────────────────────────
-
-fn cmd_extract(args: &[String]) -> Result<()> {
-    let out_root = PathBuf::from(flag(args, "--out").unwrap_or("tests"));
-    let files = positionals(args);
-    anyhow::ensure!(!files.is_empty(), "no input files");
-
-    let mut total = 0usize;
-    let mut compile_only = 0usize;
-    let mut unpairable: Vec<(String, String)> = Vec::new();
-    let mut empty: Vec<String> = Vec::new();
-
-    for input in files {
-        let path = Path::new(input);
-        let lang = flag(args, "--lang")
-            .map(str::to_string)
-            .or_else(|| language_of(path))
-            .with_context(|| format!("cannot tell the language of {input}"))?;
-        let ext = emit::extension(&lang)
-            .with_context(|| format!("no source extension known for `{lang}`"))?;
-
-        let text = std::fs::read_to_string(path).with_context(|| format!("reading {input}"))?;
-        // BOTH shapes, merged. A module can carry a macro batch AND its own
-        // `#[test] fn`s — `test_bcmath.rs` has a 12-entry `php_cases!` block
-        // beside 34 test functions, and treating the two as mutually exclusive
-        // silently dropped whichever came second.
-        // One unreadable module must not abort the whole extraction — it did,
-        // and silently left a partial corpus behind.
-        let mut cases = match extract::cases_in_file(&text) {
-            Ok(cases) => cases,
-            Err(e) => {
-                eprintln!("  {input}: macro parse stopped ({e})");
-                Vec::new()
-            }
-        };
-        let seen: std::collections::HashSet<String> =
-            cases.iter().map(|c| c.name.clone()).collect();
-        cases.extend(
-            extract::test_fns_in_file(&text)
-                .into_iter()
-                .filter(|c| !seen.contains(&c.name)),
-        );
-        let seen: std::collections::HashSet<String> =
-            cases.iter().map(|c| c.name.clone()).collect();
-        cases.extend(
-            extract::paren_macros_in_file(&text)
-                .into_iter()
-                .filter(|c| !seen.contains(&c.name)),
-        );
-        let seen: std::collections::HashSet<String> =
-            cases.iter().map(|c| c.name.clone()).collect();
-        cases.extend(
-            extract::paren_macros_in_file(&text)
-                .into_iter()
-                .filter(|c| !seen.contains(&c.name)),
-        );
-        // A module that yields NOTHING is the one failure extraction could not
-        // report. An unlisted macro name, a helper reached by a path, a program
-        // built with `format!` — each looks identical to "this file has no
-        // tests", and the gap only ever showed as a count against the cargo
-        // log: 8 C modules, 31 COBOL, 11 C#, 9 Pascal, 7 PHP.
-        if cases.is_empty() {
-            // At COLUMN ZERO only. `helpers.rs` carries an indented `#[test]`
-            // inside its `macro_rules!` body — that is the DEFINITION of a
-            // test, not a test, and cargo runs none of them.
-            let declares_tests = text.lines().any(|l| {
-                l.starts_with("#[test]")
-                    || (l.contains("! {")
-                        && !l.starts_with(char::is_whitespace)
-                        && !l.starts_with("macro_rules!"))
-            });
-            if declares_tests {
-                empty.push(input.to_string());
-            }
-            continue;
-        }
-
-        let category = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("misc")
-            .trim_start_matches("test_")
-            .trim_end_matches("_test")
-            .trim_start_matches("js_")
-            .to_string();
-        let dir = out_root.join(&lang).join(&category);
-        std::fs::create_dir_all(&dir)?;
-        // `cobc` rejects a base name longer than 31 characters ("invalid file
-        // base name — length exceeds maximum"), which would leave those cases
-        // untestable against the reference compiler. Measured: 31 passes, 32
-        // does not. The directory is not counted.
-        let max_name = if lang == "cobol" { 31 } else { usize::MAX };
-        let mut used_names: std::collections::HashSet<String> = Default::default();
-        // Not every language needs an injected harness — wast asserts by
-        // trapping, so its compile-mode cases need no helper at all.
-        let harness = emit::harness_body(&lang).unwrap_or_default();
-
-        for case in &cases {
-            round_trip_check(case, input)?;
-
-            let slug = format!("{lang}/{category}/{}", case.name);
-            // A wast case picks its own extension: a script carrying
-            // assertions must be `.wast` for a spec interpreter to run its
-            // directives, while a bare module stays `.wat`.
-            let mut file_ext = ext;
-            let (text, pairing) = match lang.as_str() {
-                "go" => {
-                    let e = emit::go::emit(case, input, &slug, &harness);
-                    (e.text, e.pairing)
-                }
-                "js" => {
-                    let e = emit::js::emit(case, input, &slug, &harness);
-                    (e.text, e.pairing)
-                }
-                "php" => {
-                    let e = emit::php::emit(case, input, &slug, &harness);
-                    (e.text, e.pairing)
-                }
-                "kotlin" => {
-                    let e = emit::kotlin::emit(case, input, &slug, &harness);
-                    (e.text, e.pairing)
-                }
-                "csharp" => {
-                    let e = emit::csharp::emit(case, input, &slug, &harness);
-                    (e.text, e.pairing)
-                }
-                "wast" => {
-                    let e = emit::wast::emit(case, input, &slug, &harness);
-                    file_ext = e.extension;
-                    (e.text, e.pairing)
-                }
-                "vb" => {
-                    let e = emit::vb::emit(case, input, &slug, &harness);
-                    (e.text, e.pairing)
-                }
-                "python" => {
-                    let e = emit::python::emit(case, input, &slug, &harness);
-                    (e.text, e.pairing)
-                }
-                "ruby" => {
-                    let e = emit::ruby::emit(case, input, &slug, &harness);
-                    (e.text, e.pairing)
-                }
-                "java" => {
-                    let e = emit::java::emit(case, input, &slug, &harness);
-                    (e.text, e.pairing)
-                }
-                "cobol" => {
-                    let e = emit::cobol::emit(case, input, &slug, &harness);
-                    (e.text, e.pairing)
-                }
-                "fortran" => {
-                    let e = emit::fortran::emit(case, input, &slug, &harness);
-                    (e.text, e.pairing)
-                }
-                "dart" => {
-                    let e = emit::dart::emit(case, input, &slug, &harness);
-                    (e.text, e.pairing)
-                }
-                "pascal" => {
-                    let e = emit::pascal::emit(case, input, &slug, &harness);
-                    (e.text, e.pairing)
-                }
-                "c" => {
-                    let e = emit::c::emit(case, input, &slug, &harness);
-                    (e.text, e.pairing)
-                }
-                "lua" => {
-                    let e = emit::lua::emit(case, input, &slug, &harness);
-                    (e.text, e.pairing)
-                }
-                other => anyhow::bail!("no emitter for `{other}` yet"),
-            };
-            if let emit::go::Pairing::Unpairable(reason) = &pairing {
-                unpairable.push((slug.clone(), reason.clone()));
-            }
-            // A compile case has no output to pair, so it is neither paired nor
-            // unpairable — counting it as "paired 1:1 into assertions" would
-            // overstate what the corpus checks.
-            if case.expected.is_none() {
-                compile_only += 1;
-            }
-            let file_name = short_unique_name(&case.name, max_name, &mut used_names);
-            std::fs::write(dir.join(format!("{file_name}.{file_ext}")), &text)?;
-            total += 1;
-        }
-        println!("{input} → {} case(s) in {}", cases.len(), dir.display());
-    }
-
-    println!("\nextracted {total} file(s)");
-    if !empty.is_empty() {
-        println!(
-            "{} module(s) HAVE tests but yielded none — an unread shape:",
-            empty.len()
-        );
-        for input in &empty {
-            println!("  {input}");
-        }
-    }
-    if compile_only > 0 {
-        println!(
-            "{compile_only} compile-mode case(s): the source must be ACCEPTED, \
-             nothing is executed"
-        );
-    }
-    if unpairable.is_empty() {
-        println!(
-            "{} case(s) paired 1:1 into assertions",
-            total - compile_only
-        );
-    } else {
-        println!("{} case(s) could NOT be paired:", unpairable.len());
-        for (slug, reason) in &unpairable {
-            println!("  {slug}: {reason}");
-        }
-    }
-    Ok(())
-}
-
-/// Prove the decode was lossless before anything is written. Go and C sources
-/// arrive as escaped Rust literals with backtick struct tags nested inside
-/// them; a wrong unescape corrupts a program silently, and silently is the
-/// failure mode that would poison the whole migration.
-fn round_trip_check(case: &extract::Case, origin: &str) -> Result<()> {
-    let re_escaped = rustlit::escape(&case.source);
-    let (decoded, _) = rustlit::scan(format!("\"{re_escaped}\"").as_bytes(), 0)?;
-    anyhow::ensure!(
-        decoded == case.source,
-        "escape round-trip lost data for `{}` in {origin}",
-        case.name
-    );
-    Ok(())
-}
-
-fn language_of(path: &Path) -> Option<String> {
-    let mut parts = path.components().map(|c| c.as_os_str().to_string_lossy());
-    while let Some(part) = parts.next() {
-        if part == "languages" {
-            return parts.next().map(|s| s.into_owned());
-        }
-    }
-    None
-}
-
-// ── dashboard ───────────────────────────────────────────────────────────────
 
 /// `testrunner dashboard` — one row per language across every saved log.
 ///
@@ -416,7 +160,7 @@ fn render_dashboard(args: &[String]) -> Result<()> {
     // reported 11920 tests for a 5954-test suite at a blended 73% — neither
     // run's number — and `done` ran past 100%, because `expected` came from the
     // one log still in flight while ok/fail came from both.
-    let extracted = extracted_suites();
+    let extracted = suite_dirs();
     let logs: Vec<PathBuf> = extracted
         .iter()
         .map(|suite| saved_dir.join(format!("tests.{suite}.txt")))
@@ -1440,10 +1184,13 @@ fn saved_log_path(results_dir: &Path, resolved: &Path) -> PathBuf {
     results_dir.join("saved").join(format!("{name}.txt"))
 }
 
-/// The suites, as the directories under `tests/` — the one list that says which
-/// suites exist, so a suite with no log yet still gets a row and a suite's log
-/// can be looked up by name rather than found by globbing.
-fn extracted_suites() -> std::collections::BTreeSet<String> {
+/// The suites ARE the directories under `tests/` — nothing is derived, listed
+/// or extracted. One list says which suites exist, so a suite with no log yet
+/// still gets a row and a log can be looked up by name rather than globbed.
+///
+/// Named `extracted_suites` until the extractor was deleted; the name implied a
+/// build step that never existed here.
+fn suite_dirs() -> std::collections::BTreeSet<String> {
     std::fs::read_dir("tests")
         .into_iter()
         .flatten()
