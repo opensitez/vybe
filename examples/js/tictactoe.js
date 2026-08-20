@@ -1,13 +1,25 @@
-// Tic Tac Toe with Minimax AI — you are X, computer is O
-let form = gui.createForm("Tic Tac Toe");
-gui.setProperty(form, "Width", 340);
-gui.setProperty(form, "Height", 430);
+// Tic Tac Toe with Minimax AI — you are X, computer is O.
+//
+// Built on the WHATWG DOM: the nine cells are `<button>` elements held in an
+// array, so a move writes to the element it already has. The old version
+// addressed them by a made-up name ("cell" + i) and asked a toolkit to look
+// each one up; an element handle IS the identity, so no lookup happens here.
+document.setTitle("Tic Tac Toe");
 
 let board = ["", "", "", "", "", "", "", "", ""];
 let gameOver = false;
 
-gui.addControl(form, "Label", "status", 10, 10, 310, 30);
-gui.setProperty("status", "Text", "Your turn (X)");
+let status = document.createElement("div");
+status.setTextContent("Your turn (X)");
+document.body.appendChild(status);
+
+// The nine cell elements, in board order.
+let cells = [];
+
+function setCell(idx, mark) {
+    board[idx] = mark;
+    cells[idx].setTextContent(mark);
+}
 
 function checkWinner(b) {
     let lines = [
@@ -71,7 +83,7 @@ function computerMove() {
         if (board[i] === "") {
             board[i] = "O";
             if (checkWinner(board) === "O") {
-                gui.setProperty("cell" + i, "Text", "O");
+                setCell(i, "O");
                 return;
             }
             board[i] = "";
@@ -81,8 +93,7 @@ function computerMove() {
         if (board[i] === "") {
             board[i] = "X";
             if (checkWinner(board) === "X") {
-                board[i] = "O";
-                gui.setProperty("cell" + i, "Text", "O");
+                setCell(i, "O");
                 return;
             }
             board[i] = "";
@@ -91,8 +102,7 @@ function computerMove() {
 
     // Take center if available
     if (board[4] === "") {
-        board[4] = "O";
-        gui.setProperty("cell4", "Text", "O");
+        setCell(4, "O");
         return;
     }
 
@@ -111,14 +121,13 @@ function computerMove() {
         }
     }
     if (bestIdx >= 0) {
-        board[bestIdx] = "O";
-        gui.setProperty("cell" + bestIdx, "Text", "O");
+        setCell(bestIdx, "O");
     }
 }
 
 function updateBoard() {
     for (let i = 0; i < 9; i++) {
-        gui.setProperty("cell" + i, "Text", board[i]);
+        cells[i].setTextContent(board[i]);
     }
 }
 
@@ -128,58 +137,60 @@ function makeCellHandler(idx) {
         if (board[idx] !== "") { return; }
 
         // Human plays X
-        board[idx] = "X";
-        gui.setProperty("cell" + idx, "Text", "X");
+        setCell(idx, "X");
 
         let w = checkWinner(board);
         if (w === "X") {
-            gui.setProperty("status", "Text", "You win!");
+            status.setTextContent("You win!");
             gameOver = true;
             return;
         }
         if (isFull(board)) {
-            gui.setProperty("status", "Text", "Draw!");
+            status.setTextContent("Draw!");
             gameOver = true;
             return;
         }
 
         // Computer plays O
-        gui.setProperty("status", "Text", "Thinking...");
+        status.setTextContent("Thinking...");
         computerMove();
 
         w = checkWinner(board);
         if (w === "O") {
-            gui.setProperty("status", "Text", "Computer wins!");
+            status.setTextContent("Computer wins!");
             gameOver = true;
             return;
         }
         if (isFull(board)) {
-            gui.setProperty("status", "Text", "Draw!");
+            status.setTextContent("Draw!");
             gameOver = true;
             return;
         }
 
-        gui.setProperty("status", "Text", "Your turn (X)");
+        status.setTextContent("Your turn (X)");
     };
 }
 
+// Three cells per row. A row is a `<div>` and the cells inside it are inline,
+// so the document lays the grid out — nothing computes an x or a y.
+let row = null;
 for (let i = 0; i < 9; i++) {
-    let row = Math.floor(i / 3);
-    let col = i - row * 3;
-    let x = 10 + col * 105;
-    let y = 50 + row * 105;
-    gui.addControl(form, "Button", "cell" + i, x, y, 100, 100);
-    gui.setProperty("cell" + i, "Text", "");
-    gui.onEvent("cell" + i, "Click", makeCellHandler(i));
+    if (i % 3 === 0) {
+        row = document.createElement("div");
+        document.body.appendChild(row);
+    }
+    let cell = document.createElement("button");
+    row.appendChild(cell);
+    cells[i] = cell;
+    cell.addEventListener("click", makeCellHandler(i));
 }
 
-gui.addControl(form, "Button", "resetBtn", 10, 370, 310, 35);
-gui.setProperty("resetBtn", "Text", "New Game");
-gui.onEvent("resetBtn", "Click", () => {
+let reset = document.createElement("button");
+reset.setTextContent("New Game");
+document.body.appendChild(reset);
+reset.addEventListener("click", () => {
     board = ["", "", "", "", "", "", "", "", ""];
     gameOver = false;
-    gui.setProperty("status", "Text", "Your turn (X)");
+    status.setTextContent("Your turn (X)");
     updateBoard();
 });
-
-gui.runApplication(form);

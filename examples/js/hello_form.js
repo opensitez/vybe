@@ -1,45 +1,44 @@
-// Hello Form — a WinForms-style GUI with event handling, created from JavaScript
-let form = gui.createForm("Hello from JS!");
-gui.setProperty(form, "Width", 450);
-gui.setProperty(form, "Height", 350);
+// Hello Form — the same UI, built the way a browser takes it. There is no
+// toolkit API and no `gui` namespace: a control IS a DOM element, so this is
+// `createElement` / `appendChild` / `addEventListener` against the document the
+// page already has. `document` is a global the web platform binds, exactly as
+// `window.document` is in a browser — nothing to import.
+document.setTitle("Hello from JS!");
 
-// Add a label
-gui.addControl(form, "Label", "label1", 20, 20, 400, 30);
-gui.setProperty("label1", "Text", "Hello World from JavaScript!");
+function add(tag, text) {
+    let node = document.createElement(tag);
+    node.setTextContent(text);
+    document.body.appendChild(node);
+    return node;
+}
 
-// Add a counter label
-gui.addControl(form, "Label", "counterLabel", 20, 60, 400, 30);
-gui.setProperty("counterLabel", "Text", "Click count: 0");
+add("div", "Hello World from JavaScript!");
 
-// Add a button with click handler
-gui.addControl(form, "Button", "btn1", 20, 100, 150, 35);
-gui.setProperty("btn1", "Text", "Click Me!");
+let counterLabel = add("div", "Click count: 0");
 
 let clickCount = 0;
-gui.onEvent("btn1", "Click", () => {
+let button = add("button", "Click Me!");
+button.addEventListener("click", () => {
     clickCount = clickCount + 1;
-    gui.setProperty("counterLabel", "Text", "Click count: " + clickCount);
-    gui.setProperty("btn1", "Text", "Clicked " + clickCount + "x");
+    counterLabel.setTextContent("Click count: " + clickCount);
+    button.setTextContent("Clicked " + clickCount + "x");
 });
 
-// Add a reset button
-gui.addControl(form, "Button", "btnReset", 180, 100, 150, 35);
-gui.setProperty("btnReset", "Text", "Reset");
-
-gui.onEvent("btnReset", "Click", () => {
+let reset = add("button", "Reset");
+reset.addEventListener("click", () => {
     clickCount = 0;
-    gui.setProperty("counterLabel", "Text", "Click count: 0");
-    gui.setProperty("btn1", "Text", "Click Me!");
+    counterLabel.setTextContent("Click count: 0");
+    button.setTextContent("Click Me!");
 });
 
-// Add a textbox
-gui.addControl(form, "TextBox", "txt1", 20, 150, 300, 25);
-gui.setProperty("txt1", "Text", "Type here...");
+let input = document.createElement("input");
+input.setAttribute("value", "Type here...");
+document.body.appendChild(input);
 
-// Info label
-gui.addControl(form, "Label", "info", 20, 200, 400, 50);
-gui.setProperty("info", "Text", "This form was created entirely from JavaScript, running on the Vybe bytecode VM with WinForms rendering!");
+add(
+    "div",
+    "This form was created entirely from JavaScript, running on the Vybe bytecode VM against the WHATWG DOM.",
+);
 
-// Launch!
-console.log("Launching JS form with event handling...");
-gui.runApplication(form);
+// Nothing launches the page. It runs because it HAS a document with content.
+console.log("Built the page from JavaScript.");

@@ -1,15 +1,18 @@
-let form = gui.createForm("Test");
-gui.setProperty(form, "Width", 300);
-gui.setProperty(form, "Height", 200);
+// The same form, written the way a browser would take it: no toolkit API and
+// no `gui` namespace — a control IS a DOM element, so this is `createElement`,
+// `appendChild`, and `addEventListener` against the document the page has.
+//
+// Nothing tells the page to run. It runs because it HAS a document.
+document.setTitle("Test");
 
-gui.addControl(form, "Label", "lbl", 20, 20, 260, 30);
-gui.setProperty("lbl", "Text", "Not clicked yet");
+let label = document.createElement("div");
+label.setTextContent("Not clicked yet");
+document.body.appendChild(label);
 
-gui.addControl(form, "Button", "btn", 20, 60, 100, 30);
-gui.setProperty("btn", "Text", "Click");
+let button = document.createElement("button");
+button.setTextContent("Click");
+document.body.appendChild(button);
 
-gui.onEvent("btn", "Click", () => {
-    gui.setProperty("lbl", "Text", "Clicked!");
+button.addEventListener("click", () => {
+    label.setTextContent("Clicked!");
 });
-
-gui.runApplication(form);
