@@ -3,7 +3,7 @@ unit MainForm;
 interface
 
 uses
-  SysUtils, Classes, Forms, Controls, StdCtrls, ExtCtrls;
+  SysUtils, Classes, Forms, Controls, StdCtrls, ExtCtrls, Dialogs;
 
 type
   TCalculatorForm = class(TForm)
@@ -173,14 +173,22 @@ begin
 end;
 
 procedure TCalculatorForm.BackspaceClick(Sender: TObject);
+var
+  S: string;
 begin
   if FResetOnNextDigit then
     Exit;
 
-  if Length(FDisplay.Text) <= 1 then
+  { `Delete` takes a `var string`, and `Text` is a property — it cannot be
+    passed by reference. Edit a local and assign the result back. }
+  S := FDisplay.Text;
+  if Length(S) <= 1 then
     FDisplay.Text := '0'
   else
-    Delete(FDisplay.Text, Length(FDisplay.Text), 1);
+  begin
+    Delete(S, Length(S), 1);
+    FDisplay.Text := S;
+  end;
 end;
 
 procedure TCalculatorForm.ApplyPendingOperation(const NewValue: Double);
