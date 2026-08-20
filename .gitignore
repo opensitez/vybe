@@ -9,7 +9,7 @@ snapshot_cache
 *.swp
 *.swo
 *~
-
+webroot
 # OS
 .DS_Store
 Thumbs.db
