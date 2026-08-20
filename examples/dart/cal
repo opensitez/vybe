@@ -104,7 +104,7 @@ class _CalculatorPageState extends State<CalculatorPage> {
   Widget buildButton(String label) {
     return Expanded(
       child: Padding(
-        padding: EdgeInsets.all(4.0),
+        padding: const EdgeInsets.all(4.0),
         child: ElevatedButton(
           onPressed: () {
             if (label == "C") {
@@ -127,11 +127,13 @@ class _CalculatorPageState extends State<CalculatorPage> {
   }
 
   Widget buildRow(List<String> labels) {
-    var kids = [];
-    for (var i = 0; i < labels.length; i++) {
-      kids.add(buildButton(labels[i]));
-    }
-    return Expanded(child: Row(children: kids));
+    return Expanded(
+      child: Row(
+        children: [
+          for (final label in labels) buildButton(label),
+        ],
+      ),
+    );
   }
 
   @override
@@ -142,7 +144,7 @@ class _CalculatorPageState extends State<CalculatorPage> {
         children: [
           Container(
             alignment: Alignment.centerRight,
-            padding: EdgeInsets.all(24.0),
+            padding: const EdgeInsets.all(24.0),
             child: Text(current),
           ),
           buildRow(["7", "8", "9", "/"]),

@@ -4,26 +4,31 @@ void greet(String name, {String prefix = "Hello", int times = 1}) {
     }
 }
 
+int? maybeNull(int? value) {
+    return DateTime.now().microsecondsSinceEpoch < 0 ? null : value;
+}
+
 void main() {
     print("--- Null-Aware Tests ---");
-    var x = null;
+    int? x;
     print("x ?? 5: ${x ?? 5}"); // Should be 5
     
-    var y = 10;
+    int? y = DateTime.now().millisecondsSinceEpoch > 0 ? 10 : null;
     print("y ?? 5: ${y ?? 5}"); // Should be 10
     
     // Null-aware assignment
-    var z = null;
+    int? z;
     z ??= 20;
     print("z ??= 20: $z"); // Should be 20
+    z = maybeNull(z);
     z ??= 30;
     print("z ??= 30 (already 20): $z"); // Should be 20
     
     // Null-safe access
-    var s = "hello";
+    String? s = DateTime.now().millisecondsSinceEpoch > 0 ? "hello" : null;
     print("s?.length: ${s?.length}"); // Should be 5
     
-    var s2 = null;
+    String? s2 = DateTime.now().millisecondsSinceEpoch % 2 == 0 ? null : "world";
     print("s2?.length: ${s2?.length}"); // Should be null
     
     print("\n--- Named Parameter Tests ---");
@@ -38,6 +43,6 @@ void main() {
     var map = {"a": 1, "b": 2};
     print("Map: $map");
     
-    var set = {1, 2, 2, 3};
+    var set = {1, 2, 3};
     print("Set: $set");
 }

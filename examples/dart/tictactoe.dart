@@ -1,189 +1,241 @@
-// Tic Tac Toe with Minimax AI for Vybe Dart
+// Tic Tac Toe with a Minimax AI — a Flutter app built from Dart.
+//
+// Idiomatic Flutter to the source; under the hood the Vybe `flutter` platform
+// adapter drives the shared `vybe_widgets` runtime through the same common
+// resolver as the WinForms/VCL adapters — no Flutter-specific host functions.
+import 'package:flutter/material.dart';
+
 void main() {
-    var form = gui.createForm("Tic Tac Toe");
-    gui.setProperty(form, "Width", 340);
-    gui.setProperty(form, "Height", 430);
+  runApp(const TicTacToeApp());
+}
 
-    var board = ["", "", "", "", "", "", "", "", ""];
-    var gameOver = false;
+class TicTacToeApp extends StatelessWidget {
+  const TicTacToeApp();
 
-    gui.addControl(form, "Label", "status", 10, 10, 310, 30);
-    gui.setProperty("status", "Text", "Your turn (X)");
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Tic Tac Toe',
+      home: const GamePage(),
+    );
+  }
+}
 
-    String checkWinner(b) {
-        var lines = [
-            [0,1,2],[3,4,5],[6,7,8],
-            [0,3,6],[1,4,7],[2,5,8],
-            [0,4,8],[2,4,6]
-        ];
-        for (var i = 0; i < 8; i++) {
-            var a = lines[i][0];
-            var c = lines[i][1];
-            var d = lines[i][2];
-            if (b[a] != "" && b[a] == b[c] && b[a] == b[d]) {
-                return b[a];
-            }
-        }
-        return "";
+class GamePage extends StatefulWidget {
+  const GamePage();
+
+  @override
+  State<GamePage> createState() => _GamePageState();
+}
+
+class _GamePageState extends State<GamePage> {
+  List<String> board = ["", "", "", "", "", "", "", "", ""];
+  bool gameOver = false;
+  String status = "Your turn (X)";
+
+  String checkWinner(List<String> b) {
+    final lines = [
+      [0, 1, 2], [3, 4, 5], [6, 7, 8],
+      [0, 3, 6], [1, 4, 7], [2, 5, 8],
+      [0, 4, 8], [2, 4, 6],
+    ];
+    for (var i = 0; i < 8; i++) {
+      final a = lines[i][0];
+      final c = lines[i][1];
+      final d = lines[i][2];
+      if (b[a] != "" && b[a] == b[c] && b[a] == b[d]) {
+        return b[a];
+      }
     }
+    return "";
+  }
 
-    bool isFull(b) {
-        for (var i = 0; i < 9; i++) {
-            if (b[i] == "") { return false; }
-        }
-        return true;
-    }
-
-    int minimax(b, bool isMaximizing, int depth) {
-        var winner = checkWinner(b);
-        if (winner == "O") { return 10 - depth; }
-        if (winner == "X") { return depth - 10; }
-        if (isFull(b)) { return 0; }
-        if (depth >= 4) { return 0; }
-
-        if (isMaximizing) {
-            var best = -100;
-            for (var i = 0; i < 9; i++) {
-                if (b[i] == "") {
-                    b[i] = "O";
-                    var score = minimax(b, false, depth + 1);
-                    b[i] = "";
-                    if (score > best) { best = score; }
-                }
-            }
-            return best;
-        } else {
-            var best = 100;
-            for (var i = 0; i < 9; i++) {
-                if (b[i] == "") {
-                    b[i] = "X";
-                    var score = minimax(b, true, depth + 1);
-                    b[i] = "";
-                    if (score < best) { best = score; }
-                }
-            }
-            return best;
-        }
-    }
-
-    void updateBoard() {
-        for (var i = 0; i < 9; i++) {
-            gui.setProperty("cell$i", "Text", board[i]);
-        }
-    }
-
-    void computerMove() {
-        // Try to win or block immediately
-        for (var i = 0; i < 9; i++) {
-            if (board[i] == "") {
-                board[i] = "O";
-                if (checkWinner(board) == "O") {
-                    gui.setProperty("cell$i", "Text", "O");
-                    return;
-                }
-                board[i] = "";
-            }
-        }
-        for (var i = 0; i < 9; i++) {
-            if (board[i] == "") {
-                board[i] = "X";
-                if (checkWinner(board) == "X") {
-                    board[i] = "O";
-                    gui.setProperty("cell$i", "Text", "O");
-                    return;
-                }
-                board[i] = "";
-            }
-        }
-
-        // Take center if available
-        if (board[4] == "") {
-            board[4] = "O";
-            gui.setProperty("cell4", "Text", "O");
-            return;
-        }
-
-        // Use limited minimax for the rest
-        var bestScore = -100;
-        var bestIdx = -1;
-        for (var i = 0; i < 9; i++) {
-            if (board[i] == "") {
-                board[i] = "O";
-                var score = minimax(board, false, 0);
-                board[i] = "";
-                if (score > bestScore) {
-                    bestScore = score;
-                    bestIdx = i;
-                }
-            }
-        }
-        if (bestIdx >= 0) {
-            board[bestIdx] = "O";
-            gui.setProperty("cell$bestIdx", "Text", "O");
-        }
-    }
-
-    Function makeCellHandler(int idx) {
-        return () {
-            if (gameOver) { return; }
-            if (board[idx] != "") { return; }
-
-            // Human plays X
-            board[idx] = "X";
-            gui.setProperty("cell$idx", "Text", "X");
-
-            var w = checkWinner(board);
-            if (w == "X") {
-                gui.setProperty("status", "Text", "You win!");
-                gameOver = true;
-                return;
-            }
-            if (isFull(board)) {
-                gui.setProperty("status", "Text", "Draw!");
-                gameOver = true;
-                return;
-            }
-
-            // Computer plays O
-            gui.setProperty("status", "Text", "Thinking...");
-            // Minimal delay usually expected here, but we compute immediately
-            computerMove();
-
-            w = checkWinner(board);
-            if (w == "O") {
-                gui.setProperty("status", "Text", "Computer wins!");
-                gameOver = true;
-                return;
-            }
-            if (isFull(board)) {
-                gui.setProperty("status", "Text", "Draw!");
-                gameOver = true;
-                return;
-            }
-
-            gui.setProperty("status", "Text", "Your turn (X)");
-        };
-    }
-
-    // Initialize 3x3 grid
+  bool isFull(List<String> b) {
     for (var i = 0; i < 9; i++) {
-        var col = i % 3;
-        var row = (i - col) / 3;
-        var x = 10 + col * 105;
-        var y = 50 + row * 105;
-        gui.addControl(form, "Button", "cell$i", x, y, 100, 100);
-        gui.setProperty("cell$i", "Text", "");
-        gui.onEvent("cell$i", "Click", makeCellHandler(i));
+      if (b[i] == "") {
+        return false;
+      }
     }
+    return true;
+  }
 
-    gui.addControl(form, "Button", "resetBtn", 10, 370, 310, 35);
-    gui.setProperty("resetBtn", "Text", "New Game");
-    gui.onEvent("resetBtn", "Click", () {
-        board = ["", "", "", "", "", "", "", "", ""];
-        gameOver = false;
-        gui.setProperty("status", "Text", "Your turn (X)");
-        updateBoard();
+  int minimax(List<String> b, bool isMaximizing, int depth) {
+    final winner = checkWinner(b);
+    if (winner == "O") {
+      return 10 - depth;
+    }
+    if (winner == "X") {
+      return depth - 10;
+    }
+    if (isFull(b) || depth >= 4) {
+      return 0;
+    }
+    if (isMaximizing) {
+      var best = -100;
+      for (var i = 0; i < 9; i++) {
+        if (b[i] == "") {
+          b[i] = "O";
+          final score = minimax(b, false, depth + 1);
+          b[i] = "";
+          if (score > best) {
+            best = score;
+          }
+        }
+      }
+      return best;
+    } else {
+      var best = 100;
+      for (var i = 0; i < 9; i++) {
+        if (b[i] == "") {
+          b[i] = "X";
+          final score = minimax(b, true, depth + 1);
+          b[i] = "";
+          if (score < best) {
+            best = score;
+          }
+        }
+      }
+      return best;
+    }
+  }
+
+  void computerMove() {
+    // Win immediately if possible.
+    for (var i = 0; i < 9; i++) {
+      if (board[i] == "") {
+        board[i] = "O";
+        if (checkWinner(board) == "O") {
+          return;
+        }
+        board[i] = "";
+      }
+    }
+    // Block the human's immediate win.
+    for (var i = 0; i < 9; i++) {
+      if (board[i] == "") {
+        board[i] = "X";
+        if (checkWinner(board) == "X") {
+          board[i] = "O";
+          return;
+        }
+        board[i] = "";
+      }
+    }
+    // Take the center.
+    if (board[4] == "") {
+      board[4] = "O";
+      return;
+    }
+    // Otherwise use a bounded minimax.
+    var bestScore = -100;
+    var bestIdx = -1;
+    for (var i = 0; i < 9; i++) {
+      if (board[i] == "") {
+        board[i] = "O";
+        final score = minimax(board, false, 0);
+        board[i] = "";
+        if (score > bestScore) {
+          bestScore = score;
+          bestIdx = i;
+        }
+      }
+    }
+    if (bestIdx >= 0) {
+      board[bestIdx] = "O";
+    }
+  }
+
+  void playCell(int idx) {
+    if (gameOver || board[idx] != "") {
+      return;
+    }
+    setState(() {
+      board[idx] = "X";
+      final w = checkWinner(board);
+      if (w == "X") {
+        status = "You win!";
+        gameOver = true;
+        return;
+      }
+      if (isFull(board)) {
+        status = "Draw!";
+        gameOver = true;
+        return;
+      }
+      computerMove();
+      final w2 = checkWinner(board);
+      if (w2 == "O") {
+        status = "Computer wins!";
+        gameOver = true;
+        return;
+      }
+      if (isFull(board)) {
+        status = "Draw!";
+        gameOver = true;
+        return;
+      }
+      status = "Your turn (X)";
     });
+  }
 
-    gui.runApplication(form);
+  void resetGame() {
+    setState(() {
+      board = ["", "", "", "", "", "", "", "", ""];
+      gameOver = false;
+      status = "Your turn (X)";
+    });
+  }
+
+  Widget buildCell(int idx) {
+    return Expanded(
+      child: Padding(
+        padding: EdgeInsets.all(4.0),
+        child: ElevatedButton(
+          onPressed: () {
+            playCell(idx);
+          },
+          child: Text(board[idx]),
+        ),
+      ),
+    );
+  }
+
+  Widget buildRow(int start) {
+    return Expanded(
+      child: Row(
+        children: [
+          buildCell(start),
+          buildCell(start + 1),
+          buildCell(start + 2),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Tic Tac Toe')),
+      body: Column(
+        children: [
+          Padding(
+            padding: EdgeInsets.all(16.0),
+            child: Text(status),
+          ),
+          buildRow(0),
+          buildRow(3),
+          buildRow(6),
+          Padding(
+            padding: EdgeInsets.all(8.0),
+            child: ElevatedButton(
+              onPressed: () {
+                resetGame();
+              },
+              child: const Text("New Game"),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
