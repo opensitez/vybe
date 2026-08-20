@@ -2,8 +2,8 @@
 ;; Run: cargo run --bin vybex -- examples/wast/arithmetic.wat
 
 (module
-  (import "wasi:cli" "log"  (func $log  (param i32)))
-  (import "wasi:cli" "logf" (func $logf (param f64)))
+  (import "wasi:logging/logging" "log" (func $log  (param i32)))
+  (import "wasi:logging/logging" "log" (func $logf (param f64)))
 
   (func $add (export "add") (param $a i32) (param $b i32) (result i32)
     (i32.add (local.get $a) (local.get $b)))

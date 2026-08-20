@@ -1,69 +1,87 @@
-;; gui.wat — simple counter GUI using vybe:gui
+;; gui.wat — a working counter GUI on the WEB platform.
 ;; Run: cargo run --bin vybex -- examples/wast/gui.wat
+;;
+;; A label shows the count; the +, -, and Reset buttons update a mutable global
+;; and refresh the label. There is no toolkit API here: a
+;; control IS a DOM element, so this builds `<button>`/`<div>` nodes with
+;; `createElement`, puts them in the document with `appendChild`, and binds
+;; clicks with `addEventListener` — the same calls a browser would answer.
+;;
+;; Nothing tells the page to run. It runs because it HAS a document, which is
+;; also what makes the window open (`gui_document::has_content`).
 
 (module
-  ;; ── vybe:gui imports ──────────────────────────────────────────────────────
-  (import "vybe:gui"  "newForm"            (func $newForm            (param externref) (result externref)))
-  (import "vybe:gui"  "new_Button"         (func $new_Button         (result externref)))
-  (import "vybe:gui"  "new_Label"          (func $new_Label          (result externref)))
-  (import "vybe:gui"  "controlSetProperty" (func $setProp            (param externref externref externref)))
-  (import "vybe:gui"  "controlsAdd"        (func $controlsAdd        (param externref externref)))
-  (import "vybe:gui"  "onEvent"            (func $onEvent            (param externref externref externref)))
-  (import "vybe:gui"  "showForm"           (func $showForm           (param externref)))
-  (import "vybe:gui"  "runApplication"     (func $runApplication     (param externref)))
-  (import "vybe:gui"  "controlGetProperty" (func $getProp            (param externref externref) (result externref)))
+  ;; ── web:dom — Node/Document members ────────────────────────────────────────
+  (import "web:dom" "createElement"
+    (func $createElement (param externref externref externref) (result externref))) ;; doc,tag,type -> node
+  (import "web:dom" "appendChild"
+    (func $appendChild (param externref externref externref) (result externref)))   ;; doc,parent,child -> node
+  (import "web:dom" "setTextContent"
+    (func $setTextContent (param externref externref externref)))                          ;; doc,node,text
+  (import "web:dom" "addEventListener"
+    (func $addEventListener (param externref externref externref funcref)))         ;; doc,node,type,handler
 
-  ;; ── wasi:cli for logging ───────────────────────────────────────────────────
-  (import "wasi:cli"  "log"                (func $log               (param externref)))
+  ;; ── web:html — HTML element IDL ────────────────────────────────────────────
+  (import "web:html" "activeDocument" (func $activeDocument (result externref)))
+  (import "web:html" "body"           (func $body (param externref) (result externref)))
+  (import "web:html" "setTitle"       (func $setTitle (param externref externref)))
 
-  ;; ── String constants (via wasm:js-string) ─────────────────────────────────
-  (import "wasm:js-string" "fromCharCodeArray" (func $str (param externref) (result externref)))
+  ;; ── web:cssom — CSSStyleDeclaration ────────────────────────────────────────
+  (import "web:cssom" "setStyleProperty"
+    (func $setStyleProperty (param externref externref externref externref)))               ;; doc,node,prop,value
 
-  ;; ── Mutable counter global ────────────────────────────────────────────────
+  (import "wasi:cli" "log" (func $log (param externref)))
+
+  ;; ── Counter state ──────────────────────────────────────────────────────────
   (global $count (mut i32) (i32.const 0))
-
-  ;; ── Label control reference ───────────────────────────────────────────────
+  ;; The label element itself, not a name to look one up by: the handle IS the
+  ;; identity, so a refresh needs no search.
   (global $label (mut externref) (ref.null extern))
 
-  ;; ── Helpers that produce string Values via wasi:cli log trick ─────────────
-  ;; In WAT we call vybe:gui functions with externref; string constants come
-  ;; from the profile's log/wasi:cli path.  For property names and values
-  ;; we use the wast profile's `log` import which accepts any value.
+  ;; Repaint the label with the current count.
+  (func $refresh
+    (call $setTextContent (call $activeDocument) (global.get $label) (global.get $count)))
 
-  ;; Build the UI and run the application
+  ;; ── Button click handlers ──────────────────────────────────────────────────
+  (func $inc
+    (global.set $count (i32.add (global.get $count) (i32.const 1)))
+    (call $refresh))
+  (func $dec
+    (global.set $count (i32.sub (global.get $count) (i32.const 1)))
+    (call $refresh))
+  (func $reset
+    (global.set $count (i32.const 0))
+    (call $refresh))
+
+  ;; Make one `<button>`, caption it, put it in the body, bind its click.
+  (func $button (param $caption externref) (param $handler funcref) (result externref)
+    (local $node externref)
+    (local.set $node
+      (call $createElement (call $activeDocument) (string.const "button") (string.const "")))
+    (call $setTextContent (call $activeDocument) (local.get $node) (local.get $caption))
+    (drop (call $appendChild (call $activeDocument) (call $body (call $activeDocument)) (local.get $node)))
+    (call $addEventListener
+      (call $activeDocument) (local.get $node) (string.const "click") (local.get $handler))
+    (local.get $node))
+
+  ;; ── Build the UI and run ───────────────────────────────────────────────────
   (func $main (export "main")
-    ;; Create form
-    (local $form    externref)
-    (local $btn_inc externref)
-    (local $btn_dec externref)
-    (local $btn_rst externref)
-    (local $lbl     externref)
+    (call $setTitle (call $activeDocument) (string.const "Counter"))
 
-    ;; newForm("Counter") — title string passed as externref via log import trick
-    ;; For simplicity we pass a null externref (title set via setProperty)
-    (local.set $form (call $newForm (ref.null extern)))
+    ;; Count label — a block-level element so the buttons sit on the next line.
+    (global.set $label
+      (call $createElement (call $activeDocument) (string.const "div") (string.const "")))
+    (call $setStyleProperty (call $activeDocument) (global.get $label)
+      (string.const "font-size") (string.const "24px"))
+    (drop (call $appendChild (call $activeDocument) (call $body (call $activeDocument))
+      (global.get $label)))
+    (call $refresh)
 
-    ;; Create controls
-    (local.set $btn_inc (call $new_Button))
-    (local.set $btn_dec (call $new_Button))
-    (local.set $btn_rst (call $new_Button))
-    (local.set $lbl     (call $new_Label))
+    (drop (call $button (string.const "+") (ref.func $inc)))
+    (drop (call $button (string.const "-") (ref.func $dec)))
+    (drop (call $button (string.const "Reset") (ref.func $reset)))
 
-    ;; Store label for use in click handlers
-    (global.set $label (local.get $lbl))
-
-    ;; Log that the GUI is being set up
-    (call $log (ref.null extern))
-
-    ;; Add controls to form
-    (call $controlsAdd (local.get $form) (local.get $lbl))
-    (call $controlsAdd (local.get $form) (local.get $btn_inc))
-    (call $controlsAdd (local.get $form) (local.get $btn_dec))
-    (call $controlsAdd (local.get $form) (local.get $btn_rst))
-
-    ;; Show and run
-    (call $showForm (local.get $form))
-    (call $runApplication (local.get $form)))
+    (call $log (string.const "Counter ready - use + / - / Reset")))
 
   (start $main)
 )
