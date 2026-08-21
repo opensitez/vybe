@@ -74,13 +74,37 @@ fn ensure_namespace(vm: &mut VM, path: &[&str]) -> Value {
 
 /// Set a property on a namespace object, under BOTH original-case and
 /// lowercase keys (same underlying Value).
+///
+/// NON-ENUMERABLE, because §17 makes that the DEFAULT for everything this
+/// function installs: "Every other data property described in clauses
+/// [Global Object] through [Reflection] … has the attributes { [[Writable]]:
+/// *true*, [[Enumerable]]: *false*, [[Configurable]]: *true* } unless
+/// otherwise specified" — and nothing in clauses 19–28 specifies otherwise for
+/// a built-in prototype method or constructor property. Marking here rather
+/// than at each call site is what makes the rule hold: enumerability used to
+/// depend on every caller remembering a separate `track_nonenum`, and they
+/// disagreed — Array marked both spellings, Map/Set marked only the exact one,
+/// Date marked nothing. §EnumerateObjectProperties reads attributes through
+/// [[GetOwnProperty]] and walks the prototype chain, so each miss surfaced as
+/// mount plumbing leaking out of a `for...in`: `new Date(0)` enumerated 72
+/// keys where the standard requires none.
+///
+/// The lowercase alias is marked too. It is not a spec property at all — it
+/// exists so case-insensitive languages can resolve `getfullyear` — so it must
+/// never be enumerable in ANY language.
 fn set_prop(ns: &Value, name: &str, value: Value) {
     if let Value::Object(obj) = ns {
         let lc = name.to_lowercase();
-        let mut o = obj.lock().unwrap();
-        o.properties.insert(name.to_string(), value.clone());
+        {
+            let mut o = obj.lock().unwrap();
+            o.properties.insert(name.to_string(), value.clone());
+            if lc != name {
+                o.properties.insert(lc.clone(), value);
+            }
+        }
+        crate::object::track_nonenum(obj, name);
         if lc != name {
-            o.properties.insert(lc, value);
+            crate::object::track_nonenum(obj, &lc);
         }
     }
 }
@@ -90,11 +114,19 @@ fn set_prop(ns: &Value, name: &str, value: Value) {
 /// on first write makes `x.constructor === Ctor` hold across parallel VMs.
 fn set_constructor_once(proto: &Value, ctor: Value) -> Value {
     if let Value::Object(obj) = proto {
-        let mut o = obj.lock().unwrap();
-        if let Some(existing) = o.properties.get("constructor") {
-            return existing.clone();
+        {
+            let mut o = obj.lock().unwrap();
+            if let Some(existing) = o.properties.get("constructor") {
+                return existing.clone();
+            }
+            o.properties.insert("constructor".to_string(), ctor.clone());
         }
-        o.properties.insert("constructor".to_string(), ctor.clone());
+        // §ClassDefinitionEvaluation installs `constructor` with
+        // `DefineMethodProperty(proto, "constructor", F, *false*)` — the
+        // trailing *false* IS the [[Enumerable]] attribute. Marked here so the
+        // rule holds for every prototype, not only the ones whose call site
+        // remembered.
+        crate::object::track_nonenum(obj, "constructor");
     }
     ctor
 }
@@ -537,6 +569,17 @@ pub fn register(vm: &mut VM) {
                     set_prop(&proto, key, receiver_host_fn_ref(module, method, idx));
                     if let Value::Object(ref p) = proto {
                         crate::object::track_nonenum(p, key);
+                        // An accessor stored as `__get_size` is EXPOSED under
+                        // its bare name, so the attribute has to be recorded
+                        // against that spelling too — §24.1.3.10 makes `size`
+                        // itself { [[Enumerable]]: false, [[Configurable]]:
+                        // true }. Marking only the storage key left the two
+                        // readers disagreeing: `propertyIsEnumerable("size")`
+                        // answered false while `Object.keys` and `for...in`
+                        // still yielded it.
+                        if key != *method {
+                            crate::object::track_nonenum(p, method);
+                        }
                     }
                 }
             }

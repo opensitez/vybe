@@ -26,7 +26,7 @@ fn push_arg(vm: &mut VM, chunk: &mut Chunk, value: Value) {
                 "__test_arg_{}",
                 TEST_GLOBAL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             );
-            vm.globals.insert(global.clone(), other);
+            vm.set_global_owned(global.clone(), other);
             let ci = chunk.intern_string_constant(&global);
             chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
         }

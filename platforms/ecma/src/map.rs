@@ -118,6 +118,12 @@ fn new_map_value() -> Value {
             "iterator".into(),
             bound_iterator_method(&map, "ecma:map", "entries", *idx),
         );
+        // This is `@@iterator` under a string spelling. §EnumerateObjectProperties
+        // — "Returned property keys do not include keys that are Symbols" — so a
+        // symbol-keyed method must never reach `for...in`; non-enumerable is how
+        // that reads once the key is a String. Same treatment `@@toStringTag`
+        // already gets on the prototype.
+        crate::object::track_nonenum(&map, "iterator");
     }
     Value::Object(map)
 }

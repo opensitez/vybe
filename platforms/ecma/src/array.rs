@@ -711,11 +711,24 @@ fn populate_array_prototype(vm: &VM) {
     let Value::Object(proto) = shared_array_prototype() else {
         return;
     };
-    let mut p = proto.lock().unwrap();
-    for name in METHODS {
-        if let Some(method) = array_proto_method(vm, name) {
-            p.properties.insert((*name).to_string(), method);
+    {
+        let mut p = proto.lock().unwrap();
+        for name in METHODS {
+            if let Some(method) = array_proto_method(vm, name) {
+                p.properties.insert((*name).to_string(), method);
+            }
         }
+    }
+    // §17: a built-in data property is { [[Writable]]: true, [[Enumerable]]:
+    // false, [[Configurable]]: true }. This list overlaps but is NOT identical
+    // to the one `ecma_globals::populate` mounts, and only that one used to
+    // mark anything — so precisely the four names unique to THIS list
+    // (`keys`, `toLocaleString`, `toString`, `with`) came out enumerable and
+    // fell out of `for (k in [])`, which the standard requires to yield the
+    // indices alone. Marking at both mounts is what keeps the two lists from
+    // disagreeing about attributes.
+    for name in METHODS {
+        crate::object::track_nonenum(&proto, name);
     }
 }
 
@@ -3093,6 +3106,9 @@ fn register_iteration(vm: &mut VM) {
             obj.kind = ObjectKind::Map(map_im);
             obj.properties
                 .insert("size".into(), Value::I32(obj_map_len(&obj) as i32));
+            // §24.1.3.10: `size` is a non-enumerable accessor — this cache of it
+            // must not turn up in `for...in`.
+            crate::object::track_nonenum_in(&mut obj, "size");
             Value::Object(vybe_runtime::heap::alloc(obj))
         }),
     );

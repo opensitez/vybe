@@ -97,6 +97,8 @@ pub fn make_set(values: indexmap::IndexSet<Value>) -> Value {
             "iterator".into(),
             bound_iterator_method(&set, "ecma:set", "values", *idx),
         );
+        // `@@iterator` under a string spelling — see the note in `map.rs`.
+        crate::object::track_nonenum(&set, "iterator");
     }
     Value::Object(set)
 }

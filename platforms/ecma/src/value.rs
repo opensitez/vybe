@@ -1949,10 +1949,16 @@ fn truthy(v: &Value) -> bool {
 // (`Value`'s `Hash + Eq` impl), `delete` uses `shift_remove` to preserve
 // insertion order per ECMA-262 §24.1.3.3 / §24.2.3.4.
 
+// §24.1.3.10 / §24.2.3.9 spell `size` as an ACCESSOR with
+// { [[Enumerable]]: false, [[Configurable]]: true }. These write a plain data
+// property as a cache, so the cache has to carry the same attribute — left
+// enumerable, it fell straight out of `for (k in new Map())`, which the
+// standard requires to yield nothing.
 fn sync_map_size(o: &mut Object) {
     if let ObjectKind::Map(ref m) = o.kind {
         let n = m.len() as i32;
         o.properties.insert("size".to_string(), Value::I32(n));
+        crate::object::track_nonenum_in(o, "size");
     }
 }
 
@@ -1960,6 +1966,7 @@ fn sync_set_size(o: &mut Object) {
     if let ObjectKind::Set(ref s) = o.kind {
         let n = s.len() as i32;
         o.properties.insert("size".to_string(), Value::I32(n));
+        crate::object::track_nonenum_in(o, "size");
     }
 }
 

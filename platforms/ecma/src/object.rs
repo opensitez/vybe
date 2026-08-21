@@ -585,6 +585,31 @@ pub fn track_nonenum(obj: &Arc<Mutex<Object>>, key: &str) {
     }
 }
 
+/// [`track_nonenum`] for a caller that already holds the object BORROWED
+/// rather than by `Arc` — the size-cache and iterator-method writers run
+/// inside `&mut Object` and cannot re-lock. Same `__nonenum` set, so both
+/// forms answer one question.
+pub fn track_nonenum_in(o: &mut Object, key: &str) {
+    let arr = match o.properties.get("__nonenum") {
+        Some(Value::Object(a)) => a.clone(),
+        _ => {
+            let a = vybe_runtime::heap::alloc(Object::new_array(Vec::new()));
+            o.properties
+                .insert("__nonenum".into(), Value::Object(a.clone()));
+            a
+        }
+    };
+    let mut a = arr.lock().unwrap();
+    if let ObjectKind::Array(ref mut elems) = a.kind {
+        if !elems
+            .iter()
+            .any(|e| matches!(e, Value::String(s) if s.as_ref() == key))
+        {
+            elems.push(Value::String(Arc::from(key)));
+        }
+    }
+}
+
 pub fn track_nonconfig(obj: &Arc<Mutex<Object>>, key: &str) {
     let mut o = obj.lock().unwrap();
     let arr = match o.properties.get("__nonconfig") {
