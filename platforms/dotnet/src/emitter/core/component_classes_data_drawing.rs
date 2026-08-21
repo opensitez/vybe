@@ -53,8 +53,8 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         // The cursor a data form navigates with. Registered under its real .NET
         // namespace so `New System.Windows.Forms.BindingSource()` and the bare
         // `New BindingSource()` resolve exactly as before — what changed is
-        // WHAT it is: a data object with real fields, not a `vybe:gui` control
-        // whose properties were keyed by a control name it never had.
+        // WHAT it is: a data object with real fields, not a control whose
+        // properties were keyed by a control name it never had.
         //
         // `Position`, `DataSource`, `DataMember`, `Filter` and `Sort` are plain
         // struct fields the constructor initializes; only the members that must
@@ -122,23 +122,21 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.sql_adapter_fill".into()),
                 )),
         ),
-        // NO `constructor_class(…, "vybe:gui", …)` entries for the drawing
-        // value types. `Point`, `Size`, `SizeF`, `Font`, `Pen`, `SolidBrush`,
-        // `HatchBrush`, `LinearGradientBrush` and `Color` are composed in
-        // BYTECODE by `common_ctor_for` → `dotnet.*_new`, because a value type
-        // has no element and nothing to insert.
+        // NO constructor entries for the drawing value types. `Point`, `Size`,
+        // `SizeF`, `Font`, `Pen`, `SolidBrush`, `HatchBrush`,
+        // `LinearGradientBrush` and `Color` are composed in BYTECODE by
+        // `common_ctor_for` → `dotnet.*_new`, because a value type has no
+        // element and nothing to insert.
         //
-        // These lines declared a SECOND constructor for the same types, backed
-        // by host fns in the now-deleted `platforms/vybe/src/drawing.rs`. For
-        // most types the bytecode path shadowed them and they were dead text —
-        // which is exactly what made the host look alive to a grep. For `Font`
-        // this one WON, and it was the only `vybe:gui` call any GUI test still
-        // emitted.
-        // No `Graphics` entry here: `winforms::component_classes` already
+        // ⚠ Declaring one here would be a SECOND constructor for the same
+        // type. Where two declarations exist the bytecode path usually
+        // shadows the other, so the loser is dead text that still reads as
+        // live — and where it does NOT shadow, the wrong one silently wins.
+        //
+        // No `Graphics` entry either: `winforms::component_classes` already
         // declares `dotnet.System.Drawing::Graphics` from the `DotnetClass`
-        // table, WITH every drawing method and with `graphicsNew` as its
-        // constructor backing, so a second `constructor_class` declaration of
-        // the same name in the same namespace is redundant.
+        // table with every drawing method, so a second declaration of the same
+        // name in the same namespace is redundant.
         DotnetClassExport::new(
             "dotnet.System.Data.SqlClient",
             ClassType::new("SqlConnection")

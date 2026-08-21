@@ -4,15 +4,17 @@
 
 use std::sync::{Mutex, OnceLock};
 
-use vybe_platform_vybe::gui_state::GuiState;
-
 use crate::winforms::form::Form;
 
+/// ⚠ CODE GENERATION ONLY. This registry answers "how does language X spell a
+/// designer file", and both members take a [`Form`] — the designer's own model.
+///
+/// It carried two more members, `load_designer`/`save_designer`, which took a
+/// widget-state object and were **registered by VB and C# but never invoked**:
+/// the only consumers (`designer::project::FormModule`) call the two below.
 #[derive(Clone, Copy)]
 pub struct FormModuleLanguage {
     pub name: &'static str,
-    pub load_designer: fn(&str, &mut GuiState) -> Result<(), String>,
-    pub save_designer: fn(&mut GuiState, &str) -> String,
     pub generate_designer_code: fn(&Form) -> String,
     pub generate_user_code_stub: fn(&str) -> String,
 }

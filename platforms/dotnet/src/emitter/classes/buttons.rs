@@ -43,8 +43,8 @@ pub fn classes() -> &'static [DotnetClass] {
             ctor_arity: 0,
             // `<button>` — materialized by the element mapping in
             // `tree_register::html_element_for_control`. A `widget_host_fn`
-            // here would win over that mapping and pin the control to
-            // `vybe:gui`; see `winforms::component_classes`.
+            // here would win over that mapping and pin the control to a host
+            // factory; see `winforms::component_classes`.
             widget_host_fn: None,        },
         DotnetClass {
             name: "CheckBox",

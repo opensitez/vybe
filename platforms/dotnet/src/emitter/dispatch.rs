@@ -182,13 +182,9 @@ fn emit_to_byte(chunk: &mut Chunk, line: u32) {
 /// `New Rectangle(x, y, width, height)` — a value type built from primitives,
 /// with no host function behind it.
 ///
-/// `Point` and `Size` used to construct through `vybe:gui::pointNew`/`sizeNew`,
-/// and a `rectangleNew` beside them would have been a third host function for
-/// four numbers in an object — growth in exactly the direction this platform
-/// was being converted away from. So the constructor is composed here instead,
-/// the way `StringBuilder`'s is. The other two followed
-/// (`dotnet.point_new` / `dotnet.size_new`); none of them has a host behind it
-/// any more.
+/// A host function for four numbers in an object buys nothing the compiler
+/// cannot emit itself, so the constructor is composed here, the way
+/// `StringBuilder`'s is — as are `dotnet.point_new` and `dotnet.size_new`.
 ///
 /// Field names are LOWERCASE to match `pointNew`'s `{x, y}`: the property axis
 /// reads `rect.X` through the same keyed getter that answers `Point.X`, and it
@@ -202,9 +198,8 @@ fn emit_to_byte(chunk: &mut Chunk, line: u32) {
 /// Build a `System.Drawing` VALUE TYPE from its constructor arguments.
 ///
 /// `Point`, `Size` and `Rectangle` are records, not controls — there is no
-/// element to create and nothing to add to a document, so a `vybe:gui` factory
-/// (`pointNew`, `sizeNew`) bought only an allocation the compiler can emit
-/// itself. Composing here is what lets those host functions go.
+/// element to create and nothing to add to a document, so a factory would buy
+/// only an allocation the compiler can emit itself.
 ///
 /// `fields` is in ARGUMENT order and holds the STORAGE spelling, which is
 /// lowercase: `rect.X` and `pt.X` both read back through the same keyed getter,
@@ -290,7 +285,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // answer — building an empty rectangle from the wrong argument count
         // would be the silent one.
         // The `System.Drawing` value types, composed rather than built by a
-        // `vybe:gui` factory. Arity-guarded so an overload this does NOT handle
+        // factory. Arity-guarded so an overload this does NOT handle
         // (`Rectangle(Point, Size)`, `Point(Size)`) falls through to a loud
         // "Unknown common emit" instead of silently building an empty value.
         "dotnet.rectangle_new" if argc == 4 => emit_value_type_new(
@@ -325,8 +320,8 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         //
         // The style pair is not passed by this overload but IS read: the
         // drawing bodies pull `bold`/`italic` off a font argument
-        // (`classes/drawing.rs`, `PushArgField(2, …)`). The retired
-        // `vybe:gui::fontNew` defaulted both to false, and that default is the
+        // (`classes/drawing.rs`, `PushArgField(2, …)`). The retired factory
+        // defaulted both to false, and that default is the
         // contract, so it is reproduced here rather than left undefined — an
         // absent field reads as `undefined` and would render as a style.
         "dotnet.font_new" if argc == 2 => {
@@ -349,8 +344,8 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             emit_value_type_new(&mut chunks[current], "SolidBrush", &["color"], line)
         }
         // The two patterned brushes. Field names and ORDER are the contract the
-        // retired `vybe:gui` factories set (`platforms/vybe/src/drawing.rs`),
-        // reproduced exactly — a brush is read by property name, so renaming a
+        // retired factories set, reproduced exactly — a brush is read by
+        // property name, so renaming a
         // field here would silently break every reader.
         //
         // ⚠ Neither stores a `color`, and the drawing bodies read

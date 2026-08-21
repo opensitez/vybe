@@ -29,9 +29,10 @@ pub fn classes() -> &'static [DotnetClass] {
             // `FlowLayoutPanel` and `TableLayoutPanel`: both are a `<div>`
             // that DECLARES its display mode (`flex`, `grid`), which is what
             // `ControlElement.declares` is for. `TabControl`/`TabPage`/
-            // `SplitContainer` map to `<vybe-*>` custom elements whose
-            // behaviour still lives in the `vybe:gui` factory and has to move
-            // first. See `tree_register::html_element_for_control`.
+            // `SplitContainer` map to `<vybe-*>` custom elements, which a real
+            // engine cannot render without a `customElements.define` — they
+            // are the remaining conversion debt, not a destination. See
+            // `tree_register::html_element_for_control`.
             widget_host_fn: None,        },
         DotnetClass {
             name: "TabControl",

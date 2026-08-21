@@ -22,20 +22,19 @@
 //! emits plain `struct_set "text"`; the VM finds `__set_text` (installed
 //! by `Control` in the inherited chain) and dispatches to a setter chunk.
 //!
-//! That chunk used to call `vybe:gui::controlSetProperty(this, "Text",
-//! "Hello")`. It no longer does: `tree_register::accessor_node` rewrites a
-//! CONTROL's accessors into the shared role emits (`gui.prop_set.<role>`),
-//! which `primitives/gui.rs` lowers onto `web:dom` / `web:html` / `web:cssom`.
+//! `tree_register::accessor_node` rewrites a CONTROL's accessors into the
+//! shared role emits (`gui.prop_set.<role>`), which `primitives/gui.rs` lowers
+//! onto `web:dom` / `web:html` / `web:cssom`.
 //! A VALUE TYPE declares no accessor at all and reads as a struct field. The
 //! keyed host accessor survives only for the NON-VISUAL components.
 //!
 //! ## Why classes and not host-side setter installation
 //!
 //! The previous shortcut was to install `__set_<prop>` setter closures on
-//! every control object inside the `vybe:gui::new_<Type>` host fn. That
-//! "worked" but flattened the inheritance, hardcoded the property surface
-//! into the host, and gave user code no real `Control`/`Form`/etc. class
-//! identity to inherit from. Real classes give us:
+//! every control object inside a per-type host factory. That "worked" but
+//! flattened the inheritance, hardcoded the property surface into the host,
+//! and gave user code no real `Control`/`Form`/etc. class identity to inherit
+//! from. Real classes give us:
 //!
 //! - `obj is Control`, `obj is Form`, `MyBase` / `base.X()` calls
 //! - User subclassing of any level (`class MyButton : Inherits Button`)
@@ -112,9 +111,8 @@ pub struct DotnetClass {
     pub parent: Option<&'static str>,
 
     /// Properties added at this class level (NOT inherited). The setter
-    /// for each gets bound under `__set_<lowercased_name>` and calls
-    /// `vybe:gui::controlSetProperty(this, "<name>", value)` so the value
-    /// mirrors into the host gui state registry.
+    /// for each gets bound under `__set_<lowercased_name>`; for a control it
+    /// resolves to the shared role emit and lands on the element.
     ///
     /// Names are written in PascalCase (`"Text"`, `"FormBorderStyle"`)
     /// because that's what `controlSetProperty` receives as the property
@@ -147,15 +145,12 @@ pub struct DotnetClass {
     pub ctor_arity: u8,
 
     /// If `Some(host_fn)`, this is a concrete leaf class whose ctor calls a
-    /// `vybe:gui` host factory to wire a backing object.
+    /// host factory to wire a backing object.
     ///
     /// **Every dotnet class is now `None`.** Construction goes through the
     /// element mapping (`is_element_mapped`) or a composed constructor
     /// (`common_ctor_for`), so no class builds through a widget factory.
-    /// The field stays because the ctor gate still asks the question; the
-    /// companion `widget_host_module` is gone, since a module beside a
-    /// permanently-absent fn was 82 lines of `"vybe:gui"` that no code read
-    /// and every `grep` had to wade through.
+    /// The field stays because the ctor gate still asks the question.
     pub widget_host_fn: Option<&'static str>,
 }
 

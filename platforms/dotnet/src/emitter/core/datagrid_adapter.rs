@@ -4,7 +4,7 @@
 //! `Columns.Add("Name", "Name")` is a `<th>` appended to the table and
 //! `Rows.Add(a, b)` is a `<tr>` of `<td>`s — which is what a real engine would
 //! render and what `vybe_widgets`' CSS tables already lay out. Nothing here
-//! reaches a `vybe:gui` factory and nothing here adds a host function: the
+//! adds a host function: the
 //! adapters compose `web:html`'s `createElement` / `setTextContent` /
 //! `appendChild`, the same three calls a script would make.
 //!

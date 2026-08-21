@@ -18,7 +18,7 @@ pub fn classes() -> &'static [DotnetClass] {
             widget_host_fn: None,        },
         // `BindingSource` is NOT declared here. It is a cursor over data, not a
         // control: it has no element, nothing paints it, and every member is a
-        // position or a list. Declared in this table it got a `vybe:gui`
+        // position or a list. Declared in this table it got a host
         // backing object and property accessors keyed by CONTROL NAME, so
         // `bs.Position` read back `""` and `bs.MoveFirst()` was `undefined`
         // (`methods: &[]`). It lives in

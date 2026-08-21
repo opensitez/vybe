@@ -95,7 +95,7 @@ const CONTROL_CREATE_GRAPHICS: &[MethodOp] = &[
 ///
 /// - `Show`/`Hide`/`Focus`/`Refresh`/… → the shared control VERBS
 ///   (`gui.ctrl.<verb>`), lowered by `primitives/gui.rs` to `web:dom` /
-///   `web:html`. They named `vybe:gui` host fns until this conversion.
+///   `web:html`. They named host fns until this conversion.
 ///
 ///   ⚠ Those targets were ALREADY dead when they were replaced, and the
 ///   replacement therefore changes no bytecode: `tree_register`'s
@@ -162,7 +162,7 @@ const CONTROL_METHODS: &[DotnetMethod] = &[
     // `Dispose` DESTROYS the control: `ChildNode.remove()`.
     //
     // The semantics decision this used to be "pending" is made: the retired
-    // `vybe:gui::__ctrl_dispose` only set `Visible = false` and dropped the
+    // implementation only set `Visible = false` and dropped the
     // handler table, so a "disposed" control could be brought back by writing
     // `Visible` — which is `Hide`, a DIFFERENT verb with a different promise.
     // Removing the node is what `Dispose` actually claims.

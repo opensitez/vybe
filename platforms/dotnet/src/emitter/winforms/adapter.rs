@@ -1,4 +1,9 @@
-//! Shared WinForms-to-vybe GUI adapter leaves.
+//! WinForms application and window verbs, lowered to the web platform.
+//!
+//! `Application.Run` and the layout no-ops emit nothing at all;
+//! `MessageBox.Show` is `window.alert`; `Form.Close` / `Application.Exit` /
+//! `Form.Activate` / `Form.CenterToScreen` reach `web:window` through
+//! `activeDocument().defaultView`.
 
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::{Op, heaptype};
@@ -6,15 +11,6 @@ use vybe_runtime::opcode::{Op, heaptype};
 /// HTML's `Window` — `alert`/`confirm` and the window verbs, all registered in
 /// `platforms/web/src/window.rs`.
 const WINDOW_MODULE: &str = "web:window";
-
-// `emit_gui_call` lived here — one line that added a `vybe:gui` import — and it
-// is gone because it has no callers left. `Application.Run` and the layout
-// no-ops emit nothing, `MessageBox.Show` is `window.alert`, and `Form.Close` /
-// `Application.Exit` / `Form.Activate` reach `web:window` through
-// `defaultView`. **Nothing in this platform emits a `vybe:gui` import any
-// more.** What remains of the surface is DECLARATIONS in `classes/form.rs`
-// (`ShowDialog`, `CenterToScreen`) and `classes/control.rs` (`Dispose`), which
-// are `MethodTarget::host` and do not come through here.
 
 /// `MessageBox.Show(text[, caption[, buttons…]])` → `window.alert(text)`.
 ///
@@ -28,10 +24,10 @@ const WINDOW_MODULE: &str = "web:window";
 /// put the title back on screen and would be a shim — the exact move that makes
 /// a swapped-in engine render something no browser would.
 ///
-/// Nothing is lost against what actually ran: the `vybe:gui::msgBox` host fn
-/// read `text` and `title`, called `vybe_widgets::dialogs::MessageBox::info` and
-/// returned null, so the BUTTONS argument was already ignored and the result was
-/// already not a `DialogResult`.
+/// Nothing is lost against what actually ran: the retired implementation read
+/// `text` and `title`, showed an info box and returned null, so the BUTTONS
+/// argument was already ignored and the result was already not a
+/// `DialogResult`.
 ///
 /// ⚠ `MessageBoxButtons.OKCancel` / `.YesNo` want `window.confirm`, which is
 /// registered on `web:window` and returns a real `Bool`. That is a genuine
@@ -63,13 +59,12 @@ pub fn emit_message_box_show(chunks: &mut [Chunk], current: usize, argc: u8, lin
 /// to be compliant WITH, so the compliant lowering is to emit no call at all —
 /// the same answer `dotnet.self` gives, for the same reason.
 ///
-/// The three things the host fn did are all answered by the document now:
+/// The three things the retired implementation did are all answered by the
+/// document now:
 ///
-/// - `should_run = true` → `should_present` already asks
-///   `has_browsing_context()` FIRST and calls `GuiState::should_run` "the
-///   legacy answer, set by `vybe:gui.runApplication`. Kept while frontends
-///   still call it." A WinForms program reaches `activeDocument` to build any
-///   control at all, so it has a context and still presents.
+/// - "should this present?" → `should_present` asks `has_browsing_context()`
+///   FIRST. A WinForms program reaches `activeDocument` to build any control at
+///   all, so it has a context and still presents.
 /// - The window's size, read off the form object's `width`/`height` → those are
 ///   CSS on the body, and `gui_launch` already prefers
 ///   `gui_document::viewport()` with `GuiState`'s pair only as the fallback
@@ -85,9 +80,6 @@ pub fn emit_message_box_show(chunks: &mut [Chunk], current: usize, argc: u8, lin
 /// its form, and that construction is the whole program. Only the call goes
 /// away: the args are dropped and one value is pushed, because every host call
 /// pushes exactly one value and the statement that wraps this emits one `DROP`.
-///
-/// Pascal/VCL, JS and Dart already compile to zero `vybe:gui` imports. This is
-/// the same door, walked through by the last frontend still using it.
 pub fn emit_application_run(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     for _ in 0..argc {
@@ -103,9 +95,9 @@ pub fn emit_application_run(chunks: &mut [Chunk], current: usize, argc: u8, line
 /// operation. The window is named the standard way — `activeDocument()` then
 /// `defaultView` — because a guest has no global object to spell `window` with.
 ///
-/// ⚠ This does not yet make the app EXIT, and neither did what it replaces. The
-/// `vybe:gui::__ctrl_close` host fn set `GuiState::close_requested`, a field
-/// WRITTEN in three places and READ IN NONE — so `Form.Close()` has been a
+/// ⚠ This does not yet make the app EXIT, and neither did what it replaces,
+/// which set `GuiState::close_requested` — a field WRITTEN in three places and
+/// READ IN NONE, so `Form.Close()` has long been a
 /// no-op. The converted form is strictly more than that: it marks the context
 /// closed in a registry `window.closed` can actually read. Making the shell act
 /// on it belongs to `gui_launch`, which owns the event loop.
@@ -138,8 +130,8 @@ pub fn emit_form_activate(chunks: &mut [Chunk], current: usize, argc: u8, line: 
 /// window from the display and halving. No host function is needed to divide
 /// by two.
 ///
-/// ⛔ The retired `vybe:gui::__form_center_to_screen` hardcoded **1920x1080**
-/// — its own comment called that "a sensible default… common enough… for most
+/// ⛔ The retired implementation hardcoded **1920x1080** — its own comment
+/// called that "a sensible default… common enough… for most
 /// users" — and then wrote `Left`/`Top` into the `GuiState` property store,
 /// which a converted frontend does not read. It also read `GuiState`'s width
 /// and height, which are the 800x600 constructor defaults now that
@@ -181,8 +173,8 @@ pub fn emit_form_center_to_screen(chunks: &mut [Chunk], current: usize, argc: u8
 /// `Form.ShowDialog()` → `DialogResult.OK`, and nothing else.
 ///
 /// **Modality is not implemented, and was not before this.** The retired
-/// `vybe:gui::__dlg_showdialog` did exactly two things: set
-/// `GuiState::should_run`, and return `I32(1)`. Its own comment said so —
+/// implementation did exactly two things: set `GuiState::should_run`, and
+/// return `I32(1)`. Its own comment said so —
 /// *"real modal handling is a separate workstream (it requires nested message
 /// loops)"*. So this is not a capability being dropped; it is the same
 /// non-capability, off the host.
@@ -247,9 +239,9 @@ fn emit_window_verb(chunks: &mut [Chunk], current: usize, argc: u8, verb: &str, 
 /// program.
 ///
 /// Same caveat as [`emit_form_close`]: the context is marked closed, and
-/// nothing yet acts on that. The `vybe:gui::appExit` host fn it replaces set
-/// `GuiState::close_requested`, which has three writers and no readers, so this
-/// is not a behaviour it used to have and lost.
+/// nothing yet acts on that. What it replaces set `GuiState::close_requested`,
+/// which has three writers and no readers, so this is not a behaviour it used
+/// to have and lost.
 pub fn emit_application_exit(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     emit_form_close(chunks, current, argc, line);
 }
@@ -261,12 +253,11 @@ pub fn emit_application_exit(chunks: &mut [Chunk], current: usize, argc: u8, lin
 /// `Me.SuspendLayout()` reaching `undefined`, which kills every designer's
 /// `InitializeComponent` on its first line) but have nothing to do: layout is
 /// the document's job and it is never batched by the guest. The host fn they
-/// called was `Box::new(|_ctx, _| Value::Null)` — a name on the `vybe:gui`
-/// surface whose entire body was "return null".
+/// called was `Box::new(|_ctx, _| Value::Null)` — a registered name whose
+/// entire body was "return null".
 ///
 /// A const push is exactly equivalent under the one-value-per-host-call rule,
-/// so this needs no host at all. Dropping it takes a VB WinForms program to
-/// ZERO `vybe:gui` imports, which is where Pascal/VCL, JS and Dart already are.
+/// so this needs no host at all.
 pub fn emit_noop(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     for _ in 0..argc {

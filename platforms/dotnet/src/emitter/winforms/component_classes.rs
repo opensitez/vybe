@@ -74,29 +74,20 @@ pub fn component_class_exports() -> &'static [(&'static str, ClassType)] {
 /// A descriptor class whose CONSTRUCTOR is composed from primitives rather than
 /// called on a host.
 ///
-/// The third arm of `class_to_component_class`'s constructor gate, and it goes
-/// FIRST because it is the direction the other two are being converted toward:
-/// `widget_host_fn` calls `vybe:gui`, the element mapping materialises a node,
-/// and this builds the value in bytecode with no host at all.
+/// The first arm of `class_to_component_class`'s constructor gate: the element
+/// mapping materialises a node, and this builds the value in bytecode with no
+/// host at all.
 ///
 /// A value type is four numbers in an object — nothing a host is needed for —
 /// so `Rectangle` is built by `dotnet.rectangle_new` (`dispatch.rs`) the way
-/// `StringBuilder` is built by `dotnet.string_builder_new`. `Point` and `Size`
-/// still go through `vybe:gui::pointNew`/`sizeNew` and belong here next; adding
-/// a `rectangleNew` beside them would have grown the surface this conversion
-/// exists to remove.
+/// `StringBuilder` is built by `dotnet.string_builder_new`.
 pub(crate) fn common_ctor_for(class: &str) -> Option<&'static str> {
     match class {
         "Rectangle" => Some("dotnet.rectangle_new"),
-        // `pointNew` / `sizeNew` were `vybe:gui` host functions that allocated
-        // an object with two fields. A value type is not a widget — there is
-        // no element and nothing to insert — so composing the object here
-        // takes two more names off a surface this conversion exists to shrink.
+        // A value type is not a widget — there is no element and nothing to
+        // insert — so the object is composed here.
         "Point" => Some("dotnet.point_new"),
         "Size" => Some("dotnet.size_new"),
-        // `Font` was the LAST value type still built by a `vybe:gui` host fn,
-        // and the only one a GUI test actually reached — every other drawing
-        // type already composed here. `platforms/vybe/src/drawing.rs` is gone.
         "Font" => Some("dotnet.font_new"),
         "Color" => Some("dotnet.color_new"),
         "Pen" => Some("dotnet.pen_new"),
@@ -140,6 +131,18 @@ fn dotnet_interface_for_class(class: &DotnetClass) -> &'static str {
     }
 }
 
+/// Not a host module — a MARKER.
+///
+/// A property carries a `HostTarget` because that is the shape `PropertyDef`
+/// takes, and `tree_register::accessor_node` reads the target's NAME to
+/// recognise a generic control accessor and rewrite it into the shared role
+/// emits (`gui.prop_set.<role>` → `web:dom`/`web:cssom`). The module half is
+/// never imported and never called.
+///
+/// ⚠ It must never name a real module. A marker that looks like a host is read
+/// as one by the next person, and by grep.
+const PROPERTY_MARKER: &str = "dotnet.property-marker";
+
 fn class_to_component_class(class: &DotnetClass) -> ClassType {
     let mut out = match class.parent {
         Some(parent) => ClassType::new(class.name).with_parent(parent),
@@ -150,11 +153,11 @@ fn class_to_component_class(class: &DotnetClass) -> ClassType {
         out = out.with_property(
             PropertyDef::new(*prop)
                 .with_setter(HostTarget::new(
-                    "vybe:gui",
+                    PROPERTY_MARKER,
                     vybe_compiler::primitives::gui::HOST_FN_SET_PROPERTY,
                 ))
                 .with_getter(HostTarget::new(
-                    "vybe:gui",
+                    PROPERTY_MARKER,
                     vybe_compiler::primitives::gui::HOST_FN_GET_PROPERTY,
                 )),
         );
@@ -234,15 +237,13 @@ fn class_to_component_class(class: &DotnetClass) -> ClassType {
         // the element mapping is what materializes it, and the
         // registrar turns that into a `CtorSpec` whose `control_fn` creates
         // the node. The backing stays `None` on purpose — there is no host
-        // function to call, and inventing one would put the object back on
-        // the path this platform is being converted off.
+        // function to call, and inventing one would put the object back on a
+        // path this platform does not have any more.
         //
-        // Without this, a class that has no `vybe:gui` twin gets NO
-        // constructor at all and `New ToolStripMenuItem()` reaches
-        // "undefined is not callable". `vybe:gui` only registers `new_*` for
-        // the names in its own `control_types` list, and menu ITEMS are not
-        // in it — which is precisely why they need this door rather than a
-        // new entry in a host list.
+        // Without this, a class gets NO constructor at all and
+        // `New ToolStripMenuItem()` reaches "undefined is not callable" — menu
+        // ITEMS are elements like any other control, and this is the door that
+        // says so.
         out = out.with_constructor(ConstructorDef::new(class.ctor_arity));
     }
 

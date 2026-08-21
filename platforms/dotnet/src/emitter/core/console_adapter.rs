@@ -1,7 +1,7 @@
 //! .NET `Console.Write` / `Console.WriteLine` — Rust inline emitters.
 //!
-//! Output goes through proper WASI I/O (`wasi:cli/stdout.get-stdout` +
-//! `wasi:io/streams.[method]output-stream.blocking-write-and-flush`), NOT the
+//! Output goes through the shared write in `primitives::io` — WASI 0.3
+//! `wasi:cli/{stdout,stderr}.write-via-stream(data: stream<u8>)` — NOT the
 //! line-oriented `wasi:logging/logging.log`. That distinction is what lets
 //! `Console.Write` emit its text with NO trailing newline while
 //! `Console.WriteLine` appends exactly one `\n` — logging always terminated a
@@ -77,30 +77,18 @@ pub(crate) fn emit_dotnet_stringify(chunk: &mut Chunk, v_local: u16, result_loca
 /// Write the string in `text_local` to an output stream, then leave `null` on
 /// the stack (the call site DROPs print results uniformly).
 ///
-/// Mirrors the proven libc stdout path: `get-<stream>` → output-stream handle,
-/// then `blocking-write-and-flush(stream, contents)` — byte-faithful, no
-/// implicit newline. Imports are registered on the CURRENT chunk (via
-/// `add_import` + `emit_call`) so the `CALL_IMPORT` indices resolve against the
-/// same per-chunk table the runtime uses — `chunks[0]` would only be correct at
-/// top level.
-fn emit_stream_write(
-    chunk: &mut Chunk,
-    text_local: u16,
-    stream_module: &str,
-    stream_getter: &str,
-    line: u32,
-) {
-    let get_idx = chunk.add_import(stream_module, stream_getter);
-    let write_idx = chunk.add_import(
-        "wasi:io/streams",
-        "[method]output-stream.blocking-write-and-flush",
-    );
-    // stream = get-stdout()
-    chunk.emit_call(get_idx, 0, line);
-    // blocking-write-and-flush(stream, contents)
-    chunk.emit_op_u16(Op::LOCAL_GET, text_local, line);
-    chunk.emit_call(write_idx, 2, line);
-    chunk.emit_op(Op::DROP, line); // discard result<_, stream-error>
+/// Byte-faithful, no implicit newline — all four `Console` shapes above differ
+/// only in what they STRINGIFY and whether they append `\n`; the transport is
+/// this one function.
+///
+/// It delegates to `io::emit_write_stream_slot`, the shared write. It used to
+/// splice `get-<stream>` + `wasi:io/streams.[method]output-stream.
+/// blocking-write-and-flush` itself — the WASI **0.2** pair, against a
+/// `wasi:io` package 0.3 DELETED (a stream is a Component Model type now, not a
+/// WASI resource). Five call sites here all reached it through this one
+/// function, so the whole adapter moves in one edit.
+fn emit_stream_write(chunk: &mut Chunk, text_local: u16, stream_module: &str, line: u32) {
+    vybe_compiler::primitives::io::emit_write_stream_slot(chunk, stream_module, text_local, line);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
@@ -123,7 +111,6 @@ pub fn emit_console_writeline(chunks: &mut [Chunk], current: usize, line: u32) {
         &mut chunks[current],
         result_local,
         "wasi:cli/stdout",
-        "get-stdout",
         line,
     );
 }
@@ -139,7 +126,6 @@ pub fn emit_console_write(chunks: &mut [Chunk], current: usize, line: u32) {
         &mut chunks[current],
         result_local,
         "wasi:cli/stdout",
-        "get-stdout",
         line,
     );
 }
@@ -153,7 +139,6 @@ pub fn emit_console_writeline_empty(chunks: &mut [Chunk], current: usize, line: 
         &mut chunks[current],
         nl_local,
         "wasi:cli/stdout",
-        "get-stdout",
         line,
     );
 }
@@ -182,7 +167,6 @@ fn emit_console_stderr(chunks: &mut [Chunk], current: usize, append_newline: boo
         &mut chunks[current],
         result_local,
         "wasi:cli/stderr",
-        "get-stderr",
         line,
     );
 }

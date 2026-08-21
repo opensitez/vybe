@@ -167,8 +167,13 @@ pub fn emit_http_fetch(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, response, line);
 
     // ── body ────────────────────────────────────────────────────────────
-    // `response.consume-body(this, res)` (0.3 static) yields the body stream;
-    // the bytes then come from `wasi:io/streams.input-stream.blocking-read`.
+    // `response.consume-body(this, res)` (0.3 static) yields
+    // `tuple<stream<u8>, future<...>>`; the shared read drains the stream.
+    //
+    // This used to call `wasi:io/streams.[method]input-stream.blocking-read`
+    // on it — a WASI **0.2** method applied to a **0.3** stream, against a
+    // `wasi:io` package 0.3 DELETED. It only ever resolved because the host
+    // still registers a 0.2.12 compat provider.
     chunk.emit_op_u16(Op::LOCAL_GET, response, line);
     core_wasm::null(chunk, line); // res: future<result<_, error-code>>
     call_import(
@@ -178,22 +183,12 @@ pub fn emit_http_fetch(chunks: &mut [Chunk], current: usize, line: u32) {
         2,
         line,
     );
-    chunk.emit_i64_const(MAX_BODY_BYTES, line);
-    call_import(
-        chunk,
-        "wasi:io/streams",
-        "[method]input-stream.blocking-read",
-        2,
-        line,
-    );
-    // bytes -> string
-    call_import(chunk, "web:encoding", "decode", 1, line);
+    // Element 0 of the tuple is the `stream<u8>` — an i32 readable handle,
+    // per the canonical ABI.
+    chunk.emit_i32_const(0, line);
+    call_import(chunk, "ecma:array", "at", 2, line);
+    vybe_compiler::primitives::io::emit_read_stream_to_string(chunk, line);
 }
-
-/// Upper bound for a single `blocking-read` of a response body. The .NET
-/// one-call shapes (`DownloadString`, `GetStringAsync`) are whole-body reads,
-/// so we request the whole buffer in one go rather than looping.
-const MAX_BODY_BYTES: i64 = 64 * 1024 * 1024;
 
 /// `WebRequest.Create(url)` / `new WebClient()` / `new HttpClient()` — these
 /// .NET objects carry no state here (each request is self-contained), so

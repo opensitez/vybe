@@ -416,9 +416,9 @@ impl DotnetSurface {
     }
 
     /// Resolve a property accessor by walking `class_name` and its ancestors —
-    /// `Button.Text` finds `Text` on `Control`. The generic `vybe:gui` property
-    /// host fns take the PascalCase key as an argument, so it rides along in
-    /// `key`; dedicated per-property host fns leave `key` `None`.
+    /// `Button.Text` finds `Text` on `Control`. A generic property accessor
+    /// takes the PascalCase key as an argument, so it rides along in `key`;
+    /// dedicated per-property host fns leave `key` `None`.
     fn lookup_instance_accessor(
         &self,
         class_name: &str,

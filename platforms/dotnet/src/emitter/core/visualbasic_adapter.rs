@@ -484,7 +484,23 @@ pub fn emit_vb_print(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
 }
 
 pub fn emit_vb_input(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_host_call(chunks, current, "wasi:cli", "readLine", argc, line);
+    // `InputBox`/`Console.ReadLine` read the SAME stdin every other language
+    // does — `wasi:cli/stdin.read-via-stream` drained with `canon stream.read`.
+    //
+    // This used to call `wasi:cli.readLine`, which is not a WASI interface at
+    // all (`wasi:cli` is the PACKAGE; the interfaces are `wasi:cli/stdin` and
+    // friends) and is registered only under `--portable`. Everywhere else the
+    // import went unresolved, so VB input was a runtime error rather than a
+    // read.
+    //
+    // The arguments are dropped rather than used: the host `readLine` closure
+    // took `_` and ignored them, so consuming them here keeps the stack
+    // balanced AND the behaviour identical. Making a prompt actually print is
+    // a separate change with a visible effect.
+    for _ in 0..argc {
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    vybe_compiler::primitives::io::emit_input(&mut chunks[current], line);
 }
 
 pub fn emit_vb_app(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {

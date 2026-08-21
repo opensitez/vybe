@@ -1374,10 +1374,9 @@ const BRUSH_METHODS: &[DotnetMethod] = &[DotnetMethod {
 /// The RGBA is pushed and the object composed by `MethodOp::NewValueType`, the
 /// same `emit_value_type_new` `Point` and `Size` reach through their
 /// constructors — NOT `Color`'s own ctor, which would be circular for a static
-/// declared on `Color`. It used to push the colour NAME
-/// and call a `vybe:gui` host function to look it up in a palette living in
-/// `platforms/vybe/src/drawing.rs` — a host round-trip to turn a compile-time
-/// constant into four compile-time constants. Nothing about a colour needs a
+/// declared on `Color`. It used to push the colour NAME and look it up in a
+/// host-side palette — a round-trip to turn a compile-time constant into four
+/// compile-time constants. Nothing about a colour needs a
 /// host: it is data, and this is where the data belongs now that it is stated
 /// once.
 ///
@@ -1401,8 +1400,8 @@ macro_rules! color_static {
             // bytecode — there is no host in it and no web API for it either,
             // because a colour is not a browser capability.
             //
-            // This was the LAST `vybe:gui` import any .NET program still
-            // carried. It stayed a host call through two failed attempts, both
+            // This was the LAST host import any .NET program still carried. It
+            // stayed a host call through two failed attempts, both
             // recorded here because the reason is not obvious:
             //   - `NewDotnet { class: "Color", argc: 4 }` — `builder.rs`
             //     asserts `argc == 0`; the DSL has no arity-N factory.
@@ -1674,9 +1673,9 @@ pub fn classes() -> &'static [DotnetClass] {
             widget_host_fn: None,        },
         // System.Drawing.Font — `New Font(name, size)`.
         //
-        // It had NO class entry here at all: its only declaration was a
-        // `constructor_class(…, "vybe:gui", "fontNew")` backing, so it was the
-        // last type still built by the deleted drawing host. `Bold`/`Italic`
+        // It had NO class entry here at all: its only declaration was a host
+        // factory backing, so it was the last type still built that way.
+        // `Bold`/`Italic`
         // are listed because the drawing bodies read them off a font argument;
         // the two-argument overload leaves both false, which is the contract
         // the retired factory set.
@@ -1696,10 +1695,8 @@ pub fn classes() -> &'static [DotnetClass] {
         // `undefined is not callable` and `examples/vb/paint_demo` could not
         // draw a circle or a rectangle at all.
         //
-        // ⚠ NO `widget_host_fn`. `Point` and `Size` still construct through
-        // `vybe:gui::pointNew`/`sizeNew`, but adding a third such host function
-        // would be growing the surface this conversion exists to remove — a
-        // rectangle is four numbers in an object and needs nothing from a host.
+        // ⚠ NO `widget_host_fn` — a rectangle is four numbers in an object and
+        // needs nothing from a host.
         // Its constructor is `dotnet.rectangle_new`, composed from primitives
         // (`common_ctor_for` in `winforms/component_classes.rs`), which is the
         // route `pointNew`/`sizeNew` should follow next.

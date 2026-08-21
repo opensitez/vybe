@@ -8,8 +8,8 @@
 //! So `PictureBox` IS a `<canvas>` element: it is created by
 //! `document.createElement("canvas")` through the element mapping in
 //! `tree_register::html_element_for_control`, and `pb.CreateGraphics()` is
-//! `getContext("2d")` on that same element. No `vybe:gui` factory stands in
-//! between, which is what makes the whole path answerable by a real browser.
+//! `getContext("2d")` on that same element. No factory stands in between,
+//! which is what makes the whole path answerable by a real browser.
 
 use super::DotnetClass;
 
@@ -31,9 +31,9 @@ pub fn classes() -> &'static [DotnetClass] {
             ctor_arity: 0,
             // No factory: `picturebox` maps to `canvas`, and the element
             // mapping is what materializes it. `component_classes` checks
-            // `widget_host_fn` FIRST, so leaving one here would keep the
-            // control on `vybe:gui::new_Canvas` and the element mapping would
-            // never be reached — only a `<canvas>` tag owns a drawing surface.
+            // `widget_host_fn` FIRST, so leaving one here would pin the control
+            // to a factory and the element mapping would never be reached —
+            // only a `<canvas>` tag owns a drawing surface.
             widget_host_fn: None,        },
         DotnetClass {
             name: "WebBrowser",

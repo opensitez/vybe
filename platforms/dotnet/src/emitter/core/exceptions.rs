@@ -197,6 +197,7 @@ fn synthesize_exception_class(name: &str, parent: &str) -> Statement {
         modifiers: Modifiers::default(),
         with_events: false,
         array_bounds: None,
+        storage: None,
     };
 
     let mut members = vec![mk_field("Message"), mk_field("InnerException")];

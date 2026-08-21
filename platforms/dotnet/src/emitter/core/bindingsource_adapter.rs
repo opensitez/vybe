@@ -4,8 +4,8 @@
 //! and every one of its members is data: a position, the list it walks, and the
 //! four `Move*` verbs that step the position. It used to live in the WinForms
 //! class table with `widget_host_fn: Some("new_BindingSource")`, which gave it a
-//! `vybe:gui` backing object and routed every property through
-//! `controlSetProperty`/`controlGetProperty` — a registry keyed by control name,
+//! host backing object and routed every property through a generic accessor —
+//! a registry keyed by control name,
 //! for a thing that is never a control. Reads answered from the object's own
 //! fallback field when one had been written and from the GUI registry (a string,
 //! or nothing) when one had not, so `bs.Position` read back `""` before anything

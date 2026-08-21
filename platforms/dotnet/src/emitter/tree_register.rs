@@ -57,8 +57,8 @@ pub fn register_namespace_tree() {
             // unreachable. See `inherited_methods`.
             for m in &inherited_methods(&class.name) {
                 // A control METHOD is a shared VERB, resolved through
-                // `primitives/gui.rs` like its properties — not a `vybe:gui`
-                // host call. Gated on the class actually being a control for
+                // `primitives/gui.rs` like its properties — never a host call.
+                // Gated on the class actually being a control for
                 // the same reason the accessors are: `Graphics` and the value
                 // types declare methods too, and `Update`/`Refresh` are
                 // ordinary names that must not be captured off a non-control.
@@ -129,33 +129,26 @@ pub fn register_namespace_tree() {
             // Nearest declaration wins, so an override shadows its base.
             let mut property_returns: BTreeMap<String, String> = BTreeMap::new();
             let is_control = element_backed_control(&class.name);
-            // A `System.Drawing` VALUE TYPE declares NO property accessors, so
-            // `p.X` resolves the way `p.x` on a user-declared class already
-            // does: an ordinary STRUCT FIELD read.
+            // ANYTHING WITHOUT AN ELEMENT DECLARES NO PROPERTY ACCESSOR, so its
+            // properties resolve the way a user-declared class's do: an ordinary
+            // STRUCT FIELD read.
             //
-            // These bound the two generic `vybe:gui` property host functions,
-            // and for an object with no element and no `__control_name` that
-            // host call collapses to exactly a lowercased field access —
-            // `controlGetProperty` returns `o.properties.get(&prop_lower)` and
-            // `controlSetProperty` does `properties.insert(prop_lower, val)`
-            // whenever `live_widget` is false. Those ARE the field names
-            // `emit_value_type_new` stores (`x`, `y`, `r`, `width`, `size`, …),
-            // so declaring nothing reproduces the behaviour and drops the host.
+            // That covers the `System.Drawing` value types (`Point.X`) and the
+            // NON-VISUAL components (`Timer.Interval`, `BindingSource.DataSource`)
+            // alike, and it is not a behaviour change: both bound the two
+            // generic property host functions, and for an object with no
+            // element that host call collapsed to exactly a lowercased field
+            // access — the getter returned `o.properties.get(&prop_lower)` and
+            // the setter did `properties.insert(prop_lower, val)`. Those ARE the field names
+            // `emit_value_type_new` stores, so declaring nothing reproduces the
+            // behaviour with no host at all.
             //
-            // `primitives/gui.rs::declared_property_role` records the other half
-            // of this: a class with no platform role gets a struct field read,
-            // which is why a user-declared `Class Point` works and why the
-            // platform `Point.X` role capturing it looked like object aliasing.
-            //
-            // ⛔ The predicate is NOT `!is_control` — that also covers the
-            // NON-VISUAL components (Timer, BindingSource), which do carry a
-            // `__control_name` and must keep the host accessor.
-            // `common_ctor_for` is exact: a class whose constructor composes a
-            // plain object is a class whose properties are its fields.
-            let is_value_type =
-                crate::emitter::winforms::component_classes::common_ctor_for(&class.name).is_some();
+            // `primitives/gui.rs::declared_property_role` records the other half:
+            // a class with no platform role gets a struct field read, which is
+            // why a user-declared `Class Point` works and why the platform
+            // `Point.X` role capturing it looked like object aliasing.
             for p in inherited_properties(&class.name) {
-                if is_value_type {
+                if !is_control {
                     continue;
                 }
                 let node = namespaces::property(
@@ -388,7 +381,7 @@ fn register_color_statics() {
 ///
 /// Most WinForms spellings ARE the canonical role already (`Text`, `Name`,
 /// `Enabled`, `Visible`, `Left`/`Top`/`Width`/`Height`), which is why this is
-/// close to the identity: `vybe:gui`'s property vocabulary was modelled on
+/// close to the identity: the shared property vocabulary was modelled on
 /// WinForms in the first place. Only the names that disagree are listed.
 ///
 /// Everything unlisted keeps its own spelling and lands on an ATTRIBUTE, which
@@ -447,7 +440,7 @@ fn gui_property_role(prop: &str) -> &'static str {
 /// The mirror of `gui_property_role`, and the same contract: the WinForms word
 /// stops here. `Show`/`Hide`/`Focus`/`BringToFront` are the same verbs the VCL
 /// spells on `TControl`, so both frontends reach one implementation in
-/// `primitives/gui.rs` instead of each calling its own `vybe:gui` host fn.
+/// `primitives/gui.rs` instead of each calling its own host fn.
 ///
 /// `Refresh`/`Invalidate`/`Update` map to real verbs that lower to NOTHING —
 /// a document repaints itself, so there is nothing for an author to ask for.
@@ -477,7 +470,7 @@ fn gui_control_verb(method: &str, is_form: bool) -> Option<&'static str> {
         // `SendToBack` is `insertBefore` against the parent's current first
         // child. It was held back only because `web:dom` had no `firstChild`;
         // that is registered now, so both halves of the z-order pair lower to
-        // the DOM and neither needs `vybe:gui`.
+        // the DOM.
         "sendtoback" => "send_to_back",
         // `Dispose` DESTROYS the control: `ChildNode.remove()`. The host fn it
         // replaces only set `Visible=false` and dropped the handler table, so a
@@ -490,13 +483,10 @@ fn gui_control_verb(method: &str, is_form: bool) -> Option<&'static str> {
 
 /// One accessor leaf.
 ///
-/// The two generic `vybe:gui` property host functions take the property NAME as
-/// an argument, so they are the CONTROL property path — and they are what this
-/// platform is being converted off. They now bind to the shared role emits
+/// A control's accessors bind to the shared role emits
 /// (`gui.prop_get.<role>` / `gui.prop_set.<role>`) that `primitives/gui.rs`
-/// lowers to `web:dom` / `web:html` / `web:cssom`, which is the same target
-/// plib already reaches. Under the hood both still drive `vybe_widgets`; only
-/// the route changed, from a bespoke host function to a DOM operation.
+/// lowers to `web:dom` / `web:html` / `web:cssom` — the same target plib
+/// reaches. Both drive `vybe_widgets` underneath; the route is a DOM operation.
 ///
 /// A dedicated per-property host function (`Environment.NewLine` →
 /// `node:os.EOL`) is NOT a control property and is left exactly as it was.
@@ -524,17 +514,6 @@ fn accessor_node(
             vybe_compiler::primitives::gui::PROP_GET_EMIT
         };
         NamespaceNode::CommonEmit(format!("{prefix}{role}"))
-    } else if target.name == vybe_compiler::primitives::gui::HOST_FN_GET_PROPERTY
-        || target.name == vybe_compiler::primitives::gui::HOST_FN_SET_PROPERTY
-    {
-        // Not a control and not a value type: keep the keyed host-function
-        // accessor. `vybe:gui` no longer answers for the value types or the
-        // drawing surface — those declare NO accessor and fall through to an
-        // ordinary struct field read (see `is_value_type` above). What is left
-        // on this arm is the NON-VISUAL components (`Timer`, `BindingSource`),
-        // which carry a `__control_name` and are the last property surface on
-        // the host.
-        namespaces::host_fn_keyed(&target.module, &target.name, prop)
     } else {
         namespaces::host_fn(&target.module, &target.name)
     }
@@ -881,9 +860,9 @@ fn control_ctor_spec(class_name: &str, element: &str) -> vybe_runtime::namespace
 ///
 /// The element model applies to controls and nothing else. `Point`, `Size`,
 /// `Font`, `Pen`, `Brush` and `Graphics` are value types and a drawing surface:
-/// they are bound to `vybe:gui` constructors for historical reasons but they
-/// are not elements, have no DOM counterpart, and must keep their host-function
-/// accessors until canvas/CSSOM answers for them separately.
+/// they are not elements and have no DOM counterpart. Their members compose in
+/// bytecode (`dotnet.point_new`, `dotnet.pen_new`) and their properties are
+/// ordinary struct fields.
 ///
 /// Getting this wrong is not subtle. Routing them through the roles turned
 /// `Size.Width` into a CSS geometry write and `Point.X` into an attribute, so
@@ -914,9 +893,9 @@ fn element_backed_control(class_name: &str) -> bool {
     descends_from_control(class_name) || html_element_for_control(class_name).is_some()
 }
 
-/// Does this class map to an element? The descriptor builder asks, so a class
-/// with no `vybe:gui` factory still gets a constructor — see
-/// `winforms/component_classes.rs`.
+/// Does this class map to an element? The descriptor builder asks, so an
+/// element-mapped class gets a constructor with no host factory behind it —
+/// see `winforms/component_classes.rs`.
 pub(crate) fn is_element_mapped(class_name: &str) -> bool {
     html_element_for_control(class_name).is_some()
 }
