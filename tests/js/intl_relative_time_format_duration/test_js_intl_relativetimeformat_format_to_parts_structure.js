@@ -52,4 +52,4 @@ function __check(got, want) {
 const rtf = new Intl.RelativeTimeFormat("en", { numeric: "always" });
 const parts = rtf.formatToParts(10, "minute");
 __p(__line(parts.some(p => p.type === "unit" && p.value === " minutes")));
-__checkLater("true");
+__checkLater("false");

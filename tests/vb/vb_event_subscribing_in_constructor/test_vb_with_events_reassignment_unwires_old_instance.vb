@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,41 +42,40 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
 
 Class Emitter
     Public Property Name As String
-    Public Event Action As EventHandler
-    Public Sub Fire()
-        RaiseEvent Action(Me, EventArgs.Empty)
-    End Sub
-End Class
+        Public Event Action As EventHandler
+        Public Sub Fire()
+            RaiseEvent Action(Me, EventArgs.Empty)
+        End Sub
+    End Class
 
-Class SwitchableListener
-    Private WithEvents currentEmitter As Emitter
+    Class SwitchableListener
+        Private WithEvents currentEmitter As Emitter
 
-    Public Sub SetEmitter(e As Emitter)
-        currentEmitter = e ' Unwires previous currentEmitter, wires new e!
-    End Sub
+        Public Sub SetEmitter(e As Emitter)
+            currentEmitter = e ' Unwires previous currentEmitter, wires new e!
+        End Sub
 
-    Private Sub OnAction(sender As Object, e As EventArgs) Handles currentEmitter.Action
-        __P(CStr("Action Handled From: " & currentEmitter.Name))
-    End Sub
-End Class
+        Private Sub OnAction(sender As Object, e As EventArgs) Handles currentEmitter.Action
+            __P(CStr("Action Handled From: " & currentEmitter.Name))
+        End Sub
+    End Class
 
-Module Program
-    Sub Main()
-        Dim e1 As New Emitter With {.Name = "First"}
-        Dim e2 As New Emitter With {.Name = "Second"}
+    Module Program
+        Sub Main()
+            Dim e1 As New Emitter With {.Name = "First"}
+            Dim e2 As New Emitter With {.Name = "Second"}
 
-        Dim listener As New SwitchableListener()
-        listener.SetEmitter(e1)
-        e1.Fire()
+            Dim listener As New SwitchableListener()
+            listener.SetEmitter(e1)
+            e1.Fire()
 
-        listener.SetEmitter(e2)
-        e1.Fire() ' Should NOT fire listener!
-        e2.Fire() ' Should fire listener!
-        __Check("Action Handled From: First
+            listener.SetEmitter(e2)
+            e1.Fire() ' Should NOT fire listener!
+            e2.Fire() ' Should fire listener!
+            __Check("Action Handled From: First
 Action Handled From: Second")
-    End Sub
-End Module
+        End Sub
+    End Module

@@ -41,6 +41,10 @@ Module VybeCheck
     End Sub
 End Module
 
-__P(CStr(Math.Max(5, 10)))
-__P(CStr(Math.Min(5, 10)))
-__P(CStr(Math.Max(-1, -5)))
+Module Program
+    Sub Main()
+        __P(CStr(Math.Max(5, 10)))
+        __P(CStr(Math.Min(5, 10)))
+        __P(CStr(Math.Max(-1, -5)))
+    End Sub
+End Module

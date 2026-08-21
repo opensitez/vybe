@@ -51,4 +51,4 @@ function __check(got, want) {
 
 const path = String.raw`C:\Users\${" name ".trim()}`;
 __p(__line(path));
-__checkLater("C:\\Users\\name");
+__checkLater("C:\\Users\\${\" name \".trim()}");

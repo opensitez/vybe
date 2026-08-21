@@ -41,14 +41,18 @@ Module VybeCheck
     End Sub
 End Module
 
-Dim outer(2) As Object
-Dim inner1(2) As Integer
-inner1(0) = 10
-inner1(1) = 20
-Dim inner2(2) As Integer
-inner2(0) = 30
-inner2(1) = 40
-outer(0) = inner1
-outer(1) = inner2
-__P(CStr(outer(0)(0)))
-__P(CStr(outer(1)(1)))
+Module Program
+    Sub Main()
+        Dim outer(2) As Object
+        Dim inner1(2) As Integer
+        inner1(0) = 10
+        inner1(1) = 20
+        Dim inner2(2) As Integer
+        inner2(0) = 30
+        inner2(1) = 40
+        outer(0) = inner1
+        outer(1) = inner2
+        __P(CStr(outer(0)(0)))
+        __P(CStr(outer(1)(1)))
+    End Sub
+End Module

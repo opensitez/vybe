@@ -41,15 +41,19 @@ Module VybeCheck
     End Sub
 End Module
 
-Function Classify(n As Integer) As String
-    If n > 0 Then
+Module Program
+    Sub Main()
+        Function Classify(n As Integer) As String
+        If n > 0 Then
         Return "positive"
-    ElseIf n < 0 Then
+        ElseIf n < 0 Then
         Return "negative"
-    Else
+        Else
         Return "zero"
-    End If
-End Function
-__P(CStr(Classify(5)))
-__P(CStr(Classify(-3)))
-__P(CStr(Classify(0)))
+        End If
+        End Function
+        __P(CStr(Classify(5)))
+        __P(CStr(Classify(-3)))
+        __P(CStr(Classify(0)))
+    End Sub
+End Module

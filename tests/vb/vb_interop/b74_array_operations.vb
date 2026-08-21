@@ -41,10 +41,14 @@ Module VybeCheck
     End Sub
 End Module
 
-Dim arr(4) As Integer
-For i As Integer = 0 To 4
-    arr(i) = i * 10
-Next
-__P(CStr(arr(0)))
-__P(CStr(arr(2)))
-__P(CStr(arr(4)))
+Module Program
+    Sub Main()
+        Dim arr(4) As Integer
+        For i As Integer = 0 To 4
+        arr(i) = i * 10
+        Next
+        __P(CStr(arr(0)))
+        __P(CStr(arr(2)))
+        __P(CStr(arr(4)))
+    End Sub
+End Module

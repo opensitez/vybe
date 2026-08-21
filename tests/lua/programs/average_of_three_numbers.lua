@@ -1,7 +1,7 @@
 -- vybe-test: lua/programs/average_of_three_numbers
 -- origin: languages/lua/tests/lua/test_programs.rs
 
-local __w1 = "4"
+local __w1 = "4.0"
 local __i = 0
 
 local a, b, c = 2, 4, 6

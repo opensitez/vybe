@@ -41,4 +41,13 @@ Module VybeCheck
     End Sub
 End Module
 
-Class C: Public Property P As Integer: End Class: Module M: Sub Main(): Dim obj As New C(): obj.P = 10: __P(CStr(obj.P)): End Sub: End Module
+Class C
+    Public Property P As Integer
+    End Class
+    Module M
+        Sub Main()
+            Dim obj As New C()
+            obj.P = 10
+            __P(CStr(obj.P))
+        End Sub
+    End Module

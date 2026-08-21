@@ -41,9 +41,13 @@ Module VybeCheck
     End Sub
 End Module
 
-Dim list As New List(Of String)
-list.Add("one")
-list.Add("two")
-list.Add("three")
-__P(CStr(list.IndexOf("two")))
-__P(CStr(list.IndexOf("four")))
+Module Program
+    Sub Main()
+        Dim list As New List(Of String)
+        list.Add("one")
+        list.Add("two")
+        list.Add("three")
+        __P(CStr(list.IndexOf("two")))
+        __P(CStr(list.IndexOf("four")))
+    End Sub
+End Module

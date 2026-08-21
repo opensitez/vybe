@@ -50,4 +50,4 @@ function __check(got, want) {
 }
 
 __p(__line(Math.imul(1e12, 1e12)));
-__checkLater("-1939898368");
+__checkLater("-1593835520");

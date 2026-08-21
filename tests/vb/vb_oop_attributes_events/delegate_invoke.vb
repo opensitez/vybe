@@ -41,4 +41,10 @@ Module VybeCheck
     End Sub
 End Module
 
-Delegate Sub D(): Module M: Sub Main(): Dim act As D = Sub() __P(CStr("Inv")): act.Invoke(): End Sub: End Module
+Delegate Sub D()
+Module M
+    Sub Main()
+        Dim act As D = Sub() __P(CStr("Inv"))
+        act.Invoke()
+    End Sub
+End Module

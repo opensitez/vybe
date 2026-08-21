@@ -41,4 +41,22 @@ Module VybeCheck
     End Sub
 End Module
 
-Interface I1: Sub T1(): End Interface: Interface I2: Inherits I1: Sub T2(): End Interface: Class C: Implements I2: Public Sub T1() Implements I2.T1: End Sub: Public Sub T2() Implements I2.T2: End Sub: End Class: Module M: Sub Main(): __P(CStr("Parsed")): End Sub: End Module
+Interface I1
+    Sub T1()
+    End Interface
+    Interface I2
+        Inherits I1
+        Sub T2()
+        End Interface
+        Class C
+            Implements I2
+            Public Sub T1() Implements I2.T1
+            End Sub
+            Public Sub T2() Implements I2.T2
+            End Sub
+        End Class
+        Module M
+            Sub Main()
+                __P(CStr("Parsed"))
+            End Sub
+        End Module

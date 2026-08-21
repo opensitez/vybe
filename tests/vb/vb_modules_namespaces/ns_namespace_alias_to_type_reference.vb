@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports PacketAlias = Data.Packet
 Module VybeCheck
     Public __buf As String = ""
 
@@ -46,7 +47,6 @@ Public Class Packet
 Public Status As String = "ready"
 End Class
 End Namespace
-Imports PacketAlias = Data.Packet
 Module M
 Sub Main()
 Dim p As New PacketAlias()

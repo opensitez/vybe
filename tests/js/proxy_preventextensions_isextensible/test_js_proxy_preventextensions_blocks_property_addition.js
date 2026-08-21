@@ -1,6 +1,8 @@
 // vybe-test: js/proxy_preventextensions_isextensible/test_js_proxy_preventextensions_blocks_property_addition
 // origin: languages/js/tests/js/test_js_proxy_preventextensions_isextensible.rs
 
+"use strict";
+
 function __fmt(v) {
     // console.log renders a bigint with an `n` suffix; String() drops it.
     return typeof v === "bigint" ? String(v) + "n" : String(v);
@@ -56,7 +58,6 @@ const proxy = new Proxy({}, {
 });
 Object.preventExtensions(proxy);
 try {
-    "use strict";
     proxy.newProp = 100;
 } catch (e) {
     __p(__line("Add Property To Non-Extensible Proxy TypeError"));

@@ -49,7 +49,7 @@ function __check(got, want) {
     }
 }
 
-const arr = [1,  3];
+const arr = [1,,  3];
 __p(__line(arr.at(1)));
 __p(__line(arr[1]));
 __p(__line(1 in arr));

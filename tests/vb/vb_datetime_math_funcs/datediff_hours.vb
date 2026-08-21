@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): __P(CStr(DateDiff("h", #12:00:00 PM#, #5:00:00 PM#))): End Sub: End Module
+Module M
+    Sub Main()
+        __P(CStr(DateDiff("h", #12:00:00 PM#, #5:00:00 PM#)))
+    End Sub
+End Module

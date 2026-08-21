@@ -53,4 +53,4 @@ const re = /a/g;
 re.lastIndex = 3;
 const clone = structuredClone(re);
 __p(__line(clone.lastIndex));
-__checkLater("3");
+__checkLater("0");

@@ -20,6 +20,8 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports Texts = System.Text
+Imports Culture = System.Globalization.CultureInfo
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,8 +43,6 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports Texts = System.Text
-Imports Culture = System.Globalization.CultureInfo
 
 Module M
     Sub Main()

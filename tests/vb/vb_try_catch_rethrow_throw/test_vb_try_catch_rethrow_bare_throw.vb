@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,7 +42,6 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
 
 Module Program
     Private Sub Helper()
@@ -49,18 +49,18 @@ Module Program
             Dim zero As Integer = 0
             Dim res As Integer = 10 \ zero
         Catch ex As Exception
-            __P(CStr("Logging in Helper"))
-            Throw ' Bare rethrow preserves stack trace
-        End Try
-    End Sub
+        __P(CStr("Logging in Helper"))
+        Throw ' Bare rethrow preserves stack trace
+    End Try
+End Sub
 
-    Sub Main()
-        Try
-            Helper()
-        Catch ex As DivideByZeroException
-            __P(CStr("Caught in Main: " & ex.GetType().Name))
-        End Try
-        __Check("Logging in Helper
+Sub Main()
+    Try
+        Helper()
+    Catch ex As DivideByZeroException
+    __P(CStr("Caught in Main: " & ex.GetType().Name))
+End Try
+__Check("Logging in Helper
 Caught in Main: DivideByZeroException")
-    End Sub
+End Sub
 End Module

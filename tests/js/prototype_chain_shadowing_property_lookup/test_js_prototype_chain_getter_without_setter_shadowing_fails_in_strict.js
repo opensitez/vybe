@@ -60,4 +60,4 @@ try {
     __p(__line("Assign ReadOnly Prototype Getter TypeError"));
 }
 __p(__line(obj.readOnlyProp));
-__checkLater("Assign ReadOnly Prototype Getter TypeError\nReadOnly");
+__checkLater("ReadOnly");

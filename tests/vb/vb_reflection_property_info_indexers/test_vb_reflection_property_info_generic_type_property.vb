@@ -43,14 +43,16 @@ End Module
 
 Class Wrapper(Of T)
     Public Property Value As T
-    Public Sub New(v As T) : Value = v : End Sub
-End Class
+        Public Sub New(v As T)
+            Value = v
+        End Sub
+    End Class
 
-Module Program
-    Sub Main()
-        Dim w As New Wrapper(Of Double)(3.14)
-        Dim prop = GetType(Wrapper(Of Double)).GetProperty("Value")
-        __P(CStr(prop.PropertyType.Name & "=" & prop.GetValue(w)))
-        __Check("Double=3.14")
-    End Sub
-End Module
+    Module Program
+        Sub Main()
+            Dim w As New Wrapper(Of Double)(3.14)
+            Dim prop = GetType(Wrapper(Of Double)).GetProperty("Value")
+            __P(CStr(prop.PropertyType.Name & "=" & prop.GetValue(w)))
+            __Check("Double=3.14")
+        End Sub
+    End Module

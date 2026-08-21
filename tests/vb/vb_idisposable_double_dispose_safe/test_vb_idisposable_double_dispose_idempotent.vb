@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,35 +42,34 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
 
 Class ManagedResource
     Implements IDisposable
 
     Public Property DisposeCount As Integer = 0
-    Private disposedValue As Boolean
+        Private disposedValue As Boolean
 
-    Protected Overridable Sub Dispose(disposing As Boolean)
-        If Not disposedValue Then
-            If disposing Then
-                DisposeCount += 1
+        Protected Overridable Sub Dispose(disposing As Boolean)
+            If Not disposedValue Then
+                If disposing Then
+                    DisposeCount += 1
+                End If
+                disposedValue = True
             End If
-            disposedValue = True
-        End If
-    End Sub
+        End Sub
 
-    Public Sub Dispose() Implements IDisposable.Dispose
-        Dispose(disposing:=True)
-        GC.SuppressFinalize(Me)
-    End Sub
-End Class
+        Public Sub Dispose() Implements IDisposable.Dispose
+            Dispose(disposing:=True)
+            GC.SuppressFinalize(Me)
+        End Sub
+    End Class
 
-Module Program
-    Sub Main()
-        Dim res As New ManagedResource()
-        res.Dispose()
-        res.Dispose() ' Second call should be no-op!
-        __P(CStr(res.DisposeCount))
-        __Check("1")
-    End Sub
-End Module
+    Module Program
+        Sub Main()
+            Dim res As New ManagedResource()
+            res.Dispose()
+            res.Dispose() ' Second call should be no-op!
+            __P(CStr(res.DisposeCount))
+            __Check("1")
+        End Sub
+    End Module

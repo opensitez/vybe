@@ -41,8 +41,12 @@ Module VybeCheck
     End Sub
 End Module
 
-Dim dict As New Dictionary(Of String, Integer)
-dict.Add("score", 100)
-dict.Add("bonus", 50)
-Dim s As Integer = dict.Item("score") + dict.Item("bonus")
-__P(CStr(s))
+Module Program
+    Sub Main()
+        Dim dict As New Dictionary(Of String, Integer)
+        dict.Add("score", 100)
+        dict.Add("bonus", 50)
+        Dim s As Integer = dict.Item("score") + dict.Item("bonus")
+        __P(CStr(s))
+    End Sub
+End Module

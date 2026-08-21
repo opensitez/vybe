@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): __P(CStr(TimeSerial(14, 30, 0).Hour)): End Sub: End Module
+Module M
+    Sub Main()
+        __P(CStr(TimeSerial(14, 30, 0).Hour))
+    End Sub
+End Module

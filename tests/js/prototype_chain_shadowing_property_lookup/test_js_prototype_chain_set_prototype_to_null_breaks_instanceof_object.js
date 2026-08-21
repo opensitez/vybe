@@ -54,4 +54,4 @@ const obj = Object.create(proto);
 __p(__line((obj instanceof Object) + "|" + ("x" in obj)));
 Object.setPrototypeOf(proto, null);
     __p(__line((obj instanceof Object) + "|" + (Object.getPrototypeOf(obj) === proto)));
-__checkLater("false|false\nfalse|true");
+__checkLater("true|false\nfalse|true");

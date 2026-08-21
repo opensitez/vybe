@@ -41,4 +41,15 @@ Module VybeCheck
     End Sub
 End Module
 
-Structure S: Public V As Integer: End Structure: Module M: Sub Main(): Dim s1 As New S(): s1.V = 1: Dim s2 = s1: s2.V = 2: __P(CStr(s1.V)): End Sub: End Module
+Structure S
+    Public V As Integer
+End Structure
+Module M
+    Sub Main()
+        Dim s1 As New S()
+        s1.V = 1
+        Dim s2 = s1
+        s2.V = 2
+        __P(CStr(s1.V))
+    End Sub
+End Module

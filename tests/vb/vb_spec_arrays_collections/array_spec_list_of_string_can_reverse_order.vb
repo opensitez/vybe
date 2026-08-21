@@ -41,4 +41,12 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M : Sub Main() : Dim items As New List(Of String) : items.Add("a") : items.Add("b") : items.Reverse() : __P(CStr(items(0))) : End Sub : End Module
+Module M
+    Sub Main()
+        Dim items As New List(Of String)
+        items.Add("a")
+        items.Add("b")
+        items.Reverse()
+        __P(CStr(items(0)))
+    End Sub
+End Module

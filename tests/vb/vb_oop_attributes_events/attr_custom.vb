@@ -41,4 +41,18 @@ Module VybeCheck
     End Sub
 End Module
 
-<AttributeUsage(AttributeTargets.Class)> Class MyAttr: Inherits Attribute: Public Name As String: Public Sub New(n As String): Name = n: End Sub: End Class: <MyAttr("Test")> Class C: End Class: Module M: Sub Main(): Dim a = CType(GetType(C).GetCustomAttributes(False)(0), MyAttr): __P(CStr(a.Name)): End Sub: End Module
+<AttributeUsage(AttributeTargets.Class)> Class MyAttr
+Inherits Attribute
+Public Name As String
+Public Sub New(n As String)
+    Name = n
+End Sub
+End Class
+<MyAttr("Test")> Class C
+End Class
+Module M
+    Sub Main()
+        Dim a = CType(GetType(C).GetCustomAttributes(False)(0), MyAttr)
+        __P(CStr(a.Name))
+    End Sub
+End Module

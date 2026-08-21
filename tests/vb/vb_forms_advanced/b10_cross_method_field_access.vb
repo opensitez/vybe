@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Public Class Form1
     Dim savedValue As String = ""
     Public Sub New()
@@ -52,6 +51,11 @@ Public Class Form1
         Return savedValue
     End Function
 End Class
-Dim f As New Form1()
-f.Save("important data")
-__P(CStr(f.Load()))
+
+Module Program
+    Sub Main()
+        Dim f As New Form1()
+        f.Save("important data")
+        __P(CStr(f.Load()))
+    End Sub
+End Module

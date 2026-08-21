@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Runtime.CompilerServices
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,18 +42,21 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.Runtime.CompilerServices
 
 Class Point2D
     Public X As Integer
     Public Y As Integer
-    Public Sub New(x As Integer, y As Integer) : Me.X = x : Me.Y = y : End Sub
+    Public Sub New(x As Integer, y As Integer)
+        Me.X = x
+        Me.Y = y
+    End Sub
 End Class
 
 Module PointExtensions
     <Extension()>
     Public Sub Deconstruct(p As Point2D, ByRef x As Integer, ByRef y As Integer)
-        x = p.X : y = p.Y
+        x = p.X
+        y = p.Y
     End Sub
 End Module
 

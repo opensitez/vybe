@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports RegexAlias = System.Text.RegularExpressions.Regex
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,7 +42,6 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports RegexAlias = System.Text.RegularExpressions.Regex
 
 Module M
     Sub Main()

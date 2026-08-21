@@ -49,6 +49,6 @@ function __check(got, want) {
     }
 }
 
-const re = /[[a-z]--[a-m&&[c-g]]]/v; // Excludes c, d, e, f, g
+const re = /[[a-z]--[[a-m]&&[c-g]]]/v; // Excludes c, d, e, f, g
 __p(__line(re.test("a") + "|" + re.test("b") + "|" + re.test("c") + "|" + re.test("g")));
 __checkLater("true|true|false|false");

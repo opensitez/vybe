@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Class Person
     Private _name As String = ""
 
@@ -54,6 +53,10 @@ Class Person
     End Property
 End Class
 
-Dim p As New Person()
-p.Name = "Alice"
-__P(CStr(p.Name))
+Module Program
+    Sub Main()
+        Dim p As New Person()
+        p.Name = "Alice"
+        __P(CStr(p.Name))
+    End Sub
+End Module

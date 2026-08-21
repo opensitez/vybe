@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Public Class Foo
     Dim value As String
     Public Sub New()
@@ -53,5 +52,10 @@ Public Class Foo
         Return value
     End Function
 End Class
-Dim f As New Foo()
-__P(CStr(f.GetValue()))
+
+Module Program
+    Sub Main()
+        Dim f As New Foo()
+        __P(CStr(f.GetValue()))
+    End Sub
+End Module

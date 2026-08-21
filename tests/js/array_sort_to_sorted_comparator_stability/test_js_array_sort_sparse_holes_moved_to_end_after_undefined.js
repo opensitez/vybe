@@ -52,4 +52,4 @@ function __check(got, want) {
 const sparse = [2, , 1, undefined, 3];
 sparse.sort((a, b) => a - b);
 __p(__line(sparse.length + "|" + sparse.map(x => String(x)).join(",")));
-__checkLater("5|1,2,3,undefined,undefined");
+__checkLater("5|1,2,3,undefined,");

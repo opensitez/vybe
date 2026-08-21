@@ -43,7 +43,7 @@ End Module
 
 Module M
     Sub Main()
-        __P(CStr(Exp(0)))
+        __P(CStr(Math.Exp(0)))
         __Check("1")
     End Sub
 End Module

@@ -1,7 +1,7 @@
 -- vybe-test: lua/metatables_extended/meta_newindex_table
 -- origin: languages/lua/tests/lua/test_metatables_extended.rs
 
-local __w1 = "42 nil"
+local __w1 = "42\tnil"
 local __i = 0
 
 local parent = {}

@@ -42,14 +42,15 @@ Module VybeCheck
 End Module
 
 Class C(Of T, U)
-Public V1 As T
-Public V2 As U
+    Public V1 As T
+    Public V2 As U
 End Class
 Module M
-Sub Main()
-Dim c1 As New C(Of Integer, String)()
-c1.V1 = 5: c1.V2 = "A"
-__P(CStr(c1.V1 & c1.V2))
-    __Check("5A")
-End Sub
+    Sub Main()
+        Dim c1 As New C(Of Integer, String)()
+        c1.V1 = 5
+        c1.V2 = "A"
+        __P(CStr(c1.V1 & c1.V2))
+        __Check("5A")
+    End Sub
 End Module

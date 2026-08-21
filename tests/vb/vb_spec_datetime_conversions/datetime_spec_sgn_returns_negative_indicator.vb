@@ -43,7 +43,7 @@ End Module
 
 Module M
     Sub Main()
-        __P(CStr(Sgn(-10)))
+        __P(CStr(Math.Sign(-10)))
         __Check("-1")
     End Sub
 End Module

@@ -50,4 +50,4 @@ function __check(got, want) {
 }
 
 function noop() {} __p(__line(noop()))
-__checkLater("null");
+__checkLater("undefined");

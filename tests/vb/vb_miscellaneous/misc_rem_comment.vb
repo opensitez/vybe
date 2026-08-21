@@ -41,4 +41,9 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): REM This is a comment: __P(CStr("OK")): End Sub: End Module
+Module M
+    Sub Main()
+        REM This is a comment
+        __P(CStr("OK"))
+    End Sub
+End Module

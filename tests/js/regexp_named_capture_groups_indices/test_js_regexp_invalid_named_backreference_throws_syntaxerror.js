@@ -50,7 +50,7 @@ function __check(got, want) {
 }
 
 try {
-    eval("const re = /\\k<missing>/;");
+    eval("const re = /\\k<missing>/u;");
 } catch (e) {
     __p(__line("Invalid Backreference SyntaxError"));
 }

@@ -49,7 +49,7 @@ function __check(got, want) {
     }
 }
 
-const arr = [1,  3];
+const arr = [1,,  3];
 const sliced = arr.slice(0, 3);
 __p(__line(1 in sliced));
 __checkLater("false");

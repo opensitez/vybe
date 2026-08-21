@@ -53,4 +53,4 @@ const d1 = new Date(Date.UTC(2026, 6, 20));
 const d2 = new Date(Date.UTC(2026, 6, 22));
 const formatter = new Intl.DateTimeFormat("en-US", { timeZone: "UTC", month: "short", day: "numeric" });
 __p(__line(formatter.formatRange(d1, d2)));
-__checkLater("Jul 20 – 22");
+__checkLater("Jul 20\u2009\u2013\u200922");

@@ -44,24 +44,24 @@ End Module
 <AttributeUsage(AttributeTargets.Class)>
 Class RoleAttribute
     Inherits Attribute
-    
+
     Public Property RoleName As String
-    Public Property AccessLevel As Integer
-End Class
+        Public Property AccessLevel As Integer
+        End Class
 
-<Role(RoleName:="Admin", AccessLevel:=10)>
-Class SecureData
-End Class
+        <Role(RoleName:="Admin", AccessLevel:=10)>
+        Class SecureData
+        End Class
 
-Module M
-    Sub Main()
-        Dim attrs = GetType(SecureData).GetCustomAttributes(GetType(RoleAttribute), False)
-        If attrs.Length > 0 Then
-            Dim r = CType(attrs(0), RoleAttribute)
-            __P(CStr(r.RoleName))
-            __P(CStr(r.AccessLevel))
-        End If
-        __Check("Admin
+        Module M
+            Sub Main()
+                Dim attrs = GetType(SecureData).GetCustomAttributes(GetType(RoleAttribute), False)
+                If attrs.Length > 0 Then
+                    Dim r = CType(attrs(0), RoleAttribute)
+                    __P(CStr(r.RoleName))
+                    __P(CStr(r.AccessLevel))
+                End If
+                __Check("Admin
 10")
-    End Sub
-End Module
+            End Sub
+        End Module

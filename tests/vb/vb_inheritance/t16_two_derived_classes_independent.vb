@@ -40,11 +40,9 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Class Base
     Public Val As Integer = 0
 End Class
-
 Class ChildA
     Inherits Base
 
@@ -53,7 +51,6 @@ Class ChildA
         Val = 1
     End Sub
 End Class
-
 Class ChildB
     Inherits Base
 
@@ -63,7 +60,11 @@ Class ChildB
     End Sub
 End Class
 
-Dim a As New ChildA()
-Dim b As New ChildB()
-__P(CStr(a.Val))
-__P(CStr(b.Val))
+Module Program
+    Sub Main()
+        Dim a As New ChildA()
+        Dim b As New ChildB()
+        __P(CStr(a.Val))
+        __P(CStr(b.Val))
+    End Sub
+End Module

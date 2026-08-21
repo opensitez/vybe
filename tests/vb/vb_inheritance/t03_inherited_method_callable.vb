@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Class Animal
     Public Name As String = "Cat"
 
@@ -48,10 +47,13 @@ Class Animal
         GetName = Name
     End Function
 End Class
-
 Class Cat
     Inherits Animal
 End Class
 
-Dim c As New Cat()
-__P(CStr(c.GetName()))
+Module Program
+    Sub Main()
+        Dim c As New Cat()
+        __P(CStr(c.GetName()))
+    End Sub
+End Module

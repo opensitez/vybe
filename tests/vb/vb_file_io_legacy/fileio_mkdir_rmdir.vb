@@ -41,4 +41,11 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): MkDir("testdir"): __P(CStr(System.IO.Directory.Exists("testdir"))): RmDir("testdir"): __P(CStr(System.IO.Directory.Exists("testdir"))): End Sub: End Module
+Module M
+    Sub Main()
+        MkDir("testdir")
+        __P(CStr(System.IO.Directory.Exists("testdir")))
+        RmDir("testdir")
+        __P(CStr(System.IO.Directory.Exists("testdir")))
+    End Sub
+End Module

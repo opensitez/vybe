@@ -41,8 +41,12 @@ Module VybeCheck
     End Sub
 End Module
 
-Dim q As New Queue(Of String)
-q.Enqueue("first")
-q.Enqueue("second")
-__P(CStr(q.Dequeue()))
-__P(CStr(q.Dequeue()))
+Module Program
+    Sub Main()
+        Dim q As New Queue(Of String)
+        q.Enqueue("first")
+        q.Enqueue("second")
+        __P(CStr(q.Dequeue()))
+        __P(CStr(q.Dequeue()))
+    End Sub
+End Module

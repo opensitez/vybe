@@ -1,6 +1,12 @@
 // vybe-test: js/async_generator_function_prototype/async_generator_function_strict_mode_preserves_prototype
 // origin: languages/js/tests/js/test_async_generator_function_prototype.rs
 
+// ECMA-262: %GeneratorFunction% / %AsyncFunction% /
+// %AsyncGeneratorFunction% are INTRINSICS, not properties of the global
+// object (§19). They are reached through a generator's prototype chain.
+const AsyncGeneratorFunction = Object.getPrototypeOf(async function*(){}).constructor;
+
+
 "use strict";
 
 function __fmt(v) {

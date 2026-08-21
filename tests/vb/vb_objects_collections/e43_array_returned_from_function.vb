@@ -41,14 +41,18 @@ Module VybeCheck
     End Sub
 End Module
 
-Function MakeArr() As Integer()
-    Dim a(3) As Integer
-    a(0) = 1
-    a(1) = 2
-    a(2) = 3
-    Return a
-End Function
-Dim result() As Integer = MakeArr()
-__P(CStr(result(0)))
-__P(CStr(result(1)))
-__P(CStr(result(2)))
+Module Program
+    Sub Main()
+        Function MakeArr() As Integer()
+        Dim a(3) As Integer
+        a(0) = 1
+        a(1) = 2
+        a(2) = 3
+        Return a
+        End Function
+        Dim result() As Integer = MakeArr()
+        __P(CStr(result(0)))
+        __P(CStr(result(1)))
+        __P(CStr(result(2)))
+    End Sub
+End Module

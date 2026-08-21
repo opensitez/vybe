@@ -49,6 +49,6 @@ function __check(got, want) {
     }
 }
 
-let [a,  c] = [10, 20, 30];
+let [a,,  c] = [10, 20, 30];
         __p(__line(a, c));
 __checkLater("10 30");

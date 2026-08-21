@@ -43,7 +43,7 @@ End Module
 
 Module M
     Sub Main()
-        __P(CStr(Round(Math.Sin(Math.PI / 2), 6)))
+        __P(CStr(Math.Round(Math.Sin(Math.PI / 2), 6)))
         __Check("1")
     End Sub
 End Module

@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,34 +42,35 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
 
 Class CustomManager
     Private handlers As Action
 
     Public Custom Event Work As Action
-        AddHandler(value As Action)
-            handlers = CType([Delegate].Combine(handlers, value), Action)
-        End AddHandler
-        RemoveHandler(value As Action)
-            Dim newHandlers = CType([Delegate].Remove(handlers, value), Action)
-            If newHandlers Is Nothing AndAlso handlers IsNot Nothing Then
-                __P(CStr("All Handlers Removed"))
-            End If
-            handlers = newHandlers
-        End RemoveHandler
-        RaiseEvent()
-            If handlers IsNot Nothing Then handlers()
-        End RaiseEvent
-    End Event
+    AddHandler(value As Action)
+    handlers = CType([Delegate].Combine(handlers, value), Action)
+End AddHandler
+RemoveHandler(value As Action)
+Dim newHandlers = CType([Delegate].Remove(handlers, value), Action)
+If newHandlers Is Nothing AndAlso handlers IsNot Nothing Then
+    __P(CStr("All Handlers Removed"))
+End If
+handlers = newHandlers
+End RemoveHandler
+RaiseEvent()
+If handlers IsNot Nothing Then handlers()
+End RaiseEvent
+End Event
 
-    Public Sub Run()
-        RaiseEvent Work()
-    End Sub
+Public Sub Run()
+    RaiseEvent Work()
+End Sub
 End Class
 
 Module Program
-    Private Sub Sub1() : __P(CStr("Sub1")) : End Sub
+    Private Sub Sub1()
+        __P(CStr("Sub1"))
+    End Sub
 
     Sub Main()
         Dim cm As New CustomManager()

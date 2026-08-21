@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Public Class Pipeline
     Public Function Step1(x As Integer) As Integer
         Return x + 1
@@ -52,5 +51,10 @@ Public Class Pipeline
         Return Step2(x) + 10
     End Function
 End Class
-Dim p As New Pipeline()
-__P(CStr(p.Step3(5)))
+
+Module Program
+    Sub Main()
+        Dim p As New Pipeline()
+        __P(CStr(p.Step3(5)))
+    End Sub
+End Module

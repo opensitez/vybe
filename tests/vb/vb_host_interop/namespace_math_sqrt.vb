@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-__P(CStr(Math.Sqrt(144)))
+Module Program
+    Sub Main()
+        __P(CStr(Math.Sqrt(144)))
+    End Sub
+End Module

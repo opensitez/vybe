@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Class Animal
     Public Name As String = "Unknown"
 
@@ -49,5 +48,9 @@ Class Animal
     End Sub
 End Class
 
-Dim a As New Animal()
-a.Speak()
+Module Program
+    Sub Main()
+        Dim a As New Animal()
+        a.Speak()
+    End Sub
+End Module

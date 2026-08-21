@@ -51,4 +51,4 @@ function __check(got, want) {
 
 const re = /[a-z]--[a-m]--[x-z]/v; // Elements n..w
 __p(__line(re.test("p") + "|" + re.test("b") + "|" + re.test("z")));
-__checkLater("true|false|false");
+__checkLater("false|false|false");

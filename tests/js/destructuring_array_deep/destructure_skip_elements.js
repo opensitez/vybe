@@ -49,7 +49,7 @@ function __check(got, want) {
     }
 }
 
-const [a,  b,  c] = [1, 2, 3, 4, 5];
+const [a,,  b,,  c] = [1, 2, 3, 4, 5];
 __p(__line(a));
 __p(__line(b));
 __p(__line(c));

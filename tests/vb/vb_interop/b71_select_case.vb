@@ -41,18 +41,22 @@ Module VybeCheck
     End Sub
 End Module
 
-Function DayName(d As Integer) As String
-    Select Case d
+Module Program
+    Sub Main()
+        Function DayName(d As Integer) As String
+        Select Case d
         Case 1
-            Return "Monday"
+        Return "Monday"
         Case 2
-            Return "Tuesday"
+        Return "Tuesday"
         Case 3
-            Return "Wednesday"
+        Return "Wednesday"
         Case Else
-            Return "Other"
-    End Select
-End Function
-__P(CStr(DayName(1)))
-__P(CStr(DayName(3)))
-__P(CStr(DayName(7)))
+        Return "Other"
+        End Select
+        End Function
+        __P(CStr(DayName(1)))
+        __P(CStr(DayName(3)))
+        __P(CStr(DayName(7)))
+    End Sub
+End Module

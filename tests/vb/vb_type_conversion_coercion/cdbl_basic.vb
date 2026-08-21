@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): __P(CStr(CDbl("3.14"))): End Sub: End Module
+Module M
+    Sub Main()
+        __P(CStr(CDbl("3.14")))
+    End Sub
+End Module

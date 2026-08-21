@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,10 +42,11 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
 
 Class Document
-    Public Sub Print() : __P(CStr("Print")) : End Sub
+    Public Sub Print()
+        __P(CStr("Print"))
+    End Sub
 End Class
 
 Module Program
@@ -53,8 +55,8 @@ Module Program
         Try
             doc.Print()
         Catch ex As NullReferenceException
-            __P(CStr("NullReferenceException Caught on Method Call"))
-        End Try
-        __Check("NullReferenceException Caught on Method Call")
-    End Sub
+        __P(CStr("NullReferenceException Caught on Method Call"))
+    End Try
+    __Check("NullReferenceException Caught on Method Call")
+End Sub
 End Module

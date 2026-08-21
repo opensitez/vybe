@@ -50,4 +50,4 @@ function __check(got, want) {
 }
 
 const o=[];Promise.resolve().then(()=>{throw "s";}).catch(e=>o.push("s:"+e));Promise.reject("a").catch(e=>o.push("a:"+e)).then(()=>__p(__line(o.sort().join("|"))));
-__checkLater("a:a\ns:s");
+__checkLater("a:a|s:s");

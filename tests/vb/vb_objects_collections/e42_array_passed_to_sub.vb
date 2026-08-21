@@ -41,9 +41,13 @@ Module VybeCheck
     End Sub
 End Module
 
-Sub SetFirst(a() As Integer, val As Integer)
-    a(0) = val
-End Sub
-Dim arr(3) As Integer
-SetFirst(arr, 77)
-__P(CStr(arr(0)))
+Module Program
+    Sub Main()
+        Sub SetFirst(a() As Integer, val As Integer)
+        a(0) = val
+        End Sub
+        Dim arr(3) As Integer
+        SetFirst(arr, 77)
+        __P(CStr(arr(0)))
+    End Sub
+End Module

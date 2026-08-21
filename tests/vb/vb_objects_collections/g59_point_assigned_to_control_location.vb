@@ -41,8 +41,12 @@ Module VybeCheck
     End Sub
 End Module
 
-Dim btn As New Button()
-Dim pt As New Point(50, 100)
-btn.Location = pt
-__P(CStr(btn.Location.x))
-__P(CStr(btn.Location.y))
+Module Program
+    Sub Main()
+        Dim btn As New Button()
+        Dim pt As New Point(50, 100)
+        btn.Location = pt
+        __P(CStr(btn.Location.x))
+        __P(CStr(btn.Location.y))
+    End Sub
+End Module

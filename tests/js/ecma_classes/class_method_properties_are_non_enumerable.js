@@ -61,4 +61,4 @@ __p(__line(Object.prototype.hasOwnProperty.call(c, "value")));
 __p(__line(typeof methodDesc.get));
 __p(__line(methodDesc.enumerable));
 __p(__line(methodDesc.configurable));
-__checkLater("true\nfunction\ntrue\ntrue");
+__checkLater("true\nfunction\nfalse\ntrue");

@@ -55,4 +55,4 @@ class CustomUint8 extends Uint8Array {
 const cu8 = new CustomUint8([1, 2, 3]);
 const sub = cu8.subarray(1); // TypedArray.prototype.subarray does NOT use Symbol.species!
 __p(__line(sub instanceof CustomUint8));
-__checkLater("true");
+__checkLater("false");

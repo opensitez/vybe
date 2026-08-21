@@ -55,4 +55,4 @@ for (let i = 0; i < 3; i++, state ??= i) {
     log.push(String(state));
 }
 __p(__line(log.join(",")));
-__checkLater("null,0,0");
+__checkLater("null,1,1");

@@ -44,16 +44,18 @@ End Module
 Module M
     Sub Main()
         On Error Resume Next
-        
-10:     Dim a = 1
-20:     Error 5 ' Simulate an error on line 20
-        
+
+        10
+        Dim a = 1
+        20
+        Error 5 ' Simulate an error on line 20
+
         ' Err object contains information about run-time errors
         __P(CStr(Err.Number))
-        
+
         ' Erl function returns the line number where the error occurred
         __P(CStr(Erl()))
-        
+
         Err.Clear()
         __P(CStr(Err.Number))
         __Check("5

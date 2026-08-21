@@ -43,7 +43,7 @@ End Module
 
 Class Publisher
     Public Event Notify(msg As String, code As Integer)
-    
+
     Public Sub DoNotify()
         ' RaiseEvent with named arguments
         RaiseEvent Notify(code:=100, msg:="Alert")

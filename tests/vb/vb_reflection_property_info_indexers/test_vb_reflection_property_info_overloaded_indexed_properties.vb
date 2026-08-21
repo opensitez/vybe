@@ -43,13 +43,19 @@ End Module
 
 Class MultiIndexer
     Default Public Property Item(i As Integer) As String
-        Get : Return "Int_" & i : End Get
-        Set(value As String) : End Set
-    End Property
-    Default Public Property Item(s As String) As String
-        Get : Return "Str_" & s : End Get
-        Set(value As String) : End Set
-    End Property
+        Get
+        Return "Int_" & i
+    End Get
+    Set(value As String)
+End Set
+End Property
+Default Public Property Item(s As String) As String
+    Get
+    Return "Str_" & s
+End Get
+Set(value As String)
+End Set
+End Property
 End Class
 
 Module Program

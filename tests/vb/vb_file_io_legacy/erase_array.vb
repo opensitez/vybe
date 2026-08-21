@@ -41,4 +41,10 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): Dim a() As Integer = {1, 2}: Erase a: __P(CStr(a Is Nothing)): End Sub: End Module
+Module M
+    Sub Main()
+        Dim a() As Integer = {1, 2}
+        Erase a
+        __P(CStr(a Is Nothing))
+    End Sub
+End Module

@@ -52,4 +52,4 @@ function __check(got, want) {
 function f1(a, { b }, c = 1) {}
 function f2({ a }, b = 2, c) {}
 __p(__line(f1.length + "|" + f2.length)); // Parameters up to first default/destructured without outer fallback
-__checkLater("1|1");
+__checkLater("2|1");

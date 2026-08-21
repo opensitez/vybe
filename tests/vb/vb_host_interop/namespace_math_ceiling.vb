@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-__P(CStr(Math.Ceiling(3.2)))
+Module Program
+    Sub Main()
+        __P(CStr(Math.Ceiling(3.2)))
+    End Sub
+End Module

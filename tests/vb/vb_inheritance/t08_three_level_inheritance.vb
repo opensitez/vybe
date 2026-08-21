@@ -40,22 +40,23 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Class GrandParent
     Public A As String = "GP"
 End Class
-
 Class Parent
     Inherits GrandParent
     Public B As String = "P"
 End Class
-
 Class Child
     Inherits Parent
     Public C As String = "C"
 End Class
 
-Dim c As New Child()
-__P(CStr(c.A))
-__P(CStr(c.B))
-__P(CStr(c.C))
+Module Program
+    Sub Main()
+        Dim c As New Child()
+        __P(CStr(c.A))
+        __P(CStr(c.B))
+        __P(CStr(c.C))
+    End Sub
+End Module

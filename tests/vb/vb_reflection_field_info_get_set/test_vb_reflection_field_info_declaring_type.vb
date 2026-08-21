@@ -45,7 +45,9 @@ Class Parent
     Public Value As Integer
 End Class
 
-Class Child : Inherits Parent : End Class
+Class Child
+    Inherits Parent
+End Class
 
 Module Program
     Sub Main()

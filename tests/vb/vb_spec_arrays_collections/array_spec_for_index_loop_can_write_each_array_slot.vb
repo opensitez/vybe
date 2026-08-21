@@ -41,4 +41,12 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M : Sub Main() : Dim values(2) As Integer : For i As Integer = 0 To 2 : values(i)=i+1 : Next : __P(CStr(values(2))) : End Sub : End Module
+Module M
+    Sub Main()
+        Dim values(2) As Integer
+        For i As Integer = 0 To 2
+            values(i)=i+1
+        Next
+        __P(CStr(values(2)))
+    End Sub
+End Module

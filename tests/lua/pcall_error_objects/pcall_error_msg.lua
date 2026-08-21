@@ -1,7 +1,7 @@
 -- vybe-test: lua/pcall_error_objects/pcall_error_msg
 -- origin: languages/lua/tests/lua/test_pcall_error_objects.rs
 
-local __w1 = "false string"
+local __w1 = "false\tstring"
 local __i = 0
 
 local ok, msg = pcall(function() error("oops") end)

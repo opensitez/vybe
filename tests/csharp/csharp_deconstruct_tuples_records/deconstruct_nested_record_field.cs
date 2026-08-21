@@ -20,5 +20,9 @@ void __Check(string want) {
     }
 }
 
-record Inner(int N); record Outer(Inner I); var (n)=new Outer(new Inner(9)); __P((n).ToString());
-__Check("9");
+// `var (n) = …` is not C# — a deconstruction declaration needs two or more
+// targets (dotnet: CS1001 on the original form). Rewritten to a two-field
+// record so the nested-field read the test is named for still happens;
+// dotnet prints GOT[9|1] for this exact program.
+record Inner(int N); record Outer(Inner I, int Tag); var (i, t) = new Outer(new Inner(9), 1); __P((i.N).ToString()); __P((t).ToString());
+__Check("9\n1");

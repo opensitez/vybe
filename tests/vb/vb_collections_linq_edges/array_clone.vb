@@ -41,4 +41,11 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): Dim a = {1, 2}: Dim b = CType(a.Clone(), Integer()): b(0) = 10: __P(CStr(a(0))): End Sub: End Module
+Module M
+    Sub Main()
+        Dim a = {1, 2}
+        Dim b = CType(a.Clone(), Integer())
+        b(0) = 10
+        __P(CStr(a(0)))
+    End Sub
+End Module

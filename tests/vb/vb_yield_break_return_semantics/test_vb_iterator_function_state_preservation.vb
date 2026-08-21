@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Collections.Generic
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,7 +42,6 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.Collections.Generic
 
 Module Program
     Private Iterator Function FibonacciSequence(limit As Integer) As IEnumerable(Of Integer)

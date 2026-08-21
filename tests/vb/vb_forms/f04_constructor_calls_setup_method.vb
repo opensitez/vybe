@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Public Class Form1
     Dim title As String
     Dim w As Integer
@@ -60,6 +59,11 @@ Public Class Form1
         Return w
     End Function
 End Class
-Dim f As New Form1()
-__P(CStr(f.GetTitle()))
-__P(CStr(f.GetWidth()))
+
+Module Program
+    Sub Main()
+        Dim f As New Form1()
+        __P(CStr(f.GetTitle()))
+        __P(CStr(f.GetWidth()))
+    End Sub
+End Module

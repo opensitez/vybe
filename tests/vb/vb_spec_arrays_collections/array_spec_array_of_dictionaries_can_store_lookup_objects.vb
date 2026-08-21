@@ -41,4 +41,10 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M : Sub Main() : Dim maps() As Dictionary(Of String, Integer) = { New Dictionary(Of String, Integer)() } : maps(0).Add("x", 7) : __P(CStr(maps(0).Item("x"))) : End Sub : End Module
+Module M
+    Sub Main()
+        Dim maps() As Dictionary(Of String, Integer) = { New Dictionary(Of String, Integer)() }
+        maps(0).Add("x", 7)
+        __P(CStr(maps(0).Item("x")))
+    End Sub
+End Module

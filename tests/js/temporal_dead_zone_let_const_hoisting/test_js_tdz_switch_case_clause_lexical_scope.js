@@ -50,7 +50,7 @@ function __check(got, want) {
 }
 
 try {
-    eval("switch(1) { case 1: let x = 10; break; case 2: console.log(x); break; }");
+    eval("switch(1) { case 1: console.log(x); break; case 2: let x = 10; break; }");
 } catch (e) {
     __p(__line("TDZ Switch Case ReferenceError"));
 }

@@ -41,4 +41,13 @@ Module VybeCheck
     End Sub
 End Module
 
-Class C: <System.Obsolete("Old")> Public Sub M1(): End Sub: End Class: Module M: Sub Main(): Dim m = GetType(C).GetMethod("M1"): __P(CStr(m.GetCustomAttributes(False).Length > 0)): End Sub: End Module
+Class C
+    <System.Obsolete("Old")> Public Sub M1()
+End Sub
+End Class
+Module M
+    Sub Main()
+        Dim m = GetType(C).GetMethod("M1")
+        __P(CStr(m.GetCustomAttributes(False).Length > 0))
+    End Sub
+End Module

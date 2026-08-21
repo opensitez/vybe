@@ -40,10 +40,14 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Public Class MathUtils
     Public Shared Function Double(n As Integer) As Integer
         Return n * 2
     End Function
 End Class
-__P(CStr(MathUtils.Double(21)))
+
+Module Program
+    Sub Main()
+        __P(CStr(MathUtils.Double(21)))
+    End Sub
+End Module

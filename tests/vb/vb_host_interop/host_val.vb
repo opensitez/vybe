@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-__P(CStr(Val("42.5")))
+Module Program
+    Sub Main()
+        __P(CStr(Val("42.5")))
+    End Sub
+End Module

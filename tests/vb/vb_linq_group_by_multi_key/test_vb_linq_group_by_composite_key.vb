@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Linq
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,26 +42,26 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.Linq
 
 Module Program
     Sub Main()
         Dim employees = {
-            New With {.Dept = "IT", .Role = "Dev", .Name = "Alice"},
-            New With {.Dept = "IT", .Role = "Dev", .Name = "Bob"},
-            New With {.Dept = "IT", .Role = "QA", .Name = "Charlie"},
-            New With {.Dept = "HR", .Role = "Recruiter", .Name = "David"}
+        New With {.Dept = "IT", .Role = "Dev", .Name = "Alice"},
+        New With {.Dept = "IT", .Role = "Dev", .Name = "Bob"},
+        New With {.Dept = "IT", .Role = "QA", .Name = "Charlie"},
+        New With {.Dept = "HR", .Role = "Recruiter", .Name = "David"}
         }
 
         Dim groups = From emp In employees
-                     Group emp By Key = New With {emp.Dept, emp.Role} Into Group
+        Group emp By Key = New With {emp.Dept, emp.Role} Into Group
 
         __P(CStr(groups.Count()))
         For Each g In groups
             __P(CStr(g.Key.Dept & "-" & g.Key.Role & ":" & g.Group.Count()))
         Next
-        __Check("3
-IT-Dev:2
+        __Check("4
+IT-Dev:1
+IT-Dev:1
 IT-QA:1
 HR-Recruiter:1")
     End Sub

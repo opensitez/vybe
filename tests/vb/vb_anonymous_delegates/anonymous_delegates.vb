@@ -53,7 +53,7 @@ Module M
 12")
                        End Function
         
-        log("Test")
+        Math.Log("Test")
         __P(CStr(multiply(3, 4)))
     End Sub
 End Module

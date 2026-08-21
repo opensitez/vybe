@@ -40,19 +40,23 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Class Pair
     Public Val As String
 End Class
-Sub SwapVals(a As Pair, b As Pair)
-    Dim tmp As String = a.Val
-    a.Val = b.Val
-    b.Val = tmp
-End Sub
-Dim p1 As New Pair()
-p1.Val = "hello"
-Dim p2 As New Pair()
-p2.Val = "world"
-SwapVals(p1, p2)
-__P(CStr(p1.Val))
-__P(CStr(p2.Val))
+
+Module Program
+    Sub Main()
+        Sub SwapVals(a As Pair, b As Pair)
+        Dim tmp As String = a.Val
+        a.Val = b.Val
+        b.Val = tmp
+        End Sub
+        Dim p1 As New Pair()
+        p1.Val = "hello"
+        Dim p2 As New Pair()
+        p2.Val = "world"
+        SwapVals(p1, p2)
+        __P(CStr(p1.Val))
+        __P(CStr(p2.Val))
+    End Sub
+End Module

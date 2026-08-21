@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Partial Public Class Form1
     Dim title As String = "My Form"
     Public Sub New()
@@ -51,5 +50,10 @@ Partial Public Class Form1
         Return title
     End Function
 End Class
-Dim f As New Form1()
-__P(CStr(f.GetTitle()))
+
+Module Program
+    Sub Main()
+        Dim f As New Form1()
+        __P(CStr(f.GetTitle()))
+    End Sub
+End Module

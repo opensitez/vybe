@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,7 +42,6 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
 
 Enum LogLevel
     Debug
@@ -53,12 +53,15 @@ End Enum
 Class LogAttribute
     Inherits Attribute
     Public Level As LogLevel
-    Public Sub New(l As LogLevel) : Level = l : End Sub
+    Public Sub New(l As LogLevel)
+        Level = l
+    End Sub
 End Class
 
 Class Service
-    <Log(LogLevel.ErrorVal)>
-    Public Sub Process() : End Sub
+    <Math.Log(LogLevel.ErrorVal)>
+    Public Sub Process()
+    End Sub
 End Class
 
 Module Program

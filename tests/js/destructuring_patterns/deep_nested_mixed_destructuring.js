@@ -55,7 +55,7 @@ const data = {
         scores: [10, 20, 30]
     }
 };
-const { user: { name, scores: [first,  third] } } = data;
+const { user: { name, scores: [first,,  third] } } = data;
 __p(__line(name));
 __p(__line(first));
 __p(__line(third));

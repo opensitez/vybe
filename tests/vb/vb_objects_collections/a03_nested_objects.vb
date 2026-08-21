@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Class Address
     Public City As String
 End Class
@@ -48,9 +47,14 @@ Class Person
     Public Name As String
     Public Addr As Address
 End Class
-Dim a As New Address()
-a.City = "London"
-Dim p As New Person()
-p.Name = "Bob"
-p.Addr = a
-__P(CStr(p.Addr.City))
+
+Module Program
+    Sub Main()
+        Dim a As New Address()
+        a.City = "London"
+        Dim p As New Person()
+        p.Name = "Bob"
+        p.Addr = a
+        __P(CStr(p.Addr.City))
+    End Sub
+End Module

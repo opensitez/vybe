@@ -41,6 +41,10 @@ Module VybeCheck
     End Sub
 End Module
 
-Dim s As New System.Drawing.Size(640, 480)
-__P(CStr(s.width))
-__P(CStr(s.height))
+Module Program
+    Sub Main()
+        Dim s As New System.Drawing.Size(640, 480)
+        __P(CStr(s.width))
+        __P(CStr(s.height))
+    End Sub
+End Module

@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,7 +42,6 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
 
 Module Program
     Sub Main()
@@ -50,14 +50,14 @@ Module Program
             Try
                 Throw New OverflowException("Inner Exception")
             Catch ex As OverflowException
-                __P(CStr("Inner Catch: " & ex.Message))
-            End Try
-            __P(CStr("Outer Try End"))
-        Catch ex As Exception
-            __P(CStr("Outer Catch"))
+            __P(CStr("Inner Catch: " & ex.Message))
         End Try
-        __Check("Outer Try Start
+        __P(CStr("Outer Try End"))
+    Catch ex As Exception
+    __P(CStr("Outer Catch"))
+End Try
+__Check("Outer Try Start
 Inner Catch: Inner Exception
 Outer Try End")
-    End Sub
+End Sub
 End Module

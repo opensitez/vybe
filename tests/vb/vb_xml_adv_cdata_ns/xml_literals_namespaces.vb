@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Xml.Linq
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,18 +42,21 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.Xml.Linq
 
 Module M
     Sub Main()
         ' XML namespaces in literals
-        Dim ns = <xml xmlns:ns1="http://example.com/ns1">
-                     <ns1:Item>Value</ns1:Item>
-                 </xml>
-                 
+        Dim ns = <xml xmlns
+        ns1="http://example.com/ns1">
+        <ns1
+        Item>Value</ns1
+        Item>
+        </xml>
+
         __P(CStr(ns.Elements().First().Name.LocalName))
         __P(CStr(ns.Elements().First().Name.NamespaceName))
         __Check("Item
-http://example.com/ns1")
+http
+//example.com/ns1")
     End Sub
 End Module

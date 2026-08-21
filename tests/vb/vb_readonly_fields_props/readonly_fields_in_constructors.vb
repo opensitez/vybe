@@ -43,11 +43,11 @@ End Module
 
 Class Config
     Public ReadOnly BaseUrl As String
-    
+
     Public Sub New(url As String)
         BaseUrl = url
     End Sub
-    
+
     ' VB.NET allows assigning to ReadOnly fields in any constructor
     Public Sub New()
         Me.New("http://localhost")
@@ -58,7 +58,7 @@ Module M
     Sub Main()
         Dim c1 As New Config()
         __P(CStr(c1.BaseUrl))
-        
+
         Dim c2 As New Config("http://test")
         __P(CStr(c2.BaseUrl))
         __Check("http://localhost

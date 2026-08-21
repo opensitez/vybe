@@ -1,6 +1,9 @@
 // vybe-test: js/wasi/test_fs_copy
 // origin: languages/js/tests/js/js_wasi_test.rs
 
+import fs from 'node:fs';
+
+
 function __fmt(v) {
     // console.log renders a bigint with an `n` suffix; String() drops it.
     return typeof v === "bigint" ? String(v) + "n" : String(v);
@@ -49,9 +52,9 @@ function __check(got, want) {
     }
 }
 
-fs.writeFile("/tmp/vybe_copy_src.txt", "original");
-        fs.copy("/tmp/vybe_copy_src.txt", "/tmp/vybe_copy_dst.txt");
-        __p(__line(fs.readFile("/tmp/vybe_copy_dst.txt")));
-        fs.remove("/tmp/vybe_copy_src.txt");
-        fs.remove("/tmp/vybe_copy_dst.txt");
+fs.writeFileSync("/tmp/vybe_copy_src.txt", "original");
+        fs.copyFileSync("/tmp/vybe_copy_src.txt", "/tmp/vybe_copy_dst.txt");
+        __p(__line(fs.readFileSync("/tmp/vybe_copy_dst.txt", 'utf8')));
+        fs.unlinkSync("/tmp/vybe_copy_src.txt");
+        fs.unlinkSync("/tmp/vybe_copy_dst.txt");
 __checkLater("original");

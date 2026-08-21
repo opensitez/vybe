@@ -1,7 +1,7 @@
 -- vybe-test: lua/math_library/math_deg_converts_radians_to_degrees
 -- origin: languages/lua/tests/lua/test_math_library.rs
 
-local __w1 = "180"
+local __w1 = "180.0"
 local __i = 0
 
 do local __t = tostring(math.deg(math.pi)); __i = __i + 1

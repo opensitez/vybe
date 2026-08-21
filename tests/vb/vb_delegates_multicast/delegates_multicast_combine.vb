@@ -47,7 +47,7 @@ Module M
     Sub LogToConsole(msg As String)
         __P(CStr("Console: " & msg))
     End Sub
-    
+
     Sub LogToFile(msg As String)
         __P(CStr("File: " & msg))
     End Sub
@@ -55,10 +55,10 @@ Module M
     Sub Main()
         Dim d1 As LogAction = AddressOf LogToConsole
         Dim d2 As LogAction = AddressOf LogToFile
-        
+
         ' Multicast delegate combination
         Dim d3 As LogAction = CType([Delegate].Combine(d1, d2), LogAction)
-        
+
         d3("Test")
         __Check("Console: Test
 File: Test")

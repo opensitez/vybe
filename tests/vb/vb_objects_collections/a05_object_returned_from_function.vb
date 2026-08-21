@@ -40,14 +40,18 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Class Item
     Public Label As String
 End Class
-Function MakeItem(lbl As String) As Item
-    Dim it As New Item()
-    it.Label = lbl
-    Return it
-End Function
-Dim x As Item = MakeItem("hello")
-__P(CStr(x.Label))
+
+Module Program
+    Sub Main()
+        Function MakeItem(lbl As String) As Item
+        Dim it As New Item()
+        it.Label = lbl
+        Return it
+        End Function
+        Dim x As Item = MakeItem("hello")
+        __P(CStr(x.Label))
+    End Sub
+End Module

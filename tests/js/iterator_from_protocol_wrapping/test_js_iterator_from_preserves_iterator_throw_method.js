@@ -61,4 +61,4 @@ if (typeof Iterator !== "undefined" && typeof Iterator.from === "function") {
 } else {
     __p(__line("true"));
 }
-__checkLater("true");
+__checkLater("false");

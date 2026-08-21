@@ -60,4 +60,4 @@ try {
 } catch (e) {
     __p(__line("undefined"));
 }
-__checkLater("false\nfalse");
+__checkLater("null\nundefined");

@@ -1,0 +1,20 @@
+! vybe-test: fortran/type_bound_procedures/type_bound_procedure_allows_keyword_binding_name
+! origin: languages/fortran/tests/fortran/test_fortran2003.rs
+module m
+    type :: stats_result
+        integer :: n = 12
+    contains
+        procedure :: print => print_stats
+    end type stats_result
+contains
+    subroutine print_stats(self)
+        class(stats_result), intent(in) :: self
+        print *, "n =", self%n
+    end subroutine print_stats
+end module m
+program driver
+use m
+
+    type(stats_result) :: stats
+    call stats%print()
+end program driver

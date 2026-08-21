@@ -41,4 +41,13 @@ Module VybeCheck
     End Sub
 End Module
 
-Class C(Of T): Public V As T: End Class: Module M: Sub Main(): Dim obj As New C(Of String)(): obj.V = "A": __P(CStr(obj.V)): End Sub: End Module
+Class C(Of T)
+    Public V As T
+End Class
+Module M
+    Sub Main()
+        Dim obj As New C(Of String)()
+        obj.V = "A"
+        __P(CStr(obj.V))
+    End Sub
+End Module

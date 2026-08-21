@@ -41,4 +41,11 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): Dim a = {1, 2}: Dim b(1) As Integer: a.CopyTo(b, 0): __P(CStr(b(1))): End Sub: End Module
+Module M
+    Sub Main()
+        Dim a = {1, 2}
+        Dim b(1) As Integer
+        a.CopyTo(b, 0)
+        __P(CStr(b(1)))
+    End Sub
+End Module

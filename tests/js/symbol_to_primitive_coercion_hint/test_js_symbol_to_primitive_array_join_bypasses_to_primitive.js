@@ -54,4 +54,4 @@ const obj = {
     toString() { return "CalledToString"; }
 };
 __p(__line([obj].join("")));
-__checkLater("CalledToString");
+__checkLater("Bypassed");

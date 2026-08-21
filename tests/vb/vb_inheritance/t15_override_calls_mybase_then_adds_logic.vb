@@ -40,13 +40,11 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Class Base
     Function Compute() As String
         Compute = "base"
     End Function
 End Class
-
 Class Child
     Inherits Base
 
@@ -56,5 +54,9 @@ Class Child
     End Function
 End Class
 
-Dim c As New Child()
-__P(CStr(c.Compute()))
+Module Program
+    Sub Main()
+        Dim c As New Child()
+        __P(CStr(c.Compute()))
+    End Sub
+End Module

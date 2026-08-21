@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-__P(CStr(Len("hello")))
+Module Program
+    Sub Main()
+        __P(CStr(Len("hello")))
+    End Sub
+End Module

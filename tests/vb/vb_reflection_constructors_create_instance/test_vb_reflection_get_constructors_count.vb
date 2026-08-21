@@ -42,9 +42,12 @@ Module VybeCheck
 End Module
 
 Class MultiCtor
-    Public Sub New() : End Sub
-    Public Sub New(a As Integer) : End Sub
-    Public Sub New(a As Integer, b As String) : End Sub
+    Public Sub New()
+    End Sub
+    Public Sub New(a As Integer)
+    End Sub
+    Public Sub New(a As Integer, b As String)
+    End Sub
 End Class
 
 Module Program

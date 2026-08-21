@@ -51,4 +51,4 @@ function __check(got, want) {
 
 const str = "αβγ";
 __p(__line(/\b/u.test(str)));
-__checkLater("true");
+__checkLater("false");

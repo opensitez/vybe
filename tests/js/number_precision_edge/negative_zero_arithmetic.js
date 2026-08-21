@@ -52,4 +52,4 @@ function __check(got, want) {
 __p(__line(1 / -0));
 __p(__line(1 / 0));
 __p(__line(-1 * 0));
-__checkLater("-Infinity\nInfinity\n-0");
+__checkLater("-Infinity\nInfinity\n0");

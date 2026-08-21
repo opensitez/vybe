@@ -59,4 +59,4 @@ try {
 __p(__line(threw));
 __p(__line(typeof result));
 __p(__line(result));
-__checkLater("false\nboolean\nfalse");
+__checkLater("false\nnumber\n5");

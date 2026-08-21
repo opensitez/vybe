@@ -41,4 +41,11 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M : Sub Main() : Dim items(1) As Date : items(0)=#5/14/2024# : items(1)=#5/15/2024# : __P(CStr(CStr(items(1)))) : End Sub : End Module
+Module M
+    Sub Main()
+        Dim items(1) As Date
+        items(0)=#5/14/2024#
+        items(1)=#5/15/2024#
+        __P(CStr(CStr(items(1))))
+    End Sub
+End Module

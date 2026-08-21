@@ -46,10 +46,11 @@ Module M
         Dim x = 10
         Dim y = 0
         Dim z = 0
-        
+
         ' Single line If with multiple statements separated by colon
-        If x = 10 Then y = 1 : z = 2
-        
+        If x = 10 Then y = 1
+        z = 2
+
         __P(CStr(y & "-" & z))
         __Check("1-2")
     End Sub

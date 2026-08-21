@@ -1,7 +1,7 @@
 -- vybe-test: lua/math_library/math_log_base_ten
 -- origin: languages/lua/tests/lua/test_math_library.rs
 
-local __w1 = "2"
+local __w1 = "2.0"
 local __i = 0
 
 do local __t = tostring(math.log(100, 10)); __i = __i + 1

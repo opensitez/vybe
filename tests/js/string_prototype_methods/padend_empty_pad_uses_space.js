@@ -50,4 +50,4 @@ function __check(got, want) {
 }
 
 __p(__line("x".padEnd(2,"")));
-__checkLater("x ");
+__checkLater("x");

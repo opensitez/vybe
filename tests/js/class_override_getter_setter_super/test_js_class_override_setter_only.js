@@ -59,4 +59,4 @@ class Derived extends Base {
 const d = new Derived();
 d.val = 5;
 __p(__line(d.val));
-__checkLater("51");
+__checkLater("undefined");

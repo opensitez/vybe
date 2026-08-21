@@ -1,6 +1,9 @@
 // vybe-test: js/async_generator_function_prototype/async_generator_function_constructor_prototype_is_function_prototype
 // origin: languages/js/tests/js/test_async_generator_function_prototype.rs
 
+const AsyncGeneratorFunction = Object.getPrototypeOf(async function*(){}).constructor;
+
+
 function __fmt(v) {
     // console.log renders a bigint with an `n` suffix; String() drops it.
     return typeof v === "bigint" ? String(v) + "n" : String(v);
@@ -49,5 +52,5 @@ function __check(got, want) {
     }
 }
 
-__p(__line(Object.getPrototypeOf(AsyncGeneratorFunction) === Function.prototype));
+__p(__line(Object.getPrototypeOf(AsyncGeneratorFunction.prototype) === Function.prototype));
 __checkLater("true");

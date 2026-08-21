@@ -41,10 +41,14 @@ Module VybeCheck
     End Sub
 End Module
 
-Dim n As Integer = 1
-Dim result As Integer = 1
-While n <= 5
-    result = result * n
-    n = n + 1
-End While
-__P(CStr(result))
+Module Program
+    Sub Main()
+        Dim n As Integer = 1
+        Dim result As Integer = 1
+        While n <= 5
+        result = result * n
+        n = n + 1
+        End While
+        __P(CStr(result))
+    End Sub
+End Module

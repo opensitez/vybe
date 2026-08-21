@@ -50,6 +50,6 @@ function __check(got, want) {
 }
 
 __p(__line("x" in { x: 1, y: 2 }));
-__p(__line("x" in 1));
+try { __p(__line("x" in 1)); } catch (e) { __p(__line(e instanceof TypeError)); }
 __p(__line("x" in Object(1)));
-__checkLater("true\nfalse\nfalse");
+__checkLater("true\ntrue\nfalse");

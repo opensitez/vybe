@@ -51,4 +51,4 @@ function __check(got, want) {
 
 const rules = new Intl.PluralRules("en-US");
 __p(__line(rules.selectRange(1, 1)));
-__checkLater("one");
+__checkLater("other");

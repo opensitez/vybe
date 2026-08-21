@@ -41,5 +41,9 @@ Module VybeCheck
     End Sub
 End Module
 
-Dim btn As New System.Windows.Forms.Button()
-__P(CStr(btn.__control_type))
+Module Program
+    Sub Main()
+        Dim btn As New System.Windows.Forms.Button()
+        __P(CStr(btn.__control_type))
+    End Sub
+End Module

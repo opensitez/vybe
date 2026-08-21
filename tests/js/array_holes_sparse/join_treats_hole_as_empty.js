@@ -49,6 +49,6 @@ function __check(got, want) {
     }
 }
 
-const arr = [1,  3];
+const arr = [1, , 3];
 __p(__line(arr.join(",")));
-__checkLater("1, 3");
+__checkLater("1,,3");

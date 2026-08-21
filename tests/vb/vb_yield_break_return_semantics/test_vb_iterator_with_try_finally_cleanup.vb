@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Collections.Generic
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,24 +42,23 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.Collections.Generic
 
 Module Program
     Private Iterator Function GeneratorWithFinally() As IEnumerable(Of Integer)
-        Try
-            Yield 100
-            Yield 200
-        Finally
-            __P(CStr("Iterator Finally Executed"))
-        End Try
-    End Function
+    Try
+        Yield 100
+        Yield 200
+    Finally
+    __P(CStr("Iterator Finally Executed"))
+End Try
+End Function
 
-    Sub Main()
-        For Each item In GeneratorWithFinally()
-            __P(CStr("Item: " & item))
-        Next
-        __Check("Item: 100
+Sub Main()
+    For Each item In GeneratorWithFinally()
+        __P(CStr("Item: " & item))
+    Next
+    __Check("Item: 100
 Item: 200
 Iterator Finally Executed")
-    End Sub
+End Sub
 End Module

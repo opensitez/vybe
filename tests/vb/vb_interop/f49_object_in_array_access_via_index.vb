@@ -40,16 +40,20 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Public Class Item
     Dim name As String
     Public Sub New(n As String)
         name = n
     End Sub
 End Class
-Dim items(2) As Item
-items(0) = New Item("first")
-items(1) = New Item("second")
-items(2) = New Item("third")
-__P(CStr(items(0).name))
-__P(CStr(items(2).name))
+
+Module Program
+    Sub Main()
+        Dim items(2) As Item
+        items(0) = New Item("first")
+        items(1) = New Item("second")
+        items(2) = New Item("third")
+        __P(CStr(items(0).name))
+        __P(CStr(items(2).name))
+    End Sub
+End Module

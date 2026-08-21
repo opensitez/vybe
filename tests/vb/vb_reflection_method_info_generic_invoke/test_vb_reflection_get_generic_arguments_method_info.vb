@@ -42,7 +42,8 @@ Module VybeCheck
 End Module
 
 Class Service
-    Public Sub Execute(Of T1, T2)() : End Sub
+    Public Sub Execute(Of T1, T2)()
+    End Sub
 End Class
 
 Module Program

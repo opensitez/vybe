@@ -60,4 +60,4 @@ try {
     __p(__line("Shadowing Non-Writable Prototype Property TypeError"));
 }
 __p(__line(obj.fixed));
-__checkLater("Shadowing Non-Writable Prototype Property TypeError\n10");
+__checkLater("10");

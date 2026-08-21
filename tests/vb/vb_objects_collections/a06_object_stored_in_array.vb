@@ -40,12 +40,16 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Class Box
     Public Size As Integer
 End Class
-Dim arr(2) As Box
-Dim b As New Box()
-b.Size = 42
-arr(0) = b
-__P(CStr(arr(0).Size))
+
+Module Program
+    Sub Main()
+        Dim arr(2) As Box
+        Dim b As New Box()
+        b.Size = 42
+        arr(0) = b
+        __P(CStr(arr(0).Size))
+    End Sub
+End Module

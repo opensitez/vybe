@@ -41,4 +41,14 @@ Module VybeCheck
     End Sub
 End Module
 
-Class C: Public Function M() As String: Return "M": End Function: End Class: Module M: Sub Main(): Dim obj As New C(): __P(CStr(CallByName(obj, "M", CallType.Method))): End Sub: End Module
+Class C
+    Public Function M() As String
+        Return "M"
+    End Function
+End Class
+Module M
+    Sub Main()
+        Dim obj As New C()
+        __P(CStr(CallByName(obj, "M", CallType.Method)))
+    End Sub
+End Module

@@ -62,4 +62,4 @@ try {
     undefinedCheck = e instanceof TypeError;
 }
 __p(__line(`${nullCheck}:${undefinedCheck}`));
-__checkLater("false:false");
+__checkLater("true:true");

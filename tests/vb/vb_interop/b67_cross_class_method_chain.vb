@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Public Class A
     Public Function GetVal() As Integer
         Return 5
@@ -64,5 +63,10 @@ Public Class C
         Return b.GetDouble() + b.GetDouble() + b.GetDouble()
     End Function
 End Class
-Dim c As New C()
-__P(CStr(c.GetTriple()))
+
+Module Program
+    Sub Main()
+        Dim c As New C()
+        __P(CStr(c.GetTriple()))
+    End Sub
+End Module

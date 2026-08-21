@@ -43,18 +43,18 @@ End Module
 
 Class Logger
     Private _lastMsg As String
-    
+
     ' WriteOnly property
     Public WriteOnly Property Message As String
         Set(value As String)
-            _lastMsg = value
-            __P(CStr("Logged: " & value))
-        End Set
-    End Property
-    
-    Public Function GetLast() As String
-        Return _lastMsg
-    End Function
+        _lastMsg = value
+        __P(CStr("Logged: " & value))
+    End Set
+End Property
+
+Public Function GetLast() As String
+    Return _lastMsg
+End Function
 End Class
 
 Module M
@@ -62,7 +62,7 @@ Module M
         Dim l As New Logger()
         l.Message = "Start"
         l.Message = "End"
-        
+
         __P(CStr(l.GetLast()))
         __Check("Logged: Start
 Logged: End

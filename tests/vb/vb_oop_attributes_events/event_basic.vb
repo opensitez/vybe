@@ -41,4 +41,16 @@ Module VybeCheck
     End Sub
 End Module
 
-Class C: Public Event E(): Public Sub DoE(): RaiseEvent E(): End Sub: End Class: Module M: Sub Main(): Dim obj As New C(): AddHandler obj.E, Sub() __P(CStr("Fired")): obj.DoE(): End Sub: End Module
+Class C
+    Public Event E()
+    Public Sub DoE()
+        RaiseEvent E()
+    End Sub
+End Class
+Module M
+    Sub Main()
+        Dim obj As New C()
+        AddHandler obj.E, Sub() __P(CStr("Fired"))
+        obj.DoE()
+    End Sub
+End Module

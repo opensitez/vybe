@@ -20,6 +20,8 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Collections.Concurrent
+Imports System.Threading.Tasks
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,25 +43,25 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.Collections.Concurrent
-Imports System.Threading.Tasks
 
 Module Program
     Sub Main()
         Dim q As New ConcurrentQueue(Of Integer)()
-        For i As Integer = 1 To 100 : q.Enqueue(i) : Next
+        For i As Integer = 1 To 100
+            q.Enqueue(i)
+        Next
 
         Dim sum = 0
         Dim lockObj As New Object()
         Parallel.For(0, 100, Sub(i)
-            Dim item As Integer
-            If q.TryDequeue(item) Then
-                SyncLock lockObj
-                    sum += item
-                End SyncLock
-            End If
-            __Check("5050|QueueEmpty=True")
-        End Sub)
-        __P(CStr(sum & "|QueueEmpty=" & q.IsEmpty))
-    End Sub
+        Dim item As Integer
+        If q.TryDequeue(item) Then
+            SyncLock lockObj
+                sum += item
+            End SyncLock
+        End If
+        __Check("5050|QueueEmpty=True")
+    End Sub)
+    __P(CStr(sum & "|QueueEmpty=" & q.IsEmpty))
+End Sub
 End Module

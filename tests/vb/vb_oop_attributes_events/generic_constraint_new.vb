@@ -41,4 +41,19 @@ Module VybeCheck
     End Sub
 End Module
 
-Class C(Of T As New): Public Function Create() As T: Return New T(): End Function: End Class: Class Item: Public Sub New(): __P(CStr("New")): End Sub: End Class: Module M: Sub Main(): Dim obj As New C(Of Item)(): obj.Create(): End Sub: End Module
+Class C(Of T As New)
+    Public Function Create() As T
+        Return New T()
+    End Function
+End Class
+Class Item
+    Public Sub New()
+        __P(CStr("New"))
+    End Sub
+End Class
+Module M
+    Sub Main()
+        Dim obj As New C(Of Item)()
+        obj.Create()
+    End Sub
+End Module

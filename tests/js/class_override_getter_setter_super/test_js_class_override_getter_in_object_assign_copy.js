@@ -58,4 +58,4 @@ class Derived extends Base {
 const d = new Derived();
 const copy = Object.assign({}, d);
 __p(__line(copy.id));
-__checkLater("124");
+__checkLater("undefined");

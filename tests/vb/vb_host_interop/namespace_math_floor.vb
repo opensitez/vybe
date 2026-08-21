@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-__P(CStr(Math.Floor(3.7)))
+Module Program
+    Sub Main()
+        __P(CStr(Math.Floor(3.7)))
+    End Sub
+End Module

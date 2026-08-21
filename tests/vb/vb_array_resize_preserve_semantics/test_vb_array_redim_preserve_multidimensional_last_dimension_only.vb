@@ -44,8 +44,10 @@ End Module
 Module Program
     Sub Main()
         Dim mat(1, 1) As Integer
-        mat(0, 0) = 1 : mat(0, 1) = 2
-        mat(1, 0) = 3 : mat(1, 1) = 4
+        mat(0, 0) = 1
+        mat(0, 1) = 2
+        mat(1, 0) = 3
+        mat(1, 1) = 4
 
         ReDim Preserve mat(1, 2)
         __P(CStr(mat(0, 0) & "," & mat(0, 1) & "," & mat(0, 2)))

@@ -41,4 +41,13 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M : Sub Fill(ByRef items() As Integer) : items(0)=9 : End Sub : Sub Main() : Dim items() As Integer = {1,2} : Fill(items) : __P(CStr(items(0))) : End Sub : End Module
+Module M
+    Sub Fill(ByRef items() As Integer)
+        items(0)=9
+    End Sub
+    Sub Main()
+        Dim items() As Integer = {1,2}
+        Fill(items)
+        __P(CStr(items(0)))
+    End Sub
+End Module

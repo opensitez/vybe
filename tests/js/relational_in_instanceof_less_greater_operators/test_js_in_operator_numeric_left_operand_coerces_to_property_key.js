@@ -52,4 +52,4 @@ function __check(got, want) {
 const arr = ["a", "b", "c"];
 __p(__line(`${1 in arr}:${"1" in arr}`));
 __p(__line(`${99 in arr}:${99n in arr}`));
-__checkLater("true:true\nfalse:true");
+__checkLater("true:true\nfalse:false");

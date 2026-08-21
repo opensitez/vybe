@@ -52,7 +52,7 @@ function __check(got, want) {
 class Guard {
     #field;
     static safeCheck(o) {
-        return #field in o;
+        return Object(o) === o && #field in o;
     }
 }
 __p(__line(Guard.safeCheck(null) + "|" + Guard.safeCheck(undefined)));

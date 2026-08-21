@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Linq
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,18 +42,19 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.Linq
 
 Class LogEntry
     Public Property Level As String
-    Public Sub New(l As String) : Level = l : End Sub
-End Class
+        Public Sub New(l As String)
+            Level = l
+        End Sub
+    End Class
 
-Module Program
-    Sub Main()
-        Dim logs = {New LogEntry("INFO"), New LogEntry("INFO"), New LogEntry("ERROR"), New LogEntry("INFO")}
-        Dim startingFromError = logs.SkipWhile(Function(l) l.Level = "INFO")
-        __P(CStr(startingFromError.First().Level & "|" & startingFromError.Count()))
-        __Check("ERROR|2")
-    End Sub
-End Module
+    Module Program
+        Sub Main()
+            Dim logs = {New LogEntry("INFO"), New LogEntry("INFO"), New LogEntry("ERROR"), New LogEntry("INFO")}
+            Dim startingFromError = logs.SkipWhile(Function(l) l.Level = "INFO")
+            __P(CStr(startingFromError.First().Level & "|" & startingFromError.Count()))
+            __Check("ERROR|2")
+        End Sub
+    End Module

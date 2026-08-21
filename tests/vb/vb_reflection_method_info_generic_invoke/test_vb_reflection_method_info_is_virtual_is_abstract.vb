@@ -43,7 +43,8 @@ End Module
 
 MustInherit Class BaseClass
     Public MustOverride Sub AbstractMethod()
-    Public Overridable Sub VirtualMethod() : End Sub
+    Public Overridable Sub VirtualMethod()
+    End Sub
 End Class
 
 Module Program

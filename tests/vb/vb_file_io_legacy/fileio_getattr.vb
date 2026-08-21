@@ -41,4 +41,12 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): Dim f = FreeFile(): FileOpen(f, "test_getattr.txt", OpenMode.Output): PrintLine(f, "Hello"): FileClose(f): __P(CStr(CInt(GetAttr("test_getattr.txt")) >= 0)): End Sub: End Module
+Module M
+    Sub Main()
+        Dim f = FreeFile()
+        FileOpen(f, "test_getattr.txt", OpenMode.Output)
+        PrintLine(f, "Hello")
+        FileClose(f)
+        __P(CStr(CInt(GetAttr("test_getattr.txt")) >= 0))
+    End Sub
+End Module

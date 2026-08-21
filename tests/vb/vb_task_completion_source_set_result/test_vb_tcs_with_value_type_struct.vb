@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Threading.Tasks
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,12 +42,14 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.Threading.Tasks
 
 Structure Coordinates
     Public Lat As Double
     Public Lon As Double
-    Public Sub New(l1 As Double, l2 As Double) : Lat = l1 : Lon = l2 : End Sub
+    Public Sub New(l1 As Double, l2 As Double)
+        Lat = l1
+        Lon = l2
+    End Sub
 End Structure
 
 Module Program

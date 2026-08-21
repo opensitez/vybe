@@ -43,7 +43,7 @@ End Module
 
 Module M
     Sub Main()
-        __P(CStr(Abs(Fix(-3.7))))
+        __P(CStr(Math.Abs(Fix(-3.7))))
         __Check("3")
     End Sub
 End Module

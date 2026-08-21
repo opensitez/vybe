@@ -41,12 +41,16 @@ Module VybeCheck
     End Sub
 End Module
 
-Dim list As New List(Of String)
-list.Add("a")
-list.Add("b")
-list.Add("c")
-list.Remove("b")
-__P(CStr(list.Count))
-For Each item As String In list
-    __P(CStr(item))
-Next
+Module Program
+    Sub Main()
+        Dim list As New List(Of String)
+        list.Add("a")
+        list.Add("b")
+        list.Add("c")
+        list.Remove("b")
+        __P(CStr(list.Count))
+        For Each item As String In list
+        __P(CStr(item))
+        Next
+    End Sub
+End Module

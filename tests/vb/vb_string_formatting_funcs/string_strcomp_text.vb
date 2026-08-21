@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): __P(CStr(StrComp("Hello", "hello", CompareMethod.Text))): End Sub: End Module
+Module M
+    Sub Main()
+        __P(CStr(StrComp("Hello", "hello", CompareMethod.Text)))
+    End Sub
+End Module

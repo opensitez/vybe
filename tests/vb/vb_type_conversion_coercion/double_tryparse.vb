@@ -41,4 +41,10 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): Dim v As Double: Double.TryParse("1.5", v): __P(CStr(v)): End Sub: End Module
+Module M
+    Sub Main()
+        Dim v As Double
+        Double.TryParse("1.5", v)
+        __P(CStr(v))
+    End Sub
+End Module

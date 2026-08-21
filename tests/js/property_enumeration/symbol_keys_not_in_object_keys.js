@@ -53,4 +53,4 @@ const sym = Symbol("x");
 const obj = { [sym]: 1, a: 2, b: 3 };
 __p(__line(Object.keys(obj).join(",")));
 __p(__line(Object.getOwnPropertySymbols(obj).length));
-__checkLater("a,b,Symbol(x)\n1");
+__checkLater("a,b\n1");

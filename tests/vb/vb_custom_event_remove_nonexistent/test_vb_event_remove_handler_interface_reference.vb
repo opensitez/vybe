@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,7 +42,6 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
 
 Interface IEventContainer
     Event Alert As Action
@@ -56,7 +56,9 @@ Class ConcreteContainer
 End Class
 
 Module Program
-    Private Sub OnAlert() : __P(CStr("Alerted")) : End Sub
+    Private Sub OnAlert()
+        __P(CStr("Alerted"))
+    End Sub
 
     Sub Main()
         Dim c As New ConcreteContainer()

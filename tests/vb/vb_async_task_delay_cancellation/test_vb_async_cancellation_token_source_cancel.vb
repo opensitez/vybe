@@ -20,6 +20,9 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
+Imports System.Threading
+Imports System.Threading.Tasks
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,27 +44,24 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
-Imports System.Threading
-Imports System.Threading.Tasks
 
 Module Program
     Private Async Function WorkAsync(token As CancellationToken) As Task(Of Boolean)
-        Try
-            Await Task.Delay(5000, token)
-            Return True
-        Catch ex As OperationCanceledException
-            __P(CStr("Operation Canceled"))
-            Return False
-        End Try
-    End Function
+    Try
+        Await Task.Delay(5000, token)
+        Return True
+    Catch ex As OperationCanceledException
+    __P(CStr("Operation Canceled"))
+    Return False
+End Try
+End Function
 
-    Sub Main()
-        Dim cts As New CancellationTokenSource()
-        Dim task = WorkAsync(cts.Token)
-        cts.Cancel()
-        __P(CStr("Task Result: " & task.Result))
-        __Check("Operation Canceled
+Sub Main()
+    Dim cts As New CancellationTokenSource()
+    Dim task = WorkAsync(cts.Token)
+    cts.Cancel()
+    __P(CStr("Task Result: " & task.Result))
+    __Check("Operation Canceled
 Task Result: False")
-    End Sub
+End Sub
 End Module

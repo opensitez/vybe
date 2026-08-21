@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,7 +42,6 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
 
 Class MultiSubscriber
     Public Event Action As Action
@@ -51,8 +51,10 @@ Class MultiSubscriber
 End Class
 
 Module Program
-    Private Sub A() : End Sub
-    Private Sub B() : End Sub
+    Private Sub A()
+    End Sub
+    Private Sub B()
+    End Sub
 
     Sub Main()
         Dim ms As New MultiSubscriber()

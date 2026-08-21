@@ -52,6 +52,7 @@ Class Base
 End Class
 
 Class Derived
+    Sub Main()
     Inherits Base
     Default Public Shadows Property Item(name As String) As String
         Get

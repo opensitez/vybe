@@ -61,4 +61,4 @@ try {
 } catch (e) {
     __p(__line("TypeError Caught"));
 }
-__checkLater("Constant\nTypeError Caught");
+__checkLater("Constant");

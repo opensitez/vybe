@@ -1,7 +1,7 @@
 -- vybe-test: lua/error_handling_xpcall_nested/xpcall_handler_fails_nested
 -- origin: languages/lua/tests/lua/test_error_handling_xpcall_nested.rs
 
-local __w1 = "true false"
+local __w1 = "true\tfalse"
 local __i = 0
 
 local function bad_handler(e) error("handler_broke", 0) end

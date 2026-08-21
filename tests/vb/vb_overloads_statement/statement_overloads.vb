@@ -49,12 +49,12 @@ End Class
 
 Class Derived
     Inherits Base
-    
+
     ' Overloads is technically optional when the signatures are different,
     ' but it's used to explicitly define overloaded methods across inheritance bounds
     Public Overloads Sub Process(x As String)
-        __P(CStr("Process String: " & x))
-    End Sub
+    __P(CStr("Process String: " & x))
+End Sub
 End Class
 
 Module M

@@ -41,23 +41,39 @@ Module VybeCheck
     End Sub
 End Module
 
-Interface IA : Sub ActA() : End Interface
-Interface IB : Inherits IA : Sub ActB() : End Interface
-Interface IC : Inherits IB : Sub ActC() : End Interface
+Interface IA
+    Sub ActA()
+    End Interface
+    Interface IB
+        Inherits IA
+        Sub ActB()
+        End Interface
+        Interface IC
+            Inherits IB
+            Sub ActC()
+            End Interface
 
-Class DeepImpl
-    Implements IC
-    Public Sub ActA() Implements IA.ActA : __P(CStr("A")) : End Sub
-    Public Sub ActB() Implements IB.ActB : __P(CStr("B")) : End Sub
-    Public Sub ActC() Implements IC.ActC : __P(CStr("C")) : End Sub
-End Class
+            Class DeepImpl
+                Implements IC
+                Public Sub ActA() Implements IA.ActA
+                    __P(CStr("A"))
+                End Sub
+                Public Sub ActB() Implements IB.ActB
+                    __P(CStr("B"))
+                End Sub
+                Public Sub ActC() Implements IC.ActC
+                    __P(CStr("C"))
+                End Sub
+            End Class
 
-Module Program
-    Sub Main()
-        Dim c As IC = New DeepImpl()
-        c.ActA() : c.ActB() : c.ActC()
-        __Check("A
+            Module Program
+                Sub Main()
+                    Dim c As IC = New DeepImpl()
+                    c.ActA()
+                    c.ActB()
+                    c.ActC()
+                    __Check("A
 B
 C")
-    End Sub
-End Module
+                End Sub
+            End Module

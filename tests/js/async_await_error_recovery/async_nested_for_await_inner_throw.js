@@ -50,4 +50,4 @@ function __check(got, want) {
 }
 
 async function main(){const o=[];async function* outer(){yield 1;yield inner();async function* inner(){throw "inner";}}try{for await(const v of outer())o.push(String(v));}catch(e){o.push("e:"+e);}__p(__line(o.join(",")));}main();
-__checkLater("1,e:inner");
+__checkLater("1,[object AsyncGenerator]");

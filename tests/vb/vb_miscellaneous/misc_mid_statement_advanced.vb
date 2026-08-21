@@ -41,4 +41,10 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): Dim s = "Hello": Mid(s, 1, 1) = "C": __P(CStr(s)): End Sub: End Module
+Module M
+    Sub Main()
+        Dim s = "Hello"
+        Mid(s, 1, 1) = "C"
+        __P(CStr(s))
+    End Sub
+End Module

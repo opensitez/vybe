@@ -62,4 +62,4 @@ try {
 }
 __p(__line(threw));
 __p(__line(obj.a));
-__checkLater("false\n1");
+__checkLater("true\nundefined");

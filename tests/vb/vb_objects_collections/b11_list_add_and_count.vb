@@ -41,7 +41,11 @@ Module VybeCheck
     End Sub
 End Module
 
-Dim list As New List(Of String)
-list.Add("hello")
-list.Add("world")
-__P(CStr(list.Count))
+Module Program
+    Sub Main()
+        Dim list As New List(Of String)
+        list.Add("hello")
+        list.Add("world")
+        __P(CStr(list.Count))
+    End Sub
+End Module

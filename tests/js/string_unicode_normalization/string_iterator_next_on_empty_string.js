@@ -49,5 +49,5 @@ function __check(got, want) {
     }
 }
 
-__p(__line("".iterator().next().done));
+__p(__line(""[Symbol.iterator]().next().done));
 __checkLater("true");

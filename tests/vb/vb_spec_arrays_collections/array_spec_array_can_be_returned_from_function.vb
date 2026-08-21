@@ -41,4 +41,11 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M : Function Build() As Integer() : Return New Integer() {4,5} : End Function : Sub Main() : __P(CStr(Build()(1))) : End Sub : End Module
+Module M
+    Function Build() As Integer()
+        Return New Integer() {4,5}
+    End Function
+    Sub Main()
+        __P(CStr(Build()(1)))
+    End Sub
+End Module

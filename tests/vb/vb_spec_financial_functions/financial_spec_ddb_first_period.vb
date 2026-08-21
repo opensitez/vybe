@@ -43,7 +43,7 @@ End Module
 
 Module M
     Sub Main()
-        __P(CStr(Round(DDB(1000, 100, 5, 1), 2)))
+        __P(CStr(Math.Round(DDB(1000, 100, 5, 1), 2)))
         __Check("400")
     End Sub
 End Module

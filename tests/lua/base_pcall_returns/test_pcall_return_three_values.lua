@@ -1,7 +1,7 @@
 -- vybe-test: lua/base_pcall_returns/test_pcall_return_three_values
 -- origin: languages/lua/tests/lua/test_base_pcall_returns.rs
 
-local __w1 = "true"
+local __w1 = "1"
 local __i = 0
 
 local ok, a = pcall(function() return 1,2,3 end)

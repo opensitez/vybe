@@ -41,7 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-Class Box : End Class
+Class Box
+End Class
 Module M
     Sub Main()
         Dim left As New Box()

@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Public Class Wrapper
     Dim val As Integer
     Public Sub New(v As Integer)
@@ -50,4 +49,9 @@ Public Class Wrapper
         Return val
     End Function
 End Class
-__P(CStr(New Wrapper(42).GetVal()))
+
+Module Program
+    Sub Main()
+        __P(CStr(New Wrapper(42).GetVal()))
+    End Sub
+End Module

@@ -20,6 +20,8 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
+Imports System.Runtime.InteropServices
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,8 +43,6 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
-Imports System.Runtime.InteropServices
 
 Class ResettableSafeHandle
     Inherits SafeHandle
@@ -54,18 +54,18 @@ Class ResettableSafeHandle
 
     Public Overrides ReadOnly Property IsInvalid As Boolean
         Get
-            Return handle = IntPtr.Zero
-        End Get
-    End Property
+        Return handle = IntPtr.Zero
+    End Get
+End Property
 
-    Public Sub Invalidate()
-        SetHandleAsInvalid()
-    End Sub
+Public Sub Invalidate()
+    SetHandleAsInvalid()
+End Sub
 
-    Protected Overrides Function ReleaseHandle() As Boolean
-        __P(CStr("Released"))
-        Return True
-    End Function
+Protected Overrides Function ReleaseHandle() As Boolean
+    __P(CStr("Released"))
+    Return True
+End Function
 End Class
 
 Module Program

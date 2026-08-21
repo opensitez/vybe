@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): __P(CStr(TimeValue("14:30:00").Minute)): End Sub: End Module
+Module M
+    Sub Main()
+        __P(CStr(TimeValue("14:30:00").Minute))
+    End Sub
+End Module

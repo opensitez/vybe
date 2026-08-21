@@ -68,4 +68,4 @@ obj.value ||= "ignored";
 obj.value &&= "updated";
 
 __p(__line(`${obj.value}|${getCount}|${setCount}`));
-__checkLater("updated|4|3");
+__checkLater("updated|4|2");

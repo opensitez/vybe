@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Class Base
     Public Ready As String = "yes"
 
@@ -48,10 +47,13 @@ Class Base
         __P(CStr("base ctor"))
     End Sub
 End Class
-
 Class Child
     Inherits Base
 End Class
 
-Dim c As New Child()
-__P(CStr(c.Ready))
+Module Program
+    Sub Main()
+        Dim c As New Child()
+        __P(CStr(c.Ready))
+    End Sub
+End Module

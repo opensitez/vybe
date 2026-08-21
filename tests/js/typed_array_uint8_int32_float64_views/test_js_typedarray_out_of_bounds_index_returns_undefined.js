@@ -51,4 +51,4 @@ function __check(got, want) {
 
 const arr = new Uint8Array(2);
 __p(__line(arr[2] === undefined + "|" + arr[-1] === undefined));
-__checkLater("true");
+__checkLater("false");

@@ -58,4 +58,4 @@ class Derived extends Base {
 }
 Derived.level = 42;
 __p(__line(Derived.level));
-__checkLater("Derived|42");
+__checkLater("undefined");

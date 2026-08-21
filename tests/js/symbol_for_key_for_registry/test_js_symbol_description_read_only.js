@@ -1,6 +1,8 @@
 // vybe-test: js/symbol_for_key_for_registry/test_js_symbol_description_read_only
 // origin: languages/js/tests/js/test_js_symbol_for_key_for_registry.rs
 
+"use strict";
+
 function __fmt(v) {
     // console.log renders a bigint with an `n` suffix; String() drops it.
     return typeof v === "bigint" ? String(v) + "n" : String(v);
@@ -51,7 +53,6 @@ function __check(got, want) {
 
 const sym = Symbol("orig");
 try {
-    "use strict";
     sym.description = "new";
 } catch (e) {
     __p(__line("Description Read-Only TypeError"));

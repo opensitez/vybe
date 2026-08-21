@@ -41,4 +41,12 @@ Module VybeCheck
     End Sub
 End Module
 
-Structure Point : Public X As Integer : End Structure : Module M : Sub Main() : Dim points() As Point = { New Point With {.X = 2}, New Point With {.X = 7} } : __P(CStr(points(1).X)) : End Sub : End Module
+Structure Point
+    Public X As Integer
+End Structure
+Module M
+    Sub Main()
+        Dim points() As Point = { New Point With {.X = 2}, New Point With {.X = 7} }
+        __P(CStr(points(1).X))
+    End Sub
+End Module

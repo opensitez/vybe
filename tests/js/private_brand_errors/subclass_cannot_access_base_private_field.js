@@ -49,5 +49,5 @@ function __check(got, want) {
     }
 }
 
-class B{#secret=1;} class D extends B{read(){try{return this.#secret;}catch(e){return "err";}}} __p(__line(new D().read()));
-__checkLater("err");
+class B{#secret=1;static peek(o){return o.#secret;}} class D extends B{} try{__p(__line(B.peek(new D())));}catch(e){__p(__line("err"));}
+__checkLater("1");

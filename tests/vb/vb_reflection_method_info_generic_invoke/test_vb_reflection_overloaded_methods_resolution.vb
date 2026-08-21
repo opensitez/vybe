@@ -42,8 +42,12 @@ Module VybeCheck
 End Module
 
 Class OverloadSample
-    Public Function Compute(x As Integer) As String : Return "Int_" & x : End Function
-    Public Function Compute(x As String) As String : Return "Str_" & x : End Function
+    Public Function Compute(x As Integer) As String
+        Return "Int_" & x
+    End Function
+    Public Function Compute(x As String) As String
+        Return "Str_" & x
+    End Function
 End Class
 
 Module Program

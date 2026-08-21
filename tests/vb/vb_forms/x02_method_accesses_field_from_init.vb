@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Public Class Form1
     Dim status As String
     Public Sub New()
@@ -53,5 +52,10 @@ Public Class Form1
         Return status
     End Function
 End Class
-Dim f As New Form1()
-__P(CStr(f.GetStatus()))
+
+Module Program
+    Sub Main()
+        Dim f As New Form1()
+        __P(CStr(f.GetStatus()))
+    End Sub
+End Module

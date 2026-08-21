@@ -42,11 +42,11 @@ Module VybeCheck
 End Module
 
 Module M
-Sub Print(a As Integer, b As Integer)
-__P(CStr(a - b))
-End Sub
-Sub Main()
-Print(b:=5, a:=10)
-    __Check("5")
-End Sub
+    Sub Print(a As Integer, b As Integer)
+        __P(CStr(a - b))
+    End Sub
+    Sub Main()
+        Print(b:=5, a:=10)
+        __Check("5")
+    End Sub
 End Module

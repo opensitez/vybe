@@ -49,5 +49,5 @@ function __check(got, want) {
     }
 }
 
-class B{#m(){return 1;}} class D extends B{call(){try{return this.#m();}catch(e){return "err";}}} __p(__line(new D().call()));
-__checkLater("err");
+class B{#m(){return 1;}static call(o){return o.#m();}} class D extends B{} try{__p(__line(B.call(new D())));}catch(e){__p(__line("err"));}
+__checkLater("1");

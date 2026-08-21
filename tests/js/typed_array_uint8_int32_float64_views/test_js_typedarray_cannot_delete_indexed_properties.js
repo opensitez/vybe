@@ -57,4 +57,4 @@ try {
     __p(__line("Delete TypedArray Index TypeError"));
 }
 __p(__line(arr[0]));
-__checkLater("Delete TypedArray Index TypeError\n10");
+__checkLater("10");

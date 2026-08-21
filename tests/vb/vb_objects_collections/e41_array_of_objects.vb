@@ -40,15 +40,19 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Class Pt
     Public X As Integer
     Public Y As Integer
 End Class
-Dim pts(3) As Pt
-Dim p As New Pt()
-p.X = 5
-p.Y = 10
-pts(0) = p
-__P(CStr(pts(0).X))
-__P(CStr(pts(0).Y))
+
+Module Program
+    Sub Main()
+        Dim pts(3) As Pt
+        Dim p As New Pt()
+        p.X = 5
+        p.Y = 10
+        pts(0) = p
+        __P(CStr(pts(0).X))
+        __P(CStr(pts(0).Y))
+    End Sub
+End Module

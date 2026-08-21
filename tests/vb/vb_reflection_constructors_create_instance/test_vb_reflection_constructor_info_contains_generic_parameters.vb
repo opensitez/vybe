@@ -42,7 +42,8 @@ Module VybeCheck
 End Module
 
 Class GenericCtor(Of T)
-    Public Sub New(item As T) : End Sub
+    Public Sub New(item As T)
+    End Sub
 End Class
 
 Module Program

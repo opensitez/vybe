@@ -1,6 +1,9 @@
 // vybe-test: js/wasi/test_fs_append
 // origin: languages/js/tests/js/js_wasi_test.rs
 
+import fs from 'node:fs';
+
+
 function __fmt(v) {
     // console.log renders a bigint with an `n` suffix; String() drops it.
     return typeof v === "bigint" ? String(v) + "n" : String(v);
@@ -49,8 +52,8 @@ function __check(got, want) {
     }
 }
 
-fs.writeFile("/tmp/vybe_test_append.txt", "hello");
-        fs.appendFile("/tmp/vybe_test_append.txt", " world");
-        __p(__line(fs.readFile("/tmp/vybe_test_append.txt")));
-        fs.remove("/tmp/vybe_test_append.txt");
+fs.writeFileSync("/tmp/vybe_test_append.txt", "hello");
+        fs.appendFileSync("/tmp/vybe_test_append.txt", " world");
+        __p(__line(fs.readFileSync("/tmp/vybe_test_append.txt", 'utf8')));
+        fs.unlinkSync("/tmp/vybe_test_append.txt");
 __checkLater("hello world");

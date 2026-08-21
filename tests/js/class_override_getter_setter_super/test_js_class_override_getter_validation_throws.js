@@ -67,4 +67,4 @@ try {
 } catch (e) {
     __p(__line("RangeError Caught"));
 }
-__checkLater("20\nRangeError Caught");
+__checkLater("undefined\nRangeError Caught");

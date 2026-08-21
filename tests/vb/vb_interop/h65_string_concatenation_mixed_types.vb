@@ -41,7 +41,11 @@ Module VybeCheck
     End Sub
 End Module
 
-__P(CStr("Count: " & 42))
-__P(CStr("Pi: " & 3.14))
-__P(CStr("Active: " & True))
-__P(CStr("Hello" & " " & "World"))
+Module Program
+    Sub Main()
+        __P(CStr("Count: " & 42))
+        __P(CStr("Pi: " & 3.14))
+        __P(CStr("Active: " & True))
+        __P(CStr("Hello" & " " & "World"))
+    End Sub
+End Module

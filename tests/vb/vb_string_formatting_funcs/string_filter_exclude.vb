@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): __P(CStr(Filter({"Apple", "Banana", "Apricot"}, "A", False).Length)): End Sub: End Module
+Module M
+    Sub Main()
+        __P(CStr(Filter({"Apple", "Banana", "Apricot"}, "A", False).Length))
+    End Sub
+End Module

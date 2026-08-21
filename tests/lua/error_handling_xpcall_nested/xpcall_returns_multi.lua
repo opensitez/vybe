@@ -1,7 +1,7 @@
 -- vybe-test: lua/error_handling_xpcall_nested/xpcall_returns_multi
 -- origin: languages/lua/tests/lua/test_error_handling_xpcall_nested.rs
 
-local __w1 = "true a b"
+local __w1 = "true\ta\tb"
 local __i = 0
 
 local ok, a, b = xpcall(function() return "a", "b" end, function(e) return e end)

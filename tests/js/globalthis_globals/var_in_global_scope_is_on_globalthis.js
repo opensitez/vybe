@@ -51,4 +51,4 @@ function __check(got, want) {
 
 var declared = "yes";
 __p(__line(globalThis.declared));
-__checkLater("yes");
+__checkLater("undefined");

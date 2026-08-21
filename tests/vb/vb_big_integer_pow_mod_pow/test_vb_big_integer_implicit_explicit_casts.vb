@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Numerics
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,11 +42,11 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.Numerics
 
 Module Program
     Sub Main()
-        Dim big: BigInteger = 999
+        Dim big
+        BigInteger = 999
         Dim intVal As Integer = CInt(big)
         Dim doubleVal As Double = CDbl(big)
         __P(CStr(intVal & "|" & doubleVal))

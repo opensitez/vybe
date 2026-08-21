@@ -49,7 +49,7 @@ function __check(got, want) {
     }
 }
 
-const arr = [1,  3]; // hole at index 1
+const arr = [1,,  3]; // hole at index 1
 __p(__line(arr.length));
 __p(__line(arr[1]));       // undefined
 __p(__line(1 in arr));     // false — hole, not undefined

@@ -1,7 +1,7 @@
 -- vybe-test: lua/metatables_index_chains/index_exist_shortcircuit
 -- origin: languages/lua/tests/lua/test_metatables_index_chains.rs
 
-local __w1 = "99 false"
+local __w1 = "99\tfalse"
 local __i = 0
 
 local called = false

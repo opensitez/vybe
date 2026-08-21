@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,13 +42,14 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
 
 Delegate Sub SimpleAction()
 
 Module Program
-    Private Sub Action1() : End Sub
-    Private Sub Action2() : End Sub
+    Private Sub Action1()
+    End Sub
+    Private Sub Action2()
+    End Sub
 
     Sub Main()
         Dim d1 As SimpleAction = AddressOf Action1

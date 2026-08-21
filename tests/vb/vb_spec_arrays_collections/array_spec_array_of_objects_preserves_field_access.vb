@@ -41,4 +41,15 @@ Module VybeCheck
     End Sub
 End Module
 
-Class C : Public Name As String : Public Sub New(v As String) : Name=v : End Sub : End Class : Module M : Sub Main() : Dim items() As C = {New C("a"), New C("b")} : __P(CStr(items(1).Name)) : End Sub : End Module
+Class C
+    Public Name As String
+    Public Sub New(v As String)
+        Name=v
+    End Sub
+End Class
+Module M
+    Sub Main()
+        Dim items() As C = {New C("a"), New C("b")}
+        __P(CStr(items(1).Name))
+    End Sub
+End Module

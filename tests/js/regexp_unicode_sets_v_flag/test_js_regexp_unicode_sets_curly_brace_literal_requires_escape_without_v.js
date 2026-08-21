@@ -49,6 +49,6 @@ function __check(got, want) {
     }
 }
 
-const reV = /[a{b}]/v; // Valid in v-mode (matches "a" or string "{b}")
+const reV = /[a\{b\}]/v; // Valid in v-mode (matches "a" or string "{b}")
 __p(__line(reV.test("{b}")));
 __checkLater("true");

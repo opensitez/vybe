@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Public Class Calc
     Dim total As Double
     Public Sub New()
@@ -57,6 +56,11 @@ Public Class Calc
         Return total
     End Function
 End Class
-Dim c As New Calc()
-c.AddTwice(5)
-__P(CStr(c.GetTotal()))
+
+Module Program
+    Sub Main()
+        Dim c As New Calc()
+        c.AddTwice(5)
+        __P(CStr(c.GetTotal()))
+    End Sub
+End Module

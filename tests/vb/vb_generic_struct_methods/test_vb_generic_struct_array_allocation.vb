@@ -43,7 +43,9 @@ End Module
 
 Structure Cell(Of T)
     Public Value As T
-    Public Sub New(v As T) : Value = v : End Sub
+    Public Sub New(v As T)
+        Value = v
+    End Sub
 End Structure
 
 Module Program

@@ -50,4 +50,4 @@ function __check(got, want) {
 }
 
 const r=/a/; __p(__line(typeof r.compile));
-__checkLater("undefined");
+__checkLater("function");

@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,7 +42,6 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
 
 <AttributeUsage(AttributeTargets.Method, Inherited:=True)>
 Class TraceAttribute
@@ -50,12 +50,14 @@ End Class
 
 Class BaseService
     <Trace>
-    Public Overridable Sub DoWork() : End Sub
+    Public Overridable Sub DoWork()
+    End Sub
 End Class
 
 Class DerivedService
     Inherits BaseService
-    Public Overrides Sub DoWork() : End Sub
+    Public Overrides Sub DoWork()
+    End Sub
 End Class
 
 Module Program

@@ -57,4 +57,4 @@ const obj = {
     }
 };
 obj.method();
-__checkLater("true");
+__checkLater("false");

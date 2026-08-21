@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): __P(CStr(DatePart("h", #5:30:00 PM#))): End Sub: End Module
+Module M
+    Sub Main()
+        __P(CStr(DatePart("h", #5:30:00 PM#)))
+    End Sub
+End Module

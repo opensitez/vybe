@@ -47,28 +47,29 @@ Class NotifyingItem
 
     Public Property Value As Integer
         Get
-            Return _val
-        End Get
-        Set(val As Integer)
-            If _val <> val Then
-                Dim old As Integer = _val
-                _val = val
-                RaiseEvent ValueChanged(old, val)
-            End If
-        End Set
-    End Property
+        Return _val
+    End Get
+    Set(val As Integer)
+    If _val <> val Then
+        Dim old As Integer = _val
+        _val = val
+        RaiseEvent ValueChanged(old, val)
+    End If
+End Set
+End Property
 End Class
 
 Module Program
     Sub Main()
         Dim item As New NotifyingItem()
         AddHandler item.ValueChanged, Sub(oldV, newV)
-            __P(CStr("Changed: " & oldV & "->" & newV))
-            __Check("Changed: 0->10
+        __P(CStr("Changed: " & oldV & "->" & newV))
+        __Check("Changed: 0->10
+VYBEBUF>>><<<VYBEBUFChanged: 0->10
 Changed: 10->20")
-        End Sub
-        item.Value = 10
-        item.Value = 10 ' No event
-        item.Value = 20
     End Sub
+    item.Value = 10
+    item.Value = 10 ' No event
+    item.Value = 20
+End Sub
 End Module

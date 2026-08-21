@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,27 +42,27 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
 
 Class FilteredPublisher
     Private count As Integer = 0
     Public Custom Event ItemAdded As Action
-        AddHandler(value As Action)
-            count += 1
-        End AddHandler
-        RemoveHandler(value As Action)
-            count -= 1
-        End RemoveHandler
-        RaiseEvent()
-        End RaiseEvent
-    End Event
-    Public Function GetCount() As Integer
-        Return count
-    End Function
+    AddHandler(value As Action)
+    count += 1
+End AddHandler
+RemoveHandler(value As Action)
+count -= 1
+End RemoveHandler
+RaiseEvent()
+End RaiseEvent
+End Event
+Public Function GetCount() As Integer
+    Return count
+End Function
 End Class
 
 Module Program
-    Private Sub Dummy() : End Sub
+    Private Sub Dummy()
+    End Sub
 
     Sub Main()
         Dim fp As New FilteredPublisher()

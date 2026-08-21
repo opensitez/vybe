@@ -43,16 +43,17 @@ End Module
 
 Structure StructPoint
     Public Property X As Integer { Get; Private Set; }
-    Public Property Y As Integer { Get; Private Set; }
-    Public Sub New(x As Integer, y As Integer)
-        Me.X = x : Me.Y = y
-    End Sub
-End Structure
+        Public Property Y As Integer { Get; Private Set; }
+            Public Sub New(x As Integer, y As Integer)
+                Me.X = x
+                Me.Y = y
+            End Sub
+        End Structure
 
-Module Program
-    Sub Main()
-        Dim p As New StructPoint(10, 20)
-        __P(CStr(p.X & "," & p.Y))
-        __Check("10,20")
-    End Sub
-End Module
+        Module Program
+            Sub Main()
+                Dim p As New StructPoint(10, 20)
+                __P(CStr(p.X & "," & p.Y))
+                __Check("10,20")
+            End Sub
+        End Module

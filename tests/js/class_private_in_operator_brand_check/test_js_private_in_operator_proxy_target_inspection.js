@@ -56,4 +56,4 @@ class Token {
 const t = new Token();
 const proxy = new Proxy(t, {});
 __p(__line(Token.isToken(t) + "|" + Token.isToken(proxy))); // Brand check on Proxy succeeds if target is instance
-__checkLater("true|true");
+__checkLater("true|false");

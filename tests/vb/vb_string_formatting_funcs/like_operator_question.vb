@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): __P(CStr("Hello" Like "H?llo")): End Sub: End Module
+Module M
+    Sub Main()
+        __P(CStr("Hello" Like "H?llo"))
+    End Sub
+End Module

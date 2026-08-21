@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,13 +42,16 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
 
 Delegate Function Compute(x As Integer) As Integer
 
 Module Program
-    Private Function Square(x As Integer) As Integer : Return x * x : End Function
-    Private Function Cube(x As Integer) As Integer : Return x * x * x : End Function
+    Private Function Square(x As Integer) As Integer
+        Return x * x
+    End Function
+    Private Function Cube(x As Integer) As Integer
+        Return x * x * x
+    End Function
 
     Sub Main()
         Dim c As Compute = AddressOf Square

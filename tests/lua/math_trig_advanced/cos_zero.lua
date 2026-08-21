@@ -1,7 +1,7 @@
 -- vybe-test: lua/math_trig_advanced/cos_zero
 -- origin: languages/lua/tests/lua/test_math_trig_advanced.rs
 
-local __w1 = "1"
+local __w1 = "1.0"
 local __i = 0
 
 do local __t = tostring(math.cos(0)); __i = __i + 1

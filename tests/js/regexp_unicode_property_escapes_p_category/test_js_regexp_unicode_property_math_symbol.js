@@ -51,4 +51,4 @@ function __check(got, want) {
 
 const re = /\p{Math}/gu;
 __p(__line("a + b = c * d".match(re).join(",")));
-__checkLater("+,=,*");
+__checkLater("+,=");

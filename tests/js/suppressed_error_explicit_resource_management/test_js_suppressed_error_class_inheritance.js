@@ -52,4 +52,4 @@ function __check(got, want) {
 class ResourceError extends SuppressedError {}
 const err = new ResourceError("a", "b", "CustomResourceError");
 __p(__line(err.name + "|" + err.message + "|isSuppressed=" + (err instanceof SuppressedError)));
-__checkLater("ResourceError|CustomResourceError|isSuppressed=true");
+__checkLater("SuppressedError|CustomResourceError|isSuppressed=true");

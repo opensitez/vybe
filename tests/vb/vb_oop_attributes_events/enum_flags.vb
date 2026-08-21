@@ -41,4 +41,14 @@ Module VybeCheck
     End Sub
 End Module
 
-<System.Flags> Enum E: A = 1: B = 2: C = 4: End Enum: Module M: Sub Main(): Dim val = E.A Or E.C: __P(CStr(val)): End Sub: End Module
+<System.Flags> Enum E
+A = 1
+B = 2
+C = 4
+End Enum
+Module M
+    Sub Main()
+        Dim val = E.A Or E.C
+        __P(CStr(val))
+    End Sub
+End Module

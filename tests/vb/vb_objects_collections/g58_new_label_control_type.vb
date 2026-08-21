@@ -41,5 +41,9 @@ Module VybeCheck
     End Sub
 End Module
 
-Dim lbl As New System.Windows.Forms.Label()
-__P(CStr(lbl.__control_type))
+Module Program
+    Sub Main()
+        Dim lbl As New System.Windows.Forms.Label()
+        __P(CStr(lbl.__control_type))
+    End Sub
+End Module

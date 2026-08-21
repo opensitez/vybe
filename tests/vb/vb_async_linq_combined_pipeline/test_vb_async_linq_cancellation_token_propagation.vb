@@ -20,6 +20,10 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
+Imports System.Linq
+Imports System.Threading
+Imports System.Threading.Tasks
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,10 +45,6 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
-Imports System.Linq
-Imports System.Threading
-Imports System.Threading.Tasks
 
 Module Program
     Private Async Function LongWorkAsync(n As Integer, ct As CancellationToken) As Task(Of Integer)

@@ -49,7 +49,7 @@ function __check(got, want) {
     }
 }
 
-const arr = [, 1,  3];
+const arr = [, 1,,  3];
 let seen = [];
 const value = arr.find((value, index) => {
     seen.push(index);

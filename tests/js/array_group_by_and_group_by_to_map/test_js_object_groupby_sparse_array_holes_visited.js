@@ -49,7 +49,7 @@ function __check(got, want) {
     }
 }
 
-const sparse = [1,  3];
+const sparse = [1,,  3];
 const grouped = Object.groupBy(sparse, x => typeof x);
 __p(__line(grouped.number.length + "|" + grouped.undefined.length));
 __checkLater("2|1");

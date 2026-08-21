@@ -20,6 +20,8 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
+Imports System.Text
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,15 +43,15 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
-Imports System.Text
 
 Module Program
     Private Function FromBase64Url(base64Url As String) As Byte()
         Dim padded = base64Url.Replace("-", "+").Replace("_", "/")
         Select Case padded.Length Mod 4
-            Case 2 : padded &= "=="
-            Case 3 : padded &= "="
+        Case 2
+            padded &= "=="
+        Case 3
+            padded &= "="
         End Select
         Return Convert.FromBase64String(padded)
     End Function

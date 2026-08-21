@@ -1,7 +1,7 @@
 -- vybe-test: lua/math_library/math_acos_of_one
 -- origin: languages/lua/tests/lua/test_math_library.rs
 
-local __w1 = "0"
+local __w1 = "0.0"
 local __i = 0
 
 do local __t = tostring(math.acos(1)); __i = __i + 1

@@ -50,4 +50,4 @@ function __check(got, want) {
 }
 
 __p(__line(String.fromCodePoint(127881) === String.fromCharCode(55357, 56199)));
-__checkLater("true");
+__checkLater("false");

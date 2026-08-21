@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Public Class Form1
     Dim counter As Integer = 0
     Public Sub New()
@@ -52,8 +51,13 @@ Public Class Form1
         Return counter
     End Function
 End Class
-Dim f As New Form1()
-f.Increment()
-f.Increment()
-f.Increment()
-__P(CStr(f.GetCount()))
+
+Module Program
+    Sub Main()
+        Dim f As New Form1()
+        f.Increment()
+        f.Increment()
+        f.Increment()
+        __P(CStr(f.GetCount()))
+    End Sub
+End Module

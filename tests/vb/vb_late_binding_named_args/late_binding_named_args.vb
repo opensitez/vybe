@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Option Strict Off
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,7 +42,6 @@ Module VybeCheck
     End Sub
 End Module
 
-Option Strict Off
 
 Class Target
     Public Sub Process(Arg As Integer)
@@ -52,7 +52,7 @@ End Class
 Module M
     Sub Main()
         Dim obj As Object = New Target()
-        
+
         ' Late binding with named arguments
         obj.Process(Arg:=42)
         __Check("42")

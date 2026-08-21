@@ -41,4 +41,9 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): Kill("test_copy.txt"): __P(CStr(System.IO.File.Exists("test_copy.txt"))): End Sub: End Module
+Module M
+    Sub Main()
+        Kill("test_copy.txt")
+        __P(CStr(System.IO.File.Exists("test_copy.txt")))
+    End Sub
+End Module

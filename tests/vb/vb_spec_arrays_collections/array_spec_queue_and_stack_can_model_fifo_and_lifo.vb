@@ -41,4 +41,15 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M : Sub Main() : Dim q As New Queue(Of Integer) : q.Enqueue(1) : q.Enqueue(2) : Dim s As New Stack(Of Integer) : s.Push(1) : s.Push(2) : __P(CStr(q.Dequeue())) : __P(CStr(s.Pop())) : End Sub : End Module
+Module M
+    Sub Main()
+        Dim q As New Queue(Of Integer)
+        q.Enqueue(1)
+        q.Enqueue(2)
+        Dim s As New Stack(Of Integer)
+        s.Push(1)
+        s.Push(2)
+        __P(CStr(q.Dequeue()))
+        __P(CStr(s.Pop()))
+    End Sub
+End Module

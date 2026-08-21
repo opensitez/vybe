@@ -50,6 +50,6 @@ function __check(got, want) {
 }
 
 function* gen() { yield 10; yield 20; yield 30; }
-const [x,  z] = gen();
+const [x,,  z] = gen();
 __p(__line(x, z));
 __checkLater("10 30");

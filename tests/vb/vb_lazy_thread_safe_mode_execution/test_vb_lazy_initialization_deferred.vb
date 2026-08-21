@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,20 +42,20 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
 
 Module Program
     Sub Main()
         Dim initialized = False
         Dim lazyVal As New Lazy(Of Integer)(Function()
-            initialized = True
-            Return 42
-            __Check("IsCreatedBefore: False
-IsCreatedAfter: True|Val=42")
-        End Function)
+        initialized = True
+        Return 42
+        __Check("IsCreatedBefore: False
+IsCreatedAfter
+True|Val=42")
+    End Function)
 
-        __P(CStr("IsCreatedBefore: " & lazyVal.IsValueCreated))
-        Dim v = lazyVal.Value
-        __P(CStr("IsCreatedAfter: " & lazyVal.IsValueCreated & "|Val=" & v))
-    End Sub
+    __P(CStr("IsCreatedBefore: " & lazyVal.IsValueCreated))
+    Dim v = lazyVal.Value
+    __P(CStr("IsCreatedAfter: " & lazyVal.IsValueCreated & "|Val=" & v))
+End Sub
 End Module

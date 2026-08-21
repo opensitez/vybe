@@ -50,4 +50,4 @@ function __check(got, want) {
 }
 
 async function main(){const o=[];const it={async next(){if(o.length)return{done:true};o.push("n");if(o.length===2)throw "n2";return{value:o.length,done:false};},[Symbol.asyncIterator](){return this;}};const r=[];try{for await(const v of it)r.push(v);}catch(e){r.push("e");}__p(__line(r.join(",")));}main();
-__checkLater("1,e");
+__checkLater("1");

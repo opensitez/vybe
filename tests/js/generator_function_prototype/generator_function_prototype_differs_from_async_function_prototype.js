@@ -1,6 +1,13 @@
 // vybe-test: js/generator_function_prototype/generator_function_prototype_differs_from_async_function_prototype
 // origin: languages/js/tests/js/test_generator_function_prototype.rs
 
+// ECMA-262: %GeneratorFunction% / %AsyncFunction% /
+// %AsyncGeneratorFunction% are INTRINSICS, not properties of the global
+// object (§19). They are reached through a generator's prototype chain.
+const GeneratorFunction = Object.getPrototypeOf(function*(){}).constructor;
+const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+
+
 function __fmt(v) {
     // console.log renders a bigint with an `n` suffix; String() drops it.
     return typeof v === "bigint" ? String(v) + "n" : String(v);

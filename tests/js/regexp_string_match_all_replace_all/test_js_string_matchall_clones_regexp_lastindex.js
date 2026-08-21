@@ -53,4 +53,4 @@ const re = /a/g;
 re.lastIndex = 2; // Original regex lastIndex should NOT affect matchAll or be modified by it!
 const matches = [..."aaa".matchAll(re)];
 __p(__line(matches.length + "|originalLastIndex=" + re.lastIndex));
-__checkLater("3|originalLastIndex=2");
+__checkLater("1|originalLastIndex=2");

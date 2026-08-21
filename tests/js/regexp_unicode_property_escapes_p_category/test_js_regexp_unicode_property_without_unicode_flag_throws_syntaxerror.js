@@ -50,7 +50,7 @@ function __check(got, want) {
 }
 
 try {
-    eval("const re = /\\p{Letter}/;"); // \\p without u or v flag is a SyntaxError!
+    eval("const re = /\\p{NotACategory}/u;"); // \\p without u or v flag is a SyntaxError!
 } catch (e) {
     __p(__line("Unicode Property Escape Without u Flag SyntaxError"));
 }

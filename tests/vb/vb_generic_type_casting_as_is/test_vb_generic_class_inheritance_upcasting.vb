@@ -41,8 +41,11 @@ Module VybeCheck
     End Sub
 End Module
 
-Class Animal : End Class
-Class Dog : Inherits Animal : End Class
+Class Animal
+End Class
+Class Dog
+    Inherits Animal
+End Class
 
 Module Program
     Private Function Upcast(Of TDerived As TBase, TBase As Class)(item As TDerived) As TBase

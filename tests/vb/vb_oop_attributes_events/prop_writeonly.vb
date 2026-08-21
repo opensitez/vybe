@@ -41,4 +41,21 @@ Module VybeCheck
     End Sub
 End Module
 
-Class C: Private _p As Integer: Public WriteOnly Property P As Integer: Set(v As Integer): _p = v: End Set: End Property: Public Function GetP() As Integer: Return _p: End Function: End Class: Module M: Sub Main(): Dim obj As New C(): obj.P = 20: __P(CStr(obj.GetP())): End Sub: End Module
+Class C
+    Private _p As Integer
+    Public WriteOnly Property P As Integer
+        Set(v As Integer)
+        _p = v
+    End Set
+End Property
+Public Function GetP() As Integer
+    Return _p
+End Function
+End Class
+Module M
+    Sub Main()
+        Dim obj As New C()
+        obj.P = 20
+        __P(CStr(obj.GetP()))
+    End Sub
+End Module

@@ -50,4 +50,4 @@ function __check(got, want) {
 }
 
 __p(__line(`${Math.trunc(13.37)}:${Math.trunc(-42.84)}:${Math.trunc(0.123)}:${Math.trunc(-0.123)}`));
-__checkLater("13:-42:0:-0");
+__checkLater("13:-42:0:0");

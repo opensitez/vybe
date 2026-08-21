@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): __P(CStr(CUInt(4000000000))): End Sub: End Module
+Module M
+    Sub Main()
+        __P(CStr(CUInt(4000000000)))
+    End Sub
+End Module

@@ -41,4 +41,13 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M : Sub Main() : Dim grid(1,1) As Integer : grid(0,0)=1 : grid(0,1)=2 : grid(1,0)=3 : grid(1,1)=4 : __P(CStr(grid(0,0)+grid(0,1)+grid(1,0)+grid(1,1))) : End Sub : End Module
+Module M
+    Sub Main()
+        Dim grid(1,1) As Integer
+        grid(0,0)=1
+        grid(0,1)=2
+        grid(1,0)=3
+        grid(1,1)=4
+        __P(CStr(grid(0,0)+grid(0,1)+grid(1,0)+grid(1,1)))
+    End Sub
+End Module

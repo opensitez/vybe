@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-__P(CStr(UCase("hello")))
+Module Program
+    Sub Main()
+        __P(CStr(UCase("hello")))
+    End Sub
+End Module

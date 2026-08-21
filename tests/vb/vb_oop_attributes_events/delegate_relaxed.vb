@@ -41,4 +41,10 @@ Module VybeCheck
     End Sub
 End Module
 
-Delegate Sub D(): Module M: Sub Target(x As Integer): __P(CStr(x)): End Sub: Sub Main(): ' Relaxed delegate instantiation (dropping args) is a VB feature: Dim act As D = AddressOf Target: act(): End Sub: End Module
+Delegate Sub D()
+Module M
+    Sub Target(x As Integer)
+        __P(CStr(x))
+    End Sub
+    Sub Main()
+        ' Relaxed delegate instantiation (dropping args) is a VB feature: Dim act As D = AddressOf Target: act(): End Sub: End Module

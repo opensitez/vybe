@@ -41,4 +41,11 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): Dim c As New Microsoft.VisualBasic.Collection(): c.Add("A", "K"): c.Remove("K"): __P(CStr(c.Count)): End Sub: End Module
+Module M
+    Sub Main()
+        Dim c As New Microsoft.VisualBasic.Collection()
+        c.Add("A", "K")
+        c.Remove("K")
+        __P(CStr(c.Count))
+    End Sub
+End Module

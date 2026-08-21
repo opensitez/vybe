@@ -43,26 +43,26 @@ End Module
 
 Interface IHandler(Of T)
     Sub Handle(item As T)
-End Interface
+    End Interface
 
-Class DualHandler
-    Implements IHandler(Of Integer), IHandler(Of String)
-    Public Sub HandleInt(item As Integer) Implements IHandler(Of Integer).Handle
-        __P(CStr("Int: " & item))
-    End Sub
-    Public Sub HandleString(item As String) Implements IHandler(Of String).Handle
-        __P(CStr("String: " & item))
-    End Sub
-End Class
+    Class DualHandler
+        Implements IHandler(Of Integer), IHandler(Of String)
+        Public Sub HandleInt(item As Integer) Implements IHandler(Of Integer).Handle
+            __P(CStr("Int: " & item))
+        End Sub
+        Public Sub HandleString(item As String) Implements IHandler(Of String).Handle
+            __P(CStr("String: " & item))
+        End Sub
+    End Class
 
-Module Program
-    Sub Main()
-        Dim dh As New DualHandler()
-        Dim hInt As IHandler(Of Integer) = dh
-        Dim hStr As IHandler(Of String) = dh
-        hInt.Handle(10)
-        hStr.Handle("Hello")
-        __Check("Int: 10
+    Module Program
+        Sub Main()
+            Dim dh As New DualHandler()
+            Dim hInt As IHandler(Of Integer) = dh
+            Dim hStr As IHandler(Of String) = dh
+            hInt.Handle(10)
+            hStr.Handle("Hello")
+            __Check("Int: 10
 String: Hello")
-    End Sub
-End Module
+        End Sub
+    End Module

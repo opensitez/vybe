@@ -54,4 +54,4 @@ const str = "a";
 __p(__line(`${re.exec(str).index}:${re.lastIndex}`));
 __p(__line(`${re.exec(str).index}:${re.lastIndex}`));
 __p(__line(re.exec(str) === null));
-__checkLater("0:1\n1:1\ntrue");
+__checkLater("0:1\n1:1\nfalse");

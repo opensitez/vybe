@@ -64,4 +64,4 @@ try {
     __p(__line("Error: " + e.name));
 }
 __p(__line(obj.prop));
-__checkLater("42\nError: TypeError\n42");
+__checkLater("42\n42");

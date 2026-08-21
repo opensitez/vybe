@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.ComponentModel
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,7 +42,6 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.ComponentModel
 
 Class EditableItem
     Implements INotifyPropertyChanging, INotifyPropertyChanged
@@ -51,16 +51,16 @@ Class EditableItem
     Private _score As Integer
     Public Property Score As Integer
         Get
-            Return _score
-        End Get
-        Set(value As Integer)
-            If _score <> value Then
-                RaiseEvent PropertyChanging(Me, New PropertyChangingEventArgs("Score"))
-                _score = value
-                RaiseEvent PropertyChanged(Me, New PropertyChangedEventArgs("Score"))
-            End If
-        End Set
-    End Property
+        Return _score
+    End Get
+    Set(value As Integer)
+    If _score <> value Then
+        RaiseEvent PropertyChanging(Me, New PropertyChangingEventArgs("Score"))
+        _score = value
+        RaiseEvent PropertyChanged(Me, New PropertyChangedEventArgs("Score"))
+    End If
+End Set
+End Property
 End Class
 
 Module Program

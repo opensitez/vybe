@@ -44,9 +44,13 @@ End Module
 Class Container(Of T1, T2)
     Public V1 As T1
     Public V2 As T2
-    Public Sub New(v1 As T1, v2 As T2) : Me.V1 = v1 : Me.V2 = v2 : End Sub
+    Public Sub New(v1 As T1, v2 As T2)
+        Me.V1 = v1
+        Me.V2 = v2
+    End Sub
     Public Sub Deconstruct(ByRef out1 As T1, ByRef out2 As T2)
-        out1 = V1 : out2 = V2
+        out1 = V1
+        out2 = V2
     End Sub
 End Class
 

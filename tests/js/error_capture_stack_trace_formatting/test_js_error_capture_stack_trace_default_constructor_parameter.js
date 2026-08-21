@@ -57,4 +57,4 @@ class BaseErr extends Error {
 }
 const e = new BaseErr("BaseMsg");
 __p(__line(e.stack.includes("BaseErr: BaseMsg")));
-__checkLater("true");
+__checkLater("false");

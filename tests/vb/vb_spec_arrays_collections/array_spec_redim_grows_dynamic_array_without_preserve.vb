@@ -41,4 +41,12 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M : Sub Main() : Dim values() As Integer : ReDim values(3) : values(3)=9 : __P(CStr(UBound(values))) : __P(CStr(values(3))) : End Sub : End Module
+Module M
+    Sub Main()
+        Dim values() As Integer
+        ReDim values(3)
+        values(3)=9
+        __P(CStr(UBound(values)))
+        __P(CStr(values(3)))
+    End Sub
+End Module

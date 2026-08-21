@@ -42,17 +42,23 @@ Module VybeCheck
 End Module
 
 Class GrandParent
-    Public Overridable Sub Show() : __P(CStr("GrandParent")) : End Sub
+    Public Overridable Sub Show()
+        __P(CStr("GrandParent"))
+    End Sub
 End Class
 
 Class Parent
     Inherits GrandParent
-    Public Overrides Sub Show() : __P(CStr("Parent")) : End Sub
+    Public Overrides Sub Show()
+        __P(CStr("Parent"))
+    End Sub
 End Class
 
 Class Child
     Inherits Parent
-    Public Shadows Sub Show() : __P(CStr("Child Shadow")) : End Sub
+    Public Shadows Sub Show()
+    __P(CStr("Child Shadow"))
+End Sub
 End Class
 
 Module Program

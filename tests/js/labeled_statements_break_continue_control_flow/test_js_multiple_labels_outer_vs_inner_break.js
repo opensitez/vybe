@@ -58,4 +58,4 @@ outer: inner: for (let i = 0; i < 3; i++) {
     }
 }
 __p(__line(log.join("|")));
-__checkLater("0:0|1:0");
+__checkLater("0:0");

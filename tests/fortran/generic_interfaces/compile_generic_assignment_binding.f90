@@ -1,0 +1,23 @@
+! vybe-test: fortran/generic_interfaces/compile_generic_assignment_binding
+! origin: languages/fortran/tests/fortran/test_fortran2003_extended.rs
+module m
+    type :: Bag
+        integer, allocatable :: items(:)
+    contains
+        procedure :: assign_from
+        generic :: assignment(=) => assign_from
+    end type Bag
+contains
+    subroutine assign_from(lhs, rhs)
+        class(Bag), intent(out) :: lhs
+        type(Bag), intent(in) :: rhs
+        lhs%items = rhs%items
+    end subroutine assign_from
+end module m
+program driver
+use m
+    type(Bag) :: a, b
+    a%items = [1, 2]
+    b = a
+    print *, size(b%items)
+end program driver

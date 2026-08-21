@@ -41,4 +41,12 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M : Function Count(items() As Integer) As Integer : Return UBound(items) + 1 : End Function : Sub Main() : Dim items() As Integer = {1,2,3} : __P(CStr(Count(items))) : End Sub : End Module
+Module M
+    Function Count(items() As Integer) As Integer
+        Return UBound(items) + 1
+    End Function
+    Sub Main()
+        Dim items() As Integer = {1,2,3}
+        __P(CStr(Count(items)))
+    End Sub
+End Module

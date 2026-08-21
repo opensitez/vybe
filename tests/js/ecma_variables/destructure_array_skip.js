@@ -50,7 +50,7 @@ function __check(got, want) {
 }
 
 const arr = [1, 2, 3, 4];
-const [a,  c] = arr;
+const [a,,  c] = arr;
 __p(__line(a));
 __p(__line(c));
 __checkLater("1\n3");

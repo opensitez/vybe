@@ -50,4 +50,4 @@ function __check(got, want) {
 }
 
 __p(__line(`${Math.cbrt(-0)}:${Math.cbrt(Infinity)}:${Math.cbrt(-Infinity)}:${Math.cbrt(NaN)}`));
-__checkLater("-0:Infinity:-Infinity:NaN");
+__checkLater("0:Infinity:-Infinity:NaN");

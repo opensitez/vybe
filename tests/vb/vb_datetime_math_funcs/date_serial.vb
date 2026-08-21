@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): __P(CStr(DateSerial(2020, 5, 10).Month)): End Sub: End Module
+Module M
+    Sub Main()
+        __P(CStr(DateSerial(2020, 5, 10).Month))
+    End Sub
+End Module

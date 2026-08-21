@@ -44,7 +44,7 @@ End Module
 Partial Class Helper
     Partial Private Sub Log(msg As String)
     End Sub
-    
+
     Public Sub DoWork()
         __P(CStr("Working"))
         Log("Done")

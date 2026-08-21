@@ -41,4 +41,10 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): Dim x = 0: Dim y = IIf(True, x + 1, x + 2): __P(CStr(y)): End Sub: End Module
+Module M
+    Sub Main()
+        Dim x = 0
+        Dim y = IIf(True, x + 1, x + 2)
+        __P(CStr(y))
+    End Sub
+End Module

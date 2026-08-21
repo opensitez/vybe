@@ -41,4 +41,11 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M : Sub Main() : Dim a() As Integer = {1,2} : Dim b() As Integer = a : b(0)=9 : __P(CStr(a(0))) : End Sub : End Module
+Module M
+    Sub Main()
+        Dim a() As Integer = {1,2}
+        Dim b() As Integer = a
+        b(0)=9
+        __P(CStr(a(0)))
+    End Sub
+End Module

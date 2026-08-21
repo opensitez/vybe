@@ -44,11 +44,11 @@ End Module
 Module M
     Sub Main()
         ' Sin(0) = 0
-        __P(CStr(Sin(0)))
+        __P(CStr(Math.Sin(0)))
         ' Cos(0) = 1
-        __P(CStr(Cos(0)))
+        __P(CStr(Math.Cos(0)))
         ' Tan(0) = 0
-        __P(CStr(Tan(0)))
+        __P(CStr(Math.Tan(0)))
         __Check("0
 1
 0")

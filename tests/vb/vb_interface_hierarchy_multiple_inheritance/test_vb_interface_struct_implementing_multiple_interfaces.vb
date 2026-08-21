@@ -41,26 +41,35 @@ Module VybeCheck
     End Sub
 End Module
 
-Interface IX : Function GetX() As Integer : End Interface
-Interface IY : Function GetY() As Integer : End Interface
+Interface IX
+    Function GetX() As Integer
+    End Interface
+    Interface IY
+        Function GetY() As Integer
+        End Interface
 
-Structure Point2D
-    Implements IX, IY
-    Public X As Integer
-    Public Y As Integer
-    Public Sub New(x As Integer, y As Integer)
-        Me.X = x : Me.Y = y
-    End Sub
-    Public Function GetX() As Integer Implements IX.GetX : Return X : End Function
-    Public Function GetY() As Integer Implements IY.GetY : Return Y : End Function
-End Structure
+        Structure Point2D
+            Implements IX, IY
+            Public X As Integer
+            Public Y As Integer
+            Public Sub New(x As Integer, y As Integer)
+                Me.X = x
+                Me.Y = y
+            End Sub
+            Public Function GetX() As Integer Implements IX.GetX
+                Return X
+            End Function
+            Public Function GetY() As Integer Implements IY.GetY
+                Return Y
+            End Function
+        End Structure
 
-Module Program
-    Sub Main()
-        Dim p As New Point2D(10, 20)
-        Dim ix As IX = p
-        Dim iy As IY = p
-        __P(CStr(ix.GetX() & "," & iy.GetY()))
-        __Check("10,20")
-    End Sub
-End Module
+        Module Program
+            Sub Main()
+                Dim p As New Point2D(10, 20)
+                Dim ix As IX = p
+                Dim iy As IY = p
+                __P(CStr(ix.GetX() & "," & iy.GetY()))
+                __Check("10,20")
+            End Sub
+        End Module

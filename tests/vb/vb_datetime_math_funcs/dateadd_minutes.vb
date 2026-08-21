@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): __P(CStr(DateAdd("n", 30, #12:00:00 PM#).Minute)): End Sub: End Module
+Module M
+    Sub Main()
+        __P(CStr(DateAdd("n", 30, #12:00:00 PM#).Minute))
+    End Sub
+End Module

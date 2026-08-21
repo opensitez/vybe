@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Globalization
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,24 +42,24 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.Globalization
 
 Module M
     Sub Main()
         Thread.CurrentThread.CurrentCulture = CultureInfo.InvariantCulture
-        
+
         Dim price As Decimal = 12.345D
         Dim pct As Double = 0.75
-        
+
         ' Interpolation with formatting
         __P(CStr($"Price: {price:F2}"))
         __P(CStr($"Percent: {pct:P0}"))
-        
+
         ' Interpolation with alignment
         __P(CStr($"[{price,10:F1}]"))
         __P(CStr($"[{price,-10:F1}]"))
         __Check("Price: 12.35
-Percent: 75 %
+Percent
+75 %
 [      12.3]
 [12.3      ]")
     End Sub

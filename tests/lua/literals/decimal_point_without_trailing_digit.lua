@@ -1,7 +1,7 @@
 -- vybe-test: lua/literals/decimal_point_without_trailing_digit
 -- origin: languages/lua/tests/lua/test_literals.rs
 
-local __w1 = "2"
+local __w1 = "2.0"
 local __i = 0
 
 do local __t = tostring(1. * 2); __i = __i + 1

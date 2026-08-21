@@ -41,8 +41,12 @@ Module VybeCheck
     End Sub
 End Module
 
-Dim btn As New Button()
-Dim sz As New Size(200, 50)
-btn.Size = sz
-__P(CStr(btn.Size.width))
-__P(CStr(btn.Size.height))
+Module Program
+    Sub Main()
+        Dim btn As New Button()
+        Dim sz As New Size(200, 50)
+        btn.Size = sz
+        __P(CStr(btn.Size.width))
+        __P(CStr(btn.Size.height))
+    End Sub
+End Module

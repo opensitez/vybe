@@ -54,7 +54,7 @@ const u8 = new Uint8Array(buf);
 buf.transfer(); // Detaches buf
 
 try {
-    u8[0] = 10;
+    u8.slice(0);
 } catch (e) {
     __p(__line("Detached Buffer Access TypeError"));
 }

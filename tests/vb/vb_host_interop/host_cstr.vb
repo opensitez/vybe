@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-__P(CStr(CStr(123)))
+Module Program
+    Sub Main()
+        __P(CStr(CStr(123)))
+    End Sub
+End Module

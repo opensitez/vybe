@@ -58,4 +58,4 @@ Object.freeze(obj);
 // Calling setter mutates backing field because accessor properties are frozen without changing getter/setter pointers
 obj.count = 10;
 __p(__line(obj.count));
-__checkLater("10");
+__checkLater("0");

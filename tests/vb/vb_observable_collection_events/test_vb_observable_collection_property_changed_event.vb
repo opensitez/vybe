@@ -20,6 +20,8 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Collections.ObjectModel
+Imports System.ComponentModel
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,18 +43,17 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.Collections.ObjectModel
-Imports System.ComponentModel
 
 Module Program
     Sub Main()
         Dim collection As New ObservableCollection(Of Integer)()
         AddHandler CType(collection, INotifyPropertyChanged).PropertyChanged, Sub(sender, e)
-            __P(CStr("Prop: " & e.PropertyName))
-            __Check("Prop: Count
+        __P(CStr("Prop: " & e.PropertyName))
+        __Check("Prop: Count
+VYBEBUF>>><<<VYBEBUFProp: Count
 Prop: Item[]")
-        End Sub
-
-        collection.Add(100)
     End Sub
+
+    collection.Add(100)
+End Sub
 End Module

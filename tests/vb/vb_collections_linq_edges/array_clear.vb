@@ -41,4 +41,10 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): Dim a = {1, 2}: Array.Clear(a, 0, 2): __P(CStr(a(0))): End Sub: End Module
+Module M
+    Sub Main()
+        Dim a = {1, 2}
+        Array.Clear(a, 0, 2)
+        __P(CStr(a(0)))
+    End Sub
+End Module

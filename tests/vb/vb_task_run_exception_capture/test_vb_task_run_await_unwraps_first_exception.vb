@@ -20,6 +20,8 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
+Imports System.Threading.Tasks
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,25 +43,22 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
-Imports System.Threading.Tasks
 
 Module Program
     Private Async Function RunFaultyTaskAsync() As Task
-        Await Task.Run(Sub()
-            Throw New ArgumentNullException("param", "Argument null in task")
-        End Sub)
-    End Function
+    Await Task.Run(Sub()
+    Throw New ArgumentNullException("param", "Argument null in task")
+End Sub)
+End Function
 
-    Sub Main()
-        Try
-            Dim t = RunFaultyTaskAsync()
-            t.Wait()
-        Catch ex As AggregateException
-            Dim inner = ex.InnerException
-            __P(CStr(inner.GetType().Name & ": " & inner.Message))
-        End Try
-        __Check("ArgumentNullException: Argument null in task
-Parameter name: param")
-    End Sub
+Sub Main()
+    Try
+        Dim t = RunFaultyTaskAsync()
+        t.Wait()
+    Catch ex As AggregateException
+    Dim inner = ex.InnerException
+    __P(CStr(inner.GetType().Name & ": " & inner.Message))
+End Try
+__Check("ArgumentNullException: Argument null in task (Parameter 'param')")
+End Sub
 End Module

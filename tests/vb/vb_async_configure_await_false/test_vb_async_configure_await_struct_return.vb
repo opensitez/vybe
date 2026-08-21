@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Threading.Tasks
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,23 +42,25 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.Threading.Tasks
 
 Structure Point
     Public X As Integer
     Public Y As Integer
-    Public Sub New(x As Integer, y As Integer) : Me.X = x : Me.Y = y : End Sub
+    Public Sub New(x As Integer, y As Integer)
+        Me.X = x
+        Me.Y = y
+    End Sub
 End Structure
 
 Module Program
     Private Async Function GetPointAsync() As Task(Of Point)
-        Await Task.Delay(5).ConfigureAwait(False)
-        Return New Point(100, 200)
-    End Function
+    Await Task.Delay(5).ConfigureAwait(False)
+    Return New Point(100, 200)
+End Function
 
-    Sub Main()
-        Dim t = GetPointAsync()
-        __P(CStr(t.Result.X & "," & t.Result.Y))
-        __Check("100,200")
-    End Sub
+Sub Main()
+    Dim t = GetPointAsync()
+    __P(CStr(t.Result.X & "," & t.Result.Y))
+    __Check("100,200")
+End Sub
 End Module

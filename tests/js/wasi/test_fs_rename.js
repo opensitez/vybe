@@ -1,6 +1,9 @@
 // vybe-test: js/wasi/test_fs_rename
 // origin: languages/js/tests/js/js_wasi_test.rs
 
+import fs from 'node:fs';
+
+
 function __fmt(v) {
     // console.log renders a bigint with an `n` suffix; String() drops it.
     return typeof v === "bigint" ? String(v) + "n" : String(v);
@@ -49,8 +52,8 @@ function __check(got, want) {
     }
 }
 
-fs.writeFile("/tmp/vybe_rename_old.txt", "data");
-        fs.rename("/tmp/vybe_rename_old.txt", "/tmp/vybe_rename_new.txt");
-        __p(__line(fs.exists("/tmp/vybe_rename_old.txt"), fs.exists("/tmp/vybe_rename_new.txt")));
-        fs.remove("/tmp/vybe_rename_new.txt");
+fs.writeFileSync("/tmp/vybe_rename_old.txt", "data");
+        fs.renameSync("/tmp/vybe_rename_old.txt", "/tmp/vybe_rename_new.txt");
+        __p(__line(fs.existsSync("/tmp/vybe_rename_old.txt"), fs.existsSync("/tmp/vybe_rename_new.txt")));
+        fs.unlinkSync("/tmp/vybe_rename_new.txt");
 __checkLater("false true");

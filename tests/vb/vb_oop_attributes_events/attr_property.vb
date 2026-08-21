@@ -41,4 +41,12 @@ Module VybeCheck
     End Sub
 End Module
 
-Class C: <System.Obsolete> Public Property P As Integer: End Class: Module M: Sub Main(): Dim p = GetType(C).GetProperty("P"): __P(CStr(p.GetCustomAttributes(False).Length > 0)): End Sub: End Module
+Class C
+    <System.Obsolete> Public Property P As Integer
+End Class
+Module M
+    Sub Main()
+        Dim p = GetType(C).GetProperty("P")
+        __P(CStr(p.GetCustomAttributes(False).Length > 0))
+    End Sub
+End Module

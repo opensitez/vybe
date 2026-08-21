@@ -43,7 +43,7 @@ End Module
 
 Module M
     Sub Main()
-        __P(CStr(Round(CDec("12.345"), 2)))
+        __P(CStr(Math.Round(CDec("12.345"), 2)))
         __Check("12.34")
     End Sub
 End Module

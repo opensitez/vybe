@@ -20,6 +20,8 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Collections.Concurrent
+Imports System.Linq
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,13 +43,13 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.Collections.Concurrent
-Imports System.Linq
 
 Module Program
     Sub Main()
         Dim q As New ConcurrentQueue(Of Integer)()
-        For i As Integer = 1 To 10 : q.Enqueue(i) : Next
+        For i As Integer = 1 To 10
+            q.Enqueue(i)
+        Next
         Dim evens = q.Where(Function(n) n Mod 2 = 0).ToList()
         __P(CStr(String.Join(",", evens)))
         __Check("2,4,6,8,10")

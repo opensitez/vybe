@@ -49,6 +49,6 @@ function __check(got, want) {
     }
 }
 
-const [,  c] = [10, 20, 30];
+const [,,  c] = [10, 20, 30];
 __p(__line(c));
 __checkLater("30");

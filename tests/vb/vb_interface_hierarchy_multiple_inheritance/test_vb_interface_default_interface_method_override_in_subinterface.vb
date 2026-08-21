@@ -43,29 +43,30 @@ End Module
 
 Interface ILogger
     Sub Log(msg As String)
-End Interface
+    End Interface
 
-Interface IAdvancedLogger
-    Inherits ILogger
-    Sub Log(msg As String, severity As Integer)
-End Interface
+    Interface IAdvancedLogger
+        Inherits ILogger
+        Sub Log(msg As String, severity As Integer)
+        End Interface
 
-Class CustomLogger
-    Implements IAdvancedLogger
-    Public Sub Log(msg As String) Implements ILogger.Log
-        __P(CStr("Basic: " & msg))
-    End Sub
-    Public Sub Log(msg As String, severity As Integer) Implements IAdvancedLogger.Log
-        __P(CStr("Advanced [" & severity & "]: " & msg))
-    End Sub
-End Class
+        Class CustomLogger
+            Implements IAdvancedLogger
+            Public Sub Log(msg As String) Implements ILogger.Log
+                __P(CStr("Basic: " & msg))
+            End Sub
+            Public Sub Log(msg As String, severity As Integer) Implements IAdvancedLogger.Log
+                __P(CStr("Advanced [" & severity & "]: " & msg))
+            End Sub
+        End Class
 
-Module Program
-    Sub Main()
-        Dim l As IAdvancedLogger = New CustomLogger()
-        l.Log("System Start")
-        l.Log("Critical Failure", 5)
-        __Check("Basic: System Start
-Advanced [5]: Critical Failure")
-    End Sub
-End Module
+        Module Program
+            Sub Main()
+                Dim l As IAdvancedLogger = New CustomLogger()
+                l.Log("System Start")
+                l.Log("Critical Failure", 5)
+                __Check("Basic: System Start
+Advanced [5]
+Critical Failure")
+            End Sub
+        End Module

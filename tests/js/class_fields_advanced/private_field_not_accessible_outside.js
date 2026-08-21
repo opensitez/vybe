@@ -56,6 +56,6 @@ class Secret {
 const s = new Secret();
 __p(__line(s.get()));
 let threw = false;
-try { s.#value; } catch { threw = true; }
+try { eval("s.#value");; } catch { threw = true; }
 __p(__line(threw));
 __checkLater("42\ntrue");

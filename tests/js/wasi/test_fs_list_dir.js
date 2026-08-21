@@ -1,6 +1,9 @@
 // vybe-test: js/wasi/test_fs_list_dir
 // origin: languages/js/tests/js/js_wasi_test.rs
 
+import fs from 'node:fs';
+
+
 function __fmt(v) {
     // console.log renders a bigint with an `n` suffix; String() drops it.
     return typeof v === "bigint" ? String(v) + "n" : String(v);
@@ -49,10 +52,10 @@ function __check(got, want) {
     }
 }
 
-fs.mkdir("/tmp/vybe_test_dir");
-        fs.writeFile("/tmp/vybe_test_dir/a.txt", "a");
-        fs.writeFile("/tmp/vybe_test_dir/b.txt", "b");
-        let files = fs.listDir("/tmp/vybe_test_dir");
+fs.mkdirSync("/tmp/vybe_test_dir", { recursive: true });
+        fs.writeFileSync("/tmp/vybe_test_dir/a.txt", "a");
+        fs.writeFileSync("/tmp/vybe_test_dir/b.txt", "b");
+        let files = fs.readdirSync("/tmp/vybe_test_dir");
         __p(__line(files.length));
-        fs.remove("/tmp/vybe_test_dir");
+        fs.rmSync("/tmp/vybe_test_dir", { recursive: true, force: true });
 __checkLater("2");

@@ -52,4 +52,4 @@ function __check(got, want) {
 class NullPrototype extends null {}
 __p(__line(Object.getPrototypeOf(NullPrototype.prototype) === null));
 __p(__line(Object.getPrototypeOf(NullPrototype) === Function.prototype));
-__checkLater("false\ntrue");
+__checkLater("true\ntrue");

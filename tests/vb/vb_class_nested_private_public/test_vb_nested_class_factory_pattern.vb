@@ -43,30 +43,34 @@ End Module
 
 Interface Product
     Function GetName() As String
-End Interface
+    End Interface
 
-Class Factory
-    Private Class ProductA
-        Implements Product
-        Public Function GetName() As String Implements Product.GetName : Return "ProdA" : End Function
+    Class Factory
+        Private Class ProductA
+            Implements Product
+            Public Function GetName() As String Implements Product.GetName
+                Return "ProdA"
+            End Function
+        End Class
+
+        Private Class ProductB
+            Implements Product
+            Public Function GetName() As String Implements Product.GetName
+                Return "ProdB"
+            End Function
+        End Class
+
+        Public Shared Function Create(type As String) As Product
+            If type = "A" Then Return New ProductA()
+            Return New ProductB()
+        End Function
     End Class
 
-    Private Class ProductB
-        Implements Product
-        Public Function GetName() As String Implements Product.GetName : Return "ProdB" : End Function
-    End Class
-
-    Public Shared Function Create(type As String) As Product
-        If type = "A" Then Return New ProductA()
-        Return New ProductB()
-    End Function
-End Class
-
-Module Program
-    Sub Main()
-        Dim p1 = Factory.Create("A")
-        Dim p2 = Factory.Create("B")
-        __P(CStr(p1.GetName() & "&" & p2.GetName()))
-        __Check("ProdA&ProdB")
-    End Sub
-End Module
+    Module Program
+        Sub Main()
+            Dim p1 = Factory.Create("A")
+            Dim p2 = Factory.Create("B")
+            __P(CStr(p1.GetName() & "&" & p2.GetName()))
+            __Check("ProdA&ProdB")
+        End Sub
+    End Module

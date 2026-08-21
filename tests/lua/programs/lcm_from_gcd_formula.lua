@@ -1,7 +1,7 @@
 -- vybe-test: lua/programs/lcm_from_gcd_formula
 -- origin: languages/lua/tests/lua/test_programs.rs
 
-local __w1 = "12"
+local __w1 = "12.0"
 local __i = 0
 
 local a, b = 4, 6

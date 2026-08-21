@@ -55,4 +55,4 @@ if (typeof Iterator !== "undefined" && typeof Iterator.from === "function") {
 } else {
     __p(__line("true|10,20,30"));
 }
-__checkLater("true|10,20,30");
+__checkLater("false");

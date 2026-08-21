@@ -54,4 +54,4 @@ const str = "one two";
 const m1 = re.exec(str);
 const m2 = re.exec(str);
 __p(__line(`${m1[0]}:${re.lastIndex}|${m2[0]}:${re.lastIndex}`));
-__checkLater("one:3|two:7");
+__checkLater("one:7|two:7");

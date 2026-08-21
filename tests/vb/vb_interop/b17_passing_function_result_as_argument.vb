@@ -41,10 +41,14 @@ Module VybeCheck
     End Sub
 End Module
 
-Function Double(n As Integer) As Integer
-    Return n * 2
-End Function
-Function AddOne(n As Integer) As Integer
-    Return n + 1
-End Function
-__P(CStr(AddOne(Double(5))))
+Module Program
+    Sub Main()
+        Function Double(n As Integer) As Integer
+        Return n * 2
+        End Function
+        Function AddOne(n As Integer) As Integer
+        Return n + 1
+        End Function
+        __P(CStr(AddOne(Double(5))))
+    End Sub
+End Module

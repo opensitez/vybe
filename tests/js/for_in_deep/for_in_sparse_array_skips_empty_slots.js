@@ -49,7 +49,7 @@ function __check(got, want) {
     }
 }
 
-const arr = [10,  30,  50];
+const arr = [10,,  30,,  50];
 const keys = [];
 for (const k in arr) {
     if (Object.hasOwn(arr, k)) keys.push(k);

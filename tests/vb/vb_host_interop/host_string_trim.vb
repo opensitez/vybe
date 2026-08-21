@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-__P(CStr(Trim("  hi  ")))
+Module Program
+    Sub Main()
+        __P(CStr(Trim("  hi  ")))
+    End Sub
+End Module

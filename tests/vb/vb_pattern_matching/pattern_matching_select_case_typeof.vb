@@ -44,12 +44,12 @@ End Module
 Module M
     Sub PrintType(obj As Object)
         Select Case obj
-            Case i As Integer
-                __P(CStr("Integer: " & i.ToString()))
-            Case s As String
-                __P(CStr("String: " & s))
-            Case Else
-                __P(CStr("Unknown"))
+        Case i As Integer
+            __P(CStr("Integer: " & i.ToString()))
+        Case s As String
+            __P(CStr("String: " & s))
+        Case Else
+            __P(CStr("Unknown"))
         End Select
     End Sub
 
@@ -58,7 +58,8 @@ Module M
         PrintType("Hello")
         PrintType(5.5)
         __Check("Integer: 42
-String: Hello
+String
+Hello
 Unknown")
     End Sub
 End Module

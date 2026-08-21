@@ -41,8 +41,12 @@ Module VybeCheck
     End Sub
 End Module
 
-Dim arr(5) As Integer
-arr(0) = 10
-arr(3) = 42
-__P(CStr(arr(0)))
-__P(CStr(arr(3)))
+Module Program
+    Sub Main()
+        Dim arr(5) As Integer
+        arr(0) = 10
+        arr(3) = 42
+        __P(CStr(arr(0)))
+        __P(CStr(arr(3)))
+    End Sub
+End Module

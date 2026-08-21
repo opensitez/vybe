@@ -1,7 +1,7 @@
 -- vybe-test: lua/pcall_error_objects/pcall_error_int_object
 -- origin: languages/lua/tests/lua/test_pcall_error_objects.rs
 
-local __w1 = "false 99"
+local __w1 = "false\t99"
 local __i = 0
 
 local ok, err = pcall(function() error(99) end)

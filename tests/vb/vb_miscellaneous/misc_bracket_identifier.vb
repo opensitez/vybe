@@ -41,4 +41,9 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): Dim [Class] = 42: __P(CStr([Class])): End Sub: End Module
+Module M
+    Sub Main()
+        Dim [Class] = 42
+        __P(CStr([Class]))
+    End Sub
+End Module

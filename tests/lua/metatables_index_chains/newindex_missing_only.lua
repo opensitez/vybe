@@ -1,7 +1,7 @@
 -- vybe-test: lua/metatables_index_chains/newindex_missing_only
 -- origin: languages/lua/tests/lua/test_metatables_index_chains.rs
 
-local __w1 = "1 99 10"
+local __w1 = "1\t99\t10"
 local __i = 0
 
 local called = 0

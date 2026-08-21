@@ -43,7 +43,7 @@ End Module
 
 Module M
     Sub Main()
-        __P(CStr(Round(Math.Atan(1), 6)))
+        __P(CStr(Math.Round(Math.Atan(1), 6)))
         __Check("0.785398")
     End Sub
 End Module

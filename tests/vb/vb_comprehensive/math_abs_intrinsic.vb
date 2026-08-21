@@ -43,9 +43,9 @@ End Module
 
 Module M
     Sub Main()
-        __P(CStr(Abs(-42)))
-        __P(CStr(Abs(42)))
-        __P(CStr(Abs(-7)))
+        __P(CStr(Math.Abs(-42)))
+        __P(CStr(Math.Abs(42)))
+        __P(CStr(Math.Abs(-7)))
         __Check("42
 42
 7")

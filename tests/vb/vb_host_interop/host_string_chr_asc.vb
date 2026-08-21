@@ -41,5 +41,9 @@ Module VybeCheck
     End Sub
 End Module
 
-__P(CStr(Chr(65)))
-__P(CStr(Asc("A")))
+Module Program
+    Sub Main()
+        __P(CStr(Chr(65)))
+        __P(CStr(Asc("A")))
+    End Sub
+End Module

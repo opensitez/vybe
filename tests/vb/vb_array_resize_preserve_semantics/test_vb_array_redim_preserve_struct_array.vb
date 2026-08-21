@@ -49,7 +49,8 @@ End Structure
 Module Program
     Sub Main()
         Dim pairs(0) As Pair
-        pairs(0).X = 10 : pairs(0).Y = 20
+        pairs(0).X = 10
+        pairs(0).Y = 20
         ReDim Preserve pairs(1)
         __P(CStr(pairs(0).X & ":" & pairs(0).Y))
         __P(CStr(pairs(1).X & ":" & pairs(1).Y))

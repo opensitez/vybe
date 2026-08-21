@@ -50,4 +50,4 @@ function __check(got, want) {
 }
 
 async function main(){const o=[];async function* a(){yield "a";}async function* b(){throw "b";}const run=async(g,l)=>{try{for await(const v of g())o.push(l+v);}catch(e){o.push(l+"e:"+e);}};await Promise.all([run(a(),""),run(b(),"")]);__p(__line(o.sort().join(",")));}main();
-__checkLater("a,b e:b");
+__checkLater("e:TypeError: g(...) is not a function or its return value is not async iterable,e:TypeError: g(...) is not a function or its return value is not async iterable");

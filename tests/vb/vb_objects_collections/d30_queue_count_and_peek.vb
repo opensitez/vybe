@@ -41,9 +41,13 @@ Module VybeCheck
     End Sub
 End Module
 
-Dim q As New Queue(Of String)
-q.Enqueue("a")
-q.Enqueue("b")
-__P(CStr(q.Count))
-__P(CStr(q.Peek()))
-__P(CStr(q.Count))
+Module Program
+    Sub Main()
+        Dim q As New Queue(Of String)
+        q.Enqueue("a")
+        q.Enqueue("b")
+        __P(CStr(q.Count))
+        __P(CStr(q.Peek()))
+        __P(CStr(q.Count))
+    End Sub
+End Module

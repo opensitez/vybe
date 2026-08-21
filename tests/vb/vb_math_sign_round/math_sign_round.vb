@@ -49,8 +49,8 @@ Module M
         __P(CStr(Sign(42)))
         
         ' Round performs banker's rounding by default
-        __P(CStr(Round(2.5))) ' Rounds to nearest even -> 2
-        __P(CStr(Round(3.5))) ' Rounds to nearest even -> 4
+        __P(CStr(Math.Round(2.5))) ' Rounds to nearest even -> 2
+        __P(CStr(Math.Round(3.5))) ' Rounds to nearest even -> 4
         __Check("-1
 0
 1

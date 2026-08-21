@@ -45,7 +45,8 @@ Structure FixedPoint
     Public X As Integer
     Public Y As Integer
     Public Sub New(x As Integer, y As Integer)
-        Me.X = x : Me.Y = y
+        Me.X = x
+        Me.Y = y
     End Sub
 End Structure
 

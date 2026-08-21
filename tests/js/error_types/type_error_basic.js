@@ -55,4 +55,4 @@ try {
     __p(__line(e instanceof TypeError));
     __p(__line(e.message));
 }
-__checkLater("true\nCannot read properties of null");
+__checkLater("true\nCannot read properties of null (reading 'foo')");

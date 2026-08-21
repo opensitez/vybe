@@ -43,6 +43,7 @@ End Module
 
 Module M
 ' Classes can only be protected if nested
+    Sub Main()
 __P(CStr("Parsed"))
 End Sub
 End Module

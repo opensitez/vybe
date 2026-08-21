@@ -42,8 +42,11 @@ Module VybeCheck
 End Module
 
 Class Sample
-    Public Function GetName() As String : Return "" : End Function
-    Public Sub DoNothing() : End Sub
+    Public Function GetName() As String
+        Return ""
+    End Function
+    Public Sub DoNothing()
+    End Sub
 End Class
 
 Module Program

@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Public Class Form1
     Dim currentValue As String = "initial"
     Dim previousValue As String = ""
@@ -57,9 +56,14 @@ Public Class Form1
         Return currentValue
     End Function
 End Class
-Dim f As New Form1()
-f.SetValue("second")
-f.SetValue("third")
-__P(CStr(f.GetValue()))
-f.Undo()
-__P(CStr(f.GetValue()))
+
+Module Program
+    Sub Main()
+        Dim f As New Form1()
+        f.SetValue("second")
+        f.SetValue("third")
+        __P(CStr(f.GetValue()))
+        f.Undo()
+        __P(CStr(f.GetValue()))
+    End Sub
+End Module

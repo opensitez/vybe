@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Collections.Generic
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,7 +42,6 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.Collections.Generic
 
 Class ReverseIntComparer
     Implements IComparer(Of Integer)
@@ -53,7 +53,9 @@ End Class
 Module Program
     Sub Main()
         Dim dict As New SortedDictionary(Of Integer, String)(New ReverseIntComparer())
-        dict(10) = "A" : dict(30) = "B" : dict(20) = "C"
+        dict(10) = "A"
+        dict(30) = "B"
+        dict(20) = "C"
         __P(CStr(String.Join(",", dict.Keys)))
         __Check("30,20,10")
     End Sub

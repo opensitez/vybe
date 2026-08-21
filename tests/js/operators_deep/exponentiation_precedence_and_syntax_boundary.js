@@ -52,4 +52,4 @@ function __check(got, want) {
 __p(__line((2 ** 3) ** 2)); // explicit grouping
 __p(__line(2 ** 3 ** 2));    // right-associative exponentiation
 __p(__line("end"));
-__checkLater("64\n64\nend");
+__checkLater("64\n512\nend");

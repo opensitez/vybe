@@ -40,15 +40,17 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Class Base
     Shared Function StaticHello() As String
         StaticHello = "hello"
     End Function
 End Class
-
 Class Child
     Inherits Base
 End Class
 
-__P(CStr(Child.StaticHello()))
+Module Program
+    Sub Main()
+        __P(CStr(Child.StaticHello()))
+    End Sub
+End Module

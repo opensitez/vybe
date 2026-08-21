@@ -41,4 +41,11 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Function Id(Of T)(v As T) As T: Return v: End Function: Sub Main(): __P(CStr(Id(42))): End Sub: End Module
+Module M
+    Function Id(Of T)(v As T) As T
+        Return v
+    End Function
+    Sub Main()
+        __P(CStr(Id(42)))
+    End Sub
+End Module

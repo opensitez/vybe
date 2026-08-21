@@ -59,4 +59,4 @@ try {
     __p(__line("PreventExtensions Error"));
 }
 __p(__line(obj.newProp));
-__checkLater("false\nPreventExtensions Error\nundefined");
+__checkLater("false\nundefined");

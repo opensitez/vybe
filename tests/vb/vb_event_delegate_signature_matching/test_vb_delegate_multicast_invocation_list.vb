@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,13 +42,16 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
 
 Delegate Sub MultiNotify(msg As String)
 
 Module Program
-    Private Sub Logger1(msg As String) : __P(CStr("Log1: " & msg)) : End Sub
-    Private Sub Logger2(msg As String) : __P(CStr("Log2: " & msg)) : End Sub
+    Private Sub Logger1(msg As String)
+        __P(CStr("Log1: " & msg))
+    End Sub
+    Private Sub Logger2(msg As String)
+        __P(CStr("Log2: " & msg))
+    End Sub
 
     Sub Main()
         Dim d As MultiNotify = AddressOf Logger1

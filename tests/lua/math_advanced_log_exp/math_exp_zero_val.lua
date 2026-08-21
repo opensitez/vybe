@@ -1,7 +1,7 @@
 -- vybe-test: lua/math_advanced_log_exp/math_exp_zero_val
 -- origin: languages/lua/tests/lua/test_math_advanced_log_exp.rs
 
-local __w1 = "1"
+local __w1 = "1.0"
 local __i = 0
 
 do local __t = tostring(math.exp(0)); __i = __i + 1

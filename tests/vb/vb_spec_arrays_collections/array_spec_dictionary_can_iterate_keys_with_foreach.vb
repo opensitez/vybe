@@ -41,4 +41,15 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M : Sub Main() : Dim d As New Dictionary(Of String, Integer) : d.Add("a",1) : d.Add("b",2) : Dim total As Integer = 0 : For Each key In d.Keys : total += d.Item(key) : Next : __P(CStr(total)) : End Sub : End Module
+Module M
+    Sub Main()
+        Dim d As New Dictionary(Of String, Integer)
+        d.Add("a",1)
+        d.Add("b",2)
+        Dim total As Integer = 0
+        For Each key In d.Keys
+            total += d.Item(key)
+        Next
+        __P(CStr(total))
+    End Sub
+End Module

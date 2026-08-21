@@ -53,9 +53,9 @@ class Base {}
 class Sub extends Base {
     constructor() {
         super();
-        return 42; // Primitive return in derived constructor is ignored!
+        return 42; // A derived ctor may return only an object or undefined.
     }
 }
-const s = new Sub();
-__p(__line(s instanceof Sub));
+try { const s = new Sub(); __p(__line(s instanceof Sub)); }
+catch (e) { __p(__line(e instanceof TypeError)); }
 __checkLater("true");

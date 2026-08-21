@@ -1,7 +1,7 @@
 -- vybe-test: lua/type_coercion/test_coercion_hex_string_to_number
 -- origin: languages/lua/tests/lua/test_type_coercion.rs
 
-local __w1 = "16.0"
+local __w1 = "16"
 local __i = 0
 
 do local __t = tostring('0x10' + 0); __i = __i + 1

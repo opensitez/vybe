@@ -45,7 +45,7 @@ Partial Class Logger
     ' Declaration
     Partial Private Sub LogMessage(msg As String)
     End Sub
-    
+
     Public Sub DoWork()
         __P(CStr("Working"))
         LogMessage("Work completed")

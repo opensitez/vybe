@@ -49,5 +49,5 @@ function __check(got, want) {
     }
 }
 
-class A{#x(){return "a";}} class B{#x(){return "b";}} __p(__line(new A().#x()));__p(__line(new B().#x()));
+class A{#x(){return "a";} static call(o){return o.#x();}} class B{#x(){return "b";} static call(o){return o.#x();}} __p(__line(A.call(new A())));__p(__line(B.call(new B())));
 __checkLater("a\nb");

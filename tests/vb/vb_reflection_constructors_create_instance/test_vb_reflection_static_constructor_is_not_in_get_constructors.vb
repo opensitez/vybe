@@ -42,8 +42,10 @@ Module VybeCheck
 End Module
 
 Class WithStaticCtor
-    Shared Sub New() : End Sub
-    Public Sub New() : End Sub
+    Shared Sub New()
+    End Sub
+    Public Sub New()
+    End Sub
 End Class
 
 Module Program

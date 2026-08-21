@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Reflection
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,11 +42,12 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.Reflection
 
 Class Account
     Private _balance As Double = 500.0
-    Public Function GetBalance() As Double : Return _balance : End Function
+    Public Function GetBalance() As Double
+        Return _balance
+    End Function
 End Class
 
 Module Program

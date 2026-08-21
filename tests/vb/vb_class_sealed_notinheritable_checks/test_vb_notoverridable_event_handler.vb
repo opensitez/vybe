@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,7 +42,6 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
 
 Class BaseEmitter
     Public Overridable Custom Event Action As EventHandler
@@ -70,7 +70,8 @@ End Class
 Module Program
     Sub Main()
         Dim e As BaseEmitter = New FixedEmitter()
-        AddHandler e.Action, Sub(sender, args) End Sub
+        AddHandler e.Action, Sub(sender, args)
+                             End Sub
         __Check("Handler Added to Fixed")
     End Sub
 End Module

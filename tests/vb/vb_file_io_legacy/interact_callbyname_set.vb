@@ -41,4 +41,13 @@ Module VybeCheck
     End Sub
 End Module
 
-Class C: Public Property P As String: End Class: Module M: Sub Main(): Dim obj As New C(): CallByName(obj, "P", CallType.Set, "V"): __P(CStr(obj.P)): End Sub: End Module
+Class C
+    Public Property P As String
+    End Class
+    Module M
+        Sub Main()
+            Dim obj As New C()
+            CallByName(obj, "P", CallType.Set, "V")
+            __P(CStr(obj.P))
+        End Sub
+    End Module

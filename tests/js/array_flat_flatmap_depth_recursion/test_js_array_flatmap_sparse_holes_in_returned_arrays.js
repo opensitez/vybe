@@ -52,4 +52,4 @@ function __check(got, want) {
 const arr = [1];
 const res = arr.flatMap(() => [10, , 20]);
 __p(__line(res.length + "|hasHole=" + !(1 in res)));
-__checkLater("3|hasHole=true");
+__checkLater("2|hasHole=false");

@@ -52,7 +52,7 @@ function __check(got, want) {
 class Target {
     #id = 1;
     static countValid(arr) {
-        return arr.filter(item => #id in item).length;
+        return arr.filter(item => Object(item) === item && #id in item).length;
     }
 }
 const items = [new Target(), {}, new Target(), "str"];

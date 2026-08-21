@@ -41,10 +41,14 @@ Module VybeCheck
     End Sub
 End Module
 
-__P(CStr(Len("hello")))
-__P(CStr(Left("hello", 3)))
-__P(CStr(Right("hello", 2)))
-__P(CStr(Mid("hello", 2, 3)))
-__P(CStr(UCase("hello")))
-__P(CStr(LCase("HELLO")))
-__P(CStr(Trim("  hi  ")))
+Module Program
+    Sub Main()
+        __P(CStr(Len("hello")))
+        __P(CStr(Left("hello", 3)))
+        __P(CStr(Right("hello", 2)))
+        __P(CStr(Mid("hello", 2, 3)))
+        __P(CStr(UCase("hello")))
+        __P(CStr(LCase("HELLO")))
+        __P(CStr(Trim("  hi  ")))
+    End Sub
+End Module

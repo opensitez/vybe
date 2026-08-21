@@ -45,10 +45,12 @@ Structure FlexBox(Of T)
     Public Val As T
     Public Name As String
     Public Sub New(v As T)
-        Val = v : Name = "Unnamed"
+        Val = v
+        Name = "Unnamed"
     End Sub
     Public Sub New(v As T, n As String)
-        Val = v : Name = n
+        Val = v
+        Name = n
     End Sub
 End Structure
 

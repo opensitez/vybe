@@ -41,6 +41,10 @@ Module VybeCheck
     End Sub
 End Module
 
-__P(CStr(7 \ 2))
-__P(CStr(10 \ 3))
-__P(CStr(100 \ 7))
+Module Program
+    Sub Main()
+        __P(CStr(7 \ 2))
+        __P(CStr(10 \ 3))
+        __P(CStr(100 \ 7))
+    End Sub
+End Module

@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Public Class Item
     Dim name As String
     Public Sub New(n As String)
@@ -50,8 +49,13 @@ Public Class Item
         Return name
     End Function
 End Class
-Function Describe(item As Object) As String
-    Return "Item: " & item.GetName()
-End Function
-Dim it As New Item("Widget")
-__P(CStr(Describe(it)))
+
+Module Program
+    Sub Main()
+        Function Describe(item As Object) As String
+        Return "Item: " & item.GetName()
+        End Function
+        Dim it As New Item("Widget")
+        __P(CStr(Describe(it)))
+    End Sub
+End Module

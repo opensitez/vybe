@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): __P(CStr(Format(12.34, "Currency"))): End Sub: End Module
+Module M
+    Sub Main()
+        __P(CStr(Format(12.34, "Currency")))
+    End Sub
+End Module

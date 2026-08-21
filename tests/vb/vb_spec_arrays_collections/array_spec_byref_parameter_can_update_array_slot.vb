@@ -41,4 +41,13 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M : Sub Bump(ByRef value As Integer) : value += 1 : End Sub : Sub Main() : Dim values() As Integer = {4} : Bump(values(0)) : __P(CStr(values(0))) : End Sub : End Module
+Module M
+    Sub Bump(ByRef value As Integer)
+        value += 1
+    End Sub
+    Sub Main()
+        Dim values() As Integer = {4}
+        Bump(values(0))
+        __P(CStr(values(0)))
+    End Sub
+End Module

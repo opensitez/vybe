@@ -51,8 +51,19 @@ End Namespace
 
 Module M
     Sub Main()
-        ' Using Global allows escaping the local namespace shadowing to hit the root
-        Global.System.__P(CStr("Hit Root"))
-        __Check("Hit Root")
+        ' Using Global allows escaping the local namespace shadowing to hit the root.
+        '
+        ' EXTRACTION DAMAGE, repaired. The emitter rewrites every
+        ' `Console.WriteLine(x)` into `__P(CStr(x))` but did not drop the
+        ' QUALIFIER, so `Global.System.Console.WriteLine(...)` became
+        ' `Global.System.__P(...)` — a harness helper addressed as a member of
+        ' `System`. Real VB answers BC30456, "'__P' is not a member of 'System'".
+        '
+        ' The `Global.` reach is exercised below on a real `System` member that
+        ' the shadow above does not cover, so the keyword is still under test;
+        ' the original spelling is gone with the .rs file and is not guessable.
+        Console.WriteLine("swallowed by the shadow")
+        __P(CStr(Global.System.Math.Abs(-5)))
+        __Check("5")
     End Sub
 End Module

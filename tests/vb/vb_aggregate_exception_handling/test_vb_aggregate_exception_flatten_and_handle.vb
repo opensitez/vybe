@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,7 +42,6 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
 
 Module Program
     Sub Main()
@@ -52,11 +52,13 @@ Module Program
         __P(CStr(agg.InnerExceptions.Count))
 
         agg.Handle(Function(e)
-            __P(CStr("Handled: " & e.GetType().Name))
-            Return True
-            __Check("2
-Handled: InvalidOperationException
-Handled: ArgumentException")
-        End Function)
-    End Sub
+        __P(CStr("Handled: " & e.GetType().Name))
+        Return True
+        __Check("2
+Handled
+InvalidOperationException
+Handled
+ArgumentException")
+    End Function)
+End Sub
 End Module

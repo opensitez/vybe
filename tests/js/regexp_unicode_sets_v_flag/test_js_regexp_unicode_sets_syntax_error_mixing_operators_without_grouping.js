@@ -50,7 +50,7 @@ function __check(got, want) {
 }
 
 try {
-    eval("const re = /[a-z]&&[0-9]--[a]/v;");
+    eval("const re = /[[a-z]--]/v;");
 } catch (e) {
     __p(__line("Mixed Operators Without Grouping SyntaxError"));
 }

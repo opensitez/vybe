@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Collections.Generic
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,21 +42,21 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.Collections.Generic
 
 Structure Point
     Public X As Integer
     Public Y As Integer
     Public Sub New(x As Integer, y As Integer)
-        Me.X = x : Me.Y = y
+        Me.X = x
+        Me.Y = y
     End Sub
 End Structure
 
 Module Program
     Sub Main()
         Dim dict As New Dictionary(Of String, Point) From {
-            {"P1", New Point(1, 2)},
-            {"P2", New Point(3, 4)}
+        {"P1", New Point(1, 2)},
+        {"P2", New Point(3, 4)}
         }
         __P(CStr(dict.ContainsValue(New Point(3, 4))))
         __P(CStr(dict.ContainsValue(New Point(0, 0))))

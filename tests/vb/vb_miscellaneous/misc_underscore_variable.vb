@@ -41,4 +41,9 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): Dim _var = 42: __P(CStr(_var)): End Sub: End Module
+Module M
+    Sub Main()
+        Dim _var = 42
+        __P(CStr(_var))
+    End Sub
+End Module

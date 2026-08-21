@@ -1,7 +1,7 @@
 -- vybe-test: lua/base_xpcall_handlers/test_xpcall_error_message_length
 -- origin: languages/lua/tests/lua/test_base_xpcall_handlers.rs
 
-local __w1 = "true"
+local __w1 = "false"
 local __i = 0
 
 local function bad() error("abcde") end

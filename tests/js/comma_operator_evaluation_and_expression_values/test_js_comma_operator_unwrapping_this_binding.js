@@ -54,4 +54,4 @@ const obj = {
     getVal() { return this ? this.val : "NoThis"; }
 };
 __p(__line(obj.getVal() + "|" + (0, obj.getVal)())); // (0, obj.getVal)() invokes method with this = undefined/globalThis!
-__checkLater("ObjVal|NoThis");
+__checkLater("ObjVal|undefined");

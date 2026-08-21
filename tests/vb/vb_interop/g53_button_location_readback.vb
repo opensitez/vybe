@@ -20,6 +20,8 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Windows.Forms
+Imports System.Drawing
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,9 +43,11 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.Windows.Forms
-Imports System.Drawing
-Dim btn As New Button()
-btn.Location = New Point(40, 100)
-__P(CStr(btn.location.x))
-__P(CStr(btn.location.y))
+Module Program
+    Sub Main()
+        Dim btn As New Button()
+        btn.Location = New Point(40, 100)
+        __P(CStr(btn.location.x))
+        __P(CStr(btn.location.y))
+    End Sub
+End Module

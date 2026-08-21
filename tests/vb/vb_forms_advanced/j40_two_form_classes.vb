@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Public Class Form1
     Dim title As String = "Form One"
     Public Sub New()
@@ -57,7 +56,12 @@ Public Class Form2
         Return title
     End Function
 End Class
-Dim f1 As New Form1()
-Dim f2 As New Form2()
-__P(CStr(f1.GetTitle()))
-__P(CStr(f2.GetTitle()))
+
+Module Program
+    Sub Main()
+        Dim f1 As New Form1()
+        Dim f2 As New Form2()
+        __P(CStr(f1.GetTitle()))
+        __P(CStr(f2.GetTitle()))
+    End Sub
+End Module

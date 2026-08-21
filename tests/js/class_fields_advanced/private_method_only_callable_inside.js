@@ -56,6 +56,6 @@ class Processor {
 const p = new Processor();
 __p(__line(p.process(21)));
 let threw = false;
-try { p.#transform(1); } catch { threw = true; }
+try { eval("p.#transform(1)");; } catch { threw = true; }
 __p(__line(threw));
 __checkLater("42\ntrue");

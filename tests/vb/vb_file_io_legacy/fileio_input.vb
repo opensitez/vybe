@@ -41,4 +41,18 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): Dim f = FreeFile(): FileOpen(f, "test_input.txt", OpenMode.Output): WriteLine(f, "A", "B"): FileClose(f): FileOpen(f, "test_input.txt", OpenMode.Input): Dim a As String = "": Dim b As String = "": Input(f, a): Input(f, b): FileClose(f): __P(CStr(a & b)): End Sub: End Module
+Module M
+    Sub Main()
+        Dim f = FreeFile()
+        FileOpen(f, "test_input.txt", OpenMode.Output)
+        WriteLine(f, "A", "B")
+        FileClose(f)
+        FileOpen(f, "test_input.txt", OpenMode.Input)
+        Dim a As String = ""
+        Dim b As String = ""
+        Input(f, a)
+        Input(f, b)
+        FileClose(f)
+        __P(CStr(a & b))
+    End Sub
+End Module

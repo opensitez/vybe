@@ -41,4 +41,11 @@ Module VybeCheck
     End Sub
 End Module
 
-Module Data: Public V As Integer = 10: End Module: Module M: Sub Main(): __P(CStr(Data.V)): End Sub: End Module
+Module Data
+    Public V As Integer = 10
+End Module
+Module M
+    Sub Main()
+        __P(CStr(Data.V))
+    End Sub
+End Module

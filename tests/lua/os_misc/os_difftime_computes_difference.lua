@@ -1,7 +1,7 @@
 -- vybe-test: lua/os_misc/os_difftime_computes_difference
 -- origin: languages/lua/tests/lua/test_os_misc.rs
 
-local __w1 = "50"
+local __w1 = "50.0"
 local __i = 0
 
 local d = os.difftime(100, 50)

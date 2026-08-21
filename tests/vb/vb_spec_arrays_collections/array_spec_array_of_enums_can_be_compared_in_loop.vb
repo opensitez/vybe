@@ -41,4 +41,17 @@ Module VybeCheck
     End Sub
 End Module
 
-Enum Tone : Low : High : End Enum : Module M : Sub Main() : Dim tones() As Tone = {Tone.Low, Tone.High} : Dim count As Integer = 0 : For Each t In tones : If t = Tone.High Then count += 1 : Next : __P(CStr(count)) : End Sub : End Module
+Enum Tone
+    Low
+    High
+End Enum
+Module M
+    Sub Main()
+        Dim tones() As Tone = {Tone.Low, Tone.High}
+        Dim count As Integer = 0
+        For Each t In tones
+            If t = Tone.High Then count += 1
+        Next
+        __P(CStr(count))
+    End Sub
+End Module

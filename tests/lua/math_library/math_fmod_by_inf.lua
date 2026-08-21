@@ -1,7 +1,7 @@
 -- vybe-test: lua/math_library/math_fmod_by_inf
 -- origin: languages/lua/tests/lua/test_math_library.rs
 
-local __w1 = "10"
+local __w1 = "10.0"
 local __i = 0
 
 do local __t = tostring(math.fmod(10, math.huge)); __i = __i + 1

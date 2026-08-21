@@ -47,13 +47,13 @@ Module M
             Try
                 Throw New Exception("inner")
             Catch ex As Exception
-                __P(CStr("inner: " & ex.Message))
-                Throw New Exception("rethrown")
-            End Try
-        Catch ex As Exception
-            __P(CStr("outer: " & ex.Message))
+            __P(CStr("inner: " & ex.Message))
+            Throw New Exception("rethrown")
         End Try
-        __Check("inner: inner
+    Catch ex As Exception
+    __P(CStr("outer: " & ex.Message))
+End Try
+__Check("inner: inner
 outer: rethrown")
-    End Sub
+End Sub
 End Module

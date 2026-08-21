@@ -53,4 +53,4 @@ const u8Base = new Uint8Array([0, 10, 20, 30, 0]);
 const u8Sub = new Uint8Array(u8Base.buffer, 1, 3);
 const clone = structuredClone(u8Sub);
 __p(__line(clone.length + "|" + clone.byteOffset + "|" + clone.join(",")));
-__checkLater("3|0|10,20,30");
+__checkLater("3|1|10,20,30");

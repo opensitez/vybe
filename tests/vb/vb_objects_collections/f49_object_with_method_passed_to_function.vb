@@ -40,16 +40,20 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Class Greeter
     Public Name As String
     Public Function Greet() As String
         Return "Hello, " & Name
     End Function
 End Class
-Function GetGreeting(g As Greeter) As String
-    Return g.Greet()
-End Function
-Dim gr As New Greeter()
-gr.Name = "World"
-__P(CStr(GetGreeting(gr)))
+
+Module Program
+    Sub Main()
+        Function GetGreeting(g As Greeter) As String
+        Return g.Greet()
+        End Function
+        Dim gr As New Greeter()
+        gr.Name = "World"
+        __P(CStr(GetGreeting(gr)))
+    End Sub
+End Module

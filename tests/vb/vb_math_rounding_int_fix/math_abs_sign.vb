@@ -43,7 +43,7 @@ End Module
 
 Module M
     Sub Main()
-        __P(CStr(Abs(-50.5)))
+        __P(CStr(Math.Abs(-50.5)))
         
         ' Sign returns -1, 0, or 1
         __P(CStr(Sign(-100)))

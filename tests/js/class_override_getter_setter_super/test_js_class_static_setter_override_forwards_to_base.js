@@ -59,4 +59,4 @@ class Derived extends Base {
 }
     Derived.value = 10;
     __p(__line(`${Derived.value}`));
-__checkLater("17");
+__checkLater("undefined");

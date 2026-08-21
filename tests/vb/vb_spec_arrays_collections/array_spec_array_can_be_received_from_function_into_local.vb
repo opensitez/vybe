@@ -41,4 +41,12 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M : Function Build() As String() : Return New String() {"x","y"} : End Function : Sub Main() : Dim items() As String = Build() : __P(CStr(items(0))) : End Sub : End Module
+Module M
+    Function Build() As String()
+        Return New String() {"x","y"}
+    End Function
+    Sub Main()
+        Dim items() As String = Build()
+        __P(CStr(items(0)))
+    End Sub
+End Module

@@ -46,7 +46,8 @@ Class Graph
         Public ID As Integer
         Public Label As String
         Public Sub New(id As Integer, label As String)
-            Me.ID = id : Me.Label = label
+            Me.ID = id
+            Me.Label = label
         End Sub
     End Structure
 End Class

@@ -41,5 +41,9 @@ Module VybeCheck
     End Sub
 End Module
 
-Dim parts() As String = Split("a,b,c", ",")
-__P(CStr(Join(parts, "-")))
+Module Program
+    Sub Main()
+        Dim parts() As String = Split("a,b,c", ",")
+        __P(CStr(Join(parts, "-")))
+    End Sub
+End Module

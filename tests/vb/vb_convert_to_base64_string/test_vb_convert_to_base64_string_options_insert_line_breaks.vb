@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,12 +42,13 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
 
 Module Program
     Sub Main()
         Dim largePayload As Byte() = New Byte(99) {}
-        For i As Integer = 0 To 99 : largePayload(i) = CByte(i) : Next
+        For i As Integer = 0 To 99
+            largePayload(i) = CByte(i)
+        Next
         Dim b64Formatted = Convert.ToBase64String(largePayload, Base64FormattingOptions.InsertLineBreaks)
         __P(CStr(b64Formatted.Contains(vbCrLf) OrElse b64Formatted.Contains(vbLf)))
         __Check("True")

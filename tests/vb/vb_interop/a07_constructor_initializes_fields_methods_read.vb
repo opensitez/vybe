@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Public Class Config
     Dim host As String
     Dim port As Integer
@@ -58,5 +57,10 @@ Public Class Config
         End If
     End Function
 End Class
-Dim cfg As New Config()
-__P(CStr(cfg.GetUrl()))
+
+Module Program
+    Sub Main()
+        Dim cfg As New Config()
+        __P(CStr(cfg.GetUrl()))
+    End Sub
+End Module

@@ -54,4 +54,4 @@ Promise.resolve().then(() => log.push("microtask"));
 log.push("sync");
 // After current sync code, microtask runs
 Promise.resolve().then(() => __p(__line(log.join(","))));
-__checkLater("microtask,sync");
+__checkLater("sync,microtask");

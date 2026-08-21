@@ -41,4 +41,16 @@ Module VybeCheck
     End Sub
 End Module
 
-Class C: Public V As Integer: Public Shared Operator +(a As C, b As C) As C: Return New C With {.V = a.V + b.V}: End Operator: End Class: Module M: Sub Main(): Dim c1 As New C With {.V = 1}: Dim c2 As New C With {.V = 2}: __P(CStr((c1 + c2).V)): End Sub: End Module
+Class C
+    Public V As Integer
+    Public Shared Operator +(a As C, b As C) As C
+    Return New C With {.V = a.V + b.V}
+End Operator
+End Class
+Module M
+    Sub Main()
+        Dim c1 As New C With {.V = 1}
+        Dim c2 As New C With {.V = 2}
+        __P(CStr((c1 + c2).V))
+    End Sub
+End Module

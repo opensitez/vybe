@@ -51,7 +51,7 @@ function __check(got, want) {
 
 const obj = { [Symbol.hasInstance]: "not_a_function" };
 try {
-    {} instanceof obj;
+    ({}) instanceof obj;
 } catch (e) {
     __p(__line("Symbol.hasInstance Not Callable TypeError"));
 }

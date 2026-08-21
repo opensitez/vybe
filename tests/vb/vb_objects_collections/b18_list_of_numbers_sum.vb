@@ -41,12 +41,16 @@ Module VybeCheck
     End Sub
 End Module
 
-Dim list As New List(Of Integer)
-list.Add(10)
-list.Add(20)
-list.Add(30)
-Dim total As Integer = 0
-For Each n As Integer In list
-    total = total + n
-Next
-__P(CStr(total))
+Module Program
+    Sub Main()
+        Dim list As New List(Of Integer)
+        list.Add(10)
+        list.Add(20)
+        list.Add(30)
+        Dim total As Integer = 0
+        For Each n As Integer In list
+        total = total + n
+        Next
+        __P(CStr(total))
+    End Sub
+End Module

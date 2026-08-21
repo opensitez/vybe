@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): __P(CStr(RGB(255, 0, 0))): End Sub: End Module
+Module M
+    Sub Main()
+        __P(CStr(RGB(255, 0, 0)))
+    End Sub
+End Module

@@ -1,7 +1,7 @@
 -- vybe-test: lua/math_constants_rounding/math_sqrt_four
 -- origin: languages/lua/tests/lua/test_math_constants_rounding.rs
 
-local __w1 = "2"
+local __w1 = "2.0"
 local __i = 0
 
 do local __t = tostring(math.sqrt(4)); __i = __i + 1

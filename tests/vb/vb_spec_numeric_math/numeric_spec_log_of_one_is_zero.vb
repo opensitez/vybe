@@ -43,7 +43,7 @@ End Module
 
 Module M
     Sub Main()
-        __P(CStr(Log(1)))
+        __P(CStr(Math.Log(1)))
         __Check("0")
     End Sub
 End Module

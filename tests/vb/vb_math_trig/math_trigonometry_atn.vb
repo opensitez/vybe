@@ -44,9 +44,9 @@ End Module
 Module M
     Sub Main()
         ' Atn(0) = 0
-        __P(CStr(Atn(0)))
+        __P(CStr(Math.Atan(0)))
         ' Approximating PI / 4
-        __P(CStr(Math.Round(Atn(1) * 4, 2)))
+        __P(CStr(Math.Round(Math.Atan(1) * 4, 2)))
         __Check("0
 3.14")
     End Sub

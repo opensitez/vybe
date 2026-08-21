@@ -41,12 +41,16 @@ Module VybeCheck
     End Sub
 End Module
 
-Sub FillList(lst As List)
-    lst.Add("one")
-    lst.Add("two")
-End Sub
-Dim myList As New List(Of String)
-FillList(myList)
-__P(CStr(myList.Count))
-__P(CStr(myList.Item(0)))
-__P(CStr(myList.Item(1)))
+Module Program
+    Sub Main()
+        Sub FillList(lst As List)
+        lst.Add("one")
+        lst.Add("two")
+        End Sub
+        Dim myList As New List(Of String)
+        FillList(myList)
+        __P(CStr(myList.Count))
+        __P(CStr(myList.Item(0)))
+        __P(CStr(myList.Item(1)))
+    End Sub
+End Module

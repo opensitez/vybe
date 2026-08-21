@@ -1,7 +1,7 @@
 -- vybe-test: lua/base_pcall_truths/test_pcall_error_from_nested
 -- origin: languages/lua/tests/lua/test_base_pcall_truths.rs
 
-local __w1 = "true"
+local __w1 = "false"
 local __i = 0
 
 local ok, v = pcall(function() pcall(function() error("x") end) end)

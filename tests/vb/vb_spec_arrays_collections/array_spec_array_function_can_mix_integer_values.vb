@@ -41,4 +41,9 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M : Sub Main() : Dim items = Array(10,20,30) : __P(CStr(items(1))) : End Sub : End Module
+Module M
+    Sub Main()
+        Dim items = Array(10,20,30)
+        __P(CStr(items(1)))
+    End Sub
+End Module

@@ -40,10 +40,14 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Class Dog
     Public Name As String
 End Class
-Dim d As New Dog()
-d.Name = "Rex"
-__P(CStr(d.Name))
+
+Module Program
+    Sub Main()
+        Dim d As New Dog()
+        d.Name = "Rex"
+        __P(CStr(d.Name))
+    End Sub
+End Module

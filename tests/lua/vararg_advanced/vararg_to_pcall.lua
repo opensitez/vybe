@@ -1,7 +1,7 @@
 -- vybe-test: lua/vararg_advanced/vararg_to_pcall
 -- origin: languages/lua/tests/lua/test_vararg_advanced.rs
 
-local __w1 = "true 15"
+local __w1 = "true\t15"
 local __i = 0
 
 local function f(a, b) return a + b end

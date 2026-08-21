@@ -41,12 +41,16 @@ Module VybeCheck
     End Sub
 End Module
 
-Dim q As New Queue(Of Integer)
-q.Enqueue(1)
-q.Enqueue(2)
-q.Enqueue(3)
-Dim total As Integer = 0
-Do While q.Count > 0
-    total = total + q.Dequeue()
-Loop
-__P(CStr(total))
+Module Program
+    Sub Main()
+        Dim q As New Queue(Of Integer)
+        q.Enqueue(1)
+        q.Enqueue(2)
+        q.Enqueue(3)
+        Dim total As Integer = 0
+        Do While q.Count > 0
+        total = total + q.Dequeue()
+        Loop
+        __P(CStr(total))
+    End Sub
+End Module

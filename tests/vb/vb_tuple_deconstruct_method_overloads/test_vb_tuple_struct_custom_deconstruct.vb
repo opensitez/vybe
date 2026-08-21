@@ -44,9 +44,13 @@ End Module
 Structure Dimensions
     Public Width As Integer
     Public Height As Integer
-    Public Sub New(w As Integer, h As Integer) : Width = w : Height = h : End Sub
+    Public Sub New(w As Integer, h As Integer)
+        Width = w
+        Height = h
+    End Sub
     Public Sub Deconstruct(ByRef w As Integer, ByRef h As Integer)
-        w = Width : h = Height
+        w = Width
+        h = Height
     End Sub
 End Structure
 

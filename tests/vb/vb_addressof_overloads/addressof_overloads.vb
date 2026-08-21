@@ -57,7 +57,7 @@ Module M
         ' AddressOf automatically selects the correct overload based on the target delegate type
         Dim ds As PrintString = AddressOf Print
         Dim di As PrintInteger = AddressOf Print
-        
+
         ds("Hello")
         di(42)
         __Check("String: Hello

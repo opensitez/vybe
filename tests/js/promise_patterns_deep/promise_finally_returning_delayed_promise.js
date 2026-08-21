@@ -35,9 +35,13 @@ function __pr(s) {
 // collects them in exactly that order, while a statement at the end of the
 // script sees an empty buffer.
 function __checkLater(want) {
+    // A macrotask LATER than any timer the test itself schedules. At 0ms
+    // this fired before the test's own `setTimeout(..., 1..10)` callbacks
+    // had run, so the check saw an empty buffer and the test asserted
+    // nothing — in Node AND in Vybe, whose timer ordering matches.
     setTimeout(function () {
         __check(__buf, want);
-    }, 0);
+    }, 50);
 }
 
 function __check(got, want) {

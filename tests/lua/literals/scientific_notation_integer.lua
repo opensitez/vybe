@@ -1,7 +1,7 @@
 -- vybe-test: lua/literals/scientific_notation_integer
 -- origin: languages/lua/tests/lua/test_literals.rs
 
-local __w1 = "100"
+local __w1 = "100.0"
 local __i = 0
 
 do local __t = tostring(1e2); __i = __i + 1

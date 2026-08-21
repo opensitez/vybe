@@ -50,7 +50,7 @@ function __check(got, want) {
 }
 
 try {
-    const res = 1n << -1n;
+    const res = 1n << 99999999999999n;
 } catch (e) {
     __p(__line(e.name));
 }

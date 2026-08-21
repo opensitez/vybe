@@ -44,7 +44,9 @@ End Module
 Class Node
     Public NextNode As Node
     Public Name As String
-    Public Sub New(n As String) : Name = n : End Sub
+    Public Sub New(n As String)
+        Name = n
+    End Sub
 End Class
 
 Module Program

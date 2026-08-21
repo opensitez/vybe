@@ -49,5 +49,5 @@ function __check(got, want) {
     }
 }
 
-__p(__line(RegExp.test("\\d+", "abc123")))
+__p(__line(new RegExp("\\d+").test("abc123")))
 __checkLater("true");

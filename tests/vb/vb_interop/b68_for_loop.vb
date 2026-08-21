@@ -41,8 +41,12 @@ Module VybeCheck
     End Sub
 End Module
 
-Dim total As Integer = 0
-For i As Integer = 1 To 5
-    total = total + i
-Next
-__P(CStr(total))
+Module Program
+    Sub Main()
+        Dim total As Integer = 0
+        For i As Integer = 1 To 5
+        total = total + i
+        Next
+        __P(CStr(total))
+    End Sub
+End Module

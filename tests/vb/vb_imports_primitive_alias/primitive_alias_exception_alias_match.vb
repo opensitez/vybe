@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports ArgError = System.ArgumentOutOfRangeException
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,7 +42,6 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports ArgError = System.ArgumentOutOfRangeException
 
 Module M
     Sub Main()

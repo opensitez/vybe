@@ -55,4 +55,4 @@ err.status = 404;
 const clone = structuredClone(err);
 
 __p(__line(clone.code + "|" + clone.status));
-__checkLater("ERR_NOT_FOUND|404");
+__checkLater("undefined|undefined");

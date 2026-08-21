@@ -41,4 +41,11 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): Dim a(,) As Integer: ReDim a(1, 1): a(1, 1) = 42: __P(CStr(a(1, 1))): End Sub: End Module
+Module M
+    Sub Main()
+        Dim a(,) As Integer
+        ReDim a(1, 1)
+        a(1, 1) = 42
+        __P(CStr(a(1, 1)))
+    End Sub
+End Module

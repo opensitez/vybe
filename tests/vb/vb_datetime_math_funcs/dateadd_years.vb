@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): __P(CStr(DateAdd("yyyy", 10, #1/1/2020#).Year)): End Sub: End Module
+Module M
+    Sub Main()
+        __P(CStr(DateAdd("yyyy", 10, #1/1/2020#).Year))
+    End Sub
+End Module

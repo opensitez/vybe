@@ -41,4 +41,9 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): Dim o As Object = New Integer() {1}: __P(CStr(TypeOf o Is Integer())): End Sub: End Module
+Module M
+    Sub Main()
+        Dim o As Object = New Integer() {1}
+        __P(CStr(TypeOf o Is Integer()))
+    End Sub
+End Module

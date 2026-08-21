@@ -41,4 +41,10 @@ Module VybeCheck
     End Sub
 End Module
 
-Delegate Function D(x As Integer) As Integer: Module M: Sub Main(): Dim fn As D = Function(x) x * 2: __P(CStr(fn(21))): End Sub: End Module
+Delegate Function D(x As Integer) As Integer
+Module M
+    Sub Main()
+        Dim fn As D = Function(x) x * 2
+        __P(CStr(fn(21)))
+    End Sub
+End Module

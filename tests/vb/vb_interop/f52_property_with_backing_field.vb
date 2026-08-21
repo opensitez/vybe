@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Public Class Temperature
     Dim _celsius As Double
     Public Property Celsius As Double
@@ -58,8 +57,13 @@ Public Class Temperature
         _celsius = c
     End Sub
 End Class
-Dim t As New Temperature(100)
-__P(CStr(t.Celsius))
-__P(CStr(t.GetFahrenheit()))
-t.Celsius = 0
-__P(CStr(t.GetFahrenheit()))
+
+Module Program
+    Sub Main()
+        Dim t As New Temperature(100)
+        __P(CStr(t.Celsius))
+        __P(CStr(t.GetFahrenheit()))
+        t.Celsius = 0
+        __P(CStr(t.GetFahrenheit()))
+    End Sub
+End Module

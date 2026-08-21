@@ -43,14 +43,16 @@ End Module
 
 Class Parent
     Public Property Tag As String
-End Class
+    End Class
 
-Class Child : Inherits Parent : End Class
+    Class Child
+        Inherits Parent
+    End Class
 
-Module Program
-    Sub Main()
-        Dim prop = GetType(Child).GetProperty("Tag")
-        __P(CStr(prop.DeclaringType.Name))
-        __Check("Parent")
-    End Sub
-End Module
+    Module Program
+        Sub Main()
+            Dim prop = GetType(Child).GetProperty("Tag")
+            __P(CStr(prop.DeclaringType.Name))
+            __Check("Parent")
+        End Sub
+    End Module

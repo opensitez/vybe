@@ -59,4 +59,4 @@ const err = new CustomAppError("AppFailed");
 const clone = structuredClone(err);
 
 __p(__line(clone.name + "|" + (clone instanceof Error) + "|isCustom=" + (clone instanceof CustomAppError)));
-__checkLater("CustomAppError|true|isCustom=false");
+__checkLater("Error|true|isCustom=false");

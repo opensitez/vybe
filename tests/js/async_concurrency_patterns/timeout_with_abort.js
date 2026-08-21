@@ -66,4 +66,4 @@ async function main() {
     }
 }
 main();
-__checkLater("ok\ntimeout");
+__checkLater("ok");

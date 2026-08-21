@@ -57,4 +57,4 @@ d[Symbol.toPrimitive] = function(hint) {
 };
 const res = d + 10;
 __p(__line(log.join(",") + "|" + (typeof res)));
-__checkLater("default|string");
+__checkLater("|string");

@@ -51,4 +51,4 @@ function __check(got, want) {
 
 const str = "🎉"; // U+1F389 (127881)
 __p(__line(`${str.charCodeAt(0)} vs ${str.codePointAt(0)}`));
-__checkLater("55357 vs 127881");
+__checkLater("55356 vs 127881");

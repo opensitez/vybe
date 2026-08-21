@@ -43,7 +43,7 @@ End Module
 
 Module M
     Sub Main()
-        __P(CStr(Round(Math.E, 2)))
+        __P(CStr(Math.Round(Math.E, 2)))
         __Check("2.72")
     End Sub
 End Module

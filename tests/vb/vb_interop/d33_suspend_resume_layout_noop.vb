@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Windows.Forms
 Module VybeCheck
     Public __buf As String = ""
 
@@ -40,8 +41,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
-Imports System.Windows.Forms
 Public Class Form1
     Public Sub New()
         Me.SuspendLayout()
@@ -50,4 +49,9 @@ Public Class Form1
         __P(CStr("ok"))
     End Sub
 End Class
-Dim f As New Form1()
+
+Module Program
+    Sub Main()
+        Dim f As New Form1()
+    End Sub
+End Module

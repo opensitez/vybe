@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports DomainAlias = Domain.Model
 Module VybeCheck
     Public __buf As String = ""
 
@@ -48,7 +49,6 @@ Public Id As Integer = 11
 End Class
 End Namespace
 End Namespace
-Imports DomainAlias = Domain.Model
 Module M
 Sub Main()
 Dim user As New DomainAlias.User()

@@ -43,32 +43,32 @@ End Module
 
 Interface ILoggerA
     Sub Log(msg As String)
-End Interface
+    End Interface
 
-Interface ILoggerB
-    Sub Log(msg As String)
-End Interface
+    Interface ILoggerB
+        Sub Log(msg As String)
+        End Interface
 
-Class DualLogger
-    Implements ILoggerA, ILoggerB
+        Class DualLogger
+            Implements ILoggerA, ILoggerB
 
-    Private Sub LogA(msg As String) Implements ILoggerA.Log
-        __P(CStr("LoggerA: " & msg))
-    End Sub
+            Private Sub LogA(msg As String) Implements ILoggerA.Log
+                __P(CStr("LoggerA: " & msg))
+            End Sub
 
-    Private Sub LogB(msg As String) Implements ILoggerB.Log
-        __P(CStr("LoggerB: " & msg))
-    End Sub
-End Class
+            Private Sub LogB(msg As String) Implements ILoggerB.Log
+                __P(CStr("LoggerB: " & msg))
+            End Sub
+        End Class
 
-Module Program
-    Sub Main()
-        Dim dl As New DualLogger()
-        Dim a As ILoggerA = dl
-        Dim b As ILoggerB = dl
-        a.Log("Message")
-        b.Log("Message")
-        __Check("LoggerA: Message
+        Module Program
+            Sub Main()
+                Dim dl As New DualLogger()
+                Dim a As ILoggerA = dl
+                Dim b As ILoggerB = dl
+                a.Log("Message")
+                b.Log("Message")
+                __Check("LoggerA: Message
 LoggerB: Message")
-    End Sub
-End Module
+            End Sub
+        End Module

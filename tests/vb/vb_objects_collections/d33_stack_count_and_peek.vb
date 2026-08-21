@@ -41,9 +41,13 @@ Module VybeCheck
     End Sub
 End Module
 
-Dim s As New Stack(Of String)
-s.Push("a")
-s.Push("b")
-__P(CStr(s.Count))
-__P(CStr(s.Peek()))
-__P(CStr(s.Count))
+Module Program
+    Sub Main()
+        Dim s As New Stack(Of String)
+        s.Push("a")
+        s.Push("b")
+        __P(CStr(s.Count))
+        __P(CStr(s.Peek()))
+        __P(CStr(s.Count))
+    End Sub
+End Module

@@ -50,4 +50,4 @@ function __check(got, want) {
 }
 
 __p(__line(`${Math.expm1(-0)}:${Math.expm1(Infinity)}:${Math.expm1(NaN)}`));
-__checkLater("-0:Infinity:NaN");
+__checkLater("0:Infinity:NaN");

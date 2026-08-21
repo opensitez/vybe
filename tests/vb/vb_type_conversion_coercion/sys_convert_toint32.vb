@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): __P(CStr(System.Convert.ToInt32("42"))): End Sub: End Module
+Module M
+    Sub Main()
+        __P(CStr(System.Convert.ToInt32("42")))
+    End Sub
+End Module

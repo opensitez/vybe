@@ -49,6 +49,6 @@ function __check(got, want) {
     }
 }
 
-const re = /[\p{Digit}\p{Letter}]/gu;
+const re = /[\p{Nd}\p{L}]/gu;
 __p(__line("a1!".match(re).join(",")));
 __checkLater("a,1");

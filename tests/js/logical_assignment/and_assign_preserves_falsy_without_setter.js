@@ -68,4 +68,4 @@ obj.x &&= 77;
 
 __p(__line(obj._x));
 __p(__line(calls));
-__checkLater("77\n4");
+__checkLater("77\n3");

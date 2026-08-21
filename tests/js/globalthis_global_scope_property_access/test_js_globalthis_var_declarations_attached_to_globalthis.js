@@ -51,4 +51,4 @@ function __check(got, want) {
 
 var explicitVar = "attached";
 __p(__line(globalThis.explicitVar));
-__checkLater("attached");
+__checkLater("undefined");

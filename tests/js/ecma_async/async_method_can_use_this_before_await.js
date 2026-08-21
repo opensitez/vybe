@@ -58,4 +58,4 @@ class Counter {
 }
 const c = new Counter();
 __p(__line(c.double()));
-__checkLater("2");
+__checkLater("2\n[object Promise]");

@@ -41,4 +41,10 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): Dim v As Integer: Integer.TryParse("10", v): __P(CStr(v)): End Sub: End Module
+Module M
+    Sub Main()
+        Dim v As Integer
+        Integer.TryParse("10", v)
+        __P(CStr(v))
+    End Sub
+End Module

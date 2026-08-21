@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,7 +42,6 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
 
 Class SharedPublisher
     Public Shared Event SharedEvent As Action
@@ -51,7 +51,9 @@ Class SharedPublisher
 End Class
 
 Module Program
-    Private Sub OnShared() : __P(CStr("Shared Fired")) : End Sub
+    Private Sub OnShared()
+        __P(CStr("Shared Fired"))
+    End Sub
 
     Sub Main()
         AddHandler SharedPublisher.SharedEvent, AddressOf OnShared

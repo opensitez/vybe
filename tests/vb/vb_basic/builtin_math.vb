@@ -43,7 +43,7 @@ End Module
 
 Module Program
     Sub Main()
-        __P(CStr(Abs(-5)))
+        __P(CStr(Math.Abs(-5)))
         __P(CStr(Math.Floor(3.7)))
         __Check("5
 3")

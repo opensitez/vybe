@@ -41,4 +41,14 @@ Module VybeCheck
     End Sub
 End Module
 
-Namespace NS: Class C: Public V As Integer = 10: End Class: End Namespace: Module M: Sub Main(): Dim obj As New NS.C(): __P(CStr(obj.V)): End Sub: End Module
+Namespace NS
+    Class C
+        Public V As Integer = 10
+    End Class
+End Namespace
+Module M
+    Sub Main()
+        Dim obj As New NS.C()
+        __P(CStr(obj.V))
+    End Sub
+End Module

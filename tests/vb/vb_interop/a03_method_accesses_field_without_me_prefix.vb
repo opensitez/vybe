@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Public Class Person
     Dim name As String
     Dim age As Integer
@@ -52,5 +51,10 @@ Public Class Person
         Return name & " is " & CStr(age)
     End Function
 End Class
-Dim p As New Person("Alice", 30)
-__P(CStr(p.Describe()))
+
+Module Program
+    Sub Main()
+        Dim p As New Person("Alice", 30)
+        __P(CStr(p.Describe()))
+    End Sub
+End Module

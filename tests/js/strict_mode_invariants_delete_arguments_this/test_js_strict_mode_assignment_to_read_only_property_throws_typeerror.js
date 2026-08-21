@@ -1,6 +1,8 @@
 // vybe-test: js/strict_mode_invariants_delete_arguments_this/test_js_strict_mode_assignment_to_read_only_property_throws_typeerror
 // origin: languages/js/tests/js/test_js_strict_mode_invariants_delete_arguments_this.rs
 
+"use strict";
+
 function __fmt(v) {
     // console.log renders a bigint with an `n` suffix; String() drops it.
     return typeof v === "bigint" ? String(v) + "n" : String(v);
@@ -52,7 +54,6 @@ function __check(got, want) {
 const obj = {};
 Object.defineProperty(obj, "fixed", { value: 10, writable: false });
 try {
-    "use strict";
     obj.fixed = 20;
 } catch (e) {
     __p(__line("Strict Read-Only Property TypeError"));

@@ -51,4 +51,4 @@ function __check(got, want) {
 
 const re = /\p{Punctuation}/gu;
 __p(__line("Hello, world!".match(re).join(",")));
-__checkLater(", !");
+__checkLater(",,!");

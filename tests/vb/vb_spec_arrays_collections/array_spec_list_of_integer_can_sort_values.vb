@@ -41,4 +41,13 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M : Sub Main() : Dim items As New List(Of Integer) : items.Add(3) : items.Add(1) : items.Add(2) : items.Sort() : __P(CStr(items(0))) : End Sub : End Module
+Module M
+    Sub Main()
+        Dim items As New List(Of Integer)
+        items.Add(3)
+        items.Add(1)
+        items.Add(2)
+        items.Sort()
+        __P(CStr(items(0)))
+    End Sub
+End Module

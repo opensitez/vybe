@@ -56,7 +56,7 @@ class Secret {
 const s = new Secret();
 __p(__line(s.getValue()));
 try {
-    __p(__line(s.#value));
+    __p(__line(eval("s.#value")));
 } catch (e) {
     __p(__line("access denied"));
 }

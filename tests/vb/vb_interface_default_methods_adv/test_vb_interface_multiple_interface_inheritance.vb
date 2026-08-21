@@ -43,32 +43,38 @@ End Module
 
 Interface IReadable
     Sub Read()
-End Interface
+    End Interface
 
-Interface IWritable
-    Sub Write()
-End Interface
+    Interface IWritable
+        Sub Write()
+        End Interface
 
-Interface IStreamable
-    Inherits IReadable, IWritable
-    Sub Flush()
-End Interface
+        Interface IStreamable
+            Inherits IReadable, IWritable
+            Sub Flush()
+            End Interface
 
-Class MemoryStreamHandler
-    Implements IStreamable
-    Public Sub Read() Implements IReadable.Read : __P(CStr("Read")) : End Sub
-    Public Sub Write() Implements IWritable.Write : __P(CStr("Write")) : End Sub
-    Public Sub Flush() Implements IStreamable.Flush : __P(CStr("Flush")) : End Sub
-End Class
+            Class MemoryStreamHandler
+                Implements IStreamable
+                Public Sub Read() Implements IReadable.Read
+                    __P(CStr("Read"))
+                End Sub
+                Public Sub Write() Implements IWritable.Write
+                    __P(CStr("Write"))
+                End Sub
+                Public Sub Flush() Implements IStreamable.Flush
+                    __P(CStr("Flush"))
+                End Sub
+            End Class
 
-Module Program
-    Sub Main()
-        Dim s As IStreamable = New MemoryStreamHandler()
-        s.Read()
-        s.Write()
-        s.Flush()
-        __Check("Read
+            Module Program
+                Sub Main()
+                    Dim s As IStreamable = New MemoryStreamHandler()
+                    s.Read()
+                    s.Write()
+                    s.Flush()
+                    __Check("Read
 Write
 Flush")
-    End Sub
-End Module
+                End Sub
+            End Module

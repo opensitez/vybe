@@ -41,4 +41,21 @@ Module VybeCheck
     End Sub
 End Module
 
-Interface I1: Sub Test(): End Interface: Interface I2: Sub Test(): End Interface: Class C: Implements I1, I2: Public Sub Test() Implements I1.Test, I2.Test: __P(CStr("B")): End Sub: End Class: Module M: Sub Main(): Dim obj As New C(): obj.Test(): End Sub: End Module
+Interface I1
+    Sub Test()
+    End Interface
+    Interface I2
+        Sub Test()
+        End Interface
+        Class C
+            Implements I1, I2
+            Public Sub Test() Implements I1.Test, I2.Test
+                __P(CStr("B"))
+            End Sub
+        End Class
+        Module M
+            Sub Main()
+                Dim obj As New C()
+                obj.Test()
+            End Sub
+        End Module

@@ -45,7 +45,8 @@ Structure Vector2D(Of T)
     Public X As T
     Public Y As T
     Public Sub New(x As T, y As T)
-        Me.X = x : Me.Y = y
+        Me.X = x
+        Me.Y = y
     End Sub
     Public Overrides Function ToString() As String
         Return "[" & X.ToString() & ", " & Y.ToString() & "]"

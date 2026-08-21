@@ -49,7 +49,7 @@ function __check(got, want) {
     }
 }
 
-const arr = [1,  3];
+const arr = [1,,  3];
 const res = [];
 for (const x of arr) res.push(String(x));
 __p(__line(res.join(",")));

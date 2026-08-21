@@ -52,4 +52,4 @@ function __check(got, want) {
 const set = new Set([10, 20]);
 const res = [1].flatMap(() => set);
 __p(__line(res.join(",") + "|isArr=" + Array.isArray(res))); // Returns flattened Array, not Set!
-__checkLater("10,20|isArr=true");
+__checkLater("[object Set]|isArr=true");

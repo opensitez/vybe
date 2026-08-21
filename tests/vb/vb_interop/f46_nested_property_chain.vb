@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Public Class Inner
     Dim value As String
     Public Sub New(v As String)
@@ -53,5 +52,10 @@ Public Class Outer
         inner = New Inner("deep")
     End Sub
 End Class
-Dim o As New Outer()
-__P(CStr(o.inner.value))
+
+Module Program
+    Sub Main()
+        Dim o As New Outer()
+        __P(CStr(o.inner.value))
+    End Sub
+End Module

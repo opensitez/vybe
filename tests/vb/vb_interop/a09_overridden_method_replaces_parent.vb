@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Public Class Base
     Public Function Name() As String
         Return "Base"
@@ -52,5 +51,10 @@ Public Class Derived
         Return "Derived"
     End Function
 End Class
-Dim d As New Derived()
-__P(CStr(d.Name()))
+
+Module Program
+    Sub Main()
+        Dim d As New Derived()
+        __P(CStr(d.Name()))
+    End Sub
+End Module

@@ -52,4 +52,4 @@ function __check(got, want) {
 const re = /^|a/y;
 __p(__line(re.test("a") + "|last=" + re.lastIndex));
 __p(__line(re.test("a") + "|last=" + re.lastIndex));
-__checkLater("true|last=0\ntrue|last=1");
+__checkLater("true|last=0\ntrue|last=0");

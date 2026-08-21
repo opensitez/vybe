@@ -50,4 +50,4 @@ function __check(got, want) {
 }
 
 function f() { return; } __p(__line(f()))
-__checkLater("null");
+__checkLater("undefined");

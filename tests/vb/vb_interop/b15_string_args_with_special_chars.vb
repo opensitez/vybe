@@ -41,9 +41,13 @@ Module VybeCheck
     End Sub
 End Module
 
-Function Echo(s As String) As String
-    Return s
-End Function
-__P(CStr(Echo("hello world")))
-__P(CStr(Echo("it's")))
-__P(CStr(Echo("a&b")))
+Module Program
+    Sub Main()
+        Function Echo(s As String) As String
+        Return s
+        End Function
+        __P(CStr(Echo("hello world")))
+        __P(CStr(Echo("it's")))
+        __P(CStr(Echo("a&b")))
+    End Sub
+End Module

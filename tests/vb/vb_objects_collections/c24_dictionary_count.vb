@@ -41,8 +41,12 @@ Module VybeCheck
     End Sub
 End Module
 
-Dim dict As New Dictionary(Of String, String)
-dict.Add("x", "1")
-dict.Add("y", "2")
-dict.Add("z", "3")
-__P(CStr(dict.Count))
+Module Program
+    Sub Main()
+        Dim dict As New Dictionary(Of String, String)
+        dict.Add("x", "1")
+        dict.Add("y", "2")
+        dict.Add("z", "3")
+        __P(CStr(dict.Count))
+    End Sub
+End Module

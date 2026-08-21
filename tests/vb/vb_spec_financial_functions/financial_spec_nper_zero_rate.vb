@@ -43,7 +43,7 @@ End Module
 
 Module M
     Sub Main()
-        __P(CStr(Round(NPer(0, -100, 1000, 0, 0), 2)))
+        __P(CStr(Math.Round(NPer(0, -100, 1000, 0, 0), 2)))
         __Check("10")
     End Sub
 End Module

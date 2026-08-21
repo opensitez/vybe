@@ -20,6 +20,8 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
+Imports System.Collections.Concurrent
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,16 +43,14 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
-Imports System.Collections.Concurrent
 
 Module Program
     Sub Main()
         Try
             Dim bc As New BlockingCollection(Of Integer)(boundedCapacity:=0)
         Catch ex As ArgumentOutOfRangeException
-            __P(CStr("ArgumentOutOfRangeException Caught on 0 Capacity"))
-        End Try
-        __Check("ArgumentOutOfRangeException Caught on 0 Capacity")
-    End Sub
+        __P(CStr("ArgumentOutOfRangeException Caught on 0 Capacity"))
+    End Try
+    __Check("ArgumentOutOfRangeException Caught on 0 Capacity")
+End Sub
 End Module

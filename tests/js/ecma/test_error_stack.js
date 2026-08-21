@@ -51,4 +51,4 @@ function __check(got, want) {
 
 let e = new Error("test error");
         __p(__line(e.stack));
-__checkLater("Error: test error");
+__checkLater("Error: test error\n    at Object.<anonymous> (/Users/youness/www/html/vybe/tests/js/ecma/test_error_stack.js:52:9)\n    at Module._compile (node:internal/modules/cjs/loader:1934:14)\n    at Object..js (node:internal/modules/cjs/loader:2074:10)\n    at Module.load (node:internal/modules/cjs/loader:1656:32)\n    at Module._load (node:internal/modules/cjs/loader:1448:12)\n    at wrapModuleLoad (node:internal/modules/cjs/loader:261:19)\n    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)\n    at node:internal/main/run_main_module:33:47");

@@ -20,6 +20,8 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Collections.Concurrent
+Imports System.Threading.Tasks
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,27 +43,27 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.Collections.Concurrent
-Imports System.Threading.Tasks
 
 Module Program
     Sub Main()
         Dim bc As New BlockingCollection(Of Integer)()
 
         Dim producer = Task.Run(Sub()
-            For i As Integer = 1 To 5 : bc.Add(i) : Next
-            bc.CompleteAdding()
-            __Check("Consumer Sum: 15")
-        End Sub)
+        For i As Integer = 1 To 5
+            bc.Add(i)
+        Next
+        bc.CompleteAdding()
+        __Check("Consumer Sum: 15")
+    End Sub)
 
-        Dim consumerSum = 0
-        Dim consumer = Task.Run(Sub()
-            For Each item In bc.GetConsumingEnumerable()
-                consumerSum += item
-            Next
-        End Sub)
+    Dim consumerSum = 0
+    Dim consumer = Task.Run(Sub()
+    For Each item In bc.GetConsumingEnumerable()
+        consumerSum += item
+    Next
+End Sub)
 
-        Task.WaitAll(producer, consumer)
-        __P(CStr("Consumer Sum: " & consumerSum))
-    End Sub
+Task.WaitAll(producer, consumer)
+__P(CStr("Consumer Sum: " & consumerSum))
+End Sub
 End Module

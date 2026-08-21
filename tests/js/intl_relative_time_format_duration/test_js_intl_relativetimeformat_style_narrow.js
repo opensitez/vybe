@@ -51,4 +51,4 @@ function __check(got, want) {
 
 const rtf = new Intl.RelativeTimeFormat("en", { style: "narrow" });
 __p(__line(rtf.format(2, "year")));
-__checkLater("in 2 yr.");
+__checkLater("in 2y");

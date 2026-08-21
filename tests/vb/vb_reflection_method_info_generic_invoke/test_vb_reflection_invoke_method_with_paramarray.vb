@@ -44,7 +44,9 @@ End Module
 Class Aggregator
     Public Function SumAll(ParamArray numbers As Integer()) As Integer
         Dim sum = 0
-        For Each n In numbers : sum += n : Next
+        For Each n In numbers
+            sum += n
+        Next
         Return sum
     End Function
 End Class

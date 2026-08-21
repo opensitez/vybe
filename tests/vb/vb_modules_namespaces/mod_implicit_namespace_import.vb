@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports N1
 Module VybeCheck
     Public __buf As String = ""
 
@@ -46,7 +47,6 @@ Public Module Mod1
 Public V As Integer = 42
 End Module
 End Namespace
-Imports N1
 Module M
 Sub Main()
 __P(CStr(V)) ' Mod1 is implicitly imported because N1 is imported

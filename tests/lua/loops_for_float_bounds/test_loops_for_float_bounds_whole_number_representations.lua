@@ -1,7 +1,7 @@
 -- vybe-test: lua/loops_for_float_bounds/test_loops_for_float_bounds_whole_number_representations
 -- origin: languages/lua/tests/lua/test_loops_for_float_bounds.rs
 
-local __w1 = "16"
+local __w1 = "16.0"
 local __i = 0
 
 local sum = 0

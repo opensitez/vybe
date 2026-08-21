@@ -52,4 +52,4 @@ function __check(got, want) {
 const loneLead = "a\uD83Db";
 const wellFormed = loneLead.toWellFormed();
 __p(__line(wellFormed + "|code=" + wellFormed.charCodeAt(1))); // Lone surrogate replaced by U+FFFD (65533 replacement character)!
-__checkLater("ab|code=65533");
+__checkLater("a\ufffdb|code=65533");

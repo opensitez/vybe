@@ -43,20 +43,24 @@ End Module
 
 Class Person
     Public Property Name As String
-    Public Property Age As Integer
-    Public Sub New(n As String, a As Integer) : Name = n : Age = a : End Sub
-    Public Sub Deconstruct(ByRef n As String, ByRef a As Integer)
-        n = Name : a = Age
-    End Sub
-End Class
+        Public Property Age As Integer
+            Public Sub New(n As String, a As Integer)
+                Name = n
+                Age = a
+            End Sub
+            Public Sub Deconstruct(ByRef n As String, ByRef a As Integer)
+                n = Name
+                a = Age
+            End Sub
+        End Class
 
-Module Program
-    Sub Main()
-        Dim p As New Person("Bob", 40)
-        Dim n As String = Nothing
-        Dim a As Integer = 0
-        p.Deconstruct(n, a)
-        __P(CStr(n & " is " & a))
-        __Check("Bob is 40")
-    End Sub
-End Module
+        Module Program
+            Sub Main()
+                Dim p As New Person("Bob", 40)
+                Dim n As String = Nothing
+                Dim a As Integer = 0
+                p.Deconstruct(n, a)
+                __P(CStr(n & " is " & a))
+                __Check("Bob is 40")
+            End Sub
+        End Module

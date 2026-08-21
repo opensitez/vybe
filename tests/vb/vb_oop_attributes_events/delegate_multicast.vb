@@ -41,4 +41,12 @@ Module VybeCheck
     End Sub
 End Module
 
-Delegate Sub D(): Module M: Sub Main(): Dim a As D = Sub() __P(CStr("A")): Dim b As D = Sub() __P(CStr("B")): Dim c = CType(System.Delegate.Combine(a, b), D): c(): End Sub: End Module
+Delegate Sub D()
+Module M
+    Sub Main()
+        Dim a As D = Sub() __P(CStr("A"))
+        Dim b As D = Sub() __P(CStr("B"))
+        Dim c = CType(System.Delegate.Combine(a, b), D)
+        c()
+    End Sub
+End Module

@@ -41,4 +41,10 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M : Sub Main() : Dim values() As String = {"a", "b"} : Erase values : __P(CStr(IsNothing(values))) : End Sub : End Module
+Module M
+    Sub Main()
+        Dim values() As String = {"a", "b"}
+        Erase values
+        __P(CStr(IsNothing(values)))
+    End Sub
+End Module

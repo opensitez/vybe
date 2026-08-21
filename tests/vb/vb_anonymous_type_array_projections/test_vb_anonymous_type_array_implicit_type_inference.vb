@@ -44,8 +44,8 @@ End Module
 Module Program
     Sub Main()
         Dim people = {
-            New With {.Name = "Alice", .Score = 90},
-            New With {.Name = "Bob", .Score = 85}
+        New With {.Name = "Alice", .Score = 90},
+        New With {.Name = "Bob", .Score = 85}
         }
         For Each p In people
             __P(CStr(p.Name & ":" & p.Score))

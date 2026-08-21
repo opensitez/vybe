@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,18 +42,20 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
 
 <AttributeUsage(AttributeTargets.Method)>
 Class RouteAttribute
     Inherits Attribute
     Public Path As String
-    Public Sub New(p As String) : Path = p : End Sub
+    Public Sub New(p As String)
+        Path = p
+    End Sub
 End Class
 
 Class Controller
     <Route("/api/users")>
-    Public Sub GetUsers() : End Sub
+    Public Sub GetUsers()
+    End Sub
 End Class
 
 Module Program

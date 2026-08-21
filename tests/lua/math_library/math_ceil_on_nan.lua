@@ -1,7 +1,7 @@
 -- vybe-test: lua/math_library/math_ceil_on_nan
 -- origin: languages/lua/tests/lua/test_math_library.rs
 
-local __w1 = "NaN"
+local __w1 = "nan"
 local __i = 0
 
 do local __t = tostring(tostring(math.ceil(0/0))); __i = __i + 1

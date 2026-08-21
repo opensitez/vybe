@@ -42,8 +42,13 @@ Module VybeCheck
 End Module
 
 Module M
-Sub Main()
-Select Case 1: Case 1: __P(CStr("A")): Case 2: __P(CStr("B")): End Select
-    __Check("A")
-End Sub
+    Sub Main()
+        Select Case 1
+        Case 1
+            __P(CStr("A"))
+        Case 2
+            __P(CStr("B"))
+        End Select
+        __Check("A")
+    End Sub
 End Module

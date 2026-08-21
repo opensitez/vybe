@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): __P(CStr(Math.Round(3.14159, 2))): End Sub: End Module
+Module M
+    Sub Main()
+        __P(CStr(Math.Round(3.14159, 2)))
+    End Sub
+End Module

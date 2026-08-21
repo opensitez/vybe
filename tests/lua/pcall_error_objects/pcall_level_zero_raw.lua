@@ -1,7 +1,7 @@
 -- vybe-test: lua/pcall_error_objects/pcall_level_zero_raw
 -- origin: languages/lua/tests/lua/test_pcall_error_objects.rs
 
-local __w1 = "false raw"
+local __w1 = "false\traw"
 local __i = 0
 
 local ok, msg = pcall(function() error("raw", 0) end)

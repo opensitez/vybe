@@ -43,7 +43,7 @@ End Module
 
 Module M
     Sub Main()
-        __P(CStr(Round(PV(0, 10, -100, 0, 0), 2)))
+        __P(CStr(Math.Round(PV(0, 10, -100, 0, 0), 2)))
         __Check("1000")
     End Sub
 End Module

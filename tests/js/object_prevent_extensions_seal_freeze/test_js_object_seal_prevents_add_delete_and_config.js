@@ -63,4 +63,4 @@ try {
 } catch (e) {
     __p(__line("Seal Delete Error"));
 }
-__checkLater("true\nfalse\n100\nSeal Delete Error");
+__checkLater("true\nfalse\n100");

@@ -42,8 +42,12 @@ Module VybeCheck
 End Module
 
 Class Utility
-    Public Function Process(Of T)(item As T) As String : Return item.ToString() : End Function
-    Public Function NonGeneric(item As String) As String : Return item : End Function
+    Public Function Process(Of T)(item As T) As String
+        Return item.ToString()
+    End Function
+    Public Function NonGeneric(item As String) As String
+        Return item
+    End Function
 End Class
 
 Module Program

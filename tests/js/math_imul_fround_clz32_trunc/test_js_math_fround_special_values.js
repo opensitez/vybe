@@ -50,4 +50,4 @@ function __check(got, want) {
 }
 
 __p(__line(`${Math.fround(0)}:${Math.fround(-0)}:${Math.fround(Infinity)}:${Math.fround(NaN)}`));
-__checkLater("0:-0:Infinity:NaN");
+__checkLater("0:0:Infinity:NaN");

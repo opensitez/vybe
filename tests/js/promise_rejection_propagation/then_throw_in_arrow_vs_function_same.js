@@ -50,4 +50,4 @@ function __check(got, want) {
 }
 
 const o=[];Promise.resolve(0).then(function(){throw "fn";}).catch(e=>o.push(e));Promise.resolve(0).then(()=>{throw "ar";}).catch(e=>o.push(e)).then(()=>__p(__line(o.join(","))));
-__checkLater("fn\nar");
+__checkLater("fn,ar");

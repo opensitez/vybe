@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Linq
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,18 +42,17 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.Linq
 
 Module Program
     Sub Main()
         Dim sales = {
-            New With {.Region = "North", .Amount = 100D},
-            New With {.Region = "North", .Amount = 200D},
-            New With {.Region = "South", .Amount = 150D}
+        New With {.Region = "North", .Amount = 100D},
+        New With {.Region = "North", .Amount = 200D},
+        New With {.Region = "South", .Amount = 150D}
         }
 
         Dim summary = From s In sales
-                      Group s By s.Region Into Total = Sum(s.Amount), Average = Average(s.Amount), Count()
+        Group s By s.Region Into Total = Sum(s.Amount), Average = Average(s.Amount), Count()
 
         For Each sum In summary
             __P(CStr(sum.Region & ": Total=" & sum.Total & ", Count=" & sum.Count))

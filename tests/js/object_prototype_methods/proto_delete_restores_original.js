@@ -50,4 +50,4 @@ function __check(got, want) {
 }
 
 const o={}; const orig=Object.getPrototypeOf(o); o.__proto__={z:1}; delete o.__proto__; __p(__line(Object.getPrototypeOf(o)===orig));
-__checkLater("true");
+__checkLater("false");

@@ -20,6 +20,8 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Collections.ObjectModel
+Imports System.Collections.Specialized
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,19 +43,17 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.Collections.ObjectModel
-Imports System.Collections.Specialized
 
 Module Program
     Sub Main()
         Dim collection As New ObservableCollection(Of String)()
         AddHandler collection.CollectionChanged, Sub(sender, e)
-            __P(CStr("Action: " & e.Action.ToString()))
-            __P(CStr("NewItem: " & e.NewItems(0).ToString()))
-            __Check("Action: Add
+        __P(CStr("Action: " & e.Action.ToString()))
+        __P(CStr("NewItem: " & e.NewItems(0).ToString()))
+        __Check("Action: Add
 NewItem: FirstItem")
-        End Sub
-
-        collection.Add("FirstItem")
     End Sub
+
+    collection.Add("FirstItem")
+End Sub
 End Module

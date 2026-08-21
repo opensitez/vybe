@@ -45,7 +45,8 @@ Module M
     Sub Main()
         Dim x = 10
         ' Single-line If with multiple statements separated by colons
-        If x = 10 Then __Pr(CStr("A")) : __P(CStr("B")) Else __P(CStr("C"))
+        If x = 10 Then __Pr(CStr("A"))
+        __P(CStr("B")) Else __P(CStr("C"))
         __Check("AB")
     End Sub
 End Module

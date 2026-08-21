@@ -40,14 +40,16 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Class Animal
     Public Name As String = "Beast"
 End Class
-
 Class Dog
     Inherits Animal
 End Class
 
-Dim d As New Dog()
-__P(CStr(d.Name))
+Module Program
+    Sub Main()
+        Dim d As New Dog()
+        __P(CStr(d.Name))
+    End Sub
+End Module

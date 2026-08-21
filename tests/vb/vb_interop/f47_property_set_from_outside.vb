@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Public Class Holder
     Dim data As String
     Public Sub New()
@@ -50,6 +49,11 @@ Public Class Holder
         Return data
     End Function
 End Class
-Dim h As New Holder()
-h.data = "external"
-__P(CStr(h.GetData()))
+
+Module Program
+    Sub Main()
+        Dim h As New Holder()
+        h.data = "external"
+        __P(CStr(h.GetData()))
+    End Sub
+End Module

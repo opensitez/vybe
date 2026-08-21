@@ -71,4 +71,4 @@ const sq = lruMemoize(x => { calls++; return x * x; }, 2);
 sq(2); sq(3); sq(2); sq(4); // sq(4) evicts sq(3)
 sq(3); // must recompute (evicted)
 __p(__line(calls)); // 2+3+4+3 computed = 4 unique + 1 recompute = 5
-__checkLater("5");
+__checkLater("4");

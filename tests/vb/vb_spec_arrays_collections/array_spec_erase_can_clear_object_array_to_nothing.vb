@@ -41,4 +41,12 @@ Module VybeCheck
     End Sub
 End Module
 
-Class C : End Class : Module M : Sub Main() : Dim items() As C = {New C()} : Erase items : __P(CStr(IsNothing(items))) : End Sub : End Module
+Class C
+End Class
+Module M
+    Sub Main()
+        Dim items() As C = {New C()}
+        Erase items
+        __P(CStr(IsNothing(items)))
+    End Sub
+End Module

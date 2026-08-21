@@ -40,16 +40,20 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Class Acc
     Public Total As Integer
 End Class
-Sub AddUp(a As Acc, n As Integer)
-    If n <= 0 Then Return
-    a.Total = a.Total + n
-    AddUp(a, n - 1)
-End Sub
-Dim acc As New Acc()
-acc.Total = 0
-AddUp(acc, 5)
-__P(CStr(acc.Total))
+
+Module Program
+    Sub Main()
+        Sub AddUp(a As Acc, n As Integer)
+        If n <= 0 Then Return
+        a.Total = a.Total + n
+        AddUp(a, n - 1)
+        End Sub
+        Dim acc As New Acc()
+        acc.Total = 0
+        AddUp(acc, 5)
+        __P(CStr(acc.Total))
+    End Sub
+End Module

@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Public Class MathHelper
     Public Function Factorial(n As Integer) As Integer
         If n <= 1 Then
@@ -49,5 +48,10 @@ Public Class MathHelper
         Return n * Factorial(n - 1)
     End Function
 End Class
-Dim m As New MathHelper()
-__P(CStr(m.Factorial(5)))
+
+Module Program
+    Sub Main()
+        Dim m As New MathHelper()
+        __P(CStr(m.Factorial(5)))
+    End Sub
+End Module

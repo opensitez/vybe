@@ -1,7 +1,7 @@
 -- vybe-test: lua/pcall_error_objects/pcall_multi_return_success
 -- origin: languages/lua/tests/lua/test_pcall_error_objects.rs
 
-local __w1 = "true 1 2"
+local __w1 = "true\t1\t2"
 local __i = 0
 
 local ok, a, b = pcall(function() return 1, 2 end)

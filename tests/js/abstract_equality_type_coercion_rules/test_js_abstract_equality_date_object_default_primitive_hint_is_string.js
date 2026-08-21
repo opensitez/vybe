@@ -51,4 +51,4 @@ function __check(got, want) {
 
 const d = new Date(0);
 __p(__line(d == d.toString()));
-__checkLater("false");
+__checkLater("true");

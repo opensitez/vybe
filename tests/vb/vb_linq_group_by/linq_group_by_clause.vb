@@ -44,17 +44,17 @@ End Module
 Module M
     Sub Main()
         Dim words As String() = {"apple", "ant", "banana", "bat", "cherry"}
-        
+
         ' Group By generates a Key and a Group collection
         Dim query = From w In words
-                    Group By firstLetter = w(0) Into Group
-                    Select Key = firstLetter, Count = Group.Count()
-                    
-        For Each item In query
-            __P(CStr(item.Key & ":" & item.Count.ToString()))
-        Next
-        __Check("a:2
+        Group By firstLetter = w(0) Into Group
+        Select Key = firstLetter, Count = Group.Count()
+
+            For Each item In query
+                __P(CStr(item.Key & ":" & item.Count.ToString()))
+            Next
+            __Check("a:2
 b:2
 c:1")
-    End Sub
-End Module
+        End Sub
+    End Module

@@ -1,7 +1,7 @@
 -- vybe-test: lua/math_library/math_sqrt_for_distance_check
 -- origin: languages/lua/tests/lua/test_math_library.rs
 
-local __w1 = "5"
+local __w1 = "5.0"
 local __i = 0
 
 do local __t = tostring(math.sqrt(3*3 + 4*4)); __i = __i + 1

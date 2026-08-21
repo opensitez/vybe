@@ -1,7 +1,7 @@
 -- vybe-test: lua/type_coercion/test_coercion_string_to_number_sub
 -- origin: languages/lua/tests/lua/test_type_coercion.rs
 
-local __w1 = "5.0"
+local __w1 = "5"
 local __i = 0
 
 do local __t = tostring('10' - '5'); __i = __i + 1

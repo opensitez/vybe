@@ -1,7 +1,7 @@
 -- vybe-test: lua/coroutine_wrap_function/test_wrap_math_return
 -- origin: languages/lua/tests/lua/test_coroutine_wrap_function.rs
 
-local __w1 = "4"
+local __w1 = "4.0"
 local __i = 0
 
 local f = coroutine.wrap(function() return math.sqrt(16) end)

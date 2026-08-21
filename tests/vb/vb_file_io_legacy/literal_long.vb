@@ -41,4 +41,9 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): Dim l = 100L: __P(CStr(l.GetType().Name)): End Sub: End Module
+Module M
+    Sub Main()
+        Dim l = 100L
+        __P(CStr(l.GetType().Name))
+    End Sub
+End Module

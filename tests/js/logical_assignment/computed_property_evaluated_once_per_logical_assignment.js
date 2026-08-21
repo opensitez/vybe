@@ -62,4 +62,4 @@ obj[key()] &&= 3;
 
 __p(__line(obj.flag));
 __p(__line(compute_count));
-__checkLater("3\n6");
+__checkLater("3\n3");

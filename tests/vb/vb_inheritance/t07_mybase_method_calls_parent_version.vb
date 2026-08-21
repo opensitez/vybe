@@ -40,13 +40,11 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Class Base
     Sub Greet()
         __P(CStr("hello from base"))
     End Sub
 End Class
-
 Class Child
     Inherits Base
 
@@ -56,5 +54,9 @@ Class Child
     End Sub
 End Class
 
-Dim c As New Child()
-c.Greet()
+Module Program
+    Sub Main()
+        Dim c As New Child()
+        c.Greet()
+    End Sub
+End Module

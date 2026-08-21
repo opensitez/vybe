@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): __P(CStr(InStrRev("Hello World", "o"))): End Sub: End Module
+Module M
+    Sub Main()
+        __P(CStr(InStrRev("Hello World", "o")))
+    End Sub
+End Module

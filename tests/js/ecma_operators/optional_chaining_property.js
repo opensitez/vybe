@@ -52,4 +52,4 @@ function __check(got, want) {
 const obj = { a: { b: 42 } };
 __p(__line(obj?.a?.b));
 __p(__line(obj?.c?.d));
-__checkLater("42");
+__checkLater("42\nundefined");

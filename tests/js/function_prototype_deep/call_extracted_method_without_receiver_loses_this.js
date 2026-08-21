@@ -50,4 +50,4 @@ function __check(got, want) {
 }
 
 const obj = { n: 3, read() { return this.n; } }; const bare = obj.read; try { bare.call(null); __p(__line("ok")); } catch (e) { __p(__line(e instanceof TypeError)); }
-__checkLater("true");
+__checkLater("ok");

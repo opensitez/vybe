@@ -41,8 +41,12 @@ Module VybeCheck
     End Sub
 End Module
 
-Dim arr(3) As String
-arr(0) = "hello"
-arr(1) = "world"
-__P(CStr(arr(0)))
-__P(CStr(arr(1)))
+Module Program
+    Sub Main()
+        Dim arr(3) As String
+        arr(0) = "hello"
+        arr(1) = "world"
+        __P(CStr(arr(0)))
+        __P(CStr(arr(1)))
+    End Sub
+End Module

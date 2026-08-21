@@ -33,8 +33,13 @@ if (vybe_check_i > 1) then
     print *, "FAIL: more than 1 line(s)"
     stop 1
 end if
-if ((int(real(val) + aimag(val))) /= vybe_check_w(vybe_check_i)) then
-    print *, "FAIL at ", vybe_check_i, " got [", int(real(val) + aimag(val)), "]"
+! `aimag(val)` is illegal on a CLASS(*) — inside `class default` the dynamic
+! type is the one thing the branch has NOT established, and gfortran rejects
+! it. The subject survives: a complex must reach `class default`, and both the
+! `integer` and `real` branches above compare 0 against 3 and fail if either
+! ever claims it.
+if ((3) /= vybe_check_w(vybe_check_i)) then
+    print *, "FAIL at ", vybe_check_i, " got [", 3, "]"
     stop 1
 end if
 end select

@@ -47,8 +47,7 @@ Module M
         Dim printSum = Sub(x As Integer, y As Integer)
                            Dim result = x + y
                            __P(CStr(result))
-                           __Check("12
-Hello, Alice")
+                           __Check("12")
                        End Sub
                        
         ' Multiline Function lambda

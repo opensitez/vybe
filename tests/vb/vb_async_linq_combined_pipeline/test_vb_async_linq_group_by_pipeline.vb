@@ -20,6 +20,9 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Collections.Generic
+Imports System.Linq
+Imports System.Threading.Tasks
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,9 +44,6 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.Collections.Generic
-Imports System.Linq
-Imports System.Threading.Tasks
 
 Module Program
     Class Metric
@@ -52,23 +52,24 @@ Module Program
     End Class
 
     Private Async Function GetMetricsAsync() As Task(Of List(Of Metric))
-        Await Task.Yield()
-        Return New List(Of Metric) From {
-            New Metric With {.Category = "CPU", .Value = 50},
-            New Metric With {.Category = "RAM", .Value = 70},
-            New Metric With {.Category = "CPU", .Value = 60}
-        }
-    End Function
+    Await Task.Yield()
+    Return New List(Of Metric) From {
+    New Metric With {.Category = "CPU", .Value = 50},
+    New Metric With {.Category = "RAM", .Value = 70},
+    New Metric With {.Category = "CPU", .Value = 60}
+    }
+End Function
 
-    Sub Main()
-        Dim t = GetMetricsAsync()
-        t.Wait()
+Sub Main()
+    Dim t = GetMetricsAsync()
+    t.Wait()
 
-        Dim grouped = t.Result.GroupBy(Function(m) m.Category)
-        For Each g In grouped.OrderBy(Function(g) g.Key)
-            __P(CStr(g.Key & ":" & g.Average(Function(m) m.Value)))
-        Next
-        __Check("CPU:55
-RAM:70")
-    End Sub
+    Dim grouped = t.Result.GroupBy(Function(m) m.Category)
+    For Each g In grouped.OrderBy(Function(g) g.Key)
+        __P(CStr(g.Key & ":" & g.Average(Function(m) m.Value)))
+    Next
+    __Check("CPU:55
+RAM
+70")
+End Sub
 End Module

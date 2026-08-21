@@ -47,7 +47,7 @@ Module M
         Dim t1 = (1, "A")
         __P(CStr(t1.Item1))
         __P(CStr(t1.Item2))
-        
+
         ' Named tuple elements
         Dim t2 = (Id:=2, Name:="B")
         __P(CStr(t2.Id))

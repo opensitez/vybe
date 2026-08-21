@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,7 +42,6 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
 
 Structure StructPublisher
     Public Event Signal As Action
@@ -51,7 +51,9 @@ Structure StructPublisher
 End Structure
 
 Module Program
-    Private Sub OnSignal() : __P(CStr("Signal")) : End Sub
+    Private Sub OnSignal()
+        __P(CStr("Signal"))
+    End Sub
 
     Sub Main()
         Dim sp As New StructPublisher()

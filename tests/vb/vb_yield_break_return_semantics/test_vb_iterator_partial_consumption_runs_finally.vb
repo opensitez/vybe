@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Collections.Generic
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,28 +42,27 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.Collections.Generic
 
 Module Program
     Private Iterator Function InfiniteWithFinally() As IEnumerable(Of Integer)
-        Try
-            Dim i = 1
-            While True
-                Yield i
-                i += 1
-            End While
-        Finally
-            __P(CStr("Cleaned Up Infinite Generator"))
-        End Try
-    End Function
+    Try
+        Dim i = 1
+        While True
+            Yield i
+            i += 1
+        End While
+    Finally
+    __P(CStr("Cleaned Up Infinite Generator"))
+End Try
+End Function
 
-    Sub Main()
-        For Each num In InfiniteWithFinally()
-            __P(CStr("Got: " & num))
-            If num = 2 Then Exit For
-        Next
-        __Check("Got: 1
+Sub Main()
+    For Each num In InfiniteWithFinally()
+        __P(CStr("Got: " & num))
+        If num = 2 Then Exit For
+    Next
+    __Check("Got: 1
 Got: 2
 Cleaned Up Infinite Generator")
-    End Sub
+End Sub
 End Module

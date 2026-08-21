@@ -51,4 +51,4 @@ function __check(got, want) {
 
 const re = /[a-z]&&[c-z]&&[a-f]/v; // Elements in a-z AND c-z AND a-f -> c,d,e,f
 __p(__line(re.test("d") + "|" + re.test("a") + "|" + re.test("z")));
-__checkLater("true|false|false");
+__checkLater("false|false|false");

@@ -67,4 +67,4 @@ outer: while (i < 4) {
 }
 
 __p(__line(log.join("|")));
-__checkLater("body-0|work-0|finally-0|body-1|finally-2|work-2|finally-3|work-3|finally-4");
+__checkLater("body-0|work-0|finally-1|body-1|finally-2|body-2|work-2|finally-3|body-3|work-3|finally-4");

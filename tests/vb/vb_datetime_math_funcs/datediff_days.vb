@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): __P(CStr(DateDiff("d", #1/1/2020#, #1/6/2020#))): End Sub: End Module
+Module M
+    Sub Main()
+        __P(CStr(DateDiff("d", #1/1/2020#, #1/6/2020#)))
+    End Sub
+End Module

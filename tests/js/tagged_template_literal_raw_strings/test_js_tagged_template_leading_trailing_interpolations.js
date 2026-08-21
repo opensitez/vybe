@@ -53,4 +53,4 @@ function tag(strings, ...values) {
     return strings.map(s => `"${s}"`).join("+");
 }
 __p(__line(tag`${1} middle ${2}`));
-__checkLater("\"\"+ \" middle \" +\"\"");
+__checkLater("\"\"+\" middle \"+\"\"");

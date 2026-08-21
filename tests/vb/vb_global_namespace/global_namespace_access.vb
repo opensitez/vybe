@@ -60,7 +60,7 @@ Module M
         ' Accessing global namespace using the Global keyword
         Dim gLog As New Global.Logger()
         gLog.Log("Hello")
-        
+
         Dim uLog As New Global.MyProject.Utils.Logger()
         uLog.Log("Hello")
         __Check("Global Logger: Hello

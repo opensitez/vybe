@@ -52,6 +52,7 @@ Class BaseContainer
 End Class
 
 Class FixedContainer
+    Sub Main()
     Inherits BaseContainer
     Default Public NotOverridable Overrides Property Item(index As Integer) As String
         Get

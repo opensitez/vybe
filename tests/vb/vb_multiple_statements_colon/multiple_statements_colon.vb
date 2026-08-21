@@ -44,9 +44,13 @@ End Module
 Module M
     Sub Main()
         ' The colon character allows placing multiple statements on a single line
-        Dim x As Integer = 10 : Dim y As Integer = 20 : __P(CStr(x + y))
-        
-        If x = 10 Then : __P(CStr("Yes")) : End If
+        Dim x As Integer = 10
+        Dim y As Integer = 20
+        __P(CStr(x + y))
+
+        If x = 10 Then
+            __P(CStr("Yes"))
+        End If
         __Check("30
 Yes")
     End Sub

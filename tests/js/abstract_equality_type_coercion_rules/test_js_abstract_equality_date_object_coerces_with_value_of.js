@@ -52,4 +52,4 @@ function __check(got, want) {
 const d = new Date(0);
 __p(__line(d == 0));
 __p(__line(d == false));
-__checkLater("true\ntrue");
+__checkLater("false\nfalse");

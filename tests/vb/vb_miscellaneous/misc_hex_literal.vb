@@ -41,4 +41,9 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): Dim h = &H10: __P(CStr(h)): End Sub: End Module
+Module M
+    Sub Main()
+        Dim h = &H10
+        __P(CStr(h))
+    End Sub
+End Module

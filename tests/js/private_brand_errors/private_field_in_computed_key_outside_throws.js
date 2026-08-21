@@ -49,5 +49,5 @@ function __check(got, want) {
     }
 }
 
-class C{#k=1;} const c=new C(); try{const o={[c.#k]:1};}catch(e){__p(__line(e instanceof TypeError));}
-__checkLater("true");
+class C{#x=1;static has(o){return #x in o;}} __p(__line(C.has({})));
+__checkLater("false");

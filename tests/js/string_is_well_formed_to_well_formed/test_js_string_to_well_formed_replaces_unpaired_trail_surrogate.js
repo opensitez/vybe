@@ -52,4 +52,4 @@ function __check(got, want) {
 const loneTrail = "a\uDE00b";
 const wellFormed = loneTrail.toWellFormed();
 __p(__line(wellFormed + "|code=" + wellFormed.charCodeAt(1)));
-__checkLater("ab|code=65533");
+__checkLater("a\ufffdb|code=65533");

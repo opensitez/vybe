@@ -49,7 +49,7 @@ function __check(got, want) {
     }
 }
 
-const sparse = [1,  3];
+const sparse = [1,,  3];
 const dense = [...sparse];
 __p(__line(1 in dense)); // true — undefined, not hole
 __p(__line(dense[1]));

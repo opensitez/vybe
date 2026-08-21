@@ -1,7 +1,7 @@
 -- vybe-test: lua/math_trig_advanced/tan_zero
 -- origin: languages/lua/tests/lua/test_math_trig_advanced.rs
 
-local __w1 = "0"
+local __w1 = "0.0"
 local __i = 0
 
 do local __t = tostring(math.tan(0)); __i = __i + 1

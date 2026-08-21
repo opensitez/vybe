@@ -42,13 +42,13 @@ Module VybeCheck
 End Module
 
 Module M
-Sub Mutate(ByRef a As Integer)
-a = 2
-End Sub
-Sub Main()
-Dim x = 1
-Mutate(a:=x)
-__P(CStr(x))
-    __Check("2")
-End Sub
+    Sub Mutate(ByRef a As Integer)
+        a = 2
+    End Sub
+    Sub Main()
+        Dim x = 1
+        Mutate(a:=x)
+        __P(CStr(x))
+        __Check("2")
+    End Sub
 End Module

@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Collections.Generic
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,14 +42,13 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.Collections.Generic
 
 Module Program
     Sub Main()
         Dim list As New List(Of (Integer, String)) From {
-            (2, "B"),
-            (1, "Z"),
-            (1, "A")
+        (2, "B"),
+        (1, "Z"),
+        (1, "A")
         }
         list.Sort()
 

@@ -43,7 +43,7 @@ End Module
 
 Module M
     Sub Main()
-        __P(CStr(Round(SLN(1000, 100, 9), 2)))
+        __P(CStr(Math.Round(SLN(1000, 100, 9), 2)))
         __Check("100")
     End Sub
 End Module

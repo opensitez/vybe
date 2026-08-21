@@ -41,4 +41,9 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): Dim o As Object = "A": __P(CStr(DirectCast(o, String))): End Sub: End Module
+Module M
+    Sub Main()
+        Dim o As Object = "A"
+        __P(CStr(DirectCast(o, String)))
+    End Sub
+End Module

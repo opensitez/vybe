@@ -41,6 +41,10 @@ Module VybeCheck
     End Sub
 End Module
 
-Dim dict As New Dictionary(Of String, String)
-dict.Add("name", "Alice")
-__P(CStr(dict.Item("name")))
+Module Program
+    Sub Main()
+        Dim dict As New Dictionary(Of String, String)
+        dict.Add("name", "Alice")
+        __P(CStr(dict.Item("name")))
+    End Sub
+End Module

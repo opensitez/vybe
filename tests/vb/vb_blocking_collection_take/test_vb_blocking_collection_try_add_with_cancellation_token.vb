@@ -20,6 +20,8 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Collections.Concurrent
+Imports System.Threading
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,8 +43,6 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.Collections.Concurrent
-Imports System.Threading
 
 Module Program
     Sub Main()
@@ -55,8 +55,8 @@ Module Program
         Try
             bc.Add(200, cts.Token)
         Catch ex As OperationCanceledException
-            __P(CStr("OperationCanceledException Caught on Add"))
-        End Try
-        __Check("OperationCanceledException Caught on Add")
-    End Sub
+        __P(CStr("OperationCanceledException Caught on Add"))
+    End Try
+    __Check("OperationCanceledException Caught on Add")
+End Sub
 End Module

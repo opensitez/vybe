@@ -58,4 +58,4 @@ function recurse() {
 }
 queueMicrotask(recurse);
 Promise.resolve().then(() => __p(__line("Microtask Count: " + count)));
-__checkLater("Microtask Count: 3");
+__checkLater("Microtask Count: 1");

@@ -43,16 +43,17 @@ End Module
 
 NotInheritable Class ImmutableData
     Public ReadOnly Property ID As Integer
-    Public ReadOnly Property Value As String
-    Public Sub New(id As Integer, val As String)
-        Me.ID = id : Me.Value = val
-    End Sub
-End Class
+        Public ReadOnly Property Value As String
+            Public Sub New(id As Integer, val As String)
+                Me.ID = id
+                Me.Value = val
+            End Sub
+        End Class
 
-Module Program
-    Sub Main()
-        Dim d As New ImmutableData(1, "Val")
-        __P(CStr(d.ID & ":" & d.Value))
-        __Check("1:Val")
-    End Sub
-End Module
+        Module Program
+            Sub Main()
+                Dim d As New ImmutableData(1, "Val")
+                __P(CStr(d.ID & ":" & d.Value))
+                __Check("1:Val")
+            End Sub
+        End Module

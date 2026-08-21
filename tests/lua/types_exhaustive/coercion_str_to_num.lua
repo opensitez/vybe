@@ -1,7 +1,7 @@
 -- vybe-test: lua/types_exhaustive/coercion_str_to_num
 -- origin: languages/lua/tests/lua/test_types_exhaustive.rs
 
-local __w1 = "15.0"
+local __w1 = "15"
 local __i = 0
 
 do local __t = tostring("10" + 5); __i = __i + 1

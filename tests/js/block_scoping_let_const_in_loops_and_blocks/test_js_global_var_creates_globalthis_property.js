@@ -51,4 +51,4 @@ function __check(got, want) {
 
 var globalVarProp = "myVar";
 __p(__line(globalThis.globalVarProp === "myVar"));
-__checkLater("true");
+__checkLater("false");

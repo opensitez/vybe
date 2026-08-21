@@ -41,4 +41,9 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M : Sub Main() : Dim items() As String = {"hello world", "vb"} : __P(CStr(items(0))) : End Sub : End Module
+Module M
+    Sub Main()
+        Dim items() As String = {"hello world", "vb"}
+        __P(CStr(items(0)))
+    End Sub
+End Module

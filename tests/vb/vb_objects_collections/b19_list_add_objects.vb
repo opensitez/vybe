@@ -40,16 +40,20 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Class Cat
     Public Name As String
 End Class
-Dim list As New List(Of Cat)
-Dim c1 As New Cat()
-c1.Name = "Whiskers"
-Dim c2 As New Cat()
-c2.Name = "Mittens"
-list.Add(c1)
-list.Add(c2)
-__P(CStr(list.Item(0).Name))
-__P(CStr(list.Item(1).Name))
+
+Module Program
+    Sub Main()
+        Dim list As New List(Of Cat)
+        Dim c1 As New Cat()
+        c1.Name = "Whiskers"
+        Dim c2 As New Cat()
+        c2.Name = "Mittens"
+        list.Add(c1)
+        list.Add(c2)
+        __P(CStr(list.Item(0).Name))
+        __P(CStr(list.Item(1).Name))
+    End Sub
+End Module

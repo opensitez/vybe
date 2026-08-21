@@ -1,7 +1,7 @@
 -- vybe-test: lua/math_library_extended/math_asin_zero
 -- origin: languages/lua/tests/lua/test_math_library_extended.rs
 
-local __w1 = "0"
+local __w1 = "0.0"
 local __i = 0
 
 do local __t = tostring(math.asin(0)); __i = __i + 1

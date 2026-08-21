@@ -40,12 +40,16 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Class Bag
     Public Count As Integer
 End Class
-Dim a As New Bag()
-a.Count = 5
-Dim b As Bag = a
-b.Count = 10
-__P(CStr(a.Count))
+
+Module Program
+    Sub Main()
+        Dim a As New Bag()
+        a.Count = 5
+        Dim b As Bag = a
+        b.Count = 10
+        __P(CStr(a.Count))
+    End Sub
+End Module

@@ -41,4 +41,12 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M : Function Pick() As Integer : Return 1 : End Function : Sub Main() : Dim values() As String = {"zero", "one"} : __P(CStr(values(Pick()))) : End Sub : End Module
+Module M
+    Function Pick() As Integer
+        Return 1
+    End Function
+    Sub Main()
+        Dim values() As String = {"zero", "one"}
+        __P(CStr(values(Pick())))
+    End Sub
+End Module

@@ -49,16 +49,16 @@ End Class
 
 Class Derived
     Inherits Base
-    
+
     ' Overrides replaces the base implementation
     Public Overrides Sub Show()
         __P(CStr("Derived.Show"))
     End Sub
-    
+
     ' Overloads allows creating a new method with the same name but different signature
     Public Overloads Sub Show(message As String)
-        __P(CStr("Derived.Show: " & message))
-    End Sub
+    __P(CStr("Derived.Show: " & message))
+End Sub
 End Class
 
 Module M

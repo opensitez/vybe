@@ -1,7 +1,7 @@
 -- vybe-test: lua/math_advanced_exhaustive/math_adv_exh_modf_float
 -- origin: languages/lua/tests/lua/test_math_advanced_exhaustive.rs
 
-local __w1 = "10 0.5"
+local __w1 = "10\t0.5"
 local __i = 0
 
 local i, f = math.modf(10.5)

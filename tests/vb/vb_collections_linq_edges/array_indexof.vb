@@ -41,4 +41,9 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): Dim a = {10, 20, 30}: __P(CStr(Array.IndexOf(a, 20))): End Sub: End Module
+Module M
+    Sub Main()
+        Dim a = {10, 20, 30}
+        __P(CStr(Array.IndexOf(a, 20)))
+    End Sub
+End Module

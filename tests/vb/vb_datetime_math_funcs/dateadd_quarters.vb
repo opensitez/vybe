@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): __P(CStr(DateAdd("q", 1, #1/1/2020#).Month)): End Sub: End Module
+Module M
+    Sub Main()
+        __P(CStr(DateAdd("q", 1, #1/1/2020#).Month))
+    End Sub
+End Module

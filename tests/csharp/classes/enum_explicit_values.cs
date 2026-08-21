@@ -23,4 +23,4 @@ void __Check(string want) {
 enum Status { Ok = 200, NotFound = 404, Error = 500 }
         __P((Status.Ok).ToString());
         __P((Status.NotFound).ToString());
-__Check("200\n404");
+__Check("Ok\nNotFound");

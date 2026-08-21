@@ -41,4 +41,10 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): Dim a As Object() = {"A", "B"}: Dim b = CType(a, String()): __P(CStr(b(0))): End Sub: End Module
+Module M
+    Sub Main()
+        Dim a As Object() = {"A", "B"}
+        Dim b = CType(a, String())
+        __P(CStr(b(0)))
+    End Sub
+End Module

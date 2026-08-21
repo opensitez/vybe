@@ -41,4 +41,12 @@ Module VybeCheck
     End Sub
 End Module
 
-Class C: End Class: Module M: Sub Main(): Dim o As Object = "A": Dim c = TryCast(o, C): __P(CStr(c Is Nothing)): End Sub: End Module
+Class C
+End Class
+Module M
+    Sub Main()
+        Dim o As Object = "A"
+        Dim c = TryCast(o, C)
+        __P(CStr(c Is Nothing))
+    End Sub
+End Module

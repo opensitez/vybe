@@ -1,7 +1,7 @@
 -- vybe-test: lua/math_exhaustive/math_sqrt_four_val
 -- origin: languages/lua/tests/lua/test_math_exhaustive.rs
 
-local __w1 = "2"
+local __w1 = "2.0"
 local __i = 0
 
 do local __t = tostring(math.sqrt(4)); __i = __i + 1

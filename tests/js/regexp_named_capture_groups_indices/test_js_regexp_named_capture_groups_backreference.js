@@ -51,4 +51,4 @@ function __check(got, want) {
 
 const re = /<(?<tag>\w+)>.*<\/k\k<tag>>/; // \k<tag> backreference
 __p(__line(re.test("<div>Hello</div>") + "|" + re.test("<div>World</span>")));
-__checkLater("true|false");
+__checkLater("false|false");

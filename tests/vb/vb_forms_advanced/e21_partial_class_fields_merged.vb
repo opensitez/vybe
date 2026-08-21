@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Partial Public Class Form1
     Dim name As String = "hello"
 End Class
@@ -52,5 +51,10 @@ Partial Public Class Form1
         __P(CStr(name & " " & CStr(count)))
     End Sub
 End Class
-Dim f As New Form1()
-f.ShowBoth()
+
+Module Program
+    Sub Main()
+        Dim f As New Form1()
+        f.ShowBoth()
+    End Sub
+End Module

@@ -70,4 +70,4 @@ obj._x = 1;
 rhsExecuted = false;
 obj.x &&= (rhsExecuted = true, 33);
 __p(__line(`${obj.x}|${setterCalls}|${rhsExecuted}`));
-__checkLater("0|1|false\n33|2|true");
+__checkLater("0|0|false\n33|1|true");

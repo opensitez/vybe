@@ -56,8 +56,8 @@ Module M
         __P(CStr(Snapshot()))
         __P(CStr(Snapshot()))
         __P(CStr(Snapshot()))
-        __Check("true:1
-false:1
-true:2")
+        __Check("True:1
+False:1
+True:2")
     End Sub
 End Module

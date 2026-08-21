@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-__P(CStr(Mid("hello", 2, 3)))
+Module Program
+    Sub Main()
+        __P(CStr(Mid("hello", 2, 3)))
+    End Sub
+End Module

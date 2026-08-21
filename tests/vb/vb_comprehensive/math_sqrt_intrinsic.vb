@@ -43,8 +43,8 @@ End Module
 
 Module M
     Sub Main()
-        __P(CStr(Sqr(25)))
-        __P(CStr(Sqr(144)))
+        __P(CStr(Math.Sqrt(25)))
+        __P(CStr(Math.Sqrt(144)))
         __Check("5
 12")
     End Sub

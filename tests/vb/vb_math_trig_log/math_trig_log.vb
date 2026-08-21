@@ -44,19 +44,19 @@ End Module
 Module M
     Sub Main()
         ' Abs
-        __P(CStr(Abs(-15.5)))
+        __P(CStr(Math.Abs(-15.5)))
         
         ' Sqrt
         __P(CStr(Sqrt(16)))
         
         ' Trig
-        __P(CStr(Int(Cos(0))))
-        __P(CStr(Int(Sin(0))))
-        __P(CStr(Int(Tan(0))))
+        __P(CStr(Int(Math.Cos(0))))
+        __P(CStr(Int(Math.Sin(0))))
+        __P(CStr(Int(Math.Tan(0))))
         
         ' Log / Exp
-        __P(CStr(Exp(0)))
-        __P(CStr(Int(Log(Exp(1)))))
+        __P(CStr(Math.Exp(0)))
+        __P(CStr(Int(Math.Log(Exp(1)))))
         __Check("15.5
 4
 1

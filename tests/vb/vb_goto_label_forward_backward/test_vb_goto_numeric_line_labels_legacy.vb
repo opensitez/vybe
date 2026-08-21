@@ -43,10 +43,13 @@ End Module
 
 Module Program
     Sub Main()
-10:     __P(CStr("Line 10"))
+        10
+        __P(CStr("Line 10"))
         GoTo 30
-20:     __P(CStr("Line 20"))
-30:     __P(CStr("Line 30"))
+        20
+        __P(CStr("Line 20"))
+        30
+        __P(CStr("Line 30"))
         __Check("Line 10
 Line 30")
     End Sub

@@ -41,4 +41,13 @@ Module VybeCheck
     End Sub
 End Module
 
-Class C(Of T): Public Shared Operator +(a As C(Of T), b As C(Of T)) As C(Of T): Return a: End Operator: End Class: Module M: Sub Main(): __P(CStr("Parsed")): End Sub: End Module
+Class C(Of T)
+    Public Shared Operator +(a As C(Of T), b As C(Of T)) As C(Of T)
+    Return a
+End Operator
+End Class
+Module M
+    Sub Main()
+        __P(CStr("Parsed"))
+    End Sub
+End Module

@@ -1,7 +1,7 @@
 -- vybe-test: lua/pcall_error_objects/pcall_error_table_object
 -- origin: languages/lua/tests/lua/test_pcall_error_objects.rs
 
-local __w1 = "false 42"
+local __w1 = "false\t42"
 local __i = 0
 
 local ok, err = pcall(function() error({code=42}) end)

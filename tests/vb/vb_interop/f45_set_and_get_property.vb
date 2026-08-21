@@ -40,14 +40,18 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Public Class Box
     Dim content As String
     Public Sub New()
         content = "empty"
     End Sub
 End Class
-Dim b As New Box()
-__P(CStr(b.content))
-b.content = "full"
-__P(CStr(b.content))
+
+Module Program
+    Sub Main()
+        Dim b As New Box()
+        __P(CStr(b.content))
+        b.content = "full"
+        __P(CStr(b.content))
+    End Sub
+End Module

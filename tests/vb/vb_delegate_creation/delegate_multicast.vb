@@ -47,7 +47,7 @@ Module M
     Sub Log1(msg As String)
         __P(CStr("1: " & msg))
     End Sub
-    
+
     Sub Log2(msg As String)
         __P(CStr("2: " & msg))
     End Sub

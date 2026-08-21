@@ -40,22 +40,26 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Class Data
     Public Value As String
 End Class
-Function CreateData() As Data
-    Dim d As New Data()
-    d.Value = "start"
-    Return d
-End Function
-Sub TransformData(d As Data)
-    d.Value = d.Value & "-transformed"
-End Sub
-Sub FinalizeData(d As Data)
-    d.Value = d.Value & "-done"
-End Sub
-Dim d As Data = CreateData()
-TransformData(d)
-FinalizeData(d)
-__P(CStr(d.Value))
+
+Module Program
+    Sub Main()
+        Function CreateData() As Data
+        Dim d As New Data()
+        d.Value = "start"
+        Return d
+        End Function
+        Sub TransformData(d As Data)
+        d.Value = d.Value & "-transformed"
+        End Sub
+        Sub FinalizeData(d As Data)
+        d.Value = d.Value & "-done"
+        End Sub
+        Dim d As Data = CreateData()
+        TransformData(d)
+        FinalizeData(d)
+        __P(CStr(d.Value))
+    End Sub
+End Module

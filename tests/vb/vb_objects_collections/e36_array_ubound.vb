@@ -41,5 +41,9 @@ Module VybeCheck
     End Sub
 End Module
 
-Dim arr(5) As Integer
-__P(CStr(UBound(arr)))
+Module Program
+    Sub Main()
+        Dim arr(5) As Integer
+        __P(CStr(UBound(arr)))
+    End Sub
+End Module

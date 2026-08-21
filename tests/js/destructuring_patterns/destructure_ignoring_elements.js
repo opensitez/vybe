@@ -49,7 +49,7 @@ function __check(got, want) {
     }
 }
 
-const [,  third,  fifth = 50] = [1, 2, 3, 4];
+const [,,  third,,  fifth = 50] = [1, 2, 3, 4];
 __p(__line(third));
 __p(__line(fifth));
 __checkLater("3\n50");

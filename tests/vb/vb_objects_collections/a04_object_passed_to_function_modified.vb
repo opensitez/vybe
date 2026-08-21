@@ -40,14 +40,18 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Class Counter
     Public Value As Integer
 End Class
-Sub Increment(c As Counter)
-    c.Value = c.Value + 1
-End Sub
-Dim c As New Counter()
-c.Value = 10
-Increment(c)
-__P(CStr(c.Value))
+
+Module Program
+    Sub Main()
+        Sub Increment(c As Counter)
+        c.Value = c.Value + 1
+        End Sub
+        Dim c As New Counter()
+        c.Value = 10
+        Increment(c)
+        __P(CStr(c.Value))
+    End Sub
+End Module

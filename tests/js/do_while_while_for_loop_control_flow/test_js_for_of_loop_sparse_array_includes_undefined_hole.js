@@ -50,7 +50,7 @@ function __check(got, want) {
 }
 
 const seen = [];
-for (const value of [1,  3]) {
+for (const value of [1,,  3]) {
     seen.push(value === undefined ? "u" : String(value));
 }
 __p(__line(seen.join(",")));

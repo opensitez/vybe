@@ -41,5 +41,9 @@ Module VybeCheck
     End Sub
 End Module
 
-__P(CStr(CInt("42")))
-__P(CStr(CDbl("3.14")))
+Module Program
+    Sub Main()
+        __P(CStr(CInt("42")))
+        __P(CStr(CDbl("3.14")))
+    End Sub
+End Module

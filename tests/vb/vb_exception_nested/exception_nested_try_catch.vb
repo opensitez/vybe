@@ -48,20 +48,20 @@ Module M
             Try
                 Throw New Exception("Inner")
             Catch ex As Exception
-                __P(CStr("Caught Inner"))
-                Throw New Exception("Outer")
-            Finally
-                __P(CStr("Inner Finally"))
-            End Try
-        Catch ex As Exception
-            __P(CStr("Caught Outer: " & ex.Message))
+            __P(CStr("Caught Inner"))
+            Throw New Exception("Outer")
         Finally
-            __P(CStr("Outer Finally"))
-        End Try
-        __Check("Outer Try
+        __P(CStr("Inner Finally"))
+    End Try
+Catch ex As Exception
+__P(CStr("Caught Outer: " & ex.Message))
+Finally
+__P(CStr("Outer Finally"))
+End Try
+__Check("Outer Try
 Caught Inner
 Inner Finally
 Caught Outer: Outer
 Outer Finally")
-    End Sub
+End Sub
 End Module

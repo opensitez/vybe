@@ -42,12 +42,14 @@ Module VybeCheck
 End Module
 
 Class BaseClass
-    Public Overridable Sub Display() : End Sub
+    Public Overridable Sub Display()
+    End Sub
 End Class
 
 Class DerivedClass
     Inherits BaseClass
-    Public Overrides Sub Display() : End Sub
+    Public Overrides Sub Display()
+    End Sub
 End Class
 
 Module Program

@@ -50,4 +50,4 @@ function __check(got, want) {
 }
 
 __p(__line([, undefined, 1].findIndex(x => x === undefined)));
-__checkLater("1");
+__checkLater("0");

@@ -41,5 +41,9 @@ Module VybeCheck
     End Sub
 End Module
 
-__P(CStr(10 Mod 3))
-__P(CStr(2 ^ 10))
+Module Program
+    Sub Main()
+        __P(CStr(10 Mod 3))
+        __P(CStr(2 ^ 10))
+    End Sub
+End Module

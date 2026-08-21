@@ -41,8 +41,12 @@ Module VybeCheck
     End Sub
 End Module
 
-Dim x As Integer = 0
-Do While x < 3
-    x = x + 1
-Loop
-__P(CStr(x))
+Module Program
+    Sub Main()
+        Dim x As Integer = 0
+        Do While x < 3
+        x = x + 1
+        Loop
+        __P(CStr(x))
+    End Sub
+End Module

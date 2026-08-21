@@ -46,7 +46,8 @@ Class Container(Of T)
         Public Key As String
         Public Value As T
         Public Sub New(k As String, v As T)
-            Key = k : Value = v
+            Key = k
+            Value = v
         End Sub
     End Structure
 End Class

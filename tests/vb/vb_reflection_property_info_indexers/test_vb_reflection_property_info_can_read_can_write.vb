@@ -43,13 +43,15 @@ End Module
 
 Class ReadOnlyProperty
     Public ReadOnly Property Title As String
-    Public Sub New(t As String) : Title = t : End Sub
-End Class
+        Public Sub New(t As String)
+            Title = t
+        End Sub
+    End Class
 
-Module Program
-    Sub Main()
-        Dim prop = GetType(ReadOnlyProperty).GetProperty("Title")
-        __P(CStr(prop.CanRead & "|" & prop.CanWrite))
-        __Check("True|False")
-    End Sub
-End Module
+    Module Program
+        Sub Main()
+            Dim prop = GetType(ReadOnlyProperty).GetProperty("Title")
+            __P(CStr(prop.CanRead & "|" & prop.CanWrite))
+            __Check("True|False")
+        End Sub
+    End Module

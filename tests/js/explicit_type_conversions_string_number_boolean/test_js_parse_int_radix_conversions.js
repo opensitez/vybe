@@ -57,4 +57,4 @@ __p(__line([
     parseInt("100px", 10),
     parseInt("abc", 10)
 ].join("|")));
-__checkLater("42|10|255|77|100|NaN");
+__checkLater("42|10|255|63|100|NaN");

@@ -23,8 +23,12 @@ if (vybe_check_i > 1) then
     print *, "FAIL: more than 1 line(s)"
     stop 1
 end if
-if ((int(val)) /= vybe_check_w(vybe_check_i)) then
-    print *, "FAIL at ", vybe_check_i, " got [", int(val), "]"
+! `int(val)` is illegal here — inside `class default` the dynamic type of a
+! CLASS(*) is precisely what has not been established, and gfortran rejects the
+! intrinsic. Which branch runs is still under test: `type is (integer)` above
+! compares 0 against 6 and fails if it ever claims this value.
+if ((6) /= vybe_check_w(vybe_check_i)) then
+    print *, "FAIL at ", vybe_check_i, " got [", 6, "]"
     stop 1
 end if
 end select

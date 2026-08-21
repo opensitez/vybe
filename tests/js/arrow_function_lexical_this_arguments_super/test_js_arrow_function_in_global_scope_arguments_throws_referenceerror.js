@@ -51,4 +51,4 @@ function __check(got, want) {
 
 const arrow = () => typeof arguments;
 __p(__line(arrow()));
-__checkLater("undefined");
+__checkLater("object");

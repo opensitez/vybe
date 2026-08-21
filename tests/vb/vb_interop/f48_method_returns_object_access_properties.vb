@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Public Class Pair
     Dim first As String
     Dim second As String
@@ -54,7 +53,12 @@ Public Class Factory
         Return New Pair("hello", "world")
     End Function
 End Class
-Dim f As New Factory()
-Dim p As Pair = f.MakePair()
-__P(CStr(p.first))
-__P(CStr(p.second))
+
+Module Program
+    Sub Main()
+        Dim f As New Factory()
+        Dim p As Pair = f.MakePair()
+        __P(CStr(p.first))
+        __P(CStr(p.second))
+    End Sub
+End Module

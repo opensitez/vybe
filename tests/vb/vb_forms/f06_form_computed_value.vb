@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Public Class Form1
     Dim width As Integer = 100
     Dim height As Integer = 50
@@ -50,5 +49,10 @@ Public Class Form1
         Return width * height
     End Function
 End Class
-Dim f As New Form1()
-__P(CStr(f.Area()))
+
+Module Program
+    Sub Main()
+        Dim f As New Form1()
+        __P(CStr(f.Area()))
+    End Sub
+End Module

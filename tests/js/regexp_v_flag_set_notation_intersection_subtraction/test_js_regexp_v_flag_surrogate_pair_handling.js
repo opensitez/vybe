@@ -49,6 +49,6 @@ function __check(got, want) {
     }
 }
 
-const re = /[😀-🎉]/v;
+const re = /[🎈-😀]/v;
 __p(__line(re.test("😀") + "|" + re.test("🎈") + "|" + re.test("A")));
 __checkLater("true|true|false");

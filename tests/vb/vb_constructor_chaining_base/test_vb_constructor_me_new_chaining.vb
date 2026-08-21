@@ -43,29 +43,29 @@ End Module
 
 Class Account
     Public Property Name As String
-    Public Property Balance As Decimal
+        Public Property Balance As Decimal
 
-    Public Sub New()
-        Me.New("Default", 0D)
-    End Sub
+            Public Sub New()
+                Me.New("Default", 0D)
+            End Sub
 
-    Public Sub New(name As String)
-        Me.New(name, 100D)
-    End Sub
+            Public Sub New(name As String)
+                Me.New(name, 100D)
+            End Sub
 
-    Public Sub New(name As String, balance As Decimal)
-        Me.Name = name
-        Me.Balance = balance
-    End Sub
-End Class
+            Public Sub New(name As String, balance As Decimal)
+                Me.Name = name
+                Me.Balance = balance
+            End Sub
+        End Class
 
-Module Program
-    Sub Main()
-        Dim a1 As New Account()
-        Dim a2 As New Account("Alice")
-        __P(CStr(a1.Name & ":" & a1.Balance))
-        __P(CStr(a2.Name & ":" & a2.Balance))
-        __Check("Default:0
+        Module Program
+            Sub Main()
+                Dim a1 As New Account()
+                Dim a2 As New Account("Alice")
+                __P(CStr(a1.Name & ":" & a1.Balance))
+                __P(CStr(a2.Name & ":" & a2.Balance))
+                __Check("Default:0
 Alice:100")
-    End Sub
-End Module
+            End Sub
+        End Module

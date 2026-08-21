@@ -40,15 +40,19 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Class Inner
     Public Val As Integer
 End Class
 Class Outer
     Public Child As Inner
 End Class
-Dim i As New Inner()
-i.Val = 99
-Dim o As New Outer()
-o.Child = i
-__P(CStr(o.Child.Val))
+
+Module Program
+    Sub Main()
+        Dim i As New Inner()
+        i.Val = 99
+        Dim o As New Outer()
+        o.Child = i
+        __P(CStr(o.Child.Val))
+    End Sub
+End Module

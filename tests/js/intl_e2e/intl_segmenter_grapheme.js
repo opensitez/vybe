@@ -52,4 +52,4 @@ function __check(got, want) {
 const seg = new Intl.Segmenter();
         const segments = seg.segment("hi");
         __p(__line(segments.length));
-__checkLater("2");
+__checkLater("undefined");

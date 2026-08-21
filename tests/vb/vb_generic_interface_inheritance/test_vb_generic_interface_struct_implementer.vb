@@ -43,25 +43,26 @@ End Module
 
 Interface ISwap(Of T)
     Function SwapWith(other As T) As T
-End Interface
+    End Interface
 
-Structure Pair(Of T)
-    Implements ISwap(Of Pair(Of T))
-    Public First As T
-    Public Second As T
-    Public Sub New(f As T, s As T)
-        First = f : Second = s
-    End Sub
-    Public Function SwapWith(other As Pair(Of T)) As Pair(Of T) Implements ISwap(Of Pair(Of T)).SwapWith
-        Return New Pair(Of T)(Second, First)
-    End Function
-End Structure
+    Structure Pair(Of T)
+        Implements ISwap(Of Pair(Of T))
+        Public First As T
+        Public Second As T
+        Public Sub New(f As T, s As T)
+            First = f
+            Second = s
+        End Sub
+        Public Function SwapWith(other As Pair(Of T)) As Pair(Of T) Implements ISwap(Of Pair(Of T)).SwapWith
+            Return New Pair(Of T)(Second, First)
+        End Function
+    End Structure
 
-Module Program
-    Sub Main()
-        Dim p As New Pair(Of Integer)(10, 20)
-        Dim swapped = p.SwapWith(p)
-        __P(CStr(swapped.First & "," & swapped.Second))
-        __Check("20,10")
-    End Sub
-End Module
+    Module Program
+        Sub Main()
+            Dim p As New Pair(Of Integer)(10, 20)
+            Dim swapped = p.SwapWith(p)
+            __P(CStr(swapped.First & "," & swapped.Second))
+            __Check("20,10")
+        End Sub
+    End Module

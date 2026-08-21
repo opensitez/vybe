@@ -1,7 +1,7 @@
 -- vybe-test: lua/os_library/os_difftime_measures_elapsed_seconds
 -- origin: languages/lua/tests/lua/test_os_library.rs
 
-local __w1 = "60"
+local __w1 = "60.0"
 local __i = 0
 
 do local __t = tostring(os.difftime(100, 40)); __i = __i + 1

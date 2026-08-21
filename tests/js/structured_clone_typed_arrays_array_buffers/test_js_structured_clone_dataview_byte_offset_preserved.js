@@ -53,4 +53,4 @@ const buf = new ArrayBuffer(16);
 const dv = new DataView(buf, 4, 8);
 const clone = structuredClone(dv);
 __p(__line(clone.byteOffset + "|" + clone.byteLength));
-__checkLater("0|8");
+__checkLater("4|8");

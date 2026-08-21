@@ -42,10 +42,11 @@ Module VybeCheck
 End Module
 
 Module M
-Sub Main()
-Dim x, y As Integer
-x = 1: y = 2
-__P(CStr(x + y))
-    __Check("3")
-End Sub
+    Sub Main()
+        Dim x, y As Integer
+        x = 1
+        y = 2
+        __P(CStr(x + y))
+        __Check("3")
+    End Sub
 End Module

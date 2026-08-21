@@ -41,4 +41,14 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Test(ByRef x As Integer): __P(CStr("ByRef")): End Sub: Sub Test(x As String): End Sub: Sub Main(): Dim y As Integer = 1: Test(y): End Sub: End Module
+Module M
+    Sub Test(ByRef x As Integer)
+        __P(CStr("ByRef"))
+    End Sub
+    Sub Test(x As String)
+    End Sub
+    Sub Main()
+        Dim y As Integer = 1
+        Test(y)
+    End Sub
+End Module

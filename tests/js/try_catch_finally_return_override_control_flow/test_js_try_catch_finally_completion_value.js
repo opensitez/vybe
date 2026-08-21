@@ -50,4 +50,4 @@ function __check(got, want) {
 }
 
 __p(__line(eval("try { 10; } catch(e) {} finally { 20; }")));
-__checkLater("20");
+__checkLater("10");

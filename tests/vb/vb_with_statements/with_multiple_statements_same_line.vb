@@ -42,14 +42,17 @@ Module VybeCheck
 End Module
 
 Class C
-Public V1 As Integer
-Public V2 As Integer
+    Public V1 As Integer
+    Public V2 As Integer
 End Class
 Module M
-Sub Main()
-Dim c1 As New C()
-With c1: .V1 = 1: .V2 = 2: End With
-__P(CStr(c1.V1 + c1.V2))
-    __Check("3")
-End Sub
+    Sub Main()
+        Dim c1 As New C()
+        With c1
+            .V1 = 1
+            .V2 = 2
+        End With
+        __P(CStr(c1.V1 + c1.V2))
+        __Check("3")
+    End Sub
 End Module

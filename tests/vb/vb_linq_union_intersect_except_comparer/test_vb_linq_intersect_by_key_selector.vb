@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Linq
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,22 +42,23 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.Linq
 
 Class Item
     Public Property ID As Integer
-    Public Sub New(id As Integer) : Me.ID = id : End Sub
-End Class
+        Public Sub New(id As Integer)
+            Me.ID = id
+        End Sub
+    End Class
 
-Module Program
-    Sub Main()
-        Dim list1 = {New Item(1), New Item(2), New Item(3)}
-        Dim keys2 = {2, 3, 4}
-        Dim res = list1.IntersectBy(keys2, Function(i) i.ID)
-        For Each i In res
-            __P(CStr(i.ID))
-        Next
-        __Check("2
+    Module Program
+        Sub Main()
+            Dim list1 = {New Item(1), New Item(2), New Item(3)}
+            Dim keys2 = {2, 3, 4}
+            Dim res = list1.IntersectBy(keys2, Function(i) i.ID)
+            For Each i In res
+                __P(CStr(i.ID))
+            Next
+            __Check("2
 3")
-    End Sub
-End Module
+        End Sub
+    End Module

@@ -20,6 +20,8 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports Demo.A
+Imports Demo.B
 Module VybeCheck
     Public __buf As String = ""
 
@@ -55,8 +57,6 @@ Namespace Demo.B
         End Function
     End Class
 End Namespace
-Imports Demo.A
-Imports Demo.B
 Module M
     Sub Main()
         __P(CStr((New BoxA()).Name()))

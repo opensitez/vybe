@@ -41,4 +41,10 @@ Module VybeCheck
     End Sub
 End Module
 
-<System.Serializable> Class C: End Class: Module M: Sub Main(): __P(CStr(GetType(C).IsSerializable)): End Sub: End Module
+<System.Serializable> Class C
+End Class
+Module M
+    Sub Main()
+        __P(CStr(GetType(C).IsSerializable))
+    End Sub
+End Module

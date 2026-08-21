@@ -41,8 +41,11 @@ Module VybeCheck
     End Sub
 End Module
 
-Class Parent : End Class
-Class Child : Inherits Parent : End Class
+Class Parent
+End Class
+Class Child
+    Inherits Parent
+End Class
 
 Module Program
     Sub Main()

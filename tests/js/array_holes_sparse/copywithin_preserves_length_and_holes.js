@@ -49,9 +49,9 @@ function __check(got, want) {
     }
 }
 
-const arr = [1,  2,  3];
+const arr = [1, , 2, , 3];
 const copied = arr.copyWithin(1, 0, 2);
 __p(__line(copied.length));
 __p(__line(2 in copied));
 __p(__line(copied.join(",")));
-__checkLater("5\ntrue\n1, , 3");
+__checkLater("5\nfalse\n1,1,,,3");

@@ -51,4 +51,4 @@ function __check(got, want) {
 
 const value = 99;
 __p(__line(`literal: \${value} | computed: ${value}`));
-__checkLater("literal: \\99 | computed: 99");
+__checkLater("literal: ${value} | computed: 99");

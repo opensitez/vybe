@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): __P(CStr(InStr(1, "Hello World", "o"))): End Sub: End Module
+Module M
+    Sub Main()
+        __P(CStr(InStr(1, "Hello World", "o")))
+    End Sub
+End Module

@@ -41,4 +41,13 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M : Sub Main() : Dim items() As Integer = {2,4,6} : Dim total As Integer = 0 : For i As Integer = LBound(items) To UBound(items) : total += items(i) : Next : __P(CStr(total)) : End Sub : End Module
+Module M
+    Sub Main()
+        Dim items() As Integer = {2,4,6}
+        Dim total As Integer = 0
+        For i As Integer = LBound(items) To UBound(items)
+            total += items(i)
+        Next
+        __P(CStr(total))
+    End Sub
+End Module

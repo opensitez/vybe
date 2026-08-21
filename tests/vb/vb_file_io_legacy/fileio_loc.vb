@@ -41,4 +41,12 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): Dim f = FreeFile(): FileOpen(f, "test_write.txt", OpenMode.Input): Dim l = Loc(f): FileClose(f): __P(CStr(l >= 0)): End Sub: End Module
+Module M
+    Sub Main()
+        Dim f = FreeFile()
+        FileOpen(f, "test_write.txt", OpenMode.Input)
+        Dim l = Loc(f)
+        FileClose(f)
+        __P(CStr(l >= 0))
+    End Sub
+End Module

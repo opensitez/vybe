@@ -40,11 +40,14 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Class MathHelper
     Shared Function Double(x As Integer) As Integer
         Double = x * 2
     End Function
 End Class
 
-__P(CStr(MathHelper.Double(5)))
+Module Program
+    Sub Main()
+        __P(CStr(MathHelper.Double(5)))
+    End Sub
+End Module

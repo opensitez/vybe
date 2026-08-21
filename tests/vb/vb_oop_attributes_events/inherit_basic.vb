@@ -41,4 +41,15 @@ Module VybeCheck
     End Sub
 End Module
 
-Class B: Public V As Integer = 1: End Class: Class C: Inherits B: End Class: Module M: Sub Main(): Dim obj As New C(): __P(CStr(obj.V)): End Sub: End Module
+Class B
+    Public V As Integer = 1
+End Class
+Class C
+    Inherits B
+End Class
+Module M
+    Sub Main()
+        Dim obj As New C()
+        __P(CStr(obj.V))
+    End Sub
+End Module

@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,13 +42,18 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
 
 Class CustomException
     Inherits Exception
-    Public Sub New() : MyBase.New("Default Message") : End Sub
-    Public Sub New(msg As String) : MyBase.New(msg) : End Sub
-    Public Sub New(msg As String, inner As Exception) : MyBase.New(msg, inner) : End Sub
+    Public Sub New()
+        MyBase.New("Default Message")
+    End Sub
+    Public Sub New(msg As String)
+        MyBase.New(msg)
+    End Sub
+    Public Sub New(msg As String, inner As Exception)
+        MyBase.New(msg, inner)
+    End Sub
 End Class
 
 Module Program

@@ -50,7 +50,7 @@ function __check(got, want) {
 }
 
 __p(__line(3 instanceof Number));
-__p(__line(3 instanceof 123));
+try { __p(__line(3 instanceof 123)); } catch (e) { __p(__line(e instanceof TypeError)); }
 __p(__line({} instanceof Number));
 __p(__line({} instanceof Object));
-__checkLater("false\nfalse\nfalse\nfalse");
+__checkLater("false\ntrue\nfalse\ntrue");

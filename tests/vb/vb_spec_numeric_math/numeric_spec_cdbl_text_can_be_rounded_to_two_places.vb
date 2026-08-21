@@ -43,7 +43,7 @@ End Module
 
 Module M
     Sub Main()
-        __P(CStr(Round(CDbl("2.345"), 2)))
+        __P(CStr(Math.Round(CDbl("2.345"), 2)))
         __Check("2.35")
     End Sub
 End Module

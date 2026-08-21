@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Public Class Formatter
     Public Function Wrap(s As String, prefix As String, suffix As String) As String
         Return prefix & s & suffix
@@ -49,5 +48,10 @@ Public Class Formatter
         Return Wrap(s, "[", "]")
     End Function
 End Class
-Dim f As New Formatter()
-__P(CStr(f.WrapBrackets("hello")))
+
+Module Program
+    Sub Main()
+        Dim f As New Formatter()
+        __P(CStr(f.WrapBrackets("hello")))
+    End Sub
+End Module

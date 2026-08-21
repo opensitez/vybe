@@ -41,4 +41,12 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): Dim f = FreeFile(): FileOpen(f, "test_filedatetime.txt", OpenMode.Output): PrintLine(f, "Hello"): FileClose(f): __P(CStr(FileDateTime("test_filedatetime.txt").Year > 2000)): End Sub: End Module
+Module M
+    Sub Main()
+        Dim f = FreeFile()
+        FileOpen(f, "test_filedatetime.txt", OpenMode.Output)
+        PrintLine(f, "Hello")
+        FileClose(f)
+        __P(CStr(FileDateTime("test_filedatetime.txt").Year > 2000))
+    End Sub
+End Module

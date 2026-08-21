@@ -1,7 +1,7 @@
 -- vybe-test: lua/iteration/numeric_for_fractional_bounds_still_iterates
 -- origin: languages/lua/tests/lua/test_iteration.rs
 
-local __w1 = "3"
+local __w1 = "3.0"
 local __i = 0
 
 local last = 0

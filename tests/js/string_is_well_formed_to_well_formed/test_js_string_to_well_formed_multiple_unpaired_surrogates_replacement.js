@@ -52,4 +52,4 @@ function __check(got, want) {
 const multipleLone = "\uD800\uD800\uD800";
 const fixed = multipleLone.toWellFormed();
 __p(__line(fixed + "|len=" + fixed.length));
-__checkLater("|len=3");
+__checkLater("\ufffd\ufffd\ufffd|len=3");

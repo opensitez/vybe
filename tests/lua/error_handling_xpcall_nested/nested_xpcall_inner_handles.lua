@@ -1,7 +1,7 @@
 -- vybe-test: lua/error_handling_xpcall_nested/nested_xpcall_inner_handles
 -- origin: languages/lua/tests/lua/test_error_handling_xpcall_nested.rs
 
-local __w1 = "true false true false"
+local __w1 = "true\tfalse\ttrue\tfalse"
 local __i = 0
 
 local inner_run = false

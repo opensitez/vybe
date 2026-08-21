@@ -1,7 +1,7 @@
 -- vybe-test: lua/math_exhaustive/math_sin_zero_val
 -- origin: languages/lua/tests/lua/test_math_exhaustive.rs
 
-local __w1 = "0"
+local __w1 = "0.0"
 local __i = 0
 
 do local __t = tostring(math.sin(0)); __i = __i + 1

@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-__P(CStr(Replace("hello world", "world", "vb")))
+Module Program
+    Sub Main()
+        __P(CStr(Replace("hello world", "world", "vb")))
+    End Sub
+End Module

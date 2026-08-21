@@ -20,6 +20,8 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Runtime.CompilerServices
+Imports N1 ' Required to use extension methods in Mod1
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,7 +43,6 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.Runtime.CompilerServices
 Namespace N1
 Public Module Mod1
 <Extension()>
@@ -50,7 +51,6 @@ Return v * 2
 End Function
 End Module
 End Namespace
-Imports N1 ' Required to use extension methods in Mod1
 Module M
 Sub Main()
 Dim x = 5

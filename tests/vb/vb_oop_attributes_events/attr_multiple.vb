@@ -41,4 +41,10 @@ Module VybeCheck
     End Sub
 End Module
 
-<System.Serializable, System.Obsolete> Class C: End Class: Module M: Sub Main(): __P(CStr(GetType(C).GetCustomAttributes(False).Length >= 2)): End Sub: End Module
+<System.Serializable, System.Obsolete> Class C
+End Class
+Module M
+    Sub Main()
+        __P(CStr(GetType(C).GetCustomAttributes(False).Length >= 2))
+    End Sub
+End Module

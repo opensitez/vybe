@@ -53,7 +53,7 @@ Module M
         ' Passing explicitly (mutates x)
         UpdateValue(x)
         __P(CStr("After: " & x.ToString()))
-        
+
         ' Omitting creates a temporary variable initialized to 5
         UpdateValue()
         __Check("Inside: 12

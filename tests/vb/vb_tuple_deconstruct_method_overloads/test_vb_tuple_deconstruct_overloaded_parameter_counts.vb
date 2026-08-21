@@ -43,10 +43,13 @@ End Module
 
 Class DateTimeInfo
     Public Sub Deconstruct(ByRef year As Integer, ByRef month As Integer)
-        year = 2025 : month = 12
+        year = 2025
+        month = 12
     End Sub
     Public Sub Deconstruct(ByRef year As Integer, ByRef month As Integer, ByRef day As Integer)
-        year = 2025 : month = 12 : day = 31
+        year = 2025
+        month = 12
+        day = 31
     End Sub
 End Class
 

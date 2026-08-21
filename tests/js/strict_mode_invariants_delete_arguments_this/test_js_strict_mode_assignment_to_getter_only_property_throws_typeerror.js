@@ -1,6 +1,8 @@
 // vybe-test: js/strict_mode_invariants_delete_arguments_this/test_js_strict_mode_assignment_to_getter_only_property_throws_typeerror
 // origin: languages/js/tests/js/test_js_strict_mode_invariants_delete_arguments_this.rs
 
+"use strict";
+
 function __fmt(v) {
     // console.log renders a bigint with an `n` suffix; String() drops it.
     return typeof v === "bigint" ? String(v) + "n" : String(v);
@@ -53,7 +55,6 @@ const obj = {
     get val() { return 5; }
 };
 try {
-    "use strict";
     obj.val = 10;
 } catch (e) {
     __p(__line("Strict Getter-Only Property TypeError"));

@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.IO
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,12 +42,13 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.IO
 
 Module Program
     Sub Main()
         Dim data As Byte() = New Byte(99) {}
-        For i As Integer = 0 To 99 : data(i) = CByte(i) : Next
+        For i As Integer = 0 To 99
+            data(i) = CByte(i)
+        Next
 
         Using srcMs As New MemoryStream(data)
             Using destMs As New MemoryStream()

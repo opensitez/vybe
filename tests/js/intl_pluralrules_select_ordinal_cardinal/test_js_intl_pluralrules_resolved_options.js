@@ -52,4 +52,4 @@ function __check(got, want) {
 const rules = new Intl.PluralRules("en-US", { type: "ordinal" });
 const opts = rules.resolvedOptions();
 __p(__line(opts.locale + "|" + opts.type + "|" + opts.pluralCategories.join(",")));
-__checkLater("en-US|ordinal|one,two,few,other");
+__checkLater("en|ordinal|one,two,few,other");

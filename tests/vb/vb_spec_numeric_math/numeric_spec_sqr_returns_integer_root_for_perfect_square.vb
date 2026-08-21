@@ -43,7 +43,7 @@ End Module
 
 Module M
     Sub Main()
-        __P(CStr(Sqr(81)))
+        __P(CStr(Math.Sqrt(81)))
         __Check("9")
     End Sub
 End Module

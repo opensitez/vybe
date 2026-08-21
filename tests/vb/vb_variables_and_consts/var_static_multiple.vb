@@ -42,13 +42,14 @@ Module VybeCheck
 End Module
 
 Module M
-Sub Test()
-Static x = 1, y = 2
-x += 1: y += 1
-__P(CStr(x + y))
-End Sub
-Sub Main()
-Test()
-    __Check("5")
-End Sub
+    Sub Test()
+        Static x = 1, y = 2
+        x += 1
+        y += 1
+        __P(CStr(x + y))
+    End Sub
+    Sub Main()
+        Test()
+        __Check("5")
+    End Sub
 End Module

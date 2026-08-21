@@ -60,4 +60,4 @@ try {
     __p(__line("Frozen Symbol Property Error"));
 }
 __p(__line(obj[sym]));
-__checkLater("Frozen Symbol Property Error\nOriginal");
+__checkLater("Original");

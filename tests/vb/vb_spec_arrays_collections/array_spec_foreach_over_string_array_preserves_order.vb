@@ -41,4 +41,13 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M : Sub Main() : Dim items() As String = {"a","b","c"} : Dim s As String = "" : For Each item In items : s &= item : Next : __P(CStr(s)) : End Sub : End Module
+Module M
+    Sub Main()
+        Dim items() As String = {"a","b","c"}
+        Dim s As String = ""
+        For Each item In items
+            s &= item
+        Next
+        __P(CStr(s))
+    End Sub
+End Module

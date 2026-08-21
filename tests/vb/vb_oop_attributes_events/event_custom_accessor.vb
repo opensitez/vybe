@@ -41,4 +41,27 @@ Module VybeCheck
     End Sub
 End Module
 
-Class C: Private _h As System.Action: Public Custom Event E As System.Action: AddHandler(v As System.Action): _h = v: End AddHandler: RemoveHandler(v As System.Action): _h = Nothing: End RemoveHandler: RaiseEvent(): _h?(): End RaiseEvent: End Event: Public Sub DoE(): RaiseEvent E(): End Sub: End Class: Module M: Sub Main(): Dim obj As New C(): AddHandler obj.E, Sub() __P(CStr("Custom")): obj.DoE(): End Sub: End Module
+Class C
+    Private _h As System.Action
+    Public Custom Event E As System.Action
+    AddHandler(v As System.Action)
+    _h = v
+End AddHandler
+RemoveHandler(v As System.Action)
+_h = Nothing
+End RemoveHandler
+RaiseEvent()
+_h?()
+End RaiseEvent
+End Event
+Public Sub DoE()
+    RaiseEvent E()
+End Sub
+End Class
+Module M
+    Sub Main()
+        Dim obj As New C()
+        AddHandler obj.E, Sub() __P(CStr("Custom"))
+        obj.DoE()
+    End Sub
+End Module

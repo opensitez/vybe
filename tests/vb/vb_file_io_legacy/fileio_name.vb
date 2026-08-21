@@ -41,4 +41,15 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): Dim f = FreeFile(): FileOpen(f, "test_rename_src.txt", OpenMode.Output): PrintLine(f, "Hello"): FileClose(f): FileCopy("test_rename_src.txt", "test_rename.txt"): Rename("test_rename.txt", "test_renamed.txt"): __P(CStr(System.IO.File.Exists("test_renamed.txt"))): Kill("test_renamed.txt"): End Sub: End Module
+Module M
+    Sub Main()
+        Dim f = FreeFile()
+        FileOpen(f, "test_rename_src.txt", OpenMode.Output)
+        PrintLine(f, "Hello")
+        FileClose(f)
+        FileCopy("test_rename_src.txt", "test_rename.txt")
+        Rename("test_rename.txt", "test_renamed.txt")
+        __P(CStr(System.IO.File.Exists("test_renamed.txt")))
+        Kill("test_renamed.txt")
+    End Sub
+End Module

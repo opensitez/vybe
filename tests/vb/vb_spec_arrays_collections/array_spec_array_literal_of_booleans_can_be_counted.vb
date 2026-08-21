@@ -41,4 +41,13 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M : Sub Main() : Dim flags() As Boolean = {True, False, True} : Dim count As Integer = 0 : For Each flag In flags : If flag Then count += 1 : Next : __P(CStr(count)) : End Sub : End Module
+Module M
+    Sub Main()
+        Dim flags() As Boolean = {True, False, True}
+        Dim count As Integer = 0
+        For Each flag In flags
+            If flag Then count += 1
+        Next
+        __P(CStr(count))
+    End Sub
+End Module

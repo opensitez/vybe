@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,32 +42,31 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
 
 <AttributeUsage(AttributeTargets.Class Or AttributeTargets.Method)>
 Public Class InfoAttribute
     Inherits Attribute
-    
+
     Public Property Author As String
-    Public Property Version As String
-    
-    Public Sub New()
-    End Sub
-End Class
+        Public Property Version As String
 
-<Info(Author:="Alice", Version:="1.0")>
-Class MyComponent
-End Class
+            Public Sub New()
+            End Sub
+        End Class
 
-Module M
-    Sub Main()
-        Dim t As Type = GetType(MyComponent)
-        Dim attrs() As Object = t.GetCustomAttributes(GetType(InfoAttribute), False)
-        Dim info As InfoAttribute = DirectCast(attrs(0), InfoAttribute)
-        
-        __P(CStr(info.Author))
-        __P(CStr(info.Version))
-        __Check("Alice
+        <Info(Author:="Alice", Version:="1.0")>
+        Class MyComponent
+        End Class
+
+        Module M
+            Sub Main()
+                Dim t As Type = GetType(MyComponent)
+                Dim attrs() As Object = t.GetCustomAttributes(GetType(InfoAttribute), False)
+                Dim info As InfoAttribute = DirectCast(attrs(0), InfoAttribute)
+
+                __P(CStr(info.Author))
+                __P(CStr(info.Version))
+                __Check("Alice
 1.0")
-    End Sub
-End Module
+            End Sub
+        End Module

@@ -53,4 +53,4 @@ const log = [];
 const value = (log.push("a"), log.push("b"), log.push("c"), "final");
 __p(__line(value));
 __p(__line(log.join(",")));
-__checkLater("final\n1,2,3");
+__checkLater("final\na,b,c");

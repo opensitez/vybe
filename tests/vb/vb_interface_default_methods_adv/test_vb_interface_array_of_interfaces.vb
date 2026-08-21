@@ -43,30 +43,34 @@ End Module
 
 Interface IShape
     Function Area() As Double
-End Interface
+    End Interface
 
-Class Circle
-    Implements IShape
-    Public Radius As Double
-    Public Sub New(r As Double) : Radius = r : End Sub
-    Public Function Area() As Double Implements IShape.Area
-        Return Math.PI * Radius * Radius
-    End Function
-End Class
+    Class Circle
+        Implements IShape
+        Public Radius As Double
+        Public Sub New(r As Double)
+            Radius = r
+        End Sub
+        Public Function Area() As Double Implements IShape.Area
+            Return Math.PI * Radius * Radius
+        End Function
+    End Class
 
-Class Square
-    Implements IShape
-    Public Side As Double
-    Public Sub New(s As Double) : Side = s : End Sub
-    Public Function Area() As Double Implements IShape.Area
-        Return Side * Side
-    End Function
-End Class
+    Class Square
+        Implements IShape
+        Public Side As Double
+        Public Sub New(s As Double)
+            Side = s
+        End Sub
+        Public Function Area() As Double Implements IShape.Area
+            Return Side * Side
+        End Function
+    End Class
 
-Module Program
-    Sub Main()
-        Dim shapes As IShape() = {New Circle(10), New Square(10)}
-        __P(CStr(Math.Round(shapes(0).Area(), 2) & "|" & shapes(1).Area()))
-        __Check("314.16|100")
-    End Sub
-End Module
+    Module Program
+        Sub Main()
+            Dim shapes As IShape() = {New Circle(10), New Square(10)}
+            __P(CStr(Math.Round(shapes(0).Area(), 2) & "|" & shapes(1).Area()))
+            __Check("314.16|100")
+        End Sub
+    End Module

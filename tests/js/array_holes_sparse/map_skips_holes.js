@@ -49,7 +49,7 @@ function __check(got, want) {
     }
 }
 
-const arr = [1,  3];
+const arr = [1,,  3];
 const result = arr.map(x => x * 2);
 __p(__line(result[0]));
 __p(__line(1 in result));  // hole preserved in map

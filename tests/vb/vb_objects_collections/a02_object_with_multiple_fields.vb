@@ -40,16 +40,20 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Class Person
     Public Name As String
     Public Age As Integer
     Public City As String
 End Class
-Dim p As New Person()
-p.Name = "Alice"
-p.Age = 30
-p.City = "Paris"
-__P(CStr(p.Name))
-__P(CStr(p.Age))
-__P(CStr(p.City))
+
+Module Program
+    Sub Main()
+        Dim p As New Person()
+        p.Name = "Alice"
+        p.Age = 30
+        p.City = "Paris"
+        __P(CStr(p.Name))
+        __P(CStr(p.Age))
+        __P(CStr(p.City))
+    End Sub
+End Module

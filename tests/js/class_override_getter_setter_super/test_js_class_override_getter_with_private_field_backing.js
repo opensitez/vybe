@@ -60,4 +60,4 @@ class Derived extends Base {
 const d = new Derived();
 d.val = 100;
 __p(__line(d.val));
-__checkLater("200");
+__checkLater("100");

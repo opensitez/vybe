@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Class Base
     Public Data As String
 
@@ -48,7 +47,6 @@ Class Base
         Data = "initialized"
     End Sub
 End Class
-
 Class Child
     Inherits Base
 
@@ -57,5 +55,9 @@ Class Child
     End Function
 End Class
 
-Dim c As New Child()
-__P(CStr(c.GetData()))
+Module Program
+    Sub Main()
+        Dim c As New Child()
+        __P(CStr(c.GetData()))
+    End Sub
+End Module

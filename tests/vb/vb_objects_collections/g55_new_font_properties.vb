@@ -41,6 +41,10 @@ Module VybeCheck
     End Sub
 End Module
 
-Dim f As New System.Drawing.Font("Arial", 12)
-__P(CStr(f.name))
-__P(CStr(f.size))
+Module Program
+    Sub Main()
+        Dim f As New System.Drawing.Font("Arial", 12)
+        __P(CStr(f.name))
+        __P(CStr(f.size))
+    End Sub
+End Module

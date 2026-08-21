@@ -41,7 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-Class Sample : End Class
+Class Sample
+End Class
 
 Module Program
     Sub Main()

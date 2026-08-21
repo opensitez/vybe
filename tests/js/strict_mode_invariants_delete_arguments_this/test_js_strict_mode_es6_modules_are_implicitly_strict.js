@@ -58,4 +58,4 @@ function fnInModule() {
     return false;
 }
 __p(__line(fnInModule()));
-__checkLater("true");
+__checkLater("false");

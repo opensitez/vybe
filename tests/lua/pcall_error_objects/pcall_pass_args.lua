@@ -1,7 +1,7 @@
 -- vybe-test: lua/pcall_error_objects/pcall_pass_args
 -- origin: languages/lua/tests/lua/test_pcall_error_objects.rs
 
-local __w1 = "true 42"
+local __w1 = "true\t42"
 local __i = 0
 
 local ok, v = pcall(function(x) return x * 2 end, 21)

@@ -52,4 +52,4 @@ function __check(got, want) {
 const obj = { a: 1 };
 const res = Object.assign(obj, obj);
 __p(__line(res === obj + "|" + res.a));
-__checkLater("true|1");
+__checkLater("false");

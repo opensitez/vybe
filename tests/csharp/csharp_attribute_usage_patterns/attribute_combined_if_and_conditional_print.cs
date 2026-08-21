@@ -21,5 +21,12 @@ void __Check(string want) {
 }
 
 #define VYBETEST_PRE
-using System; using System.Diagnostics; class App{[Conditional("DEBUG")] static void Log(){} static void Main(){#if VYBETEST_PRE __P(("pre").ToString()); #endif Log(); __P(("post").ToString());}} App.Main();
+// A preprocessor directive must be the only content on its line (ECMA-334
+// §6.5.1) — the original spelled `#if … #endif` mid-line, which dotnet
+// rejects outright. Same program, directives on their own lines.
+using System; using System.Diagnostics; class App{[Conditional("DEBUG")] static void Log(){} static void Main(){
+#if VYBETEST_PRE
+__P(("pre").ToString());
+#endif
+Log(); __P(("post").ToString());}} App.Main();
 __Check("pre\npost");

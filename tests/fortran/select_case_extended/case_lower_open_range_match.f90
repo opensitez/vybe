@@ -2,7 +2,10 @@
 ! origin: languages/fortran/tests/fortran/test_select_case_extended.rs
 program t
 integer :: vybe_check_i = 0
-character(len=9) :: vybe_check_w(1) = [ "too small" ]
+! n = -99 falls in `case (-99:0)`, whose branch asserts "small". The expected
+! word was "too small" — the label on the branch ABOVE, which never runs — so
+! gfortran failed this test too.
+character(len=9) :: vybe_check_w(1) = [ "small" ]
 integer :: n
 n = -99
 select case (n)

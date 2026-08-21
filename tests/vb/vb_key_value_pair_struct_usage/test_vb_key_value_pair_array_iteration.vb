@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Collections.Generic
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,13 +42,12 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.Collections.Generic
 
 Module Program
     Sub Main()
         Dim pairs As KeyValuePair(Of String, Integer)() = {
-            New KeyValuePair(Of String, Integer)("A", 1),
-            New KeyValuePair(Of String, Integer)("B", 2)
+        New KeyValuePair(Of String, Integer)("A", 1),
+        New KeyValuePair(Of String, Integer)("B", 2)
         }
         For Each pair In pairs
             __P(CStr(pair.Key & ":" & pair.Value))

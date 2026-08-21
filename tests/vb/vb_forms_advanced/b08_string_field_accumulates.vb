@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Public Class Form1
     Dim log As String = ""
     Public Sub New()
@@ -52,8 +51,13 @@ Public Class Form1
         Return log
     End Function
 End Class
-Dim f As New Form1()
-f.AppendLog("a")
-f.AppendLog("b")
-f.AppendLog("c")
-__P(CStr(f.GetLog()))
+
+Module Program
+    Sub Main()
+        Dim f As New Form1()
+        f.AppendLog("a")
+        f.AppendLog("b")
+        f.AppendLog("c")
+        __P(CStr(f.GetLog()))
+    End Sub
+End Module

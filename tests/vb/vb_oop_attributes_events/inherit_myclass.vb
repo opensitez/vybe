@@ -41,4 +41,23 @@ Module VybeCheck
     End Sub
 End Module
 
-Class B: Public Overridable Function M() As String: Return "B": End Function: Public Function Test() As String: Return MyClass.M(): End Function: End Class: Class C: Inherits B: Public Overrides Function M() As String: Return "C": End Function: End Class: Module M: Sub Main(): Dim obj As New C(): __P(CStr(obj.Test())): End Sub: End Module
+Class B
+    Public Overridable Function M() As String
+        Return "B"
+    End Function
+    Public Function Test() As String
+        Return MyClass.M()
+    End Function
+End Class
+Class C
+    Inherits B
+    Public Overrides Function M() As String
+        Return "C"
+    End Function
+End Class
+Module M
+    Sub Main()
+        Dim obj As New C()
+        __P(CStr(obj.Test()))
+    End Sub
+End Module

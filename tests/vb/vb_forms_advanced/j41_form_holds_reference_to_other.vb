@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Public Class Form2
     Dim msg As String = "from form2"
     Public Sub New()
@@ -58,5 +57,10 @@ Public Class Form1
         Return child.GetMsg()
     End Function
 End Class
-Dim f As New Form1()
-__P(CStr(f.GetChildMsg()))
+
+Module Program
+    Sub Main()
+        Dim f As New Form1()
+        __P(CStr(f.GetChildMsg()))
+    End Sub
+End Module

@@ -66,4 +66,4 @@ try {
 } catch (e) {
     __p(__line(e.message));
 }
-__checkLater("NoThrowMethod");
+__checkLater("The iterator does not provide a 'throw' method.");

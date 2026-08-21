@@ -1,7 +1,7 @@
 -- vybe-test: lua/loops_for_generic_ipairs_mut/test_loops_for_generic_ipairs_mut_mutate_with_factor
 -- origin: languages/lua/tests/lua/test_loops_for_generic_ipairs_mut.rs
 
-local __w1 = "6"
+local __w1 = "6.0"
 local __i = 0
 
 local t = {2,4,6}

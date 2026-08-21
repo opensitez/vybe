@@ -52,4 +52,4 @@ function __check(got, want) {
 function* gen() { yield 1; yield 2; yield 3; }
 let g = gen();
 __p(__line(g));
-__checkLater("[continuation]");
+__checkLater("[object Generator]");

@@ -41,8 +41,11 @@ Module VybeCheck
     End Sub
 End Module
 
-Interface IService : End Interface
-Class ServiceImpl : Implements IService : End Class
+Interface IService
+End Interface
+Class ServiceImpl
+    Implements IService
+End Class
 
 Module Program
     Private Function AsInterface(Of TInterface As Class)(obj As Object) As TInterface

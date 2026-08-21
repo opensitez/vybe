@@ -1,7 +1,7 @@
 -- vybe-test: lua/numeric_pow_boundaries/test_numeric_pow_boundaries_minus_power
 -- origin: languages/lua/tests/lua/test_numeric_pow_boundaries.rs
 
-local __w1 = "15"
+local __w1 = "15.0"
 local __i = 0
 
 do local __t = tostring((2 ^ 4) - 1); __i = __i + 1

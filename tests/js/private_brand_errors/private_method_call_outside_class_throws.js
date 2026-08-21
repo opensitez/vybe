@@ -49,5 +49,5 @@ function __check(got, want) {
     }
 }
 
-class C{#m(){return 1;}} const c=new C(); try{c.#m();}catch(e){__p(__line(e instanceof TypeError));}
+class C{#m(){return 1;} static call(o){return o.#m();}} try{__p(__line(C.call({})));}catch(e){__p(__line(e instanceof TypeError));}
 __checkLater("true");

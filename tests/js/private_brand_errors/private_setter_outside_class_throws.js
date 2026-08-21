@@ -49,5 +49,5 @@ function __check(got, want) {
     }
 }
 
-class C{set #v(x){} } const c=new C(); try{c.#v=1;}catch(e){__p(__line(e instanceof TypeError));}
+class C{set #v(x){} static write(o){o.#v=1;}} try{C.write({});}catch(e){__p(__line(e instanceof TypeError));}
 __checkLater("true");

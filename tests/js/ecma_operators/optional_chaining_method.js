@@ -54,4 +54,4 @@ const obj = {
 };
 __p(__line(obj?.greet()));
 __p(__line(obj?.missing?.()));
-__checkLater("hello");
+__checkLater("hello\nundefined");

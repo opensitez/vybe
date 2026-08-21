@@ -53,4 +53,4 @@ const epoch = new Date(0);
 __p(__line(epoch == 0));
 __p(__line(epoch == 1));
 __p(__line(new Date(1000) == 1000));
-__checkLater("true\nfalse\ntrue");
+__checkLater("false\nfalse\nfalse");

@@ -41,4 +41,9 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): Dim d = #8/24/2020 12:30:00 PM#: __P(CStr(d.Year)): End Sub: End Module
+Module M
+    Sub Main()
+        Dim d = #8/24/2020 12:30:00 PM#
+        __P(CStr(d.Year))
+    End Sub
+End Module

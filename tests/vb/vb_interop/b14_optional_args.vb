@@ -41,12 +41,16 @@ Module VybeCheck
     End Sub
 End Module
 
-Function Greet(name As String, greeting As String) As String
-    If greeting = "" Then
+Module Program
+    Sub Main()
+        Function Greet(name As String, greeting As String) As String
+        If greeting = "" Then
         Return "Hello " & name
-    Else
+        Else
         Return greeting & " " & name
-    End If
-End Function
-__P(CStr(Greet("Alice", "Hi")))
-__P(CStr(Greet("Bob", "")))
+        End If
+        End Function
+        __P(CStr(Greet("Alice", "Hi")))
+        __P(CStr(Greet("Bob", "")))
+    End Sub
+End Module

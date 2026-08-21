@@ -45,7 +45,8 @@ Structure Pair(Of T1, T2)
     Public Item1 As T1
     Public Item2 As T2
     Public Sub New(i1 As T1, i2 As T2)
-        Item1 = i1 : Item2 = i2
+        Item1 = i1
+        Item2 = i2
     End Sub
     Public Function Swap() As Pair(Of T2, T1)
         Return New Pair(Of T2, T1)(Item2, Item1)

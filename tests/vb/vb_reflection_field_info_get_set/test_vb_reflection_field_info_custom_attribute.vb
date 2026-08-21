@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,14 +42,16 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
 
 <AttributeUsage(AttributeTargets.Field)>
 Class RangeAttribute
     Inherits Attribute
     Public Min As Integer
     Public Max As Integer
-    Public Sub New(min As Integer, max As Integer) : Me.Min = min : Me.Max = max : End Sub
+    Public Sub New(min As Integer, max As Integer)
+        Me.Min = min
+        Me.Max = max
+    End Sub
 End Class
 
 Class Form

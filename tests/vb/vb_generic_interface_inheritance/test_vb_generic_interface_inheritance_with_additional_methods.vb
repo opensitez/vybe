@@ -43,29 +43,29 @@ End Module
 
 Interface IService(Of T)
     Sub Execute(item As T)
-End Interface
+    End Interface
 
-Interface IAdvancedService(Of T)
-    Inherits IService(Of T)
-    Sub ExecuteBatch(items As T())
-End Interface
+    Interface IAdvancedService(Of T)
+        Inherits IService(Of T)
+        Sub ExecuteBatch(items As T())
+        End Interface
 
-Class StringService
-    Implements IAdvancedService(Of String)
-    Public Sub Execute(item As String) Implements IService(Of String).Execute
-        __P(CStr("Single: " & item))
-    End Sub
-    Public Sub ExecuteBatch(items As String()) Implements IAdvancedService(Of String).ExecuteBatch
-        __P(CStr("Batch: " & String.Join("-", items)))
-    End Sub
-End Class
+        Class StringService
+            Implements IAdvancedService(Of String)
+            Public Sub Execute(item As String) Implements IService(Of String).Execute
+                __P(CStr("Single: " & item))
+            End Sub
+            Public Sub ExecuteBatch(items As String()) Implements IAdvancedService(Of String).ExecuteBatch
+                __P(CStr("Batch: " & String.Join("-", items)))
+            End Sub
+        End Class
 
-Module Program
-    Sub Main()
-        Dim s As IAdvancedService(Of String) = New StringService()
-        s.Execute("One")
-        s.ExecuteBatch({"Two", "Three"})
-        __Check("Single: One
+        Module Program
+            Sub Main()
+                Dim s As IAdvancedService(Of String) = New StringService()
+                s.Execute("One")
+                s.ExecuteBatch({"Two", "Three"})
+                __Check("Single: One
 Batch: Two-Three")
-    End Sub
-End Module
+            End Sub
+        End Module

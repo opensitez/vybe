@@ -41,4 +41,9 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): Dim xml = <R><C>1</C></R>: __P(CStr(xml.<C>.Value)): End Sub: End Module
+Module M
+    Sub Main()
+        Dim xml = <R><C>1</C></R>
+        __P(CStr(xml.<C>.Value))
+    End Sub
+End Module

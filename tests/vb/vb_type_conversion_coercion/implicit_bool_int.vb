@@ -41,4 +41,9 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): Dim x As Integer = True: __P(CStr(x)): End Sub: End Module
+Module M
+    Sub Main()
+        Dim x As Integer = True
+        __P(CStr(x))
+    End Sub
+End Module

@@ -43,7 +43,7 @@ End Module
 
 Module M
     Sub Main()
-        __P(CStr(Atn(0)))
+        __P(CStr(Math.Atan(0)))
         __Check("0")
     End Sub
 End Module

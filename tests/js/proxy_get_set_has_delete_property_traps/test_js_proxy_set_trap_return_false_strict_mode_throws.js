@@ -1,6 +1,8 @@
 // vybe-test: js/proxy_get_set_has_delete_property_traps/test_js_proxy_set_trap_return_false_strict_mode_throws
 // origin: languages/js/tests/js/test_js_proxy_get_set_has_delete_property_traps.rs
 
+"use strict";
+
 function __fmt(v) {
     // console.log renders a bigint with an `n` suffix; String() drops it.
     return typeof v === "bigint" ? String(v) + "n" : String(v);
@@ -56,7 +58,6 @@ const proxy = new Proxy(target, {
     }
 });
 try {
-    "use strict";
     proxy.foo = "bar";
 } catch (e) {
     __p(__line("TypeError on Set Returning False"));

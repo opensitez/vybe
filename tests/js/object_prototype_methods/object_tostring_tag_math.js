@@ -50,4 +50,4 @@ function __check(got, want) {
 }
 
 __p(__line(Object.prototype.toString.call(Math).slice(8,-1)));
-__checkLater("Object");
+__checkLater("Math");

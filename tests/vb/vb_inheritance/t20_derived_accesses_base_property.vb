@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Class Base
     Private _val As Integer = 0
 
@@ -53,11 +52,14 @@ Class Base
         End Set
     End Property
 End Class
-
 Class Child
     Inherits Base
 End Class
 
-Dim c As New Child()
-c.Val = 77
-__P(CStr(c.Val))
+Module Program
+    Sub Main()
+        Dim c As New Child()
+        c.Val = 77
+        __P(CStr(c.Val))
+    End Sub
+End Module

@@ -59,4 +59,4 @@ class Derived extends Base {
 const d = new Derived();
 const assigned = (d.x = 99);
 __p(__line(assigned + "|" + d.x));
-__checkLater("99|99");
+__checkLater("99|undefined");

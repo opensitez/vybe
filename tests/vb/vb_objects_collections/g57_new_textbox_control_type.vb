@@ -41,5 +41,9 @@ Module VybeCheck
     End Sub
 End Module
 
-Dim txt As New System.Windows.Forms.TextBox()
-__P(CStr(txt.__control_type))
+Module Program
+    Sub Main()
+        Dim txt As New System.Windows.Forms.TextBox()
+        __P(CStr(txt.__control_type))
+    End Sub
+End Module

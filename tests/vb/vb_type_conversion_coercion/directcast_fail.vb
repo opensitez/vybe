@@ -41,4 +41,13 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): Dim o As Object = "A": Try: DirectCast(o, Integer): Catch: __P(CStr("Err")): End Try: End Sub: End Module
+Module M
+    Sub Main()
+        Dim o As Object = "A"
+        Try
+            DirectCast(o, Integer)
+        Catch
+        __P(CStr("Err"))
+    End Try
+End Sub
+End Module

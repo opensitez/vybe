@@ -1,7 +1,7 @@
 -- vybe-test: lua/string_format/format_hash_flag_adds_decimal_for_float
 -- origin: languages/lua/tests/lua/test_string_format.rs
 
-local __w1 = "3.0"
+local __w1 = "3.00000"
 local __i = 0
 
 do local __t = tostring(string.format("%#g", 3.0)); __i = __i + 1

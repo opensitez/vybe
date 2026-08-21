@@ -41,4 +41,11 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M : Sub Main() : Dim values(1) As String : values(0)="A" : values(1)="B" : __P(CStr(values(0) & values(1))) : End Sub : End Module
+Module M
+    Sub Main()
+        Dim values(1) As String
+        values(0)="A"
+        values(1)="B"
+        __P(CStr(values(0) & values(1)))
+    End Sub
+End Module

@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): __P(CStr(System.IO.Path.Combine("A", "B").Contains("B"))): End Sub: End Module
+Module M
+    Sub Main()
+        __P(CStr(System.IO.Path.Combine("A", "B").Contains("B")))
+    End Sub
+End Module

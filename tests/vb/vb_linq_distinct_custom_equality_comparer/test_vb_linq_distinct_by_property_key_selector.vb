@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Linq
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,22 +42,24 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.Linq
 
 Class Person
     Public Property Name As String
-    Public Property Age As Integer
-    Public Sub New(n As String, a As Integer) : Name = n : Age = a : End Sub
-End Class
+        Public Property Age As Integer
+            Public Sub New(n As String, a As Integer)
+                Name = n
+                Age = a
+            End Sub
+        End Class
 
-Module Program
-    Sub Main()
-        Dim people = {New Person("Alice", 25), New Person("Bob", 25), New Person("Charlie", 30)}
-        Dim uniqueByAge = people.DistinctBy(Function(p) p.Age)
-        For Each p In uniqueByAge
-            __P(CStr(p.Name & ":" & p.Age))
-        Next
-        __Check("Alice:25
+        Module Program
+            Sub Main()
+                Dim people = {New Person("Alice", 25), New Person("Bob", 25), New Person("Charlie", 30)}
+                Dim uniqueByAge = people.DistinctBy(Function(p) p.Age)
+                For Each p In uniqueByAge
+                    __P(CStr(p.Name & ":" & p.Age))
+                Next
+                __Check("Alice:25
 Charlie:30")
-    End Sub
-End Module
+            End Sub
+        End Module

@@ -55,4 +55,4 @@ try {
     __p(__line(typeof b));
     __p(__line(b));
 }
-__checkLater("bigint\n9007199254740991");
+__checkLater("bigint\n9007199254740991n");

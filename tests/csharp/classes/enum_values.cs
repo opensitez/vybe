@@ -24,4 +24,4 @@ enum Color { Red, Green, Blue }
         __P((Color.Red).ToString());
         __P((Color.Green).ToString());
         __P((Color.Blue).ToString());
-__Check("0\n1\n2");
+__Check("Red\nGreen\nBlue");

@@ -49,7 +49,7 @@ function __check(got, want) {
     }
 }
 
-const sparse = [1,  3];
+const sparse = [1,,  3];
 const grouped = Object.groupBy(sparse, item => item === undefined ? "undef" : "def");
 __p(__line(grouped.def.join(",") + "|countUndef=" + grouped.undef.length));
 __checkLater("1,3|countUndef=1");

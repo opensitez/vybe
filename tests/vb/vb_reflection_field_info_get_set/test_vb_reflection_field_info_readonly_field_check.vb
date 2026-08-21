@@ -43,7 +43,9 @@ End Module
 
 Class ReadOnlyContainer
     Public ReadOnly ID As Integer = 42
-    Public Sub New(idVal As Integer) : ID = idVal : End Sub
+    Public Sub New(idVal As Integer)
+        ID = idVal
+    End Sub
 End Class
 
 Module Program

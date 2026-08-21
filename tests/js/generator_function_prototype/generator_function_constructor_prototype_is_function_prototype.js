@@ -1,6 +1,9 @@
 // vybe-test: js/generator_function_prototype/generator_function_constructor_prototype_is_function_prototype
 // origin: languages/js/tests/js/test_generator_function_prototype.rs
 
+const GeneratorFunction = Object.getPrototypeOf(function*(){}).constructor;
+
+
 function __fmt(v) {
     // console.log renders a bigint with an `n` suffix; String() drops it.
     return typeof v === "bigint" ? String(v) + "n" : String(v);
@@ -49,5 +52,5 @@ function __check(got, want) {
     }
 }
 
-__p(__line(Object.getPrototypeOf(GeneratorFunction) === Function.prototype));
+__p(__line(Object.getPrototypeOf(GeneratorFunction.prototype) === Function.prototype));
 __checkLater("true");

@@ -50,4 +50,4 @@ function __check(got, want) {
 }
 
 const iterable={[Symbol.iterator](){let n=0;return{next(){return n++?{value:undefined,done:true}:{value:7,done:false};},return(v){return{value:v,done:true};}};}}; function* g(){const r=yield* iterable; yield r;} __p(__line([...g()][0]));
-__checkLater("undefined");
+__checkLater("7");

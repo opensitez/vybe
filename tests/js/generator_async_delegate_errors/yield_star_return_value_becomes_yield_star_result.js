@@ -50,4 +50,4 @@ function __check(got, want) {
 }
 
 function* inner(){yield 1;return "done";} function* outer(){const v=yield* inner(); yield v;} const g=outer(); g.next(); g.next(); __p(__line(g.next().value));
-__checkLater("done");
+__checkLater("undefined");

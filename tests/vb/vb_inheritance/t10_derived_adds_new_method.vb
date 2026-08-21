@@ -40,13 +40,11 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Class Base
     Function Hello() As String
         Hello = "hi"
     End Function
 End Class
-
 Class Child
     Inherits Base
 
@@ -55,6 +53,10 @@ Class Child
     End Function
 End Class
 
-Dim c As New Child()
-__P(CStr(c.Hello()))
-__P(CStr(c.World()))
+Module Program
+    Sub Main()
+        Dim c As New Child()
+        __P(CStr(c.Hello()))
+        __P(CStr(c.World()))
+    End Sub
+End Module

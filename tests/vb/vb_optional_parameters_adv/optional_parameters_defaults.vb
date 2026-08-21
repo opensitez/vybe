@@ -50,7 +50,7 @@ Module M
         __P(CStr(Greet("Alice")))
         __P(CStr(Greet("Bob", "Hi")))
         __P(CStr(Greet("Charlie", "Hey", "?")))
-        
+
         ' Named parameters skipping optional
         __P(CStr(Greet("Dave", punctuation:=".")))
         __Check("Hello Alice!

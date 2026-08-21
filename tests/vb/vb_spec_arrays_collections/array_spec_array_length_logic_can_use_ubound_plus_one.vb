@@ -41,4 +41,9 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M : Sub Main() : Dim items() As Integer = {1,2,3,4} : __P(CStr(UBound(items)+1)) : End Sub : End Module
+Module M
+    Sub Main()
+        Dim items() As Integer = {1,2,3,4}
+        __P(CStr(UBound(items)+1))
+    End Sub
+End Module

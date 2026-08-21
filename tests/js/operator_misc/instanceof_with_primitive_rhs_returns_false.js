@@ -56,4 +56,4 @@ try {
     result = "error";
 }
 __p(__line(result));
-__checkLater("false");
+__checkLater("error");

@@ -41,4 +41,12 @@ Module VybeCheck
     End Sub
 End Module
 
-Enum E: A = 10: B = 20: End Enum: Module M: Sub Main(): __P(CStr(E.B)): End Sub: End Module
+Enum E
+    A = 10
+    B = 20
+End Enum
+Module M
+    Sub Main()
+        __P(CStr(E.B))
+    End Sub
+End Module

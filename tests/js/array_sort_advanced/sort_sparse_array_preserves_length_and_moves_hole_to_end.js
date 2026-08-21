@@ -56,4 +56,4 @@ __p(__line(0 in arr));
 __p(__line(2 in arr));
 __p(__line(3 in arr));
 __p(__line(arr.join(",")));
-__checkLater("4\ntrue\ntrue\ntrue\na,b,,");
+__checkLater("4\ntrue\ntrue\nfalse\na,b,,");

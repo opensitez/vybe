@@ -40,13 +40,17 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Class Widget
     Public Color As String
 End Class
-Dim w1 As New Widget()
-Dim w2 As New Widget()
-w1.Color = "red"
-w2.Color = "blue"
-__P(CStr(w1.Color))
-__P(CStr(w2.Color))
+
+Module Program
+    Sub Main()
+        Dim w1 As New Widget()
+        Dim w2 As New Widget()
+        w1.Color = "red"
+        w2.Color = "blue"
+        __P(CStr(w1.Color))
+        __P(CStr(w2.Color))
+    End Sub
+End Module

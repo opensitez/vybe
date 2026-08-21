@@ -41,4 +41,13 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): Dim f = FreeFile(): FileOpen(f, "test_copy_src.txt", OpenMode.Output): PrintLine(f, "Hello"): FileClose(f): FileCopy("test_copy_src.txt", "test_copy.txt"): __P(CStr(System.IO.File.Exists("test_copy.txt"))): End Sub: End Module
+Module M
+    Sub Main()
+        Dim f = FreeFile()
+        FileOpen(f, "test_copy_src.txt", OpenMode.Output)
+        PrintLine(f, "Hello")
+        FileClose(f)
+        FileCopy("test_copy_src.txt", "test_copy.txt")
+        __P(CStr(System.IO.File.Exists("test_copy.txt")))
+    End Sub
+End Module

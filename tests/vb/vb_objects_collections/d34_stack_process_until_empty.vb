@@ -41,12 +41,16 @@ Module VybeCheck
     End Sub
 End Module
 
-Dim s As New Stack(Of Integer)
-s.Push(10)
-s.Push(20)
-s.Push(30)
-Dim total As Integer = 0
-Do While s.Count > 0
-    total = total + s.Pop()
-Loop
-__P(CStr(total))
+Module Program
+    Sub Main()
+        Dim s As New Stack(Of Integer)
+        s.Push(10)
+        s.Push(20)
+        s.Push(30)
+        Dim total As Integer = 0
+        Do While s.Count > 0
+        total = total + s.Pop()
+        Loop
+        __P(CStr(total))
+    End Sub
+End Module

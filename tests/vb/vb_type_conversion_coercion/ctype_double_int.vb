@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): __P(CStr(CType(42.5, Integer))): End Sub: End Module
+Module M
+    Sub Main()
+        __P(CStr(CType(42.5, Integer)))
+    End Sub
+End Module

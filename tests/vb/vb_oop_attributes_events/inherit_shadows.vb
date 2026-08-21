@@ -41,4 +41,21 @@ Module VybeCheck
     End Sub
 End Module
 
-Class B: Public Function M() As String: Return "B": End Function: End Class: Class C: Inherits B: Public Shadows Function M() As String: Return "C": End Function: End Class: Module M: Sub Main(): Dim obj1 As New C(): Dim obj2 As B = obj1: __P(CStr(obj1.M() & obj2.M())): End Sub: End Module
+Class B
+    Public Function M() As String
+        Return "B"
+    End Function
+End Class
+Class C
+    Inherits B
+    Public Shadows Function M() As String
+    Return "C"
+End Function
+End Class
+Module M
+    Sub Main()
+        Dim obj1 As New C()
+        Dim obj2 As B = obj1
+        __P(CStr(obj1.M() & obj2.M()))
+    End Sub
+End Module

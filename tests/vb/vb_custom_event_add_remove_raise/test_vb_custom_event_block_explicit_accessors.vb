@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,7 +42,6 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
 
 Public Delegate Sub CustomHandler(msg As String)
 
@@ -49,25 +49,25 @@ Class Publisher
     Private _handlers As CustomHandler
 
     Public Custom Event StateChanged As CustomHandler
-        AddHandler(value As CustomHandler)
-            __P(CStr("Added"))
-            _handlers = CType([Delegate].Combine(_handlers, value), CustomHandler)
-        End AddHandler
+    AddHandler(value As CustomHandler)
+    __P(CStr("Added"))
+    _handlers = CType([Delegate].Combine(_handlers, value), CustomHandler)
+End AddHandler
 
-        RemoveHandler(value As CustomHandler)
-            __P(CStr("Removed"))
-            _handlers = CType([Delegate].Remove(_handlers, value), CustomHandler)
-        End RemoveHandler
+RemoveHandler(value As CustomHandler)
+__P(CStr("Removed"))
+_handlers = CType([Delegate].Remove(_handlers, value), CustomHandler)
+End RemoveHandler
 
-        RaiseEvent(msg As String)
-            __P(CStr("Raising"))
-            _handlers?.Invoke(msg)
-        End RaiseEvent
-    End Event
+RaiseEvent(msg As String)
+__P(CStr("Raising"))
+_handlers?.Invoke(msg)
+End RaiseEvent
+End Event
 
-    Public Sub Trigger(msg As String)
-        RaiseEvent StateChanged(msg)
-    End Sub
+Public Sub Trigger(msg As String)
+    RaiseEvent StateChanged(msg)
+End Sub
 End Class
 
 Module Program

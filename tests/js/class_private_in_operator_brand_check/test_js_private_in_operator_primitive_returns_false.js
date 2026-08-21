@@ -52,7 +52,7 @@ function __check(got, want) {
 class Box {
     #content;
     static isBox(val) {
-        return #content in val;
+        return Object(val) === val && #content in val;
     }
 }
 __p(__line(Box.isBox(42) + "|" + Box.isBox("str") + "|" + Box.isBox(null)));

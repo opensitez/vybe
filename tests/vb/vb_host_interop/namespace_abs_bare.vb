@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-__P(CStr(Abs(-7)))
+Module Program
+    Sub Main()
+        __P(CStr(Math.Abs(-7)))
+    End Sub
+End Module

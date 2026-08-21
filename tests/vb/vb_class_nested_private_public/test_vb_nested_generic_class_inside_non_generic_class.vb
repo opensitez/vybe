@@ -44,8 +44,12 @@ End Module
 Class Storage
     Public Class Cache(Of T)
         Private item As T
-        Public Sub SetItem(val As T) : item = val : End Sub
-        Public Function GetItem() As T : Return item : End Function
+        Public Sub SetItem(val As T)
+            item = val
+        End Sub
+        Public Function GetItem() As T
+            Return item
+        End Function
     End Class
 End Class
 

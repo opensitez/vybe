@@ -20,6 +20,8 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Collections.Generic
+Imports System.Linq
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,36 +43,37 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.Collections.Generic
-Imports System.Linq
 
 Class Product
     Public Property ID As Integer
-    Public Property Name As String
-    Public Sub New(id As Integer, name As String) : Me.ID = id : Me.Name = name : End Sub
-End Class
+        Public Property Name As String
+            Public Sub New(id As Integer, name As String)
+                Me.ID = id
+                Me.Name = name
+            End Sub
+        End Class
 
-Class ProductIDComparer
-    Implements IEqualityComparer(Of Product)
-    Public Function Equals(x As Product, y As Product) As Boolean Implements IEqualityComparer(Of Product).Equals
-        If x Is y Then Return True
-        If x Is Nothing OrElse y Is Nothing Then Return False
-        Return x.ID = y.ID
-    End Function
-    Public Function GetHashCode(obj As Product) As Integer Implements IEqualityComparer(Of Product).GetHashCode
-        If obj Is Nothing Then Return 0
-        Return obj.ID.GetHashCode()
-    End Function
-End Class
+        Class ProductIDComparer
+            Implements IEqualityComparer(Of Product)
+            Public Function Equals(x As Product, y As Product) As Boolean Implements IEqualityComparer(Of Product).Equals
+                If x Is y Then Return True
+                If x Is Nothing OrElse y Is Nothing Then Return False
+                Return x.ID = y.ID
+            End Function
+            Public Function GetHashCode(obj As Product) As Integer Implements IEqualityComparer(Of Product).GetHashCode
+                If obj Is Nothing Then Return 0
+                Return obj.ID.GetHashCode()
+            End Function
+        End Class
 
-Module Program
-    Sub Main()
-        Dim prods = {New Product(1, "P1"), New Product(1, "P1_Dup"), New Product(2, "P2")}
-        Dim unique = prods.Distinct(New ProductIDComparer())
-        For Each p In unique
-            __P(CStr(p.ID & "=" & p.Name))
-        Next
-        __Check("1=P1
+        Module Program
+            Sub Main()
+                Dim prods = {New Product(1, "P1"), New Product(1, "P1_Dup"), New Product(2, "P2")}
+                Dim unique = prods.Distinct(New ProductIDComparer())
+                For Each p In unique
+                    __P(CStr(p.ID & "=" & p.Name))
+                Next
+                __Check("1=P1
 2=P2")
-    End Sub
-End Module
+            End Sub
+        End Module

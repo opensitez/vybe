@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,19 +42,23 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
 
 <AttributeUsage(AttributeTargets.Class, Inherited:=True)>
 Class CategoryAttribute
     Inherits Attribute
     Public Tag As String
-    Public Sub New(t As String) : Tag = t : End Sub
+    Public Sub New(t As String)
+        Tag = t
+    End Sub
 End Class
 
 <Category("BaseTag")>
-Class BaseClass : End Class
+Class BaseClass
+End Class
 
-Class DerivedClass : Inherits BaseClass : End Class
+Class DerivedClass
+    Inherits BaseClass
+End Class
 
 Module Program
     Sub Main()

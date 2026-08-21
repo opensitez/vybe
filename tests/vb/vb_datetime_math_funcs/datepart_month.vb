@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): __P(CStr(DatePart("m", #5/15/2020#))): End Sub: End Module
+Module M
+    Sub Main()
+        __P(CStr(DatePart("m", #5/15/2020#)))
+    End Sub
+End Module

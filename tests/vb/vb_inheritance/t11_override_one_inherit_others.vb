@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Class Base
     Sub A()
         __P(CStr("base-A"))
@@ -50,7 +49,6 @@ Class Base
         __P(CStr("base-B"))
     End Sub
 End Class
-
 Class Child
     Inherits Base
 
@@ -59,6 +57,10 @@ Class Child
     End Sub
 End Class
 
-Dim c As New Child()
-c.A()
-c.B()
+Module Program
+    Sub Main()
+        Dim c As New Child()
+        c.A()
+        c.B()
+    End Sub
+End Module

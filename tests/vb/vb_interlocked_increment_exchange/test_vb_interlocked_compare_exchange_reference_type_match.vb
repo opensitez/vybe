@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Threading
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,11 +42,12 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.Threading
 
 Class Document
     Public Title As String
-    Public Sub New(t As String) : Title = t : End Sub
+    Public Sub New(t As String)
+        Title = t
+    End Sub
 End Class
 
 Module Program

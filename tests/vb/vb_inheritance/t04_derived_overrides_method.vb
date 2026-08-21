@@ -40,13 +40,11 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Class Animal
     Sub Speak()
         __P(CStr("generic"))
     End Sub
 End Class
-
 Class Dog
     Inherits Animal
 
@@ -55,5 +53,9 @@ Class Dog
     End Sub
 End Class
 
-Dim d As New Dog()
-d.Speak()
+Module Program
+    Sub Main()
+        Dim d As New Dog()
+        d.Speak()
+    End Sub
+End Module

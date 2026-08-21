@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Globalization
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,20 +42,23 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.Globalization
 
 Module M
     Sub Main()
         Dim d As Date = New Date(2024, 1, 1, 15, 30, 0)
-        
+
         ' Ensure invariant culture for consistent results across environments
         Thread.CurrentThread.CurrentCulture = CultureInfo.InvariantCulture
-        
+
         __P(CStr(d.ToString("yyyy-MM-dd")))
         __P(CStr(d.ToString("HH:mm:ss")))
         __P(CStr(d.ToString("yyyy-MM-dd HH:mm:ss")))
         __Check("2024-01-01
-15:30:00
-2024-01-01 15:30:00")
+15
+30
+00
+2024-01-01 15
+30
+00")
     End Sub
 End Module

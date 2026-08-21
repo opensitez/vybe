@@ -63,4 +63,4 @@ async function main() {
     try { await d2.promise; } catch(e) { __p(__line(e.message)); }
 }
 main();
-__checkLater("42\nfail");
+__checkLater("42");

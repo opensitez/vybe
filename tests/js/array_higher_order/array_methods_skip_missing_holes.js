@@ -49,7 +49,7 @@ function __check(got, want) {
     }
 }
 
-const sparse = [, 2,  4];
+const sparse = [, 2,,  4];
 const doubled = sparse.map(x => x * 2);
 __p(__line(doubled.length));
 __p(__line(0 in doubled, 1 in doubled, 2 in doubled));

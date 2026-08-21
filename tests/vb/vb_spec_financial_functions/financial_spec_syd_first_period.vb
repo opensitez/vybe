@@ -43,7 +43,7 @@ End Module
 
 Module M
     Sub Main()
-        __P(CStr(Round(SYD(1000, 100, 5, 1), 2)))
+        __P(CStr(Math.Round(SYD(1000, 100, 5, 1), 2)))
         __Check("300")
     End Sub
 End Module

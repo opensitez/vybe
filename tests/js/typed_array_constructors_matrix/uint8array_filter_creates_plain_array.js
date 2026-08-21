@@ -50,4 +50,4 @@ function __check(got, want) {
 }
 
 const r=new Uint8Array([1,2,3]).filter(x=>x>1); __p(__line(Array.isArray(r)));__p(__line(r.length));
-__checkLater("true\n2");
+__checkLater("false\n2");

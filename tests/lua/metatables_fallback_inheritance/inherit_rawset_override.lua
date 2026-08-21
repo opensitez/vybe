@@ -1,7 +1,7 @@
 -- vybe-test: lua/metatables_fallback_inheritance/inherit_rawset_override
 -- origin: languages/lua/tests/lua/test_metatables_fallback_inheritance.rs
 
-local __w1 = "2 1"
+local __w1 = "2\t1"
 local __i = 0
 
 local proto = {x = 1}

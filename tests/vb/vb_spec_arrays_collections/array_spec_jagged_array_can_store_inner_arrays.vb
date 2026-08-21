@@ -41,4 +41,9 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M : Sub Main() : Dim outer()() As Integer = { New Integer() {1,2}, New Integer() {3,4} } : __P(CStr(outer(1)(0))) : End Sub : End Module
+Module M
+    Sub Main()
+        Dim outer()() As Integer = { New Integer() {1,2}, New Integer() {3,4} }
+        __P(CStr(outer(1)(0)))
+    End Sub
+End Module

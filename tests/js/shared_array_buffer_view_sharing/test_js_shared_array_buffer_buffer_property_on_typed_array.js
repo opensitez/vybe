@@ -52,4 +52,4 @@ function __check(got, want) {
 const sab = new SharedArrayBuffer(16);
 const u8 = new Uint8Array(sab);
 __p(__line(u8.buffer === sab + "|" + u8.buffer.byteLength));
-__checkLater("true|16");
+__checkLater("false");

@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Collections.Concurrent
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,11 +42,10 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.Collections.Concurrent
 
 Module Program
     Sub Main()
-        Dim dict As New ConcurrentDictionary(Of Integer, Integer)(concurrencyLevel := 4, capacity := 100)
+        Dim dict As New ConcurrentDictionary(Of Integer, Integer)(concurrencyLevel:=4, capacity:=100)
         dict.TryAdd(1, 100)
         __P(CStr(dict.Count))
         __Check("1")

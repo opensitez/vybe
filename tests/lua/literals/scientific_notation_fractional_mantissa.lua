@@ -1,7 +1,7 @@
 -- vybe-test: lua/literals/scientific_notation_fractional_mantissa
 -- origin: languages/lua/tests/lua/test_literals.rs
 
-local __w1 = "25"
+local __w1 = "25.0"
 local __i = 0
 
 do local __t = tostring(2.5e1); __i = __i + 1

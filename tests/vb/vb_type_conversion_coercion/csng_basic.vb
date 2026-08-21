@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): __P(CStr(CSng("1.5"))): End Sub: End Module
+Module M
+    Sub Main()
+        __P(CStr(CSng("1.5")))
+    End Sub
+End Module

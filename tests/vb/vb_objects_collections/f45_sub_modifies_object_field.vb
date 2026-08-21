@@ -40,14 +40,18 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Class Score
     Public Points As Integer
 End Class
-Sub AddPoints(s As Score, p As Integer)
-    s.Points = s.Points + p
-End Sub
-Dim sc As New Score()
-sc.Points = 100
-AddPoints(sc, 50)
-__P(CStr(sc.Points))
+
+Module Program
+    Sub Main()
+        Sub AddPoints(s As Score, p As Integer)
+        s.Points = s.Points + p
+        End Sub
+        Dim sc As New Score()
+        sc.Points = 100
+        AddPoints(sc, 50)
+        __P(CStr(sc.Points))
+    End Sub
+End Module

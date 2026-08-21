@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Public Class Form1
     Dim greeting As String = "Hello World"
     Public Sub New()
@@ -49,5 +48,10 @@ Public Class Form1
         Return greeting
     End Function
 End Class
-Dim f As New Form1()
-__P(CStr(f.GetGreeting()))
+
+Module Program
+    Sub Main()
+        Dim f As New Form1()
+        __P(CStr(f.GetGreeting()))
+    End Sub
+End Module

@@ -41,4 +41,10 @@ Module VybeCheck
     End Sub
 End Module
 
-Delegate Sub D(): Module M: Sub Main(): Dim act As D = Sub() __P(CStr("Del")): act(): End Sub: End Module
+Delegate Sub D()
+Module M
+    Sub Main()
+        Dim act As D = Sub() __P(CStr("Del"))
+        act()
+    End Sub
+End Module

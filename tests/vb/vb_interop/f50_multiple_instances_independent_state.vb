@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Public Class Counter
     Dim count As Integer
     Public Sub New(start As Integer)
@@ -53,10 +52,15 @@ Public Class Counter
         Return count
     End Function
 End Class
-Dim a As New Counter(0)
-Dim b As New Counter(100)
-a.Inc()
-a.Inc()
-b.Inc()
-__P(CStr(a.GetCount()))
-__P(CStr(b.GetCount()))
+
+Module Program
+    Sub Main()
+        Dim a As New Counter(0)
+        Dim b As New Counter(100)
+        a.Inc()
+        a.Inc()
+        b.Inc()
+        __P(CStr(a.GetCount()))
+        __P(CStr(b.GetCount()))
+    End Sub
+End Module

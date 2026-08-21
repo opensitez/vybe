@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports <xmlns
 Module VybeCheck
     Public __buf As String = ""
 
@@ -40,15 +41,19 @@ Module VybeCheck
         End If
     End Sub
 End Module
+ns="http://example.com/ns">
 
-Imports <xmlns:ns="http://example.com/ns">
 
 Module M
     Sub Main()
-        Dim xml = <ns:Root>
-                      <ns:Child>Value</ns:Child>
-                  </ns:Root>
-                  
+        Dim xml = <ns
+        Root>
+        <ns
+        Child>Value</ns
+        Child>
+        </ns
+        Root>
+
         ' Need to use GetNamespace to query with namespaces
         Dim ns = GetXmlNamespace(ns)
         __P(CStr(xml.Element(ns + "Child").Value))

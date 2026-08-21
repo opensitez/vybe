@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,7 +42,6 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
 
 Class DynamicEmitter
     Public Event Trigger As Action
@@ -59,9 +59,9 @@ Module Program
             __P(CStr("H1 Executing & Adding H2"))
             AddHandler de.Trigger, h2
             __Check("H1 Executing & Adding H2
+VYBEBUF>>><<<VYBEBUFH1 Executing & Adding H2
 Second Fire:
-H1 Executing & Adding H2
-H2 Executed")
+H1 Executing & Adding H2")
         End Sub
 
         de.Fire()

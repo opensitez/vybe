@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): __P(CStr(CUShort(60000))): End Sub: End Module
+Module M
+    Sub Main()
+        __P(CStr(CUShort(60000)))
+    End Sub
+End Module

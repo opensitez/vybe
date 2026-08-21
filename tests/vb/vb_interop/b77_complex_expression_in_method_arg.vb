@@ -40,11 +40,15 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Public Class Formatter
     Public Function Format(n As Double) As String
         Return "Value: " & CStr(n)
     End Function
 End Class
-Dim f As New Formatter()
-__P(CStr(f.Format(2 + 3 * 4)))
+
+Module Program
+    Sub Main()
+        Dim f As New Formatter()
+        __P(CStr(f.Format(2 + 3 * 4)))
+    End Sub
+End Module

@@ -41,4 +41,12 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M : Function NextValue() As Integer : Return 7 : End Function : Sub Main() : Dim values() As Integer = {NextValue(), NextValue()+1} : __P(CStr(values(1))) : End Sub : End Module
+Module M
+    Function NextValue() As Integer
+        Return 7
+    End Function
+    Sub Main()
+        Dim values() As Integer = {NextValue(), NextValue()+1}
+        __P(CStr(values(1)))
+    End Sub
+End Module

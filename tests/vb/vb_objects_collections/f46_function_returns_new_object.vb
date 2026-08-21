@@ -40,14 +40,18 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Class Result
     Public Status As String
 End Class
-Function GetResult() As Result
-    Dim r As New Result()
-    r.Status = "OK"
-    Return r
-End Function
-Dim res As Result = GetResult()
-__P(CStr(res.Status))
+
+Module Program
+    Sub Main()
+        Function GetResult() As Result
+        Dim r As New Result()
+        r.Status = "OK"
+        Return r
+        End Function
+        Dim res As Result = GetResult()
+        __P(CStr(res.Status))
+    End Sub
+End Module

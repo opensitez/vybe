@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,13 +42,13 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
 
 Structure Range(Of T As IComparable(Of T))
     Public Min As T
     Public Max As T
     Public Sub New(min As T, max As T)
-        Me.Min = min : Me.Max = max
+        Me.Min = min
+        Me.Max = max
     End Sub
     Public Function Contains(val As T) As Boolean
         Return val.CompareTo(Min) >= 0 AndAlso val.CompareTo(Max) <= 0

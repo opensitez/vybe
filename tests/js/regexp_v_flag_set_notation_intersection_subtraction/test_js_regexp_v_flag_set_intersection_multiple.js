@@ -49,6 +49,6 @@ function __check(got, want) {
     }
 }
 
-const re = /[a-z&&[b-z]&&[c-z]]/v;
+const re = /[[a-z]&&[b-z]&&[c-z]]/v;
 __p(__line(re.test("c") + "|" + re.test("b") + "|" + re.test("a")));
 __checkLater("true|false|false");

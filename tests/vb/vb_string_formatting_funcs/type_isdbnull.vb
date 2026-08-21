@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): __P(CStr(IsDBNull(System.DBNull.Value))): End Sub: End Module
+Module M
+    Sub Main()
+        __P(CStr(IsDBNull(System.DBNull.Value)))
+    End Sub
+End Module

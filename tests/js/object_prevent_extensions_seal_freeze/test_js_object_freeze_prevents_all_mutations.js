@@ -62,4 +62,4 @@ try {
     __p(__line("Freeze Mutation Error"));
 }
 __p(__line(obj.x));
-__checkLater("true\ntrue\nfalse\nFreeze Mutation Error\n10");
+__checkLater("true\ntrue\nfalse\n10");

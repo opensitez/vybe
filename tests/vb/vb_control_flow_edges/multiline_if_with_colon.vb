@@ -45,7 +45,10 @@ Module M
     Sub Main()
         Dim x = 1
         ' Valid multiline if separated by colon
-        If x = 1 Then : __P(CStr("A")) : __P(CStr("B")) : End If
+        If x = 1 Then
+            __P(CStr("A"))
+            __P(CStr("B"))
+        End If
         __Check("A
 B")
     End Sub

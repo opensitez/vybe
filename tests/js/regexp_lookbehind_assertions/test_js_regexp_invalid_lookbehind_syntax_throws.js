@@ -50,7 +50,7 @@ function __check(got, want) {
 }
 
 try {
-    eval("const re = /(?<=);/");
+    eval("const re = /(?<)/");
 } catch (e) {
     __p(__line("Empty Lookbehind SyntaxError"));
 }

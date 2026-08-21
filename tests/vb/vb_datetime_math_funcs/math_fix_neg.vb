@@ -41,4 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): __P(CStr(Fix(-10.8))): End Sub: End Module
+Module M
+    Sub Main()
+        __P(CStr(Fix(-10.8)))
+    End Sub
+End Module

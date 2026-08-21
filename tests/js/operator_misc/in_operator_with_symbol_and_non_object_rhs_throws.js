@@ -55,4 +55,4 @@ try {
 } catch (e) {
     __p(__line(e.name));
 }
-__checkLater("false");
+__checkLater("TypeError");

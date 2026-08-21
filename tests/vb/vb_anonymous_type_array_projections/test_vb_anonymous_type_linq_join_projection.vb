@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Linq
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,33 +42,38 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.Linq
 
 Class Order
     Public Property OrderID As Integer
-    Public Property CustomerID As Integer
-    Public Sub New(o As Integer, c As Integer) : OrderID = o : CustomerID = c : End Sub
-End Class
+        Public Property CustomerID As Integer
+            Public Sub New(o As Integer, c As Integer)
+                OrderID = o
+                CustomerID = c
+            End Sub
+        End Class
 
-Class Customer
-    Public Property CustomerID As Integer
-    Public Property Name As String
-    Public Sub New(c As Integer, n As String) : CustomerID = c : Name = n : End Sub
-End Class
+        Class Customer
+            Public Property CustomerID As Integer
+                Public Property Name As String
+                    Public Sub New(c As Integer, n As String)
+                        CustomerID = c
+                        Name = n
+                    End Sub
+                End Class
 
-Module Program
-    Sub Main()
-        Dim orders = {New Order(1, 101), New Order(2, 102)}
-        Dim customers = {New Customer(101, "Alice"), New Customer(102, "Bob")}
+                Module Program
+                    Sub Main()
+                        Dim orders = {New Order(1, 101), New Order(2, 102)}
+                        Dim customers = {New Customer(101, "Alice"), New Customer(102, "Bob")}
 
-        Dim joined = From o In orders
-                     Join c In customers On o.CustomerID Equals c.CustomerID
-                     Select New With {.OrderID = o.OrderID, .CustomerName = c.Name}
+                        Dim joined = From o In orders
+                        Join c In customers On o.CustomerID Equals c.CustomerID
+                        Select New With {.OrderID = o.OrderID, .CustomerName = c.Name}
 
-        For Each item In joined
-            __P(CStr("No." & item.OrderID & " " & item.CustomerName))
-        Next
-        __Check("No.1 Alice
+                            For Each item In joined
+                                __P(CStr("No." & item.OrderID & " " & item.CustomerName))
+                            Next
+                            __Check("No.1 Alice
 No.2 Bob")
-    End Sub
-End Module
+                        End Sub
+                    End Module

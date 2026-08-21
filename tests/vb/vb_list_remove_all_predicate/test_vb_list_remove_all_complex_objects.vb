@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Collections.Generic
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,25 +42,25 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System.Collections.Generic
 
 Class TaskItem
     Public Property Title As String
-    Public Property IsDone As Boolean
-    Public Sub New(t As String, done As Boolean)
-        Title = t : IsDone = done
-    End Sub
-End Class
+        Public Property IsDone As Boolean
+            Public Sub New(t As String, done As Boolean)
+                Title = t
+                IsDone = done
+            End Sub
+        End Class
 
-Module Program
-    Sub Main()
-        Dim tasks As New List(Of TaskItem) From {
-            New TaskItem("T1", True),
-            New TaskItem("T2", False),
-            New TaskItem("T3", True)
-        }
-        tasks.RemoveAll(Function(t) t.IsDone)
-        __P(CStr(tasks.Count & ":" & tasks(0).Title))
-        __Check("1:T2")
-    End Sub
-End Module
+        Module Program
+            Sub Main()
+                Dim tasks As New List(Of TaskItem) From {
+                New TaskItem("T1", True),
+                New TaskItem("T2", False),
+                New TaskItem("T3", True)
+                }
+                tasks.RemoveAll(Function(t) t.IsDone)
+                __P(CStr(tasks.Count & ":" & tasks(0).Title))
+                __Check("1:T2")
+            End Sub
+        End Module

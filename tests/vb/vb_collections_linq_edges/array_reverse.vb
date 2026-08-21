@@ -41,4 +41,10 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Main(): Dim a = {1, 2, 3}: Array.Reverse(a): __P(CStr(a(0))): End Sub: End Module
+Module M
+    Sub Main()
+        Dim a = {1, 2, 3}
+        Array.Reverse(a)
+        __P(CStr(a(0)))
+    End Sub
+End Module

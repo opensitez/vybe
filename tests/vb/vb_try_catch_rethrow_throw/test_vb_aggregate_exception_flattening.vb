@@ -20,6 +20,8 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
+Imports System.Collections.Generic
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,8 +43,6 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
-Imports System.Collections.Generic
 
 Module Program
     Sub Main()
@@ -51,11 +51,11 @@ Module Program
             Dim inner2 As New ArgumentException("Op2")
             Throw New AggregateException("Batch Failed", inner1, inner2)
         Catch ex As AggregateException
-            For Each inner In ex.InnerExceptions
-                __P(CStr("Inner: " & inner.Message))
-            Next
-        End Try
-        __Check("Inner: Op1
+        For Each inner In ex.InnerExceptions
+            __P(CStr("Inner: " & inner.Message))
+        Next
+    End Try
+    __Check("Inner: Op1
 Inner: Op2")
-    End Sub
+End Sub
 End Module

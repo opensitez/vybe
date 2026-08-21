@@ -63,4 +63,4 @@ try {
 } catch (e) {
     __p(__line("Frozen Array Push Error"));
 }
-__checkLater("true\nFrozen Array Element Error\nFrozen Array Push Error");
+__checkLater("true\nFrozen Array Push Error");

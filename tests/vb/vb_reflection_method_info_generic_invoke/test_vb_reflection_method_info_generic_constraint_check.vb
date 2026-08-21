@@ -42,7 +42,8 @@ Module VybeCheck
 End Module
 
 Class ConstrainedMethod
-    Public Sub Process(Of T As Class)(item As T) : End Sub
+    Public Sub Process(Of T As Class)(item As T)
+    End Sub
 End Class
 
 Module Program

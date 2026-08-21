@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports N1
 Module VybeCheck
     Public __buf As String = ""
 
@@ -57,7 +58,6 @@ End Function
 End Module
 End Namespace
 
-Imports N1
 Module M
 Sub Main()
 __P(CStr(DoubleIt(21)))

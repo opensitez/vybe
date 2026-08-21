@@ -41,4 +41,10 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M : Sub Main() : Dim bags() As List(Of Integer) = { New List(Of Integer)(), New List(Of Integer)() } : bags(1).Add(9) : __P(CStr(bags(1).Count)) : End Sub : End Module
+Module M
+    Sub Main()
+        Dim bags() As List(Of Integer) = { New List(Of Integer)(), New List(Of Integer)() }
+        bags(1).Add(9)
+        __P(CStr(bags(1).Count))
+    End Sub
+End Module

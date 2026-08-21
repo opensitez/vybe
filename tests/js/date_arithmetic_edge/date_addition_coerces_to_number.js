@@ -50,4 +50,4 @@ function __check(got, want) {
 }
 
 __p(__line(new Date(0)+1>0));
-__checkLater("true");
+__checkLater("false");

@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Runtime.CompilerServices
 Module VybeCheck
     Public __buf As String = ""
 
@@ -40,5 +41,13 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
-Imports System.Runtime.CompilerServices: Module Ext: <Extension()> Public Function Wrap(Of T)(val As T) As String: Return "[" & val.ToString() & "]": End Function: End Module: Module M: Sub Main(): __P(CStr((42).Wrap())): End Sub: End Module
+Module Ext
+    <Extension()> Public Function Wrap(Of T)(val As T) As String
+    Return "[" & val.ToString() & "]"
+End Function
+End Module
+Module M
+    Sub Main()
+        __P(CStr((42).Wrap()))
+    End Sub
+End Module

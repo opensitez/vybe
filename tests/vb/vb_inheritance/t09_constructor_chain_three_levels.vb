@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Class Level1
     Public Tag As String
 
@@ -49,7 +48,6 @@ Class Level1
         __P(CStr("Level1.New"))
     End Sub
 End Class
-
 Class Level2
     Inherits Level1
 
@@ -59,7 +57,6 @@ Class Level2
         __P(CStr("Level2.New"))
     End Sub
 End Class
-
 Class Level3
     Inherits Level2
 
@@ -70,5 +67,9 @@ Class Level3
     End Sub
 End Class
 
-Dim x As New Level3()
-__P(CStr(x.Tag))
+Module Program
+    Sub Main()
+        Dim x As New Level3()
+        __P(CStr(x.Tag))
+    End Sub
+End Module

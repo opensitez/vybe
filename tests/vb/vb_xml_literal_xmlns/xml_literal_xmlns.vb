@@ -44,10 +44,13 @@ End Module
 Module M
     Sub Main()
         ' XML literal with inline xmlns
-        Dim xml = <Root xmlns:ns="http://test.com">
-                      <ns:Child>Val</ns:Child>
-                  </Root>
-                  
+        Dim xml = <Root xmlns
+        ns="http://test.com">
+        <ns
+        Child>Val</ns
+        Child>
+        </Root>
+
         __P(CStr(xml.Name.LocalName))
         __Check("Root")
     End Sub

@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Public Class Form1
     Dim title As String = "Hello"
     Dim count As Integer = 0
@@ -50,5 +49,10 @@ Public Class Form1
         Return title
     End Function
 End Class
-Dim f As New Form1()
-__P(CStr(f.GetTitle()))
+
+Module Program
+    Sub Main()
+        Dim f As New Form1()
+        __P(CStr(f.GetTitle()))
+    End Sub
+End Module

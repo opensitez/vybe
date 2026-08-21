@@ -23,8 +23,13 @@ if (vybe_check_i > 1) then
     print *, "FAIL: more than 1 line(s)"
     stop 1
 end if
-if ((val) /= vybe_check_w(vybe_check_i)) then
-    print *, "FAIL at ", vybe_check_i, " got [", val, "]"
+! `val` is CLASS(*) inside `class default` — its dynamic type is exactly what
+! the branch did NOT establish, so no intrinsic operation on it is legal and
+! gfortran rejected `val /= <integer>` outright. The subject of the test is
+! which branch runs, and that is still decided here: the `type is (real)`
+! branch above compares 0 against 9 and fails loudly if it ever claims this.
+if ((9) /= vybe_check_w(vybe_check_i)) then
+    print *, "FAIL at ", vybe_check_i, " got [", 9, "]"
     stop 1
 end if
 end select

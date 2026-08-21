@@ -40,11 +40,9 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Class Base
     Public X As Integer = 42
 End Class
-
 Class Child
     Inherits Base
 
@@ -53,5 +51,9 @@ Class Child
     End Sub
 End Class
 
-Dim c As New Child()
-__P(CStr(c.X))
+Module Program
+    Sub Main()
+        Dim c As New Child()
+        __P(CStr(c.X))
+    End Sub
+End Module

@@ -41,10 +41,14 @@ Module VybeCheck
     End Sub
 End Module
 
-Dim arr(2) As Integer
-arr(0) = 1
-arr(1) = 2
-arr(2) = 3
-For Each n As Integer In arr
-    __P(CStr(n))
-Next
+Module Program
+    Sub Main()
+        Dim arr(2) As Integer
+        arr(0) = 1
+        arr(1) = 2
+        arr(2) = 3
+        For Each n As Integer In arr
+        __P(CStr(n))
+        Next
+    End Sub
+End Module

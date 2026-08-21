@@ -40,7 +40,6 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Public Class Animal
     Dim species As String
     Public Sub New(s As String)
@@ -59,5 +58,10 @@ Public Class Dog
         Return "Dog: " & GetSpecies()
     End Function
 End Class
-Dim d As New Dog()
-__P(CStr(d.Describe()))
+
+Module Program
+    Sub Main()
+        Dim d As New Dog()
+        __P(CStr(d.Describe()))
+    End Sub
+End Module

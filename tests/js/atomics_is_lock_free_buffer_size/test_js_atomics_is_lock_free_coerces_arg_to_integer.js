@@ -50,4 +50,4 @@ function __check(got, want) {
 }
 
 __p(__line(Atomics.isLockFree("4.9")));
-__checkLater("true");
+__checkLater("false");

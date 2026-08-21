@@ -40,11 +40,15 @@ Module VybeCheck
         End If
     End Sub
 End Module
-
 Public Class Math2
     Public Function Add(a As Double, b As Double) As Double
         Return a + b
     End Function
 End Class
-Dim m As New Math2()
-__P(CStr(m.Add(3, 4)))
+
+Module Program
+    Sub Main()
+        Dim m As New Math2()
+        __P(CStr(m.Add(3, 4)))
+    End Sub
+End Module

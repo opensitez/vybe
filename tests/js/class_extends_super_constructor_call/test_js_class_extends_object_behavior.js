@@ -56,4 +56,4 @@ class ExplicitObjectExtends extends Object {
 }
 const o = new ExplicitObjectExtends("test");
 __p(__line(o.toString()));
-__checkLater("test");
+__checkLater("[object Object]");

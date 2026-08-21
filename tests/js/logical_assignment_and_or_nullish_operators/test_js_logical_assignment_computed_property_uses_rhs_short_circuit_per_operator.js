@@ -65,4 +65,4 @@ obj[key()] &&= "final";  // assigns
 
 __p(__line(obj.value));
 __p(__line(keyEval));
-__checkLater("final\n6");
+__checkLater("final\n3");

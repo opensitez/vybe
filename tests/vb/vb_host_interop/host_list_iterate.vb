@@ -41,11 +41,15 @@ Module VybeCheck
     End Sub
 End Module
 
-Dim list As New List(Of String)
-list.Add("x")
-list.Add("y")
-Dim total As Integer = 0
-For Each item In list
-    total = total + 1
-Next
-__P(CStr(total))
+Module Program
+    Sub Main()
+        Dim list As New List(Of String)
+        list.Add("x")
+        list.Add("y")
+        Dim total As Integer = 0
+        For Each item In list
+        total = total + 1
+        Next
+        __P(CStr(total))
+    End Sub
+End Module

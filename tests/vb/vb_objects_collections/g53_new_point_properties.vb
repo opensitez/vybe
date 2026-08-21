@@ -41,6 +41,10 @@ Module VybeCheck
     End Sub
 End Module
 
-Dim p As New System.Drawing.Point(10, 20)
-__P(CStr(p.x))
-__P(CStr(p.y))
+Module Program
+    Sub Main()
+        Dim p As New System.Drawing.Point(10, 20)
+        __P(CStr(p.x))
+        __P(CStr(p.y))
+    End Sub
+End Module

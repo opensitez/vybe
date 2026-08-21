@@ -41,7 +41,11 @@ Module VybeCheck
     End Sub
 End Module
 
-__P(CStr(Math.Floor(3.7)))
-__P(CStr(Math.Ceiling(3.2)))
-__P(CStr(Math.Abs(-5)))
-__P(CStr(Math.Sqrt(16)))
+Module Program
+    Sub Main()
+        __P(CStr(Math.Floor(3.7)))
+        __P(CStr(Math.Ceiling(3.2)))
+        __P(CStr(Math.Abs(-5)))
+        __P(CStr(Math.Sqrt(16)))
+    End Sub
+End Module

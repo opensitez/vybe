@@ -20,6 +20,8 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System
+Imports System.Reflection
 Module VybeCheck
     Public __buf As String = ""
 
@@ -41,11 +43,10 @@ Module VybeCheck
     End Sub
 End Module
 
-Imports System
-Imports System.Reflection
 
 Class Order
-    Public Sub New(id As Integer, title As String) : End Sub
+    Public Sub New(id As Integer, title As String)
+    End Sub
 End Class
 
 Module Program

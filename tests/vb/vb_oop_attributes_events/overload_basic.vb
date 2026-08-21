@@ -41,4 +41,14 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M: Sub Test(x As Integer): __P(CStr("I")): End Sub: Sub Test(x As String): __P(CStr("S")): End Sub: Sub Main(): Test("A"): End Sub: End Module
+Module M
+    Sub Test(x As Integer)
+        __P(CStr("I"))
+    End Sub
+    Sub Test(x As String)
+        __P(CStr("S"))
+    End Sub
+    Sub Main()
+        Test("A")
+    End Sub
+End Module
