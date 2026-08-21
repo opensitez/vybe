@@ -6084,6 +6084,7 @@ fn collect_vb_user_name_member_type(
                     modifiers: modifiers.clone(),
                     with_events: false,
                     array_bounds: None,
+                    storage: None,
                 });
             }
             ClassMember::Property { name, .. } if name.eq_ignore_ascii_case("Name") => {
@@ -32209,6 +32210,8 @@ fn parse_sub_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                 is_hiding,
                 is_destructor: false,
                 protocol_slot: None,
+                // A VB method's implementation is its source body.
+                implementation: None,
                 decorators,
             },
             handles,
@@ -32344,6 +32347,8 @@ fn parse_function_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                 is_hiding,
                 is_destructor: false,
                 protocol_slot: None,
+                // A VB method's implementation is its source body.
+                implementation: None,
                 decorators,
             },
             handles,
@@ -32441,6 +32446,8 @@ fn parse_operator_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                 is_hiding: false,
                 is_destructor: false,
                 protocol_slot,
+                // A VB method's implementation is its source body.
+                implementation: None,
                 decorators,
             },
             handles: vec![],
@@ -32555,6 +32562,7 @@ fn parse_module_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                     modifiers: module_field_modifiers(),
                     with_events: d.with_events,
                     array_bounds: d.array_bounds,
+                    storage: None,
                 });
             }
             Rule::sub_decl => {
@@ -32614,6 +32622,7 @@ fn parse_module_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                     modifiers,
                     with_events: false,
                     array_bounds: None,
+                    storage: None,
                 });
                 members.push(ClassMember::Const {
                     name,
@@ -32636,6 +32645,7 @@ fn parse_module_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                         modifiers: module_field_modifiers(),
                         with_events: d.with_events,
                         array_bounds: d.array_bounds,
+                        storage: None,
                     });
                 }
             }
@@ -32655,6 +32665,7 @@ fn parse_module_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                     modifiers,
                     with_events: d.with_events,
                     array_bounds: d.array_bounds,
+                    storage: None,
                 });
             }
             Rule::class_decl => {
@@ -33032,6 +33043,7 @@ fn parse_auto_property_to_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, 
             modifiers: field_modifiers,
             with_events: d.with_events,
             array_bounds: d.array_bounds,
+            storage: None,
         });
     }
     for target in implemented_targets {
@@ -34767,6 +34779,7 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                     modifiers,
                     with_events: false,
                     array_bounds: None,
+                    storage: None,
                 };
                 apply_vb_pending_member_decorators(&mut member, &mut pending_member_decorators);
                 members.push(member);
@@ -34791,6 +34804,7 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                         modifiers: Modifiers::default(),
                         with_events: d.with_events,
                         array_bounds: d.array_bounds,
+                        storage: None,
                     };
                     apply_vb_pending_member_decorators(&mut member, &mut pending_member_decorators);
                     members.push(member);
@@ -34810,6 +34824,7 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                     modifiers,
                     with_events: d.with_events,
                     array_bounds: d.array_bounds,
+                    storage: None,
                 };
                 apply_vb_pending_member_decorators(&mut member, &mut pending_member_decorators);
                 members.push(member);
@@ -41056,6 +41071,7 @@ fn parse_structure_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                         modifiers: Modifiers::default(),
                         with_events: d.with_events,
                         array_bounds: d.array_bounds,
+                        storage: None,
                     };
                     apply_vb_pending_member_decorators(&mut member, &mut pending_member_decorators);
                     members.push(member);
@@ -41075,6 +41091,7 @@ fn parse_structure_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                     modifiers,
                     with_events: d.with_events,
                     array_bounds: d.array_bounds,
+                    storage: None,
                 };
                 apply_vb_pending_member_decorators(&mut member, &mut pending_member_decorators);
                 members.push(member);
@@ -41297,6 +41314,7 @@ fn parse_event_decl_to_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, Str
             modifiers,
             with_events: false,
             array_bounds: None,
+            storage: None,
         }]);
     }
 

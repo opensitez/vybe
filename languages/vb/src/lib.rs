@@ -3,7 +3,6 @@
 include!(concat!(env!("OUT_DIR"), "/linked_plugins.rs"));
 pub mod designer_codegen;
 pub mod emitter;
-pub mod forms;
 pub mod normalize_class;
 pub mod protocol;
 pub mod walker;
@@ -48,8 +47,6 @@ pub fn register() {
     vybe_platform_dotnet::winforms::form_modules::register(
         vybe_platform_dotnet::winforms::form_modules::FormModuleLanguage {
             name: "vb",
-            load_designer: forms::load_designer,
-            save_designer: forms::save_designer,
             generate_designer_code: designer_codegen::generate_designer_code,
             generate_user_code_stub: designer_codegen::generate_user_code_stub,
         },
