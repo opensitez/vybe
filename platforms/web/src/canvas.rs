@@ -32,7 +32,7 @@ use crate::canvas_backend::{Op2D, apply, backend};
 ///
 /// The bare-name form is a **migration path, not the API**. .NET
 /// `CreateGraphics` and Flutter's canvas bridge pass a control name today
-/// because that is what `vybe:gui` took. A real browser engine has no control
+/// because that is what the retired host took. A real browser engine has no control
 /// name to resolve, so anything that depends on this cannot survive an engine
 /// swap — see the `__control_name` note on `get_context`.
 fn target_of(arg: Option<&Value>) -> String {

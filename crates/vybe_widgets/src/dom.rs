@@ -6943,7 +6943,7 @@ mod tests {
     #[test]
     fn a_flex_container_still_runs_flex() {
         // The guard for Flutter. `Row`/`Column` reach `FlowLayoutPanel` by KIND
-        // through `vybe:gui` and never become elements, so the flex algorithm
+        // and never become elements, so the flex algorithm
         // has to keep behaving exactly as it did — normal flow is what a box
         // gets when the cascade did NOT say `flex`.
         let mut doc = Document::new("t");

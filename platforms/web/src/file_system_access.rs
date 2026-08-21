@@ -9,12 +9,10 @@
 //!
 //! ## Why here
 //!
-//! These used to be registered by `crates/vybex` — the RUNNER — as
-//! `vybe:gui`/`__dlg_show`, reaching `vybe_widgets::dialogs` directly. Two
-//! things wrong with that. `vybe:gui` is the platform being deleted, so the
-//! last dialogs were holding it open. And the runner is the user agent: it
-//! should not be publishing page APIs, because then two crates own the
-//! browser's surface and neither owns it fully.
+//! These used to be registered by `crates/vybex` — the RUNNER — reaching
+//! `vybe_widgets::dialogs` directly. The runner is the user agent: it should
+//! not be publishing page APIs, because then two crates own the browser's
+//! surface and neither owns it fully.
 //!
 //! `platforms/web` owns the relationship to `vybe_widgets`. Everything a page
 //! can call belongs here.
@@ -88,9 +86,8 @@ fn build(title: &str, filter: &str, directory: &str) -> FileDialog {
 
 /// `showOpenFilePicker` as a Rust call.
 ///
-/// Public because the RUNNER needs the same three pickers to serve the
-/// `vybe:gui` dialogs that have not been migrated yet, and it must reach them
-/// through this crate rather than around it: `platforms/web` owns the
+/// Public because the RUNNER needs the same three pickers, and it must reach
+/// them through this crate rather than around it: `platforms/web` owns the
 /// relationship to `vybe_widgets`, and a second crate calling
 /// `vybe_widgets::dialogs` directly is how that ownership stops being true.
 pub fn open_file(title: &str, filter: &str, directory: &str) -> Option<std::path::PathBuf> {

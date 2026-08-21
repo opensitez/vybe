@@ -2,9 +2,9 @@
 //!
 //! A single place that turns a kind name into a live control, shared by every
 //! surface that builds one: the `web:html` DOM (`<input type=checkbox>` →
-//! `"checkbox"`), the .NET designer, the Flutter realizer, and the legacy
-//! `vybe:gui` bridge. Each of those owns the mapping from ITS vocabulary to a
-//! kind name; none of them owns a second copy of the construction.
+//! `"checkbox"`), the .NET designer, and the Flutter realizer. Each of those
+//! owns the mapping from ITS vocabulary to a kind name; none of them owns a
+//! second copy of the construction.
 
 use crate::layout::{LayoutRect, PanelWidget};
 use crate::{

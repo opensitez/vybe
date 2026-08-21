@@ -157,7 +157,7 @@ pub fn adopt(document_id: DocumentId, name: &str) -> WindowId {
 ///
 /// ⛔ Unset, this answers the context's own VIEWPORT, which makes "centre on the
 /// screen" resolve to "already centred". That is deliberate: the retired
-/// `vybe:gui::__form_center_to_screen` hardcoded **1920x1080** with a comment
+/// implementation hardcoded **1920x1080** with a comment
 /// admitting it was a guess, and a wrong number that lands a window off-screen
 /// is worse than a true statement that nothing is known. A real engine supplies
 /// the real display and the arithmetic starts meaning something with no code

@@ -61,21 +61,39 @@ impl vybe_runtime::Plugin for Plugin {
         }
     }
 
-    // No `reset`. Everything this platform holds on a program's behalf — the
-    // DOM listener table, the ambient document — is VM-owned storage
-    // (`vybe_runtime::resources`), so `reset_to` drops it without this plugin
-    // taking part. That is the whole point of the store: the listener table
-    // used to be a process-global static with a hand-written `reset_listeners`,
-    // and `reset_active_document`'s only caller was a pascal test helper — a
-    // per-test helper cannot be the mechanism, it fixes the one caller that
-    // remembers to call it and leaves every other embedder broken.
-    //
-    // Queued timer and animation callbacks are not here either: they are
-    // `DeferredSource`s, and `reset_to` clears every registered source's queue
-    // through `clear_pending`. That is what a `setTimeout` callback outliving
-    // its program used to defeat — it stayed queued and was drained by the NEXT
-    // program, against chunk indices that had since been reused, which is how
-    // one tenant's code came to run under another's closure.
+    /// Drop the widget state the finished program built.
+    ///
+    /// Most of what this platform holds needs nothing here: the DOM listener
+    /// table and the ambient document are VM-owned storage
+    /// (`vybe_runtime::resources`), so `reset_to` drops them without this
+    /// plugin taking part. That is the whole point of the store — the listener
+    /// table used to be a process-global static with a hand-written
+    /// `reset_listeners`, and `reset_active_document`'s only caller was a
+    /// pascal test helper; a per-test helper cannot be the mechanism, it fixes
+    /// the one caller that remembers to call it and leaves every other embedder
+    /// broken. Queued timer and animation callbacks are not here either: they
+    /// are `DeferredSource`s, and `reset_to` clears every registered source's
+    /// queue through `clear_pending`.
+    ///
+    /// ⛔THE WIDGET CRATE IS THE EXCEPTION, and it is why this method exists.
+    /// `vybe_widgets` keeps its own PROCESS-WIDE tables — `dom::DOCS`,
+    /// `ui_events::QUEUE`, `scheduling::TIMERS`/`FRAMES`, each a `static
+    /// OnceLock` — and no amount of VM teardown can reach a process global. A
+    /// reused VM (the warm pool, `--serve`) would otherwise hand the next
+    /// program the previous one's documents, undelivered input, and live
+    /// timers.
+    ///
+    /// This ran in the `vybe` platform while `vybe:gui` owned the widgets. The
+    /// GUI is `web:*` now and it is the same `vybe_widgets` underneath, so the
+    /// obligation moved with it — the plugin that owns the state resets it.
+    fn reset(&self) {
+        #[cfg(feature = "gui")]
+        {
+            vybe_widgets::dom::reset();
+            vybe_widgets::ui_events::reset();
+            vybe_widgets::scheduling::reset();
+        }
+    }
 }
 
 // Link-time registration: this crate submits its plugin to the one registry.

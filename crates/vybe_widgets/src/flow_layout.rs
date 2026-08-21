@@ -35,7 +35,7 @@ pub enum FlowDirection {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Formatting {
     /// `display: flex`. What this panel has always done, and what Flutter's
-    /// `Row`/`Column` mean — they reach this widget by KIND through `vybe:gui`
+    /// `Row`/`Column` mean — they reach this widget by KIND
     /// and never become elements, so this stays their behaviour exactly.
     Flex,
     /// **CSS normal flow** — block-level children stack, inline-level children
@@ -3809,7 +3809,7 @@ mod tests {
 
     /// **The Flutter guard, at the level Flutter actually reaches.**
     ///
-    /// `Row`/`Column` map to this widget by KIND through `vybe:gui` — no
+    /// `Row`/`Column` map to this widget by KIND — no
     /// element, no tag, no cascade — so nothing in the DOM's tests pins their
     /// behaviour. The invariant is this constructor's default: a panel nobody
     /// has spoken to runs flex, stacks its children and stretches them across
@@ -3937,7 +3937,7 @@ mod tests {
 
     /// **The Flutter `Column` guard.** `layout_top_down` was rewritten to
     /// support wrapping, and it is the exact path every Flutter `Column` takes
-    /// (by KIND, through `vybe:gui` — no element, no cascade). This pins the
+    /// (by KIND — no element, no cascade). This pins the
     /// unconfigured behaviour: children stack, share the height by flex weight,
     /// and stretch across the cross axis.
     #[test]
