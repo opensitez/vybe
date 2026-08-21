@@ -14,8 +14,35 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
+use vybe_platform_wasi::fsops;
 use vybe_runtime::value::{Object, ObjectKind};
 use vybe_runtime::{HostContext, VM, Value};
+
+/// Throw the way Node throws: an `Error` carrying `code`, `syscall` and
+/// `path`, because real programs branch on `err.code === 'ENOENT'` rather than
+/// on the message.
+///
+/// This exists because the sync `fs` calls here USED TO SWALLOW FAILURE.
+/// `readFileSync` answered the string `"ENOENT: …"` as though it were the
+/// file's CONTENTS — so `readFileSync(missing).length` gave a number instead of
+/// throwing — and `writeFileSync`/`appendFileSync` were `let _ = …`, reporting
+/// success for a full disk or a read-only path. Node throws on all three.
+fn throw_fs_error(ctx: &mut HostContext, e: &std::io::Error, syscall: &str, path: &str) -> Value {
+    let code = fsops::errno_name(e);
+    let message = format!("{}: {}, {} '{}'", code, e, syscall, path);
+    let err = vybe_platform_ecma::error::new_error(ctx, "Error", &message);
+    if let Value::Object(ref obj) = err {
+        let mut o = obj.lock().unwrap();
+        o.properties
+            .insert("code".into(), Value::String(Arc::from(code)));
+        o.properties
+            .insert("syscall".into(), Value::String(Arc::from(syscall)));
+        o.properties
+            .insert("path".into(), Value::String(Arc::from(path)));
+    }
+    ctx.throw_value(err);
+    Value::Null
+}
 
 // ── FD table — maps host-fd-number → (path, mode, position) ──
 /// A named type, not a bare `HashMap`: [`vybe_runtime::resources`] keys by
@@ -224,7 +251,7 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "node:fs",
         "readFileSync",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             let path = s_arg(args, 0, "");
             let encoding = match args.get(1) {
                 Some(Value::String(text)) => Some(text.to_string()),
@@ -237,18 +264,20 @@ pub fn register(vm: &mut VM) {
                 }
                 _ => None,
             };
-            match std::fs::read(&path) {
+            match fsops::read(&path) {
                 Ok(bytes) => match encoding.as_deref() {
                     Some("utf8") | Some("utf-8") | Some("UTF-8") => {
                         Value::String(Arc::from(String::from_utf8_lossy(&bytes).as_ref()))
                     }
+                    // No encoding → a Buffer, which this host represents as an
+                    // array of byte values (`node:buffer::bytes_to_buf`).
                     _ => {
                         let elems: Vec<Value> =
                             bytes.into_iter().map(|b| Value::I32(b as i32)).collect();
                         Value::Object(vybe_runtime::heap::alloc(Object::new_array(elems)))
                     }
                 },
-                Err(e) => Value::String(Arc::from(format!("ENOENT: {}", e).as_str())),
+                Err(e) => throw_fs_error(ctx, &e, "open", &path),
             }
         }),
     );
@@ -257,7 +286,7 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "node:fs",
         "writeFileSync",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             let path = s_arg(args, 0, "");
             let data = s_arg(args, 1, "");
             let flag = match args.get(2) {
@@ -271,19 +300,15 @@ pub fn register(vm: &mut VM) {
                 Some(Value::String(s)) => s.to_string(),
                 _ => "w".to_string(),
             };
-            if flag == "a" || flag == "ax" || flag == "a+" {
-                use std::io::Write;
-                if let Ok(mut f) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&path)
-                {
-                    let _ = f.write_all(data.as_bytes());
-                }
+            let outcome = if flag == "a" || flag == "ax" || flag == "a+" {
+                fsops::append(&path, data.as_bytes())
             } else {
-                let _ = std::fs::write(&path, data.as_bytes());
+                fsops::write(&path, data.as_bytes())
+            };
+            match outcome {
+                Ok(()) => Value::Null,
+                Err(e) => throw_fs_error(ctx, &e, "open", &path),
             }
-            Value::Null
         }),
     );
 
@@ -291,28 +316,25 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "node:fs",
         "appendFileSync",
-        Box::new(|_ctx, args| {
-            use std::io::Write;
+        Box::new(|ctx, args| {
             let path = s_arg(args, 0, "");
             let data = s_arg(args, 1, "");
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-            {
-                let _ = f.write_all(data.as_bytes());
+            match fsops::append(&path, data.as_bytes()) {
+                Ok(()) => Value::Null,
+                Err(e) => throw_fs_error(ctx, &e, "open", &path),
             }
-            Value::Null
         }),
     );
 
     // ── existsSync(path) → bool ───────────────────────────────────
+    // The one `fs` call that genuinely does NOT throw: §fs.existsSync answers
+    // a boolean and swallows the error by design.
     vm.register_host_fn(
         "node:fs",
         "existsSync",
         Box::new(|_ctx, args| {
             let path = s_arg(args, 0, "");
-            Value::Bool(std::path::Path::new(&path).exists())
+            Value::Bool(fsops::exists(&path))
         }),
     );
 

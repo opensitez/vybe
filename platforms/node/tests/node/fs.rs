@@ -67,7 +67,7 @@ fn call_fs(name: &str, args: Vec<Value>) -> Value {
 
     let mut vm = VM::new();
     for (name, value) in arg_globals {
-        vm.globals.insert(name, value);
+        vm.set_global_owned(name, value);
     }
     register_platforms(&mut vm, &Capabilities::all());
     vm.run(vec![chunk]).expect("VM run failed")
@@ -139,8 +139,8 @@ fn invoke_method(receiver: &Value, method: &str) -> Value {
     chunk.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
-    vm.globals.insert(method_name, method_ref);
-    vm.globals.insert(recv_name, receiver.clone());
+    vm.set_global_owned(method_name, method_ref);
+    vm.set_global_owned(recv_name, receiver.clone());
     register_platforms(&mut vm, &Capabilities::all());
     vm.run(vec![chunk]).expect("invoke_method VM run failed")
 }

@@ -50,7 +50,7 @@ fn call_proc(name: &str, args: Vec<Value>) -> Value {
                 );
                 let ci = chunk.intern_string_constant(&name);
                 chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
-                vm.globals.insert(name, other);
+                vm.set_global_owned(name, other);
             }
         }
     }
