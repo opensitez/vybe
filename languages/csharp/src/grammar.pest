@@ -101,7 +101,7 @@ class_body = { "{" ~ class_member* ~ "}" }
 // ── Class members ───────────────────────────────────────────────────────────
 
 class_member = {
-    attribute_list? ~ class_modifiers ~ (
+    attribute_list* ~ class_modifiers ~ (
         // Nested type declarations — class / struct / interface / enum
         // can all appear as inner members per ECMA-334 §15.3.
         record_struct_declaration
@@ -255,7 +255,7 @@ interface_declaration = {
 interface_body = { "{" ~ interface_member* ~ "}" }
 
 interface_member = {
-    class_modifiers ~ (
+    attribute_list* ~ class_modifiers ~ (
         interface_operator_declaration
         | type_name ~ (
         ident_name ~ (

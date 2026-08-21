@@ -48,8 +48,6 @@ pub fn register() {
     vybe_platform_dotnet::winforms::form_modules::register(
         vybe_platform_dotnet::winforms::form_modules::FormModuleLanguage {
             name: "csharp",
-            load_designer: forms::load_designer,
-            save_designer: forms::save_designer,
             generate_designer_code: forms::generate_designer_code,
             generate_user_code_stub: forms::generate_user_code_stub,
         },

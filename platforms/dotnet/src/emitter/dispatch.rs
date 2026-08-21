@@ -433,6 +433,26 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.bitconverter_to_string" => {
             crate::emitter::core::bitconverter_adapter::emit_to_string(chunks, current, line)
         }
+        "dotnet.bitconverter_single_to_int32_bits" => {
+            crate::emitter::core::bitconverter_adapter::emit_single_to_int32_bits(
+                chunks, current, line,
+            )
+        }
+        "dotnet.bitconverter_int32_bits_to_single" => {
+            crate::emitter::core::bitconverter_adapter::emit_int32_bits_to_single(
+                chunks, current, line,
+            )
+        }
+        "dotnet.bitconverter_double_to_int64_bits" => {
+            crate::emitter::core::bitconverter_adapter::emit_double_to_int64_bits(
+                chunks, current, line,
+            )
+        }
+        "dotnet.bitconverter_int64_bits_to_double" => {
+            crate::emitter::core::bitconverter_adapter::emit_int64_bits_to_double(
+                chunks, current, line,
+            )
+        }
         "dotnet.bitconverter_is_little_endian" => {
             crate::emitter::core::bitconverter_adapter::emit_is_little_endian(chunks, current, line)
         }
@@ -1410,7 +1430,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
 
         // ── .NET DateTime static adapters ───────────────────────────
         // `Now` / `UtcNow` / `Today` lower to `ecma:date.now` (which
-        // reads `wasi:clocks/wall-clock.now`); `Parse` lowers to
+        // reads `wasi:clocks/system-clock.now`); `Parse` lowers to
         // `ecma:date.parse`. Each wraps the resulting ms timestamp
         // in a `{__type:"DateTime", __time:ms}` object so the .NET
         // surface looks .NET-shaped.
@@ -1943,6 +1963,23 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.file_write_all_lines" => {
             crate::emitter::core::filesystem_adapter::emit_file_write_all_lines(
                 chunks, current, line,
+            )
+        }
+        // The three text verbs: `filesystem.*` underneath, `System.IO`'s
+        // exceptions on top. See `filesystem_adapter`'s failure-model section.
+        "dotnet.file_read_all_text" => {
+            crate::emitter::core::filesystem_adapter::emit_file_read_all_text(
+                chunks, current, line,
+            )
+        }
+        "dotnet.file_write_all_text" => {
+            crate::emitter::core::filesystem_adapter::emit_file_write_all_text(
+                chunks, current, false, line,
+            )
+        }
+        "dotnet.file_append_all_text" => {
+            crate::emitter::core::filesystem_adapter::emit_file_write_all_text(
+                chunks, current, true, line,
             )
         }
         "dotnet.file_read_all_bytes" => {

@@ -53,6 +53,12 @@ statement = _{
     | function_decl
     | const_statement
     | dim_statement
+    // `Static total As Integer` is a DECLARATION and belongs beside `Dim`. It
+    // used to sit after `call_statement`, which never left it a turn: `Static`
+    // is in the `keyword` list, so `identifier` rejected it, but `postfix` fell
+    // through to `primary`'s un-keyword-guarded `member_identifier`, matched
+    // `Static` as a bare name, and then the rest of the line had nowhere to go.
+    | static_statement
     | redim_statement
     | erase_statement
     | set_statement
@@ -94,7 +100,6 @@ statement = _{
     | write_file_statement
     | input_file_statement
     | call_statement
-    | static_statement
     | synclock_statement
     | expression_statement
 }
@@ -112,8 +117,19 @@ dim_statement = {
     ^"Dim" ~ dim_declaration_part ~ ("," ~ dim_declaration_part)*
 }
 
-static_statement = { ^"Static" ~ identifier ~ (^"As" ~ type_name)? ~ ("=" ~ expression)? }
-const_statement = { visibility_modifier? ~ ^"Const" ~ identifier ~ ^"As" ~ type_name ~ "=" ~ expression }
+// `Static x = 1, y = 2` — same comma-separated declarator list `Dim` already
+// had, so it reuses `dim_declaration_part` (initializer optional, exactly like
+// `Dim`).
+static_statement = { ^"Static" ~ dim_declaration_part ~ ("," ~ dim_declaration_part)* }
+// `As type_name` is optional: with Option Infer on (the default), `Const v = 5`
+// infers from the initializer. `parse_const_statement` already builds `type_hint`
+// opportunistically, so the absent clause needs no walker change.
+//
+// `Const` gets its OWN part rather than reusing `dim_declaration_part`, because
+// a Const REQUIRES an initializer — reusing Dim's would silently accept
+// `Const x As Integer`, which real VB rejects.
+const_declaration_part = { identifier ~ (^"As" ~ type_name)? ~ "=" ~ expression }
+const_statement = { visibility_modifier? ~ ^"Const" ~ const_declaration_part ~ ("," ~ const_declaration_part)* }
 set_statement = { ^"Set" ~ identifier ~ "=" ~ expression }
 lset_statement = { ^"LSet" ~ l_value_expression ~ "=" ~ expression }
 rset_statement = { ^"RSet" ~ l_value_expression ~ "=" ~ expression }
@@ -143,6 +159,11 @@ single_line_stmt = _{
     | throw_statement
     | exit_statement
     | continue_statement
+    // `If c Then GoTo L` is the single most common single-line If in VB. Without
+    // this it fell through to `expression_statement`, where `primary`'s
+    // un-keyword-guarded `member_identifier` matched `GoTo` as a bare name and
+    // left `L` dangling — a parse error on the whole line.
+    | goto_statement
     | erase_statement
     | set_statement
     | mid_assign_statement
@@ -210,21 +231,32 @@ select_statement = {
     ~ select_end
 }
 
+// `!case_else_kw`: `Else` is in the `keyword` list, but `primary` falls back to
+// `member_identifier`, which is NOT keyword-guarded — so `Case Else` matched
+// `case_block` with the condition `Ident("Else")` and the default arm silently
+// vanished. The boundary keeps `Case ElseFlag` a normal condition.
 case_block = {
-    ^"Case" ~ case_conditions ~ (NEWLINE | EOI)
+    ^"Case" ~ !case_else_kw ~ case_conditions ~ (NEWLINE | EOI)
     ~ (!case_control ~ line)*
 }
 
 case_conditions = { case_condition ~ ("," ~ case_condition)* }
 
 case_condition = {
-    ^"Is" ~ comp_op ~ expression           // Case Is > 10
+    case_is_kw ~ case_is_op ~ expression   // Case Is > 10, Case Is = 5, Case Is <> 4
     | expression ~ ^"To" ~ expression      // Case 1 To 10
     | expression                           // Case 5
 }
 
+case_else_kw = @{ ^"Else" ~ !(ASCII_ALPHANUMERIC | "_") }
+case_is_kw = @{ ^"Is" ~ !(ASCII_ALPHANUMERIC | "_") }
+// `Case Is` takes the full comparison set, not `comp_op`: that rule sits at the
+// `comparison` precedence level, where `=` and `<>` belong to `eq_op` one level
+// up. Listed longest-first — `"<"` before `"<>"` would eat the `<` of `<>`.
+case_is_op = { "<=" | ">=" | "<>" | "<" | ">" | "=" }
+
 case_else = {
-    ^"Case" ~ ^"Else" ~ (NEWLINE | EOI)
+    ^"Case" ~ case_else_kw ~ (NEWLINE | EOI)
     ~ (!select_end ~ line)*
 }
 
@@ -278,8 +310,13 @@ exit_type = { ^"Sub" | ^"Function" | ^"For" | ^"Do" | ^"Select" | ^"Try" | ^"Pro
 return_statement = { ^"Return" ~ expression? }
 
 // GoTo / Labels
-goto_statement = { ^"GoTo" ~ identifier }
-label_statement = { identifier ~ ":" }
+// A VB line label may be an integer as well as a name (`10:` … `GoTo 10`), the
+// VB6 legacy spelling. `line_label` is a named rule so the walker's
+// `into_inner().next()` finds a pair either way. Real VB requires the colon on a
+// numeric label (`BC30801`), so the two label forms share one rule.
+goto_statement = { ^"GoTo" ~ (identifier | line_label) }
+label_statement = { (identifier | line_label) ~ ":" }
+line_label = @{ ASCII_DIGIT+ }
 
 // On Error (VB6/VB.NET structured error handling)
 on_error_statement = {

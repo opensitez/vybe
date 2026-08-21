@@ -203,3 +203,45 @@ pub fn emit_block_copy(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_is_little_endian(chunks: &mut [Chunk], current: usize, line: u32) {
     core_wasm::bool_const(&mut chunks[current], line, true);
 }
+
+// ── Bit reinterpretation ────────────────────────────────────────────────────
+//
+// `System.BitConverter`'s bit-cast family. These lower to the SAME shared
+// emitter the AST's `UnaryOp::Reinterpret` uses — the node Fortran's `TRANSFER`,
+// Go's `Float32bits` and Java's `floatToIntBits` all reach — so the concept
+// stays unified while the .NET SPELLING lives here, in the platform that owns
+// `System.*`, rather than in a language walker.
+//
+// Stack: `[value] -> [reinterpreted]`.
+
+pub fn emit_single_to_int32_bits(chunks: &mut [Chunk], current: usize, line: u32) {
+    vybe_compiler::primitives::bits::emit_reinterpret(
+        &mut chunks[current],
+        vybe_ast::NumericRepr::I32,
+        line,
+    );
+}
+
+pub fn emit_int32_bits_to_single(chunks: &mut [Chunk], current: usize, line: u32) {
+    vybe_compiler::primitives::bits::emit_reinterpret(
+        &mut chunks[current],
+        vybe_ast::NumericRepr::F32,
+        line,
+    );
+}
+
+pub fn emit_double_to_int64_bits(chunks: &mut [Chunk], current: usize, line: u32) {
+    vybe_compiler::primitives::bits::emit_reinterpret(
+        &mut chunks[current],
+        vybe_ast::NumericRepr::I64,
+        line,
+    );
+}
+
+pub fn emit_int64_bits_to_double(chunks: &mut [Chunk], current: usize, line: u32) {
+    vybe_compiler::primitives::bits::emit_reinterpret(
+        &mut chunks[current],
+        vybe_ast::NumericRepr::F64,
+        line,
+    );
+}

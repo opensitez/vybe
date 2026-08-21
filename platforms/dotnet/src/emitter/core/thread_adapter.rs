@@ -16,8 +16,12 @@ use vybe_runtime::{Chunk, Value, opcode::Op};
 const CANCELLED_KEY: &str = "__dotnet_cancelled";
 const CANCEL_AT_MS_KEY: &str = "__dotnet_cancel_at_ms";
 const LINKED_KEY: &str = "__dotnet_linked_tokens";
-const TOKEN_KEY: &str = "Token";
-const REQUESTED_KEY: &str = "IsCancellationRequested";
+// ⛔ LOWERCASE — the dotnet value-type field convention (`tree_register`: a type
+// with no property accessor resolves its properties as "an ordinary STRUCT FIELD
+// read … a lowercased field access"). PascalCase keys are unreadable from a
+// case-insensitive frontend, which folds `cts.Token` to `token` and reads EMPTY.
+const TOKEN_KEY: &str = "token";
+const REQUESTED_KEY: &str = "iscancellationrequested";
 const DELAY_TOKEN_KEY: &str = "__dotnet_delay_token";
 const EXCEPTION_KEY: &str = "exception";
 const REGISTRATIONS_KEY: &str = "__dotnet_cancellation_registrations";

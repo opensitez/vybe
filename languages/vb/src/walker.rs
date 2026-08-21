@@ -111,8 +111,26 @@ pub fn parse(source: &str) -> Result<Module, String> {
     normalize_vb_bitwise_logic(&mut module);
     normalize_vb_flags_enum_ops(&mut module);
     normalize_vb_reflection_constants(&mut module);
-    normalize_vb_reflection_field_metadata(&mut module);
-    normalize_vb_reflection_method_metadata(&mut module);
+    // ⛔ `normalize_vb_reflection_field_metadata` is GONE. Reflection is RTTI —
+    // it is runtime information by definition, and this pass answered it at
+    // WALK time: `f.FieldType.Name` collapsed to a string literal, `GetMethod`
+    // to an empty object, `GetCustomAttributes` to an array built from whatever
+    // decorators the VB walker happened to collect. That can only be right for
+    // the shapes this walker enumerated, and it is structurally unable to
+    // describe a value produced by another language's front end.
+    // `primitives/reflection.rs` already resolves `GetField`/`GetProperty`/
+    // `FieldType`/`GetValue`/`SetValue`/`GetCustomAttributes` (reflection.rs:95
+    // for the call forms) and emits a stamped type DESCRIPTOR, so the answer
+    // lives on the value. It sits on the generic compile path
+    // (`expressions.rs:2117`), so deleting this pass is what REACHES it.
+    // ⛔ `normalize_vb_reflection_method_metadata` is GONE for the same reason,
+    // and it was the larger half: ~1,200 lines building method/constructor/
+    // parameter descriptors as ARRAY LITERALS out of what the VB walker knew
+    // about VB source. `primitives/reflection.rs` resolves `GetMethod`,
+    // `GetConstructor(s)`, `GetParameters`, `Invoke`, `ReturnType`,
+    // `ParameterType`, `CallingConvention` and `Activator.CreateInstance`
+    // already, for every front end. It ran TWICE (here and after
+    // `normalize_vb_nested_member_arg_calls`), so both calls go.
     normalize_vb_convert_change_type_reflection(&mut module);
     normalize_vb_date_literal_body(&mut module.body);
     normalize_vb_anonymous_equals(&mut module);
@@ -120,7 +138,6 @@ pub fn parse(source: &str) -> Result<Module, String> {
     normalize_vb_dotnet_collection_calls(&mut module);
     normalize_vb_datetime_array_literals(&mut module);
     normalize_vb_nested_member_arg_calls(&mut module);
-    normalize_vb_reflection_method_metadata(&mut module);
     normalize_vb_for_existing_loop_vars(&mut module);
     normalize_vb_array_paren_indexes(&mut module);
     normalize_vb_byref_place_args(&mut module);
@@ -154,6 +171,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
     normalize_vb_byref_place_args(&mut module);
     normalize_vb_nested_member_arg_calls(&mut module);
     normalize_vb_zero_arg_field_member_calls(&mut module.body);
+    // LAST: the reflection passes above still need `ExprKind::TypeOf` intact.
+    normalize_vb_enum_type_tokens(&mut module);
     Ok(module)
 }
 
@@ -1707,48 +1726,53 @@ fn rewrite_vb_version_binary(
     {
         return None;
     }
+    // Map the VB OPERATOR onto the registered dotnet leaf — do not reimplement
+    // the ordering. `component_classes_system_version` declares
+    // `CompareTo`/`Equals` backed by `dotnet.version_compare_instance`, so the
+    // four-field lexicographic walk that used to live here was a SECOND copy of
+    // System.Version's comparison semantics, reading fields the dotnet object
+    // owns. Lowering an operator to a leaf is walker work; owning the semantics
+    // is not.
+    let call = |name: &str| vb_version_op_call(name, left.clone(), right.clone());
+    let negated = |name: &str| {
+        Expression::new(ExprKind::Unary {
+            op: UnaryOp::Not,
+            expr: Box::new(vb_version_op_call(name, left.clone(), right.clone())),
+        })
+    };
     match op {
-        BinOp::Lt => Some(vb_version_lex_compare_expr(
-            left.clone(),
-            right.clone(),
-            BinOp::Lt,
-        )),
-        BinOp::Gt => Some(vb_version_lex_compare_expr(
-            left.clone(),
-            right.clone(),
-            BinOp::Gt,
-        )),
-        BinOp::LtEq => Some(Expression::new(ExprKind::Unary {
-            op: UnaryOp::Not,
-            expr: Box::new(vb_version_lex_compare_expr(
-                left.clone(),
-                right.clone(),
-                BinOp::Gt,
-            )),
-        })),
-        BinOp::GtEq => Some(Expression::new(ExprKind::Unary {
-            op: UnaryOp::Not,
-            expr: Box::new(vb_version_lex_compare_expr(
-                left.clone(),
-                right.clone(),
-                BinOp::Lt,
-            )),
-        })),
-        BinOp::Eq | BinOp::StrictEq => Some(vb_version_all_fields_equal_expr(
-            left.clone(),
-            right.clone(),
-        )),
-        BinOp::NotEq | BinOp::StrictNotEq => Some(Expression::new(ExprKind::Unary {
-            op: UnaryOp::Not,
-            expr: Box::new(vb_version_all_fields_equal_expr(
-                left.clone(),
-                right.clone(),
-            )),
-        })),
+        BinOp::Lt => Some(call("op_LessThan")),
+        BinOp::Gt => Some(call("op_GreaterThan")),
+        // `<=` is `Not >`, `>=` is `Not <` — the ordering is TOTAL, so the
+        // negation is exact and needs no second comparison.
+        BinOp::LtEq => Some(negated("op_GreaterThan")),
+        BinOp::GtEq => Some(negated("op_LessThan")),
+        BinOp::Eq | BinOp::StrictEq => Some(call("op_Equality")),
+        BinOp::NotEq | BinOp::StrictNotEq => Some(negated("op_Equality")),
         _ => None,
     }
 }
 
+/// `Version.CompareTo(right, left)` — the static form the dotnet class
+/// registers. Arg order matches the existing instance→static rewrite, which
+/// turns `a.CompareTo(b)` into `Version.CompareTo(b, a)`; the result carries
+/// .NET's sign convention, so `a < b` is `CompareTo(...) < 0`.
+/// `System.Version.<op>(left, right)` — one of the operator leaves registered on
+/// the dotnet Version class. Fully qualified because namespace resolution runs
+/// BEFORE this rewrite, so a bare `Ident("Version")` synthesised here is never
+/// qualified and resolves to nothing.
+fn vb_version_op_call(method: &str, left: Expression, right: Expression) -> Expression {
+    call_expr(
+        Expression::new(ExprKind::Member {
+            object: Box::new(build_dotted_expr("System.Version")),
+            field: method.to_string(),
+            null_safe: false,
+        }),
+        vec![Argument::positional(left), Argument::positional(right)],
+    )
+}
+
+#[allow(dead_code)]
 fn vb_uri_href_expr(object: Expression) -> Expression {
     Expression::new(ExprKind::Member {
         object: Box::new(object),
@@ -1845,99 +1869,19 @@ fn rewrite_vb_version_compareto_binary(
     }
     let lhs = (**object).clone();
     let rhs = args[0].value.clone();
+    // `a.CompareTo(b) <op> 0` — same operator leaves as the direct form. This
+    // used to call `vb_version_lex_compare_expr`, a SECOND copy of the
+    // four-field ordering living beside the first.
     match op {
-        BinOp::Lt => Some(vb_version_lex_compare_expr(lhs, rhs, BinOp::Lt)),
-        BinOp::Gt => Some(vb_version_lex_compare_expr(lhs, rhs, BinOp::Gt)),
-        BinOp::Eq => Some(Expression::new(ExprKind::Call {
-            callee: Box::new(Expression::new(ExprKind::Member {
-                object: Box::new(lhs),
-                field: "Equals".into(),
-                null_safe: false,
-            })),
-            args: vec![Argument::positional(rhs)],
-            optional: false,
-        })),
+        BinOp::Lt => Some(vb_version_op_call("op_LessThan", lhs, rhs)),
+        BinOp::Gt => Some(vb_version_op_call("op_GreaterThan", lhs, rhs)),
+        BinOp::Eq => Some(vb_version_op_call("op_Equality", lhs, rhs)),
         BinOp::NotEq => Some(Expression::new(ExprKind::Unary {
             op: UnaryOp::Not,
-            expr: Box::new(Expression::new(ExprKind::Call {
-                callee: Box::new(Expression::new(ExprKind::Member {
-                    object: Box::new(lhs),
-                    field: "Equals".into(),
-                    null_safe: false,
-                })),
-                args: vec![Argument::positional(rhs)],
-                optional: false,
-            })),
+            expr: Box::new(vb_version_op_call("op_Equality", lhs, rhs)),
         })),
         _ => None,
     }
-}
-
-fn vb_version_lex_compare_expr(lhs: Expression, rhs: Expression, op: BinOp) -> Expression {
-    let mut result = None;
-    for field in ["Revision", "Build", "Minor", "Major"] {
-        let left_field = Expression::new(ExprKind::Member {
-            object: Box::new(lhs.clone()),
-            field: field.into(),
-            null_safe: false,
-        });
-        let right_field = Expression::new(ExprKind::Member {
-            object: Box::new(rhs.clone()),
-            field: field.into(),
-            null_safe: false,
-        });
-        let cmp = Expression::new(ExprKind::Binary {
-            op,
-            left: Box::new(left_field.clone()),
-            right: Box::new(right_field.clone()),
-        });
-        let eq = Expression::new(ExprKind::Binary {
-            op: BinOp::Eq,
-            left: Box::new(left_field),
-            right: Box::new(right_field),
-        });
-        result = Some(match result {
-            Some(next) => Expression::new(ExprKind::Binary {
-                op: BinOp::Or,
-                left: Box::new(cmp),
-                right: Box::new(Expression::new(ExprKind::Binary {
-                    op: BinOp::And,
-                    left: Box::new(eq),
-                    right: Box::new(next),
-                })),
-            }),
-            None => cmp,
-        });
-    }
-    result.unwrap_or_else(|| Expression::bool(false))
-}
-
-fn vb_version_all_fields_equal_expr(lhs: Expression, rhs: Expression) -> Expression {
-    let mut result = None;
-    for field in ["Revision", "Build", "Minor", "Major"] {
-        let eq = Expression::new(ExprKind::Binary {
-            op: BinOp::Eq,
-            left: Box::new(Expression::new(ExprKind::Member {
-                object: Box::new(lhs.clone()),
-                field: field.into(),
-                null_safe: false,
-            })),
-            right: Box::new(Expression::new(ExprKind::Member {
-                object: Box::new(rhs.clone()),
-                field: field.into(),
-                null_safe: false,
-            })),
-        });
-        result = Some(match result {
-            Some(prev) => Expression::new(ExprKind::Binary {
-                op: BinOp::And,
-                left: Box::new(eq),
-                right: Box::new(prev),
-            }),
-            None => eq,
-        });
-    }
-    result.unwrap_or_else(|| Expression::bool(true))
 }
 
 fn normalize_vb_environment_properties(module: &mut Module) {
@@ -9966,9 +9910,20 @@ fn normalize_vb_operator_calls(module: &mut Module) {
     let mut operators: HashMap<String, Vec<(BinOp, &'static str)>> = HashMap::new();
     let mut conversions: HashMap<(String, String), (String, String)> = HashMap::new();
     collect_vb_operator_classes(&module.body, &mut operators, &mut conversions);
-    if operators.is_empty() && conversions.is_empty() {
-        return;
-    }
+    // ⛔ No early return when both maps are empty. `a Like b` is lowered inside
+    // this pass, and it is NOT an operator-overload concern — it is plain VB
+    // semantics that must hold in every program. Skipping the pass left the
+    // node as `BinOp::Like`, whose shared arm in `primitives/operators.rs`
+    // calls `ecma:regexp.test` with the operands in the wrong order AND with
+    // the raw VB pattern instead of `vb_like_pattern_to_regex`'s output — so
+    // every `Like` answered False unless the module happened to declare an
+    // `Operator`. That arm's comment ("the VB walker ALWAYS rewrites…, so this
+    // arm is dead for VB") was the assumption this gate quietly broke.
+    //
+    // With both maps empty every other rewrite here is a no-op by
+    // construction: the conversion and unary/binary overload paths all bail on
+    // a failed `operators`/`conversions` lookup. Only the `Like` branch acts,
+    // and it acts precisely when NO `__like__` overload claims the operands.
     rewrite_vb_operator_call_statements(
         &mut module.body,
         &operators,
@@ -11817,52 +11772,57 @@ fn vb_convert_known_call_value(
     args: &[Argument],
     locals: &VbConvertReflectionLocals,
 ) -> Option<Expression> {
+    // `Convert.ChangeType(v, T)` → `Convert.<To*>(v)`. Real .NET gives
+    // `ChangeType` NO conversion logic of its own: it reads the target's
+    // `TypeCode` and dispatches to the matching `IConvertible.ToXxx`
+    // (`System/Convert.cs`). `component_classes_system` already registers that
+    // whole family, so this is a SELECTOR over existing leaves — which is why
+    // the twelve-helper compile-time folder that used to live here was the
+    // wrong shape: it re-derived conversions the platform already had.
     if vb_callee_ends(callee, &["Convert", "ChangeType"]) && args.len() >= 2 {
         let target = vb_convert_type_expr_name(&args[1].value, locals)?;
-        return vb_convert_value_to_type(&args[0].value, &target, args.get(2), locals);
+        return dotnet_vb::change_type_expr(args[0].value.clone(), &target);
     }
     if vb_callee_ends(callee, &["ChangeTypeToNullable"]) && args.len() >= 2 {
         let target = vb_convert_type_expr_name(&args[1].value, locals)?;
         let target = vb_nullable_inner_type(&target).unwrap_or(target);
-        return vb_convert_value_to_type(&args[0].value, &target, None, locals);
+        return dotnet_vb::change_type_expr(args[0].value.clone(), &target);
     }
-    if vb_callee_ends(callee, &["Enum", "Parse"]) && args.len() >= 2 {
-        let enum_type = vb_convert_type_expr_name(&args[0].value, locals)?;
-        let name = vb_convert_known_string(&args[1].value, locals)?;
-        return Some(Expression::new(ExprKind::Object(vec![
-            ObjectProperty::KeyValue {
-                key: Expression::string("__type"),
-                value: Expression::string(&enum_type),
-            },
-            ObjectProperty::KeyValue {
-                key: Expression::string("__name"),
-                value: Expression::string(&name),
-            },
-        ])));
-    }
+    // ⛔ `Enum.Parse` is NOT folded here any more. It used to build a VB-LOCAL
+    // `{__type, __name}` object, which is what rendered as `[object Status]` —
+    // and it intercepted the call BEFORE the shared enum dispatch
+    // (`primitives/enums.rs::try_compile_dotnet_enum_call`) ever saw it, so the
+    // shared reverse-map lookup that returns the real MEMBER was unreachable.
+    // System.* belongs in the shared machinery; falling through reaches it.
     if vb_callee_ends(callee, &["Type", "GetTypeCode"]) && args.len() == 1 {
         return vb_convert_type_expr_name(&args[0].value, locals)
             .map(|name| Expression::string(&name));
     }
-    if vb_callee_ends(callee, &["Object", "ReferenceEquals"]) && args.len() == 2 {
-        return Some(Expression::bool(vb_convert_expr_same_value(
-            &args[0].value,
-            &args[1].value,
-            locals,
-        )));
-    }
-    if vb_callee_ends(callee, &["Guid", "Parse"]) && args.len() == 1 {
-        return vb_convert_known_string(&args[0].value, locals)
-            .map(|text| Expression::string(&text.to_ascii_lowercase()));
-    }
-    if vb_callee_ends(callee, &["Version", "Parse"]) && args.len() == 1 {
-        return vb_convert_known_string(&args[0].value, locals)
-            .and_then(|text| vb_version_object_expr(&text));
-    }
-    if vb_callee_ends(callee, &["TimeSpan", "Parse"]) && args.len() == 1 {
-        return vb_convert_known_string(&args[0].value, locals)
-            .and_then(|text| vb_parse_timespan_text(&text).map(build_vb_timespan_expr));
-    }
+    // ⛔ `Object.ReferenceEquals` is NOT folded here any more. It decided
+    // REFERENCE IDENTITY at walk time (`vb_convert_expr_same_value` → a
+    // `bool` literal), which a compile-time walk cannot answer in general —
+    // two distinct objects with equal contents, or the same object reached by
+    // different expressions, both got a guess. `component_classes_system`
+    // registers the real `ReferenceEquals`; System.* belongs to platforms/dotnet.
+    // ⛔ `Guid.Parse` is NOT folded here any more. It used to return a plain
+    // lowercased STRING, not a Guid — so `.ToByteArray()`, `.ToString("N")`,
+    // `Guid.Empty` comparison and format round-trips had nothing to dispatch on.
+    // `platforms/dotnet/.../guid_adapter.rs` builds the real value (`__type`,
+    // `__value`, `__bytes`) and `component_classes` registers `Parse` against
+    // it; falling through reaches that. System.* lives in platforms/dotnet.
+    // ⛔ `Version.Parse` is NOT folded here any more. It used to build a
+    // VB-LOCAL object carrying only `Major`/`Minor` (`vb_version_object_expr`),
+    // so `Version.Parse("3.14.15.926").Build` and `.Revision` read as EMPTY —
+    // `3|14||`. System.* belongs in `platforms/dotnet`: `version_adapter.rs`
+    // already parses all four components, and `component_classes_system_version`
+    // registers `Parse` against it. Falling through reaches that.
+    // ⛔ `TimeSpan.Parse` is NOT folded here any more. `vb_parse_timespan_text`
+    // accepted ONLY `h:m:s` (it bailed on a 4th colon part, so `d.hh:mm:ss` and
+    // fractional seconds were rejected) and `build_vb_timespan_expr` wrote a
+    // VB-local object carrying just `Days`/`TotalSeconds` — while
+    // `timespan_adapter` builds `totalmilliseconds`/`totalseconds`/`totalminutes`/
+    // `totalhours`/`totaldays`/`ticks`. Two copies with DIFFERENT field sets.
+    // System.* lives in platforms/dotnet; falling through reaches the adapter.
     if let ExprKind::Member { object, field, .. } = &callee.kind {
         if field.eq_ignore_ascii_case("ToString") && args.is_empty() {
             if let Some(name) = vb_convert_known_object_field(object, "__name", locals) {
@@ -12000,60 +11960,6 @@ fn vb_convert_single_reflected_object_type(locals: &VbConvertReflectionLocals) -
         }
     }
     found
-}
-
-fn vb_convert_value_to_type(
-    value: &Expression,
-    target: &str,
-    culture: Option<&Argument>,
-    locals: &VbConvertReflectionLocals,
-) -> Option<Expression> {
-    let target = vb_canonical_type_name(target);
-    if matches!(value.kind, ExprKind::Lit(Literal::Null)) {
-        return if target == "String" {
-            Some(Expression::null())
-        } else {
-            None
-        };
-    }
-    let value = vb_convert_known_value(value, locals);
-    match target.as_str() {
-        "String" => {
-            if vb_convert_expr_is_byte_array(&value) {
-                None
-            } else {
-                Some(value)
-            }
-        }
-        "Int16" | "Int32" | "Int64" | "Byte" | "SByte" | "UInt16" | "UInt32" | "UInt64" => {
-            if let Some(number) = vb_convert_number_value(&value, culture, locals) {
-                Some(Expression::int(number.trunc() as i64))
-            } else {
-                Some(call_expr(
-                    member_expr(value, "ToInt32"),
-                    vec![Argument::positional(Expression::null())],
-                ))
-            }
-        }
-        "Single" | "Double" | "Decimal" => {
-            vb_convert_number_value(&value, culture, locals).map(|number| {
-                if culture.is_some_and(|arg| {
-                    vb_convert_culture_is_decimal_comma(&vb_convert_known_value(&arg.value, locals))
-                }) {
-                    Expression::string(&format_vb_number(number))
-                } else if number.fract() == 0.0 {
-                    Expression::int(number as i64)
-                } else {
-                    Expression::float(number)
-                }
-            })
-        }
-        "Boolean" => vb_convert_bool_value(&value),
-        "DateTime" => vb_convert_known_string(&value, locals)
-            .and_then(|text| parse_vb_date_text(&text))
-            .map(|date| Expression::string(&format_vb_date_value(&date))),
-        _ => Some(value),
-    }
 }
 
 fn vb_convert_changetype_throw_message(
@@ -12236,61 +12142,6 @@ fn vb_convert_known_string(
     literal_string(&vb_convert_known_value(expr, locals))
 }
 
-fn vb_convert_number_value(
-    expr: &Expression,
-    culture: Option<&Argument>,
-    locals: &VbConvertReflectionLocals,
-) -> Option<f64> {
-    match &expr.kind {
-        ExprKind::Lit(Literal::Int(value)) => Some(*value as f64),
-        ExprKind::Lit(Literal::Float(value)) => Some(*value),
-        ExprKind::Lit(Literal::Str(text)) => {
-            let mut text = text.trim().to_string();
-            if culture.is_some_and(|arg| {
-                vb_convert_culture_is_decimal_comma(&vb_convert_known_value(&arg.value, locals))
-            }) {
-                text = text.replace(',', ".");
-            }
-            text.parse::<f64>().ok()
-        }
-        _ => None,
-    }
-}
-
-fn vb_convert_culture_is_decimal_comma(expr: &Expression) -> bool {
-    match &expr.kind {
-        ExprKind::New { args, .. } => args
-            .first()
-            .and_then(|arg| literal_string(&arg.value))
-            .is_some_and(|name| matches!(name.to_ascii_lowercase().as_str(), "de-de" | "fr-fr")),
-        ExprKind::Object(props) => props.iter().any(|prop| {
-            if let ObjectProperty::KeyValue { key, value } = prop {
-                literal_string(key).is_some_and(|name| name.eq_ignore_ascii_case("Name"))
-                    && literal_string(value).is_some_and(|name| {
-                        matches!(name.to_ascii_lowercase().as_str(), "de-de" | "fr-fr")
-                    })
-            } else {
-                false
-            }
-        }),
-        _ => false,
-    }
-}
-
-fn vb_convert_bool_value(expr: &Expression) -> Option<Expression> {
-    match &expr.kind {
-        ExprKind::Lit(Literal::Bool(_)) => Some(expr.clone()),
-        ExprKind::Lit(Literal::Str(text)) if text.eq_ignore_ascii_case("true") => {
-            Some(Expression::bool(true))
-        }
-        ExprKind::Lit(Literal::Str(text)) if text.eq_ignore_ascii_case("false") => {
-            Some(Expression::bool(false))
-        }
-        ExprKind::Lit(Literal::Int(value)) => Some(Expression::bool(*value != 0)),
-        _ => None,
-    }
-}
-
 fn vb_convert_trackable_value(expr: &Expression) -> bool {
     matches!(
         expr.kind,
@@ -12311,23 +12162,6 @@ fn vb_convert_trackable_value(expr: &Expression) -> bool {
     )
 }
 
-fn vb_convert_expr_same_value(
-    left: &Expression,
-    right: &Expression,
-    locals: &VbConvertReflectionLocals,
-) -> bool {
-    let left = vb_convert_known_value(left, locals);
-    let right = vb_convert_known_value(right, locals);
-    match (&left.kind, &right.kind) {
-        (ExprKind::Lit(Literal::Int(a)), ExprKind::Lit(Literal::Int(b))) => a == b,
-        (ExprKind::Lit(Literal::Float(a)), ExprKind::Lit(Literal::Float(b))) => a == b,
-        (ExprKind::Lit(Literal::Str(a)), ExprKind::Lit(Literal::Str(b))) => a == b,
-        (ExprKind::Lit(Literal::Bool(a)), ExprKind::Lit(Literal::Bool(b))) => a == b,
-        (ExprKind::Lit(Literal::Null), ExprKind::Lit(Literal::Null)) => true,
-        _ => false,
-    }
-}
-
 fn vb_convert_expr_is_byte_array(expr: &Expression) -> bool {
     let ExprKind::Array(items) = &expr.kind else {
         return false;
@@ -12335,44 +12169,6 @@ fn vb_convert_expr_is_byte_array(expr: &Expression) -> bool {
     items
         .iter()
         .all(|item| literal_i64(&item.value).is_some_and(|value| (0..=255).contains(&value)))
-}
-
-fn vb_parse_timespan_text(text: &str) -> Option<VbTimeSpanValue> {
-    let mut parts = text.split(':');
-    let hours = parts.next()?.parse::<i64>().ok()?;
-    let minutes = parts.next()?.parse::<i64>().ok()?;
-    let seconds = parts.next()?.parse::<i64>().ok()?;
-    if parts.next().is_some() {
-        return None;
-    }
-    let total_seconds = hours
-        .checked_mul(3_600)?
-        .checked_add(minutes.checked_mul(60)?)?
-        .checked_add(seconds)?;
-    Some(VbTimeSpanValue {
-        days: total_seconds.div_euclid(86_400),
-        total_seconds,
-    })
-}
-
-fn vb_version_object_expr(text: &str) -> Option<Expression> {
-    let mut parts = text.split('.');
-    let major = parts.next()?.parse::<i64>().ok()?;
-    let minor = parts.next()?.parse::<i64>().ok()?;
-    Some(Expression::new(ExprKind::Object(vec![
-        ObjectProperty::KeyValue {
-            key: Expression::string("__type"),
-            value: Expression::string("Version"),
-        },
-        ObjectProperty::KeyValue {
-            key: Expression::string("Major"),
-            value: Expression::int(major),
-        },
-        ObjectProperty::KeyValue {
-            key: Expression::string("Minor"),
-            value: Expression::int(minor),
-        },
-    ])))
 }
 
 #[derive(Clone)]
@@ -14570,6 +14366,105 @@ fn rewrite_vb_flags_enum_statement(
                 &mut locals.clone(),
             );
         }
+        // `Select Case x / Case E.B` was skipped entirely: the subject folded to
+        // its integer through the surrounding VarDecl, but the case conditions
+        // never did, so every enum arm compared an int against a member access
+        // and no arm matched.
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
+            rewrite_vb_flags_enum_expr(expr, enums, enum_fields, generic_enum_name_funcs, locals);
+            for case in cases {
+                for cond in &mut case.conditions {
+                    match cond {
+                        CaseCondition::Value(expr) | CaseCondition::Comparison { expr, .. } => {
+                            rewrite_vb_flags_enum_expr(
+                                expr,
+                                enums,
+                                enum_fields,
+                                generic_enum_name_funcs,
+                                locals,
+                            );
+                        }
+                        CaseCondition::Range { from, to } => {
+                            rewrite_vb_flags_enum_expr(
+                                from,
+                                enums,
+                                enum_fields,
+                                generic_enum_name_funcs,
+                                locals,
+                            );
+                            rewrite_vb_flags_enum_expr(
+                                to,
+                                enums,
+                                enum_fields,
+                                generic_enum_name_funcs,
+                                locals,
+                            );
+                        }
+                    }
+                }
+                rewrite_vb_flags_enum_statements(
+                    &mut case.body,
+                    enums,
+                    enum_fields,
+                    generic_enum_name_funcs,
+                    &mut locals.clone(),
+                );
+            }
+            if let Some(default) = default {
+                rewrite_vb_flags_enum_statements(
+                    default,
+                    enums,
+                    enum_fields,
+                    generic_enum_name_funcs,
+                    &mut locals.clone(),
+                );
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            rewrite_vb_flags_enum_statements(
+                body,
+                enums,
+                enum_fields,
+                generic_enum_name_funcs,
+                &mut locals.clone(),
+            );
+            for catch in catches {
+                rewrite_vb_flags_enum_statements(
+                    &mut catch.body,
+                    enums,
+                    enum_fields,
+                    generic_enum_name_funcs,
+                    &mut locals.clone(),
+                );
+            }
+            if let Some(else_body) = else_body {
+                rewrite_vb_flags_enum_statements(
+                    else_body,
+                    enums,
+                    enum_fields,
+                    generic_enum_name_funcs,
+                    &mut locals.clone(),
+                );
+            }
+            if let Some(finally) = finally {
+                rewrite_vb_flags_enum_statements(
+                    finally,
+                    enums,
+                    enum_fields,
+                    generic_enum_name_funcs,
+                    &mut locals.clone(),
+                );
+            }
+        }
         StmtKind::ClassDecl { members, .. }
         | StmtKind::StructDecl { members, .. }
         | StmtKind::ModuleDecl { members, .. } => {
@@ -14646,6 +14541,16 @@ fn rewrite_vb_flags_enum_expr(
         ExprKind::Binary { op: _, left, right } => {
             rewrite_vb_flags_enum_expr(left, enums, enum_fields, generic_enum_name_funcs, locals);
             rewrite_vb_flags_enum_expr(right, enums, enum_fields, generic_enum_name_funcs, locals);
+        }
+        // `materialize_bool_results` renders a Boolean as `cond ? "True" : "False"`,
+        // so a comparison against an enum member ends up UNDER a Ternary. Without
+        // this arm the subtree was skipped and only one side of `x = E.B` was
+        // folded to its integer — the other stayed a member access and the
+        // comparison was always false.
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_vb_flags_enum_expr(cond, enums, enum_fields, generic_enum_name_funcs, locals);
+            rewrite_vb_flags_enum_expr(then, enums, enum_fields, generic_enum_name_funcs, locals);
+            rewrite_vb_flags_enum_expr(else_, enums, enum_fields, generic_enum_name_funcs, locals);
         }
         ExprKind::Call { callee, args, .. } => {
             let is_writeline = is_vb_console_writeline(callee);
@@ -15043,6 +14948,57 @@ fn call_expr(callee: Expression, args: Vec<Argument>) -> Expression {
         callee: Box::new(callee),
         args,
         optional: false,
+    })
+}
+
+/// `[Enum].GetNames(GetType(Days))` — hand the shared enum dispatch the SAME
+/// type token C# hands it.
+///
+/// C#'s walker turns `typeof(X)` into `Lit(Str("System.X"))` at parse time
+/// (`languages/csharp/src/walker.rs`, `Rule::typeof_expression`), and
+/// `primitives/enums.rs::canonical_enum_type_from_runtime_type` reads only that
+/// form — so `Enum.Parse/TryParse/GetNames/GetValues/IsDefined/Format/ToObject/
+/// GetUnderlyingType` were all unreachable from VB, which emits the common
+/// `ExprKind::TypeOf` node instead.
+///
+/// ⛔ VB cannot do the conversion at parse time the way C# does: NINE VB-side
+/// readers destructure `ExprKind::TypeOf` — `GetType(x).Name`, the three
+/// `normalize_vb_reflection_*` metadata passes, `TypeOf x Is T`, the
+/// `Convert.ChangeType` reflection path. So it happens HERE instead: LAST in the
+/// pipeline, once those passes have consumed the node, and only inside an
+/// `Enum` call's arguments. The conversion is C#'s; only its position differs.
+fn normalize_vb_enum_type_tokens(module: &mut Module) {
+    for stmt in &mut module.body {
+        stmt.walk_exprs_mut(&mut |expr| {
+            let ExprKind::Call { callee, args, .. } = &mut expr.kind else {
+                return;
+            };
+            if !is_vb_enum_static_callee(callee) {
+                return;
+            }
+            for arg in args.iter_mut() {
+                let ExprKind::TypeOf(inner) = &arg.value.kind else {
+                    continue;
+                };
+                if let Some(name) = dotted_expr_name(inner) {
+                    arg.value = Expression::string(&name);
+                }
+            }
+        });
+    }
+}
+
+/// A static call on the `Enum` type — `[Enum].X(…)`, `System.Enum.X(…)`, or the
+/// namespace-resolved `dotnet.System.Enum.X(…)`. Matched on the LEAF so all
+/// three spellings answer the same.
+fn is_vb_enum_static_callee(callee: &Expression) -> bool {
+    let ExprKind::Member { object, .. } = &callee.kind else {
+        return false;
+    };
+    dotted_expr_name(object).is_some_and(|name| {
+        name.rsplit('.')
+            .next()
+            .is_some_and(|leaf| leaf.eq_ignore_ascii_case("Enum"))
     })
 }
 
@@ -22644,7 +22600,7 @@ fn normalize_vb_pointer_ref_statement(stmt: &mut Statement) {
                             .as_deref()
                             .is_some_and(|type_name| vb_type_name_ends(type_name, "GCHandle"))
                     {
-                        decl.init = Some(vb_gchandle_expr(
+                        decl.init = Some(dotnet_vb::gchandle_expr(
                             Expression::null(),
                             Expression::bool(false),
                             Expression::bool(false),
@@ -23172,7 +23128,7 @@ fn rewrite_vb_pointer_ref_call(callee: &Expression, args: &[Argument]) -> Option
 
     if vb_callee_ends(callee, &["IntPtr", "Add"]) || vb_callee_ends(callee, &["UIntPtr", "Add"]) {
         if args.len() == 2 {
-            return Some(vb_pointer_or_numeric_add(
+            return Some(dotnet_vb::pointer_or_numeric_add(
                 args[0].value.clone(),
                 args[1].value.clone(),
             ));
@@ -23182,7 +23138,7 @@ fn rewrite_vb_pointer_ref_call(callee: &Expression, args: &[Argument]) -> Option
         || vb_callee_ends(callee, &["UIntPtr", "Subtract"])
     {
         if args.len() == 2 {
-            return Some(vb_pointer_or_numeric_sub(
+            return Some(dotnet_vb::pointer_or_numeric_sub(
                 args[0].value.clone(),
                 args[1].value.clone(),
             ));
@@ -23194,7 +23150,7 @@ fn rewrite_vb_pointer_ref_call(callee: &Expression, args: &[Argument]) -> Option
                 .get(1)
                 .map(|arg| vb_gchandle_type_arg_is_pinned(&arg.value))
                 .unwrap_or(false);
-            return Some(vb_gchandle_expr(
+            return Some(dotnet_vb::gchandle_expr(
                 first.value.clone(),
                 Expression::bool(true),
                 Expression::bool(pinned),
@@ -23206,38 +23162,22 @@ fn rewrite_vb_pointer_ref_call(callee: &Expression, args: &[Argument]) -> Option
     {
         return args.first().map(|arg| arg.value.clone());
     }
-    // `BitConverter` reads STORAGE. These four used to return their ARGUMENT
-    // unchanged, so `SingleToInt32Bits(1.0F)` answered 1 where .NET answers
-    // 1065353216 — a name table in a walker producing a silent wrong number.
-    // They are `UnaryOp::Reinterpret` now: the same node Fortran's TRANSFER,
-    // Go's `Float32bits` and Java's `floatToIntBits` reach.
-    for (method, repr) in [
-        ("SingleToInt32Bits", vybe_ast::NumericRepr::I32),
-        ("Int32BitsToSingle", vybe_ast::NumericRepr::F32),
-        ("DoubleToInt64Bits", vybe_ast::NumericRepr::I64),
-        ("Int64BitsToDouble", vybe_ast::NumericRepr::F64),
-    ] {
-        if vb_callee_ends(callee, &["BitConverter", method]) {
-            return args.first().map(|arg| {
-                Expression::new(ExprKind::Unary {
-                    op: UnaryOp::Reinterpret(repr),
-                    expr: Box::new(arg.value.clone()),
-                })
-            });
-        }
-    }
+    // ⛔ `BitConverter`'s bit-cast family is NOT rewritten here any more. It
+    // MOVED to `platforms/dotnet` — `bitconverter_adapter::emit_*_bits` +
+    // leaves on the `BitConverter` ClassType — which calls the SAME shared
+    // `primitives::bits::emit_reinterpret` this rewrite used, so the concept
+    // stays unified and the .NET spelling lives with the rest of System.*.
+    // A walker is not the home for a System type, even when its lowering is
+    // already shared.
 
     let field = field_name(callee)?.to_ascii_lowercase();
     if !vb_callee_ends(callee, &["Marshal", &field]) {
         return None;
     }
     match field.as_str() {
-        "allochglobal" | "alloccotaskmem" => Some(common_pointers::make_carray_ptr(
-            common_memory::heap_array(Vec::new()),
-            Expression::int(0),
-        )),
+        "allochglobal" | "alloccotaskmem" => Some(dotnet_vb::marshal_alloc()),
         "freehglobal" | "freecotaskmem" | "freebstr" | "zerofreeglobalallocunicode" => {
-            Some(common_memory::free_value())
+            Some(dotnet_vb::marshal_free())
         }
         "reallochglobal" => args.first().map(|arg| arg.value.clone()),
         "stringtohglobalansi"
@@ -23264,15 +23204,15 @@ fn rewrite_vb_pointer_ref_call(callee: &Expression, args: &[Argument]) -> Option
         ),
         "offsetof" => Some(vb_marshal_offsetof(args)),
         "getlastwin32error" => Some(Expression::int(0)),
-        "readbyte" => vb_marshal_read(args, 1),
-        "readint16" => vb_marshal_read(args, 2),
-        "readint32" | "readintptr" => vb_marshal_read(args, 4),
-        "readint64" => vb_marshal_read(args, 8),
-        "writebyte" => vb_marshal_write(args, 1),
-        "writeint16" => vb_marshal_write(args, 2),
-        "writeint32" | "writeintptr" => vb_marshal_write(args, 4),
-        "writeint64" => vb_marshal_write(args, 8),
-        "copy" => vb_marshal_copy(args),
+        "readbyte" => dotnet_vb::marshal_read(args, 1),
+        "readint16" => dotnet_vb::marshal_read(args, 2),
+        "readint32" | "readintptr" => dotnet_vb::marshal_read(args, 4),
+        "readint64" => dotnet_vb::marshal_read(args, 8),
+        "writebyte" => dotnet_vb::marshal_write(args, 1),
+        "writeint16" => dotnet_vb::marshal_write(args, 2),
+        "writeint32" | "writeintptr" => dotnet_vb::marshal_write(args, 4),
+        "writeint64" => dotnet_vb::marshal_write(args, 8),
+        "copy" => dotnet_vb::marshal_copy(args),
         "structuretoptr" => {
             if args.len() >= 2 {
                 Some(common_pointers::carray_byte_offset_write(
@@ -23313,127 +23253,6 @@ fn vb_compare_to_expr(left: Expression, right: Expression) -> Expression {
             else_: Box::new(Expression::int(0)),
         })),
     })
-}
-
-fn vb_pointer_or_numeric_add(ptr: Expression, offset: Expression) -> Expression {
-    let numeric = Expression::new(ExprKind::Binary {
-        op: BinOp::Add,
-        left: Box::new(ptr.clone()),
-        right: Box::new(offset.clone()),
-    });
-    if vb_expr_is_carray_pointer_shape(&ptr) {
-        return common_pointers::carray_advance(ptr, offset);
-    }
-    Expression::new(ExprKind::Ternary {
-        cond: Box::new(common_pointers::is_carray_ptr_kind(ptr.clone())),
-        then: Box::new(common_pointers::carray_advance(ptr, offset)),
-        else_: Box::new(numeric),
-    })
-}
-
-fn vb_pointer_or_numeric_sub(ptr: Expression, offset: Expression) -> Expression {
-    let numeric = Expression::new(ExprKind::Binary {
-        op: BinOp::Sub,
-        left: Box::new(ptr.clone()),
-        right: Box::new(offset.clone()),
-    });
-    if vb_expr_is_carray_pointer_shape(&ptr) {
-        return common_pointers::carray_retreat(ptr, offset);
-    }
-    Expression::new(ExprKind::Ternary {
-        cond: Box::new(common_pointers::is_carray_ptr_kind(ptr.clone())),
-        then: Box::new(common_pointers::carray_retreat(ptr, offset)),
-        else_: Box::new(numeric),
-    })
-}
-
-fn vb_marshal_read(args: &[Argument], byte_width: i64) -> Option<Expression> {
-    let ptr = args.first()?.value.clone();
-    let offset = args
-        .get(1)
-        .map(|arg| arg.value.clone())
-        .unwrap_or_else(|| Expression::int(0));
-    if byte_width == 2 {
-        let base = member_expr(ptr.clone(), common_pointers::CARRAY_BASE_KEY);
-        let index = Expression::new(ExprKind::Binary {
-            op: BinOp::IDiv,
-            left: Box::new(Expression::new(ExprKind::Binary {
-                op: BinOp::Add,
-                left: Box::new(member_expr(ptr.clone(), common_pointers::CARRAY_IDX_KEY)),
-                right: Box::new(offset.clone()),
-            })),
-            right: Box::new(Expression::int(2)),
-        });
-        return Some(Expression::new(ExprKind::Ternary {
-            cond: Box::new(Expression::new(ExprKind::Binary {
-                op: BinOp::Eq,
-                left: Box::new(Expression::new(ExprKind::TypeOf(Box::new(base.clone())))),
-                right: Box::new(Expression::string("string")),
-            })),
-            then: Box::new(call_expr(
-                member_expr(base, "charCodeAt"),
-                vec![Argument::positional(index)],
-            )),
-            else_: Box::new(common_pointers::carray_byte_offset_read(
-                ptr, offset, byte_width,
-            )),
-        }));
-    }
-    Some(common_pointers::carray_byte_offset_read(
-        ptr, offset, byte_width,
-    ))
-}
-
-fn vb_marshal_write(args: &[Argument], byte_width: i64) -> Option<Expression> {
-    let ptr = args.first()?.value.clone();
-    let (offset, val) = if args.len() >= 3 {
-        (args[1].value.clone(), args[2].value.clone())
-    } else {
-        (Expression::int(0), args.get(1)?.value.clone())
-    };
-    Some(common_pointers::carray_byte_offset_write(
-        ptr, offset, byte_width, val,
-    ))
-}
-
-fn vb_marshal_copy(args: &[Argument]) -> Option<Expression> {
-    if args.len() != 4 {
-        return None;
-    }
-    if matches!(args[1].value.kind, ExprKind::Lit(Literal::Int(_))) {
-        Some(Expression::new(ExprKind::Assign {
-            target: Box::new(member_expr(
-                args[2].value.clone(),
-                common_pointers::CARRAY_BASE_KEY,
-            )),
-            value: Box::new(args[0].value.clone()),
-        }))
-    } else {
-        Some(Expression::new(ExprKind::Assign {
-            target: Box::new(args[1].value.clone()),
-            value: Box::new(member_expr(
-                args[0].value.clone(),
-                common_pointers::CARRAY_BASE_KEY,
-            )),
-        }))
-    }
-}
-
-fn vb_gchandle_expr(target: Expression, allocated: Expression, pinned: Expression) -> Expression {
-    Expression::new(ExprKind::Object(vec![
-        ObjectProperty::KeyValue {
-            key: Expression::string("Target"),
-            value: target,
-        },
-        ObjectProperty::KeyValue {
-            key: Expression::string("IsAllocated"),
-            value: allocated,
-        },
-        ObjectProperty::KeyValue {
-            key: Expression::string("Pinned"),
-            value: pinned,
-        },
-    ]))
 }
 
 fn vb_gchandle_type_arg_is_pinned(expr: &Expression) -> bool {
@@ -23477,26 +23296,6 @@ fn vb_marshal_offsetof(args: &[Argument]) -> Expression {
         "b2" => 8,
         "l1" => 16,
         _ => 0,
-    })
-}
-
-fn vb_expr_is_carray_pointer_shape(expr: &Expression) -> bool {
-    let ExprKind::Object(props) = &expr.kind else {
-        return false;
-    };
-    props.iter().any(|prop| {
-        matches!(
-            prop,
-            ObjectProperty::KeyValue {
-                key: Expression {
-                    kind: ExprKind::Lit(Literal::Str(key)),
-                    ..
-                },
-                value: Expression {
-                    kind: ExprKind::Lit(Literal::Str(value)),
-                    ..
-                } } if key == common_pointers::REF_KIND_KEY && value == common_pointers::CARRAY_KIND
-        )
     })
 }
 
@@ -30134,6 +29933,7 @@ fn normalize_vb_local_type_statement(stmt: &mut Statement, locals: &mut HashMap<
         }
         StmtKind::VarDecl { declarations, .. } => {
             for decl in declarations {
+                normalize_vb_named_tuple_decl(decl);
                 let init_type_before_normalize =
                     decl.init.as_ref().and_then(|init| match &init.kind {
                         ExprKind::Cast { type_name, .. } => Some(vb_canonical_type_name(
@@ -31761,6 +31561,26 @@ fn normalize_vb_legacy_error_body(body: &mut Vec<Statement>) -> bool {
     uses_err_state
 }
 
+/// VB `GoTo` had NO lowering: the walker produced `StmtKind::GoTo`/`Label` and
+/// `statements.rs` treats a bare `GoTo` as a no-op, so every jump silently fell
+/// through — the same shape Go's `goto` was broken in.
+///
+/// Runs AFTER `normalize_vb_legacy_error_body`, which turns `On Error GoTo L`
+/// into a try/catch and CONSUMES `L`'s label statement; what is left is a plain
+/// jump target. VB labels are procedure-scoped, so this is called per Sub and
+/// per Function rather than over the module.
+///
+/// `fold_labels: true` — VB declares `case_sensitive = false`, and a label is a
+/// name kind like a local or a callable.
+fn lower_vb_gotos(body: Vec<Statement>) -> Vec<Statement> {
+    vybe_compiler::primitives::control_flow::lower_gotos(
+        body,
+        "__vb_goto_pc",
+        "__vb_goto_dispatch",
+        true,
+    )
+}
+
 fn rewrite_vb_bare_throws(stmts: &mut Vec<Statement>, var_name: &str) {
     for stmt in stmts.iter_mut() {
         rewrite_vb_bare_throws_in_stmt(stmt, var_name);
@@ -32184,6 +32004,7 @@ fn parse_sub_decl(pair: Pair<Rule>) -> Result<Statement, String> {
     normalize_vb_legacy_error_body(&mut body);
     normalize_vb_date_literal_body(&mut body);
     normalize_vb_local_type_body(&mut body);
+    body = lower_vb_gotos(body);
 
     let is_generator = body_has_yield(&body);
     if is_partial_method {
@@ -32321,6 +32142,7 @@ fn parse_function_decl(pair: Pair<Rule>) -> Result<Statement, String> {
     normalize_vb_legacy_error_body(&mut body);
     normalize_vb_date_literal_body(&mut body);
     normalize_vb_local_type_body(&mut body);
+    body = lower_vb_gotos(body);
 
     let is_generator = body_has_yield(&body);
     if is_partial_method {
@@ -32604,32 +32426,34 @@ fn parse_module_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                 members.push(ClassMember::Method(Box::new(parse_function_decl(p)?)))
             }
             Rule::const_statement => {
-                let (vis, decl) = parse_const_statement(p)?;
-                let init = decl.init.unwrap_or_else(|| Expression::null());
-                let name = match decl.pattern {
-                    BindingPattern::Ident(n) => n,
-                    _ => String::new(),
-                };
-                let mut modifiers = Modifiers::default();
-                modifiers.visibility = vis;
-                modifiers.is_static = true;
-                modifiers.is_shared = true;
-                modifiers.is_readonly = true;
-                members.push(ClassMember::Field {
-                    name: name.clone(),
-                    type_hint: decl.type_hint.clone().as_deref().map(str::to_string),
-                    init: Some(init.clone()),
-                    modifiers,
-                    with_events: false,
-                    array_bounds: None,
-                    storage: None,
-                });
-                members.push(ClassMember::Const {
-                    name,
-                    type_hint: decl.type_hint.as_deref().map(str::to_string),
-                    value: init,
-                    visibility: vis,
-                });
+                let (vis, decls) = parse_const_statement(p)?;
+                for decl in decls {
+                    let init = decl.init.unwrap_or_else(|| Expression::null());
+                    let name = match decl.pattern {
+                        BindingPattern::Ident(n) => n,
+                        _ => String::new(),
+                    };
+                    let mut modifiers = Modifiers::default();
+                    modifiers.visibility = vis;
+                    modifiers.is_static = true;
+                    modifiers.is_shared = true;
+                    modifiers.is_readonly = true;
+                    members.push(ClassMember::Field {
+                        name: name.clone(),
+                        type_hint: decl.type_hint.clone().as_deref().map(str::to_string),
+                        init: Some(init.clone()),
+                        modifiers,
+                        with_events: false,
+                        array_bounds: None,
+                        storage: None,
+                    });
+                    members.push(ClassMember::Const {
+                        name,
+                        type_hint: decl.type_hint.as_deref().map(str::to_string),
+                        value: init,
+                        visibility: vis,
+                    });
+                }
             }
             Rule::dim_statement => {
                 let decls = parse_dim_statement(p)?;
@@ -33102,6 +32926,74 @@ fn split_vb_top_level_list(text: &str) -> Vec<String> {
     }
     parts.push(text[start..].trim().to_string());
     parts
+}
+
+/// `Dim pt As (X As Integer, Y As Integer) = (10, 20)` carries the tuple's field
+/// NAMES on the DECLARATION. VB's other spelling — `Dim pt = (X:=10, Y:=20)` —
+/// carries them on the literal, which is the only form C# has and therefore the
+/// only one the walkers were built for.
+///
+/// The shared `primitives/tuples.rs` can only expose a by-name property for a
+/// name the walker attached, so an all-`None` `NamedTuple` under a named tuple
+/// type hint produced a value with positional slots and no fields at all:
+/// `pt.X & "," & pt.Y` rendered as `,` — separators intact, both reads empty.
+fn vb_tuple_type_field_names(spelling: &str) -> Option<Vec<String>> {
+    let inner = spelling.trim().strip_prefix('(')?.strip_suffix(')')?;
+    let parts = split_vb_top_level_list(inner);
+    // One element is a parenthesised expression, not a tuple type.
+    if parts.len() < 2 {
+        return None;
+    }
+    parts.iter().map(|part| vb_tuple_element_name(part)).collect()
+}
+
+/// The name in `X As Integer` — whatever precedes the first TOP-LEVEL `As`.
+/// Depth-aware so `Items As Dictionary(Of String, Integer)` is one element and
+/// the `As` inside a nested tuple type belongs to that tuple.
+fn vb_tuple_element_name(part: &str) -> Option<String> {
+    let mut depth = 0i32;
+    for (idx, ch) in part.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            _ => {}
+        }
+        if depth == 0 && part[idx..].len() >= 4 {
+            let candidate = &part[idx..];
+            if candidate.is_char_boundary(4)
+                && candidate[..4].eq_ignore_ascii_case(" as ")
+            {
+                let name = part[..idx].trim();
+                return (!name.is_empty()).then(|| name.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn normalize_vb_named_tuple_decl(decl: &mut VarDeclarator) {
+    let Some(names) = decl
+        .type_hint
+        .as_ref()
+        .and_then(|hint| vb_tuple_type_field_names(hint.spelling()))
+    else {
+        return;
+    };
+    let Some(init) = decl.init.as_mut() else {
+        return;
+    };
+    let ExprKind::NamedTuple { fields, .. } = &mut init.kind else {
+        return;
+    };
+    // Only fill in names the literal did NOT state: `(X:=1, Y:=2)` under a
+    // declared tuple type already named its own fields, and VB lets the two
+    // spellings disagree in order.
+    if fields.len() != names.len() || fields.iter().any(|(name, _)| name.is_some()) {
+        return;
+    }
+    for (field, name) in fields.iter_mut().zip(names) {
+        field.0 = Some(name);
+    }
 }
 
 fn last_vb_top_level_member(text: &str) -> Option<String> {
@@ -34761,34 +34653,36 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                 members.push(member);
             }
             Rule::const_statement => {
-                let (vis, decl) = parse_const_statement(p)?;
-                let init = decl.init.unwrap_or_else(|| Expression::null());
-                let name = match decl.pattern {
-                    BindingPattern::Ident(n) => n,
-                    _ => String::new(),
-                };
-                let mut modifiers = Modifiers::default();
-                modifiers.visibility = vis;
-                modifiers.is_static = true;
-                modifiers.is_shared = true;
-                modifiers.is_readonly = true;
-                let mut member = ClassMember::Field {
-                    name: name.clone(),
-                    type_hint: decl.type_hint.clone().as_deref().map(str::to_string),
-                    init: Some(init.clone()),
-                    modifiers,
-                    with_events: false,
-                    array_bounds: None,
-                    storage: None,
-                };
-                apply_vb_pending_member_decorators(&mut member, &mut pending_member_decorators);
-                members.push(member);
-                members.push(ClassMember::Const {
-                    name,
-                    type_hint: decl.type_hint.as_deref().map(str::to_string),
-                    value: init,
-                    visibility: vis,
-                });
+                let (vis, decls) = parse_const_statement(p)?;
+                for decl in decls {
+                    let init = decl.init.unwrap_or_else(|| Expression::null());
+                    let name = match decl.pattern {
+                        BindingPattern::Ident(n) => n,
+                        _ => String::new(),
+                    };
+                    let mut modifiers = Modifiers::default();
+                    modifiers.visibility = vis;
+                    modifiers.is_static = true;
+                    modifiers.is_shared = true;
+                    modifiers.is_readonly = true;
+                    let mut member = ClassMember::Field {
+                        name: name.clone(),
+                        type_hint: decl.type_hint.clone().as_deref().map(str::to_string),
+                        init: Some(init.clone()),
+                        modifiers,
+                        with_events: false,
+                        array_bounds: None,
+                        storage: None,
+                    };
+                    apply_vb_pending_member_decorators(&mut member, &mut pending_member_decorators);
+                    members.push(member);
+                    members.push(ClassMember::Const {
+                        name,
+                        type_hint: decl.type_hint.as_deref().map(str::to_string),
+                        value: init,
+                        visibility: vis,
+                    });
+                }
             }
             Rule::dim_statement => {
                 let decls = parse_dim_statement(p)?;
@@ -36840,15 +36734,30 @@ fn parse_array_literal(pair: Pair<Rule>) -> Result<Expression, String> {
     Ok(Expression::with_span(ExprKind::Array(elements), span))
 }
 
-fn parse_const_statement(pair: Pair<Rule>) -> Result<(Visibility, VarDeclarator), String> {
+/// `Const a As Integer = 1, b As Integer = 2` — one visibility for the
+/// statement, one declarator per `const_declaration_part`.
+fn parse_const_statement(pair: Pair<Rule>) -> Result<(Visibility, Vec<VarDeclarator>), String> {
     let mut visibility = Visibility::Private;
+    let mut declarators = Vec::new();
+
+    for p in pair.into_inner() {
+        match p.as_rule() {
+            Rule::visibility_modifier => visibility = parse_visibility(p.as_str()),
+            Rule::const_declaration_part => declarators.push(parse_const_declaration_part(p)?),
+            _ => {}
+        }
+    }
+
+    Ok((visibility, declarators))
+}
+
+fn parse_const_declaration_part(pair: Pair<Rule>) -> Result<VarDeclarator, String> {
     let mut name = String::new();
     let mut type_hint = None;
     let mut init = None;
 
     for p in pair.into_inner() {
         match p.as_rule() {
-            Rule::visibility_modifier => visibility = parse_visibility(p.as_str()),
             Rule::identifier => name = p.as_str().to_string(),
             Rule::type_name => type_hint = Some(p.as_str().to_string()),
             Rule::expression => init = Some(parse_expression(p)?),
@@ -36857,16 +36766,13 @@ fn parse_const_statement(pair: Pair<Rule>) -> Result<(Visibility, VarDeclarator)
         }
     }
 
-    Ok((
-        visibility,
-        VarDeclarator {
-            pattern: BindingPattern::Ident(name),
-            type_hint: type_hint.map(Into::into),
-            init,
-            array_bounds: None,
-            with_events: false,
-        },
-    ))
+    Ok(VarDeclarator {
+        pattern: BindingPattern::Ident(name),
+        type_hint: type_hint.map(Into::into),
+        init,
+        array_bounds: None,
+        with_events: false,
+    })
 }
 
 fn parse_array_bounds_pair(pair: Pair<Rule>) -> Result<Vec<Expression>, String> {
@@ -37198,9 +37104,9 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Statement, String> {
             }
         }
         Rule::const_statement => {
-            let (_vis, decl) = parse_const_statement(pair)?;
+            let (_vis, declarations) = parse_const_statement(pair)?;
             StmtKind::VarDecl {
-                declarations: vec![decl],
+                declarations,
                 kind: VarDeclKind::Const,
             }
         }
@@ -37613,29 +37519,15 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Statement, String> {
                 handler,
             }
         }
-        Rule::static_statement => {
-            let mut name = String::new();
-            let mut var_type: Option<String> = None;
-            let mut initializer = None;
-            for p in pair.into_inner() {
-                match p.as_rule() {
-                    Rule::identifier => name = p.as_str().to_string(),
-                    Rule::type_name => var_type = Some(p.as_str().to_string()),
-                    Rule::expression => initializer = Some(parse_expression(p)?),
-                    _ => {}
-                }
-            }
-            StmtKind::VarDecl {
-                declarations: vec![VarDeclarator {
-                    pattern: BindingPattern::Ident(name),
-                    type_hint: var_type.map(Into::into),
-                    init: initializer,
-                    array_bounds: None,
-                    with_events: false,
-                }],
-                kind: VarDeclKind::Static,
-            }
-        }
+        // `Static x = 1, y = 2` — the grammar now shares `Dim`'s declarator
+        // list, so this shares its parser too rather than re-reading the inner
+        // pairs flat (which silently kept only the LAST name/type/init).
+        // `parse_dim_statement` filters on `Rule::dim_declaration_part` and
+        // ignores everything else, so it reads a `static_statement` verbatim.
+        Rule::static_statement => StmtKind::VarDecl {
+            declarations: parse_dim_statement(pair)?,
+            kind: VarDeclKind::Static,
+        },
         Rule::goto_statement => {
             let label = pair.into_inner().next().unwrap().as_str().to_string();
             StmtKind::GoTo(label)
@@ -40194,9 +40086,15 @@ fn parse_with_statement(pair: Pair<Rule>) -> Result<Statement, String> {
     });
     let with_stmt = Statement::with_span(
         StmtKind::With {
+            // NAME the binding. The VB walker rewrites every `.Member` in the
+            // body to `__with_target.Member` at parse time, but the shared
+            // lowering only uses that spelling when `var` is `Some` — with
+            // `None` it synthesises `__with_target_{depth}`, so the body
+            // referenced a name nothing defined and the assignments landed on a
+            // phantom global instead of the target.
             items: vec![WithItem {
                 expr: target_expr.clone(),
-                var: None,
+                var: Some("__with_target".to_string()),
             }],
             body,
             is_async: false,
@@ -40717,8 +40615,13 @@ fn parse_select_statement(pair: Pair<Rule>) -> Result<Statement, String> {
                                 CaseCondition::Value(expr1)
                             }
                         }
-                        Rule::comp_op => {
-                            let op = match first.as_str() {
+                        // `Case Is <op> expr`. `case_is_kw` carries no payload; the
+                        // operator is the next pair.
+                        Rule::case_is_kw => {
+                            let op_pair = cond_inner.next().ok_or_else(|| {
+                                "Case Is is missing its comparison operator".to_string()
+                            })?;
+                            let op = match op_pair.as_str() {
                                 "=" => ComparisonOp::Eq,
                                 "<>" => ComparisonOp::NotEq,
                                 "<" => ComparisonOp::Lt,
@@ -40728,7 +40631,7 @@ fn parse_select_statement(pair: Pair<Rule>) -> Result<Statement, String> {
                                 _ => {
                                     return Err(format!(
                                         "Unknown comparison operator: {}",
-                                        first.as_str()
+                                        op_pair.as_str()
                                     ));
                                 }
                             };

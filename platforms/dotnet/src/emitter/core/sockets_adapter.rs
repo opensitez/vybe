@@ -3,8 +3,14 @@
 //! Every `System.Net.Sockets.*` and `System.Net.Dns.*` method that the
 //! .NET wrapper exposes lowers through one of the `Common` emits in
 //! this file. The emit produces bytecode that calls the standardized
-//! `wasi:sockets/{tcp,udp,ip-name-lookup,instance-network}.*` and
-//! `node:os.*` host primitives — no `dotnet:*` host module involved.
+//! `wasi:sockets/{types,ip-name-lookup}.*` and `node:os.*` host
+//! primitives — no `dotnet:*` host module involved.
+//!
+//! WASI 0.3.1 collapsed `tcp`, `tcp-create-socket`, `udp`,
+//! `udp-create-socket`, `network` and `instance-network` into the single
+//! `wasi:sockets/types` interface, and the two-phase `start-*`/`finish-*`
+//! pairs into one call each. Two .NET verbs have NO 0.3.1 spelling and are
+//! marked `GAP:` at their emit — see each doc comment.
 //!
 //! Architectural rule: the host exposes only spec-aligned namespaces
 //! (`ecma:*`, `wasi:*`, `wasm:*`, `web:*`, `node:*`). Anything
@@ -63,16 +69,15 @@ fn struct_get(chunk: &mut Chunk, field: &str, line: u32) {
 ///
 /// Stack: `[host]` → `[array<string>]`
 ///
-/// Lowers to `wasi:sockets/ip-name-lookup.resolve-addresses(host)` which
-/// returns a `ResolveAddressStream` resource. The stream's
-/// `__addresses` field is the already-collected array of IP strings;
-/// we just `STRUCT_GET` it to drain.
+/// Lowers to `wasi:sockets/ip-name-lookup.resolve-addresses(host)`, which in
+/// 0.3.1 answers `list<ip-address>` DIRECTLY. 0.2 answered a
+/// `resolve-address-stream` resource that had to be drained, and this emit
+/// used to unwrap its `__addresses` field; there is no resource to unwrap
+/// any more, so the call result is already the array.
 pub fn emit_dns_get_host_addresses(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let resolve_idx =
         chunks[current].add_import("wasi:sockets/ip-name-lookup", "resolve-addresses");
     chunks[current].emit_call(resolve_idx, 1, line);
-    let addrs_key = chunks[current].add_constant(Value::String(Arc::from("__addresses")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, addrs_key, line);
 }
 
 /// `Dns.GetHostEntry(host)` — resolves `host` and wraps the result in
@@ -88,9 +93,9 @@ pub fn emit_dns_get_host_entry(chunks: &mut Vec<Chunk>, current: usize, line: u3
 
     chunk.emit_op_u16(Op::LOCAL_SET, host_slot, line);
 
+    // 0.3.1 hands back `list<ip-address>`; nothing to unwrap.
     chunk.emit_op_u16(Op::LOCAL_GET, host_slot, line);
     chunk.emit_call(resolve_idx, 1, line);
-    struct_get(chunk, "__addresses", line);
     chunk.emit_op_u16(Op::LOCAL_SET, addresses_slot, line);
 
     chunk.emit_struct_new(0, 0, line);
@@ -191,12 +196,12 @@ pub fn emit_ip_address_to_string(chunks: &mut Vec<Chunk>, current: usize, line: 
 ///
 /// Stack: `[host, port]` → `[tcp_socket]`
 ///
-/// Composition (per WASI 0.2.11 wasi-sockets):
-///   1. `tcp-create-socket(ipv4)` → socket
-///   2. Build IP address record `{ "ipv4": [host, port] }`
-///   3. `tcp.start-connect(socket, network=null, addr)` — our impl is
-///      synchronous and lenient (uses last arg as remote addr)
-///   4. Stamp `__type=TcpClient` on the socket so runtime dispatch
+/// Composition (per WASI 0.3.1 wasi-sockets):
+///   1. `[static]tcp-socket.create(ipv4)` → socket
+///   2. `[method]tcp-socket.connect(socket, "host:port")` — one call; 0.2's
+///      `start-connect`/`finish-connect` pair is gone, and so is the
+///      `network` handle that used to sit between the socket and the address
+///   3. Stamp `__type=TcpClient` on the socket so runtime dispatch
 ///      finds the .NET adapter TypeDef
 pub fn emit_tcp_client_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     // Stack at entry: [host, port] (user args)
@@ -208,25 +213,24 @@ pub fn emit_tcp_client_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, host_slot, line);
 
     // 1. Create socket
-    let create_idx =
-        chunks[current].add_import("wasi:sockets/tcp-create-socket", "create-tcp-socket");
+    let create_idx = chunks[current].add_import("wasi:sockets/types", "[static]tcp-socket.create");
     push_const(&mut chunks[current], Value::String(Arc::from("ipv4")), line);
     chunks[current].emit_call(create_idx, 1, line);
     // Stack: [socket]
 
-    // Stash the socket for return + for start-connect arg 0.
+    // Stash the socket for return + as `connect`'s receiver.
     let sock_slot = chunks[current].alloc_scratch(1);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, sock_slot, line);
 
-    // 2. Push args for start-connect: (socket, network=null, "host:port")
+    // 2. Push args for connect: (socket, "host:port"). 0.3.1 dropped the
+    //    `network` argument along with the `instance-network` interface.
     chunk.emit_op_u16(Op::LOCAL_GET, sock_slot, line);
-    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     emit_host_port_string(chunk, host_slot, port_slot, line);
-    // Stack: [socket, null, "host:port"]
+    // Stack: [socket, "host:port"]
 
-    let connect_idx = chunks[current].add_import("wasi:sockets/tcp", "start-connect");
-    chunks[current].emit_call(connect_idx, 3, line);
+    let connect_idx = chunks[current].add_import("wasi:sockets/types", "[method]tcp-socket.connect");
+    chunks[current].emit_call(connect_idx, 2, line);
     chunks[current].emit_op(Op::DROP, line); // discard connect result
 
     // 3. Re-push socket as the value of `New TcpClient`. The runtime
@@ -235,26 +239,35 @@ pub fn emit_tcp_client_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, sock_slot, line);
 }
 
-/// `tcpClient.GetStream()` — return the (input, output) stream pair.
+/// `tcpClient.GetStream()` — return the endpoint reads and writes go through.
 ///
-/// Stack: `[client]` → `[stream_pair_array]`
+/// Stack: `[client]` → `[tcp_socket]`
 ///
-/// `wasi:sockets/tcp.finish-connect(socket)` returns
-/// `[input_stream, output_stream]` as a 2-element array — exactly what
-/// .NET callers feed into `New StreamReader(stream)` /
-/// `New StreamWriter(stream)`.
-pub fn emit_tcp_client_get_stream(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
-    let idx = chunks[current].add_import("wasi:sockets/tcp", "finish-connect");
-    chunks[current].emit_call(idx, 1, line);
+/// 0.2 took this pair from `tcp.finish-connect`, which returned
+/// `[input_stream, output_stream]`. 0.3.1 has no `finish-connect` at all:
+/// `connect` returns nothing, and the byte streams are reached through
+/// `[method]tcp-socket.receive` (`tuple<stream<u8>, future<...>>`) and
+/// `[method]tcp-socket.send` (`stream<u8>` in). The socket IS the endpoint,
+/// so `GetStream()` hands the socket straight back and a future
+/// `NetworkStream.Read`/`Write` lowers to `receive`/`send` on it.
+pub fn emit_tcp_client_get_stream(_chunks: &mut Vec<Chunk>, _current: usize, _line: u32) {
+    // socket already on the stack; it is its own read/write endpoint.
 }
 
-/// `tcpClient.Close()` — shut down the socket.
+/// `tcpClient.Close()` — release the socket.
 ///
 /// Stack: `[client]` → `[null]` (void return)
+///
+/// GAP: 0.2's `tcp.shutdown` is DELETED in 0.3.1 and has no replacement
+/// function — the Component Model closes a socket by dropping its resource
+/// handle (`canon resource.drop`). Vybe's socket handles are plain objects
+/// carrying `__socket_id`, not typed resource handles, so `resource.drop`
+/// rejects them ("handle is not a resource handle") and there is no
+/// spec-legal lowering to emit. Dropping the value is therefore all this
+/// can do, and the OS socket stays in the host's registry until teardown.
+/// Closing it properly needs socket handles to become real resource
+/// handles — host/VM work, which is gated on the user's approval.
 pub fn emit_tcp_client_close(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
-    let idx = chunks[current].add_import("wasi:sockets/tcp", "shutdown");
-    push_const(&mut chunks[current], Value::String(Arc::from("both")), line);
-    chunks[current].emit_call(idx, 2, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
@@ -265,19 +278,21 @@ pub fn emit_tcp_client_close(chunks: &mut Vec<Chunk>, current: usize, line: u32)
 ///
 /// Stack: `[port]` → `[tcp_listener]`
 ///
-/// Composition:
-///   1. `tcp-create-socket(ipv4)` → socket
-///   2. `tcp.start-bind(socket, network=null, addr={0.0.0.0, port})`
-///   3. `tcp.finish-bind(socket)`
-///   4. `tcp.start-listen(socket)`
-///   5. `tcp.finish-listen(socket)`
+/// Composition (0.3.1 — five calls become three):
+///   1. `[static]tcp-socket.create(ipv4)` → socket
+///   2. `[method]tcp-socket.bind(socket, "0.0.0.0:port")`
+///   3. `[method]tcp-socket.listen(socket)` → `stream<tcp-socket>`
+///
+/// `listen` answers a STREAM of inbound sockets — that stream is the whole
+/// of 0.3.1's accept mechanism. Nothing in the bytecode can read it (see
+/// `emit_tcp_listener_accept`), so it is dropped here and the listener
+/// socket is what the constructor yields, matching the .NET shape.
 pub fn emit_tcp_listener_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let port_slot = chunks[current].alloc_scratch(1);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, port_slot, line);
 
-    let create_idx =
-        chunks[current].add_import("wasi:sockets/tcp-create-socket", "create-tcp-socket");
+    let create_idx = chunks[current].add_import("wasi:sockets/types", "[static]tcp-socket.create");
     push_const(&mut chunks[current], Value::String(Arc::from("ipv4")), line);
     chunks[current].emit_call(create_idx, 1, line);
 
@@ -285,34 +300,23 @@ pub fn emit_tcp_listener_new(chunks: &mut Vec<Chunk>, current: usize, line: u32)
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, sock_slot, line);
 
-    // start-bind(socket, network=null, addr="0.0.0.0:port")
+    // bind(socket, "0.0.0.0:port") — one call, no `network` handle.
     chunk.emit_op_u16(Op::LOCAL_GET, sock_slot, line);
-    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     push_const(chunk, Value::String(Arc::from("0.0.0.0")), line);
     push_const(chunk, Value::String(Arc::from(":")), line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, port_slot, line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
-    let bind_idx = chunks[current].add_import("wasi:sockets/tcp", "start-bind");
-    chunks[current].emit_call(bind_idx, 3, line);
+    let bind_idx = chunks[current].add_import("wasi:sockets/types", "[method]tcp-socket.bind");
+    chunks[current].emit_call(bind_idx, 2, line);
     chunks[current].emit_op(Op::DROP, line);
 
-    // finish-bind — synchronous, just acknowledges
+    // listen(socket) -> stream<tcp-socket>; the stream is unreadable from
+    // bytecode, so it is dropped. Calling it still flips the socket into the
+    // listening state, which is what `Pending()` and the bound port report on.
     chunks[current].emit_op_u16(Op::LOCAL_GET, sock_slot, line);
-    let fbind_idx = chunks[current].add_import("wasi:sockets/tcp", "finish-bind");
-    chunks[current].emit_call(fbind_idx, 1, line);
-    chunks[current].emit_op(Op::DROP, line);
-
-    // start-listen
-    chunks[current].emit_op_u16(Op::LOCAL_GET, sock_slot, line);
-    let listen_idx = chunks[current].add_import("wasi:sockets/tcp", "start-listen");
+    let listen_idx = chunks[current].add_import("wasi:sockets/types", "[method]tcp-socket.listen");
     chunks[current].emit_call(listen_idx, 1, line);
-    chunks[current].emit_op(Op::DROP, line);
-
-    // finish-listen
-    chunks[current].emit_op_u16(Op::LOCAL_GET, sock_slot, line);
-    let flisten_idx = chunks[current].add_import("wasi:sockets/tcp", "finish-listen");
-    chunks[current].emit_call(flisten_idx, 1, line);
     chunks[current].emit_op(Op::DROP, line);
 
     // Return the listener socket
@@ -327,42 +331,53 @@ pub fn emit_tcp_listener_start(_chunks: &mut Vec<Chunk>, _current: usize, _line:
     // listener already on stack; pass through.
 }
 
-/// `listener.Stop()` — shut down the listening socket.
+/// `listener.Stop()` — release the listening socket.
 ///
 /// Stack: `[listener]` → `[null]`
+///
+/// GAP: same as `emit_tcp_client_close` — 0.3.1 deleted `tcp.shutdown` and
+/// closes by dropping the resource handle, which Vybe's object-shaped socket
+/// handles cannot express.
 pub fn emit_tcp_listener_stop(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
-    let idx = chunks[current].add_import("wasi:sockets/tcp", "shutdown");
-    push_const(&mut chunks[current], Value::String(Arc::from("both")), line);
-    chunks[current].emit_call(idx, 2, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
-/// `listener.AcceptTcpClient()` — block until a client connects, return
-/// the connected socket.
+/// `listener.AcceptTcpClient()` — return the next connected socket.
 ///
-/// Stack: `[listener]` → `[tcp_socket | null]`
+/// Stack: `[listener]` → `[null]`
 ///
-/// `wasi:sockets/tcp.accept(listener)` returns `[client_socket,
-/// input_stream, output_stream]` array, or `null` if no pending client
-/// (non-blocking mode). For .NET semantics we want just the socket;
-/// extract index 0.
+/// GAP: 0.2's `tcp.accept` is DELETED. In 0.3.1 the ONLY way to take an
+/// inbound connection is to read the `stream<tcp-socket>` that
+/// `[method]tcp-socket.listen` returned — accept is not a function any more,
+/// it is a stream read.
+///
+/// That read cannot be emitted: `canon stream.read` copies BYTES into linear
+/// memory, so it handles `stream<u8>` and nothing else, and
+/// `EventLoop::stream_pop` (which does move whole items) has no bytecode
+/// opcode reaching it. This is the SAME blocker as
+/// `wasi:filesystem`'s `read-directory: stream<directory-entry>` — one
+/// architectural item, not two.
+///
+/// `null` is the pre-existing contract for "no client pending": 0.2's
+/// `accept` already returned null in non-blocking mode and the caller
+/// indexed it with `ARRAY_GET`, which tolerates null. So this narrows a
+/// capability rather than inventing a new silent failure — but it IS a
+/// narrowing, and the blocking form stays unavailable until a stream of
+/// non-`u8` elements can be read.
 pub fn emit_tcp_listener_accept(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
-    let accept_idx = chunks[current].add_import("wasi:sockets/tcp", "accept");
-    chunks[current].emit_call(accept_idx, 1, line);
-    // Result on stack: [array_of_3] | null
-    // Index 0 is the client socket. Use ARRAY_GET (handles null gracefully).
-    push_const(&mut chunks[current], Value::I32(0), line);
-    chunks[current].emit_op(Op::ARRAY_GET, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// `listener.Pending()` — true if `AcceptTcpClient()` would not block.
 /// Synchronous query; we approximate by checking the listener's
-/// `is-listening` state.
+/// listening state (0.3.1 spells it `get-is-listening`).
 ///
 /// Stack: `[listener]` → `[bool]`
 pub fn emit_tcp_listener_pending(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
-    let idx = chunks[current].add_import("wasi:sockets/tcp", "is-listening");
+    let idx =
+        chunks[current].add_import("wasi:sockets/types", "[method]tcp-socket.get-is-listening");
     chunks[current].emit_call(idx, 1, line);
 }
 
@@ -376,8 +391,7 @@ pub fn emit_udp_client_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, port_slot, line);
 
-    let create_idx =
-        chunks[current].add_import("wasi:sockets/udp-create-socket", "create-udp-socket");
+    let create_idx = chunks[current].add_import("wasi:sockets/types", "[static]udp-socket.create");
     push_const(&mut chunks[current], Value::String(Arc::from("ipv4")), line);
     chunks[current].emit_call(create_idx, 1, line);
 
@@ -385,21 +399,15 @@ pub fn emit_udp_client_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, sock_slot, line);
 
-    // start-bind(socket, network=null, addr="0.0.0.0:port")
+    // bind(socket, "0.0.0.0:port") — 0.2's start-bind/finish-bind pair.
     chunk.emit_op_u16(Op::LOCAL_GET, sock_slot, line);
-    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     push_const(chunk, Value::String(Arc::from("0.0.0.0")), line);
     push_const(chunk, Value::String(Arc::from(":")), line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, port_slot, line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
-    let bind_idx = chunks[current].add_import("wasi:sockets/udp", "start-bind");
-    chunks[current].emit_call(bind_idx, 3, line);
-    chunks[current].emit_op(Op::DROP, line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, sock_slot, line);
-    let fbind_idx = chunks[current].add_import("wasi:sockets/udp", "finish-bind");
-    chunks[current].emit_call(fbind_idx, 1, line);
+    let bind_idx = chunks[current].add_import("wasi:sockets/types", "[method]udp-socket.bind");
+    chunks[current].emit_call(bind_idx, 2, line);
     chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, sock_slot, line);
@@ -409,13 +417,34 @@ pub fn emit_udp_client_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
 ///
 /// Stack: `[client, data, length, host, port]` → `[null]`
 ///
-/// Lowers to `wasi:sockets/udp.stream(socket).send(...)` shape. Vybe's
-/// impl exposes the send through the stream resource returned by
-/// `udp.stream`; we wrap the call into a single emit for caller
-/// simplicity.
+/// 0.2 routed this through `udp.stream`, which returned an
+/// `outgoing-datagram-stream` resource you then called `send` on — and the
+/// five-argument call this emitted never matched that shape in the first
+/// place. 0.3.1 deletes the datagram-stream resources entirely:
+/// `[method]udp-socket.send(data: list<u8>, remote-address)` is one call on
+/// the socket, which is both honest and simpler.
+///
+/// .NET's `length` argument is consumed and not forwarded — `send` takes the
+/// whole list — exactly as before.
 pub fn emit_udp_send(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
-    let idx = chunks[current].add_import("wasi:sockets/udp", "stream");
-    chunks[current].emit_call(idx, 5, line);
+    // Stack at entry: [client, data, length, host, port] — pop in reverse.
+    let sock_slot = chunks[current].alloc_scratch(5);
+    let data_slot = sock_slot + 1;
+    let len_slot = sock_slot + 2;
+    let host_slot = sock_slot + 3;
+    let port_slot = sock_slot + 4;
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::LOCAL_SET, port_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, host_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, len_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, data_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, sock_slot, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, sock_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, data_slot, line);
+    emit_host_port_string(chunk, host_slot, port_slot, line);
+    let idx = chunks[current].add_import("wasi:sockets/types", "[method]udp-socket.send");
+    chunks[current].emit_call(idx, 3, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
@@ -423,9 +452,15 @@ pub fn emit_udp_send(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
 /// `udp.Receive()` — receive a datagram, returns bytes.
 ///
 /// Stack: `[client]` → `[bytes]`
+///
+/// `[method]udp-socket.receive()` answers
+/// `result<tuple<list<u8>, ip-socket-address>, error-code>`; .NET's
+/// `Receive` wants the payload, so element 0 of that tuple.
 pub fn emit_udp_receive(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
-    let idx = chunks[current].add_import("wasi:sockets/udp", "stream");
+    let idx = chunks[current].add_import("wasi:sockets/types", "[method]udp-socket.receive");
     chunks[current].emit_call(idx, 1, line);
+    push_const(&mut chunks[current], Value::I32(0), line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
 }
 
 /// `udp.Close()` — close the UDP socket.

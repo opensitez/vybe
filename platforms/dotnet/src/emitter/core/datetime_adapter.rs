@@ -5,9 +5,9 @@
 //! DateTime(y, m, d, ...)` constructor produce a value with
 //! `__type=DateTime` and a millisecond-since-epoch payload.
 //!
-//! The underlying primitive is `wasi:clocks/wall-clock.now` (WASI
-//! 0.2.11 spec primitive — registered alongside the legacy flat
-//! `wasi:clocks` namespace). `ecma:date.now` reads through it and
+//! The underlying primitive is `wasi:clocks/system-clock.now`
+//! (`wasi:clocks@0.3.1`; 0.2 spelled the interface `wall-clock`).
+//! `ecma:date.now` reads through it and
 //! returns ms since epoch — the form ECMA-262 §21.4 [[DateValue]]
 //! uses. Each adapter wraps that ms in a DateTime-shaped Object so
 //! the .NET surface looks .NET-shaped while the bytecode is
@@ -416,7 +416,7 @@ pub fn emit_datetime_from_millis(chunks: &mut Vec<Chunk>, current: usize, line: 
 }
 
 /// `DateTime.Now` / `DateTime.UtcNow` — read `ecma:date.now` (which
-/// reads through `wasi:clocks/wall-clock.now`) and wrap in a
+/// reads through `wasi:clocks/system-clock.now`) and wrap in a
 /// DateTime object.
 ///
 /// Stack on entry: `[]` ; Stack on exit: `[datetime_obj]`

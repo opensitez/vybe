@@ -1245,6 +1245,19 @@ pub fn lookup_component_static_property(
 
 pub fn static_method_return_type(class_name: &str, method_name: &str) -> Option<&'static str> {
     let class = class_name.rsplit('.').next().unwrap_or(class_name);
+    // `Type.GetTypeCode` and `Nullable.GetUnderlyingType` — declared here so the
+    // return type comes off the TREE (`member_returns`) rather than a walker's
+    // own table. `namespaceplan.md`: "chaining methods declare `member_returns`".
+    // The VB walker encoded both, which is `System.*` knowledge living in a
+    // language frontend where no other .NET consumer could see it.
+    if class.eq_ignore_ascii_case("Type") && method_name.eq_ignore_ascii_case("GetTypeCode") {
+        return Some("TypeCode");
+    }
+    if class.eq_ignore_ascii_case("Nullable")
+        && method_name.eq_ignore_ascii_case("GetUnderlyingType")
+    {
+        return Some("Type");
+    }
     if class.eq_ignore_ascii_case("Object")
         && matches!(
             method_name.to_ascii_lowercase().as_str(),

@@ -20,10 +20,17 @@ use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
 const BUFFER_KEY: &str = "__buffer";
-const CAPACITY_KEY: &str = "Capacity";
-const CAPACITY_LOWER_KEY: &str = "capacity";
-const MAX_CAPACITY_KEY: &str = "MaxCapacity";
-const MAX_CAPACITY_LOWER_KEY: &str = "maxcapacity";
+// ⛔ ONE spelling. These used to be two: a PascalCase key AND a lowercase one,
+// both written onto the same object so either frontend could find one. That is
+// two copies of one field, and the pair drift independently — the writes in
+// `emit_string_builder_new` used the PascalCase pair while the update path used
+// the lowercase pair, so `Capacity` and `capacity` could disagree on the SAME
+// builder. The dotnet value-type convention is a lowercased struct-field read
+// (`tree_register`), so lowercase is the single canonical spelling.
+const CAPACITY_KEY: &str = "capacity";
+const CAPACITY_LOWER_KEY: &str = CAPACITY_KEY;
+const MAX_CAPACITY_KEY: &str = "maxcapacity";
+const MAX_CAPACITY_LOWER_KEY: &str = MAX_CAPACITY_KEY;
 
 fn emit_set_field_const_i32(chunk: &mut Chunk, key: &str, value: i32, line: u32) {
     let key = chunk.add_constant(Value::String(Arc::from(key)));

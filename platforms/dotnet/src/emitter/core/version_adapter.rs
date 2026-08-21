@@ -9,12 +9,21 @@ use vybe_runtime::{Chunk, Value};
 
 const TYPE_KEY: &str = "__type";
 const TYPES_KEY: &str = "__types";
-const MAJOR_KEY: &str = "Major";
-const MINOR_KEY: &str = "Minor";
-const BUILD_KEY: &str = "Build";
-const REVISION_KEY: &str = "Revision";
-const MAJOR_REVISION_KEY: &str = "MajorRevision";
-const MINOR_REVISION_KEY: &str = "MinorRevision";
+// ⛔ LOWERCASE, like every other dotnet value type. `Version` declares no
+// property accessor, so `tree_register` resolves its properties as "an ordinary
+// STRUCT FIELD read … a lowercased field access … those ARE the field names
+// `emit_value_type_new` stores" — and that fn is called with `["x","y"]` for
+// Point, `["width","height"]` for Size, `["name","size"]` for Font. Storing
+// PascalCase made `Version` the ONE outlier: a case-insensitive frontend folds
+// `ver.Major` to `major`, missed the `Major` key, and every component read as
+// EMPTY while `Clone`/`ToString`/equality still "worked" (equality compared
+// empty to empty — a false green).
+const MAJOR_KEY: &str = "major";
+const MINOR_KEY: &str = "minor";
+const BUILD_KEY: &str = "build";
+const REVISION_KEY: &str = "revision";
+const MAJOR_REVISION_KEY: &str = "majorrevision";
+const MINOR_REVISION_KEY: &str = "minorrevision";
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     match &val {

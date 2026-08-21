@@ -135,7 +135,6 @@ fn emit_set_writer_buffer(chunk: &mut Chunk, writer_slot: u16, new_buf_slot: u16
 /// `new StreamReader(path)` — load file into a `__content` string and
 /// initialise `__pos = 0`. Stack: `[path]` → `[reader]`.
 pub fn emit_stream_reader_new(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    let read_idx = chunks[current].add_import("node:fs", "readFileSync");
     let chunk = &mut chunks[current];
     let type_key = chunk.add_constant(Value::String(Arc::from(TYPE_KEY)));
     let content_key = chunk.add_constant(Value::String(Arc::from(CONTENT_KEY)));
@@ -145,10 +144,9 @@ pub fn emit_stream_reader_new(chunks: &mut [Chunk], current: usize, _argc: u8, l
     let path_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, path_slot, line);
 
-    // content = node:fs.readFileSync(path, "utf8")
+    // content = the file, read through `read-via-stream` and decoded as UTF-8.
     chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
-    push_const(chunk, Value::String(Arc::from("utf8")), line);
-    chunk.emit_call(read_idx, 2, line);
+    vybe_compiler::primitives::fs_path::emit_read_file(chunk, line);
     let content_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, content_slot, line);
 
@@ -787,10 +785,9 @@ fn emit_string_reader_read_char(chunks: &mut [Chunk], current: usize, line: u32,
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
 
-/// `writer.Flush()` / `writer.Close()` — `node:fs.writeFileSync(__path, __buf)`.
-/// Stack: `[writer]` → `[null]`.
+/// `writer.Flush()` / `writer.Close()` — the buffered text through
+/// `write-via-stream`. Stack: `[writer]` → `[null]`.
 pub fn emit_stream_writer_flush(chunks: &mut [Chunk], current: usize, line: u32) {
-    let write_idx = chunks[current].add_import("node:fs", "writeFileSync");
     let chunk = &mut chunks[current];
     let path_key = chunk.add_constant(Value::String(Arc::from(PATH_KEY)));
     let buf_key = chunk.add_constant(Value::String(Arc::from(BUF_KEY)));
@@ -798,13 +795,12 @@ pub fn emit_stream_writer_flush(chunks: &mut [Chunk], current: usize, line: u32)
     let writer_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, writer_slot, line);
 
-    // node:fs.writeFileSync(__path, __buf)
     chunk.emit_op_u16(Op::LOCAL_GET, writer_slot, line);
     chunk.emit_struct_field_op(Op::STRUCT_GET, 0, path_key, line);
     chunk.emit_op_u16(Op::LOCAL_GET, writer_slot, line);
     chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buf_key, line);
-    chunk.emit_call(write_idx, 2, line);
-    chunk.emit_op(Op::DROP, line); // discard writeFileSync result
+    vybe_compiler::primitives::fs_path::emit_write_file(chunk, line);
+    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
@@ -812,7 +808,6 @@ pub fn emit_stream_writer_flush(chunks: &mut [Chunk], current: usize, line: u32)
 /// `reader.Close()` / `writer.Close()` — no-op for readers, flush for writers.
 /// Stack: `[stream]` → `[null]`.
 pub fn emit_stream_close(chunks: &mut [Chunk], current: usize, line: u32) {
-    let write_idx = chunks[current].add_import("node:fs", "writeFileSync");
     let chunk = &mut chunks[current];
     let type_key = chunk.add_constant(Value::String(Arc::from(TYPE_KEY)));
     let path_key = chunk.add_constant(Value::String(Arc::from(PATH_KEY)));
@@ -834,7 +829,7 @@ pub fn emit_stream_close(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_struct_field_op(Op::STRUCT_GET, 0, path_key, line);
     chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
     chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buf_key, line);
-    chunk.emit_call(write_idx, 2, line);
+    vybe_compiler::primitives::fs_path::emit_write_file(chunk, line);
     chunk.emit_op(Op::DROP, line);
 
     chunk.emit_end(line);

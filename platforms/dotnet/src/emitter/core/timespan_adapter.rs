@@ -91,7 +91,11 @@ fn emit_store_array_part_as_number(
 
 fn emit_total_ms_from_obj(chunk: &mut Chunk, obj_slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    push_const(chunk, Value::String(Arc::from("TotalMilliseconds")), line);
+    // ⛔ lowercase — `emit_build_timespan_from_total_ms` (the ONLY builder)
+    // writes `totalmilliseconds`/`totalseconds`/`ticks`, so reading the
+    // PascalCase spelling looked up a key nothing ever wrote. Write and read
+    // must be one spelling; lowercase is the dotnet value-type convention.
+    push_const(chunk, Value::String(Arc::from("totalmilliseconds")), line);
     let idx = chunk.add_import("ecma:object", "get");
     chunk.emit_call(idx, 2, line);
 }

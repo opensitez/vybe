@@ -106,6 +106,30 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "ToString",
                     1,
                     MethodBody::Common("dotnet.bitconverter_to_string".into()),
+                ))
+                // The bit-cast family — moved out of the VB walker, which was
+                // rewriting these to `UnaryOp::Reinterpret` itself. The leaves
+                // reach the SAME shared emitter, so the concept stays unified
+                // and the .NET spelling lives with the rest of System.*.
+                .with_method(MethodDef::static_method(
+                    "SingleToInt32Bits",
+                    1,
+                    MethodBody::Common("dotnet.bitconverter_single_to_int32_bits".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Int32BitsToSingle",
+                    1,
+                    MethodBody::Common("dotnet.bitconverter_int32_bits_to_single".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "DoubleToInt64Bits",
+                    1,
+                    MethodBody::Common("dotnet.bitconverter_double_to_int64_bits".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Int64BitsToDouble",
+                    1,
+                    MethodBody::Common("dotnet.bitconverter_int64_bits_to_double".into()),
                 )),
         ),
         DotnetClassExport::new(

@@ -62,7 +62,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
             ClassType::new("BinaryReader")
                 .with_constructor(
                     ConstructorDef::new(1)
-                        .with_backing(HostTarget::new("wasi:filesystem", "readFile")),
+                        .with_common_backing("filesystem.read_file"),
                 )
                 .with_method(MethodDef::new(
                     "Read",
@@ -75,7 +75,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
             ClassType::new("BinaryWriter")
                 .with_constructor(
                     ConstructorDef::new(1)
-                        .with_backing(HostTarget::new("wasi:filesystem", "writeFile")),
+                        .with_common_backing("filesystem.write_file"),
                 )
                 .with_method(MethodDef::new(
                     "Write",
@@ -262,20 +262,27 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         DotnetClassExport::new(
             "dotnet.System.IO",
             ClassType::new("File")
+                // `dotnet.file_*`, not `filesystem.*` directly: the shared
+                // lowering answers `null`/`false` — WASI's `result` in each
+                // language's idiom — and .NET's idiom is an exception. Binding
+                // straight to `filesystem.read_file` let `File.ReadAllText`
+                // on a missing file return null, which prints as `0` and
+                // concatenates as `""`. The WASI call is the same one; only the
+                // failure conversion is .NET's.
                 .with_method(MethodDef::static_method(
                     "ReadAllText",
                     1,
-                    MethodBody::HostCall(HostTarget::new("wasi:filesystem", "readFile")),
+                    MethodBody::Common("dotnet.file_read_all_text".to_string()),
                 ))
                 .with_method(MethodDef::static_method(
                     "WriteAllText",
                     2,
-                    MethodBody::HostCall(HostTarget::new("wasi:filesystem", "writeFile")),
+                    MethodBody::Common("dotnet.file_write_all_text".to_string()),
                 ))
                 .with_method(MethodDef::static_method(
                     "AppendAllText",
                     2,
-                    MethodBody::HostCall(HostTarget::new("wasi:filesystem", "appendFile")),
+                    MethodBody::Common("dotnet.file_append_all_text".to_string()),
                 ))
                 .with_method(MethodDef::static_method(
                     "ReadAllBytes",
@@ -290,7 +297,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::static_method(
                     "Exists",
                     1,
-                    MethodBody::HostCall(HostTarget::new("wasi:filesystem", "exists")),
+                    MethodBody::Common("filesystem.exists".to_string()),
                 ))
                 .with_method(MethodDef::static_method(
                     "Delete",
@@ -305,12 +312,12 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::static_method(
                     "Copy",
                     2,
-                    MethodBody::HostCall(HostTarget::new("wasi:filesystem", "copy")),
+                    MethodBody::Common("filesystem.copy".to_string()),
                 ))
                 .with_method(MethodDef::static_method(
                     "Move",
                     2,
-                    MethodBody::HostCall(HostTarget::new("wasi:filesystem", "rename")),
+                    MethodBody::Common("filesystem.rename".to_string()),
                 ))
                 .with_method(MethodDef::static_method(
                     "ReadAllLines",
@@ -345,22 +352,22 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::static_method(
                     "Exists",
                     1,
-                    MethodBody::HostCall(HostTarget::new("wasi:filesystem", "isDir")),
+                    MethodBody::Common("filesystem.is_dir".to_string()),
                 ))
                 .with_method(MethodDef::static_method(
                     "CreateDirectory",
                     1,
-                    MethodBody::HostCall(HostTarget::new("wasi:filesystem", "mkdir")),
+                    MethodBody::Common("filesystem.mkdir".to_string()),
                 ))
                 .with_method(MethodDef::static_method(
                     "Delete",
                     1,
-                    MethodBody::HostCall(HostTarget::new("wasi:filesystem", "remove")),
+                    MethodBody::Common("filesystem.remove".to_string()),
                 ))
                 .with_method(MethodDef::static_method(
                     "Move",
                     2,
-                    MethodBody::HostCall(HostTarget::new("wasi:filesystem", "rename")),
+                    MethodBody::Common("filesystem.rename".to_string()),
                 ))
                 .with_method(MethodDef::static_method(
                     "GetFiles",
@@ -386,6 +393,12 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         DotnetClassExport::new(
             "dotnet.System.IO",
             ClassType::new("Path")
+                // ⚠The last `node:path` reference on the `Path` class, kept
+                // only because `PropertyDef::getter` accepts a `HostTarget`
+                // and nothing else — there is no `Common` getter, and widening
+                // that enum in `vybe_runtime::component_model` to move one
+                // constant character is not a trade worth making. Every METHOD
+                // below is now on `primitives::paths`.
                 .with_property(
                     PropertyDef::new("DirectorySeparatorChar")
                         .with_getter(HostTarget::new("node:path", "sep")),
@@ -428,7 +441,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::static_method(
                     "GetExtension",
                     1,
-                    MethodBody::HostCall(HostTarget::new("node:path", "extname")),
+                    MethodBody::Common("path.extension".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "GetDirectoryName",
@@ -458,7 +471,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::static_method(
                     "GetTempPath",
                     0,
-                    MethodBody::HostCall(HostTarget::new("wasi:filesystem", "pathGetTempPath")),
+                    MethodBody::Common("path.temp_path".to_string()),
                 ))
                 .with_method(MethodDef::static_method(
                     "GetTempFileName",

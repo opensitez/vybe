@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 use vybe_compiler::primitives::instructions::core_wasm;
+use vybe_compiler::primitives::{fs_path, paths};
 
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
@@ -116,7 +117,7 @@ fn load_next_input_record(
         let chunk = &mut chunks[current];
         lget(chunk, handle_slot, line);
     }
-    emit_host_call(chunks, current, "wasi:filesystem", "inputFile", 1, line);
+    fs_path::emit_input_file(chunks, current, line);
     {
         let chunk = &mut chunks[current];
         lset(chunk, values_slot, line);
@@ -139,19 +140,19 @@ fn load_next_input_record(
 }
 
 pub fn emit_vb_filecopy(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_host_call(chunks, current, "wasi:filesystem", "copy", argc, line);
+    fs_path::emit_copy(&mut chunks[current], line);
 }
 
 pub fn emit_vb_kill(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_host_call(chunks, current, "wasi:filesystem", "remove", argc, line);
+    fs_path::emit_remove(&mut chunks[current], line);
 }
 
 pub fn emit_vb_fileexists(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_host_call(chunks, current, "wasi:filesystem", "exists", argc, line);
+    fs_path::emit_exists(&mut chunks[current], line);
 }
 
 pub fn emit_vb_filelen(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_host_call(chunks, current, "wasi:filesystem", "fileSize", argc, line);
+    fs_path::emit_file_size(&mut chunks[current], line);
 }
 
 pub fn emit_vb_freefile(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -216,7 +217,7 @@ pub fn emit_vb_fileopen(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
         lget(chunk, mode_slot, line);
         lget(chunk, handle_slot, line);
     }
-    emit_host_call(chunks, current, "wasi:filesystem", "openFile", 3, line);
+    fs_path::emit_open_file(chunks, current, 3, line);
     chunks[current].emit_op(Op::DROP, line);
 
     {
@@ -246,7 +247,7 @@ pub fn emit_vb_fileopen(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
 pub fn emit_vb_fileclose(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     if argc == 0 {
         push_const(&mut chunks[current], Value::Null, line);
-        emit_host_call(chunks, current, "wasi:filesystem", "closeFile", 1, line);
+        fs_path::emit_close_file(chunks, current, line);
         return;
     }
 
@@ -259,7 +260,7 @@ pub fn emit_vb_fileclose(chunks: &mut [Chunk], current: usize, argc: u8, line: u
         lset(chunk, handle_slot, line);
         lget(chunk, handle_slot, line);
     }
-    emit_host_call(chunks, current, "wasi:filesystem", "closeFile", 1, line);
+    fs_path::emit_close_file(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
 
     {
@@ -287,22 +288,15 @@ pub fn emit_vb_fileclose(chunks: &mut [Chunk], current: usize, argc: u8, line: u
 }
 
 pub fn emit_vb_printline(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_host_call(chunks, current, "wasi:filesystem", "printFile", argc, line);
+    fs_path::emit_print_file(chunks, current, argc, line);
 }
 
 pub fn emit_vb_writeline(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_host_call(
-        chunks,
-        current,
-        "wasi:filesystem",
-        "writeFile_handle",
-        argc,
-        line,
-    );
+    fs_path::emit_write_file_handle(chunks, current, argc, line);
 }
 
 pub fn emit_vb_lineinput(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    emit_host_call(chunks, current, "wasi:filesystem", "lineInput", 1, line);
+    fs_path::emit_line_input(chunks, current, line);
 }
 
 pub fn emit_vb_input_value(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -405,32 +399,65 @@ pub fn emit_vb_seek(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     emit_vb_setattr(chunks, current, argc, line);
 }
 
-pub fn emit_vb_curdir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_host_call(chunks, current, "node:process", "cwd", argc, line);
+/// `CurDir()` — `wasi:cli/environment.get-initial-cwd`.
+///
+/// INITIAL, and that is not an approximation: WASI has no `chdir`, so the
+/// working directory a component starts with is the only one it ever has. The
+/// `option<string>` is `""` when absent rather than `null`, because VB's
+/// `CurDir` is typed `String` and every caller concatenates it.
+pub fn emit_vb_curdir(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let get_cwd = chunk.add_import("wasi:cli/environment", "get-initial-cwd");
+    let cwd = alloc_local(chunk);
+    chunk.emit_call(get_cwd, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, cwd, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, cwd, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const("", line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, cwd, line);
+    chunk.emit_end(line);
 }
 
+/// `ChDir(path)` — ⚠A NO-OP, and it has to be.
+///
+/// WASI 0.3.1 has no `chdir` and cannot have one: every path is resolved
+/// `-at` a descriptor the component was granted, so there is no ambient
+/// working directory to change. `node:process.chdir` moved the HOST's cwd,
+/// which is a different process's state and affected nothing the guest then
+/// resolved — a call that appeared to work and changed nothing.
+///
+/// Silent is the wrong failure mode, but so is trapping: `ChDir` sits in
+/// startup code that would otherwise run fine. Named here so the gap is a
+/// known one; the honest fix is a preopen for the target directory, which is a
+/// capability question rather than a call.
 pub fn emit_vb_chdir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_host_call(chunks, current, "node:process", "chdir", argc, line);
+    let chunk = &mut chunks[current];
+    for _ in 0..argc {
+        chunk.emit_op(Op::DROP, line);
+    }
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_vb_mkdir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_host_call(chunks, current, "wasi:filesystem", "mkdir", argc, line);
+    fs_path::emit_mkdir(&mut chunks[current], line);
 }
 
 pub fn emit_vb_rmdir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_host_call(chunks, current, "wasi:filesystem", "remove", argc, line);
+    fs_path::emit_remove(&mut chunks[current], line);
 }
 
 pub fn emit_vb_name(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_host_call(chunks, current, "wasi:filesystem", "rename", argc, line);
+    fs_path::emit_rename(&mut chunks[current], line);
 }
 
 pub fn emit_vb_get(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_host_call(chunks, current, "wasi:filesystem", "readFile", argc, line);
+    fs_path::emit_read_file(&mut chunks[current], line);
 }
 
 pub fn emit_vb_put(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_host_call(chunks, current, "wasi:filesystem", "writeFile", argc, line);
+    fs_path::emit_write_file(&mut chunks[current], line);
 }
 
 pub fn emit_vb_app_path(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -508,7 +535,7 @@ pub fn emit_vb_app(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 }
 
 pub fn emit_vb_open(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_host_call(chunks, current, "wasi:filesystem", "readFile", argc, line);
+    fs_path::emit_read_file(&mut chunks[current], line);
 }
 
 pub fn emit_vb_dir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -516,9 +543,6 @@ pub fn emit_vb_dir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         push_const(&mut chunks[current], Value::String(Arc::from("")), line);
         return;
     }
-
-    let exists = chunks[current].add_import("wasi:filesystem", "exists");
-    let file_name = chunks[current].add_import("wasi:filesystem", "pathGetFileName");
     let path_slot = {
         let chunk = &mut chunks[current];
         alloc_local(chunk)
@@ -528,7 +552,7 @@ pub fn emit_vb_dir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         let chunk = &mut chunks[current];
         lset(chunk, path_slot, line);
         lget(chunk, path_slot, line);
-        chunk.emit_call(exists, 1, line);
+        fs_path::emit_exists(chunk, line);
         vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     }
 
@@ -536,7 +560,7 @@ pub fn emit_vb_dir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     {
         let chunk = &mut chunks[current];
         lget(chunk, path_slot, line);
-        chunk.emit_call(file_name, 1, line);
+        paths::emit_file_name(chunk, line);
     }
     chunks[current].emit_else(line);
     push_const(&mut chunks[current], Value::String(Arc::from("")), line);
@@ -544,7 +568,6 @@ pub fn emit_vb_dir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 }
 
 pub fn emit_vb_filedatetime(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
-    let stat = chunks[current].add_import("wasi:filesystem", "stat");
     let modified_key = chunks[current].add_constant(Value::String(Arc::from("modified")));
     let path_slot = {
         let chunk = &mut chunks[current];
@@ -555,7 +578,7 @@ pub fn emit_vb_filedatetime(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
         let chunk = &mut chunks[current];
         lset(chunk, path_slot, line);
         lget(chunk, path_slot, line);
-        chunk.emit_call(stat, 1, line);
+        fs_path::emit_stat(chunk, line);
         core_wasm::dup(chunk, line);
         chunk.emit_op(Op::REF_IS_NULL, line);
     }
@@ -577,7 +600,6 @@ pub fn emit_vb_filedatetime(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
 }
 
 pub fn emit_vb_lof(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    let stat = chunks[current].add_import("wasi:filesystem", "stat");
     let size_key = chunks[current].add_constant(Value::String(Arc::from("size")));
     let handle_slot = {
         let chunk = &mut chunks[current];
@@ -605,7 +627,7 @@ pub fn emit_vb_lof(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     chunks[current].emit_else(line);
     {
         let chunk = &mut chunks[current];
-        chunk.emit_call(stat, 1, line);
+        fs_path::emit_stat(chunk, line);
         core_wasm::dup(chunk, line);
         chunk.emit_op(Op::REF_IS_NULL, line);
     }

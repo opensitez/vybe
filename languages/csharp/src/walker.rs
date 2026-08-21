@@ -37,8 +37,15 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // returns — including on the `?` paths below.
     let mut __w_owned = CsWalker::default();
     let __w = &mut __w_owned;
-    let pairs =
-        CSharpParser::parse(Rule::program, source).map_err(|e| format!("Parse error: {}", e))?;
+    // Lexical preprocessing (ECMA-334 §6.5): `#define`/`#if`/`#else`/`#endif`
+    // run over the raw text before the grammar ever sees it, exactly as in
+    // C#. Excluded and directive lines become blank lines so spans keep
+    // their line numbers. The surviving symbol set also decides
+    // `[Conditional("SYM")]` call elision below.
+    let (source, defined_symbols) = preprocess_source_directives(source);
+    __w.defined_symbols = defined_symbols;
+    let pairs = CSharpParser::parse(Rule::program, source.as_ref())
+        .map_err(|e| format!("Parse error: {}", e))?;
     let mut body = Vec::new();
     let mut imports = Vec::new();
     let mut pending_attributes: Vec<Expression> = Vec::new();
@@ -121,7 +128,12 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // `walk_body`, which is where every other body gets relooped. Without
     // this the label form parsed, produced `Label`/`GoTo` markers, and then
     // nothing consumed them: the jump silently did nothing.
-    let mut body = vybe_language_c::walker::lower_c_gotos(body);
+    let mut body = vybe_compiler::primitives::control_flow::lower_gotos(
+        body,
+        "__cs_goto_pc",
+        "__cs_goto_dispatch",
+        false, // C# labels are case-sensitive
+    );
 
     // Install the shared .NET Exception hierarchy at the top of every C#
     // program. The BCL surface and constructor field semantics live in
@@ -168,7 +180,251 @@ pub fn parse(source: &str) -> Result<Module, String> {
     rewrite_csharp_span_slice_aliases(&mut module.body);
     lower_csharp_pointer_uses(&mut module.body);
     rewrite_user_defined_operator_calls(&mut module);
+    elide_conditional_attribute_calls(__w, &mut module.body);
     Ok(module)
+}
+
+/// ECMA-334 §6.5 lexical preprocessing. Returns the processed text plus the
+/// set of conditional symbols still defined at end of file (feeding
+/// `[Conditional]`). Directive and excluded lines are replaced with empty
+/// lines, preserving every surviving token's line number.
+fn preprocess_source_directives(source: &str) -> (std::borrow::Cow<'_, str>, HashSet<String>) {
+    let has_directive = source
+        .lines()
+        .any(|l| l.trim_start().starts_with('#'));
+    if !has_directive {
+        return (std::borrow::Cow::Borrowed(source), HashSet::new());
+    }
+    struct Frame {
+        // Conjunction of every enclosing region's activity.
+        parent_active: bool,
+        // Some branch of this #if chain has already been selected.
+        taken: bool,
+        active: bool,
+    }
+    let mut defined: HashSet<String> = HashSet::new();
+    let mut stack: Vec<Frame> = Vec::new();
+    let mut out = String::with_capacity(source.len());
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        let active = stack.last().map_or(true, |f| f.active);
+        if let Some(rest) = trimmed.strip_prefix('#') {
+            let rest = rest.trim_start();
+            // A directive line may carry a trailing `// comment`.
+            let rest = rest.split("//").next().unwrap_or(rest).trim_end();
+            let (word, tail) = match rest.find(char::is_whitespace) {
+                Some(i) => (&rest[..i], rest[i..].trim()),
+                None => (rest, ""),
+            };
+            match word {
+                "define" => {
+                    if active {
+                        defined.insert(tail.to_string());
+                    }
+                }
+                "undef" => {
+                    if active {
+                        defined.remove(tail);
+                    }
+                }
+                "if" => {
+                    let cond = eval_preprocessor_expr(tail, &defined);
+                    stack.push(Frame {
+                        parent_active: active,
+                        taken: cond,
+                        active: active && cond,
+                    });
+                }
+                "elif" => {
+                    if let Some(f) = stack.last_mut() {
+                        let cond = eval_preprocessor_expr(tail, &defined);
+                        f.active = f.parent_active && !f.taken && cond;
+                        f.taken = f.taken || cond;
+                    }
+                }
+                "else" => {
+                    if let Some(f) = stack.last_mut() {
+                        f.active = f.parent_active && !f.taken;
+                        f.taken = true;
+                    }
+                }
+                "endif" => {
+                    stack.pop();
+                }
+                // #region / #endregion / #pragma / #nullable / #warning /
+                // #line — no semantic content here; the line is stripped.
+                _ => {}
+            }
+            out.push('\n');
+            continue;
+        }
+        if active {
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+    (std::borrow::Cow::Owned(out), defined)
+}
+
+/// `#if` operand grammar (§6.5.2): `!`, `&&`, `||`, `==`, `!=`, parens,
+/// `true`/`false`, conditional symbols.
+fn eval_preprocessor_expr(src: &str, defined: &HashSet<String>) -> bool {
+    fn skip_ws(s: &str) -> &str {
+        s.trim_start()
+    }
+    fn parse_or<'a>(s: &'a str, defined: &HashSet<String>) -> (bool, &'a str) {
+        let (mut v, mut s) = parse_and(s, defined);
+        loop {
+            let t = skip_ws(s);
+            if let Some(rest) = t.strip_prefix("||") {
+                let (rhs, rest) = parse_and(rest, defined);
+                v = v || rhs;
+                s = rest;
+            } else {
+                return (v, s);
+            }
+        }
+    }
+    fn parse_and<'a>(s: &'a str, defined: &HashSet<String>) -> (bool, &'a str) {
+        let (mut v, mut s) = parse_eq(s, defined);
+        loop {
+            let t = skip_ws(s);
+            if let Some(rest) = t.strip_prefix("&&") {
+                let (rhs, rest) = parse_eq(rest, defined);
+                v = v && rhs;
+                s = rest;
+            } else {
+                return (v, s);
+            }
+        }
+    }
+    fn parse_eq<'a>(s: &'a str, defined: &HashSet<String>) -> (bool, &'a str) {
+        let (mut v, mut s) = parse_unary(s, defined);
+        loop {
+            let t = skip_ws(s);
+            if let Some(rest) = t.strip_prefix("==") {
+                let (rhs, rest) = parse_unary(rest, defined);
+                v = v == rhs;
+                s = rest;
+            } else if let Some(rest) = t.strip_prefix("!=") {
+                let (rhs, rest) = parse_unary(rest, defined);
+                v = v != rhs;
+                s = rest;
+            } else {
+                return (v, s);
+            }
+        }
+    }
+    fn parse_unary<'a>(s: &'a str, defined: &HashSet<String>) -> (bool, &'a str) {
+        let t = skip_ws(s);
+        if let Some(rest) = t.strip_prefix('!') {
+            let (v, rest) = parse_unary(rest, defined);
+            return (!v, rest);
+        }
+        if let Some(rest) = t.strip_prefix('(') {
+            let (v, rest) = parse_or(rest, defined);
+            let rest = skip_ws(rest).strip_prefix(')').unwrap_or(rest);
+            return (v, rest);
+        }
+        let end = t
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(t.len());
+        let word = &t[..end];
+        let v = match word {
+            "true" => true,
+            "false" | "" => false,
+            sym => defined.contains(sym),
+        };
+        (v, &t[end..])
+    }
+    parse_or(src, defined).0
+}
+
+/// ECMA-334 §22.5.3: a call to a method bearing `[Conditional("SYM")]` is
+/// omitted entirely — arguments unevaluated — unless SYM was defined at the
+/// call site. Symbols here come out of `preprocess_source_directives`.
+fn elide_conditional_attribute_calls(__w: &CsWalker, body: &mut Vec<Statement>) {
+    let mut elided: HashSet<String> = HashSet::new();
+    collect_conditional_methods(__w, body, &mut elided);
+    if elided.is_empty() {
+        return;
+    }
+    remove_calls_to_elided(body, &elided);
+}
+
+fn conditional_attribute_symbol(decorator: &Expression) -> Option<String> {
+    let ExprKind::New { class, args } = &decorator.kind else {
+        return None;
+    };
+    let leaf = match &class.kind {
+        ExprKind::Ident(name) => name.rsplit('.').next().unwrap_or(name).to_string(),
+        ExprKind::Member { field, .. } => field.clone(),
+        _ => return None,
+    };
+    if leaf != "ConditionalAttribute" {
+        return None;
+    }
+    let first = args.first()?;
+    if let ExprKind::Lit(Literal::Str(s)) = &first.value.kind {
+        Some(s.clone())
+    } else {
+        None
+    }
+}
+
+fn collect_conditional_methods(__w: &CsWalker, body: &[Statement], elided: &mut HashSet<String>) {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => {
+                for member in members {
+                    let ClassMember::Method(m) = member else {
+                        continue;
+                    };
+                    let StmtKind::FunctionDecl {
+                        name, modifiers, ..
+                    } = &m.kind
+                    else {
+                        continue;
+                    };
+                    for dec in &modifiers.decorators {
+                        if let Some(sym) = conditional_attribute_symbol(dec) {
+                            if !__w.defined_symbols.contains(&sym) {
+                                elided.insert(name.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            StmtKind::NamespaceDecl { body, .. } => {
+                collect_conditional_methods(__w, body, elided);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn remove_calls_to_elided(body: &mut Vec<Statement>, elided: &HashSet<String>) {
+    body.retain(|stmt| !stmt_is_elided_call(stmt, elided));
+    for stmt in body.iter_mut() {
+        visit_csharp_stmt_lists_for_using(&mut stmt.kind, &mut |list| {
+            remove_calls_to_elided(list, elided)
+        });
+    }
+}
+
+fn stmt_is_elided_call(stmt: &Statement, elided: &HashSet<String>) -> bool {
+    let StmtKind::Expr(expr) = &stmt.kind else {
+        return false;
+    };
+    let ExprKind::Call { callee, .. } = &expr.kind else {
+        return false;
+    };
+    let name = match &callee.kind {
+        ExprKind::Ident(name) => name.rsplit('.').next().unwrap_or(name),
+        ExprKind::Member { field, .. } => field.as_str(),
+        _ => return false,
+    };
+    elided.contains(name)
 }
 
 fn lower_csharp_pointer_uses(body: &mut [Statement]) {
@@ -1857,6 +2113,15 @@ fn rewrite_record_uses_in_statement(
                     if let BindingPattern::Ident(name) = &decl.pattern {
                         if let Some(type_name) = infer_record_type(init, record_shapes, scopes) {
                             scopes.last_mut().unwrap().insert(name.clone(), type_name);
+                        } else if let Some(elem) =
+                            infer_record_elem_type(init, record_shapes, scopes)
+                        {
+                            // A COLLECTION of records — remember the element
+                            // type so a foreach over it deconstructs.
+                            scopes
+                                .last_mut()
+                                .unwrap()
+                                .insert(format!("{name}{RECORD_ELEM_SUFFIX}"), elem);
                         }
                     }
                 }
@@ -1983,6 +2248,7 @@ fn rewrite_record_uses_in_statement(
             scopes.pop();
         }
         StmtKind::ForIn {
+            var,
             iter,
             body,
             else_body,
@@ -1990,6 +2256,12 @@ fn rewrite_record_uses_in_statement(
         } => {
             rewrite_record_uses_in_expr(iter, record_shapes, scopes);
             scopes.push(HashMap::new());
+            // `foreach (var (a, b) in <records>)` — type the loop variable
+            // from the collection's elements so the Deconstruct block the
+            // foreach lowering plants in the body rewrites here.
+            if let Some(elem) = infer_record_elem_type(iter, record_shapes, scopes) {
+                scopes.last_mut().unwrap().insert(var.clone(), elem);
+            }
             rewrite_record_uses_in_statements(body, record_shapes, scopes);
             if let Some(else_body) = else_body {
                 rewrite_record_uses_in_statements(else_body, record_shapes, scopes);
@@ -2437,11 +2709,149 @@ fn infer_record_type(
         ExprKind::Cast { type_name, .. } if record_shapes.contains_key(type_name) => {
             Some(type_name.clone())
         }
+        // `new Pair { A = 5, B = 6 }` — the object-initializer form walks to
+        // an IIFE whose body constructs and assigns; the `new` is inside.
+        ExprKind::Call { .. } => record_type_from_construction(expr, record_shapes),
+        _ => None,
+    }
+}
+
+/// Scope key carrying the ELEMENT record type of a collection variable —
+/// same convention as the tuple pass's `TUPLE_ELEM_SUFFIX`.
+const RECORD_ELEM_SUFFIX: &str = "#elem";
+
+/// The record type an expression CONSTRUCTS, seeing through the IIFE shape
+/// the walk produces for an OBJECT initializer (`new Pair { A = 1 }` becomes
+/// `(() => { var __obj = new Pair(); …; return __obj; })()`): the answer is
+/// what the RETURNED variable was constructed as — never a blanket scan,
+/// which would also claim a collection initializer that merely CONTAINS
+/// record constructions.
+fn record_type_from_construction(
+    expr: &Expression,
+    record_shapes: &HashMap<String, RecordShape>,
+) -> Option<String> {
+    fn direct_new(expr: &Expression, shapes: &HashMap<String, RecordShape>) -> Option<String> {
+        let ExprKind::New { class, .. } = &expr.kind else {
+            return None;
+        };
+        let ExprKind::Ident(name) = &class.kind else {
+            return None;
+        };
+        shapes.contains_key(name).then(|| name.clone())
+    }
+    if let Some(name) = direct_new(expr, record_shapes) {
+        return Some(name);
+    }
+    let stmts = iife_body(expr)?;
+    let returned = stmts.iter().rev().find_map(|stmt| match &stmt.kind {
+        StmtKind::Return(Some(e)) => Some(e),
+        _ => None,
+    })?;
+    match &returned.kind {
+        ExprKind::Ident(ret_name) => stmts.iter().find_map(|stmt| {
+            let StmtKind::VarDecl { declarations, .. } = &stmt.kind else {
+                return None;
+            };
+            declarations.iter().find_map(|decl| {
+                let BindingPattern::Ident(name) = &decl.pattern else {
+                    return None;
+                };
+                if name != ret_name {
+                    return None;
+                }
+                decl.init.as_ref().and_then(|init| direct_new(init, record_shapes))
+            })
+        }),
+        _ => direct_new(returned, record_shapes),
+    }
+}
+
+/// The statement body of an immediately-invoked zero-argument lambda —
+/// the shape every C# object/collection initializer lowers to.
+fn iife_body(expr: &Expression) -> Option<&[Statement]> {
+    let ExprKind::Call { callee, .. } = &expr.kind else {
+        return None;
+    };
+    let ExprKind::Lambda { body, .. } = &callee.kind else {
+        return None;
+    };
+    match body {
+        LambdaBody::Block(stmts) => Some(stmts),
+        LambdaBody::Expr(_) => None,
+    }
+}
+
+/// Element type of a COLLECTION-initializer IIFE (`new List<Pair>{…}`),
+/// read off its `.Add(…)` calls.
+fn record_elem_type_from_collection_iife(
+    expr: &Expression,
+    record_shapes: &HashMap<String, RecordShape>,
+) -> Option<String> {
+    let stmts = iife_body(expr)?;
+    let mut elem: Option<String> = None;
+    let mut saw_add = false;
+    for stmt in stmts {
+        let StmtKind::Expr(e) = &stmt.kind else {
+            continue;
+        };
+        let ExprKind::Call { callee, args, .. } = &e.kind else {
+            continue;
+        };
+        let ExprKind::Member { field, .. } = &callee.kind else {
+            continue;
+        };
+        if field != "Add" {
+            continue;
+        }
+        saw_add = true;
+        let ty = args
+            .first()
+            .and_then(|arg| record_type_from_construction(&arg.value, record_shapes))?;
+        match &elem {
+            None => elem = Some(ty),
+            Some(t) if *t == ty => {}
+            _ => return None,
+        }
+    }
+    if saw_add { elem } else { None }
+}
+
+/// The record type of a collection's ELEMENTS, for `foreach (var (a, b) in c)`
+/// — an array literal of constructions, or a tracked variable.
+fn infer_record_elem_type(
+    expr: &Expression,
+    record_shapes: &HashMap<String, RecordShape>,
+    scopes: &[HashMap<String, String>],
+) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Ident(name) => {
+            let key = format!("{name}{RECORD_ELEM_SUFFIX}");
+            scopes.iter().rev().find_map(|scope| scope.get(&key).cloned())
+        }
+        ExprKind::Array(items) => {
+            let mut elem = None;
+            for item in items {
+                let ty = infer_record_type(&item.value, record_shapes, scopes)?;
+                match &elem {
+                    None => elem = Some(ty),
+                    Some(t) if *t == ty => {}
+                    _ => return None,
+                }
+            }
+            elem
+        }
+        // A collection-initializer IIFE (`new List<Pair>{ ... }`): the
+        // `.Add(…)` calls say what an element is.
+        ExprKind::Call { .. } => record_elem_type_from_collection_iife(expr, record_shapes),
         _ => None,
     }
 }
 
 fn rewrite_tuple_uses(__w: &mut CsWalker, module: &mut Module) {
+    // Signatures first, so a call BEFORE the declaration still resolves.
+    let mut fns = HashMap::new();
+    collect_tuple_returning_fns(&module.body, &mut fns);
+    __w.tuple_returning_fns = fns;
     let mut scopes = vec![HashMap::new()];
     rewrite_tuple_uses_in_statements(__w, &mut module.body, &mut scopes);
 }
@@ -2482,11 +2892,19 @@ fn rewrite_tuple_uses_in_statement(__w: &mut CsWalker, stmt: &mut Statement, sco
                 if let Some(arity) = decl
                     .init
                     .as_ref()
-                    .and_then(|init| infer_tuple_arity(init, scopes))
+                    .and_then(|init| infer_tuple_arity(__w, init, scopes))
                 {
                     scopes.last_mut().unwrap().insert(name.clone(), arity);
                 } else {
                     scopes.last_mut().unwrap().remove(name);
+                }
+                // Tuple ARRAYS: remember the element arity so `arr[i]` (and a
+                // foreach over `arr`) deconstructs.
+                if let Some(elem) = decl.init.as_ref().and_then(tuple_array_literal_elem_arity) {
+                    scopes
+                        .last_mut()
+                        .unwrap()
+                        .insert(format!("{name}{TUPLE_ELEM_SUFFIX}"), elem);
                 }
             }
         }
@@ -2497,7 +2915,7 @@ fn rewrite_tuple_uses_in_statement(__w: &mut CsWalker, stmt: &mut Statement, sco
                 let ExprKind::Ident(name) = &target.kind else {
                     continue;
                 };
-                if let Some(arity) = infer_tuple_arity(value, scopes) {
+                if let Some(arity) = infer_tuple_arity(__w, value, scopes) {
                     scopes.last_mut().unwrap().insert(name.clone(), arity);
                 } else {
                     scopes.last_mut().unwrap().remove(name);
@@ -2602,6 +3020,7 @@ fn rewrite_tuple_uses_in_statement(__w: &mut CsWalker, stmt: &mut Statement, sco
             scopes.pop();
         }
         StmtKind::ForIn {
+            var,
             iter,
             body,
             else_body,
@@ -2609,6 +3028,20 @@ fn rewrite_tuple_uses_in_statement(__w: &mut CsWalker, stmt: &mut Statement, sco
         } => {
             rewrite_tuple_uses_in_expr(__w, iter, scopes);
             scopes.push(HashMap::new());
+            // `foreach (var (a, b) in <tuple array>)` — the loop variable IS
+            // a tuple of the array's element arity, so the Deconstruct block
+            // the foreach lowering plants in the body rewrites like any
+            // `var (a, b) = t;`.
+            let elem_arity = match &iter.kind {
+                ExprKind::Ident(name) => {
+                    let key = format!("{name}{TUPLE_ELEM_SUFFIX}");
+                    scopes.iter().rev().find_map(|scope| scope.get(&key).copied())
+                }
+                _ => tuple_array_literal_elem_arity(iter),
+            };
+            if let Some(arity) = elem_arity {
+                scopes.last_mut().unwrap().insert(var.clone(), arity);
+            }
             rewrite_tuple_uses_in_statements(__w, body, scopes);
             if let Some(else_body) = else_body {
                 rewrite_tuple_uses_in_statements(__w, else_body, scopes);
@@ -2673,8 +3106,8 @@ fn rewrite_tuple_uses_in_expr(__w: &mut CsWalker, expr: &mut Expression, scopes:
             rewrite_tuple_uses_in_expr(__w, left, scopes);
             rewrite_tuple_uses_in_expr(__w, right, scopes);
             if matches!(op, BinOp::Eq | BinOp::NotEq) {
-                let left_arity = infer_tuple_arity(left, scopes);
-                let right_arity = infer_tuple_arity(right, scopes);
+                let left_arity = infer_tuple_arity(__w, left, scopes);
+                let right_arity = infer_tuple_arity(__w, right, scopes);
                 if let Some(arity) = left_arity.filter(|arity| Some(*arity) == right_arity) {
                     let equals_expr = match (&left.kind, &right.kind) {
                         (ExprKind::Tuple(_), ExprKind::Tuple(_)) => {
@@ -2831,14 +3264,126 @@ fn rewrite_tuple_uses_in_expr(__w: &mut CsWalker, expr: &mut Expression, scopes:
     }
 }
 
-fn infer_tuple_arity(expr: &Expression, scopes: &[HashMap<String, usize>]) -> Option<usize> {
+/// Scope key that carries the ELEMENT arity of a tuple-array variable
+/// (`var arr = new[]{(1,2),(3,4)}` → `arr#elem` → 2). `#` cannot occur in an
+/// identifier, so the two facts share one scoped map without collision.
+const TUPLE_ELEM_SUFFIX: &str = "#elem";
+
+/// Arity of a tuple TYPE spelling — `(int, string)`,
+/// `System.ValueTuple<int,int>`, `Tuple<...>`. `None` for anything else;
+/// single-element spellings are not tuples in C#.
+fn csharp_tuple_type_arity(spelling: &str) -> Option<usize> {
+    let s = spelling.trim();
+    let inner = if let Some(rest) = s.strip_prefix('(') {
+        rest.strip_suffix(')')?
+    } else {
+        let lt = s.find('<')?;
+        let name = s[..lt].rsplit('.').next().unwrap_or(&s[..lt]).trim();
+        if name != "ValueTuple" && name != "Tuple" {
+            return None;
+        }
+        s[lt + 1..].trim_end().strip_suffix('>')?
+    };
+    let mut depth = 0usize;
+    let mut count = 1usize;
+    for ch in inner.chars() {
+        match ch {
+            '<' | '(' | '[' => depth += 1,
+            '>' | ')' | ']' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => count += 1,
+            _ => {}
+        }
+    }
+    (count >= 2).then_some(count)
+}
+
+/// Record every function whose DECLARED return type is a tuple, so
+/// `var (a, b) = F();` can resolve its arity from the signature — the call
+/// expression itself says nothing.
+fn collect_tuple_returning_fns(body: &[Statement], out: &mut HashMap<String, usize>) {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::FunctionDecl {
+                name,
+                return_type,
+                body,
+                ..
+            } => {
+                if let Some(arity) = return_type.as_deref().and_then(csharp_tuple_type_arity) {
+                    out.insert(name.clone(), arity);
+                }
+                collect_tuple_returning_fns(body, out);
+            }
+            StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+                collect_tuple_returning_fns(body, out);
+            }
+            StmtKind::ClassDecl { members, .. }
+            | StmtKind::StructDecl { members, .. }
+            | StmtKind::ModuleDecl { members, .. } => {
+                for member in members {
+                    match member {
+                        ClassMember::Method(m) | ClassMember::NestedType(m) => {
+                            collect_tuple_returning_fns(std::slice::from_ref(m), out);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The element arity when EVERY element of an array literal is a tuple of one
+/// arity — the shape `new[]{(1,2),(3,4)}` walks to.
+fn tuple_array_literal_elem_arity(expr: &Expression) -> Option<usize> {
+    let ExprKind::Array(items) = &expr.kind else {
+        return None;
+    };
+    let mut arity = None;
+    for item in items {
+        let ExprKind::Tuple(elems) = &item.value.kind else {
+            return None;
+        };
+        match arity {
+            None => arity = Some(elems.len()),
+            Some(a) if a == elems.len() => {}
+            _ => return None,
+        }
+    }
+    arity
+}
+
+fn infer_tuple_arity(
+    __w: &CsWalker,
+    expr: &Expression,
+    scopes: &[HashMap<String, usize>],
+) -> Option<usize> {
     match &expr.kind {
         ExprKind::Ident(name) => scopes
             .iter()
             .rev()
             .find_map(|scope| scope.get(name).copied()),
         ExprKind::Tuple(items) => Some(items.len()),
-        ExprKind::Cast { expr, .. } => infer_tuple_arity(expr, scopes),
+        ExprKind::Cast { expr, .. } => infer_tuple_arity(__w, expr, scopes),
+        // `F()` — the SIGNATURE carries the tuple shape, collected up front.
+        ExprKind::Call { callee, .. } => {
+            let name = match &callee.kind {
+                ExprKind::Ident(name) => name.as_str(),
+                ExprKind::Member { field, .. } => field.as_str(),
+                _ => return None,
+            };
+            __w.tuple_returning_fns.get(name).copied()
+        }
+        // `arr[i]` — an element of a tracked tuple array, or of a tuple-array
+        // literal indexed in place.
+        ExprKind::Index { object, .. } => match &object.kind {
+            ExprKind::Ident(name) => {
+                let key = format!("{name}{TUPLE_ELEM_SUFFIX}");
+                scopes.iter().rev().find_map(|scope| scope.get(&key).copied())
+            }
+            _ => tuple_array_literal_elem_arity(object),
+        },
         _ => None,
     }
 }
@@ -2876,7 +3421,7 @@ fn rewrite_tuple_deconstruction_block(__w: &mut CsWalker,
     });
     let (arity, is_named) = match named_arity {
         Some(a) => (a, true),
-        None => (infer_tuple_arity(object, scopes)?, false),
+        None => (infer_tuple_arity(__w, object, scopes)?, false),
     };
     if arity != args.len() {
         return None;
@@ -6419,7 +6964,8 @@ fn rewrite_using_imports_in_member(
     static_paths: &UsingStaticScope,
 ) {
     match member {
-        ClassMember::Field { modifiers, .. } | ClassMember::Property { modifiers, .. } => {
+        ClassMember::Field { modifiers, ..
+} | ClassMember::Property { modifiers, .. } => {
             for decorator in &mut modifiers.decorators {
                 rewrite_using_imports_in_expr(decorator, aliases, static_paths);
             }
@@ -8011,19 +8557,6 @@ fn collect_tuple_binding_leaf_names(pattern: &[ArrayPatternElem], out: &mut Vec<
             ArrayPatternElem::Pattern(BindingPattern::Object(_), _) => {}
         }
     }
-}
-
-fn tuple_binding_pattern_elems(idents: Vec<String>) -> Vec<ArrayPatternElem> {
-    idents
-        .into_iter()
-        .map(|name| {
-            if name == "_" {
-                ArrayPatternElem::Hole
-            } else {
-                ArrayPatternElem::Pattern(BindingPattern::Ident(name), None)
-            }
-        })
-        .collect()
 }
 
 fn infer_csharp_new_type_name(class: &Expression) -> Option<String> {
@@ -9785,6 +10318,7 @@ fn apply_primary_constructor(
             modifiers: Modifiers::default(),
             with_events: false,
             array_bounds: None,
+            storage: None,
         });
     }
     let ctor_body: Vec<Statement> = params
@@ -9931,7 +10465,8 @@ fn disambiguate_explicit_property_backing_fields(members: &mut [ClassMember]) {
     }
 
     for member in members.iter_mut() {
-        if let ClassMember::Field { name, .. } = member {
+        if let ClassMember::Field { name, ..
+} = member {
             if let Some(new_name) = renames.get(name) {
                 *name = new_name.clone();
             }
@@ -9963,8 +10498,21 @@ fn rewrite_property_backing_field_idents_in_member(
             rewrite_property_backing_field_idents_in_statement(stmt, renames);
         }
         ClassMember::Constructor {
-            body, base_args, ..
+            body,
+            base_args,
+            params,
+            ..
         } => {
+            // A ctor param spelled exactly like the renamed field (the
+            // primary-constructor synthesis guarantees this shape) must be
+            // renamed WITH it: the body's bare idents are rewritten
+            // uniformly, so an un-renamed param would leave
+            // `this.__value = __value` reading an undefined name.
+            for param in params.iter_mut() {
+                if let Some(new_name) = renames.get(&param.name) {
+                    param.name = new_name.clone();
+                }
+            }
             rewrite_property_backing_field_idents_in_statements(body, renames);
             if let Some(base_args) = base_args {
                 for arg in base_args {
@@ -10351,6 +10899,7 @@ fn inject_csharp_generic_ctor_fields(members: &mut Vec<ClassMember>, generic_cou
                 modifiers: Modifiers::default(),
                 with_events: false,
                 array_bounds: None,
+                storage: None,
             },
         );
     }
@@ -11378,6 +11927,7 @@ fn walk_property(__w: &mut CsWalker, pair: Pair<Rule>, mods: Modifiers) -> Resul
                 modifiers: mods,
                 with_events: false,
                 array_bounds: None,
+                storage: None,
             });
         }
     }
@@ -11391,6 +11941,9 @@ fn walk_property(__w: &mut CsWalker, pair: Pair<Rule>, mods: Modifiers) -> Resul
 #[derive(Default)]
 pub(crate) struct CsWalker {
     custom_events: std::collections::HashSet<String>,
+    /// Conditional-compilation symbols still defined at end of file
+    /// (`#define`), consumed by `[Conditional("SYM")]` call elision.
+    defined_symbols: std::collections::HashSet<String>,
     declared_enums: std::collections::HashSet<String>,
     named_tuple_vars: std::collections::HashMap<String, usize>,
     interface_defaults: std::collections::HashMap<String, Vec<ClassMember>>,
@@ -11399,6 +11952,10 @@ pub(crate) struct CsWalker {
     /// Saved and restored around each declaration, so a nested declaration
     /// never leaks its type outward.
     target_new_type: Option<String>,
+    /// Functions whose declared return type is a tuple, name → arity —
+    /// collected before the tuple pass so `var (a, b) = F();` resolves from
+    /// the signature.
+    tuple_returning_fns: std::collections::HashMap<String, usize>,
 }
 
 
@@ -12449,6 +13006,7 @@ fn walk_field(__w: &mut CsWalker, pair: Pair<Rule>, mods: Modifiers) -> Result<V
                 modifiers: mods.clone(),
                 with_events: false,
                 array_bounds: None,
+                storage: None,
             }
         })
         .collect())
@@ -12954,6 +13512,7 @@ fn walk_record_decl(__w: &mut CsWalker, pair: Pair<Rule>, decorators: &[Expressi
             modifiers: Modifiers::default(),
             with_events: false,
             array_bounds: None,
+            storage: None,
         });
     }
 
@@ -13443,19 +14002,52 @@ fn walk_foreach(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<StmtKind, String
     }
 
     if let Some(names) = tuple_target {
-        body.insert(
-            0,
-            Statement::new(StmtKind::VarDecl {
-                declarations: vec![VarDeclarator {
-                    pattern: BindingPattern::Array(tuple_binding_pattern_elems(names)),
+        // Lower exactly as `var (a, b) = item;` does — a block ending in
+        // `item.Deconstruct(out a, out b)` — so the SAME record/tuple rewrite
+        // passes decide what the element is. The old direct array-destructure
+        // was a second, poorer copy of that decision: right for tuples,
+        // silently `undefined` for records and custom-Deconstruct classes.
+        let mut declarations = Vec::new();
+        let mut args = Vec::new();
+        for (index, name) in names.into_iter().enumerate() {
+            let target_name = if name == "_" {
+                format!("__discard_{}", index)
+            } else {
+                declarations.push(VarDeclarator {
+                    pattern: BindingPattern::Ident(name.clone()),
                     type_hint: None,
-                    init: Some(Expression::ident(&var)),
+                    init: None,
                     array_bounds: None,
                     with_events: false,
-                }],
+                });
+                name
+            };
+            args.push(Argument {
+                value: Expression::ident(&target_name),
+                name: None,
+                by_ref: true,
+                spread: false,
+            });
+        }
+        let mut block = Vec::new();
+        if !declarations.is_empty() {
+            block.push(Statement::new(StmtKind::VarDecl {
+                declarations,
                 kind: VarDeclKind::Let,
-            }),
-        );
+            }));
+        }
+        block.push(Statement::new(StmtKind::Expr(Expression::new(
+            ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::ident(&var)),
+                    field: "Deconstruct".into(),
+                    null_safe: false,
+                })),
+                args,
+                optional: false,
+            },
+        ))));
+        body.insert(0, Statement::new(StmtKind::Block(block)));
     } else {
         let uses_entry_fields = !var.is_empty()
             && (foreach_src.contains(&format!("{}.Key", var))
@@ -18207,8 +18799,13 @@ fn walk_body(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<Vec<Statement>, Str
         .map(|__x| walk_statement(__w, __x))
         .collect::<Result<_, _>>()?;
     // Lower `goto`/labels to structured control flow via the shared relooper
-    // (C `goto` uses the identical pass). No-op when the body has no labels.
-    Ok(vybe_language_c::walker::lower_c_gotos(body))
+    // in `primitives::control_flow`. No-op when the body has no labels.
+    Ok(vybe_compiler::primitives::control_flow::lower_gotos(
+        body,
+        "__cs_goto_pc",
+        "__cs_goto_dispatch",
+        false, // C# labels are case-sensitive
+    ))
 }
 
 fn to_span(pair: &Pair<Rule>) -> Span {
@@ -20154,7 +20751,7 @@ fn parse_interpolated_hole_text(__w: &mut CsWalker, text: &str) -> Result<Expres
         composite.push('}');
 
         return Ok(Expression::new(ExprKind::Call {
-            callee: Box::new(Expression::ident("String.Format")),
+            callee: Box::new(build_dotted_expr("String.Format")),
             args: vec![
                 Argument::positional(Expression::new(ExprKind::Lit(Literal::Str(composite)))),
                 Argument::positional(value),
@@ -20165,7 +20762,7 @@ fn parse_interpolated_hole_text(__w: &mut CsWalker, text: &str) -> Result<Expres
 
     let value = parse_interpolated_expr_text(__w, text)?;
     Ok(Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::ident("String.Format")),
+        callee: Box::new(build_dotted_expr("String.Format")),
         args: vec![
             Argument::positional(Expression::new(ExprKind::Lit(Literal::Str("{0}".into())))),
             Argument::positional(value),
