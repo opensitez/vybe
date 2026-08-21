@@ -648,15 +648,20 @@ pub fn emit_sdl_update_window_surface(chunks: &mut [Chunk], current: usize, _arg
 
 pub fn emit_sdl_delay(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let delay_ms = chunks[current].alloc_scratch(1);
-    let sub_idx = chunks[current].add_import("wasi:clocks/monotonic-clock", "subscribe-duration");
-    let block_idx = chunks[current].add_import("wasi:io/poll", "[method]pollable.block");
+    // `wait-for(ns)` — the 0.3 sleep. Was `subscribe-duration` +
+    // `wasi:io/poll.[method]pollable.block`; 0.3 deleted the `wasi:io`
+    // package, and monotonic-clock grew its own wait.
+    let wait_for_idx = chunks[current].add_import("wasi:clocks/monotonic-clock", "wait-for");
 
     emit_set_local(chunks, current, delay_ms, line);
     emit_get_local(chunks, current, delay_ms, line);
     chunks[current].emit_f64_const(1_000_000.0, line);
     chunks[current].emit_op(Op::F64_MUL, line);
-    chunks[current].emit_call(sub_idx, 1, line);
-    chunks[current].emit_call(block_idx, 1, line);
+    chunks[current].emit_call(wait_for_idx, 1, line);
+    // The future stays on the stack, exactly where `pollable.block`'s null
+    // used to sit. One host call replaced two, and each pushes one result, so
+    // the depth is unchanged — deliberately, since correcting the leftover is
+    // a separate question from which interface does the sleeping.
     emit_zero_i32(chunks, current, line);
 }
 

@@ -2086,10 +2086,12 @@ fn build_prelude() -> Vec<Statement> {
             if_stmt(
                 call_member(ident("piece"), "endsWith", vec![str_lit("\n")]),
                 vec![
-                    // Flush the completed line to stdout via wasi:io directly
-                    // (NOT the `print`/wasi:logging vybelib builtin). wasi:io is
-                    // byte-faithful — no implicit newline — so write `buffer +
-                    // piece` verbatim (piece still carries its trailing '\n').
+                    // Flush the completed line straight to stdout (NOT the
+                    // `print`/wasi:logging vybelib builtin). `__c_write_stdout`
+                    // is the libc intrinsic, which goes through the shared
+                    // `primitives::io` write — byte-faithful, no implicit
+                    // newline — so write `buffer + piece` verbatim (piece still
+                    // carries its trailing '\n').
                     stmt(StmtKind::Expr(call_expr(
                         ident("__c_write_stdout"),
                         vec![expr(ExprKind::Binary {
