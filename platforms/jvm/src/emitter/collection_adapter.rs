@@ -5,12 +5,27 @@
 //! JVM namespace tree.
 
 use vybe_compiler::primitives::{
-    collections, errors, heap,
+    collections, heap,
     instructions::{core_wasm, host},
     object, ops, sets, sorted_collection,
 };
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
+
+/// The JDK set contract, stated ONCE for every `java.util` set this platform
+/// constructs: `add`/`remove` answer whether membership changed, and
+/// membership identity follows the `hashCode`/`equals` model
+/// (`SetMembership::SnapshotKey` — structural identity captured at insertion,
+/// so equivalent data keys deduplicate and a mutated element no longer answers
+/// to lookup). Every jvm set leg reads THIS, so the policy has one owner.
+pub(crate) const JAVA_SET_SEMANTICS: sets::SetSemantics = sets::SetSemantics {
+    mutation_result: sets::SetMutationResult::ChangedBool,
+    delete_result: sets::SetMutationResult::ChangedBool,
+    missing_delete: sets::SetMissingDelete::Ignore,
+    algebra_arity: sets::SetAlgebraArity::Binary,
+    predicate_bool_object: false,
+    membership: sets::SetMembership::SnapshotKey,
+};
 
 const VECTOR_CAPACITY_KEY: &str = "__java_vector_capacity";
 const BLOCKING_QUEUE_CAPACITY_KEY: &str = "__java_blocking_queue_capacity";
@@ -97,6 +112,24 @@ pub(crate) fn emit_is_ecma_set(chunks: &mut [Chunk], current: usize, value: u16,
     chunks[current].emit_end(line);
 }
 
+/// Materialize a `Collection` ARGUMENT to a plain values array: a real ECMA-Set
+/// flattens to its values (the `emit_collection_to_string` idiom); everything
+/// else (`ArrayList`, a marked `TreeSet` array, `Arrays.asList`) is already
+/// array-backed and passes through. For callers that read the argument by
+/// position. Stack: `[coll] -> [array]`.
+pub(crate) fn emit_values_snapshot(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], value, line);
+    emit_is_ecma_set(chunks, current, value, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], value, line);
+    sets::emit_values_array(chunks, current, line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], value, line);
+    chunks[current].emit_end(line);
+}
+
 fn emit_sort_if_ordered(chunks: &mut [Chunk], current: usize, value: u16, line: u32) {
     sorted_collection::emit_sort_if_ordered(chunks, current, value, line);
 }
@@ -105,17 +138,7 @@ fn emit_comparator(chunks: &mut [Chunk], current: usize, value: u16, line: u32) 
     sorted_collection::emit_comparator(chunks, current, value, line);
 }
 
-fn emit_jvm_exception_throw(chunks: &mut [Chunk], current: usize, name: &str, line: u32) {
-    chunks[current].emit_struct_new(0, 0, line);
-    chunks[current].emit_dup(line);
-    chunks[current].emit_string_const("", line);
-    vybe_compiler::primitives::errors::emit_exception_new_finalize(
-        &mut chunks[current],
-        name,
-        line,
-    );
-    errors::emit_throw(&mut chunks[current], line);
-}
+use crate::emitter::exceptions::emit_jvm_exception_throw;
 
 fn emit_throw_if_immutable_list(chunks: &mut [Chunk], current: usize, list: u16, line: u32) {
     get(&mut chunks[current], list, line);
@@ -153,21 +176,19 @@ pub fn emit_mutable_list_new(chunks: &mut [Chunk], current: usize, argc: u8, lin
 }
 
 pub fn emit_hash_set_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    let marked = if argc == 0 {
+    if argc == 0 {
         sets::emit_new(chunks, current, line);
-        true
     } else if argc == 1 {
-        sets::emit_from_iterable(chunks, current, line);
-        true
+        // The argument may itself be a Set — flatten to values first so the
+        // snapshot-keyed construction reads it by position.
+        emit_values_snapshot(chunks, current, line);
+        sets::emit_from_iterable_snapshot(chunks, current, line);
     } else {
         let base = chunks[current].alloc_scratch(argc as u16);
         collections::emit_pack_n(chunks, current, argc as u16, base, line);
-        sets::emit_from_iterable(chunks, current, line);
-        true
-    };
-    if marked {
-        sorted_collection::emit_mark_set_collection(chunks, current, line);
+        sets::emit_from_iterable_snapshot(chunks, current, line);
     }
+    sorted_collection::emit_mark_set_collection(chunks, current, line);
 }
 
 pub fn emit_list_of(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -181,7 +202,13 @@ pub fn emit_list_copy_of(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 pub fn emit_set_of(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    sets::emit_literal(chunks, current, argc, line);
+    let base = if argc == 0 {
+        0
+    } else {
+        chunks[current].alloc_scratch(argc as u16)
+    };
+    collections::emit_pack_n(chunks, current, argc as u16, base, line);
+    sets::emit_from_iterable_snapshot(chunks, current, line);
     sorted_collection::emit_mark_set_collection(chunks, current, line);
     if argc > 0 {
         let set_slot = chunks[current].alloc_scratch(1);
@@ -199,7 +226,8 @@ pub fn emit_set_of(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 }
 
 pub fn emit_set_copy_of(chunks: &mut [Chunk], current: usize, line: u32) {
-    sets::emit_from_iterable(chunks, current, line);
+    emit_values_snapshot(chunks, current, line);
+    sets::emit_from_iterable_snapshot(chunks, current, line);
     mark_bool(chunks, current, IMMUTABLE_LIST_KEY, line);
 }
 
@@ -645,15 +673,7 @@ pub fn emit_iterator_next(chunks: &mut [Chunk], current: usize, line: u32) {
     ops::emit_dyn_ge(&mut chunks[current], line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
-    chunks[current].emit_struct_new(0, 0, line);
-    chunks[current].emit_dup(line);
-    chunks[current].emit_string_const("", line);
-    vybe_compiler::primitives::errors::emit_exception_new_finalize(
-        &mut chunks[current],
-        "NoSuchElementException",
-        line,
-    );
-    errors::emit_throw(&mut chunks[current], line);
+    emit_jvm_exception_throw(chunks, current, "NoSuchElementException", line);
     chunks[current].emit_end(line);
     set_object_prop_from_local(chunks, current, iterator, "__last", index, line);
     get(&mut chunks[current], index, line);
@@ -720,7 +740,7 @@ pub fn emit_iterator_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_else(line);
     get(&mut chunks[current], list, line);
     get(&mut chunks[current], item, line);
-    sets::emit_delete(chunks, current, line);
+    sets::emit_delete_mode(chunks, current, JAVA_SET_SEMANTICS, line);
     chunks[current].emit_op(Op::DROP, line);
     get(&mut chunks[current], values, line);
     chunks[current].emit_end(line);
@@ -888,7 +908,7 @@ pub fn emit_add(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_if_value(line);
     get(&mut chunks[current], list, line);
     get(&mut chunks[current], value, line);
-    sets::emit_add_changed(chunks, current, line);
+    sets::emit_add_mode(chunks, current, JAVA_SET_SEMANTICS, line);
     chunks[current].emit_else(line);
     get(&mut chunks[current], list, line);
     get(&mut chunks[current], value, line);
@@ -960,7 +980,7 @@ pub fn emit_contains(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_if_value(line);
     get(&mut chunks[current], value, line);
     get(&mut chunks[current], needle, line);
-    sets::emit_has(chunks, current, line);
+    sets::emit_has_mode(chunks, current, JAVA_SET_SEMANTICS, line);
     chunks[current].emit_else(line);
     get(&mut chunks[current], value, line);
     get(&mut chunks[current], needle, line);
@@ -983,7 +1003,7 @@ pub fn emit_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     get(&mut chunks[current], value, line);
-    sets::emit_clear(chunks, current, line);
+    sets::emit_clear_snapshot(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_else(line);
     get(&mut chunks[current], value, line);
@@ -1003,7 +1023,7 @@ pub fn emit_remove(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunks[current].emit_if_value(line);
         get(&mut chunks[current], list, line);
         get(&mut chunks[current], value, line);
-        sets::emit_delete(chunks, current, line);
+        sets::emit_delete_mode(chunks, current, JAVA_SET_SEMANTICS, line);
         chunks[current].emit_else(line);
         get(&mut chunks[current], list, line);
         get(&mut chunks[current], value, line);
@@ -1037,15 +1057,13 @@ pub fn emit_collection_copy(chunks: &mut [Chunk], current: usize, line: u32) {
     ops::emit_dyn_lt(&mut chunks[current], line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
-    chunks[current].emit_struct_new(0, 0, line);
-    chunks[current].emit_dup(line);
-    chunks[current].emit_string_const("Source does not fit in dest", line);
-    vybe_compiler::primitives::errors::emit_exception_new_finalize(
-        &mut chunks[current],
+    crate::emitter::exceptions::emit_jvm_exception_throw_msg(
+        chunks,
+        current,
         "IndexOutOfBoundsException",
+        "Source does not fit in dest",
         line,
     );
-    errors::emit_throw(&mut chunks[current], line);
     chunks[current].emit_end(line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     set(&mut chunks[current], index, line);

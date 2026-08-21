@@ -25,7 +25,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     use crate::emitter::list_adapter;
     use crate::emitter::map_adapter as map;
     use crate::emitter::math_adapter as math;
+    use crate::emitter::object_adapter as object;
     use crate::emitter::optional_adapter as optional;
+    use crate::emitter::print_adapter as print;
     use crate::emitter::random_adapter as random;
     use crate::emitter::reflection_adapter as reflection;
     use crate::emitter::regex_adapter as regex;
@@ -810,11 +812,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "jvm.java.instant_hash_code" => instant::emit_hash_code(chunks, current, line),
         "jvm.java.random_set_seed" => random::emit_set_seed(chunks, current, line),
         "jvm.java.random_next_int" => random::emit_next_int(chunks, current, argc, line),
-        "jvm.java.random_next_long" => random::emit_next_long(chunks, current, line),
+        "jvm.java.random_next_long" => random::emit_next_long(chunks, current, argc, line),
         "jvm.java.random_next_boolean" => random::emit_next_bool(chunks, current, line),
         "jvm.java.random_next_float" => random::emit_next_float(chunks, current, line),
-        "jvm.java.random_next_double" => random::emit_next_double(chunks, current, line),
-        "jvm.java.random_next_bytes" => random::emit_next_bytes(chunks, current, line),
+        "jvm.java.random_next_double" => random::emit_next_double(chunks, current, argc, line),
+        "jvm.java.random_next_bytes" => random::emit_next_bytes(chunks, current, argc, line),
         "jvm.java.random_split" => random::emit_split(chunks, current, line),
         "jvm.java.random_ints" => random::emit_ints(chunks, current, argc, line),
         "jvm.java.random_longs" => random::emit_longs(chunks, current, argc, line),
@@ -1366,13 +1368,18 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             map::emit_identity_hash_map_new(chunks, current, argc, line)
         }
         "jvm.java.linked_hash_map_new" => {
-            map::emit_linked_hash_map_new(chunks, current, argc, line)
+            list_adapter::emit_linked_hash_map_new(chunks, current, argc, line)
         }
         "jvm.java.map_of" => map::emit_map_of(chunks, current, argc, line),
         "jvm.java.map_entry" => map::emit_map_entry(chunks, current, line),
         "jvm.java.map_of_entries" => map::emit_map_of_entries(chunks, current, argc, line),
-        "jvm.java.map_get" => map::emit_get(chunks, current, line),
-        "jvm.java.map_put" => map::emit_put(chunks, current, line),
+        // The list_adapter family is THE map implementation: it canonicalizes
+        // keys for identity maps and touches access-ordered LinkedHashMaps.
+        // `map_adapter`'s plain get/put were a duplicate that skipped both, so
+        // an IdentityHashMap stored under one key scheme and looked up under
+        // another — present entries answered `false`.
+        "jvm.java.map_get" => list_adapter::emit_map_get(chunks, current, line),
+        "jvm.java.map_put" => list_adapter::emit_map_put(chunks, current, line),
         "jvm.java.map_size" => map::emit_size(chunks, current, line),
         "jvm.java.map_is_empty" => map::emit_is_empty(chunks, current, line),
         "jvm.java.map_clear" => map::emit_clear(chunks, current, line),
@@ -1397,6 +1404,38 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "jvm.java.sb_delete" => sb::emit_delete(chunks, current, argc, line),
         "jvm.java.sb_reverse" => sb::emit_reverse(chunks, current, argc, line),
         "jvm.java.sb_set_length" => sb::emit_set_length(chunks, current, argc, line),
+        // ── java.io.PrintStream / Formatter + java.lang misc (moved from
+        // languages/java — the LAST `common:java.*` bodies; the language crate
+        // now owns no emitters at all) ──
+        "jvm.java.println" => print::emit_println(chunks, current, argc, line),
+        "jvm.java.print_no_newline" => print::emit_print_no_newline(chunks, current, argc, line),
+        "jvm.java.printf" => print::emit_printf(chunks, current, argc, line),
+        "jvm.java.printf_array" => print::emit_printf_array(chunks, current, line),
+        "jvm.java.format_grouped_int" => print::emit_format_grouped_int(chunks, current, line),
+        "jvm.java.format_exp_lower" => print::emit_format_exp(chunks, current, false, line),
+        "jvm.java.format_exp_upper" => print::emit_format_exp(chunks, current, true, line),
+        "jvm.java.field_set" => reflection::emit_field_set(chunks, current, line),
+        "jvm.java.field_inc" => reflection::emit_field_inc(chunks, current, line),
+        "jvm.java.str_is_empty" => string_adapter::emit_str_is_empty(chunks, current, line),
+        "jvm.java.str_is_blank" => string_adapter::emit_str_is_blank(chunks, current, line),
+        "jvm.java.new_array" => arrays::emit_new_array(chunks, current, line),
+        "jvm.java.new_int_array" => {
+            arrays::emit_new_array_with_default(chunks, current, arrays::JavaArrayDefault::IntZero, line)
+        }
+        "jvm.java.new_bool_array" => arrays::emit_new_array_with_default(
+            chunks,
+            current,
+            arrays::JavaArrayDefault::BoolFalse,
+            line,
+        ),
+        "jvm.java.new_int_2d_array" => arrays::emit_new_int_2d(chunks, current, line),
+        "jvm.java.entry_key" => map::emit_entry_key(chunks, current, line),
+        "jvm.java.entry_value" => map::emit_entry_value(chunks, current, line),
+        "jvm.java.equals" => object::emit_equals(chunks, current, line),
+        "jvm.java.hash_code" => object::emit_hash_code(chunks, current, line),
+        "jvm.java.array_clone" => collections::emit_slice(chunks, current, line),
+        "jvm.java.mutable_list_of" => collections::emit_array_new(chunks, current, argc as u16, line),
+        "jvm.java.sb_delete_char_at" => sb::emit_delete(chunks, current, 2, line),
         "jvm.java.sb_clear" => sb::emit_clear(chunks, current, argc, line),
         "jvm.java.sb_set_char_at" => sb::emit_set_char_at(chunks, current, argc, line),
         "jvm.java.sb_char_at" => sb::emit_char_at(chunks, current, argc, line),

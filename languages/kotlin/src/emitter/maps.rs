@@ -859,8 +859,9 @@ pub fn emit_remove_any(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     chunks[current].emit_if_value(line);
     get(chunks, current, recv, line);
     get(chunks, current, x, line);
-    crate::emitter::collections::emit_set_delete_value_eq(chunks, current, line);
-    ops::emit_i32_to_bool(&mut chunks[current], line);
+    // A Kotlin set IS a JVM set — deletion goes through the snapshot-keyed
+    // membership so the sidecar stays in step with the backing Set.
+    vybe_compiler::primitives::sets::emit_delete_snapshot(chunks, current, line);
     chunks[current].emit_else(line);
     // Dict-backed receiver. Keys are stored stringified — normalize with
     // KOTLIN's tostring, the same renderer `kotlin_key_expr` stored them

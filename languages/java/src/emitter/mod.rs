@@ -1,13 +1,9 @@
-//! Java adapter — bytecode-only.
+//! Java adapter surface — RETIRED except the runtime prelude.
 //!
-//! Java-specific surfaces that aren't a single WASM opcode or single ECMA
-//! host fn are described as `emit_*` opcode-emitter functions composing
-//! pre-existing host fns and core WASM ops.
-//!
-//! No new host fns are registered. The Java profile binds language fns to
-//! `common:java.<name>` emit targets; `emitter::dispatch::emit_common`
-//! routes those names to the `emit_*` functions in this module.
+//! Every `common:java.*` emitter moved to `platforms/jvm` and answers as
+//! `common:jvm.java.*`: the JDK is platform surface, reached through the
+//! common tree resolver, so this crate owns no dispatch and no emit bodies.
+//! What remains is the `java.util.Formatter`/`PrintStream` runtime prelude
+//! (common-AST construction, prepended by the walker), pending its own move.
 
-pub mod dispatch;
 pub mod format_runtime;
-pub mod string_adapter;

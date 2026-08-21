@@ -38,6 +38,18 @@ use vybe_runtime::opcode::Op;
 /// Only a non-array OBJECT can fill the slot, and `STRUCT_GET` traps on a
 /// primitive, so the probe is guarded. Everything else — `null`, numbers,
 /// booleans, strings, arrays — keeps the ECMA coercion it already had.
+/// `Object.equals(a, b)` — the shared Object equality primitive.
+/// Stack: `[a, b] -> [bool]`.
+pub fn emit_equals(chunks: &mut [Chunk], current: usize, line: u32) {
+    vybe_compiler::primitives::object::emit_equals(&mut chunks[current], line);
+}
+
+/// `Object.hashCode(x)` — the shared Object hash primitive.
+/// Stack: `[x] -> [int]`.
+pub fn emit_hash_code(chunks: &mut [Chunk], current: usize, line: u32) {
+    vybe_compiler::primitives::object::emit_hash_code(&mut chunks[current], line);
+}
+
 pub fn emit_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
     let value = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);

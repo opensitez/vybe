@@ -1294,7 +1294,8 @@ pub fn emit_contains_any(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, lin
     chunks[current].emit_if_value(line);
     get(chunks, current, recv, line);
     get(chunks, current, needle, line);
-    sets::emit_has(chunks, current, line);
+    // A Kotlin set IS a JVM set — snapshot-keyed (hashCode/equals) membership.
+    sets::emit_has_snapshot(chunks, current, line);
     chunks[current].emit_else(line);
     get(chunks, current, recv, line);
     get(chunks, current, needle, line);

@@ -6,6 +6,32 @@ use vybe_compiler::primitives::strings;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
+/// `String.isEmpty()` — polymorphic across String, List, Map receivers
+/// (Java overloads the SPELLING per type; the receiver's shape picks).
+/// Stack: `[receiver] -> [bool]`.
+pub fn emit_str_is_empty(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    vybe_compiler::primitives::instructions::core_wasm::dup(&mut chunks[current], line);
+    host::emit(&mut chunks[current], "wasm:js-string", "test", 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    strings::emit_length(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_end(line);
+    vybe_compiler::primitives::instructions::core_wasm::i32_const(&mut chunks[current], line, 0);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
+}
+
+/// `String.isBlank()` (JDK 11). Stack: `[string] -> [bool]`.
+pub fn emit_str_is_blank(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    strings::emit_trim(&mut chunks[current], line);
+    strings::emit_length(&mut chunks[current], line);
+    vybe_compiler::primitives::instructions::core_wasm::i32_const(&mut chunks[current], line, 0);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
+}
+
 pub fn emit_join(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     let elem_count = argc.saturating_sub(1);
     let first_elem = chunks[current].alloc_scratch(elem_count as u16);

@@ -1759,10 +1759,10 @@ fn walk_method(__w: &mut JavaWalker, pair: Pair<Rule>) -> Result<ClassMember, St
         consume_java_type_params(inner.next().unwrap());
     }
 
-    // Return type (type_ref)
+    // Return type (type_ref) — erased like every other AST-facing hint.
     let return_type = if inner.peek().map(|p| p.as_rule()) == Some(Rule::type_ref) {
         let tr = inner.next().unwrap();
-        Some(extract_ref_name(&tr))
+        Some(java_erased_type_hint(extract_ref_name(&tr)))
     } else {
         None
     };
@@ -1855,11 +1855,12 @@ fn walk_field(__w: &mut JavaWalker, pair: Pair<Rule>) -> Result<Vec<ClassMember>
             };
             fields.push(ClassMember::Field {
                 name,
-                type_hint: type_hint.clone(),
+                type_hint: type_hint.clone().map(java_erased_type_hint),
                 init,
                 modifiers: modifiers.clone(),
                 with_events: false,
                 array_bounds: None,
+                storage: None,
             });
         }
     }
@@ -2572,6 +2573,7 @@ fn walk_record(__w: &mut JavaWalker, pair: Pair<Rule>) -> Result<StmtKind, Strin
                 modifiers: Modifiers::default(),
                 with_events: false,
                 array_bounds: None,
+                storage: None,
             },
         );
     }
@@ -3202,7 +3204,7 @@ fn walk_var_declarator(__w: &mut JavaWalker,
 
     Ok(VarDeclarator {
         pattern: BindingPattern::Ident(name),
-        type_hint: emitted_type_hint.map(Into::into),
+        type_hint: emitted_type_hint.map(java_erased_type_hint).map(Into::into),
         init,
         array_bounds: None,
         with_events: false,
@@ -3258,7 +3260,7 @@ fn walk_if(__w: &mut JavaWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
                 Statement::new(StmtKind::VarDecl {
                     declarations: vec![VarDeclarator {
                         pattern: BindingPattern::Ident(var),
-                        type_hint: Some(type_name.into()),
+                        type_hint: Some(java_erased_type_hint(type_name).into()),
                         init: Some(subject),
                         array_bounds: None,
                         with_events: false,
@@ -4285,7 +4287,7 @@ fn walk_param(pair: Pair<Rule>) -> Result<Param, String> {
 
     Ok(Param {
         name,
-        type_hint: type_hint.map(Into::into),
+        type_hint: type_hint.map(java_erased_type_hint).map(Into::into),
         default: None,
         pass_by: PassBy::Value,
         is_rest,
@@ -11004,6 +11006,7 @@ fn java_thread_local_class_captures(members: &mut Vec<ClassMember>, captures: &[
                 modifiers: Modifiers::default(),
                 with_events: false,
                 array_bounds: None,
+                storage: None,
             },
         );
     }
@@ -11580,6 +11583,7 @@ fn adapt_java_inner_class(
                 modifiers: Modifiers::default(),
                 with_events: false,
                 array_bounds: None,
+                storage: None,
             },
         );
     }
@@ -15504,6 +15508,57 @@ fn java_type_simple_name(type_name: &str) -> &str {
     erased.rsplit('.').next().unwrap_or(erased)
 }
 
+/// The AST-facing spelling of a declared type: Java dispatches on the
+/// ERASURE, so generic arguments never take part in member resolution —
+/// `java.util.LinkedHashMap<String, Integer>` resolves members exactly as
+/// `java.util.LinkedHashMap`. Left in the hint, the arguments defeat the
+/// shared tree lookups (`find_type_node` matches whole leaves), and a typed
+/// receiver silently degrades to a dynamic member walk.
+///
+/// This is the walker-boundary canon namespaceplan.md prescribes; the
+/// walker's OWN tables (`java_local_types`, …) keep the full source spelling
+/// — probes like the `<Thread>` receiver test read those, never the AST.
+/// Depth-tracking, not `split('<')`: `Map<String, List<Integer>>[]` keeps
+/// its `[]` suffix.
+fn java_erased_type_hint(hint: String) -> String {
+    let erased = if !hint.contains('<') {
+        hint
+    } else {
+        let mut out = String::with_capacity(hint.len());
+        let mut depth = 0usize;
+        for ch in hint.chars() {
+            match ch {
+                '<' => depth += 1,
+                '>' => depth = depth.saturating_sub(1),
+                _ if depth == 0 => out.push(ch),
+                _ => {}
+            }
+        }
+        out.trim().to_string()
+    };
+    java_nested_binary_name(erased)
+}
+
+/// Source spelling → JVM BINARY name for the JDK's nested types.
+///
+/// `Map.Entry` is a member type of `Map`; in the namespace tree `Map` is a
+/// `Type` node and resolution does not descend through a type to find
+/// another type, so the dotted source spelling can never name a tree leaf.
+/// The JVM itself already solves this: the binary name is `Map$Entry`, one
+/// segment, and that is what `platforms/jvm` registers. Frontend syntax
+/// knowledge (which dot is a member-type boundary), so it lives here at the
+/// walker boundary — the same place case canon lives for other languages.
+fn java_nested_binary_name(hint: String) -> String {
+    let (package, nested) = match hint.trim() {
+        "Map.Entry" | "java.util.Map.Entry" => ("util", "Map$Entry"),
+        "AbstractMap.SimpleEntry" | "java.util.AbstractMap.SimpleEntry" => {
+            ("util", "AbstractMap$SimpleEntry")
+        }
+        _ => return hint,
+    };
+    format!("java.{package}.{nested}")
+}
+
 fn java_type_base_simple_name(type_name: &str) -> &str {
     java_type_simple_name(type_name).trim()
 }
@@ -16562,6 +16617,7 @@ fn inject_java_anonymous_captures(
                 modifiers: Modifiers::default(),
                 with_events: false,
                 array_bounds: None,
+                storage: None,
             },
         );
     }

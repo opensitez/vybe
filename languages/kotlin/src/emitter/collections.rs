@@ -95,201 +95,37 @@ pub fn emit_file_walk_max_depth(chunks: &mut Vec<Chunk>, current: usize, argc: u
     get(&mut chunks[current], out, line);
 }
 
-pub fn emit_add(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
-    let value = chunks[current].alloc_scratch(1);
-    let collection = chunks[current].alloc_scratch(1);
-
-    set(&mut chunks[current], value, line);
-    set(&mut chunks[current], collection, line);
-    emit_throw_if_java_immutable(chunks, current, collection, line);
-
-    get(&mut chunks[current], collection, line);
-    chunks[current].emit_string_const("__java_backing_map", line);
-    host::emit(&mut chunks[current], "ecma:object", "get", 2, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
-    chunks[current].emit_op(Op::I32_EQZ, line);
-    chunks[current].emit_if_value(line);
-    get(&mut chunks[current], collection, line);
-    get(&mut chunks[current], value, line);
-    vybe_platform_jvm::emitter::collection_adapter::emit_add(chunks, current, 2, line);
-    chunks[current].emit_else(line);
-
-    get(&mut chunks[current], collection, line);
-    host::emit(&mut chunks[current], "ecma:array", "isArray", 1, line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if(line);
-
-    get(&mut chunks[current], collection, line);
-    get(&mut chunks[current], value, line);
-    common_collections::emit_push(chunks, current, line);
-    chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_bool_const(true, line);
-
-    chunks[current].emit_else(line);
-
-    get(&mut chunks[current], collection, line);
-    // The KEY is the element's Kotlin rendering — the same key the set's
-    // construction and `contains` use. Passing the raw value keyed the entry
-    // by object reference, so `add(Box(3))` stored an element `contains`
-    // could never find.
-    get(&mut chunks[current], value, line);
-    crate::emitter::tostring::emit_to_string(chunks, current, line);
-    get(&mut chunks[current], value, line);
-    emit_set_add(chunks, current, 3, line);
-
-    chunks[current].emit_end(line);
-    chunks[current].emit_end(line);
-}
-
-/// Kotlin `MutableSet.remove(value)`.
-pub fn emit_remove(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
-    let value = chunks[current].alloc_scratch(1);
-    let collection = chunks[current].alloc_scratch(1);
-
-    set(&mut chunks[current], value, line);
-    set(&mut chunks[current], collection, line);
-    emit_throw_if_java_immutable(chunks, current, collection, line);
-
-    get(&mut chunks[current], collection, line);
-    emit_is_ecma_set(chunks, current, line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if_value(line);
-    get(&mut chunks[current], collection, line);
-    get(&mut chunks[current], value, line);
-    emit_set_delete_value_eq(chunks, current, line);
-    chunks[current].emit_else(line);
-    get(&mut chunks[current], collection, line);
-    get(&mut chunks[current], value, line);
-    crate::emitter::tostring::emit_to_string(chunks, current, line);
-    dict::emit_method_delete(chunks, current, line);
-    chunks[current].emit_end(line);
-}
-
-/// Kotlin `MutableSet.add(value)`.
-///
-/// Stack in: `[set, key, value]`; stack out: `[changed_bool]`.
-pub fn emit_set_add(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
-    let value = chunks[current].alloc_scratch(1);
-    let key = chunks[current].alloc_scratch(1);
-    let set_slot = chunks[current].alloc_scratch(1);
-    let existed = chunks[current].alloc_scratch(1);
-
-    set(&mut chunks[current], value, line);
-    set(&mut chunks[current], key, line);
-    set(&mut chunks[current], set_slot, line);
-
-    get(&mut chunks[current], set_slot, line);
-    emit_is_ecma_set(chunks, current, line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if_value(line);
-    emit_set_contains_value_eq(chunks, current, set_slot, value, line);
-    set(&mut chunks[current], existed, line);
-    get(&mut chunks[current], existed, line);
-    ops::emit_dyn_not(&mut chunks[current], line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if(line);
-    get(&mut chunks[current], set_slot, line);
-    get(&mut chunks[current], value, line);
-    common_sets::emit_add(chunks, current, line);
-    chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_end(line);
-    get(&mut chunks[current], existed, line);
-    ops::emit_dyn_not(&mut chunks[current], line);
-    ops::emit_i32_to_bool(&mut chunks[current], line);
-    chunks[current].emit_else(line);
-
-    get(&mut chunks[current], set_slot, line);
-    host::emit(&mut chunks[current], "ecma:array", "isArray", 1, line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if(line);
-
-    get(&mut chunks[current], set_slot, line);
-    get(&mut chunks[current], value, line);
-    common_collections::emit_contains(chunks, current, line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
-    set(&mut chunks[current], existed, line);
-
-    get(&mut chunks[current], existed, line);
-    ops::emit_dyn_not(&mut chunks[current], line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if(line);
-    get(&mut chunks[current], set_slot, line);
-    get(&mut chunks[current], value, line);
-    common_collections::emit_push(chunks, current, line);
-    chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_end(line);
-
-    get(&mut chunks[current], existed, line);
-    ops::emit_dyn_not(&mut chunks[current], line);
-    ops::emit_i32_to_bool(&mut chunks[current], line);
-    chunks[current].emit_else(line);
-
-    get(&mut chunks[current], set_slot, line);
-    get(&mut chunks[current], key, line);
-    dict::emit_method_has(chunks, current, line);
-    set(&mut chunks[current], existed, line);
-
-    get(&mut chunks[current], set_slot, line);
-    get(&mut chunks[current], key, line);
-    get(&mut chunks[current], value, line);
-    common_collections::emit_set(chunks, current, line);
-    chunks[current].emit_op(Op::DROP, line);
-
-    get(&mut chunks[current], existed, line);
-    ops::emit_dyn_not(&mut chunks[current], line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if(line);
-    get(&mut chunks[current], set_slot, line);
-    let keys_key = chunks[current].add_constant(Value::String(Arc::from("__keys")));
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, keys_key, line);
-    get(&mut chunks[current], key, line);
-    common_collections::emit_push(chunks, current, line);
-    chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_end(line);
-
-    get(&mut chunks[current], existed, line);
-    ops::emit_dyn_not(&mut chunks[current], line);
-    ops::emit_i32_to_bool(&mut chunks[current], line);
-    chunks[current].emit_end(line);
-    chunks[current].emit_end(line);
-}
-
 /// Variadic `kotlin.collections.setOf(...)` / `mutableSetOf(...)`.
 ///
 /// Tree-resolved calls arrive as ordinary variadic calls; lower them to the
 /// shared set literal primitive.
 pub fn emit_set_literal(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
-    if argc == 0 {
-        common_sets::emit_new(chunks, current, line);
-        return;
-    }
-    let base = chunks[current].alloc_scratch(argc as u16);
-    for offset in (0..argc as u16).rev() {
-        set(&mut chunks[current], base + offset, line);
-    }
-    common_sets::emit_new(chunks, current, line);
-    let out = chunks[current].alloc_scratch(1);
-    set(&mut chunks[current], out, line);
-    for offset in 0..argc as u16 {
-        get(&mut chunks[current], out, line);
-        get(&mut chunks[current], base + offset, line);
-        crate::emitter::tostring::emit_to_string(chunks, current, line);
-        get(&mut chunks[current], base + offset, line);
-        emit_set_add(chunks, current, 3, line);
-        chunks[current].emit_op(Op::DROP, line);
-    }
-    get(&mut chunks[current], out, line);
-}
-
-/// Variadic `kotlin.collections.hashSetOf(...)`.
-pub fn emit_hash_set_literal(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    // A Kotlin set IS a `java.util.LinkedHashSet`-shaped JVM set: construct
+    // through the platform so every set in the program shares ONE
+    // representation. The old dict-backed shape (render-string keys) is gone —
+    // it was a second implementation of the same Java class.
+    //
+    // The ELEMENTS are packed into one array first: `setOf(x)` is a
+    // single-element set, while the platform ctor's 1-arg form is Java's
+    // `HashSet(Collection)` and would read `x` as an iterable.
     let base = if argc == 0 {
         0
     } else {
         chunks[current].alloc_scratch(argc as u16)
     };
     common_collections::emit_pack_n(chunks, current, argc as u16, base, line);
-    emit_to_hash_set(chunks, current, 1, line);
+    vybe_platform_jvm::emitter::dispatch::dispatch(
+        "jvm.java.hash_set_new",
+        chunks,
+        current,
+        1,
+        line,
+    );
+}
+
+/// Variadic `kotlin.collections.hashSetOf(...)`.
+pub fn emit_hash_set_literal(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    emit_set_literal(chunks, current, argc, line);
 }
 
 /// Kotlin dict-backed set `size`. The marker property is implementation detail.
@@ -329,7 +165,11 @@ pub fn emit_set_has(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u3
     emit_is_ecma_set(chunks, current, line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
-    emit_set_contains_value_eq(chunks, current, set_slot, value, line);
+    // A Kotlin set IS a JVM set — membership is the snapshot-keyed
+    // (hashCode/equals) contract the platform's sets declare.
+    get(&mut chunks[current], set_slot, line);
+    get(&mut chunks[current], value, line);
+    common_sets::emit_has_snapshot(chunks, current, line);
     chunks[current].emit_else(line);
 
     get(&mut chunks[current], set_slot, line);
@@ -421,15 +261,6 @@ fn emit_dict_backed_set_values_array(
     }
 }
 
-fn emit_mark_kotlin_set(chunks: &mut Vec<Chunk>, current: usize, out: u16, line: u32) {
-    get(&mut chunks[current], out, line);
-    let marker = chunks[current].add_constant(Value::String(Arc::from(
-        crate::emitter::tostring::SET_MARKER,
-    )));
-    chunks[current].emit_bool_const(true, line);
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, marker, line);
-}
-
 /// Kotlin `toList()` / `toTypedArray()` for arrays and dict-backed sets.
 pub fn emit_to_list(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
     let collection = chunks[current].alloc_scratch(1);
@@ -471,188 +302,20 @@ pub fn emit_to_set(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32
     emit_to_hash_set(chunks, current, 1, line);
 }
 
-/// Kotlin `hashSetOf(...)`: unlike `setOf`, lookup is hash/key based. If a
-/// mutable data-class field changes after insertion, Kotlin can no longer find
-/// the element by its new hash. Model that by snapshotting the Kotlin render
-/// key at insertion while still storing the original value.
+/// Kotlin `toHashSet()` / `toSet()` — a real JVM set, built by the platform.
+/// The operand may be any collection shape (`union` is declared on
+/// `Iterable`), so it is flattened to a values array first.
 pub fn emit_to_hash_set(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
     let collection = chunks[current].alloc_scratch(1);
-    let values = chunks[current].alloc_scratch(1);
-    let out = chunks[current].alloc_scratch(1);
-    let idx = chunks[current].alloc_scratch(1);
-    let len = chunks[current].alloc_scratch(1);
-    let value = chunks[current].alloc_scratch(1);
-    let key = chunks[current].alloc_scratch(1);
-
     set(&mut chunks[current], collection, line);
     emit_collection_values_array(chunks, current, collection, line);
-    set(&mut chunks[current], values, line);
-    dict::emit_new(chunks, current, line);
-    set(&mut chunks[current], out, line);
-    emit_mark_kotlin_set(chunks, current, out, line);
-    chunks[current].emit_i32_const(0, line);
-    set(&mut chunks[current], idx, line);
-    get(&mut chunks[current], values, line);
-    common_collections::emit_len(chunks, current, line);
-    set(&mut chunks[current], len, line);
-
-    let block = chunks[current].emit_block(line);
-    let (loop_id, _) = chunks[current].emit_loop_s(line);
-    get(&mut chunks[current], idx, line);
-    get(&mut chunks[current], len, line);
-    ops::emit_dyn_lt(&mut chunks[current], line);
-    ops::emit_dyn_not(&mut chunks[current], line);
-    chunks[current].emit_br_if(1, line);
-
-    get(&mut chunks[current], values, line);
-    get(&mut chunks[current], idx, line);
-    common_collections::emit_get(chunks, current, line);
-    set(&mut chunks[current], value, line);
-    get(&mut chunks[current], value, line);
-    crate::emitter::tostring::emit_to_string(chunks, current, line);
-    set(&mut chunks[current], key, line);
-    get(&mut chunks[current], out, line);
-    get(&mut chunks[current], key, line);
-    dict::emit_method_has(chunks, current, line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_op(Op::I32_EQZ, line);
-    chunks[current].emit_if(line);
-    get(&mut chunks[current], out, line);
-    get(&mut chunks[current], key, line);
-    get(&mut chunks[current], value, line);
-    crate::emitter::maps::emit_dict_set_tracked(chunks, current, line);
-    chunks[current].emit_end(line);
-
-    get(&mut chunks[current], idx, line);
-    chunks[current].emit_i32_const(1, line);
-    ops::emit_dyn_add(&mut chunks[current], line);
-    set(&mut chunks[current], idx, line);
-    chunks[current].emit_br(0, line);
-    chunks[current].emit_end(line);
-    chunks[current].patch_loop(loop_id);
-    chunks[current].emit_end(line);
-    chunks[current].patch_block(block);
-    get(&mut chunks[current], out, line);
-}
-
-fn emit_set_contains_value_eq(
-    chunks: &mut Vec<Chunk>,
-    current: usize,
-    set_slot: u16,
-    value_slot: u16,
-    line: u32,
-) {
-    let values = chunks[current].alloc_scratch(1);
-    let idx = chunks[current].alloc_scratch(1);
-    let len = chunks[current].alloc_scratch(1);
-    let found = chunks[current].alloc_scratch(1);
-
-    get(&mut chunks[current], set_slot, line);
-    common_sets::emit_values_array(chunks, current, line);
-    set(&mut chunks[current], values, line);
-    chunks[current].emit_bool_const(false, line);
-    set(&mut chunks[current], found, line);
-    chunks[current].emit_i32_const(0, line);
-    set(&mut chunks[current], idx, line);
-    get(&mut chunks[current], values, line);
-    common_collections::emit_len(chunks, current, line);
-    set(&mut chunks[current], len, line);
-
-    let block = chunks[current].emit_block(line);
-    let (loop_id, _) = chunks[current].emit_loop_s(line);
-    get(&mut chunks[current], idx, line);
-    get(&mut chunks[current], len, line);
-    ops::emit_dyn_lt(&mut chunks[current], line);
-    ops::emit_dyn_not(&mut chunks[current], line);
-    chunks[current].emit_br_if(1, line);
-
-    get(&mut chunks[current], values, line);
-    get(&mut chunks[current], idx, line);
-    common_collections::emit_get(chunks, current, line);
-    get(&mut chunks[current], value_slot, line);
-    crate::emitter::equality::emit_value_eq(chunks, current, line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if(line);
-    chunks[current].emit_bool_const(true, line);
-    set(&mut chunks[current], found, line);
-    chunks[current].emit_end(line);
-
-    get(&mut chunks[current], idx, line);
-    chunks[current].emit_i32_const(1, line);
-    ops::emit_dyn_add(&mut chunks[current], line);
-    set(&mut chunks[current], idx, line);
-    chunks[current].emit_br(0, line);
-    chunks[current].emit_end(line);
-    chunks[current].patch_loop(loop_id);
-    chunks[current].emit_end(line);
-    chunks[current].patch_block(block);
-    get(&mut chunks[current], found, line);
-}
-
-/// ECMA Set deletion with Kotlin equality. Stack in: `[set, value]`; out:
-/// `[changed_bool]`. The common ECMA delete path only removes the exact stored
-/// reference; Kotlin `MutableSet.remove` must remove an equal value.
-pub fn emit_set_delete_value_eq(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
-    let value = chunks[current].alloc_scratch(1);
-    let set_slot = chunks[current].alloc_scratch(1);
-    let values = chunks[current].alloc_scratch(1);
-    let idx = chunks[current].alloc_scratch(1);
-    let len = chunks[current].alloc_scratch(1);
-    let stored = chunks[current].alloc_scratch(1);
-    let removed = chunks[current].alloc_scratch(1);
-
-    set(&mut chunks[current], value, line);
-    set(&mut chunks[current], set_slot, line);
-    get(&mut chunks[current], set_slot, line);
-    common_sets::emit_values_array(chunks, current, line);
-    set(&mut chunks[current], values, line);
-    chunks[current].emit_bool_const(false, line);
-    set(&mut chunks[current], removed, line);
-    chunks[current].emit_i32_const(0, line);
-    set(&mut chunks[current], idx, line);
-    get(&mut chunks[current], values, line);
-    common_collections::emit_len(chunks, current, line);
-    set(&mut chunks[current], len, line);
-
-    let block = chunks[current].emit_block(line);
-    let (loop_id, _) = chunks[current].emit_loop_s(line);
-    get(&mut chunks[current], idx, line);
-    get(&mut chunks[current], len, line);
-    ops::emit_dyn_lt(&mut chunks[current], line);
-    ops::emit_dyn_not(&mut chunks[current], line);
-    chunks[current].emit_br_if(1, line);
-
-    get(&mut chunks[current], values, line);
-    get(&mut chunks[current], idx, line);
-    common_collections::emit_get(chunks, current, line);
-    set(&mut chunks[current], stored, line);
-    get(&mut chunks[current], stored, line);
-    get(&mut chunks[current], value, line);
-    crate::emitter::equality::emit_value_eq(chunks, current, line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
-    get(&mut chunks[current], removed, line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_op(Op::I32_EQZ, line);
-    chunks[current].emit_op(Op::I32_AND, line);
-    chunks[current].emit_if(line);
-    get(&mut chunks[current], set_slot, line);
-    get(&mut chunks[current], stored, line);
-    common_sets::emit_delete(chunks, current, line);
-    chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_bool_const(true, line);
-    set(&mut chunks[current], removed, line);
-    chunks[current].emit_end(line);
-
-    get(&mut chunks[current], idx, line);
-    chunks[current].emit_i32_const(1, line);
-    ops::emit_dyn_add(&mut chunks[current], line);
-    set(&mut chunks[current], idx, line);
-    chunks[current].emit_br(0, line);
-    chunks[current].emit_end(line);
-    chunks[current].patch_loop(loop_id);
-    chunks[current].emit_end(line);
-    chunks[current].patch_block(block);
-    get(&mut chunks[current], removed, line);
+    vybe_platform_jvm::emitter::dispatch::dispatch(
+        "jvm.java.hash_set_new",
+        chunks,
+        current,
+        1,
+        line,
+    );
 }
 
 /// `intersect` / `subtract`: keep each element of the LEFT collection whose
@@ -669,24 +332,21 @@ pub fn emit_set_delete_value_eq(chunks: &mut Vec<Chunk>, current: usize, line: u
 fn emit_set_from_filter(chunks: &mut Vec<Chunk>, current: usize, keep_present: bool, line: u32) {
     let right = chunks[current].alloc_scratch(1);
     let left = chunks[current].alloc_scratch(1);
-    let right_set = chunks[current].alloc_scratch(1);
+    let right_values = chunks[current].alloc_scratch(1);
     let values = chunks[current].alloc_scratch(1);
     let out = chunks[current].alloc_scratch(1);
     let index = chunks[current].alloc_scratch(1);
     let len = chunks[current].alloc_scratch(1);
     let value = chunks[current].alloc_scratch(1);
-    let key = chunks[current].alloc_scratch(1);
 
     set(&mut chunks[current], right, line);
     set(&mut chunks[current], left, line);
-    get(&mut chunks[current], right, line);
-    emit_to_set(chunks, current, 1, line);
-    set(&mut chunks[current], right_set, line);
+    emit_collection_values_array(chunks, current, right, line);
+    set(&mut chunks[current], right_values, line);
     emit_collection_values_array(chunks, current, left, line);
     set(&mut chunks[current], values, line);
-    dict::emit_new(chunks, current, line);
+    common_collections::emit_array_new(chunks, current, 0, line);
     set(&mut chunks[current], out, line);
-    emit_mark_kotlin_set(chunks, current, out, line);
     chunks[current].emit_i32_const(0, line);
     set(&mut chunks[current], index, line);
     get(&mut chunks[current], values, line);
@@ -704,24 +364,17 @@ fn emit_set_from_filter(chunks: &mut Vec<Chunk>, current: usize, keep_present: b
     get(&mut chunks[current], index, line);
     common_collections::emit_get(chunks, current, line);
     set(&mut chunks[current], value, line);
+    get(&mut chunks[current], right_values, line);
     get(&mut chunks[current], value, line);
-    crate::emitter::tostring::emit_to_string(chunks, current, line);
-    set(&mut chunks[current], key, line);
-    get(&mut chunks[current], right_set, line);
-    get(&mut chunks[current], key, line);
-    dict::emit_method_has(chunks, current, line);
+    common_collections::emit_contains(chunks, current, line);
     if !keep_present {
         ops::emit_dyn_not(&mut chunks[current], line);
     }
     ops::emit_dyn_to_bool(&mut chunks[current], line);
-    // A STATEMENT `if`: the body consumes its own value (`emit_set_add` answers
-    // a changed-flag, dropped right after) and there is no `else`, so the
-    // value-producing form would leave the arms unbalanced.
     chunks[current].emit_if(line);
     get(&mut chunks[current], out, line);
-    get(&mut chunks[current], key, line);
     get(&mut chunks[current], value, line);
-    emit_set_add(chunks, current, 3, line);
+    common_collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_end(line);
     get(&mut chunks[current], index, line);
@@ -733,7 +386,15 @@ fn emit_set_from_filter(chunks: &mut Vec<Chunk>, current: usize, keep_present: b
     chunks[current].patch_loop(loop_id);
     chunks[current].emit_end(line);
     chunks[current].patch_block(outer);
+    // The filtered values, as ONE JVM set (platform representation).
     get(&mut chunks[current], out, line);
+    vybe_platform_jvm::emitter::dispatch::dispatch(
+        "jvm.java.hash_set_new",
+        chunks,
+        current,
+        1,
+        line,
+    );
 }
 
 /// Kotlin `union`: every element of the left operand in order, then each
@@ -762,221 +423,6 @@ pub fn emit_set_intersect(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, li
 
 pub fn emit_set_subtract(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
     emit_set_from_filter(chunks, current, false, line);
-}
-
-/// Kotlin `MutableCollection.addAll(values)`.
-pub fn emit_add_all(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
-    let other = chunks[current].alloc_scratch(1);
-    let collection = chunks[current].alloc_scratch(1);
-    let values = chunks[current].alloc_scratch(1);
-    let index = chunks[current].alloc_scratch(1);
-    let len = chunks[current].alloc_scratch(1);
-    let value = chunks[current].alloc_scratch(1);
-    let changed = chunks[current].alloc_scratch(1);
-
-    set(&mut chunks[current], other, line);
-    set(&mut chunks[current], collection, line);
-    emit_collection_values_array(chunks, current, other, line);
-    set(&mut chunks[current], values, line);
-    chunks[current].emit_bool_const(false, line);
-    set(&mut chunks[current], changed, line);
-    chunks[current].emit_i32_const(0, line);
-    set(&mut chunks[current], index, line);
-    get(&mut chunks[current], values, line);
-    common_collections::emit_len(chunks, current, line);
-    set(&mut chunks[current], len, line);
-
-    let outer = chunks[current].emit_block(line);
-    let (loop_id, _) = chunks[current].emit_loop_s(line);
-    get(&mut chunks[current], index, line);
-    get(&mut chunks[current], len, line);
-    ops::emit_dyn_lt(&mut chunks[current], line);
-    ops::emit_dyn_not(&mut chunks[current], line);
-    chunks[current].emit_br_if(1, line);
-
-    get(&mut chunks[current], values, line);
-    get(&mut chunks[current], index, line);
-    common_collections::emit_get(chunks, current, line);
-    set(&mut chunks[current], value, line);
-
-    get(&mut chunks[current], collection, line);
-    get(&mut chunks[current], value, line);
-    emit_add(chunks, current, 2, line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if_value(line);
-    chunks[current].emit_bool_const(true, line);
-    set(&mut chunks[current], changed, line);
-    chunks[current].emit_end(line);
-
-    get(&mut chunks[current], index, line);
-    chunks[current].emit_i32_const(1, line);
-    ops::emit_dyn_add(&mut chunks[current], line);
-    set(&mut chunks[current], index, line);
-    chunks[current].emit_br(0, line);
-    chunks[current].emit_end(line);
-    chunks[current].patch_loop(loop_id);
-    chunks[current].emit_end(line);
-    chunks[current].patch_block(outer);
-
-    get(&mut chunks[current], changed, line);
-}
-
-fn emit_mutate_by_filter(chunks: &mut Vec<Chunk>, current: usize, delete_present: bool, line: u32) {
-    let other = chunks[current].alloc_scratch(1);
-    let collection = chunks[current].alloc_scratch(1);
-    let other_set = chunks[current].alloc_scratch(1);
-    let values = chunks[current].alloc_scratch(1);
-    let index = chunks[current].alloc_scratch(1);
-    let len = chunks[current].alloc_scratch(1);
-    let value = chunks[current].alloc_scratch(1);
-    let changed = chunks[current].alloc_scratch(1);
-
-    set(&mut chunks[current], other, line);
-    set(&mut chunks[current], collection, line);
-    get(&mut chunks[current], other, line);
-    emit_to_set(chunks, current, 1, line);
-    set(&mut chunks[current], other_set, line);
-    emit_collection_values_array(chunks, current, collection, line);
-    set(&mut chunks[current], values, line);
-    chunks[current].emit_bool_const(false, line);
-    set(&mut chunks[current], changed, line);
-    chunks[current].emit_i32_const(0, line);
-    set(&mut chunks[current], index, line);
-    get(&mut chunks[current], values, line);
-    common_collections::emit_len(chunks, current, line);
-    set(&mut chunks[current], len, line);
-
-    let outer = chunks[current].emit_block(line);
-    let (loop_id, _) = chunks[current].emit_loop_s(line);
-    get(&mut chunks[current], index, line);
-    get(&mut chunks[current], len, line);
-    ops::emit_dyn_lt(&mut chunks[current], line);
-    ops::emit_dyn_not(&mut chunks[current], line);
-    chunks[current].emit_br_if(1, line);
-    get(&mut chunks[current], values, line);
-    get(&mut chunks[current], index, line);
-    common_collections::emit_get(chunks, current, line);
-    set(&mut chunks[current], value, line);
-    emit_set_contains_value_eq(chunks, current, other_set, value, line);
-    if !delete_present {
-        ops::emit_dyn_not(&mut chunks[current], line);
-    }
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if_value(line);
-    get(&mut chunks[current], collection, line);
-    emit_is_ecma_set(chunks, current, line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if_value(line);
-    get(&mut chunks[current], collection, line);
-    get(&mut chunks[current], value, line);
-    emit_set_delete_value_eq(chunks, current, line);
-    chunks[current].emit_else(line);
-    get(&mut chunks[current], collection, line);
-    get(&mut chunks[current], value, line);
-    crate::emitter::tostring::emit_to_string(chunks, current, line);
-    dict::emit_method_delete(chunks, current, line);
-    chunks[current].emit_end(line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if_value(line);
-    chunks[current].emit_bool_const(true, line);
-    set(&mut chunks[current], changed, line);
-    chunks[current].emit_end(line);
-    chunks[current].emit_end(line);
-    get(&mut chunks[current], index, line);
-    chunks[current].emit_i32_const(1, line);
-    ops::emit_dyn_add(&mut chunks[current], line);
-    set(&mut chunks[current], index, line);
-    chunks[current].emit_br(0, line);
-    chunks[current].emit_end(line);
-    chunks[current].patch_loop(loop_id);
-    chunks[current].emit_end(line);
-    chunks[current].patch_block(outer);
-    get(&mut chunks[current], changed, line);
-}
-
-pub fn emit_remove_all(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
-    emit_mutate_by_filter(chunks, current, true, line);
-}
-
-pub fn emit_retain_all(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
-    emit_mutate_by_filter(chunks, current, false, line);
-}
-
-/// Kotlin `Collection.containsAll(values)`. Stack in: `[collection, values]`.
-pub fn emit_contains_all(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
-    let other = chunks[current].alloc_scratch(1);
-    let collection = chunks[current].alloc_scratch(1);
-    let values = chunks[current].alloc_scratch(1);
-    let index = chunks[current].alloc_scratch(1);
-    let len = chunks[current].alloc_scratch(1);
-    let value = chunks[current].alloc_scratch(1);
-
-    set(&mut chunks[current], other, line);
-    set(&mut chunks[current], collection, line);
-    emit_collection_values_array(chunks, current, other, line);
-    set(&mut chunks[current], values, line);
-
-    chunks[current].emit_bool_const(true, line);
-    chunks[current].emit_i32_const(0, line);
-    set(&mut chunks[current], index, line);
-    get(&mut chunks[current], values, line);
-    common_collections::emit_len(chunks, current, line);
-    set(&mut chunks[current], len, line);
-
-    let outer = chunks[current].emit_block(line);
-    let (loop_id, _) = chunks[current].emit_loop_s(line);
-    get(&mut chunks[current], index, line);
-    get(&mut chunks[current], len, line);
-    ops::emit_dyn_lt(&mut chunks[current], line);
-    ops::emit_dyn_not(&mut chunks[current], line);
-    chunks[current].emit_br_if(1, line);
-
-    get(&mut chunks[current], values, line);
-    get(&mut chunks[current], index, line);
-    common_collections::emit_get(chunks, current, line);
-    set(&mut chunks[current], value, line);
-
-    get(&mut chunks[current], collection, line);
-    host::emit(&mut chunks[current], "ecma:array", "isArray", 1, line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if(line);
-    get(&mut chunks[current], collection, line);
-    get(&mut chunks[current], value, line);
-    common_collections::emit_contains(chunks, current, line);
-    chunks[current].emit_else(line);
-    get(&mut chunks[current], collection, line);
-    emit_is_ecma_set(chunks, current, line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if_value(line);
-    get(&mut chunks[current], collection, line);
-    get(&mut chunks[current], value, line);
-    common_sets::emit_has(chunks, current, line);
-    chunks[current].emit_else(line);
-    get(&mut chunks[current], collection, line);
-    get(&mut chunks[current], value, line);
-    crate::emitter::tostring::emit_to_string(chunks, current, line);
-    dict::emit_method_has(chunks, current, line);
-    chunks[current].emit_end(line);
-    chunks[current].emit_end(line);
-
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
-    ops::emit_dyn_not(&mut chunks[current], line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if_value(line);
-    chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_bool_const(false, line);
-    chunks[current].emit_br(2, line);
-    chunks[current].emit_end(line);
-
-    get(&mut chunks[current], index, line);
-    chunks[current].emit_i32_const(1, line);
-    ops::emit_dyn_add(&mut chunks[current], line);
-    set(&mut chunks[current], index, line);
-    chunks[current].emit_br(0, line);
-    chunks[current].emit_end(line);
-    chunks[current].patch_loop(loop_id);
-    chunks[current].emit_end(line);
-    chunks[current].patch_block(outer);
 }
 
 /// Kotlin collection `isEmpty()`. Stack in: `[collection]`; stack out: `[bool]`.

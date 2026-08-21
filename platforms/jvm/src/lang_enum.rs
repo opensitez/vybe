@@ -406,6 +406,7 @@ fn install_constants(class_name: &str, constants: &[EnumConstant], members: &mut
             modifiers,
             with_events: false,
             array_bounds: None,
+            storage: None,
         });
 
         init.push(assign(

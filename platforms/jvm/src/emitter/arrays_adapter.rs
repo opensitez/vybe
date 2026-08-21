@@ -887,6 +887,45 @@ pub fn emit_arrays_as_list(chunks: &mut [Chunk], current: usize, argc: u8, line:
     chunks[current].emit_end(line);
 }
 
+/// The default an array's elements carry before assignment.
+pub enum JavaArrayDefault {
+    IntZero,
+    BoolFalse,
+}
+
+/// `new T[n]` — a length-`n` array with no default fill (reference arrays).
+/// Stack: `[n] -> [array]`.
+pub fn emit_new_array(chunks: &mut [Chunk], current: usize, line: u32) {
+    collections::emit_new_with_length(chunks, current, line);
+}
+
+/// `new int[n]` / `new boolean[n]` — length-`n`, filled with the type's
+/// default value (JLS §4.12.5). Stack: `[n] -> [array]`.
+pub fn emit_new_array_with_default(
+    chunks: &mut [Chunk],
+    current: usize,
+    default: JavaArrayDefault,
+    line: u32,
+) {
+    let len_slot = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], len_slot, line);
+
+    get(&mut chunks[current], len_slot, line);
+    collections::emit_new_with_length(chunks, current, line);
+
+    let arr_slot = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], arr_slot, line);
+
+    get(&mut chunks[current], arr_slot, line);
+    match default {
+        JavaArrayDefault::IntZero => chunks[current].emit_i32_const(0, line),
+        JavaArrayDefault::BoolFalse => chunks[current].emit_bool_const(false, line),
+    }
+    chunks[current].emit_i32_const(0, line);
+    get(&mut chunks[current], len_slot, line);
+    collections::emit_fill(chunks, current, line);
+}
+
 pub fn emit_new_int_2d(chunks: &mut [Chunk], current: usize, line: u32) {
     let cols_slot = chunks[current].alloc_scratch(1);
     let rows_slot = chunks[current].alloc_scratch(1);

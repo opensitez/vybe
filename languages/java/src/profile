@@ -103,17 +103,17 @@ __vybe_class_for_name = { emit = "intrinsic:symbol_require:ClassNotFoundExceptio
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
 # Walker rewrites System.out.println → println, System.out.print → print
-println             = { emit = "common:java.println",            min_args = 0, max_args = 255 }
-print               = { emit = "common:java.print_no_newline",   min_args = 0, max_args = 255 }
-printf              = { emit = "common:java.printf",             min_args = 1, max_args = 255 }
-__java_println      = { emit = "common:java.println",            min_args = 0, max_args = 1 }
-__java_print        = { emit = "common:java.print_no_newline",   min_args = 0, max_args = 1 }
-__java_printf       = { emit = "common:java.printf_array",       min_args = 2, max_args = 2 }
-__java_format_grouped_int = { emit = "common:java.format_grouped_int", min_args = 1, max_args = 1 }
-__java_format_exp_lower = { emit = "common:java.format_exp_lower", min_args = 1, max_args = 1 }
-__java_format_exp_upper = { emit = "common:java.format_exp_upper", min_args = 1, max_args = 1 }
-__java_field_set    = { emit = "common:java.field_set",           min_args = 3, max_args = 3 }
-__java_field_inc    = { emit = "common:java.field_inc",           min_args = 3, max_args = 3 }
+println             = { emit = "common:jvm.java.println",            min_args = 0, max_args = 255 }
+print               = { emit = "common:jvm.java.print_no_newline",   min_args = 0, max_args = 255 }
+printf              = { emit = "common:jvm.java.printf",             min_args = 1, max_args = 255 }
+__java_println      = { emit = "common:jvm.java.println",            min_args = 0, max_args = 1 }
+__java_print        = { emit = "common:jvm.java.print_no_newline",   min_args = 0, max_args = 1 }
+__java_printf       = { emit = "common:jvm.java.printf_array",       min_args = 2, max_args = 2 }
+__java_format_grouped_int = { emit = "common:jvm.java.format_grouped_int", min_args = 1, max_args = 1 }
+__java_format_exp_lower = { emit = "common:jvm.java.format_exp_lower", min_args = 1, max_args = 1 }
+__java_format_exp_upper = { emit = "common:jvm.java.format_exp_upper", min_args = 1, max_args = 1 }
+__java_field_set    = { emit = "common:jvm.java.field_set",           min_args = 3, max_args = 3 }
+__java_field_inc    = { emit = "common:jvm.java.field_inc",           min_args = 3, max_args = 3 }
 __java_semaphore_new = { emit = "common:jvm.java.semaphore_new",      min_args = 1, max_args = 2 }
 __java_semaphore_available = { emit = "common:jvm.java.semaphore_available", min_args = 1, max_args = 1 }
 __java_semaphore_acquire = { emit = "common:jvm.java.semaphore_acquire", min_args = 1, max_args = 2 }
@@ -236,7 +236,7 @@ __java_iterator_remove_unsupported = { emit = "common:jvm.java.iterator_remove_u
 __java_deque_push = { emit = "common:jvm.java.add_first", min_args = 2, max_args = 2 }
 __java_deque_pop = { emit = "common:jvm.java.poll_first", min_args = 1, max_args = 1 }
 __java_stack_push = { emit = "common:jvm.java.stack_push", min_args = 2, max_args = 2 }
-__java_stack_pop = { emit = "common:java.poll_last", min_args = 1, max_args = 1 }
+__java_stack_pop = { emit = "common:jvm.java.poll_last", min_args = 1, max_args = 1 }
 __java_stack_peek = { emit = "common:jvm.java.peek_last", min_args = 1, max_args = 1 }
 __java_stack_element_at = { emit = "common:jvm.java.get", min_args = 2, max_args = 2 }
 __java_stack_first_element = { emit = "common:jvm.java.peek_first", min_args = 1, max_args = 1 }
@@ -277,8 +277,8 @@ __j_stream_builder_add = { emit = "common:jvm.java.stream_builder_add", min_args
 __java_map_get = { emit = "common:jvm.java.map_get", min_args = 2, max_args = 2 }
 __java_map_put = { emit = "common:jvm.java.map_put", min_args = 3, max_args = 3 }
 __java_concurrent_map_put = { emit = "common:jvm.java.concurrent_map_put", min_args = 3, max_args = 3 }
-__java_concurrent_hash_map_new = { emit = "common:java.concurrent_hash_map_new", min_args = 0, max_args = 3 }
-__java_concurrent_hash_map_new_key_set = { emit = "common:java.hash_set_new", min_args = 0, max_args = 0 }
+__java_concurrent_hash_map_new = { emit = "common:jvm.java.concurrent_hash_map_new", min_args = 0, max_args = 3 }
+__java_concurrent_hash_map_new_key_set = { emit = "common:jvm.java.hash_set_new", min_args = 0, max_args = 0 }
 __java_map_put_all = { emit = "common:jvm.java.map_put_all", min_args = 2, max_args = 2 }
 __java_map_remove = { emit = "common:jvm.java.map_remove", min_args = 2, max_args = 3 }
 __java_map_get_or_default = { emit = "common:jvm.java.map_get_or_default", min_args = 3, max_args = 3 }
@@ -355,9 +355,9 @@ __j_write          = { emit = "intrinsic:write_stdout",     min_args = 1, max_ar
 # prelude getters read the parsed object's fields.
 #
 # NOT movable to `platforms/jvm` as-is: `tree_register.rs` registers a platform
-# SHORTHAND builtin only when its target is java-owned (`common:java.<op>`).
+# SHORTHAND builtin only when its target is java-owned (`common:jvm.java.<op>`).
 # `host:web:url:new` is not, so moving it silently stopped registering and java
-# URL errored. A move needs a `common:java.url_*` shim in the platform.
+# URL errored. A move needs a `common:jvm.java.url_*` shim in the platform.
 __j_url_parse      = { emit = "host:web:url:new",           min_args = 1, max_args = 2 }
 
 # Regex host surface for the __j_pat_*/__j_m_* prelude runtime
@@ -407,10 +407,10 @@ __process_exit = { emit = "common:control_flow.exit",  min_args = 1, max_args = 
 
 # ── Array helpers ─────────────────────────────────────────────────────────────
 
-__new_array = { emit = "common:java.new_array", min_args = 1, max_args = 1 }
-__new_int_array = { emit = "common:java.new_int_array", min_args = 1, max_args = 1 }
-__new_bool_array = { emit = "common:java.new_bool_array", min_args = 1, max_args = 1 }
-__new_int_2d_array = { emit = "common:java.new_int_2d_array", min_args = 2, max_args = 2 }
+__new_array = { emit = "common:jvm.java.new_array", min_args = 1, max_args = 1 }
+__new_int_array = { emit = "common:jvm.java.new_int_array", min_args = 1, max_args = 1 }
+__new_bool_array = { emit = "common:jvm.java.new_bool_array", min_args = 1, max_args = 1 }
+__new_int_2d_array = { emit = "common:jvm.java.new_int_2d_array", min_args = 2, max_args = 2 }
 __java_class_name = { emit = "common:jvm.java.class_name", min_args = 1, max_args = 1 }
 __java_class_simple_name = { emit = "common:jvm.java.class_simple_name", min_args = 1, max_args = 1 }
 __java_object_get_class = { emit = "common:jvm.java.object_get_class", min_args = 1, max_args = 1 }
@@ -486,8 +486,8 @@ compareTo     = { emit = "common:jvm.java.compare_to",       min_args = 1, max_a
 compareToIgnoreCase = { emit = "common:jvm.java.compare_ignore_case", min_args = 1, max_args = 1 }
 equalsIgnoreCase    = { emit = "common:jvm.java.equals_ignore_case",  min_args = 1, max_args = 1 }
 matches       = { emit = "common:jvm.java.str_matches",      min_args = 1, max_args = 1 }
-isEmpty       = { emit = "common:java.str_is_empty",     min_args = 0, max_args = 0 }
-isBlank       = { emit = "common:java.str_is_blank",     min_args = 0, max_args = 0 }
+isEmpty       = { emit = "common:jvm.java.str_is_empty",     min_args = 0, max_args = 0 }
+isBlank       = { emit = "common:jvm.java.str_is_blank",     min_args = 0, max_args = 0 }
 repeat        = { emit = "common:str_repeat",            min_args = 1, max_args = 1 }
 concat        = { emit = "common:strings.concat",        min_args = 1, max_args = 1 }
 intern        = { emit = "noop",                         min_args = 0, max_args = 0 }
@@ -498,8 +498,8 @@ indent        = { emit = "noop",                         min_args = 1, max_args 
 
 # toString / hashCode / equals
 toString      = { emit = "invoke:toString",              min_args = 0, max_args = 0 }
-hashCode      = { emit = "common:java.hash_code",        min_args = 0, max_args = 0 }
-equals        = { emit = "common:java.equals",           min_args = 1, max_args = 1 }
+hashCode      = { emit = "common:jvm.java.hash_code",        min_args = 0, max_args = 0 }
+equals        = { emit = "common:jvm.java.equals",           min_args = 1, max_args = 1 }
 getName       = { emit = "common:jvm.java.class_name",        min_args = 0, max_args = 0 }
 getSimpleName = { emit = "common:jvm.java.class_simple_name", min_args = 0, max_args = 0 }
 getClass      = { emit = "common:jvm.java.object_get_class",  min_args = 0, max_args = 0 }
@@ -589,66 +589,33 @@ intValue      = { emit = "common:jvm.java.trunc_cast",       min_args = 0, max_a
 longValue     = { emit = "common:jvm.java.trunc_cast",       min_args = 0, max_args = 0 }
 doubleValue   = { emit = "common:jvm.java.double_to_string", min_args = 0, max_args = 0 }
 
-# List / ArrayList methods
-add           = { emit = "common:jvm.java.set_add",              min_args = 1, max_args = 2 }
-addAll        = { emit = "common:jvm.java.add_all",          min_args = 1, max_args = 2 }
-remove        = [
-    { emit = "common:jvm.java.iterator_remove_unsupported", min_args = 0, max_args = 0 },
-    { emit = "common:jvm.java.list_remove",      min_args = 1, max_args = 1 },
-    { emit = "common:jvm.java.map_remove",       min_args = 1, max_args = 2 },
-]
-removeAll     = { emit = "common:jvm.java.remove_all",       min_args = 1, max_args = 1 }
-retainAll     = { emit = "common:jvm.java.retain_all",       min_args = 1, max_args = 1 }
-removeIf      = { emit = "common:jvm.java.list_remove_if",   min_args = 1, max_args = 1 }
-clear         = { emit = "common:java.list_clear",       min_args = 0, max_args = 0 }
-get           = { emit = "common:java.get",              min_args = 1, max_args = 1 }
-getFirst      = { emit = "common:jvm.java.peek_first",       min_args = 0, max_args = 0 }
-getLast       = { emit = "common:jvm.java.peek_last",        min_args = 0, max_args = 0 }
-set           = { emit = "common:jvm.java.list_set",         min_args = 1, max_args = 2 }
-size          = { emit = "common:jvm.java.size",             min_args = 0, max_args = 0 }
+# List / ArrayList / Map / Iterator methods: NO ROWS. The families resolve
+# through the jvm tree's Type-node method tables (Collection/List/Map/
+# Iterator/ListIterator, folded per concrete class by ancestry in
+# `platforms/jvm/src/emitter/tree_register.rs`). A row here SHADOWS the
+# tree's receiver-typed dispatch with name-keyed dispatch — the collision
+# this migration removes. The stragglers below have no tree home yet.
 mappingCount  = { emit = "common:jvm.java.size",             min_args = 0, max_args = 0 }
-subList       = { emit = "common:jvm.java.sub_list",         min_args = 2, max_args = 2 }
-sort          = { emit = "common:jvm.java.list_sort",        min_args = 0, max_args = 1 }
-iterator      = { emit = "common:java.list_iterator",    min_args = 0, max_args = 0 }
-listIterator  = { emit = "common:java.list_iterator",    min_args = 0, max_args = 1 }
-next          = { emit = "common:java.iterator_next",     min_args = 0, max_args = 0 }
-hasNext       = { emit = "common:java.iterator_has_next", min_args = 0, max_args = 0 }
-previous      = { emit = "common:java.iterator_previous", min_args = 0, max_args = 0 }
-hasPrevious   = { emit = "common:java.iterator_has_previous", min_args = 0, max_args = 0 }
-nextIndex     = { emit = "common:java.iterator_next_index", min_args = 0, max_args = 0 }
-previousIndex = { emit = "common:java.iterator_previous_index", min_args = 0, max_args = 0 }
 stream        = { emit = "noop",                         min_args = 0, max_args = 0 }
 parallelStream = { emit = "noop",                       min_args = 0, max_args = 0 }
-
-# Map methods
 put           = [
     { emit = "common:jvm.java.blocking_queue_put", min_args = 1, max_args = 1 },
     { emit = "common:jvm.java.map_put",            min_args = 2, max_args = 2 },
 ]
-putAll        = { emit = "common:jvm.java.map_put_all",      min_args = 1, max_args = 1 }
-getOrDefault  = { emit = "common:jvm.java.map_get_or_default", min_args = 2, max_args = 2 }
-containsKey   = { emit = "common:jvm.java.map_contains_key", min_args = 1, max_args = 1 }
-containsValue = { emit = "common:jvm.java.map_contains_value", min_args = 1, max_args = 1 }
-keySet        = { emit = "common:dict.keys",             min_args = 0, max_args = 0 }
-values        = { emit = "common:dict.values",           min_args = 0, max_args = 0 }
-entrySet      = { emit = "common:jvm.java.entry_set",        min_args = 0, max_args = 0 }
-putIfAbsent   = { emit = "common:jvm.java.put_if_absent",    min_args = 2, max_args = 2 }
-computeIfAbsent = { emit = "common:jvm.java.compute_if_absent", min_args = 2, max_args = 2 }
-merge         = { emit = "common:jvm.java.map_merge",        min_args = 3, max_args = 3 }
-getKey        = { emit = "common:java.entry_key",        min_args = 0, max_args = 0 }
-getValue      = { emit = "common:java.entry_value",      min_args = 0, max_args = 0 }
+getKey        = { emit = "common:jvm.java.entry_key",        min_args = 0, max_args = 0 }
+getValue      = { emit = "common:jvm.java.entry_value",      min_args = 0, max_args = 0 }
 setValue      = { emit = "common:jvm.java.entry_set_value",  min_args = 1, max_args = 1 }
 
 # StringBuilder
-append        = { emit = "common:java.sb_append",        min_args = 1, max_args = 1 }
-insert        = { emit = "common:java.sb_insert",        min_args = 2, max_args = 2 }
-delete        = { emit = "common:java.sb_delete",        min_args = 2, max_args = 2 }
-deleteCharAt  = { emit = "common:java.sb_delete_char_at",min_args = 1, max_args = 1 }
-reverse       = { emit = "common:java.sb_reverse",       min_args = 0, max_args = 0 }
+append        = { emit = "common:jvm.java.sb_append",        min_args = 1, max_args = 1 }
+insert        = { emit = "common:jvm.java.sb_insert",        min_args = 2, max_args = 2 }
+delete        = { emit = "common:jvm.java.sb_delete",        min_args = 2, max_args = 2 }
+deleteCharAt  = { emit = "common:jvm.java.sb_delete_char_at",min_args = 1, max_args = 1 }
+reverse       = { emit = "common:jvm.java.sb_reverse",       min_args = 0, max_args = 0 }
 capacity      = { emit = "noop",                         min_args = 0, max_args = 0 }
 
 # Array methods (raw Java arrays mapped to JS arrays)
-clone         = { emit = "common:java.array_clone",      min_args = 0, max_args = 0 }
+clone         = { emit = "common:jvm.java.array_clone",      min_args = 0, max_args = 0 }
 
 # Optional
 orElse        = { emit = "common:jvm.java.optional_or_else", min_args = 1, max_args = 1 }
@@ -723,7 +690,7 @@ isFair        = { emit = "common:jvm.java.semaphore_is_fair", min_args = 0, max_
 # Stack
 push          = { emit = "common:jvm.java.stack_push",       min_args = 1, max_args = 1 }
 pop           = { emit = "common:collections.pop",       min_args = 0, max_args = 0 }
-empty         = { emit = "common:java.is_empty",         min_args = 0, max_args = 0 }
+empty         = { emit = "common:jvm.java.is_empty",         min_args = 0, max_args = 0 }
 
 # Queue / Deque
 offer         = { emit = "common:collections.push",      min_args = 1, max_args = 1 }
@@ -733,8 +700,8 @@ drainTo       = { emit = "common:jvm.java.blocking_queue_drain_to", min_args = 1
 addIfAbsent   = { emit = "common:jvm.java.copy_on_write_add_if_absent", min_args = 1, max_args = 1 }
 containsAll   = { emit = "common:jvm.java.list_contains_all", min_args = 1, max_args = 1 }
 poll          = { emit = "common:jvm.java.queue_poll",       min_args = 0, max_args = 0 }
-first         = { emit = "common:java.sorted_first",     min_args = 0, max_args = 0 }
-last          = { emit = "common:java.sorted_last",      min_args = 0, max_args = 0 }
+first         = { emit = "common:jvm.java.sorted_first",     min_args = 0, max_args = 0 }
+last          = { emit = "common:jvm.java.sorted_last",      min_args = 0, max_args = 0 }
 ceiling       = { emit = "common:jvm.java.sorted_ceiling",   min_args = 1, max_args = 1 }
 floor         = { emit = "common:jvm.java.sorted_floor",     min_args = 1, max_args = 1 }
 higher        = { emit = "common:jvm.java.sorted_higher",    min_args = 1, max_args = 1 }
@@ -749,10 +716,10 @@ addFirst      = { emit = "common:jvm.java.add_first",        min_args = 1, max_a
 addLast       = { emit = "common:collections.push",      min_args = 1, max_args = 1 }
 offerFirst    = { emit = "common:jvm.java.add_first",        min_args = 1, max_args = 1 }
 offerLast     = { emit = "common:collections.push",      min_args = 1, max_args = 1 }
-removeFirst   = { emit = "common:java.remove_first",     min_args = 0, max_args = 0 }
+removeFirst   = { emit = "common:jvm.java.remove_first",     min_args = 0, max_args = 0 }
 removeLast    = { emit = "common:collections.pop",       min_args = 0, max_args = 0 }
 pollFirst     = { emit = "common:jvm.java.poll_first",       min_args = 0, max_args = 0 }
-pollLast      = { emit = "common:java.poll_last",        min_args = 0, max_args = 0 }
+pollLast      = { emit = "common:jvm.java.poll_last",        min_args = 0, max_args = 0 }
 peekFirst     = { emit = "common:jvm.java.peek_first",       min_args = 0, max_args = 0 }
 peekLast      = { emit = "common:jvm.java.peek_last",        min_args = 0, max_args = 0 }
 
@@ -883,5 +850,12 @@ to_string = "common:jvm.java.double_to_string"
 # as a VALUE (`ArrayList.class`) reaches the shared `Ctor`/`ancestry` machinery
 # instead of resolving to nothing.
 type_scopes = ["jvm"]
+# Same knob csharp sets to ["dotnet", "system", "collections"]: method names
+# that a `Type` node under this tree path declares at the call's arity are NOT
+# intercepted by value-method tables or array builtins — the generic member
+# path consults the tree/type registry instead, so an untyped collection
+# receiver reaches the collection's own method. Data, not behaviour: the
+# resolver walk is the shared one dotnet already rides.
+runtime_collection_scope = ["jvm", "java", "util"]
 roots = []
 extra_imports = []

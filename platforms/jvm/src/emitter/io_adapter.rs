@@ -4,7 +4,7 @@
 //! frontends without putting `java.io.*` behaviour in Kotlin or Java walkers.
 
 use vybe_compiler::primitives::{
-    callable, collections, errors, globals, instructions::host, loops, ops, strings,
+    callable, collections, globals, instructions::host, loops, ops, strings,
 };
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
@@ -87,13 +87,7 @@ fn object_delete(chunks: &mut [Chunk], current: usize, obj: u16, name: &str, lin
     host::emit(&mut chunks[current], "ecma:object", "delete", 2, line);
 }
 
-fn emit_jvm_exception_throw(chunks: &mut [Chunk], current: usize, name: &str, line: u32) {
-    chunks[current].emit_struct_new(0, 0, line);
-    chunks[current].emit_dup(line);
-    chunks[current].emit_string_const("", line);
-    errors::emit_exception_new_finalize(&mut chunks[current], name, line);
-    errors::emit_throw(&mut chunks[current], line);
-}
+use crate::emitter::exceptions::emit_jvm_exception_throw;
 
 fn emit_file_store(chunks: &mut [Chunk], current: usize, line: u32) {
     globals::emit_read(&mut chunks[current], JVM_FILE_STORE, line);

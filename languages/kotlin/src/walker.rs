@@ -1039,6 +1039,10 @@ pub fn parse(source: &str) -> Result<Module, String> {
                 missing_delete: SetMissingDelete::Ignore,
                 algebra_arity: SetAlgebraArity::Binary,
                 predicate_bool_object: true,
+                // Kotlin sets ARE `java.util` sets — JDK hash-at-insert
+                // membership (data-class structural equality, mutation
+                // breaks lookup).
+                membership: SetMembership::SnapshotKey,
             }),
             ..Default::default()
         },
@@ -9924,14 +9928,11 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
                         .as_deref()
                         .is_some_and(kotlin_type_is_set_like)
                     {
-                        let value = args[1].value.clone();
+                        // A Kotlin set IS a JVM set now — `add` is the 2-arg
+                        // `java.util.Set.add`, no render-key sidecar.
                         *expr = Expression::new(ExprKind::Call {
-                            callee: Box::new(Expression::ident("__kt_set_add")),
-                            args: vec![
-                                args[0].clone(),
-                                Argument::positional(kotlin_key_expr(value.clone())),
-                                Argument::positional(value),
-                            ],
+                            callee: Box::new(Expression::ident("__kt_add")),
+                            args: vec![args[0].clone(), args[1].clone()],
                             optional: false,
                         });
                         return;
@@ -14656,6 +14657,7 @@ fn walk_enum_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                             },
                             with_events: false,
                             array_bounds: None,
+                            storage: None,
                         });
                         ctor_body.push(Statement::new(StmtKind::Expr(Expression::new(
                             ExprKind::Assign {
@@ -15807,6 +15809,7 @@ fn kt_stored_property_members(
                 },
                 with_events: false,
                 array_bounds: None,
+                storage: None,
             },
             ClassMember::Property {
                 name,
@@ -16488,6 +16491,7 @@ fn walk_class_property(__w: &mut KtWalker, pair: Pair<Rule>) -> Vec<ClassMember>
             },
             with_events: false,
             array_bounds: None,
+            storage: None,
         });
     }
     out.push(ClassMember::Property {
@@ -17367,6 +17371,7 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                                                     },
                                                     with_events: false,
                                                     array_bounds: None,
+                                                    storage: None,
                                                 });
                                             }
                                             let companion_method_names: HashSet<String> =
@@ -17550,6 +17555,7 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                 },
                 with_events: false,
                 array_bounds: None,
+                storage: None,
             });
         }
         let capture_params: Vec<Param> = captures
@@ -17617,6 +17623,7 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
             },
             with_events: false,
             array_bounds: None,
+            storage: None,
         });
         let outer_param = Param {
             name: "__kt_outer".to_string(),
@@ -17734,6 +17741,7 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
             },
             with_events: false,
             array_bounds: None,
+            storage: None,
         });
         if from_ctor_param {
             init_stmts.push(Statement::new(StmtKind::Expr(Expression::new(
@@ -18125,6 +18133,7 @@ fn walk_object_body_members(__w: &mut KtWalker, class_body: Pair<Rule>, statics:
                         },
                         with_events: false,
                         array_bounds: None,
+                        storage: None,
                     });
                 }
             }
@@ -18252,6 +18261,7 @@ fn walk_object_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                 },
                 with_events: false,
                 array_bounds: None,
+                storage: None,
             },
         );
     }

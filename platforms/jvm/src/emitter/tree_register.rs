@@ -702,6 +702,21 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
     const SPECS: &[(&str, &str, &str, u8, u8)] = &[
         // ── Iterable ───────────────────────────────────────────────────────
         ("Iterable", "iterator", "jvm.java.list_iterator", 0, 0),
+        // ── Iterator / ListIterator ────────────────────────────────────────
+        ("Iterator", "next", "jvm.java.iterator_next", 0, 0),
+        ("Iterator", "hasnext", "jvm.java.iterator_has_next", 0, 0),
+        ("Iterator", "remove", "jvm.java.iterator_remove_unsupported", 0, 0),
+        ("ListIterator", "next", "jvm.java.iterator_next", 0, 0),
+        ("ListIterator", "hasnext", "jvm.java.iterator_has_next", 0, 0),
+        ("ListIterator", "previous", "jvm.java.iterator_previous", 0, 0),
+        ("ListIterator", "hasprevious", "jvm.java.iterator_has_previous", 0, 0),
+        ("ListIterator", "nextindex", "jvm.java.iterator_next_index", 0, 0),
+        ("ListIterator", "previousindex", "jvm.java.iterator_previous_index", 0, 0),
+        ("ListIterator", "set", "jvm.java.list_set", 1, 1),
+        // `it.add(x)` — `jvm.java.add`'s argc-2 form probes the
+        // `__java_list_iterator` shape and inserts at the cursor.
+        ("ListIterator", "add", "jvm.java.add", 1, 1),
+        ("ListIterator", "remove", "jvm.java.iterator_remove_unsupported", 0, 0),
         // ── Collection ─────────────────────────────────────────────────────
         ("Collection", "add", "jvm.java.add", 1, 1),
         ("Collection", "size", "jvm.java.size", 0, 0),
@@ -717,6 +732,11 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
         // notion of. `List` overrides below with the index overload that is
         // genuinely List's.
         ("Collection", "remove", "jvm.java.list_remove_value", 1, 1),
+        ("Collection", "addall", "jvm.java.add_all", 1, 1),
+        ("Collection", "removeall", "jvm.java.remove_all", 1, 1),
+        ("Collection", "retainall", "jvm.java.retain_all", 1, 1),
+        ("Collection", "containsall", "jvm.java.list_contains_all", 1, 1),
+        ("Collection", "removeif", "jvm.java.remove_if", 1, 1),
         // ── List ───────────────────────────────────────────────────────────
         // `add(index, e)` is the List-only overload, so List widens the arity.
         ("List", "add", "jvm.java.add", 1, 2),
@@ -725,8 +745,16 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
         ("List", "remove", "jvm.java.list_remove", 1, 1),
         ("List", "get", "jvm.java.get", 1, 1),
         ("List", "set", "jvm.java.list_set", 1, 2),
-        ("List", "sort", "jvm.java.collections_sort", 0, 1),
+        // The arm the profile's `sort` row proved — comparator-aware
+        // `List.sort(cmp)`, not the `Arrays.sort` static shape.
+        ("List", "sort", "jvm.java.list_sort", 0, 1),
+        // JDK 21 SequencedCollection accessors.
+        ("List", "getfirst", "jvm.java.peek_first", 0, 0),
+        ("List", "getlast", "jvm.java.peek_last", 0, 0),
         ("List", "listiterator", "jvm.java.list_iterator", 0, 1),
+        // `List.addAll(index, coll)` widens the Collection arity, like `add`.
+        ("List", "addall", "jvm.java.add_all", 1, 2),
+        ("List", "sublist", "jvm.java.sub_list", 2, 2),
         // ── SortedSet / NavigableSet ───────────────────────────────────────
         ("SortedSet", "add", "jvm.java.sorted_add", 1, 1),
         ("SortedSet", "first", "jvm.java.sorted_first", 0, 0),
@@ -757,6 +785,10 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
         ("Deque", "peeklast", "jvm.java.peek_last", 0, 0),
         ("Deque", "push", "jvm.java.add_first", 1, 1),
         ("Deque", "pop", "jvm.java.poll_first", 0, 0),
+        // ── Map.Entry (binary name `Map$Entry`) ────────────────────────────
+        ("Map$Entry", "getkey", "jvm.java.entry_key", 0, 0),
+        ("Map$Entry", "getvalue", "jvm.java.entry_value", 0, 0),
+        ("Map$Entry", "setvalue", "jvm.java.entry_set_value", 1, 1),
         // ── Map (NOT a Collection — no `iterator`, its own `size`) ─────────
         ("Map", "put", "jvm.java.map_put", 2, 2),
         ("Map", "get", "jvm.java.map_get", 1, 1),
@@ -766,6 +798,22 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
         ("Map", "keyset", "jvm.java.map_key_set", 0, 0),
         ("Map", "values", "jvm.java.map_values", 0, 0),
         ("Map", "entryset", "jvm.java.entry_set", 0, 0),
+        ("Map", "remove", "jvm.java.map_remove", 1, 2),
+        ("Map", "putall", "jvm.java.map_put_all", 1, 1),
+        ("Map", "getordefault", "jvm.java.map_get_or_default", 2, 2),
+        ("Map", "containskey", "jvm.java.map_contains_key", 1, 1),
+        ("Map", "containsvalue", "jvm.java.map_contains_value", 1, 1),
+        ("Map", "putifabsent", "jvm.java.put_if_absent", 2, 2),
+        ("Map", "computeifabsent", "jvm.java.compute_if_absent", 2, 2),
+        ("Map", "computeifpresent", "jvm.java.compute_if_present", 2, 2),
+        ("Map", "compute", "jvm.java.map_compute", 2, 2),
+        ("Map", "merge", "jvm.java.map_merge", 3, 3),
+        // `replace(k, v)` and the conditional `replace(k, old, new)`.
+        ("Map", "replace", "jvm.java.map_replace", 2, 3),
+        ("Map", "replaceall", "jvm.java.map_replace_all", 1, 1),
+        ("Map", "foreach", "jvm.java.map_for_each", 1, 1),
+        ("Map", "equals", "jvm.java.map_equals", 1, 1),
+        ("Map", "clone", "jvm.java.map_clone", 0, 0),
         // ── SortedMap / NavigableMap ───────────────────────────────────────
         ("SortedMap", "keyset", "jvm.java.sorted_map_key_set", 0, 0),
         ("SortedMap", "values", "jvm.java.sorted_map_values", 0, 0),
@@ -777,6 +825,9 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
             0,
         ),
         ("SortedMap", "lastkey", "jvm.java.sorted_map_last_key", 0, 0),
+        ("SortedMap", "headmap", "jvm.java.map_head_map", 1, 1),
+        ("SortedMap", "tailmap", "jvm.java.map_tail_map", 1, 1),
+        ("SortedMap", "submap", "jvm.java.map_sub_map", 2, 2),
         (
             "NavigableMap",
             "higherkey",
@@ -790,6 +841,90 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
             "jvm.java.sorted_map_lower_key",
             1,
             1,
+        ),
+        (
+            "NavigableMap",
+            "ceilingkey",
+            "jvm.java.sorted_map_ceiling_key",
+            1,
+            1,
+        ),
+        (
+            "NavigableMap",
+            "floorkey",
+            "jvm.java.sorted_map_floor_key",
+            1,
+            1,
+        ),
+        (
+            "NavigableMap",
+            "firstentry",
+            "jvm.java.sorted_map_first_entry",
+            0,
+            0,
+        ),
+        (
+            "NavigableMap",
+            "lastentry",
+            "jvm.java.sorted_map_last_entry",
+            0,
+            0,
+        ),
+        (
+            "NavigableMap",
+            "ceilingentry",
+            "jvm.java.sorted_map_ceiling_entry",
+            1,
+            1,
+        ),
+        (
+            "NavigableMap",
+            "floorentry",
+            "jvm.java.sorted_map_floor_entry",
+            1,
+            1,
+        ),
+        (
+            "NavigableMap",
+            "higherentry",
+            "jvm.java.sorted_map_higher_entry",
+            1,
+            1,
+        ),
+        (
+            "NavigableMap",
+            "lowerentry",
+            "jvm.java.sorted_map_lower_entry",
+            1,
+            1,
+        ),
+        (
+            "NavigableMap",
+            "pollfirstentry",
+            "jvm.java.sorted_map_poll_first_entry",
+            0,
+            0,
+        ),
+        (
+            "NavigableMap",
+            "polllastentry",
+            "jvm.java.sorted_map_poll_last_entry",
+            0,
+            0,
+        ),
+        (
+            "NavigableMap",
+            "descendingmap",
+            "jvm.java.sorted_map_descending_map",
+            0,
+            0,
+        ),
+        (
+            "NavigableMap",
+            "descendingkeyset",
+            "jvm.java.sorted_map_descending_key_set",
+            0,
+            0,
         ),
         // ── Iterator ───────────────────────────────────────────────────────
         ("Iterator", "next", "jvm.java.iterator_next", 0, 0),
@@ -826,6 +961,23 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
         ("ListIterator", "set", "jvm.java.iterator_set", 1, 1),
         ("ListIterator", "add", "jvm.java.iterator_add", 1, 1),
         // ── Concrete classes: ONLY what they override or add ───────────────
+        // EnumSet keeps declaration order by ordinal and refuses non-members;
+        // its own arms carry that, the rest of the surface folds in from
+        // Collection/Iterable like every other type.
+        ("EnumSet", "add", "jvm.java.enum_set_add", 1, 1),
+        ("EnumSet", "addall", "jvm.java.enum_set_add_all", 1, 1),
+        ("EnumSet", "contains", "jvm.java.enum_set_contains", 1, 1),
+        (
+            "EnumSet",
+            "containsall",
+            "jvm.java.enum_set_contains_all",
+            1,
+            1,
+        ),
+        ("EnumSet", "remove", "jvm.java.enum_set_remove", 1, 1),
+        ("EnumSet", "equals", "jvm.java.enum_set_equals", 1, 1),
+        ("EnumSet", "hashcode", "jvm.java.enum_set_hash_code", 0, 0),
+        ("EnumSet", "iterator", "jvm.java.enum_set_iterator", 0, 0),
         ("Vector", "addelement", "jvm.java.add", 1, 1),
         ("Vector", "elementat", "jvm.java.get", 1, 1),
         // `Stack` is a `Vector`, so it inherits the whole list surface; these
@@ -839,6 +991,18 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
         ("PriorityQueue", "poll", "jvm.java.priority_poll", 0, 0),
         ("PriorityQueue", "remove", "jvm.java.priority_poll", 0, 0),
         ("PriorityQueue", "peek", "jvm.java.priority_peek", 0, 0),
+    ];
+
+    // Declared return types, folded by the SAME ancestry walks below — a
+    // chained call (`list.iterator().next()`, `map.keySet().iterator()`)
+    // resolves its next receiver from these.
+    const RETURN_SPECS: &[(&str, &str, &str)] = &[
+        ("Iterable", "iterator", "java.util.Iterator"),
+        ("List", "listIterator", "java.util.ListIterator"),
+        ("List", "subList", "java.util.List"),
+        ("Map", "keySet", "java.util.Set"),
+        ("Map", "values", "java.util.Collection"),
+        ("Map", "entrySet", "java.util.Set"),
     ];
 
     // Fold each type's ancestry, nearest first. `JAVA_TYPES` already carries
@@ -876,6 +1040,81 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
         let type_path = format!("{}.{}", ty.package, ty.name.to_lowercase());
         ensure_type_node(root, &type_path);
         merge_type_methods(root, &type_path, methods);
+
+        let returns: Vec<(&str, &str)> = ty
+            .ancestry
+            .iter()
+            .flat_map(|ancestor| {
+                RETURN_SPECS
+                    .iter()
+                    .filter(|(owner, _, _)| owner.eq_ignore_ascii_case(ancestor))
+                    .map(|(_, member, ret)| (*member, *ret))
+            })
+            .collect();
+        if !returns.is_empty() {
+            merge_type_member_returns(root, &type_path, &returns);
+        }
+    }
+
+    // The INTERFACES get nodes of their own, folded through their declared
+    // super-interface chains — a receiver whose DECLARED type is `List`,
+    // `Set`, `Map` or an iterator must resolve without depending on a
+    // concrete class's node happening to match. This is what lets
+    // `Set<String> ks = map.keySet(); ks.iterator()` resolve: the chain types
+    // through RETURN_SPECS and lands on these nodes.
+    const INTERFACE_ANCESTRY: &[(&str, &[&str])] = &[
+        // `Map.Entry`, by its BINARY name — the walker canons the dotted
+        // source spelling to `Map$Entry` (a nested type is one leaf, not a
+        // path through the `Map` type node).
+        ("Map$Entry", &["Map$Entry"]),
+        ("Iterable", &["Iterable"]),
+        ("Iterator", &["Iterator"]),
+        ("ListIterator", &["ListIterator", "Iterator"]),
+        ("Collection", &["Collection", "Iterable"]),
+        ("List", &["List", "Collection", "Iterable"]),
+        ("Set", &["Set", "Collection", "Iterable"]),
+        ("SortedSet", &["SortedSet", "Set", "Collection", "Iterable"]),
+        (
+            "NavigableSet",
+            &["NavigableSet", "SortedSet", "Set", "Collection", "Iterable"],
+        ),
+        ("Queue", &["Queue", "Collection", "Iterable"]),
+        ("Deque", &["Deque", "Queue", "Collection", "Iterable"]),
+        ("Map", &["Map"]),
+        ("SortedMap", &["SortedMap", "Map"]),
+        ("NavigableMap", &["NavigableMap", "SortedMap", "Map"]),
+    ];
+    for (iface, chain) in INTERFACE_ANCESTRY {
+        let mut methods = Subtree::new();
+        for ancestor in *chain {
+            for (owner, member, emit, min_args, max_args) in SPECS {
+                if !owner.eq_ignore_ascii_case(ancestor) {
+                    continue;
+                }
+                methods
+                    .entry((*member).to_string())
+                    .or_insert_with(|| common_method(emit, *min_args, *max_args));
+            }
+        }
+        if methods.is_empty() {
+            continue;
+        }
+        let type_path = format!("util.{}", iface.to_lowercase());
+        ensure_type_node(root, &type_path);
+        merge_type_methods(root, &type_path, methods);
+
+        let returns: Vec<(&str, &str)> = chain
+            .iter()
+            .flat_map(|ancestor| {
+                RETURN_SPECS
+                    .iter()
+                    .filter(|(owner, _, _)| owner.eq_ignore_ascii_case(ancestor))
+                    .map(|(_, member, ret)| (*member, *ret))
+            })
+            .collect();
+        if !returns.is_empty() {
+            merge_type_member_returns(root, &type_path, &returns);
+        }
     }
 
     merge_type_member_returns(
@@ -1771,17 +2010,12 @@ fn insert_java_util_enum_set(root: &mut Subtree) {
         ("complementof", "jvm.java.enum_set_complement_of", 1, 1),
         ("range", "jvm.java.enum_set_range", 2, 2),
     ];
-    const METHODS: &[(&str, &str, u8, u8)] = &[
-        ("add", "jvm.java.enum_set_add", 1, 1),
-        ("addall", "jvm.java.enum_set_add_all", 1, 1),
-        ("contains", "jvm.java.enum_set_contains", 1, 1),
-        ("containsall", "jvm.java.enum_set_contains_all", 1, 1),
-        ("remove", "jvm.java.enum_set_remove", 1, 1),
-        ("equals", "jvm.java.enum_set_equals", 1, 1),
-        ("hashcode", "jvm.java.enum_set_hash_code", 0, 0),
-        ("iterator", "jvm.java.enum_set_iterator", 0, 0),
-    ];
-
+    // Instance methods are NOT declared here: `EnumSet` has a `JAVA_TYPES`
+    // row, so `insert_java_util_collection_methods` folds its full surface —
+    // its own `enum_set_*` overrides from `SPECS` (owner "EnumSet", nearest
+    // first) plus everything `Set`/`Collection`/`Iterable` declare. A second
+    // list here was how `size()` went missing: two half-surfaces, each
+    // trusting the other.
     for (member, emit, min_args, max_args) in STATICS {
         insert_path(
             root,
@@ -1796,14 +2030,6 @@ fn insert_java_util_enum_set(root: &mut Subtree) {
     // nodes only — saw no type at all, and every instance method and declared
     // return type was dropped without a word.
     ensure_type_node(root, "util.enumset");
-    let mut methods = Subtree::new();
-    for (member, emit, min_args, max_args) in METHODS {
-        methods.insert(
-            (*member).to_string(),
-            common_method(emit, *min_args, *max_args),
-        );
-    }
-    merge_type_methods(root, "util.enumset", methods);
     merge_type_member_returns(
         root,
         "util.enumset",
@@ -3149,6 +3375,24 @@ pub const JAVA_TYPES: &[JavaType] = &[
         "PriorityQueue",
         "util",
         &["PriorityQueue", "Queue", "Collection", "Iterable", "Object"],
+        None,
+    ),
+    // No public constructor — built by its own statics (`noneOf`, `of`,
+    // `range`, …), which `insert_java_util_enum_set` registers. The row is
+    // what folds the whole Collection surface over it: without it the type
+    // carried only its hand-picked overrides, and `s.size()` — one missing
+    // leaf — was an "undefined is not callable" at runtime.
+    t(
+        "EnumSet",
+        "util",
+        &[
+            "EnumSet",
+            "Set",
+            "Collection",
+            "Iterable",
+            "Cloneable",
+            "Object",
+        ],
         None,
     ),
     t("Comparator", "util", &["Comparator", "Object"], None),

@@ -690,6 +690,42 @@ pub fn emit_concurrent_hash_map_new(chunks: &mut [Chunk], current: usize, argc: 
     get(&mut chunks[current], map, line);
 }
 
+/// `new LinkedHashMap()` / `(capacity)` / `(capacity, loadFactor)` /
+/// `(capacity, loadFactor, accessOrder)`.
+///
+/// Insertion order costs nothing — an ecma Map already iterates that way.
+/// The THIRD constructor argument is the one observable choice: with
+/// `accessOrder = true` every `get`/`put` of a present key moves the entry
+/// to the tail (LRU), which `emit_touch_access_order_map` performs wherever
+/// the mark is set. Capacity and load factor are sizing hints and drop.
+pub fn emit_linked_hash_map_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let access_order = if argc == 3 {
+        let slot = chunks[current].alloc_scratch(1);
+        set(&mut chunks[current], slot, line);
+        chunks[current].emit_op(Op::DROP, line);
+        chunks[current].emit_op(Op::DROP, line);
+        Some(slot)
+    } else {
+        for _ in 0..argc {
+            chunks[current].emit_op(Op::DROP, line);
+        }
+        None
+    };
+    collections::emit_map_new(chunks, current, line);
+    if let Some(flag) = access_order {
+        let map = chunks[current].alloc_scratch(1);
+        set(&mut chunks[current], map, line);
+        get(&mut chunks[current], flag, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if(line);
+        get(&mut chunks[current], map, line);
+        emit_mark_access_order_map(chunks, current, line);
+        chunks[current].emit_op(Op::DROP, line);
+        chunks[current].emit_end(line);
+        get(&mut chunks[current], map, line);
+    }
+}
+
 pub fn emit_map_put(chunks: &mut [Chunk], current: usize, line: u32) {
     let value = chunks[current].alloc_scratch(1);
     let key = chunks[current].alloc_scratch(1);
@@ -1678,8 +1714,7 @@ pub fn emit_semaphore_acquire(chunks: &mut [Chunk], current: usize, argc: u8, li
     core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op_u16(Op::LOCAL_SET, queued, line);
 
-    let sub_dur_idx = chunks[0].add_import("wasi:clocks/monotonic-clock", "subscribe-duration");
-    let block_idx = chunks[0].add_import("wasi:io/poll", "[method]pollable.block");
+    let wait_for_idx = chunks[0].add_import("wasi:clocks/monotonic-clock", "wait-for");
 
     let outer = chunks[current].emit_block(line);
     let (loop_patch, _) = chunks[current].emit_loop_s(line);
@@ -1725,12 +1760,7 @@ pub fn emit_semaphore_acquire(chunks: &mut [Chunk], current: usize, argc: u8, li
     chunks[current].emit_op_u16(Op::LOCAL_SET, queued, line);
     chunks[current].emit_end(line);
     chunks[current].emit_f64_const(5.0, line);
-    vybe_compiler::primitives::threading::emit_sleep(
-        &mut chunks[current],
-        sub_dur_idx,
-        block_idx,
-        line,
-    );
+    vybe_compiler::primitives::threading::emit_sleep(&mut chunks[current], wait_for_idx, line);
     chunks[current].emit_end(line);
     chunks[current].emit_br(0, line);
     chunks[current].emit_end(line);
@@ -1851,15 +1881,9 @@ pub fn emit_java_thread_start_with(chunks: &mut Vec<Chunk>, current: usize, line
     host::emit(&mut chunks[current], "ecma:object", "set", 3, line);
     chunks[current].emit_op(Op::DROP, line);
 
-    let sub_dur_idx = chunks[0].add_import("wasi:clocks/monotonic-clock", "subscribe-duration");
-    let block_idx = chunks[0].add_import("wasi:io/poll", "[method]pollable.block");
+    let wait_for_idx = chunks[0].add_import("wasi:clocks/monotonic-clock", "wait-for");
     chunks[current].emit_f64_const(1.0, line);
-    vybe_compiler::primitives::threading::emit_sleep(
-        &mut chunks[current],
-        sub_dur_idx,
-        block_idx,
-        line,
-    );
+    vybe_compiler::primitives::threading::emit_sleep(&mut chunks[current], wait_for_idx, line);
 
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
@@ -1882,16 +1906,10 @@ pub fn emit_java_thread_join(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 pub fn emit_java_thread_sleep(chunks: &mut [Chunk], current: usize, line: u32) {
-    let sub_dur_idx = chunks[0].add_import("wasi:clocks/monotonic-clock", "subscribe-duration");
-    let block_idx = chunks[0].add_import("wasi:io/poll", "[method]pollable.block");
+    let wait_for_idx = chunks[0].add_import("wasi:clocks/monotonic-clock", "wait-for");
     chunks[current].emit_f64_const(25.0, line);
     chunks[current].emit_op(Op::F64_MUL, line);
-    vybe_compiler::primitives::threading::emit_sleep(
-        &mut chunks[current],
-        sub_dur_idx,
-        block_idx,
-        line,
-    );
+    vybe_compiler::primitives::threading::emit_sleep(&mut chunks[current], wait_for_idx, line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
@@ -2344,7 +2362,12 @@ pub fn emit_add(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunks[current].emit_if_value(line);
         get(&mut chunks[current], list, line);
         get(&mut chunks[current], value, line);
-        sets::emit_add_changed(chunks, current, line);
+        sets::emit_add_mode(
+            chunks,
+            current,
+            crate::emitter::collection_adapter::JAVA_SET_SEMANTICS,
+            line,
+        );
         chunks[current].emit_else(line);
         emit_is_set_collection(chunks, current, list, line);
         chunks[current].emit_if_value(line);
@@ -2658,8 +2681,7 @@ pub fn emit_blocking_queue_put(chunks: &mut [Chunk], current: usize, line: u32) 
     set(&mut chunks[current], queue, line);
     chunks[current].emit_bool_const(false, line);
     set(&mut chunks[current], done, line);
-    let sub_dur_idx = chunks[0].add_import("wasi:clocks/monotonic-clock", "subscribe-duration");
-    let block_idx = chunks[0].add_import("wasi:io/poll", "[method]pollable.block");
+    let wait_for_idx = chunks[0].add_import("wasi:clocks/monotonic-clock", "wait-for");
     let outer = chunks[current].emit_block(line);
     let (loop_patch, _) = chunks[current].emit_loop_s(line);
     get(&mut chunks[current], queue, line);
@@ -2677,12 +2699,7 @@ pub fn emit_blocking_queue_put(chunks: &mut [Chunk], current: usize, line: u32) 
     chunks[current].emit_br(2, line);
     chunks[current].emit_end(line);
     chunks[current].emit_f64_const(1.0, line);
-    vybe_compiler::primitives::threading::emit_sleep(
-        &mut chunks[current],
-        sub_dur_idx,
-        block_idx,
-        line,
-    );
+    vybe_compiler::primitives::threading::emit_sleep(&mut chunks[current], wait_for_idx, line);
     chunks[current].emit_br(0, line);
     chunks[current].emit_end(line);
     chunks[current].patch_loop(loop_patch);
@@ -2699,8 +2716,7 @@ pub fn emit_blocking_queue_take(chunks: &mut [Chunk], current: usize, line: u32)
     set(&mut chunks[current], queue, line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     set(&mut chunks[current], result, line);
-    let sub_dur_idx = chunks[0].add_import("wasi:clocks/monotonic-clock", "subscribe-duration");
-    let block_idx = chunks[0].add_import("wasi:io/poll", "[method]pollable.block");
+    let wait_for_idx = chunks[0].add_import("wasi:clocks/monotonic-clock", "wait-for");
     let outer = chunks[current].emit_block(line);
     let (loop_patch, _) = chunks[current].emit_loop_s(line);
     get(&mut chunks[current], queue, line);
@@ -2715,12 +2731,7 @@ pub fn emit_blocking_queue_take(chunks: &mut [Chunk], current: usize, line: u32)
     chunks[current].emit_br(2, line);
     chunks[current].emit_end(line);
     chunks[current].emit_f64_const(1.0, line);
-    vybe_compiler::primitives::threading::emit_sleep(
-        &mut chunks[current],
-        sub_dur_idx,
-        block_idx,
-        line,
-    );
+    vybe_compiler::primitives::threading::emit_sleep(&mut chunks[current], wait_for_idx, line);
     chunks[current].emit_br(0, line);
     chunks[current].emit_end(line);
     chunks[current].patch_loop(loop_patch);
@@ -3207,11 +3218,67 @@ pub fn emit_add_all(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     set(&mut chunks[current], list, line);
     emit_throw_if_immutable_list(chunks, current, list, line);
 
-    emit_is_set_collection(chunks, current, list, line);
-    chunks[current].emit_if_value(line);
+    // The source Collection is read by position below — a `HashSet` argument
+    // is a real ECMA Set, so flatten it to its values first.
+    get(&mut chunks[current], source, line);
+    crate::emitter::collection_adapter::emit_values_snapshot(chunks, current, line);
+    set(&mut chunks[current], source, line);
+
     let index_slot = chunks[current].alloc_scratch(1);
     let len_slot = chunks[current].alloc_scratch(1);
     let value_slot = chunks[current].alloc_scratch(1);
+
+    // Receiver #1: a real ECMA Set (`HashSet`/`LinkedHashSet`) — the marked
+    // branch below is ARRAY code and silently no-ops on a Set, which is how
+    // `hashSet.addAll(list)` reported changed=true while adding nothing.
+    crate::emitter::collection_adapter::emit_is_ecma_set(chunks, current, list, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_bool_const(false, line);
+    set(&mut chunks[current], changed, line);
+    get(&mut chunks[current], source, line);
+    collections::emit_len(chunks, current, line);
+    set(&mut chunks[current], len_slot, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    set(&mut chunks[current], index_slot, line);
+    let set_outer = chunks[current].emit_block(line);
+    let (set_loop, _) = chunks[current].emit_loop_s(line);
+    get(&mut chunks[current], index_slot, line);
+    get(&mut chunks[current], len_slot, line);
+    ops::emit_dyn_lt(&mut chunks[current], line);
+    ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+    get(&mut chunks[current], source, line);
+    get(&mut chunks[current], index_slot, line);
+    collections::emit_get(chunks, current, line);
+    set(&mut chunks[current], value_slot, line);
+    get(&mut chunks[current], list, line);
+    get(&mut chunks[current], value_slot, line);
+    sets::emit_add_mode(
+        chunks,
+        current,
+        crate::emitter::collection_adapter::JAVA_SET_SEMANTICS,
+        line,
+    );
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_bool_const(true, line);
+    set(&mut chunks[current], changed, line);
+    chunks[current].emit_end(line);
+    get(&mut chunks[current], index_slot, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    ops::emit_dyn_add(&mut chunks[current], line);
+    set(&mut chunks[current], index_slot, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(set_loop);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(set_outer);
+    get(&mut chunks[current], changed, line);
+    chunks[current].emit_else(line);
+
+    emit_is_set_collection(chunks, current, list, line);
+    chunks[current].emit_if_value(line);
     chunks[current].emit_bool_const(false, line);
     set(&mut chunks[current], changed, line);
     get(&mut chunks[current], source, line);
@@ -3279,6 +3346,7 @@ pub fn emit_add_all(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     collections::emit_insert_range(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     get(&mut chunks[current], changed, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
 }
 
@@ -3389,7 +3457,7 @@ pub fn emit_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     get(&mut chunks[current], value, line);
-    vybe_compiler::primitives::sets::emit_clear(chunks, current, line);
+    vybe_compiler::primitives::sets::emit_clear_snapshot(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_else(line);
@@ -3436,6 +3504,14 @@ pub fn emit_contains_all(chunks: &mut [Chunk], current: usize, line: u32) {
     let value = chunks[current].alloc_scratch(1);
     let ok = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], source, line);
+    set(&mut chunks[current], target, line);
+    // Both operands are read by position below — flatten Set shapes to their
+    // values (the receiver is only READ here, so a snapshot is sound).
+    get(&mut chunks[current], source, line);
+    crate::emitter::collection_adapter::emit_values_snapshot(chunks, current, line);
+    set(&mut chunks[current], source, line);
+    get(&mut chunks[current], target, line);
+    crate::emitter::collection_adapter::emit_values_snapshot(chunks, current, line);
     set(&mut chunks[current], target, line);
     chunks[current].emit_bool_const(true, line);
     set(&mut chunks[current], ok, line);
@@ -3495,6 +3571,63 @@ pub fn emit_remove_if(chunks: &mut [Chunk], current: usize, line: u32) {
     set(&mut chunks[current], predicate, line);
     set(&mut chunks[current], list, line);
     emit_throw_if_immutable_list(chunks, current, list, line);
+
+    // Receiver #1: a real ECMA Set — iterate a values snapshot, delete through
+    // the set primitive; the index-based removal below no-ops on a Set.
+    let set_snapshot = chunks[current].alloc_scratch(1);
+    crate::emitter::collection_adapter::emit_is_ecma_set(chunks, current, list, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], list, line);
+    sets::emit_values_array(chunks, current, line);
+    set(&mut chunks[current], set_snapshot, line);
+    get(&mut chunks[current], set_snapshot, line);
+    collections::emit_len(chunks, current, line);
+    set(&mut chunks[current], length, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    set(&mut chunks[current], index, line);
+    chunks[current].emit_bool_const(false, line);
+    set(&mut chunks[current], changed, line);
+    let set_outer = chunks[current].emit_block(line);
+    let (set_loop, _) = chunks[current].emit_loop_s(line);
+    get(&mut chunks[current], index, line);
+    get(&mut chunks[current], length, line);
+    ops::emit_dyn_lt(&mut chunks[current], line);
+    ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+    get(&mut chunks[current], set_snapshot, line);
+    get(&mut chunks[current], index, line);
+    collections::emit_get(chunks, current, line);
+    set(&mut chunks[current], value, line);
+    get(&mut chunks[current], predicate, line);
+    get(&mut chunks[current], value, line);
+    callable::emit_direct_invoke(chunks, current, 1, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    get(&mut chunks[current], list, line);
+    get(&mut chunks[current], value, line);
+    sets::emit_delete_mode(
+        chunks,
+        current,
+        crate::emitter::collection_adapter::JAVA_SET_SEMANTICS,
+        line,
+    );
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_bool_const(true, line);
+    set(&mut chunks[current], changed, line);
+    chunks[current].emit_end(line);
+    get(&mut chunks[current], index, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    ops::emit_dyn_add(&mut chunks[current], line);
+    set(&mut chunks[current], index, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(set_loop);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(set_outer);
+    get(&mut chunks[current], changed, line);
+    chunks[current].emit_else(line);
+
     get(&mut chunks[current], list, line);
     collections::emit_len(chunks, current, line);
     set(&mut chunks[current], length, line);
@@ -3544,6 +3677,7 @@ pub fn emit_remove_if(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_end(line);
     chunks[current].patch_block(outer);
     get(&mut chunks[current], changed, line);
+    chunks[current].emit_end(line);
 }
 
 pub fn emit_replace_all(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -3606,6 +3740,70 @@ fn emit_filter_members(chunks: &mut [Chunk], current: usize, line: u32, retain: 
     set(&mut chunks[current], members, line);
     set(&mut chunks[current], list, line);
     emit_throw_if_immutable_list(chunks, current, list, line);
+
+    // The membership operand is read by position — flatten a Set argument.
+    get(&mut chunks[current], members, line);
+    crate::emitter::collection_adapter::emit_values_snapshot(chunks, current, line);
+    set(&mut chunks[current], members, line);
+
+    // Receiver #1: a real ECMA Set — iterate a values snapshot and delete
+    // through the set primitive; the array path below no-ops on a Set.
+    crate::emitter::collection_adapter::emit_is_ecma_set(chunks, current, list, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], list, line);
+    sets::emit_values_array(chunks, current, line);
+    set(&mut chunks[current], snapshot, line);
+    get(&mut chunks[current], snapshot, line);
+    collections::emit_len(chunks, current, line);
+    set(&mut chunks[current], length, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    set(&mut chunks[current], index, line);
+    chunks[current].emit_bool_const(false, line);
+    set(&mut chunks[current], changed, line);
+    let set_outer = chunks[current].emit_block(line);
+    let (set_loop, _) = chunks[current].emit_loop_s(line);
+    get(&mut chunks[current], index, line);
+    get(&mut chunks[current], length, line);
+    ops::emit_dyn_lt(&mut chunks[current], line);
+    ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+    get(&mut chunks[current], snapshot, line);
+    get(&mut chunks[current], index, line);
+    collections::emit_get(chunks, current, line);
+    set(&mut chunks[current], value, line);
+    get(&mut chunks[current], members, line);
+    get(&mut chunks[current], value, line);
+    collections::emit_contains(chunks, current, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    if retain {
+        chunks[current].emit_op(Op::I32_EQZ, line);
+    }
+    chunks[current].emit_if(line);
+    get(&mut chunks[current], list, line);
+    get(&mut chunks[current], value, line);
+    sets::emit_delete_mode(
+        chunks,
+        current,
+        crate::emitter::collection_adapter::JAVA_SET_SEMANTICS,
+        line,
+    );
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_bool_const(true, line);
+    set(&mut chunks[current], changed, line);
+    chunks[current].emit_end(line);
+    get(&mut chunks[current], index, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    ops::emit_dyn_add(&mut chunks[current], line);
+    set(&mut chunks[current], index, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(set_loop);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(set_outer);
+    get(&mut chunks[current], changed, line);
+    chunks[current].emit_else(line);
+
     get(&mut chunks[current], list, line);
     collections::emit_clone(chunks, current, line);
     set(&mut chunks[current], snapshot, line);
@@ -3656,4 +3854,5 @@ fn emit_filter_members(chunks: &mut [Chunk], current: usize, line: u32, retain: 
     chunks[current].emit_end(line);
     chunks[current].patch_block(outer);
     get(&mut chunks[current], changed, line);
+    chunks[current].emit_end(line);
 }

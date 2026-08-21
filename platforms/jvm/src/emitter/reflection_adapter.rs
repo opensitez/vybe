@@ -11,6 +11,47 @@ use vybe_compiler::primitives::{reflection, strings};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
+/// `Field.set(obj, name, value)` — reflective field write, answering the
+/// written value. Stack: `[obj, name, value] -> [value]`.
+pub fn emit_field_set(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    let field = chunks[current].alloc_scratch(1);
+    let object = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, field, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, object, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, object, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, field, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    host::emit(&mut chunks[current], "ecma:object", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+}
+
+/// Reflective numeric field increment: `obj.<name> += delta`, answering the
+/// new value. Stack: `[obj, name, delta] -> [new value]`.
+pub fn emit_field_inc(chunks: &mut [Chunk], current: usize, line: u32) {
+    let delta = chunks[current].alloc_scratch(1);
+    let field = chunks[current].alloc_scratch(1);
+    let object = chunks[current].alloc_scratch(1);
+    let value = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, delta, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, field, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, object, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, object, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, field, line);
+    host::emit(&mut chunks[current], "ecma:object", "get", 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, delta, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, object, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, field, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    host::emit(&mut chunks[current], "ecma:object", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+}
+
 fn get(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
 }

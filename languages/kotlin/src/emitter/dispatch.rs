@@ -7,9 +7,6 @@
 use vybe_runtime::Chunk;
 
 pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
-    if name.starts_with("java.") {
-        return vybe_language_java::emitter::dispatch::dispatch(name, chunks, current, argc, line);
-    }
     match name {
         "kotlin.sorted_set_of" => {
             crate::emitter::hof::emit_sorted_set_of(chunks, current, argc, line);
@@ -955,22 +952,6 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::system::emit_random_default(chunks, current, line);
             true
         }
-        "kotlin.random_next_int" => {
-            crate::emitter::system::emit_random_next_int(chunks, current, argc, line);
-            true
-        }
-        "kotlin.random_next_long" => {
-            crate::emitter::system::emit_random_next_long(chunks, current, argc, line);
-            true
-        }
-        "kotlin.random_next_double" => {
-            crate::emitter::system::emit_random_next_double(chunks, current, argc, line);
-            true
-        }
-        "kotlin.random_next_bytes" => {
-            crate::emitter::system::emit_random_next_bytes(chunks, current, argc, line);
-            true
-        }
         // Identity at RUNTIME — the marker's whole job is carrying the
         // Double static type out of the erased `toDouble(unit)` call.
         "kotlin.as_double" => true,
@@ -1066,18 +1047,6 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::tostring::emit_join_to_string(chunks, current, argc, line);
             true
         }
-        "kotlin.add" => {
-            crate::emitter::collections::emit_add(chunks, current, argc, line);
-            true
-        }
-        "kotlin.remove" => {
-            crate::emitter::collections::emit_remove(chunks, current, argc, line);
-            true
-        }
-        "kotlin.set_add" => {
-            crate::emitter::collections::emit_set_add(chunks, current, argc, line);
-            true
-        }
         "kotlin.set_size" => {
             crate::emitter::collections::emit_set_size(chunks, current, argc, line);
             true
@@ -1114,10 +1083,6 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::collections::emit_is_mutable_list(chunks, current, argc, line);
             true
         }
-        "kotlin.add_all" => {
-            crate::emitter::collections::emit_add_all(chunks, current, argc, line);
-            true
-        }
         "kotlin.set_union" => {
             crate::emitter::collections::emit_set_union(chunks, current, argc, line);
             true
@@ -1128,18 +1093,6 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "kotlin.set_subtract" => {
             crate::emitter::collections::emit_set_subtract(chunks, current, argc, line);
-            true
-        }
-        "kotlin.remove_all" => {
-            crate::emitter::collections::emit_remove_all(chunks, current, argc, line);
-            true
-        }
-        "kotlin.retain_all" => {
-            crate::emitter::collections::emit_retain_all(chunks, current, argc, line);
-            true
-        }
-        "kotlin.contains_all" => {
-            crate::emitter::collections::emit_contains_all(chunks, current, argc, line);
             true
         }
         "kotlin.is_empty" => {

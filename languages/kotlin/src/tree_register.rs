@@ -60,12 +60,12 @@ fn kotlin_random_type() -> NamespaceNode {
 
     let mut methods = Subtree::new();
     for (name, emit, min_args, max_args) in [
-        ("nextint", "kotlin.random_next_int", 0, 2),
-        ("nextlong", "kotlin.random_next_long", 0, 2),
-        ("nextdouble", "kotlin.random_next_double", 0, 2),
+        ("nextint", "jvm.java.random_next_int", 0, 2),
+        ("nextlong", "jvm.java.random_next_long", 0, 2),
+        ("nextdouble", "jvm.java.random_next_double", 0, 2),
         ("nextfloat", "jvm.java.random_next_float", 0, 0),
         ("nextboolean", "jvm.java.random_next_boolean", 0, 0),
-        ("nextbytes", "kotlin.random_next_bytes", 1, 1),
+        ("nextbytes", "jvm.java.random_next_bytes", 1, 1),
     ] {
         methods.insert(name.to_string(), common_method(emit, min_args, max_args));
     }
@@ -220,7 +220,7 @@ pub fn register_namespace_tree() {
             ("collections.union", "kotlin.set_union"),
             ("collections.intersect", "kotlin.set_intersect"),
             ("collections.subtract", "kotlin.set_subtract"),
-            ("collections.containsall", "kotlin.contains_all"),
+            ("collections.containsall", "jvm.java.list_contains_all"),
         ] {
             insert_path(&mut root, name, common_emit(emit));
         }
@@ -240,7 +240,7 @@ pub fn register_namespace_tree() {
             ("union", "kotlin.set_union"),
             ("intersect", "kotlin.set_intersect"),
             ("subtract", "kotlin.set_subtract"),
-            ("containsall", "kotlin.contains_all"),
+            ("containsall", "jvm.java.list_contains_all"),
             ("toset", "kotlin.to_set"),
             ("tomutableset", "kotlin.to_set"),
             ("tohashset", "kotlin.to_hash_set"),
@@ -263,13 +263,13 @@ pub fn register_namespace_tree() {
             "collections.mutableset",
             kotlin_collection_type(
                 &[
-                    ("add", "kotlin.add"),
+                    ("add", "jvm.java.add"),
                     ("remove", "kotlin.remove_any"),
                     ("clear", "kotlin.clear_any"),
                     ("union", "kotlin.set_union"),
                     ("intersect", "kotlin.set_intersect"),
                     ("subtract", "kotlin.set_subtract"),
-                    ("containsall", "kotlin.contains_all"),
+                    ("containsall", "jvm.java.list_contains_all"),
                     ("toset", "kotlin.to_set"),
                     ("tomutableset", "kotlin.to_set"),
                     ("tohashset", "kotlin.to_hash_set"),
@@ -292,12 +292,12 @@ pub fn register_namespace_tree() {
             insert_path(&mut root, name, NamespaceNode::Const(Value::F64(value)));
         }
         for (name, emit, min_args, max_args) in [
-            ("random.nextint", "kotlin.random_next_int", 1, 3),
-            ("random.nextlong", "kotlin.random_next_long", 1, 3),
-            ("random.nextdouble", "kotlin.random_next_double", 1, 3),
+            ("random.nextint", "jvm.java.random_next_int", 1, 3),
+            ("random.nextlong", "jvm.java.random_next_long", 1, 3),
+            ("random.nextdouble", "jvm.java.random_next_double", 1, 3),
             ("random.nextfloat", "jvm.java.random_next_float", 1, 1),
             ("random.nextboolean", "jvm.java.random_next_boolean", 1, 1),
-            ("random.nextbytes", "kotlin.random_next_bytes", 2, 2),
+            ("random.nextbytes", "jvm.java.random_next_bytes", 2, 2),
         ] {
             insert_path(&mut root, name, common_method(emit, min_args, max_args));
         }

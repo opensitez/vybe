@@ -137,12 +137,12 @@ __coll_slice      = { emit = "common:collections.slice", min_args = 3, max_args 
 __coll_sum        = { emit = "common:collections.sum", min_args = 1, max_args = 1 }
 __coll_min        = { emit = "common:collections.min", min_args = 1, max_args = 1 }
 __coll_max        = { emit = "common:collections.max", min_args = 1, max_args = 1 }
-__kt_random_next_int = { emit = "common:kotlin.random_next_int", min_args = 1, max_args = 3 }
-__kt_random_next_long = { emit = "common:kotlin.random_next_long", min_args = 1, max_args = 3 }
-__kt_random_next_double = { emit = "common:kotlin.random_next_double", min_args = 1, max_args = 3 }
+__kt_random_next_int = { emit = "common:jvm.java.random_next_int", min_args = 1, max_args = 3 }
+__kt_random_next_long = { emit = "common:jvm.java.random_next_long", min_args = 1, max_args = 3 }
+__kt_random_next_double = { emit = "common:jvm.java.random_next_double", min_args = 1, max_args = 3 }
 __kt_random_next_float = { emit = "common:jvm.java.random_next_float", min_args = 1, max_args = 1 }
 __kt_random_next_boolean = { emit = "common:jvm.java.random_next_boolean", min_args = 1, max_args = 1 }
-__kt_random_next_bytes = { emit = "common:kotlin.random_next_bytes", min_args = 2, max_args = 2 }
+__kt_random_next_bytes = { emit = "common:jvm.java.random_next_bytes", min_args = 2, max_args = 2 }
 __jvm_add = { emit = "common:jvm.java.add", min_args = 2, max_args = 3 }
 __jvm_map_get = { emit = "common:jvm.java.map_get", min_args = 2, max_args = 2 }
 __jvm_map_put = { emit = "common:jvm.java.map_put", min_args = 3, max_args = 3 }
@@ -210,10 +210,9 @@ __kt_sublist_clear = { emit = "common:kotlin.sublist_clear", min_args = 3, max_a
 __dict_keys   = { emit = "common:dict.keys",        min_args = 1, max_args = 1 }
 __dict_values = { emit = "common:dict.values",      min_args = 1, max_args = 1 }
 __dict_items  = { emit = "common:dict.items",       min_args = 1, max_args = 1 }
-__kt_add      = { emit = "common:kotlin.add",       min_args = 2, max_args = 2 }
-__kt_remove   = { emit = "common:kotlin.remove",    min_args = 2, max_args = 2 }
+__kt_add      = { emit = "common:jvm.java.add",       min_args = 2, max_args = 2 }
+__kt_remove   = { emit = "common:jvm.java.list_remove_value", min_args = 2, max_args = 2 }
 __kt_put_all  = { emit = "common:kotlin.put_all",   min_args = 2, max_args = 2 }
-__kt_set_add  = { emit = "common:kotlin.set_add",   min_args = 3, max_args = 3 }
 __kt_set_literal = { emit = "common:kotlin.set_literal", min_args = 0, max_args = 255 }
 __kt_set_size = { emit = "common:kotlin.set_size",  min_args = 1, max_args = 1 }
 __kt_set_has  = { emit = "common:kotlin.set_has",   min_args = 2, max_args = 2 }
@@ -222,13 +221,13 @@ __kt_to_hash_set = { emit = "common:kotlin.to_hash_set", min_args = 1, max_args 
 __kt_to_list         = { emit = "common:kotlin.to_list",   min_args = 1, max_args = 1 }
 __kt_to_mutable_list = { emit = "common:kotlin.to_mutable_list", min_args = 1, max_args = 1 }
 __kt_is_mutable_list = { emit = "common:kotlin.is_mutable_list", min_args = 1, max_args = 1 }
-__kt_add_all  = { emit = "common:kotlin.add_all",   min_args = 2, max_args = 2 }
+__kt_add_all  = { emit = "common:jvm.java.add_all",   min_args = 2, max_args = 2 }
 __kt_set_union = { emit = "common:kotlin.set_union", min_args = 2, max_args = 2 }
 __kt_set_intersect = { emit = "common:kotlin.set_intersect", min_args = 2, max_args = 2 }
 __kt_set_subtract = { emit = "common:kotlin.set_subtract", min_args = 2, max_args = 2 }
-__kt_remove_all = { emit = "common:kotlin.remove_all", min_args = 2, max_args = 2 }
-__kt_retain_all = { emit = "common:kotlin.retain_all", min_args = 2, max_args = 2 }
-__kt_contains_all = { emit = "common:kotlin.contains_all", min_args = 2, max_args = 2 }
+__kt_remove_all = { emit = "common:jvm.java.remove_all", min_args = 2, max_args = 2 }
+__kt_retain_all = { emit = "common:jvm.java.retain_all", min_args = 2, max_args = 2 }
+__kt_contains_all = { emit = "common:jvm.java.list_contains_all", min_args = 2, max_args = 2 }
 __kt_is_empty = { emit = "common:kotlin.is_empty",  min_args = 1, max_args = 1 }
 __kt_is_not_empty = { emit = "common:kotlin.is_not_empty", min_args = 1, max_args = 1 }
 
@@ -618,7 +617,7 @@ asReversed       = { emit = "common:collections.reverse", min_args = 0, max_args
 binarySearch     = { emit = "common:kotlin.binary_search_range", min_args = 1, max_args = 3 }
 plus             = { emit = "common:kotlin.plus", min_args = 1, max_args = 1 }
 minus            = { emit = "common:kotlin.minus", min_args = 1, max_args = 1 }
-containsAll      = { emit = "common:kotlin.contains_all", min_args = 1, max_args = 1 }
+containsAll      = { emit = "common:jvm.java.list_contains_all", min_args = 1, max_args = 1 }
 mapKeys          = { emit = "common:kotlin.map_keys_transform", min_args = 1, max_args = 1 }
 mapValues        = { emit = "common:kotlin.map_values_transform", min_args = 1, max_args = 1 }
 filterKeys       = { emit = "common:kotlin.filter_keys", min_args = 1, max_args = 1 }

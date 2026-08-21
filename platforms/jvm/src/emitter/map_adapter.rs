@@ -1,7 +1,7 @@
 //! JVM `java.util.Map` adapters.
 
 use vybe_compiler::primitives::{
-    collections, errors,
+    collections,
     instructions::{core_wasm, host},
     ops, sorted_collection,
 };
@@ -42,11 +42,7 @@ pub fn emit_mark_immutable_map(chunks: &mut [Chunk], current: usize, line: u32) 
     mark_bool(chunks, current, IMMUTABLE_MAP_KEY, line);
 }
 
-fn emit_jvm_exception_throw(chunks: &mut [Chunk], current: usize, name: &str, line: u32) {
-    chunks[current].emit_string_const(name, line);
-    host::emit(&mut chunks[current], "ecma:object", "new", 0, line);
-    errors::emit_throw(&mut chunks[current], line);
-}
+use crate::emitter::exceptions::emit_jvm_exception_throw;
 
 fn emit_throw_if_immutable_map(chunks: &mut [Chunk], current: usize, map: u16, line: u32) {
     get(&mut chunks[current], map, line);
@@ -173,6 +169,19 @@ pub fn emit_get(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_end(line);
 
     get(&mut chunks[current], result, line);
+}
+
+/// `Map.Entry.getKey()` — an entry is a `[key, value]` pair.
+/// Stack: `[entry] -> [key]`.
+pub fn emit_entry_key(chunks: &mut [Chunk], current: usize, line: u32) {
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    collections::emit_get(chunks, current, line);
+}
+
+/// `Map.Entry.getValue()`. Stack: `[entry] -> [value]`.
+pub fn emit_entry_value(chunks: &mut [Chunk], current: usize, line: u32) {
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    collections::emit_get(chunks, current, line);
 }
 
 pub fn emit_put(chunks: &mut [Chunk], current: usize, line: u32) {

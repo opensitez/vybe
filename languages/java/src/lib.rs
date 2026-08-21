@@ -29,7 +29,10 @@ pub fn register() {
         name: "java",
         parse,
         profile_source,
-        emit_dispatch: Some(emitter::dispatch::dispatch),
+        // No language-owned emitters: the whole `java.*` surface is
+        // `platforms/jvm`'s (`common:jvm.java.*`), resolved by platform
+        // prefix through the registry.
+        emit_dispatch: None,
         normalize_class: Some(normalize_class::normalize_class),
         // The `java.*` root is a PLATFORM capability, not this frontend's
         // property: `vybe_platform_jvm` registers it from its own
