@@ -37,7 +37,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use vybe_runtime::value::Object;
-use vybe_runtime::{VM, Value};
+use vybe_runtime::{HostContext, VM, Value};
 
 // ── Resource registry ─────────────────────────────────────────────
 //
@@ -148,6 +148,51 @@ pub(super) fn err(code: &str) -> Value {
     o.properties
         .insert("__wasi_error".into(), Value::String(Arc::from(code)));
     Value::Object(vybe_runtime::heap::alloc(o))
+}
+
+/// The `future<result<_, error-code>>` that 0.3.1's stream-consuming writes
+/// answer, already settled.
+///
+/// The WIT says these "return once either full contents of the stream are
+/// written or an error is encountered", so there is nothing left pending by
+/// the time this is built — the future carries the OUTCOME, not a promise of
+/// later work. `Value::Null` is success; an `error-code` string is failure,
+/// matching how the rest of this module spells one.
+/// A 0.3.1 `tuple<stream<u8>, future<result<_, error-code>>>`.
+///
+/// The one shape every stream-producing WASI 0.3.1 function answers with, so
+/// it is built in one place rather than spelled out per call site. `failure`
+/// is `None` for a clean read; a `Some(code)` resolves the future with the
+/// `error-code` while still handing over the bytes that did arrive.
+fn stream_future_tuple(ctx: &mut HostContext, bytes: &[u8], failure: Option<&str>) -> Value {
+    let (stream_val, stream_id) = ctx.create_stream();
+    for byte in bytes {
+        ctx.stream_push(stream_id, Value::I32(*byte as i32));
+    }
+    // Closed, not left open: an open-but-empty end answers BLOCKED to
+    // `canon stream.read`, which leaves it COPYING and traps the next read.
+    ctx.stream_close(stream_id);
+    let (future_val, future_id) = ctx.create_future();
+    ctx.resolve_future(
+        future_id,
+        match failure {
+            None => Value::Null,
+            Some(code) => Value::String(Arc::from(code)),
+        },
+    );
+    Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
+        stream_val, future_val,
+    ])))
+}
+
+fn resolved_write_future(ctx: &mut HostContext, outcome: std::io::Result<()>) -> Value {
+    let (future_val, future_id) = ctx.create_future();
+    let settled = match outcome {
+        Ok(()) => Value::Null,
+        Err(e) => Value::String(Arc::from(map_io_error(&e))),
+    };
+    ctx.resolve_future(future_id, settled);
+    future_val
 }
 
 pub(super) fn map_io_error(e: &std::io::Error) -> &'static str {
@@ -693,10 +738,40 @@ fn register_types(vm: &mut VM) {
         }),
     );
 
+    // §descriptor.read-via-stream, `wasi:filesystem@0.3.1`
+    // (`proposals/WASI/proposals/filesystem/wit/types.wit`):
+    //
+    //     read-via-stream: func(offset: filesize)
+    //         -> tuple<stream<u8>, future<result<_, error-code>>>;
+    //
+    // A TUPLE, and element 0 is the readable end — the same shape every 0.3.1
+    // stream producer answers with (`wasi:cli/stdin.read-via-stream`,
+    // `[static]request.consume-body`). It used to answer a bare registry
+    // object readable only through the `wasi:io/streams` methods below, which
+    // is a package 0.3.1 deleted: a guest doing the conformant thing
+    // (`canon stream.read`) got a value that arm cannot accept, while the
+    // non-conformant path worked. That is the failure mode this whole
+    // migration exists to remove.
+    //
+    // The bytes are pushed EAGERLY, from `offset` to EOF, and the stream is
+    // then closed. Two reasons, and the second is the load-bearing one:
+    //
+    //   - A file's bytes are available synchronously, exactly as a piped
+    //     stdin's are, so there is nothing to wait for.
+    //   - `canon stream.read` on an open-but-empty end answers BLOCKED and
+    //     leaves the end COPYING, where the NEXT read traps. Closing is what
+    //     makes the guest's drain loop terminate.
+    //
+    // The cost is real and stated rather than hidden: this is O(bytes from
+    // offset) per call, so a positioned record read materialises the tail of
+    // the file. The fix is a refill hook on the event loop that tops an open
+    // stream up on demand; a bounded chunk that then closed would instead
+    // SILENTLY TRUNCATE, and answering less than was asked for without saying
+    // so is worse than answering slowly.
     vm.register_host_fn(
         "wasi:filesystem/types",
         "[method]descriptor.read-via-stream",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let Some(id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else {
                 return err("bad-descriptor");
             };
@@ -713,36 +788,49 @@ fn register_types(vm: &mut VM) {
                 Ok(f) => f,
                 Err(e) => return err(map_io_error(&e)),
             };
+            // The WIT likens the positioned pair to `pread`/`pwrite`, so the
+            // offset positions THIS read and nothing else — there is no
+            // descriptor-wide cursor to disturb.
             if offset > 0 {
                 if let Err(e) = file.seek(SeekFrom::Start(offset)) {
                     return err(map_io_error(&e));
                 }
             }
-            let stream_id = {
-                let mut reg = registry().lock().unwrap();
-                let stream_id = alloc_id();
-                reg.input_streams.insert(
-                    stream_id,
-                    InputStreamKind::File {
-                        file,
-                        position: offset,
-                    },
-                );
-                stream_id
+            let mut bytes = Vec::new();
+            // A read that fails partway still hands over what it got, with the
+            // failure carried by the future: the stream and the outcome are
+            // two channels in 0.3.1 precisely so a partial read is expressible.
+            let failure = match file.read_to_end(&mut bytes) {
+                Ok(_) => None,
+                Err(e) => Some(map_io_error(&e)),
             };
-            make_resource(KIND_INPUT_STREAM, stream_id)
+            stream_future_tuple(ctx, &bytes, failure)
         }),
     );
 
-    // write-via-stream(offset) → output-stream
+    // §descriptor.write-via-stream, `wasi:filesystem@0.3.1`:
+    //
+    //     write-via-stream: func(data: stream<u8>, offset: filesize)
+    //                       -> future<result<_, error-code>>
+    //
+    // The DATA STREAM IS AN ARGUMENT and the answer is a future — the same
+    // shape as `wasi:cli/stdout.write-via-stream(data)`. It used to be the 0.2
+    // form, `write-via-stream(offset) -> output-stream`: a writable resource
+    // the guest then fed through `wasi:io/streams`, a package 0.3 deleted. So
+    // the direction inverted — the guest now produces the bytes and this
+    // consumes them, rather than handing back an end to push into.
+    //
+    // `ctx.stream_drain` takes either form the guest can hand over: an
+    // `ObjectKind::Stream` marker, or the i32 readable-end handle a conforming
+    // component lowers (CanonicalABI §HandleTable).
     vm.register_host_fn(
         "wasi:filesystem/types",
         "[method]descriptor.write-via-stream",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let Some(id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else {
                 return err("bad-descriptor");
             };
-            let offset = u64_arg(args, 1, 0);
+            let offset = u64_arg(args, 2, 0);
             let path = {
                 let reg = registry().lock().unwrap();
                 match reg.descriptors.get(&id) {
@@ -751,31 +839,36 @@ fn register_types(vm: &mut VM) {
                     None => return err("bad-descriptor"),
                 }
             };
+            let bytes = match args.get(1) {
+                Some(data) => ctx.stream_drain(data),
+                None => Vec::new(),
+            };
+            // §write-via-stream: "It is valid to write past the end of a file;
+            // the file is extended to the extent of the write, with bytes
+            // between the previous end and the start of the write set to zero."
+            // `File::seek` past the end plus a write does exactly that.
             let mut file = match OpenOptions::new().write(true).open(&path) {
                 Ok(f) => f,
                 Err(e) => return err(map_io_error(&e)),
             };
-            if offset > 0 {
-                if let Err(e) = file.seek(SeekFrom::Start(offset)) {
-                    return err(map_io_error(&e));
-                }
+            if let Err(e) = file.seek(SeekFrom::Start(offset)) {
+                return err(map_io_error(&e));
             }
-            let stream_id = {
-                let mut reg = registry().lock().unwrap();
-                let sid = alloc_id();
-                reg.output_streams
-                    .insert(sid, OutputStreamKind::File { file });
-                sid
-            };
-            make_resource(KIND_OUTPUT_STREAM, stream_id)
+            resolved_write_future(ctx, file.write_all(&bytes))
         }),
     );
 
-    // append-via-stream() → output-stream
+    // §descriptor.append-via-stream, 0.3.1:
+    //
+    //     append-via-stream: func(data: stream<u8>)
+    //                        -> future<result<_, error-code>>
+    //
+    // Same inversion as `write-via-stream`, without an offset — the position
+    // is "the end", established by the open mode rather than a seek.
     vm.register_host_fn(
         "wasi:filesystem/types",
         "[method]descriptor.append-via-stream",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let Some(id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else {
                 return err("bad-descriptor");
             };
@@ -787,14 +880,15 @@ fn register_types(vm: &mut VM) {
                     None => return err("bad-descriptor"),
                 }
             };
-            let stream_id = {
-                let mut reg = registry().lock().unwrap();
-                let sid = alloc_id();
-                reg.output_streams
-                    .insert(sid, OutputStreamKind::Append(path));
-                sid
+            let bytes = match args.get(1) {
+                Some(data) => ctx.stream_drain(data),
+                None => Vec::new(),
             };
-            make_resource(KIND_OUTPUT_STREAM, stream_id)
+            let mut file = match OpenOptions::new().append(true).create(true).open(&path) {
+                Ok(f) => f,
+                Err(e) => return err(map_io_error(&e)),
+            };
+            resolved_write_future(ctx, file.write_all(&bytes))
         }),
     );
 
@@ -931,89 +1025,18 @@ fn register_types(vm: &mut VM) {
         }),
     );
 
-    // read(length, offset) → result<tuple<list<u8>, bool>, error-code>  (pread)
-    vm.register_host_fn(
-        "wasi:filesystem/types",
-        "[method]descriptor.read",
-        Box::new(|_ctx, args| {
-            let Some(id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else {
-                return err("bad-descriptor");
-            };
-            let length = u64_arg(args, 1, 0);
-            let offset = u64_arg(args, 2, 0);
-            let path = {
-                let reg = registry().lock().unwrap();
-                match reg.descriptors.get(&id) {
-                    Some(DescriptorKind::File(p)) => p.clone(),
-                    Some(DescriptorKind::Directory(_)) => return err("is-directory"),
-                    None => return err("bad-descriptor"),
-                }
-            };
-            let mut file = match File::open(&path) {
-                Ok(f) => f,
-                Err(e) => return err(map_io_error(&e)),
-            };
-            if let Err(e) = file.seek(SeekFrom::Start(offset)) {
-                return err(map_io_error(&e));
-            }
-            let cap = length.min(64 * 1024) as usize;
-            let mut buf = vec![0u8; cap];
-            match file.read(&mut buf) {
-                Ok(n) => {
-                    buf.truncate(n);
-                    let eof = n == 0 || n < cap;
-                    let bytes: Vec<Value> = buf.into_iter().map(|b| Value::I32(b as i32)).collect();
-                    let bytes_val =
-                        Value::Object(vybe_runtime::heap::alloc(Object::new_array(bytes)));
-                    let tuple = Object::new_array(vec![bytes_val, Value::Bool(eof)]);
-                    Value::Object(vybe_runtime::heap::alloc(tuple))
-                }
-                Err(e) => err(map_io_error(&e)),
-            }
-        }),
-    );
-
-    // write(bytes, offset) → result<u64, error-code>  (pwrite)
-    vm.register_host_fn(
-        "wasi:filesystem/types",
-        "[method]descriptor.write",
-        Box::new(|_ctx, args| {
-            let Some(id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else {
-                return err("bad-descriptor");
-            };
-            let bytes_val = args.get(1).cloned().unwrap_or(Value::Null);
-            let offset = u64_arg(args, 2, 0);
-            let bytes: Vec<u8> = if let Value::Object(arr) = &bytes_val {
-                let inner = arr.lock().unwrap();
-                if let vybe_runtime::value::ObjectKind::Array(ref elems) = inner.kind {
-                    elems.iter().map(|v| v.as_f64() as u8).collect()
-                } else {
-                    return err("invalid");
-                }
-            } else {
-                return err("invalid");
-            };
-            let path = {
-                let reg = registry().lock().unwrap();
-                match reg.descriptors.get(&id) {
-                    Some(DescriptorKind::File(p)) => p.clone(),
-                    Some(DescriptorKind::Directory(_)) => return err("is-directory"),
-                    None => return err("bad-descriptor"),
-                }
-            };
-            let mut file = match OpenOptions::new().write(true).open(&path) {
-                Ok(f) => f,
-                Err(e) => return err(map_io_error(&e)),
-            };
-            if let Err(e) = file.seek(SeekFrom::Start(offset)) {
-                return err(map_io_error(&e));
-            }
-            match file.write_all(&bytes) {
-                Ok(_) => Value::F64(bytes.len() as f64),
-                Err(e) => err(map_io_error(&e)),
-            }
-        }),
-    );
+    // `descriptor.read(length, offset)` and `descriptor.write(bytes, offset)`
+    // — WASI 0.2's pread/pwrite — are DELETED in 0.3.1 and are not registered.
+    //
+    // `proposals/WASI/proposals/filesystem/wit/types.wit` (`package
+    // wasi:filesystem@0.3.1`) defines exactly two ways to move bytes:
+    // `read-via-stream(offset)` and `write-via-stream(data, offset)`, both
+    // `@since(version = 0.3.0)` and both documented as "similar to pread/pwrite".
+    // Positioned access survives; the positioned CALLS do not.
+    //
+    // They are removed rather than deprecated because a non-conformant call that
+    // still resolves is worse than one that fails: record file I/O was about to
+    // be built on this pair precisely because it was here and it worked.
 
     // sync() → result
     vm.register_host_fn(

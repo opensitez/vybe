@@ -12,6 +12,7 @@
 
 pub mod crypto;
 pub mod filesystem;
+pub mod fsops;
 pub mod http;
 pub mod io;
 pub mod plugin;

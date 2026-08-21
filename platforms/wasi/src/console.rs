@@ -110,19 +110,51 @@ pub fn register(vm: &mut VM) {
     //
     // The stream carries stdin's bytes and the future signals how the read
     // ended: resolved with success at clean EOF, with an `error-code` if the
-    // read failed. When stdin is a terminal the stream is closed empty rather
-    // than blocking the process waiting for a key — interactive reads are the
-    // 0.2 `get-stdin` + `input-stream.blocking-read` path, which stays bound
-    // above and is what a prompting program uses.
+    // read failed.
+    //
+    // How MUCH arrives per call depends on what stdin is, and both answers are
+    // honest ones:
+    //
+    //   - A pipe or a file has all its bytes already, so one `read_to_end`
+    //     hands the whole thing over and the next call sees EOF.
+    //   - A TERMINAL has nothing until somebody types, so this blocks for one
+    //     line and closes. It used to close EMPTY here on the grounds that
+    //     interactive reads were the 0.2 `get-stdin` + `blocking-read` path —
+    //     but 0.3 deleted `wasi:io` and that path with it, so closing empty
+    //     now means `input()` answers "" forever at a prompt.
+    //
+    // The stream is closed either way rather than left open for more, because
+    // a guest reading it synchronously cannot wait: `canon stream.read` on an
+    // open-but-empty end answers BLOCKED and leaves the end COPYING, where the
+    // NEXT read traps. Closing makes the drain terminate; the caller asks for
+    // the following line by asking for the stream again. Line splitting itself
+    // is the guest's (`primitives::io::emit_input`), not this function's — a
+    // stream carries bytes.
     vm.register_host_fn(
         "wasi:cli/stdin",
         "read-via-stream",
         Box::new(|ctx: &mut HostContext, _args: &[Value]| {
-            use std::io::{IsTerminal, Read};
+            use std::io::{BufRead, IsTerminal, Read};
 
             let (stream_val, stream_id) = ctx.create_stream();
             let mut failure: Option<&str> = None;
-            if !std::io::stdin().is_terminal() {
+            if std::io::stdin().is_terminal() {
+                let mut buffer = String::new();
+                match std::io::stdin().lock().read_line(&mut buffer) {
+                    Ok(_) => {
+                        for byte in buffer.as_bytes() {
+                            ctx.stream_push(stream_id, Value::I32(*byte as i32));
+                        }
+                    }
+                    Err(error) => {
+                        failure = Some(match error.kind() {
+                            std::io::ErrorKind::BrokenPipe => "pipe",
+                            std::io::ErrorKind::InvalidData => "illegal-byte-sequence",
+                            _ => "io",
+                        })
+                    }
+                }
+            } else {
                 let mut buffer = Vec::new();
                 match std::io::stdin().read_to_end(&mut buffer) {
                     Ok(_) => {

@@ -20,6 +20,7 @@ mod io_contracts;
 mod io_length_matrix;
 mod io_poll_matrix;
 mod random;
+mod stream_drain;
 mod sockets;
 mod sockets_contracts;
 mod tls;

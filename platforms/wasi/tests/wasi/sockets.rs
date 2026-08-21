@@ -27,7 +27,7 @@ fn call_import(module: &str, name: &str, args: Vec<Value>) -> Value {
                     "__test_arg_{}",
                     TEST_GLOBAL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                 );
-                vm.globals.insert(global_name.clone(), other);
+                vm.set_global_owned(global_name.clone(), other);
                 let ci = chunk.intern_string_constant(&global_name);
                 chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
             }
@@ -59,7 +59,7 @@ fn call_import_result(module: &str, name: &str, args: Vec<Value>) -> Result<Valu
                     "__test_arg_{}",
                     TEST_GLOBAL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                 );
-                vm.globals.insert(global_name.clone(), other);
+                vm.set_global_owned(global_name.clone(), other);
                 let ci = chunk.intern_string_constant(&global_name);
                 chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
             }
@@ -576,7 +576,7 @@ fn call_on(vm: &mut VM, module: &str, name: &str, args: Vec<Value>) -> Value {
                     "__test_arg_{}",
                     TEST_GLOBAL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                 );
-                vm.globals.insert(global_name.clone(), other);
+                vm.set_global_owned(global_name.clone(), other);
                 let ci = chunk.intern_string_constant(&global_name);
                 chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
             }

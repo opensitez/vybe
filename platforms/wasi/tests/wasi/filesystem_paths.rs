@@ -42,7 +42,7 @@ fn invoke(module: &str, name: &str, args: Vec<Value>) -> Value {
                     "__test_arg_{}",
                     TEST_GLOBAL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                 );
-                vm.globals.insert(global_name.clone(), other);
+                vm.set_global_owned(global_name.clone(), other);
                 let ci = chunk.intern_string_constant(&global_name);
                 chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
             }
@@ -604,62 +604,32 @@ fn read_via_stream_from_nested_file_observes_initial_offset() {
     let dir = scratch_dir("stream_nested_offset");
     std::fs::create_dir_all(dir.join("nested")).unwrap();
     std::fs::write(dir.join("nested/file.txt"), b"abcdef").unwrap();
-    let root = open_test_root(&dir);
-    let descriptor = types(
-        "[method]descriptor.open-at",
-        vec![
-            root,
-            Value::I32(0),
-            s("nested/file.txt"),
-            Value::I32(0),
-            Value::I32(0),
-        ],
-    );
-
-    let stream = types(
-        "[method]descriptor.read-via-stream",
-        vec![descriptor, Value::F64(3.0)],
-    );
-    let bytes = invoke(
-        "wasi:io/streams",
-        "[method]input-stream.read",
-        vec![stream, Value::F64(3.0)],
-    );
-    assert_eq!(bytes_from_array(&bytes), b"def");
+    let bytes = crate::stream_drain::read_via_stream(&dir, "nested/file.txt", 3.0);
+    assert_eq!(bytes, b"def");
 }
 
+/// 0.3.1 has no stream CURSOR to consume: `read-via-stream` is positioned like
+/// `pread`, so two reads at the same offset see the same bytes and the offset
+/// is the only thing that moves them. The 0.2 version of this test asserted
+/// that a second read continued where the first stopped, which was a property
+/// of the `input-stream` resource that no longer exists.
 #[test]
-fn input_stream_read_consumes_remaining_bytes_across_multiple_reads() {
+fn repeated_reads_are_positioned_by_offset_not_by_a_cursor() {
     let dir = scratch_dir("stream_multiple_reads");
     std::fs::write(dir.join("payload.bin"), b"abcdefgh").unwrap();
-    let root = open_test_root(&dir);
-    let descriptor = types(
-        "[method]descriptor.open-at",
-        vec![
-            root,
-            Value::I32(0),
-            s("payload.bin"),
-            Value::I32(0),
-            Value::I32(0),
-        ],
+    assert_eq!(
+        crate::stream_drain::read_via_stream(&dir, "payload.bin", 1.0),
+        b"bcdefgh"
     );
-    let stream = types(
-        "[method]descriptor.read-via-stream",
-        vec![descriptor, Value::F64(1.0)],
+    assert_eq!(
+        crate::stream_drain::read_via_stream(&dir, "payload.bin", 4.0),
+        b"efgh"
     );
-
-    let first = invoke(
-        "wasi:io/streams",
-        "[method]input-stream.read",
-        vec![stream.clone(), Value::F64(3.0)],
+    assert_eq!(
+        crate::stream_drain::read_via_stream(&dir, "payload.bin", 1.0),
+        b"bcdefgh",
+        "the first read consumed nothing — there is no cursor for it to consume"
     );
-    let second = invoke(
-        "wasi:io/streams",
-        "[method]input-stream.read",
-        vec![stream, Value::F64(8.0)],
-    );
-    assert_eq!(bytes_from_array(&first), b"bcd");
-    assert_eq!(bytes_from_array(&second), b"efgh");
 }
 
 #[test]

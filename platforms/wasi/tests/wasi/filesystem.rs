@@ -57,7 +57,7 @@ fn invoke(module: &str, name: &str, args: Vec<Value>) -> Value {
                     "__test_arg_{}",
                     TEST_GLOBAL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                 );
-                vm.globals.insert(global_name.clone(), other);
+                vm.set_global_owned(global_name.clone(), other);
                 let ci = chunk.intern_string_constant(&global_name);
                 chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
             }
@@ -786,69 +786,26 @@ fn is_same_object_false_for_different_paths() {
     assert_eq!(same, Value::Bool(false));
 }
 
-// ── [method]descriptor.read-via-stream + wasi:io/streams.read ─────
+// ── [method]descriptor.read-via-stream ────────────────────────────
+//
+// 0.3.1 answers `tuple<stream<u8>, future<result<_, error-code>>>` and the
+// bytes come out of element 0 via `canon stream.read`. These used to drain
+// through `wasi:io/streams.[method]input-stream.{read,blocking-read}` — a
+// package 0.3.1 deleted — so they were asserting the 0.2 contract.
 
 #[test]
-fn read_via_stream_yields_input_stream() {
+fn read_via_stream_yields_the_file_bytes() {
     let dir = scratch_dir("read_stream");
-    let file = dir.join("payload.bin");
-    std::fs::write(&file, b"hello, world").unwrap();
-    let root = open_test_root(&dir);
-
-    let descriptor = types(
-        "[method]descriptor.open-at",
-        vec![
-            root,
-            Value::I32(0),
-            s("payload.bin"),
-            Value::I32(0),
-            Value::I32(0),
-        ],
-    );
-    // read-via-stream(offset=0)
-    let stream = types(
-        "[method]descriptor.read-via-stream",
-        vec![descriptor, Value::F64(0.0)],
-    );
-    assert!(
-        is_error(&stream).is_none(),
-        "read-via-stream should succeed"
-    );
-    assert!(
-        matches!(stream, Value::Object(_)),
-        "read-via-stream returns an input-stream"
-    );
-
-    // Now read from it via wasi:io/streams.[method]input-stream.blocking-read
-    let chunk = invoke(
-        "wasi:io/streams",
-        "[method]input-stream.blocking-read",
-        vec![stream, Value::F64(64.0)],
-    );
-    if let Value::Object(object) = &chunk {
-        let object = object.lock().unwrap();
-        if let ObjectKind::Array(bytes) = &object.kind {
-            let actual: Vec<u8> = bytes
-                .iter()
-                .filter_map(|value| match value {
-                    Value::I32(n) => Some(*n as u8),
-                    Value::F64(n) => Some(*n as u8),
-                    _ => None,
-                })
-                .collect();
-            assert_eq!(actual, b"hello, world");
-            return;
-        }
-    }
-    panic!("blocking-read should return a list<u8>, got {:?}", chunk);
+    std::fs::write(dir.join("payload.bin"), b"hello, world").unwrap();
+    let bytes = crate::stream_drain::read_via_stream(&dir, "payload.bin", 0.0);
+    assert_eq!(bytes, b"hello, world");
 }
 
 #[test]
-fn input_stream_read_respects_offset_and_length() {
-    let dir = scratch_dir("read_stream_offset");
+fn read_via_stream_returns_a_two_element_tuple() {
+    let dir = scratch_dir("read_stream_tuple");
     std::fs::write(dir.join("payload.bin"), b"abcdef").unwrap();
     let root = open_test_root(&dir);
-
     let descriptor = types(
         "[method]descriptor.open-at",
         vec![
@@ -859,36 +816,34 @@ fn input_stream_read_respects_offset_and_length() {
             Value::I32(0),
         ],
     );
-    let stream = types(
+    let result = types(
         "[method]descriptor.read-via-stream",
-        vec![descriptor, Value::F64(2.0)],
+        vec![descriptor, Value::F64(0.0)],
     );
-    let chunk = invoke(
-        "wasi:io/streams",
-        "[method]input-stream.read",
-        vec![stream, Value::F64(2.0)],
+    assert!(is_error(&result).is_none(), "read-via-stream should succeed");
+    let Value::Object(object) = &result else {
+        panic!("read-via-stream returns a tuple, got {result:?}");
+    };
+    let object = object.lock().unwrap();
+    let ObjectKind::Array(parts) = &object.kind else {
+        panic!("read-via-stream returns a tuple, got {:?}", object.kind);
+    };
+    assert_eq!(
+        parts.len(),
+        2,
+        "tuple<stream<u8>, future<result<_, error-code>>> has exactly two elements"
     );
+}
 
-    if let Value::Object(object) = &chunk {
-        let object = object.lock().unwrap();
-        if let ObjectKind::Array(bytes) = &object.kind {
-            let actual: Vec<u8> = bytes
-                .iter()
-                .filter_map(|value| match value {
-                    Value::I32(n) => Some(*n as u8),
-                    Value::F64(n) => Some(*n as u8),
-                    _ => None,
-                })
-                .collect();
-            assert_eq!(actual, b"cd");
-            return;
-        }
-    }
-
-    panic!(
-        "input-stream.read should return a list<u8>, got {:?}",
-        chunk
-    );
+#[test]
+fn read_via_stream_observes_the_offset() {
+    let dir = scratch_dir("read_stream_offset");
+    std::fs::write(dir.join("payload.bin"), b"abcdef").unwrap();
+    // The offset positions the read like `pread`; the stream then carries
+    // everything from there, so the suffix is what arrives — 0.2's separate
+    // length argument has no counterpart in 0.3.1.
+    let bytes = crate::stream_drain::read_via_stream(&dir, "payload.bin", 2.0);
+    assert_eq!(bytes, b"cdef");
 }
 
 #[test]

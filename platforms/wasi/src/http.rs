@@ -2048,28 +2048,9 @@ fn register_wasi3(vm: &mut VM, type_ids: HttpTypeIds) {
     vm.register_host_fn(
         "wasi:http/types",
         "[static]request.consume-body",
-        Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let bytes = if let Some(body_id) = resource_id(&args[0], KIND_OUTGOING_BODY) {
-                registry()
-                    .lock()
-                    .unwrap()
-                    .outgoing_bodies
-                    .get(&body_id)
-                    .map(|b| b.bytes.clone())
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-            let (stream_val, stream_id) = ctx.create_stream();
-            for byte in &bytes {
-                ctx.stream_push(stream_id, Value::I32(*byte as i32));
-            }
-            ctx.stream_close(stream_id);
-            let (future_val, future_id) = ctx.create_future();
-            ctx.resolve_future(future_id, Value::Null);
-            Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
-                stream_val, future_val,
-            ])))
+        Box::new(|ctx: &mut HostContext, args: &[Value]| match consume_body_bytes(&args[0]) {
+            Some(bytes) => body_stream_tuple(ctx, bytes),
+            None => err("invalid-argument"),
         }),
     );
 
@@ -2097,36 +2078,88 @@ fn register_wasi3(vm: &mut VM, type_ids: HttpTypeIds) {
     vm.register_host_fn(
         "wasi:http/types",
         "[static]response.consume-body",
-        Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let bytes = if let Some(body_id) = resource_id(&args[0], KIND_OUTGOING_BODY) {
-                registry()
-                    .lock()
-                    .unwrap()
-                    .outgoing_bodies
-                    .get(&body_id)
-                    .map(|b| b.bytes.clone())
-                    .unwrap_or_default()
-            } else if let Some(body_id) = resource_id(&args[0], KIND_INCOMING_BODY) {
-                registry()
-                    .lock()
-                    .unwrap()
-                    .incoming_bodies
-                    .get(&body_id)
-                    .map(|b| b.body.clone())
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-            let (stream_val, stream_id) = ctx.create_stream();
-            for byte in &bytes {
-                ctx.stream_push(stream_id, Value::I32(*byte as i32));
-            }
-            ctx.stream_close(stream_id);
-            let (future_val, future_id) = ctx.create_future();
-            ctx.resolve_future(future_id, Value::Null);
-            Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
-                stream_val, future_val,
-            ])))
+        Box::new(|ctx: &mut HostContext, args: &[Value]| match consume_body_bytes(&args[0]) {
+            Some(bytes) => body_stream_tuple(ctx, bytes),
+            None => err("invalid-argument"),
         }),
     );
+}
+
+/// The bytes a 0.3 `consume-body` should hand over, for any resource its
+/// signature can legally receive. `None` means "not a resource this call
+/// accepts, or already consumed" — an `error-code`, not an empty body.
+///
+/// §request.consume-body and §response.consume-body take the REQUEST or the
+/// RESPONSE, not its body: 0.3 deleted the `incoming-body`/`outgoing-body`
+/// resources that 0.2 made you fetch first. Both registrations used to match
+/// only the two BODY kinds, so a caller passing the resource the signature
+/// actually names — which is every conforming caller — fell through to
+/// `Vec::new()` and read an empty body with no error raised anywhere. The body
+/// kinds stay accepted for callers still holding a 0.2-shaped handle.
+fn consume_body_bytes(arg: &Value) -> Option<Vec<u8>> {
+    if let Some(body_id) = resource_id(arg, KIND_OUTGOING_BODY) {
+        let registry = registry().lock().unwrap();
+        return registry.outgoing_bodies.get(&body_id).map(|b| b.bytes.clone());
+    }
+    if let Some(body_id) = resource_id(arg, KIND_INCOMING_BODY) {
+        let registry = registry().lock().unwrap();
+        return registry.incoming_bodies.get(&body_id).map(|b| b.body.clone());
+    }
+    if let Some(response_id) = resource_id(arg, KIND_INCOMING_RESPONSE) {
+        let registry = registry().lock().unwrap();
+        return registry
+            .incoming_responses
+            .get(&response_id)
+            .map(|r| r.body.as_bytes().to_vec());
+    }
+    if let Some(response_id) = resource_id(arg, KIND_OUTGOING_RESPONSE) {
+        let registry = registry().lock().unwrap();
+        let body_id = registry.outgoing_responses.get(&response_id)?.body_id;
+        return match body_id {
+            Some(id) => registry.outgoing_bodies.get(&id).map(|b| b.bytes.clone()),
+            // A response whose body was never opened has an empty body, which
+            // is a legal answer — not a missing resource.
+            None => Some(Vec::new()),
+        };
+    }
+    if let Some(request_id) = resource_id(arg, KIND_INCOMING_REQUEST) {
+        // §consume: "Will only return success at most once, and subsequent
+        // calls will return error." The flag is shared with the 0.2
+        // `incoming-request.consume`, so a program cannot take the body twice
+        // by mixing the two spellings.
+        let mut registry = registry().lock().unwrap();
+        let request = registry.incoming_requests.get(&request_id)?;
+        if request.consumed {
+            return None;
+        }
+        let body = request.body.clone();
+        if let Some(request) = registry.incoming_requests.get_mut(&request_id) {
+            request.consumed = true;
+        }
+        return Some(body);
+    }
+    // An outgoing request carries no body in this host — `request.new`'s
+    // `contents` stream is accepted and not retained — so "no body" is the
+    // truthful answer rather than an error.
+    if resource_id(arg, KIND_OUTGOING_REQUEST).is_some() {
+        return Some(Vec::new());
+    }
+    None
+}
+
+/// `tuple<stream<u8>, future<result<option<trailers>, error-code>>>` — the 0.3
+/// body handover shape. The stream is closed before returning, so a guest
+/// draining it with `canon stream.read` sees COMPLETED chunks then DROPPED,
+/// and never BLOCKED.
+fn body_stream_tuple(ctx: &mut HostContext, bytes: Vec<u8>) -> Value {
+    let (stream_val, stream_id) = ctx.create_stream();
+    for byte in &bytes {
+        ctx.stream_push(stream_id, Value::I32(*byte as i32));
+    }
+    ctx.stream_close(stream_id);
+    let (future_val, future_id) = ctx.create_future();
+    ctx.resolve_future(future_id, Value::Null);
+    Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
+        stream_val, future_val,
+    ])))
 }

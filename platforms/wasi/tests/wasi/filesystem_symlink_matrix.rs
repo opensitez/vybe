@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use vybe_compiler::primitives::platforms::register_platforms;
 use vybe_runtime::capabilities::Capabilities;
-use vybe_runtime::value::{ObjectKind, Value};
+use vybe_runtime::value::Value;
 use vybe_runtime::{Chunk, Op, VM};
 
 fn scratch_dir(label: &str) -> PathBuf {
@@ -42,7 +42,7 @@ fn invoke(module: &str, name: &str, args: Vec<Value>) -> Value {
                     "__test_arg_{}",
                     TEST_GLOBAL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                 );
-                vm.globals.insert(global_name.clone(), other);
+                vm.set_global_owned(global_name.clone(), other);
                 let ci = chunk.intern_string_constant(&global_name);
                 chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
             }
@@ -56,10 +56,6 @@ fn invoke(module: &str, name: &str, args: Vec<Value>) -> Value {
 
 fn types(name: &str, args: Vec<Value>) -> Value {
     invoke("wasi:filesystem/types", name, args)
-}
-
-fn io_streams(name: &str, args: Vec<Value>) -> Value {
-    invoke("wasi:io/streams", name, args)
 }
 
 fn s(text: &str) -> Value {
@@ -92,24 +88,6 @@ fn open_test_root(dir: &PathBuf) -> Value {
         "__test_open_root",
         vec![s(dir.to_str().unwrap())],
     )
-}
-
-fn bytes_from_array(value: &Value) -> Vec<u8> {
-    let Value::Object(object) = value else {
-        return Vec::new();
-    };
-    let object = object.lock().unwrap();
-    let ObjectKind::Array(values) = &object.kind else {
-        return Vec::new();
-    };
-    values
-        .iter()
-        .filter_map(|value| match value {
-            Value::I32(byte) => Some(*byte as u8),
-            Value::F64(byte) => Some(*byte as u8),
-            _ => None,
-        })
-        .collect()
 }
 
 fn directory_entries(stream: Value) -> Vec<(String, String)> {
@@ -243,26 +221,8 @@ fn read_via_stream_on_symlinked_file_reads_target_bytes() {
     let dir = scratch_dir("stream_file_link");
     std::fs::write(dir.join("target.txt"), b"hello").unwrap();
     std::os::unix::fs::symlink("target.txt", dir.join("alias.txt")).unwrap();
-    let root = open_test_root(&dir);
-    let descriptor = types(
-        "[method]descriptor.open-at",
-        vec![
-            root,
-            Value::I32(0),
-            s("alias.txt"),
-            Value::I32(0),
-            Value::I32(0),
-        ],
-    );
-    let stream = types(
-        "[method]descriptor.read-via-stream",
-        vec![descriptor, Value::F64(0.0)],
-    );
-    let bytes = io_streams(
-        "[method]input-stream.blocking-read",
-        vec![stream, Value::F64(5.0)],
-    );
-    assert_eq!(bytes_from_array(&bytes), b"hello");
+    let bytes = crate::stream_drain::read_via_stream(&dir, "alias.txt", 0.0);
+    assert_eq!(bytes, b"hello");
 }
 
 #[test]

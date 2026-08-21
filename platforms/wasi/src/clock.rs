@@ -77,46 +77,23 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    // subscribe-instant(when: instant) → pollable
-    // Returns a TimerPollable that becomes ready when monotonic clock reaches `when` ns.
-    clock_fn(
-        vm,
-        "wasi:clocks/monotonic-clock",
-        "subscribe-instant",
-        vec![nanos()],
-        vec![ValType::Own("pollable".to_string())],
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let ready_at_ns = args.first().map(|v| v.as_f64()).unwrap_or(0.0);
-            let mut obj = Object::new();
-            obj.properties
-                .insert("__type".into(), Value::String(Arc::from("TimerPollable")));
-            obj.properties
-                .insert("__ready_at_ns".into(), Value::F64(ready_at_ns));
-            Value::Object(vybe_runtime::heap::alloc(obj))
-        }),
-    );
-
-    // subscribe-duration(how-long: duration) → pollable
-    // Returns a TimerPollable ready after `how-long` ns from now.
-    clock_fn(
-        vm,
-        "wasi:clocks/monotonic-clock",
-        "subscribe-duration",
-        vec![nanos()],
-        vec![ValType::Own("pollable".to_string())],
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            static START: OnceLock<Instant> = OnceLock::new();
-            let start = START.get_or_init(Instant::now);
-            let how_long_ns = args.first().map(|v| v.as_f64()).unwrap_or(0.0);
-            let ready_at_ns = start.elapsed().as_nanos() as f64 + how_long_ns;
-            let mut obj = Object::new();
-            obj.properties
-                .insert("__type".into(), Value::String(Arc::from("TimerPollable")));
-            obj.properties
-                .insert("__ready_at_ns".into(), Value::F64(ready_at_ns));
-            Value::Object(vybe_runtime::heap::alloc(obj))
-        }),
-    );
+    // `subscribe-instant` and `subscribe-duration` USED TO BE REGISTERED HERE.
+    //
+    // Both are gone from `wasi:clocks@0.3.1` — `monotonic-clock` declares
+    // exactly `now`, `get-resolution`, `wait-until` and `wait-for`
+    // (`proposals/WASI/proposals/clocks/wit/monotonic-clock.wit`). They existed
+    // to mint a `pollable`, and `pollable` lived in `wasi:io`, a package 0.3
+    // deleted outright — there is no `io` proposal in the umbrella at all.
+    //
+    // Removed rather than deprecated, deliberately. Every sleep-shaped surface
+    // in the tree (Thread.Sleep, usleep, SDL_Delay, the JVM semaphore backoff)
+    // spliced `subscribe-duration` + `pollable.block` until 2026-08-20, and the
+    // reason nobody noticed was that the pair still RESOLVED. A non-conformant
+    // call that works is more dangerous than one that fails: it also silently
+    // truncated every sleep over a second, because the host's
+    // `block_until_ready` spins `while !ready && elapsed < 1s`.
+    //
+    // The replacement is `wait-for(ns)` below — one call for the two.
 
     // ── WASI 0.3 additions ───────────────────────────────────────────
     // get-resolution — 0.3 rename of `resolution`; keep both for compat.
