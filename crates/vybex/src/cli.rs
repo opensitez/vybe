@@ -227,6 +227,9 @@ pub fn run() {
     let mut dump = false;
     let mut dump_ast = false;
     let mut emit_wasm = false;
+    // `--check` compiles the program and reports diagnostics WITHOUT running it,
+    // exiting non-zero on any parse/compile error. Intended for editors and CI.
+    let mut check = false;
     let mut eval_source: Option<String> = None;
     let mut eval_language: Option<String> = None;
     let mut eval_virtual_path: Option<String> = None;
@@ -265,6 +268,7 @@ pub fn run() {
         match arg.as_str() {
             "--dump" | "-d" => dump = true,
             "--dump-ast" => dump_ast = true,
+            "--check" | "-c" => check = true,
             "--emit-wasm" | "-w" => emit_wasm = true,
             "--entry" | "-e" => {
                 let Some(name) = iter.next() else {
@@ -506,6 +510,10 @@ pub fn run() {
                 eprintln!("AST dump is only available for source files and projects");
                 std::process::exit(1);
             }
+            if check {
+                eprintln!("--check is only available for source files and projects");
+                std::process::exit(1);
+            }
             run_wasm(
                 path,
                 dump,
@@ -632,6 +640,18 @@ pub fn run() {
             },
         }
     };
+
+    // ── --check: report success and exit WITHOUT running ────────────────────
+    // Reaching here means every unit parsed and compiled; any parse/compile
+    // error already exited non-zero above. No program code is executed.
+    if check {
+        println!(
+            "OK: {} compiled successfully ({} chunk(s))",
+            source_path.display(),
+            compiled.chunks.len()
+        );
+        return;
+    }
 
     // What the program DECLARED about presenting a UI
     // (`vybe_ast::Directives::app_shell`). Read here because `run_compiled`
@@ -1000,6 +1020,7 @@ fn print_usage() {
     eprintln!("Flags:");
     eprintln!("  -d, --dump        Disassemble bytecode (no run)");
     eprintln!("      --dump-ast    Parse and print the prepared common AST");
+    eprintln!("  -c, --check       Compile and report errors without running (exit 1 on error)");
     eprintln!("  -w, --emit-wasm   Compile to .wasm binary");
     eprintln!("      --eval CODE   Compile source from a string");
     eprintln!("      --lang NAME   Language for --eval (js, php, python, vb, ...)");
