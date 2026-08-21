@@ -1254,7 +1254,8 @@ pub fn emit_lua_coroutine_resume(chunks: &mut Vec<Chunk>, current: usize, argc: 
     i32_const(&mut chunks[current], 1, line);
     vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
     save(&mut chunks[current], ok_slot, line);
-    chunks[current].emit_br(0, line);
+    // `br 1`: `br 0` targets the handler block's `end` — the catch arms.
+    chunks[current].emit_br(1, line);
 
     vybe_compiler::primitives::errors::emit_handler_block_end(&mut chunks[current], line);
     save(&mut chunks[current], value_slot, line);
@@ -1404,7 +1405,8 @@ pub fn emit_lua_coroutine_resume_row(chunks: &mut Vec<Chunk>, current: usize, ar
     i32_const(&mut chunks[current], 1, line);
     vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
     save(&mut chunks[current], ok_slot, line);
-    chunks[current].emit_br(0, line);
+    // `br 1`: `br 0` targets the handler block's `end` — the catch arms.
+    chunks[current].emit_br(1, line);
 
     vybe_compiler::primitives::errors::emit_handler_block_end(&mut chunks[current], line);
     save(&mut chunks[current], value_slot, line);
@@ -3155,6 +3157,7 @@ pub fn emit_lua_pcall(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u
     let ok_slot = chunks[current].alloc_scratch(1);
     let value_slot = chunks[current].alloc_scratch(1);
     let marker_slot = chunks[current].alloc_scratch(1);
+    let rest_arity = chunks[current].alloc_scratch(1);
     for i in (0..argc).rev() {
         save(&mut chunks[current], base + i as u16, line);
     }
@@ -3166,17 +3169,27 @@ pub fn emit_lua_pcall(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u
     let done = chunks[current].emit_block(line);
     vybe_compiler::primitives::errors::emit_try_start(&mut chunks[current], line);
 
-    load(&mut chunks[current], base, line);
-    for i in 1..argc {
-        load(&mut chunks[current], base + i as u16, line);
-    }
-    call_ref(chunks, current, argc - 1, line);
+    // A variadic callee packs its tail into one array, and the packing is the
+    // CALL SITE's job — driven by the callee's `__vybe_rest_fixed_arity`
+    // stamp. Calling it flat (the plain `emit_lua_call_fixed` below) handed
+    // `function(...)` its arguments unpacked, so `select('#', ...)` answered 1
+    // for `pcall(f, 3, 4)`. Same dispatch `emit_metamethod_call` uses.
+    emit_object_get_const_key(&mut chunks[current], base, "__vybe_rest_fixed_arity", line);
+    save(&mut chunks[current], rest_arity, line);
+    emit_is_missing_value(&mut chunks[current], rest_arity, line);
+    chunks[current].emit_if(line);
+    emit_lua_call_fixed(chunks, current, base, argc, line);
     save(&mut chunks[current], value_slot, line);
+    chunks[current].emit_else(line);
+    emit_lua_call_rest_dispatch(chunks, current, base, argc, rest_arity, line);
+    save(&mut chunks[current], value_slot, line);
+    chunks[current].emit_end(line);
     vybe_compiler::primitives::errors::emit_try_end(&mut chunks[current], line);
     i32_const(&mut chunks[current], 1, line);
     vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
     save(&mut chunks[current], ok_slot, line);
-    chunks[current].emit_br(0, line);
+    // `br 1`: `br 0` targets the handler block's `end` — the catch arms.
+    chunks[current].emit_br(1, line);
 
     vybe_compiler::primitives::errors::emit_handler_block_end(&mut chunks[current], line);
     save(&mut chunks[current], value_slot, line);
@@ -3278,9 +3291,21 @@ pub fn emit_lua_xpcall(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     let value_slot = chunks[current].alloc_scratch(1);
     let error_slot = chunks[current].alloc_scratch(1);
     let marker_slot = chunks[current].alloc_scratch(1);
+    let rest_arity = chunks[current].alloc_scratch(1);
+    // `base` holds [f, handler, args…], but the rest-packing helpers read a
+    // [callee, args…] run — so gather one. Without it the handler slot would
+    // be passed as the protected call's first argument.
+    let call_base = chunks[current].alloc_scratch((argc - 1) as u16);
 
     for i in (0..argc).rev() {
         save(&mut chunks[current], base + i as u16, line);
+    }
+
+    load(&mut chunks[current], base, line);
+    save(&mut chunks[current], call_base, line);
+    for i in 2..argc {
+        load(&mut chunks[current], base + i as u16, line);
+        save(&mut chunks[current], call_base + (i - 1) as u16, line);
     }
 
     load(&mut chunks[current], base, line);
@@ -3292,17 +3317,24 @@ pub fn emit_lua_xpcall(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
 
     let done = chunks[current].emit_block(line);
     vybe_compiler::primitives::errors::emit_try_start(&mut chunks[current], line);
-    load(&mut chunks[current], base, line);
-    for i in 2..argc {
-        load(&mut chunks[current], base + i as u16, line);
-    }
-    call_ref(chunks, current, argc - 2, line);
+    // Same call-site rest packing `pcall` does — a variadic protected
+    // function otherwise receives its arguments unpacked.
+    emit_object_get_const_key(&mut chunks[current], base, "__vybe_rest_fixed_arity", line);
+    save(&mut chunks[current], rest_arity, line);
+    emit_is_missing_value(&mut chunks[current], rest_arity, line);
+    chunks[current].emit_if(line);
+    emit_lua_call_fixed(chunks, current, call_base, argc - 1, line);
     save(&mut chunks[current], value_slot, line);
+    chunks[current].emit_else(line);
+    emit_lua_call_rest_dispatch(chunks, current, call_base, argc - 1, rest_arity, line);
+    save(&mut chunks[current], value_slot, line);
+    chunks[current].emit_end(line);
     vybe_compiler::primitives::errors::emit_try_end(&mut chunks[current], line);
     i32_const(&mut chunks[current], 1, line);
     vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
     save(&mut chunks[current], ok_slot, line);
-    chunks[current].emit_br(0, line);
+    // `br 1`: `br 0` targets the handler block's `end` — the catch arms.
+    chunks[current].emit_br(1, line);
 
     vybe_compiler::primitives::errors::emit_handler_block_end(&mut chunks[current], line);
     save(&mut chunks[current], error_slot, line);
@@ -3313,7 +3345,8 @@ pub fn emit_lua_xpcall(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     call_ref(chunks, current, 1, line);
     save(&mut chunks[current], value_slot, line);
     vybe_compiler::primitives::errors::emit_try_end(&mut chunks[current], line);
-    chunks[current].emit_br(0, line);
+    // `br 1`: `br 0` targets the handler block's `end` — the catch arms.
+    chunks[current].emit_br(1, line);
     vybe_compiler::primitives::errors::emit_handler_block_end(&mut chunks[current], line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_string_const("error in error handling", line);
@@ -3651,19 +3684,61 @@ pub fn emit_metamethod_concat(chunks: &mut Vec<Chunk>, current: usize, _argc: u8
 pub fn emit_lua_float_repr(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     let value = chunk.alloc_scratch(1);
-    let is_integer = chunk.add_import("ecma:number", "isInteger");
     save(chunk, value, line);
+    emit_lua_number_repr(chunk, value, true, line);
+}
+
+/// Lua's spelling of a number. `float` marks a value whose TYPE is known to be
+/// a float, which prints an integral value with a `.0` tail — `tostring(3/1)`
+/// is `3.0`, where the ECMA coercion answers `3`.
+///
+/// ⛔ `nan`, `inf` and `-inf` are Lua's spellings; the ECMA coercion answers
+/// `NaN`, `Infinity` and `-Infinity`. Neither is ever integral, so the
+/// non-finite arms apply whether or not the float type is known — that is why
+/// the plain `tostring` path routes here too.
+fn emit_lua_number_repr(chunk: &mut Chunk, value: u16, float: bool, line: u32) {
+    let is_integer = chunk.add_import("ecma:number", "isInteger");
+    let is_nan = chunk.add_import("ecma:number", "isNaN");
 
     load(chunk, value, line);
-    call1(chunk, is_integer, line);
+    call1(chunk, is_nan, line);
     chunk.emit_if_value(line);
-    load(chunk, value, line);
-    vybe_compiler::primitives::strings::emit_to_string(chunk, line);
-    chunk.emit_string_const(".0", line);
-    vybe_compiler::primitives::strings::emit_str_concat(chunk, line);
+    chunk.emit_string_const("nan", line);
     chunk.emit_else(line);
-    load(chunk, value, line);
-    vybe_compiler::primitives::strings::emit_to_string(chunk, line);
+
+    // ⛔ Test the infinities BY VALUE, not with `ecma:number.isFinite` — that
+    // predicate is strict (`Value::F64` / `Value::I32` only), so an
+    // integer-valued result arriving as `I64` answered "not finite" and
+    // `tostring(7)` printed `inf`.
+    emit_num_eq_const(chunk, value, f64::INFINITY, line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const("inf", line);
+    chunk.emit_else(line);
+    emit_num_eq_const(chunk, value, f64::NEG_INFINITY, line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const("-inf", line);
+    chunk.emit_else(line);
+    if float {
+        load(chunk, value, line);
+        call1(chunk, is_integer, line);
+        chunk.emit_if_value(line);
+        load(chunk, value, line);
+        vybe_compiler::primitives::strings::emit_to_string(chunk, line);
+        chunk.emit_string_const(".0", line);
+        vybe_compiler::primitives::strings::emit_str_concat(chunk, line);
+        chunk.emit_else(line);
+        load(chunk, value, line);
+        vybe_compiler::primitives::strings::emit_to_string(chunk, line);
+        chunk.emit_end(line);
+    } else {
+        load(chunk, value, line);
+        vybe_compiler::primitives::strings::emit_to_string(chunk, line);
+    }
+    chunk.emit_end(line);
+
+    chunk.emit_end(line);
     chunk.emit_end(line);
 }
 
@@ -4543,7 +4618,6 @@ pub fn emit_lua_tostring(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, lin
     let value = chunks[current].alloc_scratch(1);
     let tostring_fn = chunks[current].alloc_scratch(1);
     let test_num = chunks[current].add_import("wasm:js-number", "test");
-    let test_i32 = chunks[current].add_import("wasm:js-number", "testI32");
 
     save(&mut chunks[current], value, line);
     load(&mut chunks[current], value, line);
@@ -4561,16 +4635,11 @@ pub fn emit_lua_tostring(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, lin
     call1(&mut chunks[current], test_num, line);
     chunks[current].emit_if(line);
 
-    load(&mut chunks[current], value, line);
-    call1(&mut chunks[current], test_i32, line);
-    chunks[current].emit_if(line);
-    load(&mut chunks[current], value, line);
-    vybe_compiler::primitives::strings::emit_to_string(&mut chunks[current], line);
-    chunks[current].emit_else(line);
-    load(&mut chunks[current], value, line);
-    vybe_compiler::primitives::strings::emit_to_string(&mut chunks[current], line);
-
-    chunks[current].emit_end(line);
+    // The two arms of the `testI32` branch that stood here were IDENTICAL, so
+    // it decided nothing and every number reached the ECMA coercion — which is
+    // why `tostring(0/0)` answered `NaN`. No `.0` tail on this path: the
+    // dynamic value carries no float type, and `tostring(4)` is `4`.
+    emit_lua_number_repr(&mut chunks[current], value, false, line);
     chunks[current].emit_else(line);
     load(&mut chunks[current], value, line);
     vybe_compiler::primitives::reflection::emit_is_callable(chunks, current, line);

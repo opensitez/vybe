@@ -65,11 +65,23 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         Rule::repeat_statement => walk_repeat_statement(pair)?,
         Rule::return_statement => walk_return_statement(pair)?,
         Rule::break_statement => StmtKind::Break(BreakTarget::Implicit),
+        // `::name::` / `goto name`. The shared `lower_gotos` turns these into
+        // the pc-dispatch state machine — WASM has no goto.
+        Rule::label_statement => StmtKind::Label(walk_goto_name(pair)?),
+        Rule::goto_statement => StmtKind::GoTo(walk_goto_name(pair)?),
         Rule::assign_stmt => walk_assign_stmt(pair)?,
         Rule::expr => StmtKind::Expr(walk_expression(pair)?),
         other => return Err(format!("Unhandled statement rule: {other:?}")),
     };
     Ok(Statement::with_span(kind, span))
+}
+
+/// The `name` inside `::name::` or `goto name` — the only child either rule has.
+fn walk_goto_name(pair: Pair<Rule>) -> Result<String, String> {
+    pair.into_inner()
+        .find(|p| p.as_rule() == Rule::name)
+        .map(|p| p.as_str().to_string())
+        .ok_or_else(|| "goto/label without a name".to_string())
 }
 
 fn walk_do_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {

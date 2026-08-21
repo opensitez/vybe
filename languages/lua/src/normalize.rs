@@ -47,8 +47,61 @@ pub fn normalize_module(module: &mut Module) {
     };
     normalize_lua_class_metatable_stmts(&mut module.body, &class_tables);
     normalize_lua_stmt_sequence(__w, &mut module.body);
+    lua_lower_gotos_in_body(&mut module.body);
     __w.lua_declared_functions.clear();
     __w.lua_multi_return_functions.clear();
+}
+
+/// Lower `goto`/`::label::` to the shared pc-dispatch state machine, at every
+/// level that can hold a label: the chunk itself and each function body. A
+/// Lua label is visible in the block that declares it and in nested blocks, so
+/// the innermost enclosing body is the right unit — `lower_gotos` rewrites
+/// jumps nested inside loops and `if`s for us.
+///
+/// No-op unless a label is actually present, so a program without one keeps
+/// its statements untouched rather than being wrapped in a dispatch loop.
+fn lua_lower_gotos_in_body(body: &mut Vec<Statement>) {
+    for stmt in body.iter_mut() {
+        lua_lower_gotos_in_stmt(&mut stmt.kind);
+    }
+    if body
+        .iter()
+        .any(|s| matches!(s.kind, StmtKind::Label(_)))
+    {
+        let taken = std::mem::take(body);
+        *body = vybe_compiler::primitives::control_flow::lower_gotos(
+            taken,
+            "__lua_goto_pc",
+            "__lua_goto_dispatch",
+            false, // Lua labels are case-sensitive
+        );
+    }
+}
+
+fn lua_lower_gotos_in_stmt(kind: &mut StmtKind) {
+    match kind {
+        StmtKind::FunctionDecl { body, .. } => lua_lower_gotos_in_body(body),
+        StmtKind::Block(body)
+        | StmtKind::While { body, .. }
+        | StmtKind::DoWhile { body, .. }
+        | StmtKind::For { body, .. }
+        | StmtKind::ForIn { body, .. } => lua_lower_gotos_in_body(body),
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
+            lua_lower_gotos_in_body(then_body);
+            for (_, b) in elifs.iter_mut() {
+                lua_lower_gotos_in_body(b);
+            }
+            if let Some(b) = else_body {
+                lua_lower_gotos_in_body(b);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn collect_lua_declared_functions(body: &[Statement]) -> HashSet<String> {
@@ -777,6 +830,31 @@ fn expr_is_lua_float(expr: &Expression) -> bool {
                 ) =>
             {
                 args.iter().any(|arg| expr_is_lua_float(&arg.value))
+            }
+            // The transcendentals ALWAYS answer a float, whatever subtype they
+            // were given: `math.sqrt(16)` is `4.0`, not `4`. ⛔ `abs`, `floor`,
+            // `ceil`, `fmod`, `max`, `min`, `modf` and `tointeger` PRESERVE the
+            // argument's subtype and are deliberately absent — `math.abs(-9)`
+            // is `9`. (`math.random()` is a float only with NO arguments;
+            // `math.random(1,5)` is an integer.)
+            _ if matches!(
+                lua_call_name(callee),
+                Some(
+                    "math.sqrt"
+                        | "math.sin"
+                        | "math.cos"
+                        | "math.tan"
+                        | "math.asin"
+                        | "math.acos"
+                        | "math.atan"
+                        | "math.exp"
+                        | "math.log"
+                        | "math.deg"
+                        | "math.rad"
+                )
+            ) =>
+            {
+                true
             }
             _ => false,
         },
@@ -3129,6 +3207,17 @@ fn is_lua_synthetic_multi_decl_block(kind: &StmtKind) -> bool {
             return true;
         }
     }
+    is_lua_multi_decl_assign_block(kind)
+}
+
+/// The exact residue of a lowered multi-target assignment: a temp `let`
+/// followed by one array-destructure `Assign`. Unlike the test above this
+/// names no identifier prefix, so a block the USER wrote cannot grow into it
+/// by being normalized.
+fn is_lua_multi_decl_assign_block(kind: &StmtKind) -> bool {
+    let StmtKind::Block(stmts) = kind else {
+        return false;
+    };
     let [
         Statement {
             kind:
@@ -3154,6 +3243,26 @@ fn is_lua_synthetic_multi_decl_block(kind: &StmtKind) -> bool {
 }
 
 fn take_lua_synthetic_multi_decl_block(kind: &mut StmtKind) -> Option<Vec<Statement>> {
+    take_lua_decl_block_with(kind, is_lua_synthetic_multi_decl_block)
+}
+
+/// Post-`normalize_stmt` variant. ⛔ It must NOT use the `__lua_`-name
+/// heuristic: by this point a user's own `do ... end` whose first statement is
+/// a multi-target `local a, b = f()` has been lowered to a leading
+/// `__lua_local_multi_tmp` `let`, so the loose test claimed it, spliced its
+/// locals into the parent and — because the caller restarts the loop at the
+/// same index — normalized the already-normalized decl a SECOND time, wrapping
+/// the row in `__lua_first`. That truncates it to one value, so
+/// `local ok, r = pcall(f, v)` inside `for _, v in ipairs(t)` or `do ... end`
+/// read `nil, nil`.
+fn take_lua_multi_decl_assign_block(kind: &mut StmtKind) -> Option<Vec<Statement>> {
+    take_lua_decl_block_with(kind, is_lua_multi_decl_assign_block)
+}
+
+fn take_lua_decl_block_with(
+    kind: &mut StmtKind,
+    is_synthetic: fn(&StmtKind) -> bool,
+) -> Option<Vec<Statement>> {
     if let StmtKind::Block(stmts) = kind {
         if stmts.len() >= 2
             && matches!(
@@ -3163,7 +3272,7 @@ fn take_lua_synthetic_multi_decl_block(kind: &mut StmtKind) -> Option<Vec<Statem
                     ..
                 })
             )
-            && is_lua_synthetic_multi_decl_block(&stmts[1].kind)
+            && is_synthetic(&stmts[1].kind)
         {
             let mut stmts = match std::mem::replace(kind, StmtKind::Block(Vec::new())) {
                 StmtKind::Block(stmts) => stmts,
@@ -3181,7 +3290,7 @@ fn take_lua_synthetic_multi_decl_block(kind: &mut StmtKind) -> Option<Vec<Statem
             return Some(flattened);
         }
     }
-    if !is_lua_synthetic_multi_decl_block(kind) {
+    if !is_synthetic(kind) {
         return None;
     }
     match std::mem::replace(kind, StmtKind::Block(Vec::new())) {
@@ -3226,7 +3335,7 @@ fn normalize_lua_stmt_sequence(__w: &mut LuaWalker, body: &mut Vec<Statement>) {
             let stmt = &mut body[i];
             normalize_stmt(__w, &mut stmt.kind);
         }
-        if let Some(stmts) = take_lua_synthetic_multi_decl_block(&mut body[i].kind) {
+        if let Some(stmts) = take_lua_multi_decl_assign_block(&mut body[i].kind) {
             body.splice(i..=i, stmts);
             continue;
         }

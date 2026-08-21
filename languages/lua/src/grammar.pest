@@ -12,7 +12,7 @@ COMMENT = _{
 // Identifiers — keywords are reserved (Python-style `!keyword` guard).
 keyword = _{
     ("and" | "break" | "do" | "else" | "elseif" | "end" | "false" | "for" | "function"
-    | "if" | "in" | "local" | "nil" | "not" | "or" | "repeat" | "return" | "then"
+    | "goto" | "if" | "in" | "local" | "nil" | "not" | "or" | "repeat" | "return" | "then"
     | "true" | "until" | "while")
     ~ !(ASCII_ALPHANUMERIC | "_")
 }
@@ -27,6 +27,7 @@ KW_END = @{ "end" ~ !(ASCII_ALPHANUMERIC | "_") }
 KW_FALSE = @{ "false" ~ !(ASCII_ALPHANUMERIC | "_") }
 KW_FOR = @{ "for" ~ !(ASCII_ALPHANUMERIC | "_") }
 KW_FUNCTION = @{ "function" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_GOTO = @{ "goto" ~ !(ASCII_ALPHANUMERIC | "_") }
 KW_IF = @{ "if" ~ !(ASCII_ALPHANUMERIC | "_") }
 KW_IN = @{ "in" ~ !(ASCII_ALPHANUMERIC | "_") }
 KW_LOCAL = @{ "local" ~ !(ASCII_ALPHANUMERIC | "_") }
@@ -43,13 +44,16 @@ KW_WHILE = @{ "while" ~ !(ASCII_ALPHANUMERIC | "_") }
 nil_literal = { KW_NIL }
 boolean = { KW_TRUE | KW_FALSE }
 hex_digits = @{ ASCII_HEX_DIGIT+ }
+// ⛔ Lua has NO binary literals and NO `_` digit separators. Both were
+// accepted here, and corpus tests certified them green — `0b1010`, `0B11` and
+// `1_000` are a syntax error in every real Lua, so those tests could only ever
+// pass against vybex.
 number = @{
-    ("0" ~ ("b" | "B") ~ ('0'..'1' | "_")+)                                         // binary: 0b1010, 0B11
-    | ("0" ~ ("x" | "X") ~ (ASCII_HEX_DIGIT | "_")+)                                 // hex: 0xFF, 0x1_0
+    ("0" ~ ("x" | "X") ~ ASCII_HEX_DIGIT+)                                          // hex: 0xFF
     | ("." ~ ASCII_DIGIT+ ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)?)            // leading dot: .5
-    | (ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ "." ~ ASCII_DIGIT* ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)?)  // 1.5, 1., 1_000.0
-    | (ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+))  // 1e2
-    | (ASCII_DIGIT ~ (ASCII_DIGIT | "_")*)                                            // integer: 42, 1_000
+    | (ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT* ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)?)  // 1.5, 1.
+    | (ASCII_DIGIT+ ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+))                   // 1e2
+    | (ASCII_DIGIT+)                                                                 // integer: 42
 }
 
 // String escape sequences
@@ -191,9 +195,16 @@ statement = _{
     | repeat_statement
     | return_statement
     | break_statement
+    | label_statement
+    | goto_statement
     | assign_stmt
     | expr
 }
+
+// `::name::` marks a jump target; `goto name` jumps to it. Both must precede
+// `assign_stmt`/`expr` — a bare `goto x` would otherwise parse as a call.
+label_statement = { "::" ~ name ~ "::" }
+goto_statement = { KW_GOTO ~ name }
 
 local_function = {
     KW_LOCAL ~ KW_FUNCTION ~ name ~ lparen ~ param_list? ~ rparen ~ func_body ~ KW_END
