@@ -456,31 +456,25 @@ pub fn emit_php_phpinfo(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     for _ in 0..argc {
         chunk.emit_op(Op::DROP, line);
     }
-    let write_idx = chunk.add_import("wasi:cli/stdout", "write-via-stream");
-    let rd_slot = alloc_local(chunk);
-    let wr_slot = alloc_local(chunk);
-    vybe_compiler::primitives::io::emit_write_stdout_with_imports(
+    // The report is a constant, so it goes into a slot and then through the
+    // shared stdout write — the canon `stream.new`/`stream.write`/`drop`
+    // sequence used to be spliced here by hand.
+    let report_slot = alloc_local(chunk);
+    push_str(
         chunk,
-        write_idx,
-        rd_slot,
-        wr_slot,
+        "phpinfo()\n\
+         PHP Version => 8.0.0\n\
+         System => Darwin\n\
+         Build Date => vybe\n\
+         Server API => cli\n\
+         PHP API => vybex\n\
+         PHP Extension Build => vybe\n\
+         Zend Extension Build => n/a\n\
+         PHP Integer Size => 8\n",
         line,
-        |c| {
-            push_str(
-                c,
-                "phpinfo()\n\
-                 PHP Version => 8.0.0\n\
-                 System => Darwin\n\
-                 Build Date => vybe\n\
-                 Server API => cli\n\
-                 PHP API => vybex\n\
-                 PHP Extension Build => vybe\n\
-                 Zend Extension Build => n/a\n\
-                 PHP Integer Size => 8\n",
-                line,
-            );
-        },
     );
+    lset(chunk, report_slot, line);
+    vybe_compiler::primitives::io::emit_write_stdout_slot(chunk, report_slot, line);
     push_const(chunk, Value::Bool(true), line);
 }
 

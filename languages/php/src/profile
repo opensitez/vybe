@@ -106,7 +106,7 @@ __php_dynamic_include = { emit = "host:vybe:php:dynamic_include", min_args = 2, 
 # `eval($code)` → universal compiler-as-a-service; the walker injects the
 # language ("php") so this is just the host binding for `vybe:eval`.
 __vybe_eval         = { emit = "host:vybe:eval:eval",       min_args = 2, max_args = 3 }
-readline            = { emit = "host:wasi:cli:readLine",     min_args = 0, max_args = 1 }
+readline            = { emit = "intrinsic:readline",     min_args = 0, max_args = 1 }
 error_log           = { emit = "host:wasi:cli:error",        min_args = 1, max_args = 4 }
 __php_int_max       = { emit = "common:php.int_max",         min_args = 0, max_args = 0 }
 __php_int_min       = { emit = "common:php.int_min",         min_args = 0, max_args = 0 }

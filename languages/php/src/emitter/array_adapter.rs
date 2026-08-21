@@ -6679,20 +6679,18 @@ pub fn emit_php_var_export(chunks: &mut [Chunk], current: usize, argc: u8, line:
     chunk.emit_if(line);
     // return mode — string stays on stack
     chunk.emit_else(line);
-    // echo mode — use wasi:cli/stdout write (no newline)
-    let write_idx = chunk.add_import("wasi:cli/stdout", "write-via-stream");
+    // echo mode — the shared stdout write, no newline.
+    //
+    // ⚠This is `emit_write_stdout_SLOT`, not `emit_write_or_buffer`: it still
+    // goes STRAIGHT to the sink, so `var_dump` inside `ob_start()` is not
+    // captured. That is a real divergence from PHP and it is deliberate for
+    // now — moving it changes observable capture behaviour and needs a
+    // by-name suite diff, not a terminal check. What changed here is only that
+    // the canon `stream.new`/`stream.write`/`drop` sequence is no longer
+    // re-plumbed by hand.
     let out_slot = alloc_local(chunk);
     lset(chunk, out_slot, line);
-    let rd_slot = alloc_local(chunk);
-    let wr_slot = alloc_local(chunk);
-    vybe_compiler::primitives::io::emit_write_stdout_with_imports(
-        chunk,
-        write_idx,
-        rd_slot,
-        wr_slot,
-        line,
-        |c| c.emit_op_u16(Op::LOCAL_GET, out_slot, line),
-    );
+    vybe_compiler::primitives::io::emit_write_stdout_slot(chunk, out_slot, line);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunk.emit_end(line);
 }

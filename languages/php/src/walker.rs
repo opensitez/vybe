@@ -1274,6 +1274,7 @@ fn note_promoted_constructor_field(__php_w: &mut PhpWalker,
         modifiers,
         with_events: false,
         array_bounds: None,
+        storage: None,
     });
 }
 
@@ -8036,6 +8037,7 @@ fn fold_inherited_fields_into_class(__php_w: &mut PhpWalker,
                 },
                 with_events: false,
                 array_bounds: None,
+                storage: None,
             });
         }
     }
@@ -8055,6 +8057,7 @@ fn php_lsb_class_field(name: &str, span: &Span) -> ClassMember {
         },
         with_events: false,
         array_bounds: None,
+        storage: None,
     }
 }
 
@@ -10164,6 +10167,7 @@ fn walk_enum_decl(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<StmtKind,
             modifiers: static_mods(),
             with_events: false,
             array_bounds: None,
+            storage: None,
         });
     }
 
@@ -10184,6 +10188,7 @@ fn walk_enum_decl(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<StmtKind,
                 modifiers: static_mods(),
                 with_events: false,
                 array_bounds: None,
+                storage: None,
             }),
             other => class_members.push(other),
         }
@@ -10469,6 +10474,7 @@ fn walk_class_member(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<Vec<Cl
                     modifiers,
                     with_events: false,
                     array_bounds: None,
+                    storage: None,
                 }])
             }
         }
@@ -24324,7 +24330,12 @@ fn php_lower_gotos(stmts: Vec<Statement>) -> Vec<Statement> {
     if !has_label {
         return stmts;
     }
-    vybe_language_c::walker::lower_gotos(php_flatten_labels(stmts), "__goto_pc", "__goto_dispatch")
+    vybe_compiler::primitives::control_flow::lower_gotos(
+        php_flatten_labels(stmts),
+        "__goto_pc",
+        "__goto_dispatch",
+        false, // PHP labels are case-sensitive
+    )
 }
 
 /// Apply `php_lower_gotos` to a function declaration's body (free functions);

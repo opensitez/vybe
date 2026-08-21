@@ -1477,21 +1477,11 @@ pub fn emit_fwrite(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
-    {
-        let write_idx = chunk.add_import("wasi:cli/stdout", "write-via-stream");
-        let rd_slot = chunk.alloc_scratch(1);
-        let wr_slot = chunk.alloc_scratch(1);
-        vybe_compiler::primitives::io::emit_write_stdout_with_imports(
-            chunk,
-            write_idx,
-            rd_slot,
-            wr_slot,
-            line,
-            |c| {
-                c.emit_op_u16(Op::LOCAL_GET, data_slot, line);
-            },
-        );
-    }
+    // The shared stdout write. `data_slot` already holds the string, which is
+    // exactly what `emit_write_stdout_slot` takes — the canon
+    // `stream.new`/`stream.write`/`drop` sequence used to be spliced here by
+    // hand.
+    vybe_compiler::primitives::io::emit_write_stdout_slot(chunk, data_slot, line);
     chunk.emit_else(line);
     // if sink == "stderr" -> discard (no stdout pollution); else memory buffer
     lget(chunk, sink_slot, line);

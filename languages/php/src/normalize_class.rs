@@ -73,6 +73,7 @@ pub fn normalize_class(
                     access: Access::from(m.visibility),
                     readonly: m.is_readonly,
                     value_type: None,
+                    storage: None,
                 };
                 out.push_field(m.is_static, field);
             }
@@ -202,6 +203,7 @@ pub fn normalize_class(
                         access: Access::Public,
                         readonly: true,
                         value_type: None,
+                        storage: None,
                     },
                 );
                 // Keep the raw entry too so the legacy `Class.Const`
