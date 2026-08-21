@@ -1081,8 +1081,8 @@ fn jspi_fulfilled_promise_suspend_unwraps_value() {
     chunk.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
-    vm.globals.insert(
-        "__jspi_fulfilled_promise".into(),
+    vm.set_global_owned(
+        "__jspi_fulfilled_promise",
         make_promise(1, "fulfilled", Value::I32(88)),
     );
     let result = vm.run(vec![chunk]).unwrap();
@@ -1107,8 +1107,8 @@ fn jspi_rejected_promise_suspend_enters_wasm_catch_handler() {
     chunk.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
-    vm.globals.insert(
-        "__jspi_rejected_promise".into(),
+    vm.set_global_owned(
+        "__jspi_rejected_promise",
         make_promise(2, "rejected", Value::String(Arc::from("network failed"))),
     );
     let result = vm.run(vec![chunk]).unwrap();

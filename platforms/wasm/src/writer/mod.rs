@@ -44,8 +44,8 @@ pub fn write_wasm(chunks: &[Chunk]) -> Vec<u8> {
     // Free globals — declared imports of the embedder, not module-owned state.
     let host_globals = sections::collect_host_globals(chunks);
 
-    // Collect globals (string-keyed → absolute WASM global index)
-    let (globals, global_map) = sections::collect_globals(chunks, &string_constants, &host_globals);
+    // The module-DEFINED globals, sliced from the compiler's index space.
+    let globals = sections::collect_globals(chunks, &string_constants, &host_globals);
 
     // Type section: GC struct types + array type + function types
     let (type_section_data, type_ctx) =
@@ -168,7 +168,7 @@ pub fn write_wasm(chunks: &[Chunk]) -> Vec<u8> {
     write_section(
         &mut out,
         SECTION_CODE,
-        &code::encode_code_section(chunks, &rt_imports, &type_ctx, &global_map, &tag_plan),
+        &code::encode_code_section(chunks, &rt_imports, &type_ctx, &tag_plan),
     );
 
     // ── Trailing custom sections ─────────────────────────────────────

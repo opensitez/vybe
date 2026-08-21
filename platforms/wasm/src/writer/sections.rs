@@ -231,65 +231,34 @@ fn collect_global_imports(chunks: &[Chunk], module: &str) -> Vec<String> {
 /// Imported globals are in the map under their `(module, name)` key, so
 /// `global.get` on a string constant and on a user variable resolve through one
 /// lookup — and a user global can never be assigned an imported global's index.
+/// ⚠ The module's DEFINED globals, for the global section only.
+///
+/// This used to also return a `name -> absolute index` map that the code
+/// encoder resolved `GLOBAL_GET` through. That map is gone: the compiler now
+/// assigns the index itself (`globals::normalize_global_table`) over the SAME
+/// ordering, defined once in `vybe_runtime::chunk::global_index_space`. Two
+/// implementations that merely AGREED is exactly the failure this area already
+/// had — a chunk-0 coincidence held together the whole numbering.
 pub fn collect_globals(
     chunks: &[Chunk],
     string_constants: &[String],
     host_globals: &[String],
-) -> (Vec<String>, std::collections::HashMap<String, u32>) {
-    let mut globals = Vec::new();
-    let mut global_map = std::collections::HashMap::new();
-
-    let import_base = rt_globals().len() as u32;
-    for (i, text) in string_constants.iter().enumerate() {
-        global_map.insert(
-            vybe_runtime::chunk::imported_global_key(
-                vybe_runtime::chunk::STRING_CONSTANTS_MODULE,
-                text,
-            ),
-            import_base + i as u32,
-        );
-    }
-    // Host globals are referenced by their BARE name — that is what the
-    // bytecode's `GLOBAL_GET` constant holds — so seeding the map with them
-    // both points the instruction at the import AND stops the loop below
-    // handing the same name a defined global.
-    let host_base = import_base + string_constants.len() as u32;
-    for (i, name) in host_globals.iter().enumerate() {
-        global_map.insert(name.clone(), host_base + i as u32);
-    }
-    let defined_base = host_base + host_globals.len() as u32;
-
-    for chunk in chunks {
-        let mut ip = 0;
-        while ip < chunk.code.len() {
-            if ip + 3 >= chunk.code.len() {
-                break;
-            }
-            let group = ((chunk.code[ip] as u16) << 8) | chunk.code[ip + 1] as u16;
-            let sub = ((chunk.code[ip + 2] as u16) << 8) | chunk.code[ip + 3] as u16;
-            if let Some(op) = Op::decode(group, sub) {
-                if op == Op::GLOBAL_GET || op == Op::GLOBAL_SET {
-                    let name_idx = ((chunk.code[ip + 4] as u16) << 8) | chunk.code[ip + 5] as u16;
-                    if let Some(vybe_runtime::value::Value::String(name)) =
-                        chunk.constants.get(name_idx as usize)
-                    {
-                        let name_str = name.to_string();
-                        // Already present = an imported global (or a repeat).
-                        // Either way it does not get a definition.
-                        if !global_map.contains_key(&name_str) {
-                            let idx = defined_base + globals.len() as u32;
-                            global_map.insert(name_str.clone(), idx);
-                            globals.push(name_str);
-                        }
-                    }
-                }
-                ip += crate::writer::code::opcode_size(op, &chunk.code, ip);
-            } else {
-                ip += 4;
-            }
-        }
-    }
-    (globals, global_map)
+) -> Vec<String> {
+    // CONSUMER of the compiler's index space, not a second construction of it.
+    //
+    // `chunks[0].globals` is the whole space in WASM's order —
+    // `chunk::global_index_space`: the primitive imports, then one imported
+    // global per string constant, then host globals, then the module's own.
+    // The global SECTION declares only that last part, so this returns the
+    // tail. Rebuilding it here by walking the bytecode is what this used to do,
+    // and it cannot work any more: a `GLOBAL_GET` operand is a globalidx now,
+    // not a constant index naming the global.
+    let defined_base =
+        vybe_runtime::chunk::global_index_space(string_constants, host_globals, &[]).len();
+    chunks
+        .first()
+        .map(|c| c.globals.iter().skip(defined_base).cloned().collect())
+        .unwrap_or_default()
 }
 
 /// Encode the global section — all globals are (mut externref), initialized to null.

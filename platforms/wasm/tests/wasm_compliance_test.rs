@@ -2639,10 +2639,8 @@ fn ref_eq_matches_identical_objects() {
     chunk.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
-    vm.globals
-        .insert("__ref_eq_same_a".into(), Value::Object(obj.clone()));
-    vm.globals
-        .insert("__ref_eq_same_b".into(), Value::Object(obj));
+    vm.set_global_owned("__ref_eq_same_a", Value::Object(obj.clone()));
+    vm.set_global_owned("__ref_eq_same_b", Value::Object(obj));
     assert_eq!(vm.run(vec![chunk]).unwrap().as_i32(), 1);
 
     // Two DIFFERENT objects → ref.eq is false.
@@ -2666,10 +2664,8 @@ fn ref_eq_matches_identical_objects() {
     chunk.emit_op(Op::REF_EQ, 0);
     chunk.emit_op(Op::RETURN, 0);
     let mut vm = VM::new();
-    vm.globals
-        .insert("__ref_eq_diff_a".into(), Value::Object(a));
-    vm.globals
-        .insert("__ref_eq_diff_b".into(), Value::Object(b));
+    vm.set_global_owned("__ref_eq_diff_a", Value::Object(a));
+    vm.set_global_owned("__ref_eq_diff_b", Value::Object(b));
     assert_eq!(vm.run(vec![chunk]).unwrap().as_i32(), 0);
 }
 

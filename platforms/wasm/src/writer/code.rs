@@ -261,7 +261,6 @@ pub fn encode_code_section(
     chunks: &[Chunk],
     rt_imports: &[(&str, &str)],
     type_ctx: &WasmTypeContext,
-    global_map: &std::collections::HashMap<String, u32>,
     tag_plan: &crate::writer::proposals::exception_handling::ModuleTagPlan,
 ) -> Vec<u8> {
     let host_import_count = chunks.first().map(|c| c.imports.len()).unwrap_or(0);
@@ -399,7 +398,6 @@ pub fn encode_code_section(
                     temp_local_idx,
                     has_temp,
                     type_ctx,
-                    global_map,
                     host_import_count,
                     tag_plan,
                 );
@@ -497,7 +495,6 @@ fn emit_core_op(
     temp_idx: u32,
     _has_temp: bool,
     type_ctx: &WasmTypeContext,
-    global_map: &std::collections::HashMap<String, u32>,
     _host_import_count: usize,
     tag_plan: &crate::writer::proposals::exception_handling::ModuleTagPlan,
 ) {
@@ -722,36 +719,24 @@ fn emit_core_op(
             let (align, offset, memidx) = read_optional_memarg(chunk, ip, 2);
             encode_memarg_with_memidx(body, align, offset, memidx);
         }
-        // WASM global.get/set — resolved via `global_map`, whose values are
-        // already ABSOLUTE WASM global indices. WASM numbers imported globals
-        // first: the `rt_globals()` js-primitive singletons, then one per
-        // imported string constant, then the module's own globals.
-        // `collect_globals` applies that offset once, so nothing is added
-        // here — adding it again would make `global.set 0` target an
-        // immutable imported global, which v8 correctly rejects.
+        // WASM global.get/set — the operand IS the global index.
+        //
+        // It used to be a constant index naming the global, which this resolved
+        // through `global_map`. The compiler now assigns a real `globalidx`
+        // (`globals::normalize_global_table`) over the SAME ordering this
+        // writer uses — `chunk::global_index_space`: the `rt_globals()`
+        // js-primitive singletons, then one imported global per string
+        // constant, then host globals, then the module's own. One definition,
+        // consumed at both ends, so no remapping is needed or wanted here.
         _ if op == Op::GLOBAL_GET => {
-            let name_idx = read_u16(&chunk.code, ip);
-            if let Some(vybe_runtime::value::Value::String(name)) =
-                chunk.constants.get(name_idx as usize)
-            {
-                if let Some(&wasm_gidx) = global_map.get(name.as_ref()) {
-                    body.push(0x23); // global.get
-                    write_leb128_u32(body, wasm_gidx);
-                } else {
-                    body.push(0xD0);
-                    body.push(0x6F); // ref.null extern (unknown global)
-                }
-            } else {
-                body.push(0xD0);
-                body.push(0x6F);
-            }
+            let gidx = read_u16(&chunk.code, ip) as u32;
+            body.push(0x23); // global.get
+            write_leb128_u32(body, gidx);
         }
         _ if op == Op::GLOBAL_SET => {
-            let name_idx = read_u16(&chunk.code, ip);
-            if let Some(vybe_runtime::value::Value::String(name)) =
-                chunk.constants.get(name_idx as usize)
             {
-                if let Some(&wasm_gidx) = global_map.get(name.as_ref()) {
+                {
+                    let wasm_gidx = read_u16(&chunk.code, ip) as u32;
                     // Stack has [value]. global.set consumes it — but our VM keeps it.
                     // Use local.tee pattern: tee to keep value, then global.set
                     body.push(0x22);
@@ -760,8 +745,6 @@ fn emit_core_op(
                     write_leb128_u32(body, wasm_gidx);
                     body.push(0x20);
                     write_leb128_u32(body, temp_idx); // restore value
-                } else {
-                    // Unknown global — just keep value on stack
                 }
             }
         }

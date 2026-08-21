@@ -985,7 +985,7 @@ fn call_ref_preserves_array_argument() {
     script.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
 
     let mut vm = VM::new();
-    vm.globals.insert("__call_ref_arg_array".into(), array);
+    vm.set_global_owned("__call_ref_arg_array", array);
     let result = vm.run(vec![script, first_chunk]).unwrap();
     match result {
         Value::F64(v) if v == 50.0 => {}
