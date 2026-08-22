@@ -28,7 +28,7 @@ namespace  WeakMap -> ecma:weakmap
 namespace  WeakRef -> ecma:weakref
 namespace  WeakSet -> ecma:weakset
 namespace  child_process -> node:child_process
-namespace  clock -> wasi:clocks/wall-clock
+namespace  clock -> wasi:clocks/system-clock
 namespace  console -> wasi:cli
 namespace  crypto -> node:crypto
 namespace  db -> wasi:sql

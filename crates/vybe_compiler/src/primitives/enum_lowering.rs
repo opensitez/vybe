@@ -376,6 +376,7 @@ fn install_statics(
                     modifiers,
                     with_events: false,
                     array_bounds: None,
+                    storage: None,
                 });
                 append_to_static_init(
                     members,
@@ -451,6 +452,7 @@ fn install_constants(
             modifiers,
             with_events: false,
             array_bounds: None,
+            storage: None,
         });
 
         init.push(assign(

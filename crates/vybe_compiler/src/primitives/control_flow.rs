@@ -175,7 +175,7 @@ impl Compiler {
         // var = step.value
         self.emit_u16(Op::LOCAL_GET, step_slot);
         self.emit_struct_field_op(Op::STRUCT_GET, 0, value_key_c);
-        let var_slot = self.define_local(var);
+        let var_slot = self.define_source_local(var);
         self.emit_u16(Op::LOCAL_SET, var_slot);
 
         // Loop body in $body block for break/continue targeting
@@ -294,7 +294,7 @@ impl Compiler {
         }
 
         if let Some(key_name) = key {
-            let key_slot = self.define_local(key_name);
+            let key_slot = self.define_source_local(key_name);
             if self.profile.buffered_iterator_methods {
                 self.emit_buffered_generator_key_binding(key_slot, value_slot, key_index_slot);
             } else {
@@ -303,7 +303,7 @@ impl Compiler {
             }
         }
 
-        let var_slot = self.define_local(var);
+        let var_slot = self.define_source_local(var);
         if self.profile.buffered_iterator_methods {
             self.emit_buffered_generator_value_binding(var_slot, value_slot);
         } else {
@@ -1267,6 +1267,39 @@ impl Compiler {
     /// invariant `chunk.local_count >= scope.next_slot` at all times
     /// makes every helper using `chunk.local_count` for scratch correct
     /// by construction.
+    /// Define a binding the SOURCE declared — a parameter, a `let`/`var`/`Dim`,
+    /// a catch binding, a loop variable.
+    ///
+    /// The distinction matters because `_G` / `globalThis` / `$GLOBALS` /
+    /// `globals()` expose module-level SOURCE bindings and nothing else. That
+    /// used to be decided by `!name.starts_with("__")`, which is a spelling
+    /// answering a provenance question: a user variable named `__x` vanished
+    /// from the namespace, and a temporary that forgot the prefix leaked in.
+    ///
+    /// `define_local` is the compiler-temporary path and stays the default:
+    /// 856 of the 909 call sites are emitter scratch. Marking the 53 source
+    /// sites is the smaller, checkable half.
+    pub(crate) fn define_source_local(&mut self, name: &str) -> u16 {
+        self.scopes
+            .last_mut()
+            .unwrap()
+            .set_pending_origin(vybe_runtime::chunk::LocalOrigin::Source);
+        self.define_local(name)
+    }
+
+    /// [`define_source_local`], carrying a declared type.
+    pub(crate) fn define_source_local_typed(
+        &mut self,
+        name: &str,
+        type_hint: Option<vybe_ast::TypeHint>,
+    ) -> u16 {
+        self.scopes
+            .last_mut()
+            .unwrap()
+            .set_pending_origin(vybe_runtime::chunk::LocalOrigin::Source);
+        self.define_local_typed(name, type_hint)
+    }
+
     pub(crate) fn define_local(&mut self, name: &str) -> u16 {
         {
             let scope = self.scopes.last_mut().unwrap();
@@ -1850,4 +1883,450 @@ pub fn build_iif(imports: &mut Chunk) -> Chunk {
     c.emit_op(Op::SELECT, 0);
     c.emit_op(Op::RETURN, 0);
     c
+}
+
+// ── `goto` / label → structured control flow ──────────────────────────────
+//
+// WASM has no goto, so every language that supports one lowers HERE. This
+// used to live in the C walker, with PHP reaching across into
+// `vybe_language_c::walker::lower_gotos` to borrow it — a language crate
+// acting as the home for shared machinery.
+
+fn goto_stmt(kind: StmtKind) -> Statement {
+    Statement::new(kind)
+}
+
+fn goto_expr(kind: ExprKind) -> Expression {
+    Expression::new(kind)
+}
+
+fn goto_ident(name: &str) -> Expression {
+    goto_expr(ExprKind::Ident(name.to_string()))
+}
+
+fn goto_int_lit(value: i64) -> Expression {
+    goto_expr(ExprKind::Lit(Literal::Int(value)))
+}
+
+fn goto_assign(target: Expression, value: Expression) -> Expression {
+    goto_expr(ExprKind::Assign {
+        target: Box::new(target),
+        value: Box::new(value),
+    })
+}
+
+/// Language-agnostic `goto`/label → structured control flow: split the block at
+/// each label into numbered sub-blocks, then run a `while(true) { switch(pc) }`
+/// state machine (`goto L` becomes `pc = block(L); continue dispatch`). WASM has
+/// no goto, so every language that supports it lowers here. `pc_name` is the
+/// program-counter variable name in the TARGET language's convention (C uses a
+/// bare identifier; PHP passes a `$`-prefixed name); `dispatch_label` names the
+/// wrapping loop for the labeled `continue`.
+/// `fold_labels` folds label names to lowercase, for the frontends that declare
+/// `case_sensitive = false` (pascal, vb, cobol, fortran). It is the same
+/// name-kind folding as [`Scope::fold_case`] for locals and
+/// `LanguageProfile::fold_callable_names` for callables — a label is simply a
+/// third kind of name — so it is REQUIRED rather than defaulted, per the
+/// `fold_case` lesson in `documentation/directives.md`: 23 of 33 call sites
+/// forgot that guard once and silently broke Go.
+pub fn lower_gotos(
+    body: Vec<Statement>,
+    pc_name_arg: &str,
+    dispatch_label_arg: &str,
+    fold_labels: bool,
+) -> Vec<Statement> {
+    let fold = |name: &str| {
+        if fold_labels {
+            name.to_lowercase()
+        } else {
+            name.to_string()
+        }
+    };
+    // A label written as `L: stmt` arrives as `StmtKind::Labeled`, not a bare
+    // `Label` — Go and PHP both spell goto targets that way. Only a label some
+    // `goto` actually NAMES is flattened into a split point; a `Labeled` that
+    // exists for `break L` / `continue L` on a loop is left alone, or the loop
+    // would lose the target its own jumps resolve against.
+    let mut goto_targets = std::collections::HashSet::new();
+    for s in &body {
+        collect_goto_targets(s, &mut goto_targets);
+    }
+    let body: Vec<Statement> = body
+        .into_iter()
+        .flat_map(|s| match s.kind {
+            StmtKind::Labeled { label, body: inner } if goto_targets.contains(&label) => {
+                let mut out = vec![Statement::new(StmtKind::Label(label))];
+                match inner.kind {
+                    StmtKind::Block(stmts) => out.extend(stmts),
+                    other => out.push(Statement::new(other)),
+                }
+                out
+            }
+            other => vec![Statement::new(other)],
+        })
+        .collect();
+
+    let mut label_to_block: std::collections::HashMap<String, i64> =
+        std::collections::HashMap::new();
+    let mut blocks: Vec<Vec<Statement>> = vec![Vec::new()];
+
+    for s in body {
+        if let StmtKind::Label(name) = s.kind {
+            let idx = blocks.len() as i64;
+            label_to_block.insert(fold(&name), idx);
+            blocks.push(Vec::new());
+        } else if let Some(last) = blocks.last_mut() {
+            last.push(s);
+        }
+    }
+
+    if label_to_block.is_empty() {
+        return blocks.into_iter().next().unwrap_or_default();
+    }
+
+    // A DECLARATION before the first label is not a step in the flow, and must
+    // stay visible to every branch — so it is hoisted above the dispatch loop
+    // rather than sealed inside block 0. `Statement::is_declaration` answers
+    // this from the node, so it is right for every language at once.
+    let mut prelude = Vec::new();
+    if let Some(first_block) = blocks.first_mut() {
+        while first_block
+            .first()
+            .map(Statement::is_declaration)
+            .unwrap_or(false)
+        {
+            prelude.push(first_block.remove(0));
+        }
+    }
+
+    let dispatch_label = dispatch_label_arg.to_string();
+    let pc_name = pc_name_arg.to_string();
+
+    let mut switch_cases = Vec::new();
+    let total_blocks = blocks.len();
+    for (idx, block) in blocks.into_iter().enumerate() {
+        let next_pc = if idx + 1 < total_blocks {
+            goto_int_lit((idx + 1) as i64)
+        } else {
+            goto_int_lit(-1)
+        };
+        let mut case_body = vec![goto_stmt(StmtKind::Expr(goto_assign(
+            goto_ident(&pc_name),
+            next_pc,
+        )))];
+        case_body.extend(rewrite_gotos_in_stmts(
+            block,
+            &label_to_block,
+            &pc_name,
+            &dispatch_label,
+            fold_labels,
+        ));
+        case_body.push(goto_stmt(StmtKind::Break(BreakTarget::Implicit)));
+        switch_cases.push(SwitchCase {
+            conditions: vec![CaseCondition::Value(goto_int_lit(idx as i64))],
+            body: case_body,
+        });
+    }
+
+    let while_body = vec![
+        goto_stmt(StmtKind::Switch {
+            expr: goto_ident(&pc_name),
+            cases: switch_cases,
+            default: Some(vec![goto_stmt(StmtKind::Break(BreakTarget::Implicit))]),
+        }),
+        goto_stmt(StmtKind::If {
+            cond: goto_expr(ExprKind::Binary {
+                op: BinOp::Lt,
+                left: Box::new(goto_ident(&pc_name)),
+                right: Box::new(goto_int_lit(0)),
+            }),
+            then_body: vec![goto_stmt(StmtKind::Break(BreakTarget::Implicit))],
+            elifs: vec![],
+            else_body: None,
+        }),
+    ];
+
+    let mut lowered = prelude;
+    lowered.push(goto_stmt(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(pc_name.clone()),
+            // The block counter IS an integer, in every language — so the
+            // declaration says so once, canonically, and each frontend's own
+            // spelling machinery renders it (`Integer` for pascal, nothing for
+            // lua). Passing the spelling in would put one language's word for
+            // `int` inside a shared pass.
+            type_hint: Some("int".to_string().into()),
+            init: Some(goto_int_lit(0)),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Let,
+    }));
+    lowered.push(goto_stmt(StmtKind::Labeled {
+        label: dispatch_label,
+        body: Box::new(goto_stmt(StmtKind::While {
+            cond: goto_expr(ExprKind::Lit(Literal::Bool(true))),
+            body: while_body,
+            else_body: None,
+        })),
+    }));
+    lowered
+}
+
+fn rewrite_gotos_in_stmts(
+    stmts: Vec<Statement>,
+    label_to_block: &std::collections::HashMap<String, i64>,
+    pc_name: &str,
+    dispatch_label: &str,
+    fold_labels: bool,
+) -> Vec<Statement> {
+    let mut out = Vec::new();
+    for stmt_in in stmts {
+        match stmt_in.kind {
+            StmtKind::GoTo(target) => {
+                // Folded on BOTH sides or not at all — the map was keyed the
+                // same way when the labels were collected.
+                let key = if fold_labels {
+                    target.to_lowercase()
+                } else {
+                    target.clone()
+                };
+                if let Some(idx) = label_to_block.get(&key) {
+                    out.push(goto_stmt(StmtKind::Expr(goto_assign(
+                        goto_ident(pc_name),
+                        goto_int_lit(*idx),
+                    ))));
+                    out.push(goto_stmt(StmtKind::Continue(ContinueTarget::Label(
+                        dispatch_label.to_string(),
+                    ))));
+                }
+            }
+            StmtKind::If {
+                cond,
+                then_body,
+                elifs,
+                else_body,
+            } => {
+                let then_body =
+                    rewrite_gotos_in_stmts(then_body, label_to_block, pc_name, dispatch_label, fold_labels);
+                let elifs = elifs
+                    .into_iter()
+                    .map(|(c, b)| {
+                        (
+                            c,
+                            rewrite_gotos_in_stmts(b, label_to_block, pc_name, dispatch_label, fold_labels),
+                        )
+                    })
+                    .collect();
+                let else_body = else_body
+                    .map(|b| rewrite_gotos_in_stmts(b, label_to_block, pc_name, dispatch_label, fold_labels));
+                out.push(goto_stmt(StmtKind::If {
+                    cond,
+                    then_body,
+                    elifs,
+                    else_body,
+                }));
+            }
+            StmtKind::For {
+                init,
+                cond,
+                update,
+                body,
+            } => {
+                out.push(goto_stmt(StmtKind::For {
+                    init,
+                    cond,
+                    update,
+                    body: rewrite_gotos_in_stmts(body, label_to_block, pc_name, dispatch_label, fold_labels),
+                }));
+            }
+            StmtKind::ForIn {
+                var,
+                key,
+                iter,
+                body,
+                of,
+                else_body,
+                is_async,
+            } => {
+                out.push(goto_stmt(StmtKind::ForIn {
+                    var,
+                    key,
+                    iter,
+                    body: rewrite_gotos_in_stmts(body, label_to_block, pc_name, dispatch_label, fold_labels),
+                    of,
+                    else_body: else_body.map(|b| {
+                        rewrite_gotos_in_stmts(b, label_to_block, pc_name, dispatch_label, fold_labels)
+                    }),
+                    is_async,
+                }));
+            }
+            StmtKind::While {
+                cond,
+                body,
+                else_body,
+            } => {
+                out.push(goto_stmt(StmtKind::While {
+                    cond,
+                    body: rewrite_gotos_in_stmts(body, label_to_block, pc_name, dispatch_label, fold_labels),
+                    else_body: else_body.map(|b| {
+                        rewrite_gotos_in_stmts(b, label_to_block, pc_name, dispatch_label, fold_labels)
+                    }),
+                }));
+            }
+            StmtKind::DoWhile { body, cond, until } => {
+                out.push(goto_stmt(StmtKind::DoWhile {
+                    body: rewrite_gotos_in_stmts(body, label_to_block, pc_name, dispatch_label, fold_labels),
+                    cond,
+                    until,
+                }));
+            }
+            StmtKind::Switch {
+                expr,
+                cases,
+                default,
+            } => {
+                let cases = cases
+                    .into_iter()
+                    .map(|mut c| {
+                        c.body =
+                            rewrite_gotos_in_stmts(c.body, label_to_block, pc_name, dispatch_label, fold_labels);
+                        c
+                    })
+                    .collect();
+                let default = default
+                    .map(|b| rewrite_gotos_in_stmts(b, label_to_block, pc_name, dispatch_label, fold_labels));
+                out.push(goto_stmt(StmtKind::Switch {
+                    expr,
+                    cases,
+                    default,
+                }));
+            }
+            StmtKind::Block(body) => {
+                out.push(goto_stmt(StmtKind::Block(rewrite_gotos_in_stmts(
+                    body,
+                    label_to_block,
+                    pc_name,
+                    dispatch_label,
+                    fold_labels,
+                ))));
+            }
+            StmtKind::Try {
+                body,
+                catches,
+                else_body,
+                finally,
+            } => {
+                let body = rewrite_gotos_in_stmts(body, label_to_block, pc_name, dispatch_label, fold_labels);
+                let catches = catches
+                    .into_iter()
+                    .map(|mut c| {
+                        c.body =
+                            rewrite_gotos_in_stmts(c.body, label_to_block, pc_name, dispatch_label, fold_labels);
+                        c
+                    })
+                    .collect();
+                let else_body = else_body
+                    .map(|b| rewrite_gotos_in_stmts(b, label_to_block, pc_name, dispatch_label, fold_labels));
+                let finally = finally
+                    .map(|b| rewrite_gotos_in_stmts(b, label_to_block, pc_name, dispatch_label, fold_labels));
+                out.push(goto_stmt(StmtKind::Try {
+                    body,
+                    catches,
+                    else_body,
+                    finally,
+                }));
+            }
+            StmtKind::Labeled { label, body } => {
+                out.push(goto_stmt(StmtKind::Labeled {
+                    label,
+                    body: Box::new(goto_stmt(match body.kind {
+                        StmtKind::Block(inner) => StmtKind::Block(rewrite_gotos_in_stmts(
+                            inner,
+                            label_to_block,
+                            pc_name,
+                            dispatch_label,
+                            fold_labels,
+                        )),
+                        other => other,
+                    })),
+                }));
+            }
+            StmtKind::Label(_) => {}
+            _ => out.push(stmt_in),
+        }
+    }
+    out
+}
+
+/// Every label named by a `goto` anywhere inside `s`, however deeply nested.
+fn collect_goto_targets(s: &Statement, out: &mut std::collections::HashSet<String>) {
+    match &s.kind {
+        StmtKind::GoTo(target) => {
+            out.insert(target.clone());
+        }
+        StmtKind::Block(body)
+        | StmtKind::While { body, .. }
+        | StmtKind::DoWhile { body, .. }
+        | StmtKind::For { body, .. }
+        | StmtKind::ForIn { body, .. } => {
+            for inner in body {
+                collect_goto_targets(inner, out);
+            }
+        }
+        StmtKind::Labeled { body, .. } => collect_goto_targets(body, out),
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
+            for inner in then_body {
+                collect_goto_targets(inner, out);
+            }
+            for (_, b) in elifs {
+                for inner in b {
+                    collect_goto_targets(inner, out);
+                }
+            }
+            if let Some(b) = else_body {
+                for inner in b {
+                    collect_goto_targets(inner, out);
+                }
+            }
+        }
+        StmtKind::Switch { cases, default, .. } => {
+            for c in cases {
+                for inner in &c.body {
+                    collect_goto_targets(inner, out);
+                }
+            }
+            if let Some(b) = default {
+                for inner in b {
+                    collect_goto_targets(inner, out);
+                }
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            for inner in body {
+                collect_goto_targets(inner, out);
+            }
+            for c in catches {
+                for inner in &c.body {
+                    collect_goto_targets(inner, out);
+                }
+            }
+            for b in [else_body, finally].into_iter().flatten() {
+                for inner in b {
+                    collect_goto_targets(inner, out);
+                }
+            }
+        }
+        _ => {}
+    }
 }

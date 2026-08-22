@@ -38,7 +38,9 @@ pub fn resolve_common_import(name: &str) -> Option<CommonImport> {
         }
 
         "readline" | "input" | "gets" | "prompt" => {
-            // 2-step: wasi:cli/stdin.get-stdin → [method]input-stream.blocking-read
+            // `wasi:cli/stdin.read-via-stream` + `canon stream.read`, with the
+            // line buffer guest-side — see `io::emit_input`. (Was the 0.2
+            // `get-stdin` + `[method]input-stream.blocking-read` pair.)
             Some(CommonImport::Intrinsic("readline"))
         }
 

@@ -209,6 +209,7 @@ fn normalize_from_ast_legacy(
                 init,
                 modifiers,
                 array_bounds,
+                storage,
                 ..
             } => {
                 let field = NormalField {
@@ -220,6 +221,12 @@ fn normalize_from_ast_legacy(
                     access: access_from_visibility(modifiers.visibility),
                     readonly: modifiers.is_readonly,
                     value_type: None,
+                    // CARRIED, never re-defaulted. This is the one path from a
+                    // declared width to anything that can use it; writing
+                    // `None` here would drop every `PIC` on the floor and the
+                    // only symptom would be records silently landing at
+                    // offset 0.
+                    storage: *storage,
                 };
                 if modifiers.is_shared {
                     static_fields.push(field);

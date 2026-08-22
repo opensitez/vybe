@@ -31,6 +31,7 @@ pub mod codepoints;
 pub mod collections;
 pub mod complex;
 pub mod convert;
+pub mod config;
 pub mod csv;
 pub mod datetime;
 pub mod delegates;
@@ -39,6 +40,7 @@ pub mod dispatch;
 pub mod dynamic_symbols;
 pub mod enum_lowering;
 pub mod errors;
+pub mod fs_path;
 pub mod functions;
 pub mod generators;
 pub mod generics;
@@ -53,6 +55,7 @@ pub mod loops;
 pub mod math;
 pub mod memory;
 pub mod multivalue;
+pub mod paths;
 pub mod object;
 pub mod ops;
 pub mod packing;
@@ -62,6 +65,7 @@ pub mod polyfills;
 pub mod prelude; // parse cache + splice for language preludes — one place, not four
 pub mod proxy;
 pub mod random;
+pub mod record_files; // FileDecl / RecordTransfer → wasi:filesystem 0.3.1
 pub mod regex;
 pub mod sets;
 pub mod sorted_collection;
@@ -113,7 +117,11 @@ pub mod class_normalize; // cross-language class normalisation (was crate::commo
 pub mod classes;
 pub mod closures;
 pub mod components;
-mod control_flow;
+// `pub` for `lower_gotos`: `goto`/label lowering is shared machinery every
+// language with a goto calls (C, PHP), so it has to be reachable from the
+// language crates. It previously lived in the C walker, which is why nothing
+// outside this crate needed the module before.
+pub mod control_flow;
 mod emit_helpers;
 pub mod enums;
 pub mod events;
@@ -372,6 +380,17 @@ pub(crate) struct ReflectionTypeMetadata {
     pub methods: HashMap<String, ReflectionMethodMetadata>,
     pub properties: HashMap<String, ReflectionMemberMetadata>,
     pub fields: HashMap<String, ReflectionMemberMetadata>,
+    /// The type's declared generic parameters, as the generics primitive's own
+    /// `GenericParam` — parsed with `generics::parse_generic_params_hint`, not
+    /// a local spelling.
+    ///
+    /// Members store their declared type as a string, so a field of type `T`
+    /// records `"T"`. Without the parameter list there is nothing to bind that
+    /// against, so `FieldType.Name` answered `T` instead of the type argument.
+    /// The metadata KEY stays the erased name — the declaration lives on the
+    /// open type — and this is the other half `GenericSignature::bind_args`
+    /// needs to build a `GenericContext` for a closed use.
+    pub generic_params: Vec<vybe_ast::GenericParam>,
 }
 
 #[derive(Debug, Clone)]
@@ -3022,7 +3041,7 @@ impl Compiler {
 
         // .NET BCL classes no longer emit a per-class constructor prelude:
         // control/value/drawing types resolve through the component descriptor
-        // (properties/methods) and the GUI-direct `vybe:gui` path or a
+        // (properties/methods) and either the GUI-direct path or a
         // descriptor constructor (construction), and user `class Form1 : Form`
         // base construction lowers via `try_emit_framework_control_base`. See
         // the retired `registry::dotnet` (keep-set went empty once the drawing

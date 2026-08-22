@@ -84,8 +84,14 @@ impl Compiler {
         let saved = self.current;
         self.current = factory_idx;
 
+        // The factory is a FUNCTION FRAME like any other, so it enters the
+        // shared frame books. No seed: its only locals are the by-value
+        // capture params, and the inner lambda's upvalues resolve through
+        // them, never through an enclosing shared env.
+        let frame_books = self.enter_closure_frame(&[]);
+
         for (capture_name, capture_type) in &capture_bindings {
-            self.define_local_typed(capture_name, capture_type.clone().map(Into::into));
+            self.define_source_local_typed(capture_name, capture_type.clone().map(Into::into));
         }
 
         // Compile the actual lambda body inside the factory. The inner lambda
@@ -108,6 +114,7 @@ impl Compiler {
             .collect();
         self.scopes.pop();
         self.current = saved;
+        self.exit_closure_frame(frame_books);
 
         let line = self.line;
         if uvs.is_empty() {
@@ -232,21 +239,12 @@ impl Compiler {
         // removing the user's enclosing try/catch).
         let saved_async_try_depth = std::mem::take(&mut self.active_async_try_depth);
         let saved_fn = self.current_func_name.replace("<lambda>".into());
-        let saved_env_names = std::mem::take(&mut self.closure_env_names);
-        let saved_capture_locals = std::mem::take(&mut self.capture_locals);
-        let saved_shared_env_slot = self.shared_env_slot.take();
-        let saved_shared_env_names = std::mem::take(&mut self.shared_env_names);
-        // If parent has a shared env, pre-seed the inner function's
-        // closure_env_names so upvalue indices match the shared env layout.
-        if !parent_shared_env_names.is_empty() {
-            self.closure_env_names = parent_shared_env_names.clone();
-        }
+        let frame_books = self.enter_closure_frame(&parent_shared_env_names);
         // ECMA-262 §11.2.2: strict mode is inherited by nested functions and
         // additionally turned on by a `"use strict"` directive prologue in
         // this function's own block body. Arrow expression bodies cannot carry
         // a prologue, so they only inherit.
         let saved_strict = self.in_strict;
-        let saved_closure_captured = std::mem::take(&mut self.current_closure_captured_locals);
         match body {
             LambdaBody::Block(stmts) => {
                 if Self::stmts_have_use_strict_directive(stmts) {
@@ -265,7 +263,7 @@ impl Compiler {
             }
         }
         for p in params {
-            self.define_local_typed(&p.name, p.type_hint.clone());
+            self.define_source_local_typed(&p.name, p.type_hint.clone());
             if let Some(ref default) = p.default {
                 let slot = self.scope().resolve(&p.name).unwrap();
                 self.emit_u16(Op::LOCAL_GET, slot);
@@ -282,6 +280,29 @@ impl Compiler {
         self.emit_param_type_bindings(params)?;
         // An alias parameter is handed a reference — mark it, do not wrap it.
         self.bind_alias_params(params);
+        // Reserve the closure environment slot BEFORE any body statement is
+        // compiled.
+        //
+        // `call_function_inner` copies upvalues into the frame at function
+        // ENTRY, into `[capture_base .. capture_base + capture_count)`. But
+        // `capture_local_slot` allocated that slot LAZILY, at the first
+        // captured-variable access. Every statement compiled before that
+        // access draws `alloc_scratch` slots out of the same low range —
+        // and `compile_stmt` reclaims scratch back to the statement mark, so
+        // the range genuinely is reused — overwriting the env the VM had
+        // already placed there. The reclaim's `capture_locals` floor protects
+        // the slot forward from the moment it exists; nothing protected it
+        // backward, because the VM's write happens before statement one.
+        //
+        // A COBOL PROCEDURE DIVISION is exactly this shape: a capturing inner
+        // lambda whose first statement is a DISPLAY, whose stream handles took
+        // the env's slot. Reserving here is what makes `capture_base` true for
+        // the whole body rather than only after the first read.
+        //
+        // Inert for a closure with no upvalues — the VM copies
+        // min(upvalues.len(), capture_count) values, so a reserved-but-unused
+        // slot costs one local and nothing else.
+        self.closure_env_slot();
         // Snapshot __js_this as a local BEFORE shared env creation so inner
         // arrows can capture it via the shared env / upvalue chain.
         if self.ambient_this() && self.scopes.len() > 1 {
@@ -459,11 +480,7 @@ impl Compiler {
         self.scopes.pop();
         self.current = saved;
         self.active_async_try_depth = saved_async_try_depth;
-        self.current_closure_captured_locals = saved_closure_captured;
-        self.closure_env_names = saved_env_names;
-        self.capture_locals = saved_capture_locals;
-        self.shared_env_slot = saved_shared_env_slot;
-        self.shared_env_names = saved_shared_env_names;
+        self.exit_closure_frame(frame_books);
         let parent_locals = self.scope().locals.clone();
         let line = self.line;
         if uvs.is_empty() {

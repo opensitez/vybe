@@ -177,12 +177,12 @@ fn emit_store_super_sets_property() {
 #[test]
 fn emit_save_base_method_creates_base_prefix() {
     let mut chunk = Chunk::new("test");
-    classes::emit_save_base_method(&mut chunk, 1, "greet", 0);
+    classes::emit_save_base_method(&mut chunk, 1, "derived", "greet", 0);
     let has_base = chunk
         .constants
         .iter()
-        .any(|c| matches!(c, Value::String(s) if s.as_ref() == "__base_greet"));
-    assert!(has_base, "Should have '__base_greet' constant");
+        .any(|c| matches!(c, Value::String(s) if s.as_ref() == "__base_derived$greet"));
+    assert!(has_base, "Should have '__base_derived$greet' constant");
 }
 
 #[test]

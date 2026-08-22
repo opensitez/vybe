@@ -173,12 +173,12 @@ impl Compiler {
         self.emit_struct_field_op(Op::STRUCT_SET, 0, tk);
 
         // __control_type — the control's own class name, `Button`, not the tag.
-        // The `vybe:gui` `new_*` factory used to stamp it and the DOM path did
-        // not, so it silently became `undefined` for every converted control —
-        // and it is READ: `platforms/vybe/src/gui.rs`, `gui_launch.rs` and
-        // `simd.rs` all ask an object what control it is. Same key
-        // `gui::CONTROL_TYPE_FIELD` names, stamped on every frontend at once
-        // because it is stamped here.
+        //
+        // ⚠ This is class IDENTITY smuggled as a magic string field, and it is
+        // the shortcut `flexclassplan` §4a-octies is about: identity belongs to
+        // the class model, which already knows it and carries it through
+        // inheritance. Stamped here so every frontend agrees on one key
+        // (`gui::CONTROL_TYPE_FIELD`) until the model answers instead.
         if is_control && !control_type.is_empty() {
             self.emit_u16(Op::LOCAL_GET, this_slot);
             self.emit_const(Value::String(std::sync::Arc::from(control_type.as_str())));
@@ -186,8 +186,8 @@ impl Compiler {
             self.emit_struct_field_op(Op::STRUCT_SET, 0, ctk);
         }
 
-        // __controlfn — the `vybe:gui` factory for this widget (`new_Label`…),
-        // or null for a plain tree type. Marks a GUI-adapter widget.
+        // __controlfn — the declared construction fn for this widget, or null
+        // for a plain tree type. Marks a GUI-adapter widget.
         self.emit_u16(Op::LOCAL_GET, this_slot);
         match &spec.control_fn {
             Some(cf) => self.emit_const(Value::String(std::sync::Arc::from(cf.as_str()))),
@@ -1285,7 +1285,9 @@ impl Compiler {
                 }
                 if self.profile.ecma_in_operator && *op == BinOp::In {
                     if let ExprKind::Ident(field) = &left.kind {
-                        if field.starts_with('#') {
+                        // `#x in obj` — the ergonomic brand check. Private-ness
+                        // comes from the DECLARATION, same as every other site.
+                        if self.member_access_is_private(field) {
                             let storage_name = self.js_member_storage_name(field);
                             self.emit_const(Value::String(Arc::from(storage_name.as_str())));
                             self.compile_expr(right)?;
@@ -2738,7 +2740,7 @@ impl Compiler {
                     return Ok(());
                 }
 
-                if self.profile.supports_private_fields && field.starts_with('#') && !*null_safe {
+                if self.member_access_is_private(field) && !*null_safe {
                     self.compile_expr(object)?;
                     let obj_slot = self.define_local("__js_private_member_obj");
                     self.emit_u16(Op::LOCAL_SET, obj_slot);
@@ -3288,7 +3290,9 @@ impl Compiler {
                         // `Class MyForm Inherits Form` never matched at this
                         // site anyway — it reaches Form's roles through
                         // `declared_property_role`'s parent walk.
-                        if self.shadows_builtin_type(&class_name) {
+                        // Case-blind, like `lookup_type_property_target` — see
+                        // `user_owns_type_spelling`.
+                        if self.user_owns_type_spelling(&class_name) {
                             return None;
                         }
                         vybe_runtime::namespaces::lookup_type_property_target(
@@ -4712,7 +4716,7 @@ impl Compiler {
                         // is using.
                         //
                         // It only stayed hidden because a class that also carries a
-                        // `vybe:gui` `ctor_call` has a second route — so the bug
+                        // `ctor_call` has a second route — so the bug
                         // surfaced exactly on the classes that have been CONVERTED
                         // to pure element construction, and would have surfaced on
                         // plib and flutter the same way at their first qualified
@@ -4746,7 +4750,7 @@ impl Compiler {
                         {
                             // Generic field-capture construction only when the
                             // spec actually DESCRIBES a construction — captured
-                            // params/fields, or a `vybe:gui` control factory
+                            // params/fields, or a declared control factory
                             // (flutter widgets, plib GCL controls).
                             //
                             // A spec may instead be IDENTITY-ONLY: just an
@@ -7114,10 +7118,10 @@ impl Compiler {
                                 }
                             }
                             // Framework GUI control parent (`MyBase.New()` /
-                            // `super()` over `Form`/`Button`/…): construct via
-                            // the `vybe:gui` host factory, the same GUI-direct
-                            // path the auto-base construction uses. Control
-                            // leaves no longer have a ctor global to CALL_REF.
+                            // `super()` over `Form`/`Button`/…): construct the
+                            // control directly, the same path the auto-base
+                            // construction uses. Control leaves have no ctor
+                            // global to CALL_REF.
                             if self.is_framework_control_parent(&parent_name) {
                                 let _canonical = common::gui::canonical_control_name(&parent_name);
                                 for a in args {
@@ -7719,7 +7723,7 @@ impl Compiler {
                         }
                         _ => self.canon(name),
                     };
-                    if self.profile.supports_private_fields && name.starts_with('#') {
+                    if self.member_access_is_private(name) {
                         let getter_name = format!("__get_{}", field_name);
                         self.emit_u16(Op::LOCAL_GET, class_slot);
                         self.emit_const(Value::String(Arc::from(getter_name.as_str())));
@@ -8743,8 +8747,20 @@ pub fn emit_rich_compare_locals(
     // discard the value it just computed — the outer consumer then read
     // whatever sat beneath it on the stack (measured: Null into an `if`).
     let done = chunk.emit_block_typed(line, 1);
-    for method_name in ["compare", "CompareTo", "compareTo", "__cmp__", "<=>"] {
-        let method_key = chunk.add_constant(Value::String(Arc::from(method_name)));
+    // ONE probe on the Compare SLOT, not a synonym list.
+    //
+    // This used to try `["compare", "CompareTo", "compareTo", "__cmp__",
+    // "<=>"]` in turn — `cross_language_aliases` reincarnated, and the exact
+    // shape flexclassplan §2g says must not come back. Every live spelling is
+    // already bound to `ProtocolSlot::Compare` by its own language (go
+    // `compare`; csharp/vb/pascal/powershell `CompareTo`; dart/kotlin/java
+    // `compareTo`; ruby `<=>`), so the slot reaches all of them and reaches
+    // any language that binds it later without editing this list. `__cmp__`
+    // was bound by NOBODY — python 3 removed it — so it was dead weight that
+    // could only ever capture a user method of that name.
+    for slot in [vybe_ast::ProtocolSlot::Compare] {
+        let method_key =
+            chunk.add_constant(Value::String(Arc::from(vybe_ast::protocol_slot_key(slot))));
         chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
         chunk.emit_struct_field_op(Op::STRUCT_GET, 0, method_key, line);
         chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);

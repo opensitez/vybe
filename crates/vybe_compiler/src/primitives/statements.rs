@@ -382,6 +382,17 @@ impl Compiler {
 
             // ── Assignment ──────────────────────────────────────────────
             StmtKind::Assign { targets, value, .. } => {
+                // Rebinding a name to the null literal drops what it held —
+                // Python's `x = None`. Scoped to the literal ON PURPOSE:
+                // finalising on every rebind would fire in loops and
+                // accumulators where the old value is usually still referenced
+                // elsewhere, which is wrong more often than right. Runs BEFORE
+                // the assignment, while the name still refers to the old value.
+                if let [target] = targets.as_slice()
+                    && matches!(value.kind, ExprKind::Lit(Literal::Null))
+                {
+                    self.emit_name_drop_finalise(target)?;
+                }
                 if self.profile.array_assign_broadcasts_scalar {
                     if let [target] = targets.as_slice() {
                         let is_whole_array_target =
@@ -502,7 +513,7 @@ impl Compiler {
                     let in_function = self.scopes.len() > 1;
                     for name in idents.iter().rev() {
                         if in_function && self.scope().resolve(name).is_none() {
-                            self.define_local(name);
+                            self.define_source_local(name);
                         }
                         self.emit_var_set(name);
                     }
@@ -1123,17 +1134,17 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, pair_slot);
                         self.emit_const(Value::I32(0));
                         common::collections::emit_get(&mut self.chunks, self.current, line);
-                        let key_slot = self.define_local(k_name);
+                        let key_slot = self.define_source_local(k_name);
                         self.emit_u16(Op::LOCAL_SET, key_slot);
 
                         // var = pair[1]
                         self.emit_u16(Op::LOCAL_GET, pair_slot);
                         self.emit_const(Value::I32(1));
                         common::collections::emit_get(&mut self.chunks, self.current, line);
-                        let var_slot = self.define_local(var);
+                        let var_slot = self.define_source_local(var);
                         self.emit_u16(Op::LOCAL_SET, var_slot);
                     } else if iterates_dictionary_entries {
-                        let var_slot = self.define_local(var);
+                        let var_slot = self.define_source_local(var);
                         self.emit_u16(Op::LOCAL_SET, var_slot);
                     } else {
                         // Values path: TOS is the value, bind directly.
@@ -1154,9 +1165,9 @@ impl Compiler {
                                 .map(str::to_string)
                         });
                         let var_slot = if let Some(type_hint) = value_type_hint {
-                            self.define_local_typed(var, Some(type_hint.into()))
+                            self.define_source_local_typed(var, Some(type_hint.into()))
                         } else {
-                            self.define_local(var)
+                            self.define_source_local(var)
                         };
                         self.emit_u16(Op::LOCAL_SET, var_slot);
                     }
@@ -1718,7 +1729,7 @@ impl Compiler {
 
                         if let Some(ref var) = c.var_name {
                             self.scope_mut().begin_scope();
-                            let slot = self.define_local(var);
+                            let slot = self.define_source_local(var);
                             self.emit_u16(Op::LOCAL_GET, exc_slot);
                             self.emit_u16(Op::LOCAL_SET, slot);
                         } else {
@@ -2527,7 +2538,7 @@ impl Compiler {
                         Some(ref var) => var.clone(),
                         None => format!("__with_target_{}", self.with_targets.len()),
                     };
-                    let slot = self.define_local_typed(&binding, target_type.map(Into::into));
+                    let slot = self.define_source_local_typed(&binding, target_type.map(Into::into));
                     self.emit_u16(Op::LOCAL_SET, slot);
                     self.with_targets.push(binding);
                 }
@@ -2561,7 +2572,7 @@ impl Compiler {
                     .infer_expr_type_hint(resource)
                     .map(|type_hint| self.resolve_source_type_alias(&type_hint));
                 self.compile_expr(resource)?;
-                let slot = self.define_local_typed(var, resource_type_hint.map(Into::into));
+                let slot = self.define_source_local_typed(var, resource_type_hint.map(Into::into));
                 self.emit_u16(Op::LOCAL_SET, slot);
 
                 let line = self.line;
@@ -2918,8 +2929,8 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, path_slot);
                 self.emit_const(Value::String(Arc::from(mode_text)));
                 self.emit_u16(Op::LOCAL_GET, file_slot);
-                let idx = self.import("wasi:filesystem", "openFile");
-                self.emit_host_call(idx, 3);
+                let line = self.line;
+                crate::primitives::fs_path::emit_open_file(&mut self.chunks, self.current, 3, line);
                 self.emit(Op::DROP);
 
                 self.emit_ensure_global_map("__vb_file_path_by_handle");
@@ -2945,8 +2956,12 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, file_slot);
 
                     self.emit_u16(Op::LOCAL_GET, file_slot);
-                    let idx = self.import("wasi:filesystem", "closeFile");
-                    self.emit_host_call(idx, 1);
+                    let line = self.line;
+                    crate::primitives::fs_path::emit_close_file(
+                        &mut self.chunks,
+                        self.current,
+                        line,
+                    );
                     self.emit(Op::DROP);
 
                     self.emit_ensure_global_map("__vb_file_path_by_handle");
@@ -2966,8 +2981,12 @@ impl Compiler {
                     self.emit_global_map_set_null("__vb_record_current_index_by_handle", file_slot);
                 } else {
                     self.emit_null();
-                    let idx = self.import("wasi:filesystem", "closeFile");
-                    self.emit_host_call(idx, 1);
+                    let line = self.line;
+                    crate::primitives::fs_path::emit_close_file(
+                        &mut self.chunks,
+                        self.current,
+                        line,
+                    );
                     self.emit(Op::DROP);
                 }
             }
@@ -2976,8 +2995,13 @@ impl Compiler {
                 for item in items {
                     self.compile_expr(item)?;
                 }
-                let idx = self.import("wasi:filesystem", "printFile");
-                self.emit_host_call(idx, (items.len() + 1) as u8);
+                let line = self.line;
+                crate::primitives::fs_path::emit_print_file(
+                    &mut self.chunks,
+                    self.current,
+                    (items.len() + 1) as u8,
+                    line,
+                );
                 self.emit(Op::DROP);
             }
             StmtKind::WriteFile { file_number, items } => {
@@ -2985,8 +3009,13 @@ impl Compiler {
                 for item in items {
                     self.compile_expr(item)?;
                 }
-                let idx = self.import("wasi:filesystem", "writeFile_handle");
-                self.emit_host_call(idx, (items.len() + 1) as u8);
+                let line = self.line;
+                crate::primitives::fs_path::emit_write_file_handle(
+                    &mut self.chunks,
+                    self.current,
+                    (items.len() + 1) as u8,
+                    line,
+                );
                 self.emit(Op::DROP);
             }
             StmtKind::InputFile {
@@ -3017,8 +3046,8 @@ impl Compiler {
                 self.chunk().emit_end(line);
 
                 self.emit_u16(Op::LOCAL_GET, file_slot);
-                let idx = self.import("wasi:filesystem", "inputFile");
-                self.emit_host_call(idx, 1);
+                let line = self.line;
+                crate::primitives::fs_path::emit_input_file(&mut self.chunks, self.current, line);
                 self.emit_u16(Op::LOCAL_SET, values_slot);
 
                 for (index, variable) in variables.iter().enumerate() {
@@ -3083,8 +3112,8 @@ impl Compiler {
                 self.chunk().emit_end(line);
 
                 self.emit_u16(Op::LOCAL_GET, file_slot);
-                let idx = self.import("wasi:filesystem", "lineInput");
-                self.emit_host_call(idx, 1);
+                let line = self.line;
+                crate::primitives::fs_path::emit_line_input(&mut self.chunks, self.current, line);
                 self.emit_var_set(variable);
 
                 self.emit_ensure_global_map("__vb_file_eof_by_handle");
@@ -3421,8 +3450,7 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, rows_slot);
                 self.emit_const(Value::String(Arc::from("\n")));
                 common::collections::emit_join(&mut self.chunks, self.current, line);
-                let write_file_idx = self.import("wasi:filesystem", "writeFile");
-                self.emit_host_call(write_file_idx, 2);
+                crate::primitives::fs_path::emit_write_file(self.chunk(), line);
                 self.emit(Op::DROP);
                 self.chunk().emit_end(line);
             }
@@ -3655,7 +3683,12 @@ impl Compiler {
                             self.chunk().emit_end(line);
                         }
                         _ => {
-                            // Delete on non-member is a no-op
+                            // Delete on a bare NAME drops the reference. Where
+                            // the region declares `name_drop = Finalise` that
+                            // runs the referent's Destructor slot first; the
+                            // unbinding itself is still the language's own
+                            // business, so nothing else is emitted here.
+                            self.emit_name_drop_finalise(expr)?;
                         }
                     }
                 }
@@ -3914,12 +3947,12 @@ impl Compiler {
                     self.label_depth -= 1;
                     if c.capture_ref {
                         if let Some(exnref) = &c.exnref_bind {
-                            let slot = self.define_local(exnref);
+                            let slot = self.define_source_local(exnref);
                             self.emit_u16(Op::LOCAL_SET, slot);
                         }
                     }
                     for bind in c.payload_binds.iter().rev() {
-                        let slot = self.define_local(bind);
+                        let slot = self.define_source_local(bind);
                         self.emit_u16(Op::LOCAL_SET, slot);
                     }
                     for s in &c.body {
@@ -3935,6 +3968,53 @@ impl Compiler {
                 self.chunk().emit_end(line);
                 self.chunk().patch_block(after);
                 self.label_depth -= 1;
+            }
+
+            // ── Record files ────────────────────────────────────────────
+            // Lowered onto `wasi:filesystem/types` — see
+            // `primitives/record_files.rs` for the transport and for why a
+            // record's width comes from the declaration rather than from the
+            // language that declared it.
+            //
+            // The arms this emitter refuses (keyed addressing, READ, DELETE)
+            // fail LOUDLY rather than writing nothing: the whole reason this
+            // migration exists is that `wasi:filesystem/openFile` resolved and
+            // worked while doing something else entirely.
+            StmtKind::FileDecl {
+                name,
+                path,
+                record,
+                organization,
+                access,
+                mode,
+                keys,
+            } => {
+                self.compile_file_decl(
+                    name,
+                    path,
+                    record,
+                    *organization,
+                    *access,
+                    *mode,
+                    keys,
+                )?;
+            }
+            StmtKind::RecordTransfer {
+                file,
+                record_type,
+                direction,
+                at,
+                record,
+                status,
+            } => {
+                self.compile_record_transfer(
+                    file,
+                    record_type,
+                    *direction,
+                    at,
+                    record.as_ref(),
+                    status.as_ref(),
+                )?;
             }
 
             // ── Empty ───────────────────────────────────────────────────
@@ -4028,6 +4108,7 @@ impl Compiler {
                 modifiers: static_modifiers.clone(),
                 with_events: false,
                 array_bounds: None,
+                storage: None,
             });
         }
 
@@ -4332,7 +4413,7 @@ impl Compiler {
                     let slot = self
                         .scope()
                         .resolve(name)
-                        .unwrap_or_else(|| self.define_local(name));
+                        .unwrap_or_else(|| self.define_source_local(name));
                     self.emit_u16(Op::LOCAL_SET, slot);
                 }
             }
@@ -4371,7 +4452,7 @@ impl Compiler {
                             let slot = self
                                 .scope()
                                 .resolve(name)
-                                .unwrap_or_else(|| self.define_local(name));
+                                .unwrap_or_else(|| self.define_source_local(name));
                             self.emit_u16(Op::LOCAL_SET, slot);
                         }
                     }
@@ -4651,7 +4732,7 @@ impl Compiler {
                                 self.scope_mut()
                                     .define_at_function_scope(name, inferred_type_hint.clone())
                             } else {
-                                self.define_local_typed(name, inferred_type_hint.clone())
+                                self.define_source_local_typed(name, inferred_type_hint.clone())
                             };
                             self.emit_null();
                             self.emit_u16(Op::LOCAL_SET, slot);
@@ -4773,7 +4854,7 @@ impl Compiler {
                         self.scope_mut()
                             .define_at_function_scope(name, inferred_type_hint.clone())
                     } else {
-                        self.define_local_typed(name, inferred_type_hint.clone())
+                        self.define_source_local_typed(name, inferred_type_hint.clone())
                     };
                     if *kind == VarDeclKind::Const && self.profile.ecma_lexical_declarations {
                         self.scope_mut().mark_const(slot);
@@ -4844,7 +4925,7 @@ impl Compiler {
     ) -> Result<(), String> {
         match pattern {
             BindingPattern::Ident(name) => {
-                let slot = self.define_local(name);
+                let slot = self.define_source_local(name);
                 self.emit_u16(Op::LOCAL_SET, slot);
                 if let (Some(env_slot), Some(idx)) =
                     (self.shared_env_slot, self.shared_env_index(name))
@@ -4883,7 +4964,7 @@ impl Compiler {
                             self.emit(Op::DROP); // drop bool result
                         }
                         self.emit_u16(Op::LOCAL_GET, rest_slot);
-                        let rest_var_slot = self.define_local(&prop.key);
+                        let rest_var_slot = self.define_source_local(&prop.key);
                         self.emit_u16(Op::LOCAL_SET, rest_var_slot);
                         continue;
                     }
@@ -4984,7 +5065,7 @@ impl Compiler {
                             self.emit_array_pattern_rest_end(arr_slot, n - 1 - i);
                             let line = self.line;
                             common::collections::emit_slice(&mut self.chunks, self.current, line);
-                            let slot = self.define_local(name);
+                            let slot = self.define_source_local(name);
                             self.emit_u16(Op::LOCAL_SET, slot);
                         }
                         ArrayPatternElem::Hole => {}
@@ -5157,7 +5238,7 @@ impl Compiler {
                         }
                         _ => self.canon(name),
                     };
-                    if self.profile.supports_private_fields && name.starts_with('#') {
+                    if self.member_access_is_private(name) {
                         let setter_name = format!("__set_{}", field_name);
                         self.emit_u16(Op::LOCAL_GET, class_tmp);
                         self.emit_const(Value::String(Arc::from(setter_name.as_str())));
@@ -5307,7 +5388,7 @@ impl Compiler {
                     }
                 }
                 // .NET control property write resolves through the component
-                // descriptor to a direct `vybe:gui` host call — no emitted
+                // descriptor to a direct call — no emitted
                 // accessor. Stack on entry is [value]. The generic property
                 // setter takes (this, "Key", value); dedicated setters (this,
                 // value).
@@ -5332,7 +5413,9 @@ impl Compiler {
                         // shadowed name simply has no platform target, so this
                         // falls out to the ordinary member-assign path below,
                         // which is what a plain field write already uses.
-                        if let Some(target) = (!self.shadows_builtin_type(&class_name))
+                        // Case-blind, like `lookup_type_property_setter_target`
+                        // — see `user_owns_type_spelling`.
+                        if let Some(target) = (!self.user_owns_type_spelling(&class_name))
                             .then(|| {
                                 vybe_runtime::namespaces::lookup_type_property_setter_target(
                                     &self.profile.namespaces.type_scopes,
@@ -5482,7 +5565,7 @@ impl Compiler {
                         return Ok(());
                     }
                 }
-                if self.profile.supports_private_fields && field.starts_with('#') {
+                if self.member_access_is_private(field) {
                     self.compile_expr(object)?;
                     let obj_tmp = self.define_local("__js_private_set_obj");
                     self.emit_u16(Op::LOCAL_SET, obj_tmp);

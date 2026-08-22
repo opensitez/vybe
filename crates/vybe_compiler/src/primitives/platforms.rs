@@ -21,14 +21,13 @@ pub fn register_platforms(vm: &mut VM, caps: &Capabilities) {
     vybe_runtime::init_all_registered(vm, caps);
 }
 
-/// [`register_platforms`] with every capability granted, plus the `vybe:gui`
-/// no-op stubs so compiled control/form code links in non-GUI contexts.
+/// [`register_platforms`] with every capability granted.
 pub fn register_platforms_all(vm: &mut VM) {
     register_platforms(vm, &Capabilities::all());
 }
 
-/// Phase 1 only — every plugin's `Plugin::init` (host functions), and the
-/// `vybe:gui` stubs, but NOT the `finalize` pass.
+/// Phase 1 only — every plugin's `Plugin::init` (host functions), but NOT the
+/// `finalize` pass.
 ///
 /// Use this when host functions must be **overridden before** globals are
 /// wired: `register_host_fn` appends a *new* index rather than replacing, and
@@ -46,6 +45,5 @@ pub fn finalize_platforms(vm: &mut VM) {
     vybe_runtime::finalize_registered_plugins(vm, &Capabilities::all());
 }
 
-// The `vybe:gui` no-op stubs are installed by the `vybe` plugin itself when no
-// widget surface is present — see its `Plugin::init`. Nothing here names a
-// platform crate, which is what lets the emit layer live in the compiler.
+// Nothing here names a platform crate, which is what lets the emit layer live
+// in the compiler.

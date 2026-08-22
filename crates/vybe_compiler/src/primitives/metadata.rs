@@ -287,6 +287,7 @@ impl Compiler {
                     false,
                     modifiers.is_sealed,
                 );
+                self.record_reflection_generic_params(&runtime_name, name);
             }
             StmtKind::StructDecl {
                 name,
@@ -305,6 +306,7 @@ impl Compiler {
                     true,
                     false,
                 );
+                self.record_reflection_generic_params(&runtime_name, name);
             }
             StmtKind::InterfaceDecl {
                 name,
@@ -360,6 +362,30 @@ impl Compiler {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Record a generic type's declared PARAMETER names, taken from the
+    /// declaration BEFORE `reflection_runtime_type_name` erases them.
+    ///
+    /// The erased name is the right metadata key — the declaration lives on
+    /// the open type — but erasing was also throwing the parameter list away,
+    /// leaving nothing for a closed use like `GenericHolder(Of Integer)` to
+    /// substitute against. `GetGenericArguments` and `FieldType.Name` both
+    /// answered from the open declaration as a result, in EVERY front end
+    /// (C#'s own `get_generic_arguments_reports_type_argument_name` failed the
+    /// same way).
+    pub(super) fn record_reflection_generic_params(
+        &mut self,
+        runtime_name: &str,
+        declared_name: &str,
+    ) {
+        let params = common::generics::parse_generic_params_hint(declared_name);
+        if params.is_empty() {
+            return;
+        }
+        if let Some(meta) = self.reflection_types.get_mut(runtime_name) {
+            meta.generic_params = params;
         }
     }
 
@@ -1024,12 +1050,94 @@ impl Compiler {
         false
     }
 
+    /// Does `class_name` DECLARE `member` with private visibility?
+    ///
+    /// Answered from `normalized_classes` — the one class model — because
+    /// `Access` is already on every member there, put there by each language's
+    /// normalizer from its own rule (JS `#`, php/java/C#/VB a keyword). Shared
+    /// code asks the declaration; it never inspects the spelling.
+    ///
+    /// Private is NOT inherited: an ancestor's private member is invisible
+    /// here, so this deliberately does not walk `parent`.
+    pub(super) fn class_declares_private_member(&self, class_name: &str, member: &str) -> bool {
+        use crate::primitives::class_normalize::Access;
+        let Some(nc) = self.normalized_classes.get(&self.canon(class_name)) else {
+            return false;
+        };
+        let want = self.canon(member);
+        nc.instance_fields
+            .iter()
+            .chain(nc.static_fields.iter())
+            .any(|f| f.access == Access::Private && self.canon(&f.name) == want)
+            || nc
+                .instance_methods
+                .iter()
+                .chain(nc.static_methods.iter())
+                .any(|m| m.access == Access::Private && self.canon(&m.source_name) == want)
+            // An accessor pair carries its visibility on the GETTER/SETTER
+            // methods — `NormalProperty` has no `access` of its own, and both
+            // halves already get one from the normalizer. Without this a
+            // private `get #x()` was invisible here and lost its routing.
+            || nc.properties.iter().any(|p| {
+                self.canon(&p.source_name) == want
+                    && (p
+                        .getter
+                        .as_ref()
+                        .is_some_and(|g| g.access == Access::Private)
+                        || p.setter
+                            .as_ref()
+                            .is_some_and(|s| s.access == Access::Private))
+            })
+    }
+
+    /// Is `field` at THIS site an access to a private member?
+    ///
+    /// The one predicate every private-routing site asks, so none of them
+    /// inspects a spelling. Keyed on `current_class` because a private name is
+    /// only in scope inside its declaring class body — ECMA-262 makes `#x`
+    /// outside one an early error, and php/java/C# reject an outside access
+    /// too, so there is no other class this could legally concern.
+    pub(super) fn member_access_is_private(&self, field: &str) -> bool {
+        if !self.profile.supports_private_fields {
+            return false;
+        }
+        if self
+            .current_class
+            .as_deref()
+            .is_some_and(|class_name| self.class_declares_private_member(class_name, field))
+        {
+            return true;
+        }
+        // OUTSIDE the declaring class — or inside a nested/anonymous scope
+        // where `current_class` is not the declarer. The access is still a
+        // private one and must reach the brand-check/throwing path; compiling
+        // it as an ordinary property read is the silent-success failure
+        // (`private_getter_outside_class_throws` measured exactly that).
+        self.any_class_declares_private_member(field)
+    }
+
+    /// Does ANY class in the program declare `member` private? The question a
+    /// site asks when it has no receiver and no enclosing class to resolve
+    /// against — an access from outside every class body.
+    pub(super) fn any_class_declares_private_member(&self, member: &str) -> bool {
+        self.normalized_classes
+            .keys()
+            .any(|class_name| self.class_declares_private_member(class_name, member))
+    }
+
     pub(super) fn js_private_member_storage_name_for_class(
         &self,
         owner_class: &str,
         field: &str,
     ) -> Option<String> {
-        if !self.profile.supports_private_fields || !field.starts_with('#') {
+        // The gate is the DECLARED visibility, not the spelling. `field` still
+        // carries the source name (JS keeps the `#`, which is part of the
+        // identifier per ECMA-262's PrivateIdentifier production) but nothing
+        // here tests for it — a php/java/C# private member reaches this by
+        // declaring `Access::Private`, exactly like a JS `#x`.
+        if !self.profile.supports_private_fields
+            || !self.class_declares_private_member(owner_class, field)
+        {
             return None;
         }
         Some(format!(
@@ -1060,7 +1168,11 @@ impl Compiler {
         receiver: &Expression,
         field: &str,
     ) -> String {
-        if !self.profile.supports_private_fields || !field.starts_with('#') {
+        // No spelling test: `js_member_storage_name_for_class` consults the
+        // DECLARED visibility and degrades to the plain canonical name for a
+        // member no class declares private, so a non-private member takes the
+        // same answer it always did.
+        if !self.profile.supports_private_fields {
             return self.js_member_storage_name(field);
         }
 
@@ -1095,7 +1207,7 @@ impl Compiler {
     /// Whether an instance field named `field_canon` is already declared by
     /// some ancestor (walking `parent` up the already-compiled
     /// `pending_classes` chain) — i.e. this declaration HIDES it. Used only
-    /// under `profile.field_hiding`.
+    /// under the `field_shadowing` directive.
     pub(super) fn field_hides_ancestor(&self, parent: Option<&str>, field_canon: &str) -> bool {
         let mut current = parent.map(|p| self.canon(p));
         let mut guard = 0;
@@ -1204,8 +1316,18 @@ impl Compiler {
         receiver: &Expression,
         field: &str,
     ) -> Option<String> {
-        // JS `#private` fields have their own receiver-storage path.
-        if field.starts_with('#') {
+        // A member the DECLARING class marks private has its own storage path
+        // (the accessor route below `supports_private_fields`); this generic
+        // one must not answer for it. Keyed on `current_class` because a
+        // private name is only in scope inside its declaring class body —
+        // ECMA-262 makes `#x` outside one an early error, so there is no other
+        // class this could legally be asking about.
+        if self.profile.supports_private_fields
+            && self
+                .current_class
+                .as_deref()
+                .is_some_and(|class_name| self.class_declares_private_member(class_name, field))
+        {
             return None;
         }
         let self_kw = self.profile.self_keyword.as_str();
@@ -1244,6 +1366,19 @@ impl Compiler {
     }
 
     pub(super) fn private_member_access_forbidden(&self, field: &str) -> bool {
+        // ⛔ The ONE site that cannot ask a declaration, and the reason is real
+        // rather than laziness: this fires for an access from outside every
+        // class body, and the case that exercises it is `eval("s.#value")` —
+        // a fragment compiled on its own, where `normalized_classes` is EMPTY
+        // and there is no declaration in scope to consult. ECMA-262 agrees:
+        // `PrivateIdentifier` is a distinct GRAMMAR production and `#x` outside
+        // a class body is an early SyntaxError, i.e. a purely lexical fact.
+        //
+        // So the spelling stays here until the js WALKER carries it — it is
+        // the layer that parsed the PrivateIdentifier and the only one that
+        // still knows. Every other private site now asks the declaration
+        // (`member_access_is_private`); replacing this one measured 5 js
+        // failures, all `*_outside_*_throws`.
         self.profile.supports_private_fields
             && field.starts_with('#')
             && self.current_class.is_none()

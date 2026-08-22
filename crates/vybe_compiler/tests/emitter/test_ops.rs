@@ -29,7 +29,7 @@ fn run(emit: impl FnOnce(&mut Chunk)) -> Value {
     vybe_compiler::primitives::platforms::register_platforms_all(&mut vm);
     PENDING_GLOBALS.with(|p| {
         for (name, value) in p.borrow_mut().drain(..) {
-            vm.globals.insert(name, value);
+            vm.set_global_owned(name, value);
         }
     });
     vm.run(vec![chunk]).expect("VM run failed")

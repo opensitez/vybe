@@ -312,24 +312,37 @@ pub fn emit_suspend(chunk: &mut Chunk, line: u32) {
     crate::primitives::generators::emit_suspend(chunk, line);
 }
 
-/// Emit Thread.Sleep(ms) — WASI pollable blocking sleep.
-/// Stack before: [ms_value]  Stack after: []
-pub fn emit_sleep(chunk: &mut Chunk, sub_dur_idx: u16, block_idx: u16, line: u32) {
-    emit_thread_sleep(chunk, sub_dur_idx, block_idx, line);
+/// Emit Thread.Sleep(ms) — WASI blocking sleep.
+/// Stack before: [ms_value]  Stack after: [future]
+pub fn emit_sleep(chunk: &mut Chunk, wait_for_idx: u16, line: u32) {
+    emit_thread_sleep(chunk, wait_for_idx, line);
 }
 
-/// Blocking sleep via WASI pollables — `subscribe-duration(ns)` then
-/// `pollable.block`. Platform-neutral (pure WASI); every platform's
-/// sleep-shaped surface (Thread.Sleep, usleep, …) routes here.
-/// Stack before: [ms_value]  Stack after: []
-pub fn emit_thread_sleep(chunk: &mut Chunk, sub_dur_idx: u16, block_idx: u16, line: u32) {
+/// Blocking sleep — `wasi:clocks/monotonic-clock.wait-for(ns)`.
+/// Platform-neutral (pure WASI); every platform's sleep-shaped surface
+/// (Thread.Sleep, usleep, SDL_Delay, …) routes here.
+///
+/// This was `subscribe-duration(ns)` + `wasi:io/poll.[method]pollable.block`,
+/// a 0.2 pair whose second half lives in a package 0.3 DELETED. 0.3 gives
+/// monotonic-clock its own `wait-for: async func(how-long: duration)`, so the
+/// wait no longer needs a pollable at all — one call replaces two.
+///
+/// ⚠This also FIXES a silent truncation. The host's `pollable.block` spins
+/// `while !ready && elapsed < 1s`, so every sleep longer than a second
+/// returned early and the program carried on as though it had waited.
+/// `wait-for` sleeps the duration asked for, which means a test that sleeps
+/// 5s now actually takes 5s where it used to take 1.
+///
+/// Stack before: [ms_value]  Stack after: [future] — ONE value, exactly as
+/// the old pair left (`pollable.block`'s null): every host call pushes a
+/// result regardless of its declared arity, and callers like the JVM
+/// semaphore backoff consume that value as an `if_value` result.
+pub fn emit_thread_sleep(chunk: &mut Chunk, wait_for_idx: u16, line: u32) {
     // ms × 1_000_000 = nanoseconds
     chunk.emit_f64_const(1_000_000.0, line);
     chunk.emit_op(Op::F64_MUL, line);
-    // subscribe-duration(ns) → pollable
-    chunk.emit_call(sub_dur_idx, 1u8, line);
-    // [method]pollable.block(pollable) → ()
-    chunk.emit_call(block_idx, 1u8, line);
+    // wait-for(ns) → future<result<_, error-code>>
+    chunk.emit_call(wait_for_idx, 1u8, line);
 }
 
 /// Emit Task.Delay(ms) — spawn a worker that sleeps for `ms`, returning
@@ -343,16 +356,14 @@ pub fn emit_thread_sleep(chunk: &mut Chunk, sub_dur_idx: u16, block_idx: u16, li
 ///
 /// Stack before: [ms]  Stack after: [task_object]
 pub fn emit_task_delay(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
-    // WASI pollable sleep imports — all imports flow through chunks[0].
-    let sub_dur_idx =
-        chunks[current].add_import("wasi:clocks/monotonic-clock", "subscribe-duration");
-    let block_idx = chunks[current].add_import("wasi:io/poll", "[method]pollable.block");
+    // WASI sleep import — all imports flow through chunks[0].
+    let wait_for_idx = chunks[current].add_import("wasi:clocks/monotonic-clock", "wait-for");
 
-    // Worker chunk: arity=1 (start_arg = ms), body sleeps via WASI pollable,
+    // Worker chunk: arity=1 (start_arg = ms), body sleeps via WASI clocks,
     // returns null. The Task.result field reflects this null on completion.
     let mut worker = create_function_chunk("__task_delay_worker", 1);
     worker.emit_op_u16(Op::LOCAL_GET, 0, line);
-    emit_thread_sleep(&mut worker, sub_dur_idx, block_idx, line);
+    emit_thread_sleep(&mut worker, wait_for_idx, line);
     worker.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     worker.emit_op(Op::RETURN, line);
     worker.local_count = 1;

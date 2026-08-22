@@ -605,6 +605,14 @@ pub fn emit_merge_mask(
     lset(&mut chunks[current], false_slot, line);
     lset(&mut chunks[current], true_slot, line);
 
+    // A SCALAR mask selects one source WHOLE — it has no shape to walk, and
+    // flattening it to a one-element array would return a one-element result
+    // where Fortran's `where (.true.)` assigns the entire array.
+    lget(&mut chunks[current], mask_slot, line);
+    emit_is_array(chunks, current, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+
     emit_flatten_slot(chunks, current, mask_slot, mask_flat_slot, order, line);
     emit_source_flat(
         chunks,
@@ -671,6 +679,16 @@ pub fn emit_merge_mask(
     loops::emit_loop_end(chunks, current, state, line);
 
     emit_flat_result_shaped_like_mask(chunks, current, mask_slot, result_slot, line);
+
+    chunks[current].emit_else(line);
+    lget(&mut chunks[current], mask_slot, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    lget(&mut chunks[current], true_slot, line);
+    chunks[current].emit_else(line);
+    lget(&mut chunks[current], false_slot, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
 }
 
 /// Flatten a MERGE source, remembering whether it was an array at all — a

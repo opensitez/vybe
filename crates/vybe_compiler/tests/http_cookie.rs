@@ -70,7 +70,7 @@ fn serialize(name: &str, value: &str, attrs: &[(&str, Value)]) -> String {
                         "__test_arg_{}",
                         TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed)
                     );
-                    vm.globals.insert(name.clone(), other.clone());
+                    vm.set_global_owned(name.clone(), other.clone());
                     let ci = chunks[0].intern_string_constant(&name);
                     chunks[0].emit_op_u16(Op::GLOBAL_GET, ci, 0);
                 }

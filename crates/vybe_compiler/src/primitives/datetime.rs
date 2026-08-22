@@ -234,6 +234,12 @@ pub fn emit_weekday_in_base(chunk: &mut Chunk, base: WeekdayBase, line: u32) {
             chunk.emit_f64_const(7.0, line);
             super::math::emit_c_fmod(chunk, line);
         }
+        WeekdayBase::SundayOne => {
+            // d + 1 → Sunday=1 … Saturday=7. No modulus: the ECMA base already
+            // starts at Sunday, so only the origin moves.
+            chunk.emit_f64_const(1.0, line);
+            chunk.emit_op(Op::F64_ADD, line);
+        }
     }
 }
 

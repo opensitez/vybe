@@ -6,8 +6,8 @@
 //!   call site (`platforms/dotnet` `DotnetSurface::lookup_instance_property` /
 //!   `lookup_instance_method`), reached via
 //!   `Compiler::dotnet_framework_instance_method_owner`.
-//! - **Construction**: control leaves via the GUI-direct `vybe:gui` path
-//!   (`emit_new_control` / `try_emit_framework_control_base`); value & drawing
+//! - **Construction**: control leaves via the GUI-direct element path
+//!   (`try_emit_framework_control_base`); value & drawing
 //!   objects (`Point`, `Pen`, `Graphics`, …) via a descriptor constructor
 //!   (`ConstructorDef::with_backing`); abstract classes are never directly
 //!   constructed.

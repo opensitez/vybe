@@ -57,6 +57,22 @@ impl Compiler {
                 let enum_type = terminal_type_name(object)?;
                 self.resolve_known_enum_type(strip_generic_suffix(&enum_type))
             }
+            // A bitwise COMBINATION of members of one enum is still that enum
+            // (ECMA-334 §12.12 — `|`, `&`, `^` are defined on every enum type
+            // and return it). Without this the receiver of
+            // `(P.Read | P.Write).ToString()` was a bare integer, so the
+            // flags renderer never ran and .NET's "Read, Write" printed as
+            // "3". Both operands must name the SAME enum; a mixed expression
+            // is not an enum operation.
+            ExprKind::Binary {
+                op: BinOp::BitOr | BinOp::BitAnd | BinOp::BitXor,
+                left,
+                right,
+            } => {
+                let left_type = self.canonical_enum_type_from_expr(left)?;
+                let right_type = self.canonical_enum_type_from_expr(right)?;
+                (left_type == right_type).then_some(left_type)
+            }
             _ => resolve_receiver_type_hint(self, expr)
                 .and_then(|hint| self.resolve_known_enum_type(strip_generic_suffix(&hint))),
         }

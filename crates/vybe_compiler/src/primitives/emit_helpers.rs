@@ -274,6 +274,26 @@ impl Compiler {
                     .any(|g| g.eq_ignore_ascii_case(name)))
     }
 
+    /// The shadow question, folded the way the NAMESPACE-TREE lookups fold.
+    ///
+    /// `shadows_builtin_type` honours the language's case policy — correct
+    /// wherever the guarded lookup does too. But the platform registry
+    /// (`lookup_type_ctor_spec`, `lookup_type_property_*`,
+    /// `canonical_control_name`) matches case-INSENSITIVELY, and several
+    /// callers reach it with a `normalize_type_hint`-lowercased spelling. In a
+    /// case-sensitive language `shadows_builtin_type("label")` then cannot see
+    /// the user's `class Label`, while the registry still answers — the guard
+    /// and the lookup disagree about one name, and the user's class loses its
+    /// own field writes to the DOM. A guard must fold exactly like the lookup
+    /// it guards; this is the case-blind form for the case-blind lookups.
+    pub(crate) fn user_owns_type_spelling(&self, name: &str) -> bool {
+        self.shadows_builtin_type(name)
+            || self
+                .defined_classes
+                .iter()
+                .any(|g| g.eq_ignore_ascii_case(name))
+    }
+
     pub(super) fn normalize_type_hint(type_hint: &str) -> String {
         type_hint.trim().to_lowercase()
     }
@@ -633,8 +653,7 @@ impl Compiler {
         self.emit_global_read("__vb_file_path_by_handle");
         self.emit_u16(Op::LOCAL_GET, file_slot);
         self.emit(Op::ARRAY_GET);
-        let read_file_idx = self.import("wasi:filesystem", "readFile");
-        self.emit_host_call(read_file_idx, 1);
+        crate::primitives::fs_path::emit_read_file(self.chunk(), line);
         self.emit_const(Value::String(Arc::from("\n")));
         fn_call!(self, "ecma:string", "split", 2);
         self.emit_u16(Op::LOCAL_SET, rows_slot);

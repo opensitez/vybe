@@ -86,27 +86,30 @@ impl Target {
                 "wasi:cli/environment".into(),
                 "wasi:logging/logging".into(),
                 "web:console".into(),
-                "wasi:filesystem".into(),
+                // Same rule as the HTTP note below: `wasi:filesystem` alone is
+                // the PACKAGE, and the interfaces are what a component imports.
+                // The bare name sat here for as long as the shim verbs were
+                // registered under it, which no conforming runtime could serve.
+                "wasi:filesystem/types".into(),
+                "wasi:filesystem/preopens".into(),
                 // WASI 0.3 HTTP interfaces (`wasi:http` alone is the
                 // *package* name, not an importable interface).
                 "wasi:http/types".into(),
                 "wasi:http/client".into(),
                 "wasi:http/handler".into(),
-                "wasi:http/outgoing-handler".into(),
                 "wasi:random/random".into(),
                 "wasi:random/insecure".into(),
                 "wasi:random/insecure-seed".into(),
-                "wasi:clocks/wall-clock".into(),
+                "wasi:clocks/system-clock".into(),
                 "wasi:clocks/monotonic-clock".into(),
                 "wasi:clocks/timezone".into(),
                 "wasi:io/streams".into(),
                 "wasi:io/poll".into(),
-                "wasi:sockets/network".into(),
-                "wasi:sockets/instance-network".into(),
-                "wasi:sockets/tcp".into(),
-                "wasi:sockets/tcp-create-socket".into(),
-                "wasi:sockets/udp".into(),
-                "wasi:sockets/udp-create-socket".into(),
+                // WASI 0.3.1 collapsed `network`, `instance-network`, `tcp`,
+                // `tcp-create-socket`, `udp` and `udp-create-socket` into one
+                // `types` interface. `ip-name-lookup` is the only sibling that
+                // survives as its own interface.
+                "wasi:sockets/types".into(),
                 "wasi:sockets/ip-name-lookup".into(),
             ],
         }
@@ -136,27 +139,30 @@ impl Target {
                 "wasi:cli/environment".into(),
                 "wasi:logging/logging".into(),
                 "web:console".into(),
-                "wasi:filesystem".into(),
+                // Same rule as the HTTP note below: `wasi:filesystem` alone is
+                // the PACKAGE, and the interfaces are what a component imports.
+                // The bare name sat here for as long as the shim verbs were
+                // registered under it, which no conforming runtime could serve.
+                "wasi:filesystem/types".into(),
+                "wasi:filesystem/preopens".into(),
                 // WASI 0.3 HTTP interfaces (`wasi:http` alone is the
                 // *package* name, not an importable interface).
                 "wasi:http/types".into(),
                 "wasi:http/client".into(),
                 "wasi:http/handler".into(),
-                "wasi:http/outgoing-handler".into(),
                 "wasi:random/random".into(),
                 "wasi:random/insecure".into(),
                 "wasi:random/insecure-seed".into(),
-                "wasi:clocks/wall-clock".into(),
+                "wasi:clocks/system-clock".into(),
                 "wasi:clocks/monotonic-clock".into(),
                 "wasi:clocks/timezone".into(),
                 "wasi:io/streams".into(),
                 "wasi:io/poll".into(),
-                "wasi:sockets/network".into(),
-                "wasi:sockets/instance-network".into(),
-                "wasi:sockets/tcp".into(),
-                "wasi:sockets/tcp-create-socket".into(),
-                "wasi:sockets/udp".into(),
-                "wasi:sockets/udp-create-socket".into(),
+                // WASI 0.3.1 collapsed `network`, `instance-network`, `tcp`,
+                // `tcp-create-socket`, `udp` and `udp-create-socket` into one
+                // `types` interface. `ip-name-lookup` is the only sibling that
+                // survives as its own interface.
+                "wasi:sockets/types".into(),
                 "wasi:sockets/ip-name-lookup".into(),
             ],
         }

@@ -98,9 +98,14 @@ impl Compiler {
                     .defined_names
                     .iter()
                     // Compiler temporaries (`__php_offset_obj_1`, `__tmp`) are
-                    // not user bindings and must not be exposed.
-                    .filter(|(_, name)| !name.starts_with("__"))
-                    .map(|(_, name)| name.clone()),
+                    // not user bindings and must not be exposed. This asks the
+                    // BINDING who declared it — recorded by
+                    // `define_source_local` where the fact is known — rather
+                    // than inferring provenance from the spelling. A user
+                    // variable named `__x` is a member; a temporary that
+                    // forgot the prefix still is not.
+                    .filter(|entry| entry.is_source())
+                    .map(|entry| entry.name.clone()),
             );
         }
         names.sort();
@@ -356,7 +361,14 @@ pub fn normalize_global_table(chunks: &mut [Chunk]) {
         }
     }
 
-    chunks[0].globals = table;
+    // Share the one table with EVERY chunk, not just chunk 0. The index space
+    // is module-level, so any chunk holding a `GLOBAL_GET` operand can resolve
+    // it — that is what lets `disassemble(chunk)` name globals without being
+    // handed the table, and what keeps a single source of truth for the space.
+    let shared = std::sync::Arc::new(table);
+    for chunk in chunks.iter_mut() {
+        chunk.globals = shared.clone();
+    }
 }
 
 /// Every `(constant index, global name)` a chunk's `GLOBAL_GET`/`GLOBAL_SET`

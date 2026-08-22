@@ -345,14 +345,6 @@ pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
             "__stdlib_futex_alloc16",
         ),
         (
-            crate::primitives::canon_marshal::build_canon_alloc,
-            "__stdlib_canon_alloc",
-        ),
-        (
-            crate::primitives::canon_marshal::build_canon_store_utf8,
-            "__stdlib_canon_store_utf8",
-        ),
-        (
             crate::primitives::channels::build_task_new,
             "__stdlib_task_new",
         ),
@@ -577,8 +569,6 @@ fn build_runtime_helper_export(imports: &mut Chunk, name: &str) -> Option<Chunk>
             crate::primitives::channels::build_chan_wait_readable(imports)
         }
         "__stdlib_futex_alloc16" => crate::primitives::channels::build_futex_alloc16(imports),
-        "__stdlib_canon_alloc" => crate::primitives::canon_marshal::build_canon_alloc(imports),
-        "__stdlib_canon_store_utf8" => crate::primitives::canon_marshal::build_canon_store_utf8(imports),
         "__stdlib_task_new" => crate::primitives::channels::build_task_new(imports),
         "__stdlib_task_wait" => crate::primitives::channels::build_task_wait(imports),
         "__stdlib_sort_in_place" => crate::primitives::collections::build_sort_in_place(imports),

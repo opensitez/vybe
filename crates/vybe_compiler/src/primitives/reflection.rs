@@ -26,11 +26,16 @@ impl Compiler {
                     ExprKind::Member { .. } => self.flatten_member_chain(inner).join("."),
                     _ => return None,
                 };
+                // Read the type ARGUMENTS off the ORIGINAL spelling.
+                // `resolve_source_namespace_type` resolves the erased base
+                // (`Box<int>` -> `Box`), so anything asking for arguments
+                // after it has already lost them.
+                let declared_args = common::generics::generic_argument_display_names(&raw_name);
                 let raw_name = self
                     .resolve_source_namespace_type(&raw_name)
                     .unwrap_or(raw_name);
                 Some(ReflectionBinding::Type(
-                    self.reflection_runtime_type_name(&raw_name, None),
+                    self.reflection_closed_type_name(&raw_name, &declared_args),
                 ))
             }
             ExprKind::Ident(name) => self.reflection_bindings.get(&self.canon(name)).cloned(),
@@ -59,6 +64,9 @@ impl Compiler {
                     ) => self
                         .reflection_property_metadata(&type_name, &property_name)
                         .and_then(|(_, meta)| meta.type_name.clone())
+                        .map(|declared| {
+                            self.reflection_substitute_type_argument(&type_name, &declared)
+                        })
                         .map(ReflectionBinding::Type),
                     (
                         ReflectionBinding::Field {
@@ -69,6 +77,9 @@ impl Compiler {
                     ) => self
                         .reflection_field_metadata(&type_name, &field_name)
                         .and_then(|(_, meta)| meta.type_name.clone())
+                        .map(|declared| {
+                            self.reflection_substitute_type_argument(&type_name, &declared)
+                        })
                         .map(ReflectionBinding::Type),
                     (
                         ReflectionBinding::Property {
@@ -720,6 +731,86 @@ impl Compiler {
         }
     }
 
+    /// The runtime type name of a use site, with its type ARGUMENTS kept.
+    ///
+    /// `reflection_runtime_type_name` erases them, which is right for the
+    /// metadata lookup key (the declaration lives on the open type) but wrong
+    /// for a binding, which has to remember it was `GenericHolder(Of Integer)`
+    /// and not `GenericHolder`. Every lookup downstream goes through
+    /// `reflection_type_lookup_name`, which erases again, so carrying the
+    /// closed name here costs those paths nothing.
+    pub(crate) fn reflection_closed_type_name(&self, raw_name: &str, args: &[String]) -> String {
+        use vybe_ast::{GenericArg, TypeRef, TypeRefKind};
+
+        let base = self.reflection_runtime_type_name(raw_name, None);
+        let args: Vec<GenericArg> = args
+            .iter()
+            .filter(|arg| !arg.trim().is_empty())
+            .map(|arg| {
+                GenericArg::Type(TypeRef::named(self.reflection_runtime_type_name(arg, None)))
+            })
+            .collect();
+        if args.is_empty() {
+            return base;
+        }
+        // Rendered by the generics primitive, not by a local `format!` — the
+        // spelling of a closed generic type is the primitive's to define, and
+        // inventing another one here is the same mistake as VB's
+        // `__vb_generic_type_` marker.
+        common::generics::display_type_ref(&TypeRef {
+            kind: TypeRefKind::Named {
+                path: vybe_ast::TypePath::from_dotted(&base),
+                args,
+            },
+        })
+    }
+
+    /// Resolve a member's declared type against the OWNER's type arguments.
+    ///
+    /// A field declared `As T` stores the string `"T"`. Given the owner's
+    /// closed name, zip the declared parameter names against the supplied
+    /// arguments and substitute. Returns `declared` unchanged when the owner
+    /// is not generic or the name is not one of its parameters — so a
+    /// non-generic member is untouched.
+    pub(crate) fn reflection_substitute_type_argument(
+        &self,
+        owner_closed_name: &str,
+        declared: &str,
+    ) -> String {
+        let args = common::generics::generic_argument_type_refs(owner_closed_name);
+        if args.is_empty() {
+            return declared.to_string();
+        }
+        let lookup = self.reflection_type_lookup_name(owner_closed_name);
+        let Some(meta) = self.reflection_types.get(&lookup) else {
+            return declared.to_string();
+        };
+        if meta.generic_params.is_empty() {
+            return declared.to_string();
+        }
+        // Bind the declared parameters to the supplied arguments and run the
+        // member's declared type through the primitive's own substitution.
+        // `T` -> `Int32`; `List(Of T)` -> `List<Int32>`; a non-generic member
+        // comes back untouched because nothing in it matches a parameter.
+        let signature = common::generics::GenericSignature::new(meta.generic_params.clone());
+        let Ok(ctx) = signature.bind_args(&args) else {
+            return declared.to_string();
+        };
+        let Some(declared_ref) = common::generics::parse_type_ref_hint(declared) else {
+            return declared.to_string();
+        };
+        let substituted = common::generics::substitute_type(&declared_ref, &ctx);
+        common::generics::display_type_ref(&substituted)
+    }
+
+    /// `BindingFlags.DeclaredOnly` — do not walk to base types. This is a
+    /// property of the WALK, not of a member, so it cannot live in
+    /// `reflection_member_matches_binding_flags`; every `Get*s` array below
+    /// climbed `meta.parents` unconditionally and so ignored the flag.
+    fn reflection_binding_flags_declared_only(flags: Option<&Expression>) -> bool {
+        Self::reflection_binding_flags_include(flags, "DeclaredOnly")
+    }
+
     fn reflection_member_matches_binding_flags(
         flags: Option<&Expression>,
         member: &ReflectionMemberMetadata,
@@ -753,7 +844,11 @@ impl Compiler {
                     });
                 }
             }
-            current = meta.parents.first().cloned();
+            current = if Self::reflection_binding_flags_declared_only(flags) {
+                None
+            } else {
+                meta.parents.first().cloned()
+            };
         }
 
         let line = self.line;
@@ -786,7 +881,71 @@ impl Compiler {
                     });
                 }
             }
-            current = meta.parents.first().cloned();
+            current = if Self::reflection_binding_flags_declared_only(flags) {
+                None
+            } else {
+                meta.parents.first().cloned()
+            };
+        }
+
+        let line = self.line;
+        common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
+        for binding in entries {
+            inst!(self, core_wasm::dup);
+            self.compile_reflection_binding_value(&binding)?;
+            common::collections::emit_push(&mut self.chunks, self.current, line);
+            self.emit(Op::DROP);
+        }
+        Ok(())
+    }
+
+    /// `Type.GetMethods([BindingFlags])`. The property/field/constructor
+    /// arrays existed; this one did not, so `GetMethods` resolved to nothing
+    /// and read back as `undefined`.
+    ///
+    /// `meta.methods` is a `HashMap`, so iteration order is not stable across
+    /// runs — the entries are sorted by name here to keep emitted code
+    /// deterministic. .NET does not specify `GetMethods` ordering, so any
+    /// total order is conformant; an unstable one is not.
+    fn compile_reflection_method_array(
+        &mut self,
+        type_name: &str,
+        flags: Option<&Expression>,
+    ) -> Result<(), String> {
+        let mut entries = Vec::new();
+        let mut current = Some(self.reflection_type_lookup_name(type_name));
+        while let Some(name) = current {
+            let Some(meta) = self.reflection_types.get(&name) else {
+                break;
+            };
+            let mut names: Vec<&String> = meta.methods.keys().collect();
+            names.sort();
+            for method_name in names {
+                let method_meta = &meta.methods[method_name];
+                // The flags predicate is expressed over `ReflectionMemberMetadata`;
+                // a method carries the same visibility/static facts under a
+                // different type, so project it the way the constructor array does.
+                let as_member = ReflectionMemberMetadata {
+                    decorators: method_meta.decorators.clone(),
+                    is_static: method_meta.is_static,
+                    can_write: false,
+                    type_name: method_meta.return_type.clone(),
+                    params: method_meta.params.clone(),
+                    visibility: method_meta.visibility,
+                };
+                if Self::reflection_member_matches_binding_flags(flags, &as_member) {
+                    entries.push(ReflectionBinding::Method {
+                        type_name: name.clone(),
+                        method_name: method_name.clone(),
+                        generic_args: Vec::new(),
+                    });
+                }
+            }
+            current = if Self::reflection_binding_flags_declared_only(flags) {
+                None
+            } else {
+                meta.parents.first().cloned()
+            };
         }
 
         let line = self.line;
@@ -1085,6 +1244,120 @@ impl Compiler {
         Ok(())
     }
 
+    /// `Convert.ChangeType(value, type)` — resolved THROUGH the reflection
+    /// primitive.
+    ///
+    /// The second argument is a `Type`, and answering "which type is this
+    /// expression naming" is already this module's job:
+    /// `resolve_reflection_type_arg` handles `GetType(X)` / `typeof(X)`, an
+    /// ident bound to a type, and member chains. VB was doing the same job by
+    /// hand with a walk-time value interpreter that tracked what every local
+    /// WOULD hold (`vb_convert_known_value` and eighteen friends); that is the
+    /// reflection primitive's question, asked in the wrong place.
+    ///
+    /// The conversion itself reuses the `Convert.To*` statics already
+    /// registered on the .NET `Convert` class — this rewrites to a call and
+    /// compiles it, so there is no second implementation of any conversion.
+    /// Returns false (falls through) when the type cannot be resolved
+    /// statically, rather than guessing.
+    pub(super) fn try_compile_dotnet_convert_change_type_call(
+        &mut self,
+        callee: &Expression,
+        args: &[Argument],
+    ) -> Result<bool, String> {
+        let ExprKind::Member { object, field, .. } = &callee.kind else {
+            return Ok(false);
+        };
+        let field_name = strip_generic_suffix(field);
+        let receiver_name = terminal_type_name(object).unwrap_or_default();
+
+        // `Type.GetTypeCode(t)` — the same question, one argument.
+        //
+        // After `reflection_runtime_type_name` normalisation the LEAF of a
+        // .NET type name IS its `TypeCode` name: `System.Int32` -> `Int32`,
+        // `System.Double` -> `Double`, `System.String` -> `String`. So a
+        // resolvable type answers directly, and `TypeCode` needs no separate
+        // enum. VB folded this to the VB SPELLING instead (`Integer`, not
+        // `Int32`), which was wrong for every type VB renames.
+        if field_name == "GetTypeCode"
+            && args.len() == 1
+            && (receiver_name.eq_ignore_ascii_case("Type")
+                || receiver_name.eq_ignore_ascii_case("System.Type"))
+        {
+            let Some(target) = self.resolve_reflection_type_arg(&args[0].value) else {
+                return Ok(false);
+            };
+            let leaf = target.rsplit('.').next().unwrap_or(&target).to_string();
+            self.compile_expr(&Expression::string(&leaf))?;
+            return Ok(true);
+        }
+
+        // `Convert.GetTypeCode(value)` — the same answer, taken from the
+        // VALUE's declared type rather than from a `Type`. .NET reads it off
+        // the boxed instance; statically, the declared type is that answer.
+        // Falls through when the type is not known, rather than guessing.
+        if field_name == "GetTypeCode"
+            && args.len() == 1
+            && (receiver_name.eq_ignore_ascii_case("Convert")
+                || receiver_name.eq_ignore_ascii_case("System.Convert"))
+        {
+            let Some(hint) = self.infer_expr_type_hint(&args[0].value) else {
+                return Ok(false);
+            };
+            let runtime = self.reflection_runtime_type_name(&hint, None);
+            let leaf = runtime.rsplit('.').next().unwrap_or(&runtime).to_string();
+            self.compile_expr(&Expression::string(&leaf))?;
+            return Ok(true);
+        }
+
+        if field_name != "ChangeType" || args.len() < 2 {
+            return Ok(false);
+        }
+        let receiver = receiver_name;
+        if !(receiver.eq_ignore_ascii_case("Convert")
+            || receiver.eq_ignore_ascii_case("System.Convert"))
+        {
+            return Ok(false);
+        }
+        let Some(target) = self.resolve_reflection_type_arg(&args[1].value) else {
+            return Ok(false);
+        };
+        let Some(method) = convert_change_type_method(&target) else {
+            return Ok(false);
+        };
+        let call = Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(Expression::ident("Convert")),
+                field: method.to_string(),
+                null_safe: false,
+            })),
+            args: vec![args[0].clone()],
+            optional: false,
+        });
+        // ⛔ `Convert.ChangeType(null, T)` is NOT `Convert.To<T>(null)`.
+        // .NET returns NULL when the target is a reference type, and only
+        // throws `InvalidCastException` for a value type. Rewriting
+        // unconditionally turned `ChangeType(Nothing, GetType(String))` into
+        // `Convert.ToString(Nothing)` = "", which is a wrong ANSWER rather
+        // than an error. Guard the reference-type case; a value-type target
+        // keeps the existing behaviour rather than gaining a fake throw here.
+        if convert_change_type_target_is_reference(&target) {
+            let guarded = Expression::new(ExprKind::Ternary {
+                cond: Box::new(Expression::new(ExprKind::Binary {
+                    op: vybe_ast::BinOp::Eq,
+                    left: Box::new(args[0].value.clone()),
+                    right: Box::new(Expression::null()),
+                })),
+                then: Box::new(Expression::null()),
+                else_: Box::new(call),
+            });
+            self.compile_expr(&guarded)?;
+            return Ok(true);
+        }
+        self.compile_expr(&call)?;
+        Ok(true)
+    }
+
     pub(super) fn try_compile_dotnet_attribute_reflection_call(
         &mut self,
         callee: &Expression,
@@ -1260,6 +1533,16 @@ impl Compiler {
                     return Ok(false);
                 };
                 self.compile_reflection_field_array(
+                    &type_name,
+                    args.first().map(|arg| &arg.value),
+                )?;
+                Ok(true)
+            }
+            "GetMethods" => {
+                let ReflectionBinding::Type(type_name) = provider else {
+                    return Ok(false);
+                };
+                self.compile_reflection_method_array(
                     &type_name,
                     args.first().map(|arg| &arg.value),
                 )?;
@@ -1991,6 +2274,38 @@ impl ObjectOp {
             ObjectOp::IsPrototypeOf => "isPrototypeOf",
         }
     }
+}
+
+/// The `Convert.To*` static that a `TypeCode` selects.
+///
+/// This is the dispatch .NET performs at run time on the target's `TypeCode`
+/// (`System/Convert.cs` switches on it and calls the matching
+/// `IConvertible.ToXxx`). Resolved here when the target type is statically
+/// known; the names on the right are the statics registered on the .NET
+/// `Convert` class, so nothing is reimplemented.
+fn convert_change_type_method(target_type: &str) -> Option<&'static str> {
+    let leaf = target_type.rsplit('.').next().unwrap_or(target_type);
+    Some(match leaf.trim().to_ascii_lowercase().as_str() {
+        "boolean" | "bool" => "ToBoolean",
+        "byte" => "ToByte",
+        "char" => "ToChar",
+        "datetime" | "date" => "ToDateTime",
+        "decimal" => "ToDecimal",
+        "double" => "ToDouble",
+        "single" | "float" => "ToSingle",
+        "int16" | "short" | "int32" | "integer" | "int" => "ToInt32",
+        "int64" | "long" => "ToInt64",
+        "string" => "ToString",
+        _ => return None,
+    })
+}
+
+/// Whether a `ChangeType` target is a REFERENCE type, which decides what
+/// `Convert.ChangeType(null, T)` does: null for a reference type,
+/// `InvalidCastException` for a value type.
+fn convert_change_type_target_is_reference(target_type: &str) -> bool {
+    let leaf = target_type.rsplit('.').next().unwrap_or(target_type);
+    matches!(leaf.trim().to_ascii_lowercase().as_str(), "string" | "object")
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

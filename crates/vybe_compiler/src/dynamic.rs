@@ -2140,8 +2140,7 @@ mod tests {
 
         let greet = vm.global("greet").cloned().expect("greet global");
         let call_greet = vm
-            .globals
-            .get("callgreet")
+            .global("callgreet")
             .cloned()
             .expect("callGreet global");
 
@@ -2295,8 +2294,7 @@ mod tests {
         };
 
         let value = vm
-            .globals
-            .get("__test_result")
+            .global("__test_result")
             .cloned()
             .expect("stored host-import result");
 

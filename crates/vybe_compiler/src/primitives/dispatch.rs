@@ -26,8 +26,9 @@ use vybe_runtime::opcode::Op;
 
 use crate::primitives::threading as thread_adapter;
 use crate::primitives::{
-    base64, collections, csv, dict, heap, http_cookie, http_form, http_request_env, http_session,
-    io, object, ops, reflection, sets, strings, threading, url, xml,
+    base64, collections, config, csv, dict, fs_path, heap, http_cookie, http_form,
+    http_request_env, http_session,
+    io, object, ops, paths, reflection, sets, strings, threading, url, xml,
 };
 
 /// Handle common ops that need only a chunk and line.
@@ -111,6 +112,110 @@ pub fn emit_common(
         // (capture what would have been written), not a PHP feature. A language
         // maps its own names onto these in its profile; the semantics live in
         // `io.rs` beside the write they intercept.
+        // ── Filesystem ──
+        // Path-addressed file operations, lowered onto `wasi:filesystem@0.3.1`
+        // in `fs_path.rs`. Language-neutral because a path is: PHP's
+        // `file_get_contents`, Python's `open().read()`, Ruby's `File.read`
+        // and Pascal's `AssignFile` are spellings of the same capability.
+        //
+        // These exist so a profile can bind to the SPEC lowering by name.
+        // Before them a profile could only say `host:wasi:filesystem:readFile`
+        // — a verb that is not in the WIT — because a host import is the only
+        // thing profile syntax could reach. That is precisely why thirty
+        // invented verbs accumulated inside a real WASI namespace: the honest
+        // call was a sequence (preopens → open-at → read-via-stream → drain)
+        // and nothing but a shim could be named in one line.
+        // ── Path strings ──
+        // NOT filesystem: `Path.GetExtension("a/b.txt")` is ".txt" whether or
+        // not the file exists. WASI has no path interface because path SYNTAX
+        // is a language concern, which is why these ten sat in
+        // `wasi:filesystem` naming functions no WIT declares, to do work that
+        // never needed a host call. Two of them do read a capability and say so
+        // at their definition.
+        "path.file_name" => paths::emit_file_name(&mut chunks[current], line),
+        "path.directory" => paths::emit_directory(&mut chunks[current], line),
+        "path.extension" => paths::emit_extension(&mut chunks[current], line),
+        "path.file_stem" => paths::emit_file_stem(&mut chunks[current], line),
+        "path.has_extension" => paths::emit_has_extension(&mut chunks[current], line),
+        "path.change_extension" => paths::emit_change_extension(&mut chunks[current], line),
+        "path.is_rooted" => paths::emit_is_rooted(&mut chunks[current], line),
+        "path.combine" => paths::emit_combine(&mut chunks[current], argc, line),
+        "path.full_path" => paths::emit_full_path(&mut chunks[current], line),
+        "path.temp_path" => paths::emit_temp_path(&mut chunks[current], line),
+
+        // ── Component Model streams ──
+        // What replaced `wasi:io`. 0.3.1 deleted that package outright: a
+        // stream is a Component Model TYPE now, so reading and writing one is
+        // `canon stream.{read,write}` — canonical built-ins the compiler
+        // emits, not host imports. A profile row can only name a host import,
+        // so without these two names a language had nothing to call, which is
+        // the whole reason `wasi:io/streams:read` survived in two profiles
+        // long after the package it names ceased to exist.
+        //
+        // Language-neutral for the same reason `filesystem.*` above is: a
+        // `stream<u8>` parameter is a WIT type, not a feature of C or Python.
+        // Sinks and sources that take or return one stay ordinary rows.
+        "stream.read_bytes" => io::emit_read_stream_chunk(&mut chunks[current], line),
+        "stream.drain_bytes" => io::emit_read_stream_to_bytes(&mut chunks[current], line),
+        "stream.from_bytes" => io::emit_bytes_to_stream(&mut chunks[current], line),
+        "stream.read_handle" => io::emit_read_stream_handle(&mut chunks[current], line),
+
+        "filesystem.read_file" => fs_path::emit_read_file(&mut chunks[current], line),
+        "filesystem.read_file_bytes" => fs_path::emit_read_file_bytes(&mut chunks[current], line),
+        "filesystem.write_file" => fs_path::emit_write_file(&mut chunks[current], line),
+        "filesystem.append_file" => fs_path::emit_append_file(&mut chunks[current], line),
+        "filesystem.exists" => fs_path::emit_exists(&mut chunks[current], line),
+        "filesystem.is_file" => fs_path::emit_is_file(&mut chunks[current], line),
+        "filesystem.is_dir" => fs_path::emit_is_dir(&mut chunks[current], line),
+        "filesystem.file_size" => fs_path::emit_file_size(&mut chunks[current], line),
+        "filesystem.stat" => fs_path::emit_stat(&mut chunks[current], line),
+        "filesystem.mkdir" => fs_path::emit_mkdir(&mut chunks[current], line),
+        "filesystem.mkdir_all" => fs_path::emit_mkdir_all(chunks, current, line),
+        "filesystem.unlink" => fs_path::emit_unlink(&mut chunks[current], line),
+        "filesystem.rmdir" => fs_path::emit_rmdir(&mut chunks[current], line),
+        "filesystem.remove" => fs_path::emit_remove(&mut chunks[current], line),
+        "filesystem.remove_all" => fs_path::emit_remove_all(&mut chunks[current], line),
+        "filesystem.rename" => fs_path::emit_rename(&mut chunks[current], line),
+        "filesystem.copy" => fs_path::emit_copy(&mut chunks[current], line),
+        // ── Numbered file handles ──
+        //
+        // `Open #1 For Output`, Pascal's `AssignFile`/`Rewrite`, and every other
+        // language whose file API is a NUMBER rather than an object. The handle
+        // table is a guest global mapping file number → `{path, mode, pos}`;
+        // WASI has no cursor, because `read-via-stream`/`write-via-stream` take
+        // a `filesize` and are deliberately stateless.
+        //
+        // These had no `common:` name until now, so the only way to reach them
+        // was a Rust call from an emitter — which is why Pascal's profile still
+        // named `host:wasi:filesystem:openFile`, a verb no WIT declares, while
+        // the real lowering sat one crate away.
+        "filesystem.open_file" => fs_path::emit_open_file(chunks, current, argc, line),
+        "filesystem.close_file" => fs_path::emit_close_file(chunks, current, line),
+        "filesystem.print_file" => fs_path::emit_print_file(chunks, current, argc, line),
+        "filesystem.write_file_handle" => {
+            fs_path::emit_write_file_handle(chunks, current, argc, line)
+        }
+        "filesystem.line_input" => fs_path::emit_line_input(chunks, current, line),
+        "filesystem.input_file" => fs_path::emit_input_file(chunks, current, line),
+
+        // Enumeration. `list_dir` answers names, `read_dir_entries` answers the
+        // WIT's `{ type, name }` record — a language that wants `isFile` asks
+        // the second and compares `type` itself, because `isFile` is that
+        // language's question and `descriptor-type` is the spec's answer.
+        "filesystem.list_dir" => {
+            // `os.listdir()` and `Dir.entries` take the path as OPTIONAL and
+            // mean the working directory when it is absent. WASI has no
+            // implicit cwd — `open-at` needs something to resolve — so the
+            // default is spelled here rather than left to each caller.
+            if argc == 0 {
+                chunks[current].emit_string_const(".", line);
+            }
+            fs_path::emit_list_dir(&mut chunks[current], line)
+        }
+        "filesystem.read_dir_entries" => {
+            fs_path::emit_read_directory_entries(&mut chunks[current], line)
+        }
+
         "output_buffer.start" => io::emit_ob_start(chunks, current, argc, line),
         "output_buffer.get_level" => io::emit_ob_get_level(chunks, current, line),
         "output_buffer.get_contents" => io::emit_ob_get_contents(chunks, current, line),
@@ -786,6 +891,10 @@ pub fn emit_common(
         // CSV — a structured format, so it lives beside `json` and `url`.
         // Dialect (delimiter, enclosure) is on the STACK because php takes it
         // as runtime arguments.
+        // INI/config text — the same argument as CSV one entry down, and
+        // the same runtime-dialect rule: key CASE is a stack value because
+        // python lowercases option names and php does not.
+        "config.parse" => config::emit_parse(chunks, current, line),
         "csv.parse_line" => csv::emit_parse_line(chunks, current, line),
         "csv.format_row" => {
             csv::emit_format_row(chunks, current, csv::FormatOptions::minimal(), line)
@@ -989,9 +1098,8 @@ pub fn emit_common_with_imports(
     let _ = argc; // unused by current emits — kept for parity with `emit_common`
     match name {
         "threading.sleep" => {
-            let sub_dur_idx = import("wasi:clocks/monotonic-clock", "subscribe-duration");
-            let block_idx = import("wasi:io/poll", "[method]pollable.block");
-            thread_adapter::emit_thread_sleep(chunk, sub_dur_idx, block_idx, line);
+            let wait_for_idx = import("wasi:clocks/monotonic-clock", "wait-for");
+            thread_adapter::emit_thread_sleep(chunk, wait_for_idx, line);
             chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         }
         _ => return false,

@@ -5,9 +5,19 @@
 //! insertion-ordered iteration, and native set algebra. Language adapters layer
 //! their quirks above this module instead of exposing `ecma:set` directly.
 
-use vybe_ast::{SetAlgebraArity, SetMissingDelete, SetMutationResult, SetSemantics};
+pub use vybe_ast::{
+    SetAlgebraArity, SetMembership, SetMissingDelete, SetMutationResult, SetSemantics,
+};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
+
+/// Sidecar property on a snapshot-keyed set: an `ecma:map` from the element's
+/// INSERTION-TIME structural render to the element itself. The backing store
+/// stays the ECMA Set (order, size, iteration are native); this map is what
+/// makes membership follow the JDK `hashCode`/`equals` contract
+/// ([`SetMembership::SnapshotKey`]): structurally equal values collide, and an
+/// element mutated after insertion no longer answers to its current render.
+pub const SNAPSHOT_KEYS_KEY: &str = "__snapshot_keys";
 
 fn call(chunks: &mut [Chunk], current: usize, name: &str, argc: u8, line: u32) {
     let idx = chunks[current].add_import("ecma:set", name);
@@ -94,8 +104,277 @@ pub fn emit_add_void(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
+// ── SnapshotKey membership ([`SetMembership::SnapshotKey`]) ────────────────
+//
+// The JDK contract over the same ECMA-Set backing. Identity is the element's
+// structural render (`ecma:json.stringify`) taken at INSERTION and kept in the
+// [`SNAPSHOT_KEYS_KEY`] sidecar map; every membership question consults the
+// sidecar, never the native `has` (which is SameValueZero).
+
+fn call_host(chunks: &mut [Chunk], current: usize, module: &str, name: &str, argc: u8, line: u32) {
+    let idx = chunks[current].add_import(module, name);
+    chunks[current].emit_call(idx, argc, line);
+}
+
+/// Render the membership key for the value on the stack — the JDK
+/// `hashCode`/`equals` proxy:
+///
+/// * primitives and null are their own key (an `ecma:map` keys primitives by
+///   value, which IS their equality);
+/// * an object whose class BINDS the `Eq` protocol slot (a Kotlin data class,
+///   a record) keys by its structural render at this moment — so equivalent
+///   values collide and a later mutation orphans the entry;
+/// * a plain object keys by ITSELF — map keys hold objects by reference,
+///   which is exactly Java's default identity `equals`.
+///
+/// The discriminator is the published Eq SLOT KEY (`protocol_slot_key` — an
+/// unspellable role key the class emitter binds alongside the method), never
+/// a method name: a user method merely spelled `equals` cannot set it
+/// (flexclassplan §1e).
+///
+/// Stack: `[value] -> [key]`.
+fn emit_snapshot_render(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    call_host(chunks, current, "ecma:value", "typeof", 1, line);
+    chunks[current].emit_string_const("object", line);
+    crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    // A Set ELEMENT keys by its sorted values — `AbstractSet.equals` is
+    // order-independent, so `setOf(1,2)` and `setOf(2,1)` must collide.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    call_host(chunks, current, "ecma:object", "toStringTag", 1, line);
+    chunks[current].emit_string_const("[object Set]", line);
+    call_host(chunks, current, "wasm:js-string", "equals", 2, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    emit_values_array(chunks, current, line);
+    crate::primitives::collections::emit_sorted(chunks, current, line);
+    call_host(chunks, current, "ecma:json", "stringify", 1, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    chunks[current].emit_string_const(
+        vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Eq).as_str(),
+        line,
+    );
+    // `getMethodForCall` performs the FULL method walk (own props, prototype
+    // chain, type-registry vtable) — bound slot methods live in the vtable
+    // for typed instances, where a plain property read cannot see them.
+    call_host(chunks, current, "ecma:value", "getMethodForCall", 2, line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    call_host(chunks, current, "ecma:json", "stringify", 1, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+}
+
+/// Load the sidecar map of the set in `set_slot` into `out_slot`, creating and
+/// attaching it when absent (a set adopted from a plain construction).
+fn emit_snapshot_keys_map(
+    chunks: &mut [Chunk],
+    current: usize,
+    set_slot: u16,
+    out_slot: u16,
+    line: u32,
+) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, set_slot, line);
+    chunks[current].emit_string_const(SNAPSHOT_KEYS_KEY, line);
+    call_host(chunks, current, "ecma:object", "get", 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    call_host(chunks, current, "ecma:map", "new", 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, set_slot, line);
+    chunks[current].emit_string_const(SNAPSHOT_KEYS_KEY, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
+    call_host(chunks, current, "ecma:object", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+}
+
+/// Stack: `[set, value] -> [changed-bool]`.
+pub fn emit_add_snapshot(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    let set_slot = chunks[current].alloc_scratch(1);
+    let keys = chunks[current].alloc_scratch(1);
+    let key = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, set_slot, line);
+    emit_snapshot_keys_map(chunks, current, set_slot, keys, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    emit_snapshot_render(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    call_host(chunks, current, "ecma:map", "has", 2, line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_bool_const(false, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, set_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    call(chunks, current, "add", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    call_host(chunks, current, "ecma:map", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_bool_const(true, line);
+    chunks[current].emit_end(line);
+}
+
+/// Stack: `[set, value] -> [bool]`.
+pub fn emit_has_snapshot(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    let set_slot = chunks[current].alloc_scratch(1);
+    let keys = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, set_slot, line);
+    emit_snapshot_keys_map(chunks, current, set_slot, keys, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    emit_snapshot_render(chunks, current, line);
+    call_host(chunks, current, "ecma:map", "has", 2, line);
+}
+
+/// Stack: `[set, value] -> [changed-bool]`.
+pub fn emit_delete_snapshot(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    let set_slot = chunks[current].alloc_scratch(1);
+    let keys = chunks[current].alloc_scratch(1);
+    let key = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, set_slot, line);
+    emit_snapshot_keys_map(chunks, current, set_slot, keys, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    emit_snapshot_render(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    call_host(chunks, current, "ecma:map", "has", 2, line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, set_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    call_host(chunks, current, "ecma:map", "get", 2, line);
+    call(chunks, current, "delete", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    call_host(chunks, current, "ecma:map", "delete", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_bool_const(true, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_bool_const(false, line);
+    chunks[current].emit_end(line);
+}
+
+/// Stack: `[set] -> [set]` — native clear plus the sidecar's.
+pub fn emit_clear_snapshot(chunks: &mut [Chunk], current: usize, line: u32) {
+    let set_slot = chunks[current].alloc_scratch(1);
+    let keys = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, set_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, set_slot, line);
+    call(chunks, current, "clear", 1, line);
+    chunks[current].emit_op(Op::DROP, line);
+    emit_snapshot_keys_map(chunks, current, set_slot, keys, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    call_host(chunks, current, "ecma:map", "clear", 1, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, set_slot, line);
+}
+
+/// Stack: `[values-array] -> [set]` — a snapshot-keyed set of the array's
+/// elements, deduplicated by their insertion-time render.
+pub fn emit_from_iterable_snapshot(chunks: &mut [Chunk], current: usize, line: u32) {
+    let values = chunks[current].alloc_scratch(1);
+    let out = chunks[current].alloc_scratch(1);
+    let index = chunks[current].alloc_scratch(1);
+    let len = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, values, line);
+    emit_new(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, index, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, values, line);
+    crate::primitives::collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len, line);
+    let block = chunks[current].emit_block(line);
+    let (loop_id, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len, line);
+    crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, values, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
+    crate::primitives::collections::emit_get(chunks, current, line);
+    emit_add_snapshot(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
+    chunks[current].emit_i32_const(1, line);
+    crate::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, index, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_id);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+}
+
+/// Stack: `[set, value] -> [bool]` — membership under the declared identity.
+pub fn emit_has_mode(chunks: &mut [Chunk], current: usize, semantics: SetSemantics, line: u32) {
+    match semantics.membership {
+        SetMembership::SnapshotKey => emit_has_snapshot(chunks, current, line),
+        SetMembership::SameValueZero => emit_has(chunks, current, line),
+    }
+}
+
 /// Stack: `[set, value] -> [mode result]`.
 pub fn emit_add_mode(chunks: &mut [Chunk], current: usize, semantics: SetSemantics, line: u32) {
+    if semantics.membership == SetMembership::SnapshotKey {
+        match semantics.mutation_result {
+            SetMutationResult::ChangedBool => emit_add_snapshot(chunks, current, line),
+            SetMutationResult::Receiver => {
+                let value = chunks[current].alloc_scratch(1);
+                let set_slot = chunks[current].alloc_scratch(1);
+                chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+                chunks[current].emit_op_u16(Op::LOCAL_SET, set_slot, line);
+                chunks[current].emit_op_u16(Op::LOCAL_GET, set_slot, line);
+                chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+                emit_add_snapshot(chunks, current, line);
+                chunks[current].emit_op(Op::DROP, line);
+                chunks[current].emit_op_u16(Op::LOCAL_GET, set_slot, line);
+            }
+            SetMutationResult::Void => {
+                emit_add_snapshot(chunks, current, line);
+                chunks[current].emit_op(Op::DROP, line);
+                chunks[current]
+                    .emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+            }
+        }
+        return;
+    }
     match semantics.mutation_result {
         SetMutationResult::Receiver => emit_add(chunks, current, line),
         SetMutationResult::ChangedBool => emit_add_changed(chunks, current, line),
@@ -136,6 +415,47 @@ pub fn emit_delete_or_key_error(chunks: &mut [Chunk], current: usize, line: u32)
 
 /// Stack: `[set, value] -> [mode result]`.
 pub fn emit_delete_mode(chunks: &mut [Chunk], current: usize, semantics: SetSemantics, line: u32) {
+    if semantics.membership == SetMembership::SnapshotKey {
+        if semantics.missing_delete == SetMissingDelete::ThrowKeyError {
+            emit_delete_snapshot(chunks, current, line);
+            crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+            chunks[current].emit_op(Op::I32_EQZ, line);
+            chunks[current].emit_if(line);
+            chunks[current].emit_struct_new(0, 0, line);
+            chunks[current].emit_dup(line);
+            chunks[current].emit_string_const("", line);
+            crate::primitives::errors::emit_exception_new_finalize(
+                &mut chunks[current],
+                "KeyError",
+                line,
+            );
+            crate::primitives::errors::emit_throw(&mut chunks[current], line);
+            chunks[current].emit_end(line);
+            chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+            return;
+        }
+        match semantics.delete_result {
+            SetMutationResult::ChangedBool => emit_delete_snapshot(chunks, current, line),
+            SetMutationResult::Receiver => {
+                let value = chunks[current].alloc_scratch(1);
+                let set_slot = chunks[current].alloc_scratch(1);
+                chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+                chunks[current].emit_op_u16(Op::LOCAL_SET, set_slot, line);
+                chunks[current].emit_op_u16(Op::LOCAL_GET, set_slot, line);
+                chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+                emit_delete_snapshot(chunks, current, line);
+                chunks[current].emit_op(Op::DROP, line);
+                chunks[current].emit_op_u16(Op::LOCAL_GET, set_slot, line);
+            }
+            SetMutationResult::Void => {
+                emit_delete_snapshot(chunks, current, line);
+                chunks[current].emit_op(Op::DROP, line);
+                chunks[current]
+                    .emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+            }
+        }
+        return;
+    }
     if semantics.missing_delete == SetMissingDelete::ThrowKeyError {
         emit_delete_or_key_error(chunks, current, line);
         return;
@@ -200,6 +520,14 @@ pub fn emit_clear_void(chunks: &mut [Chunk], current: usize, line: u32) {
 
 /// Stack: `[set] -> [mode result]`.
 pub fn emit_clear_mode(chunks: &mut [Chunk], current: usize, semantics: SetSemantics, line: u32) {
+    if semantics.membership == SetMembership::SnapshotKey {
+        emit_clear_snapshot(chunks, current, line);
+        if semantics.mutation_result == SetMutationResult::Void {
+            chunks[current].emit_op(Op::DROP, line);
+            chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+        }
+        return;
+    }
     match semantics.mutation_result {
         SetMutationResult::Void => emit_clear_void(chunks, current, line),
         _ => emit_clear(chunks, current, line),

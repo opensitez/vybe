@@ -101,7 +101,11 @@ pub struct Scope {
     /// Debug accumulator: every `(slot, name)` ever defined in this function,
     /// NOT popped by `end_scope`. Copied into `Chunk.local_names` at finalize
     /// so the debugger can resolve variable names ↔ slots. Inspection only.
-    pub defined_names: Vec<(u16, String)>,
+    pub defined_names: Vec<vybe_runtime::chunk::LocalName>,
+    /// Origin stamped on the next binding defined; reset to `Compiler` after
+    /// each one so a forgotten `set_pending_origin` cannot leak a Source mark
+    /// onto an unrelated temporary.
+    pending_origin: vybe_runtime::chunk::LocalOrigin,
 }
 
 impl Scope {
@@ -119,6 +123,7 @@ impl Scope {
             depth: 0,
             next_slot: 0,
             defined_names: Vec::new(),
+            pending_origin: vybe_runtime::chunk::LocalOrigin::Compiler,
         }
     }
 
@@ -176,6 +181,15 @@ impl Scope {
         self.define_typed(name, None)
     }
 
+    /// Record who declared the NEXT binding this scope defines.
+    ///
+    /// The origin is a property of the call site, not of the name, and the
+    /// call sites outnumber the definitions 909 to 2 — so it is set here and
+    /// consumed by `define_typed` rather than threaded through every overload.
+    pub fn set_pending_origin(&mut self, origin: vybe_runtime::chunk::LocalOrigin) {
+        self.pending_origin = origin;
+    }
+
     pub fn define_typed(&mut self, name: &str, type_hint: Option<vybe_ast::TypeHint>) -> u16 {
         let slot = self.next_slot;
         self.locals.push(Local {
@@ -188,7 +202,14 @@ impl Scope {
             holds_reference: false,
             declared_arity: None,
         });
-        self.defined_names.push((slot, name.to_string()));
+        self.defined_names.push(vybe_runtime::chunk::LocalName::new(
+            slot,
+            name,
+            std::mem::replace(
+                &mut self.pending_origin,
+                vybe_runtime::chunk::LocalOrigin::Compiler,
+            ),
+        ));
         self.next_slot += 1;
         slot
     }
@@ -214,7 +235,14 @@ impl Scope {
             holds_reference: false,
             declared_arity: None,
         });
-        self.defined_names.push((slot, name.to_string()));
+        self.defined_names.push(vybe_runtime::chunk::LocalName::new(
+            slot,
+            name,
+            std::mem::replace(
+                &mut self.pending_origin,
+                vybe_runtime::chunk::LocalOrigin::Compiler,
+            ),
+        ));
         self.next_slot += 1;
         slot
     }

@@ -27,8 +27,7 @@ fn eval(op: &str, method: &str, path_with_query: &str) -> Value {
         Vec::new(),
     );
     let handle = wasi_http::incoming_request_value(&vm, request_id).expect("request handle");
-    vm.globals
-        .insert(http_request_env::REQUEST_GLOBAL.to_string(), handle);
+    vm.set_global_owned(http_request_env::REQUEST_GLOBAL.to_string(), handle);
 
     let mut chunks = vec![Chunk::new("<request-env-test>")];
     let handled = dispatch::emit_common(op, &mut chunks, 0, 0, 0);
@@ -127,8 +126,7 @@ fn environ(method: &str, path_with_query: &str, scheme: &str) -> Value {
         Vec::new(),
     );
     let handle = wasi_http::incoming_request_value(&vm, request_id).expect("request handle");
-    vm.globals
-        .insert(http_request_env::REQUEST_GLOBAL.to_string(), handle);
+    vm.set_global_owned(http_request_env::REQUEST_GLOBAL.to_string(), handle);
 
     let mut chunks = vec![Chunk::new("<environ-test>")];
     assert!(dispatch::emit_common(

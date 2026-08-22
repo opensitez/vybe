@@ -4,4 +4,4 @@ namespace  os -> wasi:filesystem
 namespace  random -> ecma:math
 namespace  re -> ecma:regexp
 namespace  sys -> wasi:cli
-namespace  time -> wasi:clocks/wall-clock
+namespace  time -> wasi:clocks/system-clock

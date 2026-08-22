@@ -171,7 +171,7 @@ impl Compiler {
         //
         // The one it replaces was name-keyed: `onEvent(control.__control_name,
         // …)` into `GuiState`. An element created by `createElement` has no
-        // `__control_name` (the `vybe:gui` factory that used to assign one is
+        // `__control_name` (the factory that used to assign one is
         // gone), so every `AddHandler`/`Handles`/`+=` subscription registered
         // under an EMPTY key and no button in any WinForms program could fire.
         // Nothing errored — the control existed, the handler existed, and the
@@ -307,8 +307,8 @@ use vybe_ast::{BinOp, ExprKind, Expression, StmtKind};
 // from `gui.rs` because events are not necessarily a GUI concern.
 //
 // The emit side lives in the compiler (`primitives/events.rs`) and the shared
-// `vybe:gui` binding in `gui.rs`; these are the *walker-facing* builders any
-// front-end can reuse.
+// binding in `gui.rs`; these are the *walker-facing* builders any front-end
+// can reuse.
 
 pub fn add_handler_stmt(
     control: Expression,

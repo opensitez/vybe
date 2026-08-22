@@ -2480,7 +2480,7 @@ impl Compiler {
         self.current_ref_out_params = None;
 
         for param in params {
-            self.define_local(param);
+            self.define_source_local(param);
         }
 
         {
@@ -3290,8 +3290,8 @@ impl Compiler {
 
         // A call whose callee resolves to a framework GUI control class —
         // `Form("Calculator")`, `Window.Forms.Form(...)`, `Window.Forms.TextBox()`
-        // — constructs the control through the `vybe:gui` host factory, the
-        // same GUI-direct path as `New Form()`. Control classes no longer emit
+        // — constructs the control directly, the
+        // same path as `New Form()`. Control classes no longer emit
         // a per-class constructor global; construction resolves through the
         // component descriptor. The callee is resolved by its LAST segment
         // (namespace qualifiers are ignored, matching how the class name used
@@ -3540,6 +3540,9 @@ impl Compiler {
         if self.try_compile_dotnet_attribute_reflection_call(callee, args)? {
             return Ok(());
         }
+        if self.try_compile_dotnet_convert_change_type_call(callee, args)? {
+            return Ok(());
+        }
 
         // `dict(...)`, `OrderedDict(...)` and keyword-form `Counter(...)`
         // used to be rebuilt here behind `is_python_profile()`, which also put
@@ -3760,7 +3763,7 @@ impl Compiler {
                         self.emit_const(Value::String(Arc::from(cur_canon.as_str())));
                         self.emit_const(Value::String(Arc::from(canon_field.as_str())));
                         self.emit_direct_callable_invoke(3);
-                    } else {
+                    } else if self.ambient_this() {
                         // ECMA `super` resolves from the method's
                         // [[HomeObject]].[[Prototype]] at call time. For
                         // instance methods that is `C.prototype.__proto__`,
@@ -3768,6 +3771,40 @@ impl Compiler {
                         self.emit_js_super_home_base();
                         let method_idx = self.str_const(&canon_field);
                         self.emit_struct_field_op(Op::STRUCT_GET, 0, method_idx);
+                    } else {
+                        // Typed languages have no prototype chain to walk —
+                        // the constructor saved the parent's implementation
+                        // under a LEVEL-KEYED slot (`__base_<Class>$<m>`,
+                        // see `emit_save_base_method`) before stamping this
+                        // class's override. When the current class does not
+                        // override the method there was nothing to save, and
+                        // `base.m()` means the same method the instance
+                        // carries — fall back to the plain slot.
+                        let owner = self.canon(class_name.as_deref().unwrap_or(""));
+                        let base_key =
+                            self.str_const(&format!("__base_{}${}", owner, canon_field));
+                        let method_idx = self.str_const(&canon_field);
+                        let line = self.line;
+                        if let Some(s) = self_slot {
+                            self.emit_u16(Op::LOCAL_GET, s);
+                        } else {
+                            self.emit_null();
+                        }
+                        self.emit_struct_field_op(Op::STRUCT_GET, 0, base_key);
+                        let picked = self.define_local("__base_method_fn");
+                        self.emit_u16(Op::LOCAL_SET, picked);
+                        self.emit_u16(Op::LOCAL_GET, picked);
+                        fn_call!(self, "wasm:js-undefined", "test", 1);
+                        self.chunk().emit_if_value(line);
+                        if let Some(s) = self_slot {
+                            self.emit_u16(Op::LOCAL_GET, s);
+                        } else {
+                            self.emit_null();
+                        }
+                        self.emit_struct_field_op(Op::STRUCT_GET, 0, method_idx);
+                        self.chunk().emit_else(line);
+                        self.emit_u16(Op::LOCAL_GET, picked);
+                        self.chunk().emit_end(line);
                     }
 
                     if self.ambient_this() {
@@ -4191,7 +4228,7 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_SET, obj_tmp);
                 let fn_tmp = self.define_local("__static_container_fn");
                 let class_canon = self.canon(&self.flatten_member_chain(object).join("."));
-                if self.profile.supports_private_fields && field.starts_with('#') {
+                if self.member_access_is_private(field) {
                     if let Some(overload) = self.resolve_static_method_overload_for_type(
                         &class_canon,
                         field,
@@ -4517,8 +4554,8 @@ impl Compiler {
         // a literal namespace chain `<prefix>.<module>.<fn>(args)` where
         // the leading ident is a known host-namespace prefix (`vybe`,
         // `wasi`, `wasm`). Emit as `call_import("<prefix>:<module>",
-        // "<fn>", args)` — identical to what JS gets via `import * as
-        // gui from "vybe:gui"; gui.setProperty(...)`.
+        // "<fn>", args)` — identical to what JS gets via
+        // `import * as fs from "wasi:filesystem"; fs.readFile(...)`.
         //
         // Without this, the call falls through to the method-call
         // pattern and injects `vybe.<module>` as a phantom receiver,
@@ -5150,8 +5187,8 @@ impl Compiler {
                                     // is an element now, and `createElement`
                                     // leaves it DETACHED — it has no parent
                                     // and renders nothing until something
-                                    // inserts it. Routing this to the old
-                                    // `vybe:gui` collection left every control
+                                    // inserts it. Routing this to a host-side
+                                    // collection instead left every control
                                     // unparented, which is why a form opened
                                     // with nothing on it.
                                     let line = self.line;
@@ -5405,7 +5442,10 @@ impl Compiler {
                 // If any part of the chain (after the head) is a private field, this is
                 // ClassName.#privateField.method(...) — the receiver is the private field
                 // value, NOT the class itself. Don't treat it as a static method call.
-                let chain_through_private = class_parts.iter().skip(1).any(|p| p.starts_with('#'));
+                let chain_through_private = class_parts
+                    .iter()
+                    .skip(1)
+                    .any(|p| self.member_access_is_private(p));
 
                 if !chain_through_private {
                     if let Some(current_class) = self.current_class.clone() {
@@ -5473,7 +5513,7 @@ impl Compiler {
                             .scope()
                             .resolve("__static_fn")
                             .unwrap_or_else(|| self.define_local("__static_fn"));
-                        if field.starts_with('#') {
+                        if self.class_declares_private_member(&canon, field) {
                             if let Some(overload) = self
                                 .resolve_static_method_overload_for_type(&canon, field, &arg_exprs)
                             {
@@ -5912,7 +5952,7 @@ impl Compiler {
             // Framework method resolution walks the .NET class hierarchy
             // (user subclasses into the descriptor) and wins over the "pending
             // class ⇒ dynamic" gate, so `Button.Show` / inherited control
-            // members resolve to `vybe:gui` host calls instead of needing an
+            // members resolve through the descriptor instead of needing an
             // emitted thunk. Returns `None` on a user override → dynamic.
             // `namespace_tree_instance_method_owner` is scoped by `type_scopes`
             // and finds nothing for a language declaring none, so the filter
@@ -7397,7 +7437,7 @@ impl Compiler {
                 self.emit_private_access_denied(field)?;
                 return Ok(());
             }
-            if self.profile.supports_private_fields && field.starts_with('#') && !*null_safe {
+            if self.member_access_is_private(field) && !*null_safe {
                 self.compile_expr(object)?;
                 let obj_tmp = self.define_local("__js_private_call_obj");
                 self.emit_u16(Op::LOCAL_SET, obj_tmp);
@@ -8132,7 +8172,7 @@ impl Compiler {
             self.reserve_local_slot(obj_tmp);
             self.emit_u16(Op::LOCAL_SET, obj_tmp);
 
-            if self.profile.supports_private_fields && field.starts_with('#') && !*null_safe {
+            if self.member_access_is_private(field) && !*null_safe {
                 let class_parts = self.flatten_member_chain(object);
                 let class_name = if let Some(current_class) = self.current_class.clone() {
                     if class_parts

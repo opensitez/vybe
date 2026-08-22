@@ -14,7 +14,6 @@ vybe_platform_ecma = { workspace = true }
 vybe_platform_web = { workspace = true }
 vybe_platform_wasi = { workspace = true }
 vybe_platform_node = { workspace = true }
-vybe_platform_vybe = { workspace = true }
 pest = { workspace = true }
 pest_derive = { workspace = true }
 chrono = { workspace = true }

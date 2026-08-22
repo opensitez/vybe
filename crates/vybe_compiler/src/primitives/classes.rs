@@ -7,7 +7,7 @@
 
 use super::*;
 use crate::primitives::ArrayBindingMetadata;
-use crate::primitives::class_normalize::{BaseCall, NormalConstructor, NormalMethod};
+use crate::primitives::class_normalize::{Access, BaseCall, NormalConstructor, NormalMethod};
 
 /// Global name of the arity-specialized constructor overload for `prefix`.
 ///
@@ -199,8 +199,8 @@ impl Compiler {
 
     /// A form carries its class name as its `name` — the DOM `id`.
     ///
-    /// Written through the `name` ROLE, like every other property. It used to
-    /// call `vybe:gui.controlSetProperty` directly, which is a second way of
+    /// Written through the `name` ROLE, like every other property. Calling a
+    /// property host directly beside it would be a second way of
     /// saying the same thing: the role already resolves to the element's `id`,
     /// and a private call beside it is exactly the duplicated role→DOM match
     /// that drifts (guiplan.md, "Do not").
@@ -468,10 +468,10 @@ impl Compiler {
     }
 
     /// A framework GUI control (`Button`, `Form`, `Panel`, …) used as a class
-    /// parent constructs through the `vybe:gui` host factory directly rather
-    /// than through a per-class constructor global. The host `new_<Type>`
-    /// builds the complete control object — identity fields plus the
-    /// `Controls`/`components` collections — so no emitted ctor chunk is
+    /// parent constructs directly rather than through a per-class constructor
+    /// global: the construction builds the complete control object — identity
+    /// fields plus the `Controls`/`components` collections — so no emitted ctor
+    /// chunk is
     /// needed, and control access resolves through the component descriptor at
     /// each call site (see `dotnet_framework_instance_method_owner` /
     /// `lookup_instance_property`). Returns `true` when it emitted the
@@ -567,10 +567,12 @@ impl Compiler {
         }
         if let Some(parent_name) = parent {
             let pname = self.canon(parent_name);
+            let owner = self.canon(name);
             for method_name in instance_method_names {
                 crate::primitives::classes::emit_save_base_method(
                     self.chunk(),
                     this_slot,
+                    &owner,
                     method_name,
                     line,
                 );
@@ -1156,23 +1158,14 @@ impl Compiler {
         // the C-only at-entry cell promotion has.
         let saved_atomic_words = std::mem::take(&mut self.current_atomic_word_locals);
         crate::primitives::collect_atomic_place_idents(body, &mut self.current_atomic_word_locals);
-        let saved_closure_captured = std::mem::take(&mut self.current_closure_captured_locals);
-        let saved_env_names = std::mem::take(&mut self.closure_env_names);
-        let saved_capture_locals = std::mem::take(&mut self.capture_locals);
         // Capture parent shared env for nested function upvalue resolution
         let parent_shared_env_slot = self.shared_env_slot;
         let parent_shared_env_names = self.shared_env_names.clone();
-        let saved_shared_env_slot = self.shared_env_slot.take();
-        let saved_shared_env_names = std::mem::take(&mut self.shared_env_names);
+        let frame_books = self.enter_closure_frame(&parent_shared_env_names);
         crate::primitives::collect_closure_captured_idents(
             body,
             &mut self.current_closure_captured_locals,
         );
-        // If parent has a shared env, pre-seed closure_env_names so
-        // upvalue indices match the parent's shared env layout.
-        if !parent_shared_env_names.is_empty() {
-            self.closure_env_names = parent_shared_env_names.clone();
-        }
         // ECMA-262 §11.2.2: inherit strict mode and additionally enable it on
         // a `"use strict"` directive prologue in this function's body.
         let saved_strict = self.in_strict;
@@ -1194,7 +1187,7 @@ impl Compiler {
             None
         };
         let js_arguments_slot = if uses_js_arguments {
-            let slot = self.define_local("arguments");
+            let slot = self.define_source_local("arguments");
             self.emit_u16(Op::LOCAL_GET, js_arguments_source_slot.unwrap());
             self.emit_u16(Op::LOCAL_SET, slot);
             self.emit_u16(Op::LOCAL_GET, slot);
@@ -1228,7 +1221,7 @@ impl Compiler {
                 .all(|param| param.default.is_none() && !param.is_rest);
 
         for (index, p) in params.iter().enumerate() {
-            self.define_local_typed(&p.name, p.type_hint.clone());
+            self.define_source_local_typed(&p.name, p.type_hint.clone());
             let normalized_type_hint = p.type_hint.as_deref().map(Compiler::normalize_type_hint);
             if normalized_type_hint
                 .as_deref()
@@ -1365,6 +1358,17 @@ impl Compiler {
         }
         // An alias parameter is handed a reference — mark it, do not wrap it.
         self.bind_alias_params(params);
+        // Reserve the closure environment slot BEFORE any body statement, for
+        // the same reason `lambdas.rs` does: the VM fills
+        // `[capture_base .. capture_base + capture_count)` at function ENTRY,
+        // but `capture_local_slot` allocates that slot at the first
+        // captured-variable access, so any statement compiled before that
+        // access can draw the same slot from `alloc_scratch` and overwrite it.
+        //
+        // Both function-compilation paths need this, not just lambdas. A COBOL
+        // paragraph is compiled HERE, and fixing only the enclosing lambda
+        // moved the collision into the paragraph instead of removing it.
+        self.closure_env_slot();
 
         let generator_control_slot =
             is_generator.then(|| self.define_local("__generator_entry_control"));
@@ -1543,11 +1547,7 @@ impl Compiler {
         self.current_func_name = saved_fn;
         self.current_addr_taken_locals = saved_addr_taken;
         self.current_atomic_word_locals = saved_atomic_words;
-        self.current_closure_captured_locals = saved_closure_captured;
-        self.closure_env_names = saved_env_names;
-        self.capture_locals = saved_capture_locals;
-        self.shared_env_slot = saved_shared_env_slot;
-        self.shared_env_names = saved_shared_env_names;
+        self.exit_closure_frame(frame_books);
         self.in_strict = saved_strict;
         if directive_frame {
             self.pop_directive_frame();
@@ -1723,36 +1723,20 @@ impl Compiler {
             }
         }
 
-        // VB `Handles ctrl.Event` clause on a top-level Sub: register the
-        // event handler with the canonical GUI binding. The same canonical
-        // emit path serves C# `+=`, JS `addEventListener`, etc.
-        for handle in handles {
-            let parts: Vec<&str> = handle.splitn(2, '.').collect();
-            if parts.len() == 2 {
-                let line = self.line;
-                let bind_idx = self.import("vybe:gui", common::gui::HOST_FN_BIND_EVENT);
-                let ctrl_raw = parts[0].trim();
-                let ctrl_canon = self.canon(ctrl_raw);
-                let ctrl_key = if ctrl_canon == self.profile.self_keyword
-                    || ctrl_canon == "me"
-                    || ctrl_canon == "this"
-                    || ctrl_canon == "mybase"
-                {
-                    self.current_class
-                        .clone()
-                        .map(|c| self.canon(&c))
-                        .unwrap_or(ctrl_canon)
-                } else {
-                    ctrl_canon
-                };
-                self.emit_const(Value::String(Arc::from(ctrl_key.as_str())));
-                let ev = parts[1].to_lowercase();
-                self.emit_const(Value::String(Arc::from(ev.as_str())));
-                self.emit_var_get(name);
-                common::gui::emit_bind_event(self.chunk(), bind_idx, line);
-                self.emit(Op::DROP); // statement: discard host call result
-            }
-        }
+        // A `Handles ctrl.Event` clause binds NOTHING here.
+        //
+        // It used to register the handler in a host-side registry keyed by
+        // control NAME. That registry is gone —
+        // subscription is `web:dom`'s `addEventListener`, reached through
+        // `StmtKind::AddHandler`, which is what every frontend's spelling
+        // (`Handles`, `+=`, `OnClick :=`) normalizes to. VB's walker already
+        // rewrites a `Handles` clause into an `AddHandler` statement
+        // (`languages/vb/src/normalize_class.rs`), so binding again from the
+        // declaration would be a second subscription for one clause.
+        //
+        // `handles` survives on `FunctionDecl` as the DECLARED fact — the
+        // designer reads it — and is not an instruction to emit anything.
+        let _ = handles;
 
         Ok(())
     }
@@ -1800,9 +1784,13 @@ impl Compiler {
                 let mut fields: Vec<String> = Vec::new();
                 let mut field_storage_names: HashMap<String, String> = HashMap::new();
                 let field_storage_slot_name =
-                    |compiler: &Self, owner_class: &str, field_name: &str| {
+                    |compiler: &Self, owner_class: &str, field_name: &str, is_private: bool| {
                         let field_canon = compiler.canon(field_name);
-                        if compiler.profile.field_hiding
+                        // Private takes a class-keyed slot for the same reason
+                        // as the outer path — an ancestor's private field is
+                        // invisible here, so a same-named field is a different
+                        // field. See the `instance_fields` loop below.
+                        if (compiler.directives().field_shadowing == Some(vybe_ast::FieldShadowing::Hide) || is_private)
                             && compiler.field_hides_ancestor(nested_parent.as_deref(), &field_canon)
                         {
                             format!("__hide_{}${}", compiler.canon(owner_class), field_canon)
@@ -1853,8 +1841,12 @@ impl Compiler {
                                 static_fields.push(self.canon(fname));
                             } else {
                                 let field_canon = self.canon(fname);
-                                let storage_name =
-                                    field_storage_slot_name(self, &nested_canon, fname);
+                                let storage_name = field_storage_slot_name(
+                                    self,
+                                    &nested_canon,
+                                    fname,
+                                    modifiers.visibility == vybe_ast::Visibility::Private,
+                                );
                                 if storage_name != field_canon {
                                     field_storage_names
                                         .insert(field_canon.clone(), storage_name.clone());
@@ -1970,7 +1962,34 @@ impl Compiler {
             // Field hiding (java/C#/VB): a field that shadows an ancestor's
             // gets a declaring-class-qualified slot so both survive on the
             // object and access resolves by the reference's declared type.
-            let fname = if self.profile.field_hiding
+            //
+            // A PRIVATE field takes the same slot for a different reason, and
+            // in every language that has private rather than only the ones
+            // opting into `new`-hiding: an ancestor's private field is not
+            // visible to this class at all, so a same-named field here is a
+            // DIFFERENT field and must not share storage. Without this, `B`'s
+            // `private $x` and `D`'s `private $x` collapsed into one slot —
+            // php printed `D D` where php prints `B D`, and java/C#/VB read
+            // the same way.
+            //
+            // This is the first reader `Access::Private` has ever had. Five
+            // normalizers (php/java/csharp/vb/ruby) have been computing it
+            // from `modifiers.visibility` and the compiler discarded it —
+            // §1a of flexclassplan, in a different field.
+            //
+            // ⛔ Unless the language's OWN private storage already claimed the
+            // field. A JS `#x` resolves to `__js_private_<class>.x`, which is
+            // ALREADY class-keyed — and it is a separate namespace with its
+            // own accessors and brand check, not a visibility level. Taking it
+            // over here renamed the slot out from under that path and threw on
+            // any subclass redeclaring the same `#x`. Storage identity and
+            // reflective hiding are two properties; this owns only the first.
+            let already_class_keyed = self
+                .js_private_member_storage_name_for_class(&class.name, &f.name)
+                .is_some();
+            let fname = if (self.directives().field_shadowing
+                == Some(vybe_ast::FieldShadowing::Hide)
+                || (f.access == Access::Private && !already_class_keyed))
                 && self.field_hides_ancestor(class.parent.as_deref(), &field_canon)
             {
                 format!("__hide_{}${}", self.canon(&class.name), field_canon)
@@ -2006,7 +2025,7 @@ impl Compiler {
                 || p.setter
                     .as_ref()
                     .is_some_and(|setter| setter.is_override || setter.raw_modifiers.is_override);
-            let property_storage_name = if self.profile.field_hiding
+            let property_storage_name = if self.directives().field_shadowing == Some(vybe_ast::FieldShadowing::Hide)
                 && !p.is_static
                 && !prop_is_override
                 && self.field_hides_ancestor(class.parent.as_deref(), &prop_canon)
@@ -2496,7 +2515,12 @@ impl Compiler {
             cc.current = ci;
             let saved_fn = cc.current_func_name.take();
             cc.current_func_name = Some(bound_name.clone());
-            let saved_closure_captured = std::mem::take(&mut cc.current_closure_captured_locals);
+            // The method is a function frame: enter the shared closure books,
+            // pre-seeded with the enclosing frame's shared-env layout so
+            // `env[idx]` reads line up with the array actually passed. (The
+            // inline spelling this replaces had drifted — it forgot
+            // `capture_locals`, the exact bug class one shared ritual ends.)
+            let frame_books = cc.enter_closure_frame(&enclosing_shared_env_names);
             crate::primitives::collect_closure_captured_idents(
                 &m.body,
                 &mut cc.current_closure_captured_locals,
@@ -2519,7 +2543,7 @@ impl Compiler {
                 None
             };
             for p in &user_params {
-                cc.define_local_typed(&p.name, p.type_hint.clone());
+                cc.define_source_local_typed(&p.name, p.type_hint.clone());
                 let normalized_type_hint =
                     p.type_hint.as_deref().map(Compiler::normalize_type_hint);
                 if normalized_type_hint
@@ -2550,7 +2574,7 @@ impl Compiler {
             cc.bind_alias_params(user_params.iter().copied());
 
             let js_arguments_len_slot = if uses_js_arguments {
-                let slot = cc.define_local("arguments");
+                let slot = cc.define_source_local("arguments");
                 cc.emit_u16(Op::LOCAL_GET, js_arguments_source_slot.unwrap());
                 cc.emit_u16(Op::LOCAL_SET, slot);
                 cc.emit_u16(Op::LOCAL_GET, slot);
@@ -2585,7 +2609,7 @@ impl Compiler {
                     }
                 }
             }
-            if ambient_this && !is_static && mname.starts_with('#') {
+            if ambient_this && !is_static && cc.class_declares_private_member(&class.name, mname) {
                 let this_slot = cc.define_local("__js_private_method_this");
                 cc.emit_global_read("__js_this");
                 cc.emit_u16(Op::LOCAL_SET, this_slot);
@@ -2597,7 +2621,7 @@ impl Compiler {
                         if self_param.name != self_kw {
                             let self_slot = cc.scope().resolve(&self_kw).unwrap();
                             let alias_slot = cc
-                                .define_local_typed(&self_param.name, self_param.type_hint.clone());
+                                .define_source_local_typed(&self_param.name, self_param.type_hint.clone());
                             cc.emit_u16(Op::LOCAL_GET, self_slot);
                             cc.emit_u16(Op::LOCAL_SET, alias_slot);
                         }
@@ -2615,17 +2639,6 @@ impl Compiler {
             let saved_rs = cc.current_result_slot.take();
             let saved_ref_out = cc.current_ref_out_params.take();
             let saved_member_static = cc.current_member_is_static;
-            // Same handling `compile_function_decl` gives a nested function: the
-            // enclosing shared-env SLOT is only meaningful in the enclosing
-            // frame, so clear it, and pre-seed `closure_env_names` with that
-            // frame's layout so `env[idx]` reads here line up with the array
-            // actually being passed.
-            let saved_shared_env_slot = cc.shared_env_slot.take();
-            let saved_shared_env_names = std::mem::take(&mut cc.shared_env_names);
-            let saved_closure_env_names = std::mem::take(&mut cc.closure_env_names);
-            if !enclosing_shared_env_names.is_empty() {
-                cc.closure_env_names = enclosing_shared_env_names.clone();
-            }
             cc.current_result_slot = None;
             cc.current_ref_out_params = (!ref_out_slots.is_empty()).then_some(ref_out_slots);
             cc.current_member_is_static = is_static;
@@ -2661,7 +2674,7 @@ impl Compiler {
                 && crate::primitives::closures_in_body_reference_this(&m.body)
             {
                 cc.emit_global_read("__js_this");
-                let this_local = cc.define_local(&self_kw);
+                let this_local = cc.define_source_local(&self_kw);
                 cc.emit_u16(Op::LOCAL_SET, this_local);
                 cc.current_closure_captured_locals.insert(self_kw.clone());
             }
@@ -2793,10 +2806,7 @@ impl Compiler {
             cc.current_result_slot = saved_rs;
             cc.current_ref_out_params = saved_ref_out;
             cc.current_member_is_static = saved_member_static;
-            cc.current_closure_captured_locals = saved_closure_captured;
-            cc.shared_env_slot = saved_shared_env_slot;
-            cc.shared_env_names = saved_shared_env_names;
-            cc.closure_env_names = saved_closure_env_names;
+            cc.exit_closure_frame(frame_books);
 
             let ns = cc.scope().next_slot;
             cc.chunks[ci].finalize_local_count(ns);
@@ -3303,7 +3313,7 @@ impl Compiler {
                 })
                 .unwrap_or_default();
             for p in &user_params {
-                self.define_local(p);
+                self.define_source_local(p);
             }
             // §15.7.14: class constructors require `new` (JS only).
             // `__js_new_target` is null on plain calls; every `new` chain
@@ -3461,10 +3471,10 @@ impl Compiler {
                         };
 
                     // Framework GUI control parent (`class Form1 : Form`):
-                    // construct via the `vybe:gui` host factory directly. The
-                    // host builds the full control (identity + Controls
-                    // collection), replacing the per-class ctor global we no
-                    // longer emit for control types.
+                    // construct the control directly. That builds the full
+                    // control (identity + Controls collection), replacing the
+                    // per-class ctor global we no longer emit for control
+                    // types.
                     // Only intercept on the paths where the block below
                     // (`has_explicit_base || auto_base_needed ||
                     // ctor_body.is_none()`) consumes our `this_slot`
@@ -3773,10 +3783,12 @@ impl Compiler {
 
                         if let Some(parent_name) = parent {
                             let pname = self.canon(parent_name);
+                            let owner = self.canon(&class.name);
                             for method_name in &instance_method_names {
                                 crate::primitives::classes::emit_save_base_method(
                                     self.chunk(),
                                     this_slot,
+                                    &owner,
                                     method_name,
                                     line,
                                 );
@@ -4556,7 +4568,7 @@ impl Compiler {
         self.current_class = Some(name.to_string());
         self.current_class_implicit_self = class.implicit_self_fields;
         let static_self_kw = self.profile.self_keyword.clone();
-        let static_self_slot = self.define_local(&static_self_kw);
+        let static_self_slot = self.define_source_local(&static_self_kw);
         self.emit_u16(Op::LOCAL_GET, ctor_local);
         self.emit_u16(Op::LOCAL_SET, static_self_slot);
 
@@ -4762,7 +4774,7 @@ impl Compiler {
 
         if self.profile.supports_private_fields {
             for method in &class.static_methods {
-                if !method.source_name.starts_with('#') {
+                if !self.class_declares_private_member(&class.name, &method.source_name) {
                     continue;
                 }
                 let bound_name =
@@ -5735,6 +5747,7 @@ fn emit_object_base_stub(chunk: &mut Chunk, line: u32) {
 pub fn emit_super_call_store_result(
     chunk: &mut Chunk,
     this_slot: u16,
+    child_class_canon: &str,
     child_method_names: &[&str],
     line: u32,
 ) {
@@ -5743,18 +5756,111 @@ pub fn emit_super_call_store_result(
 
     // Save parent's methods that child will override (for super.method() calls)
     for method_name in child_method_names {
-        emit_save_base_method(chunk, this_slot, method_name, line);
+        emit_save_base_method(chunk, this_slot, child_class_canon, method_name, line);
+    }
+}
+
+// ── Name drop ───────────────────────────────────────────────────────────
+
+impl Compiler {
+    /// Run the referent's [`ProtocolSlot::Destructor`] before a name stops
+    /// referring to it, when [`Directives::name_drop`] says this region
+    /// finalises on drop.
+    ///
+    /// Two facts, two homes, joined only here: the language declares WHETHER a
+    /// dropped name finalises (a directive — it governs a region of code), and
+    /// the class declares WHICH method that is (a slot — it travels with the
+    /// value). Python's walker used to state both at once by synthesising
+    /// `typeof x.__del__ == "function"` into the tree at every drop site, which
+    /// carried a spelling across a layer and re-tested at runtime a slot
+    /// `NormalClass::destructor` had already filled by construction.
+    ///
+    /// Reaching the slot rather than a name is also what makes this work across
+    /// languages: a PHP object with `__destruct`, a Pascal `destructor Destroy`
+    /// and a C# `~Foo()` all bind the same slot, so `del x` finalises any of
+    /// them without knowing where the class came from.
+    ///
+    /// Stack: unchanged.
+    pub(crate) fn emit_name_drop_finalise(&mut self, target: &Expression) -> Result<(), String> {
+        if self.directives().name_drop != Some(vybe_ast::NameDrop::Finalise) {
+            return Ok(());
+        }
+        // Only a bare NAME drops the object. `del obj.attr` / `del obj[k]`
+        // remove a member and leave the object referenced, so nothing is
+        // finalised — the target's own shape decides, no language check.
+        let ExprKind::Ident(name) = &target.kind else {
+            return Ok(());
+        };
+        // A name the compiler never bound holds nothing to finalise. Asking the
+        // scope is both cheaper and SAFER than the runtime `typeof` probe this
+        // replaces: compiling a read of an unbound name is what used to fault,
+        // and a hoisted-but-null local answered "object" to `typeof` anyway.
+        let canon = self.canon(name);
+        if self.scope().resolve(name).is_none() && !self.defined_globals.contains(&canon) {
+            return Ok(());
+        }
+
+        let line = self.line;
+        self.compile_expr(target)?;
+        let obj = self.define_local("__drop_obj");
+        self.emit_u16(Op::LOCAL_SET, obj);
+
+        // null/undefined holds no finaliser. This is the overwhelmingly common
+        // case — `x = None` as an INITIALISER, where the local is freshly
+        // hoisted — so it is tested first and costs one branch.
+        self.emit_u16(Op::LOCAL_GET, obj);
+        self.emit(Op::REF_IS_NULL);
+        self.emit(Op::I32_EQZ);
+        self.chunk().emit_if(line);
+
+        self.emit_u16(Op::LOCAL_GET, obj);
+        let key = self.str_const(&vybe_ast::protocol_slot_key(
+            vybe_ast::ProtocolSlot::Destructor,
+        ));
+        self.emit_struct_field_op(Op::STRUCT_GET, 0, key);
+        let dtor = self.define_local("__drop_dtor");
+        self.emit_u16(Op::LOCAL_SET, dtor);
+
+        self.emit_u16(Op::LOCAL_GET, dtor);
+        self.emit(Op::REF_IS_NULL);
+        self.emit(Op::I32_EQZ);
+        self.chunk().emit_if(line);
+        self.emit_u16(Op::LOCAL_GET, dtor);
+        self.emit_u16(Op::LOCAL_GET, obj);
+        {
+            let line = self.line;
+            crate::primitives::callable::emit_direct_invoke_chunk(self.chunk(), 1, line);
+        }
+        // A finaliser is called for its effect; every call pushes exactly one
+        // value, so the result is dropped rather than left to unbalance the
+        // enclosing statement.
+        self.emit(Op::DROP);
+        self.chunk().emit_end(line);
+
+        self.chunk().emit_end(line);
+        Ok(())
     }
 }
 
 // ── Inheritance ─────────────────────────────────────────────────────────
 
-/// Save parent's version of a method as __base_<name> before child override.
-/// Used for super()/MyBase/base calls.
-/// Emits: local_get this → local_get this → struct_get name → struct_set __base_name → drop
+/// Save parent's version of a method as `__base_<owner>$<name>` before the
+/// child override is stamped. Used for `super.m()` / `MyBase.m()` / `base.m()`
+/// in the typed-language path.
+///
+/// LEVEL-KEYED: the slot carries the class whose constructor saved it. A flat
+/// `__base_<name>` collided across levels — C's ctor overwrote the slot B's
+/// `base.m()` needed, and B's super call looped back into itself (the same
+/// collision that pushed JS onto the home-object route).
 /// Stack: unchanged
-pub fn emit_save_base_method(chunk: &mut Chunk, this_slot: u16, method_name: &str, line: u32) {
-    let base_name = format!("__base_{}", method_name);
+pub fn emit_save_base_method(
+    chunk: &mut Chunk,
+    this_slot: u16,
+    owner_canon: &str,
+    method_name: &str,
+    line: u32,
+) {
+    let base_name = format!("__base_{}${}", owner_canon, method_name);
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line); // obj for struct_set
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line); // obj for struct_get
     let prop_idx = chunk.add_constant(Value::String(Arc::from(method_name)));

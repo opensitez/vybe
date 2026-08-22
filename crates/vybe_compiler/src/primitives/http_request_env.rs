@@ -13,16 +13,31 @@
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
-/// Global holding this request's `wasi:http` `incoming-request` handle.
+/// Global holding this request's `wasi:http` `request` handle.
 ///
-/// The spec has the host hand `incoming-request` to a component's exported
-/// `incoming-handler.handle`. `vybex --serve` compiles a SCRIPT, which has no
-/// exports, so the handle is published under this reserved name instead. Kept
-/// in step with `crates/vybex/src/server/script.rs`.
+/// The spec has the host hand a `request` to a component's exported
+/// `handler.handle`. `vybex --serve` compiles a SCRIPT, which has no exports,
+/// so the handle is published under this reserved name instead. Kept in step
+/// with `crates/vybex/src/server/script.rs`.
+///
+/// 0.3.1 has ONE `request` resource; 0.2's `incoming-request` was the arriving
+/// half of a pair. The global keeps its 0.2-flavoured NAME because renaming a
+/// reserved global is a separate, cross-crate change — the WASI names it is
+/// read with are the 0.3.1 ones.
 pub const REQUEST_GLOBAL: &str = "__wasi_http_incoming_request";
 
-/// Global holding this request's `response-outparam` handle.
-pub const RESPONSE_OUT_GLOBAL: &str = "__wasi_http_response_out";
+/// Global holding the `response` this request answers with.
+///
+/// 0.3.1 has `handler.handle` RETURN a `result<response, error-code>`. 0.2
+/// instead handed the guest a `response-outparam` to write into, and
+/// `wasi:http@0.3.1` does not declare that resource at all — there is nothing
+/// left to call `set` on.
+///
+/// A script has no export to return FROM, so the resource is assigned to this
+/// reserved global and the host takes delivery from it: the same substitution
+/// [`REQUEST_GLOBAL`] already makes in the other direction, and the reason both
+/// are reserved names rather than invented `wasi:` functions.
+pub const RESPONSE_GLOBAL: &str = "__wasi_http_response";
 
 /// Global holding DEPLOYMENT metadata the transport supplies, CGI-named.
 ///
@@ -56,7 +71,7 @@ fn emit_request_method_call(chunks: &mut [Chunk], current: usize, method: &str, 
 
 /// The HTTP method (`GET`, `POST`, …). Stack: [] → [string].
 pub fn emit_method(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_request_method_call(chunks, current, "[method]incoming-request.method", line);
+    emit_request_method_call(chunks, current, "[method]request.get-method", line);
 }
 
 /// Path AND query, exactly as `wasi:http` reports it. Stack: [] → [string|null].
@@ -64,24 +79,24 @@ pub fn emit_path_with_query(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_request_method_call(
         chunks,
         current,
-        "[method]incoming-request.path-with-query",
+        "[method]request.get-path-with-query",
         line,
     );
 }
 
 /// URI scheme, or null. Stack: [] → [string|null].
 pub fn emit_scheme(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_request_method_call(chunks, current, "[method]incoming-request.scheme", line);
+    emit_request_method_call(chunks, current, "[method]request.get-scheme", line);
 }
 
 /// URI authority (`host[:port]`), or null. Stack: [] → [string|null].
 pub fn emit_authority(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_request_method_call(chunks, current, "[method]incoming-request.authority", line);
+    emit_request_method_call(chunks, current, "[method]request.get-authority", line);
 }
 
 /// The request headers as a `wasi:http` `fields` resource. Stack: [] → [fields].
 pub fn emit_headers(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_request_method_call(chunks, current, "[method]incoming-request.headers", line);
+    emit_request_method_call(chunks, current, "[method]request.get-headers", line);
 }
 
 /// The path with any query string removed. Stack: [] → [string].
@@ -371,7 +386,7 @@ fn emit_http_header_keys(chunks: &mut [Chunk], current: usize, map: u16, line: u
     let key = chunks[current].alloc_scratch(1);
 
     emit_headers(chunks, current, line);
-    let entries_fn = chunks[current].add_import("wasi:http/types", "[method]fields.entries");
+    let entries_fn = chunks[current].add_import("wasi:http/types", "[method]fields.copy-all");
     chunks[current].emit_call(entries_fn, 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, entries, line);
 
@@ -453,7 +468,6 @@ pub fn emit_body(chunks: &mut [Chunk], current: usize, line: u32) {
     let out = chunks[current].alloc_scratch(1);
     let body = chunks[current].alloc_scratch(1);
     let stream = chunks[current].alloc_scratch(1);
-    let piece = chunks[current].alloc_scratch(1);
 
     push_global(&mut chunks[current], BODY_CACHE_GLOBAL, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
@@ -471,57 +485,53 @@ pub fn emit_body(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
 
+    // `[static]request.consume-body(request, trailers)` — the WASI 0.3 shape.
+    // This used to be `incoming-request.consume` → `incoming-body.%stream` →
+    // `wasi:io/streams.[method]input-stream.blocking-read`, a chain whose last
+    // two links 0.3 DELETED: `incoming-body` is gone as a resource and the
+    // whole `wasi:io` package with it. 0.3 hands the body over as a
+    // `tuple<stream<u8>, future<result<option<trailers>, error-code>>>` in one
+    // call, so the stream IS the body and there is no intermediate resource.
     push_request_handle(&mut chunks[current], line);
-    let consume = chunks[current].add_import("wasi:http/types", "[method]incoming-request.consume");
-    chunks[current].emit_call(consume, 1, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    let consume = chunks[current].add_import("wasi:http/types", "[static]request.consume-body");
+    chunks[current].emit_call(consume, 2, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, body, line);
 
-    // A trap-free check: on failure `consume` returns an error record, and
-    // asking it for a stream would fail again. Only proceed on a resource.
+    // A trap-free check: §request.consume-body succeeds at most once, and a
+    // second call answers an error record rather than the tuple. Only an
+    // actual tuple has a stream at element 0 — asking an error record for one
+    // would hand `canon stream.read` a non-handle, which traps.
     chunks[current].emit_op_u16(Op::LOCAL_GET, body, line);
+    let is_array = chunks[current].add_import("ecma:array", "isArray");
+    chunks[current].emit_call(is_array, 1, line);
+    chunks[current].emit_if(line);
+
+    // Element 0 of the tuple is the `stream<u8>` — an i32 readable handle,
+    // per the canonical ABI.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, body, line);
+    chunks[current].emit_i32_const(0, line);
+    let at = chunks[current].add_import("ecma:array", "at");
+    chunks[current].emit_call(at, 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, stream, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, stream, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
 
-    chunks[current].emit_op_u16(Op::LOCAL_GET, body, line);
-    let stream_fn = chunks[current].add_import("wasi:http/types", "[method]incoming-body.%stream");
-    chunks[current].emit_call(stream_fn, 1, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, stream, line);
-
-    // Drain the stream. A buffer stream reports end-of-body as a zero-length
-    // read; anything that is not a list is an error and also ends the loop.
-    let block = chunks[current].emit_block(line);
-    let (loop_patch, _) = chunks[current].emit_loop_s(line);
-
+    // LATIN-1, deliberately — NOT the UTF-8 `emit_read_stream_to_string`.
+    // One char per byte keeps a binary upload lossless through a string, which
+    // is what every body parser downstream (`$_POST`, `$_FILES`, `wsgi.input`,
+    // `rack.input`) is written against. Decoding as UTF-8 here would replace
+    // every byte ≥ 0x80 that is not part of a valid sequence with U+FFFD and
+    // silently corrupt every file upload.
     chunks[current].emit_op_u16(Op::LOCAL_GET, stream, line);
-    chunks[current].emit_i32_const(65536, line);
-    let read = chunks[current].add_import("wasi:io/streams", "[method]input-stream.blocking-read");
-    chunks[current].emit_call(read, 2, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, piece, line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, piece, line);
-    let is_array = chunks[current].add_import("ecma:array", "isArray");
-    chunks[current].emit_call(is_array, 1, line);
-    chunks[current].emit_op(Op::I32_EQZ, line);
-    chunks[current].emit_br_if(1, line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, piece, line);
-    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
-    chunks[current].emit_op(Op::I32_EQZ, line);
-    chunks[current].emit_br_if(1, line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, piece, line);
+    super::io::emit_read_stream_to_bytes(&mut chunks[current], line);
     emit_bytes_to_string(chunks, current, line);
-    super::strings::emit_concat(&mut chunks[current], 2, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
 
-    chunks[current].emit_br(0, line);
     chunks[current].emit_end(line);
-    chunks[current].patch_loop(loop_patch);
-    chunks[current].emit_end(line);
-    chunks[current].patch_block(block);
-
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
 

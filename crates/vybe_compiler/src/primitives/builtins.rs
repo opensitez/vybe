@@ -488,15 +488,15 @@ impl Compiler {
             self.emit_global_map_get_into_local("__vb_file_path_by_handle", file_slot, path_slot);
 
             self.emit_u16(Op::LOCAL_GET, file_slot);
-            let close_idx = self.import("wasi:filesystem", "closeFile");
-            self.emit_host_call(close_idx, 1);
+            let line = self.line;
+            crate::primitives::fs_path::emit_close_file(&mut self.chunks, self.current, line);
             self.emit(Op::DROP);
 
             self.emit_u16(Op::LOCAL_GET, path_slot);
             self.emit_const(Value::String(Arc::from("Input")));
             self.emit_u16(Op::LOCAL_GET, file_slot);
-            let open_idx = self.import("wasi:filesystem", "openFile");
-            self.emit_host_call(open_idx, 3);
+            let line = self.line;
+            crate::primitives::fs_path::emit_open_file(&mut self.chunks, self.current, 3, line);
             self.emit(Op::DROP);
 
             self.emit_global_map_set_const(
@@ -2765,25 +2765,32 @@ impl Compiler {
                 crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
                 self.chunk().emit_if_value(line);
 
+                // ASK THE OBJECT. This used to test `__type == "DateTime"` and
+                // emit `toISOString` — a per-language sentinel in a shared
+                // crate, and a DEAD arm: the .NET adapter writes `__type` as
+                // `"datetime"` in lower case, so the comparison never held and
+                // every DateTime rendered as `[object datetime]` the moment a
+                // walk-time fold stopped answering first. The object's
+                // `ToString` protocol slot is the same question with no
+                // spelling to keep in sync, and it carries the language's own
+                // date format rather than ISO.
+                let tostring_key = self.chunk().add_constant(Value::String(Arc::from(
+                    vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::ToString).as_str(),
+                )));
+                let method_slot = self.define_local("__vb_cstr_tostring");
                 self.emit_u16(Op::LOCAL_GET, value_slot);
-                let type_key = self
-                    .chunk()
-                    .add_constant(Value::String(Arc::from("__type")));
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, type_key);
-                self.emit_const(Value::String(Arc::from("DateTime")));
+                self.emit_struct_field_op(Op::STRUCT_GET, 0, tostring_key);
+                self.emit_u16(Op::LOCAL_SET, method_slot);
+                self.emit_u16(Op::LOCAL_GET, method_slot);
+                self.emit(Op::REF_IS_NULL);
+                self.emit(Op::I32_EQZ);
+                self.chunk().emit_if_value(line);
+                self.emit_u16(Op::LOCAL_GET, method_slot);
+                self.emit_u16(Op::LOCAL_GET, value_slot);
                 {
                     let line = self.line;
-                    crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
-                };
-                crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                self.chunk().emit_if_value(line);
-                self.emit_u16(Op::LOCAL_GET, value_slot);
-                let time_key = self
-                    .chunk()
-                    .add_constant(Value::String(Arc::from("__time")));
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, time_key);
-                let iso_idx = self.import("ecma:date", "toISOString");
-                self.emit_host_call(iso_idx, 1);
+                    crate::primitives::callable::emit_direct_invoke_chunk(self.chunk(), 1, line);
+                }
                 self.chunk().emit_else(line);
                 self.emit_u16(Op::LOCAL_GET, value_slot);
                 let string_idx = self.import("ecma:string", "String");
@@ -2831,7 +2838,21 @@ impl Compiler {
                 common::collections::emit_array_new(&mut self.chunks, self.current, 0, l);
             }
             "readline" => {
-                // wasi:cli/stdin.get-stdin → [method]input-stream.blocking-read
+                // An optional PROMPT, written without a newline: python
+                // `input("name? ")`, js `prompt(msg)`, php `readline(msg)`.
+                // It goes through the output funnel like any other write, so a
+                // prompt is captured by `ob_start` exactly as an `echo` is —
+                // and, being an argument, it must be compiled whether or not
+                // anything is done with it.
+                if let Some(arg) = args.first() {
+                    self.compile_expr(arg)?;
+                    crate::primitives::io::emit_write_or_buffer(
+                        &mut self.chunks,
+                        self.current,
+                        line,
+                    );
+                }
+                // wasi:cli/stdin.read-via-stream → canon stream.read
                 crate::primitives::io::emit_input(self.chunk(), line);
             }
             "write_stdout" => {
@@ -2842,15 +2863,17 @@ impl Compiler {
                 self.compile_expr(args[0])?;
                 let text_slot = self.define_local("__c_wasi_stdout_text");
                 self.emit_u16(Op::LOCAL_SET, text_slot);
-                let stdout_idx = self.import("wasi:cli/stdout", "get-stdout");
-                let write_idx = self.import(
-                    "wasi:io/streams",
-                    "[method]output-stream.blocking-write-and-flush",
+                // WASI 0.3: `write-via-stream(data: stream<u8>)`. The 0.2 pair
+                // (`get-stdout` + `[method]output-stream.blocking-write-and-flush`)
+                // targets `wasi:io`, a package 0.3 DELETED — streams became a
+                // Component Model type rather than a WASI resource.
+                let line = self.line;
+                common::io::emit_write_stream_slot(
+                    self.chunk(),
+                    "wasi:cli/stdout",
+                    text_slot,
+                    line,
                 );
-                self.emit_host_call(stdout_idx, 0);
-                self.emit_u16(Op::LOCAL_GET, text_slot);
-                self.emit_host_call(write_idx, 2);
-                self.emit(Op::DROP);
                 // fputs/stdout_append return 0
                 self.emit_const(Value::I32(0));
             }
@@ -2861,15 +2884,13 @@ impl Compiler {
                 self.compile_expr(args[0])?;
                 let text_slot = self.define_local("__c_wasi_stderr_text");
                 self.emit_u16(Op::LOCAL_SET, text_slot);
-                let stderr_idx = self.import("wasi:cli/stderr", "get-stderr");
-                let write_idx = self.import(
-                    "wasi:io/streams",
-                    "[method]output-stream.blocking-write-and-flush",
+                let line = self.line;
+                common::io::emit_write_stream_slot(
+                    self.chunk(),
+                    "wasi:cli/stderr",
+                    text_slot,
+                    line,
                 );
-                self.emit_host_call(stderr_idx, 0);
-                self.emit_u16(Op::LOCAL_GET, text_slot);
-                self.emit_host_call(write_idx, 2);
-                self.emit(Op::DROP);
                 self.emit_const(Value::I32(0));
             }
             "asc" => {

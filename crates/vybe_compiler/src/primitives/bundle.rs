@@ -33,8 +33,6 @@ const MAPPINGS: &[(&str, &str)] = &[
     ("__stdlib_chan_recv_or_throw", "__vybe_chan_recv_or_throw"),
     ("__stdlib_chan_wait_readable", "__vybe_chan_wait_readable"),
     ("__stdlib_futex_alloc16", "__vybe_futex_alloc16"),
-    ("__stdlib_canon_alloc", "__vybe_canon_alloc"),
-    ("__stdlib_canon_store_utf8", "__vybe_canon_store_utf8"),
     ("__stdlib_task_new", "__vybe_task_new"),
     ("__stdlib_task_wait", "__vybe_task_wait"),
     ("__stdlib_sort_in_place", "__vybe_sort_in_place"),

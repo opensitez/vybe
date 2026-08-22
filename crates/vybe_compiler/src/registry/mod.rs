@@ -9,4 +9,4 @@
 //!
 //! The former `dotnet` pass (per-class .NET ctor globals for VB / C#) is
 //! retired — control/value/drawing types resolve through the component
-//! descriptor + the GUI-direct `vybe:gui` path instead of an emitted prelude.
+//! descriptor + the GUI-direct element path instead of an emitted prelude.

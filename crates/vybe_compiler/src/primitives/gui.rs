@@ -15,10 +15,10 @@
 //!
 //! ```text
 //! VB walker  ───┐
-//! C# walker  ───┤   .NET surface         vybe:gui::*
+//! C# walker  ───┤   .NET surface
 //! F# walker  ───┴──> dotnet.rs ──┐
 //!                                │
-//! Dart walker ─────> flutter.rs ─┼──> compiler_common::gui ──> host fn
+//! Dart walker ─────> flutter.rs ─┼──> compiler_common::gui ──> web:dom / web:cssom
 //!                                │
 //! Python walker ───> tkinter.rs ─┘
 //! ```
@@ -179,44 +179,6 @@ pub const HOST_FN_NEW_CONTROLS_COLLECTION: &str = "newControlsCollection";
 /// Stack at call site: [owner]
 pub const HOST_FN_NEW_COMPONENTS_COLLECTION: &str = "newComponentsCollection";
 
-/// The legacy GUI module, addressed BY CONTROL NAME rather than by object.
-///
-/// `vybe.gui.setProperty("display", "Text", v)` is a program-visible surface —
-/// programs call it directly — so it survives the conversion as a spelling and
-/// is lowered onto the document here, rather than reaching a host registry the
-/// renderer no longer paints from.
-pub const GUI_MODULE: &str = "vybe:gui";
-
-/// Host fn name for "set a property on the control with this NAME".
-/// Stack at call site: [name, prop_name, value]
-pub const HOST_FN_SET_PROPERTY_BY_NAME: &str = "setProperty";
-
-/// Host fn name for "get a property from the control with this NAME".
-/// Stack at call site: [name, prop_name]
-pub const HOST_FN_GET_PROPERTY_BY_NAME: &str = "getProperty";
-
-/// Host fn name for "register an event handler on a control".
-/// Stack at call site: [control_name_string, event_name, handler_fn_ref]
-pub const HOST_FN_BIND_EVENT: &str = "onEvent";
-
-/// Host fn name for "remove an event handler from a control".
-pub const HOST_FN_UNBIND_EVENT: &str = "removeEvent";
-
-/// Host fn name for "add a control as a child of another control's
-/// .Controls collection".
-/// Stack at call site: [parent, child]
-pub const HOST_FN_ADD_CHILD: &str = "controlsAdd";
-
-/// Host fn name for "run the application event loop with this form".
-pub const HOST_FN_RUN_APPLICATION: &str = "runApplication";
-
-/// Host fn name for "exit the application".
-pub const HOST_FN_APP_EXIT: &str = "appExit";
-
-/// Host fn name for "fire a custom event on the current control/form".
-/// Stack at call site: [arg0, arg1, ..., event_name_string]
-pub const HOST_FN_RAISE_EVENT: &str = "raiseEvent";
-
 /// WHATWG DOM — where a control is actually created.
 pub const DOM_MODULE: &str = "web:dom";
 /// WHATWG HTML — `document`, and the element IDL properties.
@@ -233,17 +195,6 @@ pub const CSSOM_MODULE: &str = "web:cssom";
 /// PLATFORM's declaration and the platform crates cannot see this one.
 pub use vybe_runtime::namespaces::DOM_ELEMENT_TYPE;
 
-// The `vybe:gui` component-model export table used to live here — 157 lines
-// declaring `createForm`, `addControl`, `setProperty`, `onEvent`,
-// `newControlsCollection`, `runApplication`, `showForm`, `msgBox` and the rest
-// as component exports, with a doc comment saying the Linker called it to give
-// every language GUI functions without per-language profile duplication.
-//
-// **Nothing called it.** A repo-wide search found exactly one occurrence of
-// `gui_component_exports`: its own definition. It described a registration
-// path that does not exist, for a namespace being retired — so it read as the
-// authority on what `vybe:gui` offers while having no effect on anything.
-//
 // The live statement of what a control IS lives below, in the emit helpers and
 // the property-role tables. Those emit to `web:*`.
 
@@ -298,10 +249,9 @@ pub const CTRL_METHOD_EMIT: &str = "gui.ctrl.";
 /// `container.Add(child)` — insertion spelled as a METHOD rather than as the
 /// child's `Parent` property. Same DOM operation either way.
 ///
-/// VCL menus are the case that needs it: `FMainMenu.Items.Add(MenuFile)`. The
-/// old binding was `vybe:gui.controlsAdd`, which nests inside `GuiState` — so
-/// a menu built that way never entered the document and could not render,
-/// be hit-tested, or be listed by `widgets`.
+/// VCL menus are the case that needs it: `FMainMenu.Items.Add(MenuFile)`. A
+/// menu that does not enter the DOCUMENT cannot render, be hit-tested, or be
+/// listed by `widgets`.
 pub const APPEND_CHILD_EMIT: &str = "gui.append_child";
 
 /// `List.Items.Add(text)` — the sibling of [`APPEND_CHILD_EMIT`] for a list
@@ -341,10 +291,9 @@ pub const APP_EXIT_EMIT: &str = "gui.app.exit";
 
 /// The DOM operation a property role IS. `(module, func, attribute-key)`.
 ///
-/// The roles ARE `vybe:gui`'s canonical property names — the vocabulary every
-/// language was already lowering to. Nothing was invented here; only the
-/// TARGET changed, from a custom host function to a compliant DOM operation.
-/// That is also why dotnet needs no mapping: it already emits these names.
+/// The roles are the canonical property names every language already lowers
+/// to — a shared vocabulary, not per-framework spellings. That is why dotnet
+/// needs no mapping of its own: it emits these names already.
 ///
 /// Pascal never learns any of this. It calls with the same intent it always
 /// had; `vybe_widgets` is HTML underneath, which is not its business.
@@ -626,7 +575,27 @@ fn property_op(role: &str, setting: bool) -> (&'static str, &'static str, Option
         // rule instead of a number: the container computes the rect from it.
         // A frontend that spells it `Align` (VCL) or `Dock` (WinForms) reaches
         // the same style property, and `vybe_widgets` owns the result.
-        "left" | "top" | "width" | "height" | "dock" => (
+        // ⚠ The READ is `getComputedStyle`, not `element.style`. A frontend
+        // asking for `Left` wants the pixel the control OCCUPIES, which is a
+        // resolved value; `element.style.getPropertyValue` answers what was
+        // declared, so `Left := 0` followed by a layout would read back `0`
+        // forever. Writing is unchanged — a write always sets a declaration.
+        "left" | "top" | "width" | "height" => (
+            CSSOM_MODULE,
+            if setting {
+                "setStyleProperty"
+            } else {
+                "getComputedStyleProperty"
+            },
+            Some(""),
+        ),
+        // `dock` is geometry too, but expressed as a RULE rather than a number:
+        // the container computes a rect from it. So it splits from the four
+        // above — there is no resolved `dock` to read, and asking the computed
+        // style for one would answer with a value that has no meaning. A
+        // frontend spelling it `Align` (VCL) or `Dock` (WinForms) reaches the
+        // same declaration, and `vybe_widgets` owns the result.
+        "dock" => (
             CSSOM_MODULE,
             if setting {
                 "setStyleProperty"
@@ -656,9 +625,9 @@ fn property_op(role: &str, setting: bool) -> (&'static str, &'static str, Option
 /// the `px` suffix and the CSS operation are `left`/`top`/`width`/`height`'s
 /// own, stated once.
 ///
-/// The field names are the ones the value type actually stores (`vybe:gui`'s
-/// `pointNew`/`sizeNew`), not the framework's property spelling — `Point`
-/// declares `X`/`Y` and stores `x`/`y`.
+/// The field names are the ones the value type actually STORES, not the
+/// framework's property spelling — `Point` declares `X`/`Y` and stores
+/// `x`/`y`.
 fn pair_role_components(role: &str) -> Option<[(&'static str, &'static str); 2]> {
     match role {
         "location" => Some([("x", "left"), ("y", "top")]),
@@ -1299,11 +1268,11 @@ impl Compiler {
     /// `RemoveHandler ctrl.Click, AddressOf H` IS `removeEventListener` —
     /// stack in `[control, handler]`, out `[_]`.
     ///
-    /// The counterpart of the `on<type>` branch in `emit_gui_property_set`, and
-    /// it did not exist: `compile_remove_handler_stmt` had no element branch at
-    /// all, so subscribing migrated to the web platform and UNsubscribing still
-    /// went to `vybe:gui`'s unbind host — against a registry the DOM path never
-    /// writes to. Removing a handler quietly did nothing.
+    /// The counterpart of the `on<type>` branch in `emit_gui_property_set`.
+    /// ⚠ It did not exist for a while: `compile_remove_handler_stmt` had no
+    /// element branch at all, so subscribing reached the document and
+    /// UNsubscribing wrote to a registry nothing read. Removing a handler
+    /// quietly did nothing.
     ///
     /// The handler is passed UNBOUND, deliberately. `addEventListener` stores
     /// the wrapper `bind` produced, which the program has never seen and cannot
@@ -1799,7 +1768,17 @@ impl Compiler {
         // A raw `defined_classes` probe here answers differently from the other
         // shadow sites, which is the split that let `Class Point` win in one
         // path and lose in another.
-        if !self.shadows_builtin_type(type_name) {
+        //
+        // The shadow must be asked with the SAME fold as the lookup it guards.
+        // `registered_control_element` resolves through the namespace tree,
+        // which matches case-insensitively — but callers reach here with a
+        // `normalize_type_hint`-lowercased spelling, so in a case-SENSITIVE
+        // language `shadows_builtin_type("label")` cannot see the user's
+        // `class Label` and the registry hit went unguarded: the ctor's
+        // `this.text = text` compiled as a DOM property write and the field
+        // stayed null. One lookup, one fold, on both sides of the guard.
+        let user_owns_spelling = self.user_owns_type_spelling(type_name);
+        if !user_owns_spelling {
             if let Some(element) =
                 registered_control_element(&self.profile.namespaces.type_scopes, type_name)
             {
@@ -1826,26 +1805,25 @@ impl Compiler {
         // type constructed as an element and then was not recognised as one
         // for its events or its properties. One fact, two answers.
         //
-        // The gap between them is exactly where the legacy `vybe:gui::onEvent`
-        // path lived: `should_use_gui_event_host` fires precisely when a type
-        // has a control NAME but no registered element. That path is not a
-        // working fallback to preserve — it imports `removeEvent`, which is
-        // registered nowhere, so unsubscribing through it calls a host
-        // function that does not exist.
+        // The gap between them — a type with a control NAME but no registered
+        // element — was where a separate host-side event path used to live, and
+        // it was not a fallback worth preserving: it unsubscribed against a
+        // registry nothing wrote to.
         //
         // WinForms is the case that made it visible. Those classes are
-        // adapters, the same way the VB ones are, and they should reach the
-        // DOM through here rather than speak `vybe:gui` directly.
+        // adapters, the same way the VB ones are, and they reach the DOM
+        // through here.
         //
         // `canonical_control_name` is the gate, so this claims nothing about
         // an arbitrary type — only about names the shared table already calls
         // controls. The user shadow still applies: `Class Button` is the
         // user's class, not a control.
-        // Same predicate as the direct lookup above — `shadows_builtin_type`,
+        // Same predicate as the direct lookup above — `user_owns_spelling`,
         // not a second probe. Asking the shadow question two ways here is the
         // very split that let `Class Point` win in one path and lose in
-        // another.
-        if !self.shadows_builtin_type(type_name) && !canonical_control_name(type_name).is_empty() {
+        // another — and `canonical_control_name` folds case just like the
+        // registry, so this arm needs the same case-blind shadow.
+        if !user_owns_spelling && !canonical_control_name(type_name).is_empty() {
             return Some(ControlElement::custom(type_name));
         }
         None
@@ -1869,6 +1847,16 @@ impl Compiler {
     /// this profile's own type scopes is the signal, and a user
     /// function/class/local of the same name shadows.
     pub(super) fn constructed_control_type_name(&self, callee: &Expression) -> Option<String> {
+        // A method call on a VALUE is never a construction. The receiver of
+        // `new Tag("core").Label()` flattens to nothing (only name chains
+        // flatten), so without this the receiver evaporates and the method
+        // name masquerades as a bare `Label(...)` — which then constructs an
+        // element out of an instance method call.
+        if let vybe_ast::ExprKind::Member { object, .. } = &callee.kind {
+            if self.flatten_member_chain(object).is_empty() {
+                return None;
+            }
+        }
         let parts = self.flatten_member_chain(callee);
         let last = parts.last()?;
         if canonical_control_name(last).is_empty() {
@@ -1945,7 +1933,9 @@ impl Compiler {
         // consults platform roles, which is what keeps `Class MyForm Inherits
         // Form` working — the user name owns nothing of its own, but it
         // inherits `Form`'s roles exactly as before.
-        if !self.shadows_builtin_type(type_name) {
+        // Case-blind, like the role tables this guards — see
+        // `user_owns_type_spelling`.
+        if !self.user_owns_type_spelling(type_name) {
             if let Some(role) = declared(type_name) {
                 return Some(role);
             }
@@ -2041,9 +2031,9 @@ impl Compiler {
 
     /// `x.<prop> = value` where the compiler does not know what `x` IS.
     ///
-    /// **This restores a decision the conversion moved.** `vybe:gui`'s
-    /// `controlSetProperty(obj, prop, value)` took the OBJECT at runtime, so a
-    /// late-bound receiver reached the widget no matter what the compiler knew.
+    /// **This restores a decision the conversion moved.** The retired
+    /// property host took the OBJECT at runtime, so a late-bound receiver
+    /// reached the widget no matter what the compiler knew.
     /// The DOM path is chosen from the receiver's STATIC type, which is
     /// strictly better where a type exists — and where none does, left no path
     /// at all. `Sub HandleClick(btn As Object)` writing `btn.Text` emitted a
@@ -2303,9 +2293,9 @@ impl Compiler {
         // framework here guarantees it — WinForms' designer assigns `Button1`,
         // the VCL assigns `Button1` — and programs read it: the calculator does
         // `displayName := display.Name` and addresses the control by that
-        // string afterwards. The `vybe:gui` factory generated one; a bare
-        // `createElement` does not, so `.Name` answered `""` and every
-        // by-name write went to a control called nothing.
+        // string afterwards. A bare `createElement` generates no name, so
+        // without this `.Name` answered `""` and every by-name write went to a
+        // control called nothing.
         //
         // It is the element's `id`, which is what `getElementById` resolves —
         // the same role a program-assigned `Name` fills, so a later `Name = x`
@@ -2388,44 +2378,17 @@ impl Compiler {
     }
 }
 
-// `emit_new_control` is GONE — zero callers. Construction goes through
-// `CtorSpec::control_fn` → `emit_control_element`, which creates the ELEMENT
-// (`web:html.activeDocument` + `web:dom.createElement`). Nothing has called a
-// `new_<Type>` control factory since the frontends became element declarations.
-
-/// Emit `vybe:gui::onEvent(control_name, event_name, handler_fn)`.
-/// `import_idx` must be the result of `compiler.import("vybe:gui", HOST_FN_BIND_EVENT)`.
-///
-/// Stack on entry: [control_name_string, event_name_string, handler_fn]
-/// Stack on exit:  [host_call_result]   (caller is responsible for dropping)
-///
-/// All `gui::emit_*` helpers leave the host call's return value on the stack
-/// to keep the same convention as `compile_expr` and `compile_call`. Statement-
-/// level callers (AddHandler / Controls.Add as a stmt / etc.) emit a `drop`
-/// after calling these helpers. Expression-level callers leave it.
-///
-/// Frontends produce the three operands in their language-specific way:
-/// - VB walker emits this for `Handles ctrl.Event` clauses
-/// - C# walker emits this for `ctrl.Event += handler` statements
-/// - JS walker emits this for `ctrl.addEventListener(event, handler)`
-/// - etc.
-pub fn emit_bind_event(chunk: &mut Chunk, import_idx: u16, line: u32) {
-    chunk.emit_call(import_idx, 3, line);
-}
-
-// `emit_unbind_event`, `emit_add_child`, `emit_run_application`,
-// `emit_app_exit` and `emit_raise_event` are GONE — all five had zero callers.
-// Each was one line wrapping a host call, and each named a function on a host
-// that is being deleted:
-//   - unbind  → the DOM's `removeEventListener`, via the `on<event>` role
-//   - addChild→ `gui.append_child`, which appends to the DOCUMENT
-//   - run/exit→ nothing at all; a document is not told to run
-//   - raise   → a frontend dispatches its own events
-// `emit_bind_event` above is the ONE survivor, and only because the VB
-// `Handles` path still calls it (`classes.rs`); it goes when that does.
+// Construction goes through `CtorSpec::control_fn` → `emit_control_element`,
+// which creates the ELEMENT (`web:html.activeDocument` + `web:dom.createElement`).
+//
+// Event subscription is `web:dom`'s `addEventListener`, reached through
+// `StmtKind::AddHandler` — which is what every frontend's spelling (`Handles`,
+// `+=`, `OnClick :=`) normalizes to. Unsubscription is `removeEventListener`
+// via the `on<event>` role, appending a child is `appendChild` on the document,
+// and a document is never told to run.
 
 /// Push a string constant onto the stack (helper used when assembling
-/// arguments for the GUI host calls above).
+/// arguments for the DOM calls above).
 pub fn emit_string_const(chunk: &mut Chunk, s: &str, line: u32) {
     chunk.emit_string_const(s, line);
 }

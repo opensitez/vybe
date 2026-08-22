@@ -5,6 +5,16 @@
 
 use super::*;
 
+/// The enclosing frame's closure bookkeeping, held across a nested
+/// function-like frame. See [`Compiler::enter_closure_frame`].
+pub(super) struct ClosureFrameBooks {
+    closure_captured: HashSet<String>,
+    env_names: Vec<String>,
+    capture_locals: HashMap<u8, u16>,
+    shared_env_slot: Option<u16>,
+    shared_env_names: Vec<String>,
+}
+
 /// Why a bare name is being loaded. The two uses resolve identically except
 /// under a closed scope, where the VARIABLE namespace stops chaining outward
 /// but the function namespace does not — see [`Compiler::emit_callee_get`].
@@ -747,7 +757,7 @@ impl Compiler {
             && !self.defined_classes.contains(&cname)
             && !cname.starts_with("__")
         {
-            let slot = self.define_local(name);
+            let slot = self.define_source_local(name);
             self.emit_u16(Op::LOCAL_SET, slot);
             return;
         }
@@ -780,6 +790,51 @@ impl Compiler {
             return;
         }
         self.emit_global_write(&global_key);
+    }
+
+    /// Enter a function-like FRAME's closure bookkeeping, returning the
+    /// enclosing frame's books for [`Self::exit_closure_frame`].
+    ///
+    /// Five fields are per-frame: the captured-locals scan, the closure env
+    /// NAME LAYOUT, the upvalue slot map, and the shared-env slot/name pair.
+    /// Every site that pushes a function chunk + scope must reset all five —
+    /// this pair is the ONE home for that ritual. It used to be spelled
+    /// inline at each site, and the copies drifted exactly as duplicated
+    /// mechanisms do: the anonymous-class site forgot `capture_locals`, and
+    /// the by-value capture factory reset nothing at all, so an inner
+    /// lambda's `closure_env_index` kept answering from the ENCLOSING
+    /// function's name list — `env[N]` of a smaller env, null captures in
+    /// every language that declares bare-name captures.
+    ///
+    /// `seed_env_names`: a frame whose parent carries a shared env pre-seeds
+    /// its own name layout with the parent's, so upvalue indices computed
+    /// inside line up with the parent's shared-env array. Pass the parent's
+    /// `shared_env_names` (or `&[]` when the frame has no such parent — the
+    /// capture factory, whose only locals are the by-value captures).
+    pub(super) fn enter_closure_frame(&mut self, seed_env_names: &[String]) -> ClosureFrameBooks {
+        let books = ClosureFrameBooks {
+            closure_captured: std::mem::take(&mut self.current_closure_captured_locals),
+            env_names: std::mem::take(&mut self.closure_env_names),
+            capture_locals: std::mem::take(&mut self.capture_locals),
+            shared_env_slot: self.shared_env_slot.take(),
+            shared_env_names: std::mem::take(&mut self.shared_env_names),
+        };
+        if !seed_env_names.is_empty() {
+            self.closure_env_names = seed_env_names.to_vec();
+        }
+        books
+    }
+
+    /// Restore the enclosing frame's closure books. Call with the value the
+    /// matching [`Self::enter_closure_frame`] returned, after `self.current`
+    /// is back on the enclosing chunk and BEFORE any code is emitted there —
+    /// upvalue env construction in the enclosing frame consults these.
+    pub(super) fn exit_closure_frame(&mut self, books: ClosureFrameBooks) {
+        self.current_closure_captured_locals = books.closure_captured;
+        self.closure_env_names = books.env_names;
+        self.capture_locals = books.capture_locals;
+        self.shared_env_slot = books.shared_env_slot;
+        self.shared_env_names = books.shared_env_names;
     }
 
     pub(super) fn capture_local_slot(&mut self, uv_idx: u8) -> u16 {
