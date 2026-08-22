@@ -1,4 +1,5 @@
-//! `wasi:filesystem` — WASI 0.2.8 filesystem proposal.
+//! `wasi:filesystem` — `wasi:filesystem@0.3.1`
+//! (`proposals/WASI/proposals/filesystem/wit/{types,preopens}.wit`).
 //!
 //! Implements the descriptor-based, capability-rooted surface
 //! defined in `proposals/wasi-filesystem/wit/{types,preopens}.wit`
@@ -37,6 +38,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use vybe_runtime::value::Object;
+use vybe_runtime::component::ValType;
 use vybe_runtime::{HostContext, VM, Value};
 
 // ── Resource registry ─────────────────────────────────────────────
@@ -227,8 +229,38 @@ fn ms_since_epoch(time: SystemTime) -> f64 {
         .unwrap_or(0.0)
 }
 
-fn descriptor_type_string(meta: &std::fs::Metadata) -> &'static str {
-    let ft = meta.file_type();
+/// A `std::fs::FileType` as one of `variant descriptor-type`'s case NAMES.
+///
+/// ⚠The eight names here are the WIT's, and that is load-bearing rather than
+/// tidy: `canon stream.read` lowers a `directory-entry` by looking its `type`
+/// up in [`descriptor_type_type`]'s case list and writing the INDEX. A name
+/// the variant does not declare is not a lenient near-miss — `variant_case`
+/// answers `Unsupported`, so the copy fails and the guest's whole
+/// `read-directory` drain errors out.
+///
+/// This answered `"unknown"` for everything that was not a file, directory or
+/// symlink, and `descriptor-type` has no such case. So a directory holding a
+/// fifo or a socket — `/tmp` on a developer's machine routinely does — made
+/// every entry in it unreadable, and the four device cases the WIT declares
+/// could never be produced at all. The catch-all the spec actually provides is
+/// `other(option<string>)`.
+fn descriptor_type_name(ft: &std::fs::FileType) -> &'static str {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt;
+        if ft.is_block_device() {
+            return "block-device";
+        }
+        if ft.is_char_device() {
+            return "character-device";
+        }
+        if ft.is_fifo() {
+            return "fifo";
+        }
+        if ft.is_socket() {
+            return "socket";
+        }
+    }
     if ft.is_file() {
         "regular-file"
     } else if ft.is_dir() {
@@ -236,8 +268,15 @@ fn descriptor_type_string(meta: &std::fs::Metadata) -> &'static str {
     } else if ft.is_symlink() {
         "symbolic-link"
     } else {
-        "unknown"
+        // `other`'s `option<string>` payload stays `none`: the platform has
+        // told us only that it is none of the above, and inventing a
+        // description would be inventing.
+        "other"
     }
+}
+
+fn descriptor_type_string(meta: &std::fs::Metadata) -> &'static str {
+    descriptor_type_name(&meta.file_type())
 }
 
 fn build_stat(meta: &std::fs::Metadata) -> Value {
@@ -368,8 +407,11 @@ fn u64_arg(args: &[Value], idx: usize, default: u64) -> u64 {
 pub fn register(vm: &mut VM) {
     register_preopens(vm);
     register_types(vm);
-    register_io_streams(vm);
-    register_test_helpers(vm);
+    // `register_io_streams` is NOT called: it registered `wasi:io/streams`
+    // entries scoped to file streams, and 0.3.1 has no `wasi:io`. A file is
+    // read through `read-via-stream`, which answers a `stream<u8>` the guest
+    // drains with `canon stream.read` — the resource these methods hung off
+    // does not exist any more.
 }
 
 fn register_preopens(vm: &mut VM) {
@@ -541,7 +583,23 @@ fn register_types(vm: &mut VM) {
     vm.register_host_fn(
         "wasi:filesystem/types",
         "[method]descriptor.read-directory",
-        Box::new(|_ctx, args| {
+        // `read-directory: func() -> tuple<stream<directory-entry>,
+        //                                  future<result<_, error-code>>>`
+        //
+        // 0.2 answered a `directory-entry-stream` RESOURCE that the guest
+        // drained with `read-directory-entry`. 0.3.1 deletes that resource —
+        // `stream<T>` is a Component Model built-in now — so the entries are
+        // pushed into a real stream here and the whole tuple is the answer.
+        //
+        // ⛔ NOTHING IN THE BYTECODE CAN READ THIS STREAM YET. `canon
+        // stream.read` copies BYTES into linear memory, so it serves
+        // `stream<u8>` and nothing else, and `EventLoop::stream_pop` (which
+        // moves whole items) has no opcode reaching it. `tcp-socket.listen`'s
+        // `stream<tcp-socket>` has exactly the same problem: ONE architectural
+        // item behind two packages. That gap is a consumer gap — it is not a
+        // reason for the HOST to keep answering a shape the WIT does not
+        // declare, which is what the resource was.
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let Some(id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else {
                 return err("bad-descriptor");
             };
@@ -553,53 +611,41 @@ fn register_types(vm: &mut VM) {
                     None => return err("bad-descriptor"),
                 }
             };
+
+            let mut entries = Vec::new();
+            let mut failure = Value::Null;
             match std::fs::read_dir(&path) {
-                Ok(rd) => {
-                    let stream_id = {
-                        let mut reg = registry().lock().unwrap();
-                        let stream_id = alloc_id();
-                        reg.dir_streams.insert(stream_id, rd);
-                        stream_id
-                    };
-                    make_resource(KIND_DIR_STREAM, stream_id)
+                Ok(read_dir) => {
+                    for entry in read_dir {
+                        match entry {
+                            Ok(entry) => entries.push(directory_entry_value(&entry)),
+                            Err(e) => {
+                                failure = err(map_io_error(&e));
+                                break;
+                            }
+                        }
+                    }
                 }
-                Err(e) => err(map_io_error(&e)),
+                Err(e) => return err(map_io_error(&e)),
             }
+
+            let (stream_val, stream_id) = ctx.create_stream_of(Some(directory_entry_type()));
+            for entry in entries {
+                ctx.stream_push(stream_id, entry);
+            }
+            ctx.stream_close(stream_id);
+            let (future_val, future_id) = ctx.create_future();
+            ctx.resolve_future(future_id, failure);
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
+                stream_val, future_val,
+            ])))
         }),
     );
 
-    vm.register_host_fn(
-        "wasi:filesystem/types",
-        "[method]directory-entry-stream.read-directory-entry",
-        Box::new(|_ctx, args| {
-            let Some(stream_id) = resource_id(&args[0].clone(), KIND_DIR_STREAM) else {
-                return err("bad-descriptor");
-            };
-            let mut reg = registry().lock().unwrap();
-            let Some(stream) = reg.dir_streams.get_mut(&stream_id) else {
-                return err("bad-descriptor");
-            };
-            match stream.next() {
-                None => Value::Null, // option<directory-entry>::none — end of stream.
-                Some(Err(e)) => err(map_io_error(&e)),
-                Some(Ok(entry)) => {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    let entry_type = match entry.file_type() {
-                        Ok(ft) if ft.is_file() => "regular-file",
-                        Ok(ft) if ft.is_dir() => "directory",
-                        Ok(ft) if ft.is_symlink() => "symbolic-link",
-                        _ => "unknown",
-                    };
-                    let mut o = Object::new();
-                    o.properties
-                        .insert("type".into(), Value::String(Arc::from(entry_type)));
-                    o.properties
-                        .insert("name".into(), Value::String(Arc::from(name.as_str())));
-                    Value::Object(vybe_runtime::heap::alloc(o))
-                }
-            }
-        }),
-    );
+    // `[method]directory-entry-stream.read-directory-entry` is NOT registered:
+    // WASI 0.3.1 deleted the `directory-entry-stream` resource it hung off.
+    // Entries now arrive in the `stream<directory-entry>` that `read-directory`
+    // returns, built above.
 
     vm.register_host_fn(
         "wasi:filesystem/types",
@@ -1245,21 +1291,70 @@ fn register_types(vm: &mut VM) {
         }),
     );
 
-    // filesystem-error-code(err) → option<error-code>
-    // Converts a wasi:io/error into a filesystem error-code if it came from this module.
-    vm.register_host_fn(
-        "wasi:filesystem/types",
-        "filesystem-error-code",
-        Box::new(|_ctx, args| {
-            if let Some(Value::Object(obj)) = args.first() {
-                let inner = obj.lock().unwrap();
-                if let Some(code) = inner.properties.get("__wasi_error") {
-                    return code.clone();
-                }
-            }
-            Value::Null
-        }),
-    );
+    // `filesystem-error-code` is NOT registered: WASI 0.3.1 deleted it.
+    //
+    // Its whole job was `func(err: borrow<io-error>) -> option<error-code>` —
+    // downcasting a `wasi:io/error` to a filesystem code. 0.3.1 deletes the
+    // `wasi:io` package outright (streams and futures became Component Model
+    // built-ins), so its ARGUMENT TYPE no longer exists and every 0.3.1
+    // filesystem operation returns `result<_, error-code>` directly. There is
+    // nothing left for it to convert.
+}
+
+/// `variant descriptor-type` — `types.wit:50`, in DECLARATION ORDER.
+///
+/// Order is the contract: the canonical ABI writes a case's INDEX as the
+/// discriminant, so reordering these silently relabels every entry a guest
+/// reads. The last case carries `option<string>`, which is why this is a
+/// `variant` and not an `enum` — and why `directory-entry` is 24 bytes rather
+/// than the 12 an enum tag would have given.
+fn descriptor_type_type() -> ValType {
+    let case = |name: &str| (name.to_string(), None);
+    ValType::Variant(vec![
+        case("block-device"),
+        case("character-device"),
+        case("directory"),
+        case("fifo"),
+        case("symbolic-link"),
+        case("regular-file"),
+        case("socket"),
+        (
+            "other".to_string(),
+            Some(ValType::Option(Box::new(ValType::String))),
+        ),
+    ])
+}
+
+/// `record directory-entry { %type: descriptor-type, name: string }`
+/// (`types.wit:182`) — the element type of `read-directory`'s stream.
+fn directory_entry_type() -> ValType {
+    ValType::Record(vec![
+        ("type".to_string(), descriptor_type_type()),
+        ("name".to_string(), ValType::String),
+    ])
+}
+
+/// One `record directory-entry { %type: descriptor-type, name: string }`
+/// (`proposals/WASI/proposals/filesystem/wit/types.wit:182`).
+fn directory_entry_value(entry: &std::fs::DirEntry) -> Value {
+    let name = entry.file_name().to_string_lossy().to_string();
+    // `read_dir` reports the entry's OWN type, not its target's — a symlink
+    // stays `symbolic-link` here however the link resolves, which is what
+    // makes an enumerator able to see links at all.
+    let entry_type = match entry.file_type() {
+        Ok(ft) => descriptor_type_name(&ft),
+        // The type could not be read. `other` with no description is the
+        // honest answer; it is also the only one the variant can carry.
+        Err(_) => "other",
+    };
+    let mut object = Object::new();
+    object
+        .properties
+        .insert("type".into(), Value::String(Arc::from(entry_type)));
+    object
+        .properties
+        .insert("name".into(), Value::String(Arc::from(name.as_str())));
+    Value::Object(vybe_runtime::heap::alloc(object))
 }
 
 fn path_of(kind: &DescriptorKind) -> PathBuf {
@@ -1491,36 +1586,20 @@ fn register_io_streams(vm: &mut VM) {
     );
 }
 
-// ── Test-only helpers ─────────────────────────────────────────────
+// ── No test-only helpers ──────────────────────────────────────────
 //
-// Production code receives preopened directories via
-// `get-directories`. Tests need to build a descriptor for a known
-// scratch path; this opens that backdoor under a `__test_*` name so
-// there's no chance of guest code stumbling onto it accidentally
-// (none of the language profiles route imports to `__test_*`).
-
-fn register_test_helpers(vm: &mut VM) {
-    vm.register_host_fn(
-        "wasi:filesystem/types",
-        "__test_open_root",
-        Box::new(|_ctx, args| {
-            let Some(path_str) = s_arg(args, 0) else {
-                return err("invalid");
-            };
-            let path = PathBuf::from(&path_str);
-            if !path.is_dir() {
-                return err("not-directory");
-            }
-            let id = {
-                let mut reg = registry().lock().unwrap();
-                let id = alloc_id();
-                reg.descriptors.insert(id, DescriptorKind::Directory(path));
-                id
-            };
-            make_resource(KIND_DESCRIPTOR, id)
-        }),
-    );
-}
+// `__test_open_root` used to live here: it minted a descriptor for ANY
+// absolute path, so tests could reach a scratch directory directly. Its
+// comment argued that was safe because "none of the language profiles route
+// imports to `__test_*`" — but a profile is not the boundary. The boundary is
+// the interface: anything registered under `wasi:filesystem/types` is
+// importable by any guest that names it, and the WIT declares no such
+// function. It was ambient authority over the whole filesystem, wearing a
+// naming convention as a lock.
+//
+// Tests now do what production code does: `preopens.get-directories` for a
+// descriptor, then `open-at` to walk to the scratch directory. That path is
+// the capability model actually working, so the tests cover more than before.
 
 // Suppress unused-constant warnings for the descriptor-flag bits.
 #[allow(dead_code)]

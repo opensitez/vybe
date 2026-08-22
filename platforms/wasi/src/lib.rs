@@ -1,7 +1,11 @@
-//! # `wasi:*` host imports — real WASI 0.2.8 proposals.
+//! # `wasi:*` host imports — real WASI 0.3.1 proposals.
 //!
 //! Implementations match the WIT definitions vendored under
-//! `proposals/wasi-*/wit/`. Function names match the canonical-ABI
+//! `proposals/WASI/proposals/*/wit/`, every one of which declares
+//! `@0.3.1`. Read those, not this header: the versions claimed in
+//! this directory were stale by four minor revisions until
+//! 2026-08-21, and `interface_coverage.rs` is the only statement of
+//! the surface that a test can check. Function names match the canonical-ABI
 //! shape (`[method]<resource>.<name>`) so an external Component
 //! Model runtime that loads Vybe-emitted `.wasm` can satisfy the
 //! imports against any conforming WASI implementation.
@@ -33,9 +37,21 @@ use vybe_runtime::VM;
 pub fn register(vm: &mut VM) {
     crypto::register(vm);
     filesystem::register(vm);
-    // io::register runs after filesystem so its [method] handlers take precedence,
-    // giving unified file+socket+fd dispatch for all wasi:io/streams resources.
-    io::register(vm);
+    // `io::register` is NOT called. `wasi:io` does not exist in WASI 0.3.1 —
+    // streams and futures became Component Model built-ins, reached through
+    // `canon stream.*` / `canon future.*`, which is why `read-via-stream` and
+    // `tcp-socket.receive` answer a `stream<u8>` rather than an
+    // `input-stream` resource.
+    //
+    // The 23 functions in `io.rs` (17 `streams`, 4 `poll`, 2 `error`) are a
+    // deleted package's surface. They were exempted from the coverage gate via
+    // `interface_coverage.rs`'s `RETIRING` list, which is how the gate stayed
+    // GREEN while a whole non-existent package was live — the same blind spot
+    // as a `#[ignore]`. Registering nothing is what makes the exemption
+    // unnecessary.
+    //
+    // The file stays, like `fs.rs`: deleting source is not what makes an
+    // interface absent from the component's imports — not registering it is.
 }
 
 /// VM hot-reset: the state this platform still clears BY HAND, because clearing

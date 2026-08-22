@@ -21,15 +21,38 @@ use vybe_runtime::{Chunk, Op, VM};
 
 // ── Test scaffolding ──────────────────────────────────────────────
 
-fn scratch_dir(label: &str) -> PathBuf {
+/// Where a scratch directory lives, RELATIVE to the `.` preopen.
+///
+/// It used to be `std::env::temp_dir()`, which no guest can reach: WASI grants
+/// no ambient authority over absolute paths, so `/tmp/...` is only openable by
+/// a host function that hands out descriptors for arbitrary paths — which is
+/// exactly what `__test_open_root` was, and why it had to go. Under the CWD
+/// preopen the same directory is reachable by `open-at`, the way a real guest
+/// reaches anything.
+///
+/// `target/` because it is already ignored and `cargo clean` collects it.
+const SCRATCH_ROOT: &str = "target/wasi-fs-tests";
+
+/// The scratch directory's path relative to the preopen, and its absolute path.
+///
+/// Both are needed: the relative one is what `open-at` takes, the absolute one
+/// is what `std::fs` uses to arrange the fixture.
+fn scratch_rel(label: &str) -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!(
-        "vybe-wasi-fs-test-{}-{}-{}",
+    format!(
+        "{SCRATCH_ROOT}/vybe-wasi-fs-test-{}-{}-{}",
         std::process::id(),
         label,
         id
-    ));
+    )
+}
+
+fn scratch_dir(label: &str) -> PathBuf {
+    let rel = scratch_rel(label);
+    let dir = std::env::current_dir()
+        .expect("cwd is the `.` preopen")
+        .join(&rel);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("scratch dir mkdir");
     dir
@@ -108,19 +131,70 @@ fn is_error(value: &Value) -> Option<String> {
     None
 }
 
-/// Open a descriptor for the scratch directory itself — every test
-/// starts here. WASI doesn't grant ambient access to absolute paths;
-/// in real deployments the host pre-opens directories. This helper
-/// stands in for that by opening the scratch root via the
-/// `__test_open_root` host fn (registered alongside the WASI
-/// surface specifically for tests — production code uses
-/// `get-directories`).
+/// Open a descriptor for the scratch directory — every test starts here.
+///
+/// This goes through the REAL capability path: `preopens.get-directories`
+/// answers `list<tuple<descriptor, string>>`, and the scratch directory is
+/// reached from that descriptor with `open-at`. It used to call a
+/// `__test_open_root` host function that minted a descriptor for any absolute
+/// path — a TEST FIXTURE registered inside `wasi:filesystem/types`, and so
+/// callable by any guest that imported it. Its own comment argued no profile
+/// routes imports to `__test_*`, but the namespace is the contract: a
+/// conforming guest may import anything the interface declares, and the WIT
+/// declares no such function.
+///
+/// Going through `open-at` is also strictly better coverage — these 38 tests
+/// now exercise the preopen path that production code uses, instead of a
+/// shortcut that existed only for them.
 fn open_test_root(dir: &PathBuf) -> Value {
-    invoke(
+    let cwd = std::env::current_dir().expect("cwd is the `.` preopen");
+    let rel = dir
+        .strip_prefix(&cwd)
+        .expect("scratch dirs live under the `.` preopen so `open-at` can reach them");
+
+    let preopens = invoke("wasi:filesystem/preopens", "get-directories", vec![]);
+    let root = first_preopen_descriptor(&preopens);
+
+    // open-at(parent, path-flags=0, path, open-flags=OPEN_DIRECTORY, %flags=0)
+    let opened = invoke(
         "wasi:filesystem/types",
-        "__test_open_root",
-        vec![s(dir.to_str().unwrap())],
-    )
+        "[method]descriptor.open-at",
+        vec![
+            root,
+            Value::I32(0),
+            s(rel.to_str().expect("scratch path is utf-8")),
+            Value::I32(OPEN_DIRECTORY),
+            Value::I32(0),
+        ],
+    );
+    assert!(
+        is_error(&opened).is_none(),
+        "opening the scratch dir from the preopen failed: {:?}",
+        is_error(&opened)
+    );
+    opened
+}
+
+/// `open-flags::directory` — `proposals/WASI/proposals/filesystem/wit/types.wit`.
+const OPEN_DIRECTORY: i32 = 2;
+
+/// Element 0 of the first `tuple<descriptor, string>` `get-directories` answers.
+fn first_preopen_descriptor(preopens: &Value) -> Value {
+    let Value::Object(list) = preopens else {
+        panic!("get-directories must answer a list");
+    };
+    let list = list.lock().unwrap();
+    let ObjectKind::Array(entries) = &list.kind else {
+        panic!("get-directories must answer list<tuple<descriptor, string>>");
+    };
+    let Some(Value::Object(pair)) = entries.first() else {
+        panic!("no preopened directory — the guest has no capability at all");
+    };
+    let pair = pair.lock().unwrap();
+    let ObjectKind::Array(pair) = &pair.kind else {
+        panic!("each preopen is a tuple<descriptor, string>");
+    };
+    pair.first().cloned().expect("descriptor is element 0")
 }
 
 macro_rules! assert_wasi_error {
@@ -450,33 +524,54 @@ fn read_directory_then_iterate_entries() {
     std::fs::create_dir(dir.join("sub")).unwrap();
     let root = open_test_root(&dir);
 
-    let stream = types("[method]descriptor.read-directory", vec![root]);
-    assert!(
-        matches!(stream, Value::Object(_)),
-        "read-directory returns a directory-entry-stream"
-    );
+    let result = types("[method]descriptor.read-directory", vec![root]);
+    assert_read_directory_tuple(&result);
 
-    let mut names = Vec::new();
-    loop {
-        let entry = types(
-            "[method]directory-entry-stream.read-directory-entry",
-            vec![stream.clone()],
-        );
-        // option<directory-entry>: null = end-of-stream
-        if matches!(entry, Value::Null) {
-            break;
-        }
-        let name = match prop(&entry, "name") {
-            Value::String(text) => text.to_string(),
-            other => panic!("directory-entry.name expected string, got {:?}", other),
-        };
-        names.push(name);
-        if names.len() > 50 {
-            panic!("read-directory-entry didn't terminate");
-        }
-    }
-    names.sort();
-    assert_eq!(names, vec!["a.txt", "b.txt", "sub"]);
+    assert_eq!(
+        crate::stream_drain::read_directory(&dir),
+        vec![
+            ("regular-file".to_string(), "a.txt".to_string()),
+            ("regular-file".to_string(), "b.txt".to_string()),
+            ("directory".to_string(), "sub".to_string()),
+        ]
+    );
+}
+
+/// `read-directory: func() -> tuple<stream<directory-entry>,
+///                                  future<result<_, error-code>>>`.
+///
+/// The SHAPE half of the assertion — that the answer is the declared tuple and
+/// not the 0.2 `directory-entry-stream` resource. The ENTRIES are asserted
+/// separately, through `stream_drain::read_directory`, because reading them
+/// requires draining a `stream<directory-entry>` inside the same VM that opened
+/// it and the one-host-call-per-`invoke` helper here cannot do that.
+///
+/// Both halves are needed and neither implies the other: this one catches a
+/// host that goes back to answering a resource handle, and the drain catches a
+/// host that answers the right shape with the wrong contents. For a while only
+/// this half existed — a documented loss, now closed. The reason it could be
+/// closed is `canon stream.read` learning element types; before that it copied
+/// bytes and served `stream<u8>` and nothing else, so the honest position was
+/// that the host answered the declared shape and nothing could read it — the
+/// same blocker `tcp-socket.listen`'s `stream<tcp-socket>` sat behind.
+fn assert_read_directory_tuple(result: &Value) {
+    assert!(
+        is_error(result).is_none(),
+        "read-directory failed: {:?}",
+        is_error(result)
+    );
+    let Value::Object(parts) = result else {
+        panic!("read-directory must answer a tuple, got {result:?}");
+    };
+    let parts = parts.lock().unwrap();
+    let ObjectKind::Array(parts) = &parts.kind else {
+        panic!("read-directory must answer tuple<stream<directory-entry>, future<...>>");
+    };
+    assert_eq!(
+        parts.len(),
+        2,
+        "the entry stream AND the completion future — not a resource handle"
+    );
 }
 
 #[test]
@@ -500,25 +595,98 @@ fn read_directory_on_file_descriptor_errors_not_directory() {
 }
 
 #[test]
-fn directory_entry_stream_returns_null_after_end_of_stream() {
+fn read_directory_on_an_empty_directory_still_answers_the_tuple() {
     let dir = scratch_dir("read_directory_eof");
     let root = open_test_root(&dir);
 
-    let stream = types("[method]descriptor.read-directory", vec![root]);
-    assert!(matches!(
-        types(
-            "[method]directory-entry-stream.read-directory-entry",
-            vec![stream.clone()]
-        ),
-        Value::Null
-    ));
-    assert!(matches!(
-        types(
-            "[method]directory-entry-stream.read-directory-entry",
-            vec![stream]
-        ),
-        Value::Null
-    ));
+    // An empty directory is not an error — it is an empty entry stream, and
+    // the shape must be the same one a populated directory answers. 0.2 tested
+    // this by reading `none` twice off the entry-stream resource; there is no
+    // resource to read now.
+    assert_read_directory_tuple(&types("[method]descriptor.read-directory", vec![root]));
+
+    // And the drain terminates. This is the case that distinguishes a stream
+    // the host CLOSED from one it merely has not written to: a closed empty
+    // stream reads DROPPED and the loop ends, an unclosed one reads
+    // COMPLETED-with-zero forever. Both are "no entries" to an assertion on
+    // the result; only one of them returns.
+    assert!(crate::stream_drain::read_directory(&dir).is_empty());
+}
+
+/// A fifo enumerates as `fifo`, and — more to the point — does not take the
+/// rest of the directory down with it.
+///
+/// `variant descriptor-type` declares eight cases and the host answered
+/// `"unknown"`, which is not one of them, for everything that was not a file,
+/// directory or symlink. That is not a cosmetic mislabel: `canon stream.read`
+/// lowers `%type` by looking the name up in the variant's case list and
+/// writing the INDEX, so an undeclared name makes the copy fail and the
+/// guest's whole drain error out. One fifo made every entry beside it
+/// unreadable, and `/tmp` has fifos in it.
+///
+/// So this asserts the neighbour too. A host that reports the fifo as `other`
+/// would still pass a test that only looked at the fifo.
+#[test]
+#[cfg(unix)]
+fn read_directory_reports_a_fifo_without_failing_the_drain() {
+    let dir = scratch_dir("read_directory_fifo");
+    std::fs::write(dir.join("beside.txt"), "x").unwrap();
+    let made = std::process::Command::new("mkfifo")
+        .arg(dir.join("pipe"))
+        .status()
+        .expect("mkfifo should be runnable");
+    assert!(made.success(), "mkfifo failed");
+
+    assert_eq!(
+        crate::stream_drain::read_directory(&dir),
+        vec![
+            ("regular-file".to_string(), "beside.txt".to_string()),
+            ("fifo".to_string(), "pipe".to_string()),
+        ]
+    );
+}
+
+/// More entries than one `canon stream.read` asks for.
+///
+/// The guest lift requests `ENTRIES_PER_READ` (32) elements at a time and loops
+/// until the copy reports anything but COMPLETED. Every other test in this file
+/// fits in one read, so the loop-back — re-reading into the SAME buffer,
+/// re-deriving `count`, re-testing the low nibble — never executes and the
+/// whole second half of the drain is unproven.
+///
+/// 40 is deliberately just over the boundary. The failure it catches is silent
+/// truncation at exactly 32, which no assertion on "did we get entries" would
+/// notice and which any directory in real use hits before a user thinks to
+/// check.
+#[test]
+fn read_directory_drains_more_entries_than_one_read_returns() {
+    let dir = scratch_dir("read_directory_many");
+    let mut expected: Vec<String> = Vec::new();
+    for i in 0..40 {
+        let name = format!("entry-{i:02}.txt");
+        std::fs::write(dir.join(&name), "x").unwrap();
+        expected.push(name);
+    }
+    expected.sort();
+
+    assert_eq!(crate::stream_drain::read_directory_names(&dir), expected);
+}
+
+/// POSIX `readdir` yields `.` and `..`; `wasi:filesystem` does not.
+///
+/// Asserted rather than assumed because the difference is invisible until a
+/// caller ported from `scandir` counts its entries, and because "the host
+/// forgot to filter them" and "the host filtered them" produce the same
+/// passing result on every other test in this file.
+#[test]
+fn read_directory_does_not_yield_dot_or_dotdot() {
+    let dir = scratch_dir("read_directory_no_dots");
+    std::fs::write(dir.join("only.txt"), "").unwrap();
+
+    assert_eq!(
+        crate::stream_drain::read_directory_names(&dir),
+        vec!["only.txt".to_string()]
+    );
 }
 
 // ── [method]descriptor.create-directory-at ────────────────────────
@@ -905,18 +1073,14 @@ fn stat_at_rejects_bad_descriptor() {
     assert_wasi_error!(result, "bad-descriptor");
 }
 
+// `read_directory_rejects_bad_descriptor` below already covers what the old
+// `directory_entry_stream_read_rejects_bad_descriptor` did: with the
+// `directory-entry-stream` resource deleted, a bad handle can only be caught
+// at `read-directory` itself, and that assertion already existed.
+
 #[test]
 fn read_directory_rejects_bad_descriptor() {
     let result = types("[method]descriptor.read-directory", vec![Value::Null]);
-    assert_wasi_error!(result, "bad-descriptor");
-}
-
-#[test]
-fn directory_entry_stream_read_rejects_bad_descriptor() {
-    let result = types(
-        "[method]directory-entry-stream.read-directory-entry",
-        vec![Value::Null],
-    );
     assert_wasi_error!(result, "bad-descriptor");
 }
 
@@ -987,25 +1151,10 @@ fn read_via_stream_rejects_bad_descriptor() {
     assert_wasi_error!(result, "bad-descriptor");
 }
 
-#[test]
-fn input_stream_read_rejects_bad_descriptor() {
-    let result = invoke(
-        "wasi:io/streams",
-        "[method]input-stream.read",
-        vec![Value::Null, Value::F64(1.0)],
-    );
-    assert_wasi_error!(result, "bad-descriptor");
-}
-
-#[test]
-fn input_stream_blocking_read_rejects_bad_descriptor() {
-    let result = invoke(
-        "wasi:io/streams",
-        "[method]input-stream.blocking-read",
-        vec![Value::Null, Value::F64(1.0)],
-    );
-    assert_wasi_error!(result, "bad-descriptor");
-}
+// Two `wasi:io/streams` `input-stream` tests stood here. The resource does not
+// exist in 0.3.1 — a file is read through `read-via-stream`, which answers a
+// `stream<u8>`. The bad-descriptor case they covered is still covered, by
+// `read_via_stream_rejects_bad_descriptor` on the real verb.
 
 #[allow(dead_code)]
 fn _force_object_use(_: Object) {}
@@ -1051,7 +1200,9 @@ fn proposal_filesystem_descriptor_surface_is_registered() {
         "[method]descriptor.is-same-object",
         "[method]descriptor.metadata-hash",
         "[method]descriptor.metadata-hash-at",
-        "[method]directory-entry-stream.read-directory-entry",
+        // `[method]directory-entry-stream.read-directory-entry` is NOT here:
+        // 0.3.1 deleted the `directory-entry-stream` resource. `read-directory`
+        // answers `tuple<stream<directory-entry>, future<...>>` directly.
     ];
     let missing = expected
         .into_iter()

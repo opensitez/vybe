@@ -44,7 +44,6 @@
 //!
 //! [`wasi-random`/random.wit]: proposals/WASI/proposals/random/wit/random.wit
 
-use std::sync::Arc;
 use vybe_runtime::value::Object;
 use vybe_runtime::vm::HostFnDecl;
 use vybe_runtime::{FuncSig, HostContext, VM, ValType, Value};
@@ -93,12 +92,7 @@ fn next_u64() -> u64 {
     })
 }
 
-fn next_f64() -> f64 {
-    (next_u64() >> 11) as f64 / (1u64 << 53) as f64
-}
-
-/// `tuple<u64, u64>` — the shape both `insecure-seed` (0.2) and
-/// `get-insecure-seed` (0.3) return.
+/// `tuple<u64, u64>` — the shape `get-insecure-seed` returns.
 fn insecure_seed_pair() -> Value {
     let a = next_u64();
     let b = next_u64();
@@ -230,18 +224,10 @@ pub fn register(vm: &mut VM) {
     //   insecure-seed: func() -> tuple<u64, u64>
     // The two u64s form a 128-bit seed value. MVP returns the xorshift
     // state and a derivative.
-    random_fn(
-        vm,
-        "wasi:random/insecure-seed",
-        "insecure-seed",
-        vec![],
-        vec![u64_pair()],
-        Box::new(|_ctx: &mut HostContext, _args: &[Value]| insecure_seed_pair()),
-    );
-
-    // 0.3.0 renamed the function to `get-insecure-seed`
-    // (`proposals/random/wit/insecure-seed.wit`); the 0.2 name stays bound so
-    // components built against either revision resolve.
+    // 0.3 renamed this function from `insecure-seed` to `get-insecure-seed`
+    // (`proposals/WASI/proposals/random/wit/insecure-seed.wit`). Both were
+    // bound until 2026-08-21, "so components built against either revision
+    // resolve" — which is the reason a deleted name never leaves.
     random_fn(
         vm,
         "wasi:random/insecure-seed",
@@ -251,61 +237,17 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, _args: &[Value]| insecure_seed_pair()),
     );
 
-    // ── Convenience extensions under wasi:random/random ───────────────
-    random_fn(
-        vm,
-        "wasi:random/random",
-        "random",
-        vec![],
-        vec![ValType::F64],
-        Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::F64(next_f64())),
-    );
-    // `randomInt` stays UNDECLARED: its `max` is optional — the closure falls
-    // back to `min` when the second argument is absent, so `randomInt(n)` is a
-    // legal call. The Component Model has no optional parameter, so either
-    // arity declared here would be wrong for the other form. Undeclared means
-    // UNKNOWN, which is the truth. (Nothing lowers to it today — every language
-    // reaches randomness through `ecma:math.random` — so this costs no
-    // coverage that a caller would have exercised.)
-    vm.register_host_fn(
-        "wasi:random/random",
-        "randomInt",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let min = args.first().map(|v| v.as_f64() as i64).unwrap_or(0);
-            let max = args.get(1).map(|v| v.as_f64() as i64).unwrap_or(min);
-            if min >= max {
-                return Value::F64(min as f64);
-            }
-            let range = (max - min + 1) as u64;
-            let r = (next_u64() % range) as i64 + min;
-            Value::F64(r as f64)
-        }),
-    );
-    random_fn(
-        vm,
-        "wasi:random/random",
-        "uuid",
-        vec![],
-        vec![ValType::String],
-        Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
-            let a = next_u64();
-            let b = next_u64();
-            let bytes: [u8; 16] = {
-                let mut buf = [0u8; 16];
-                buf[..8].copy_from_slice(&a.to_le_bytes());
-                buf[8..].copy_from_slice(&b.to_le_bytes());
-                buf[6] = (buf[6] & 0x0f) | 0x40; // version 4
-                buf[8] = (buf[8] & 0x3f) | 0x80; // variant 1
-                buf
-            };
-            let s = format!(
-                "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-                bytes[0], bytes[1], bytes[2], bytes[3],
-                bytes[4], bytes[5], bytes[6], bytes[7],
-                bytes[8], bytes[9], bytes[10], bytes[11],
-                bytes[12], bytes[13], bytes[14], bytes[15],
-            );
-            Value::String(Arc::from(s.as_str()))
-        }),
-    );
+    // `random`, `randomInt` and `uuid` USED TO BE REGISTERED HERE, under the
+    // banner "Convenience extensions".
+    //
+    // `wasi:random@0.3.1` declares `get-random-bytes` and `get-random-u64`,
+    // and nothing else. These three were invented and put in the `wasi:`
+    // namespace anyway, so a guest built against the WIT could not call them
+    // and a conforming runtime could not answer them — the prefix was a claim
+    // this module did not keep.
+    //
+    // `random` and `randomInt` had no caller in the tree at all. `uuid` had
+    // exactly one — Python's `tempfile` name — and it never needed a canonical
+    // UUID, only a unique token; it composes one from `get-random-u64`.
+
 }

@@ -6,9 +6,10 @@ use vybe_runtime::{FuncSig, HostContext, VM, ValType, Value};
 
 /// Declare a `wasi:clocks/*` function.
 ///
-/// No resource: a clock is not a handle. The one handle these interfaces deal
-/// in is the `pollable` that `subscribe-*` MINTS, and that is an `own<pollable>`
-/// in the results — the resource `wasi:io/poll` declares, bound by name.
+/// No resource: a clock is not a handle. 0.2 had one — the `pollable` that
+/// `subscribe-*` minted, declared by `wasi:io/poll` — but 0.3.1 deletes the
+/// `wasi:io` package and the `subscribe-*` functions with it, so there is now
+/// no handle anywhere in `wasi:clocks`.
 fn clock_fn(
     vm: &mut VM,
     module: &str,
@@ -38,18 +39,22 @@ fn datetime_record() -> ValType {
     ])
 }
 
-/// `future<result<_, error-code>>`. `ValType` has no `unit`, so the `ok` arm of
-/// a result that carries nothing declares as `Any` — the alternative would be
-/// inventing a type the enum does not have.
+/// `future<result<_, error-code>>`.
+///
+/// The `ok` arm carries NOTHING and now says so: `ValType::Result`'s cases are
+/// each optional. This used to declare `Any` on both arms with a comment that
+/// `ValType` has no `unit` — true when it was written, and the workaround
+/// outlived the limitation. `Any` is one byte, so an ok arm declared that way
+/// inflated `elem_size` and pushed the payload offset for every case.
 fn future_result() -> ValType {
     ValType::Future(Box::new(ValType::Result(
-        Box::new(ValType::Any),
-        Box::new(ValType::Any),
+        None,
+        Some(Box::new(ValType::Any)),
     )))
 }
 
 pub fn register(vm: &mut VM) {
-    // ── wasi:clocks/monotonic-clock — WASI 0.2 spec interface ───────────
+    // ── wasi:clocks/monotonic-clock — wasi:clocks@0.3.1 ─────────────────
     // Returns nanoseconds since an arbitrary reference point (process start).
     // Values are only meaningful relative to each other — use for scheduling.
     // Mirrors proposals/WASI/proposals/clocks/wit/monotonic-clock.wit.
@@ -66,16 +71,13 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    clock_fn(
-        vm,
-        "wasi:clocks/monotonic-clock",
-        "resolution",
-        vec![],
-        vec![nanos()],
-        Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
-            Value::F64(1.0) // 1 nanosecond resolution
-        }),
-    );
+    // `resolution` USED TO BE REGISTERED HERE.
+    //
+    // 0.3 renamed it to `get-resolution`, and `monotonic-clock` in
+    // `wasi:clocks@0.3.1` declares no `resolution` at all. Keeping the old
+    // spelling bound "for compat" is the same trap `subscribe-duration` was:
+    // the call RESOLVES, so nothing fails, and the tree goes on emitting a
+    // name no conforming runtime provides. The 0.3.1 name is registered below.
 
     // `subscribe-instant` and `subscribe-duration` USED TO BE REGISTERED HERE.
     //
@@ -95,8 +97,8 @@ pub fn register(vm: &mut VM) {
     //
     // The replacement is `wait-for(ns)` below — one call for the two.
 
-    // ── WASI 0.3 additions ───────────────────────────────────────────
-    // get-resolution — 0.3 rename of `resolution`; keep both for compat.
+    // `get-resolution: func() -> duration` — the 0.3 name for what 0.2 called
+    // `resolution`. It is the only spelling bound; see the note above.
     clock_fn(
         vm,
         "wasi:clocks/monotonic-clock",
@@ -149,41 +151,30 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    // ── wasi:clocks/wall-clock — WASI 0.2.11 spec interface ─────────────
-    // The canonical WASI wall-clock primitive. Returns a `datetime` record
-    // `{ seconds: u64, nanoseconds: u32 }` per the .wit at
-    // proposals/WASI/proposals/clocks/wit/wall-clock.wit. This is the
-    // single source-of-truth timestamp; `ecma:date.now` reads through it.
-    clock_fn(
-        vm,
-        "wasi:clocks/wall-clock",
-        "now",
-        vec![],
-        vec![datetime_record()],
-        Box::new(|_ctx: &mut HostContext, _args: &[Value]| system_clock_now()),
-    );
+    // `wasi:clocks/wall-clock` USED TO BE REGISTERED HERE — `now` and
+    // `resolution`.
+    //
+    // The whole INTERFACE is gone in `wasi:clocks@0.3.1`: 0.3 renamed it to
+    // `system-clock`, and there is no `wall-clock.wit` in the umbrella any
+    // more (`proposals/WASI/proposals/clocks/wit/` holds `monotonic-clock`,
+    // `system-clock`, `timezone`, `types` and `world`). The comment that stood
+    // here cited `wit/wall-clock.wit` as its source of truth — a file this
+    // tree does not contain.
+    //
+    // `now` was byte-identical to `system-clock.now` below, so nothing is lost
+    // with it. `resolution` is NOT a rename: 0.2 answered a
+    // `{ seconds, nanoseconds }` record where 0.3.1's `get-resolution` answers
+    // a bare `duration`, which is u64 NANOSECONDS (`clocks/wit/types.wit`).
+    // A caller ported by name alone would read `.seconds` off a number and get
+    // `undefined` rather than an error, which is why the corpus test for it
+    // asserts the shape and not just the value.
 
-    // wasi:clocks/wall-clock.resolution — clock tick resolution per spec.
-    // Most platforms report nanosecond resolution; we return 1ns.
-    clock_fn(
-        vm,
-        "wasi:clocks/wall-clock",
-        "resolution",
-        vec![],
-        vec![datetime_record()],
-        Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
-            let mut rec = Object::new();
-            rec.properties.insert("seconds".into(), Value::F64(0.0));
-            rec.properties.insert("nanoseconds".into(), Value::F64(1.0));
-            Value::Object(vybe_runtime::heap::alloc(rec))
-        }),
-    );
-
-    // ── wasi:clocks/system-clock — WASI 0.3.0 ───────────────────────────
-    // `proposals/clocks/wit/system-clock.wit`. 0.3 renamed `wall-clock` to
-    // `system-clock` and `resolution` to `get-resolution`; `now` still answers
-    // a `{ seconds, nanoseconds }` record, now called `instant` rather than
-    // `datetime`. Both spellings stay bound so either revision resolves.
+    // ── wasi:clocks/system-clock — wasi:clocks@0.3.1 ────────────────────
+    // `proposals/WASI/proposals/clocks/wit/system-clock.wit`. 0.3 renamed
+    // `wall-clock` to `system-clock` and `resolution` to `get-resolution`;
+    // `now` still answers a `{ seconds, nanoseconds }` record, now called
+    // `instant` rather than `datetime`. Only the 0.3.1 spelling is bound —
+    // see the note above for why keeping both was worse than keeping neither.
     clock_fn(
         vm,
         "wasi:clocks/system-clock",
@@ -194,8 +185,8 @@ pub fn register(vm: &mut VM) {
     );
 
     // `get-resolution: func() -> duration`, and `duration = u64` NANOSECONDS
-    // (`clocks/wit/types.wit`) — a bare number, not the record 0.2's
-    // `wall-clock.resolution` returned.
+    // (`clocks/wit/types.wit`) — a bare number, not the record the 0.2
+    // interface returned.
     clock_fn(
         vm,
         "wasi:clocks/system-clock",
@@ -206,39 +197,11 @@ pub fn register(vm: &mut VM) {
     );
 
     // ── wasi:clocks/timezone ────────────────────────────────────────────
-    // display(when: datetime) → timezone-display { utc-offset: s32, name: string, in-daylight-saving-time: bool }
-    // 0.2 only; 0.3 replaced it with `iana-id` + `to-debug-string`.
-    clock_fn(
-        vm,
-        "wasi:clocks/timezone",
-        "display",
-        vec![datetime_record()],
-        vec![ValType::Record(vec![
-            ("utc-offset".to_string(), ValType::I32),
-            ("name".to_string(), ValType::String),
-            ("in-daylight-saving-time".to_string(), ValType::Bool),
-        ])],
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let seconds = instant_seconds(args.first());
-            let offset = local_offset_seconds(seconds).unwrap_or(0);
-            let mut rec = Object::new();
-            rec.properties
-                .insert("utc-offset".into(), Value::I32(offset as i32));
-            rec.properties.insert(
-                "name".into(),
-                Value::String(Arc::from(
-                    configured_zone_id()
-                        .unwrap_or_else(|| "UTC".to_string())
-                        .as_str(),
-                )),
-            );
-            rec.properties.insert(
-                "in-daylight-saving-time".into(),
-                Value::Bool(local_is_dst(seconds).unwrap_or(false)),
-            );
-            Value::Object(vybe_runtime::heap::alloc(rec))
-        }),
-    );
+    // `display(when: datetime) -> timezone-display` USED TO BE REGISTERED HERE.
+    //
+    // 0.2 only. `wasi:clocks@0.3.1` replaced it with `iana-id` and
+    // `to-debug-string`, both registered below, and it has no measured caller
+    // anywhere in the tree — the two replacements carry everything it reported.
 
     // `iana-id: func() -> option<string>` — the IANA Time Zone Database
     // identifier of the configured zone, or nothing when the host does not
@@ -392,11 +355,6 @@ fn configured_zone_id() -> Option<String> {
 /// TZif rules. `None` when no zone or no rules are available.
 fn local_offset_seconds(seconds: i64) -> Option<i64> {
     tzif_type_at(seconds).map(|(offset, _)| offset)
-}
-
-/// Whether the configured zone is in daylight saving time at `seconds`.
-fn local_is_dst(seconds: i64) -> Option<bool> {
-    tzif_type_at(seconds).map(|(_, is_dst)| is_dst)
 }
 
 /// Resolve `(utoff, isdst)` for an instant from the configured zone's TZif.

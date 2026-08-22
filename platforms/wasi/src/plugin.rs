@@ -51,10 +51,22 @@ impl vybe_runtime::Plugin for Plugin {
             crate::random::register(vm);
         }
         if files {
-            crate::fs::register(vm); // flat wasi:filesystem convenience surface
+            // `crate::fs` is NOT registered. It bound 31 verbs — `readFile`,
+            // `writeFile`, `listDir`, `pathCombine`, `pathGetTempPath` … —
+            // under the module string `"wasi:filesystem"`, which is the
+            // PACKAGE name and not an importable interface at all. None of
+            // them appears in `proposals/WASI/proposals/filesystem/wit/`, so a
+            // guest compiled against the WIT could not call one and a
+            // conforming runtime could not satisfy one. Calling that a
+            // "convenience surface" is what let it live inside `wasi:`.
+            //
+            // The canonical interface below is the whole of this package.
             crate::filesystem::register(vm); // canonical wasi:filesystem/types
-            // io after filesystem so its stream handlers take precedence.
-            crate::io::register(vm);
+            // `crate::io::register` is NOT called: `wasi:io` does not exist in
+            // 0.3.1. This was the FOURTH call site, and the one that kept the
+            // package alive after the other three were cut — the coverage gate
+            // is what named it, which is the argument for the gate asserting
+            // ABSENCE rather than carrying an exemption.
         }
         if environment {
             crate::env::register(vm);

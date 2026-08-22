@@ -1,11 +1,27 @@
-//! Behaviour of the `wasi:http` SERVER half — `incoming-request`,
-//! `response-outparam`, `outgoing-body.finish`.
+//! Behaviour of the `wasi:http` SERVER half.
 //!
-//! Source of truth: `proposals/wasi-http/wit/types.wit`. These six
-//! `incoming-request` accessors plus `response-outparam.set` were registered as
-//! stubs returning `Value::Null` ("Registered so WASM modules that import them
-//! don't get link errors"), so registration tests passed while nothing worked.
-//! These assert behaviour, not registration.
+//! Source of truth: `proposals/WASI/proposals/http/wit/types.wit`
+//! (`wasi:http@0.3.1`). The accessors here were once registered as stubs
+//! returning `Value::Null` ("Registered so WASM modules that import them don't
+//! get link errors"), so registration tests passed while nothing worked. These
+//! assert behaviour, not registration — `no_stub_registrations_remain_in_the_
+//! http_surface` at the bottom guards that specific regression.
+//!
+//! HALF-MIGRATED, deliberately, and this is where the line falls:
+//!
+//!   * the REQUEST side is on 0.3.1. 0.2's `incoming-request` and
+//!     `outgoing-request` are one `request` resource now, so these read it
+//!     through `request.get-*` and `[static]request.consume-body`.
+//!   * the RESPONSE side is NOT. `response-outparam`, `outgoing-response` and
+//!     `outgoing-body` are absent from 0.3.1 — a handler RETURNS its response
+//!     rather than writing it into an outparam. Renaming cannot express that:
+//!     `vybex --serve` publishes the outparam handle as a global
+//!     (`__wasi_http_response_out`) and collects the answer from it, so moving
+//!     to the 0.3.1 model changes how a served script answers at all, not just
+//!     what the call is called.
+//!
+//! `interface_coverage.rs` reports every one of those response-side names as
+//! undeclared. That list shrinking to nothing is what finishes this file.
 
 use std::sync::Arc;
 
@@ -90,16 +106,16 @@ fn sample_request() -> u32 {
 }
 
 #[test]
-fn incoming_request_reports_method_path_scheme_authority() {
+fn request_reports_method_path_scheme_authority() {
     let vm = vm_with_platforms();
     let id = sample_request();
     let handle = wasi_http::incoming_request_value(&vm, id).expect("resource value");
 
     for (name, expected) in [
-        ("[method]incoming-request.method", "POST"),
-        ("[method]incoming-request.path-with-query", "/orders?page=2"),
-        ("[method]incoming-request.scheme", "https"),
-        ("[method]incoming-request.authority", "example.test:8443"),
+        ("[method]request.get-method", "POST"),
+        ("[method]request.get-path-with-query", "/orders?page=2"),
+        ("[method]request.get-scheme", "https"),
+        ("[method]request.get-authority", "example.test:8443"),
     ] {
         let got = call(|| vec![handle.clone()], name);
         assert_eq!(
@@ -111,17 +127,17 @@ fn incoming_request_reports_method_path_scheme_authority() {
 }
 
 #[test]
-fn incoming_request_optional_fields_are_null_not_error() {
-    // §incoming-request: path-with-query / scheme / authority are `option<..>`.
+fn request_optional_fields_are_null_not_error() {
+    // §request: path-with-query / scheme / authority are `option<..>`.
     // Absent must be null — an error would be a different WIT type.
     let vm = vm_with_platforms();
     let id = wasi_http::push_incoming_request("GET", None, None, None, Vec::new(), Vec::new());
     let handle = wasi_http::incoming_request_value(&vm, id).expect("resource value");
 
     for name in [
-        "[method]incoming-request.path-with-query",
-        "[method]incoming-request.scheme",
-        "[method]incoming-request.authority",
+        "[method]request.get-path-with-query",
+        "[method]request.get-scheme",
+        "[method]request.get-authority",
     ] {
         let got = call(|| vec![handle.clone()], name);
         assert!(
@@ -132,12 +148,12 @@ fn incoming_request_optional_fields_are_null_not_error() {
 }
 
 #[test]
-fn incoming_request_headers_resource_is_readable() {
+fn request_headers_resource_is_readable() {
     let vm = vm_with_platforms();
     let id = sample_request();
     let handle = wasi_http::incoming_request_value(&vm, id).expect("resource value");
 
-    let headers = call(|| vec![handle.clone()], "[method]incoming-request.headers");
+    let headers = call(|| vec![handle.clone()], "[method]request.get-headers");
     assert!(
         !is_error(&headers),
         "headers returned an error: {headers:?}"
@@ -152,17 +168,17 @@ fn incoming_request_headers_resource_is_readable() {
 }
 
 #[test]
-fn incoming_request_consume_succeeds_at_most_once() {
-    // §incoming-request.consume: "Will only return success at most once, and
-    // subsequent calls will return error."
+fn request_consume_body_succeeds_at_most_once() {
+    // §request.consume-body: the body is given up at most once; a second
+    // call answers an error. 0.2 spelled this `incoming-request.consume`.
     let vm = vm_with_platforms();
     let id = sample_request();
     let handle = wasi_http::incoming_request_value(&vm, id).expect("resource value");
 
-    let first = call(|| vec![handle.clone()], "[method]incoming-request.consume");
+    let first = call(|| vec![handle.clone()], "[static]request.consume-body");
     assert!(!is_error(&first), "first consume failed: {first:?}");
 
-    let second = call(|| vec![handle.clone()], "[method]incoming-request.consume");
+    let second = call(|| vec![handle.clone()], "[static]request.consume-body");
     assert!(
         is_error(&second),
         "second consume must error, got {second:?}"
@@ -170,11 +186,11 @@ fn incoming_request_consume_succeeds_at_most_once() {
 }
 
 #[test]
-fn incoming_request_accessors_reject_a_foreign_resource() {
-    // Passing a non-incoming-request resource is `invalid-argument`, not a panic.
+fn request_accessors_reject_a_foreign_resource() {
+    // Passing a resource that is not a request is `invalid-argument`, not a panic.
     let got = call(
         || vec![Value::String(Arc::from("not-a-resource"))],
-        "[method]incoming-request.method",
+        "[method]request.get-method",
     );
     assert!(is_error(&got), "expected an error, got {got:?}");
 }
@@ -196,45 +212,19 @@ fn response_outparam_reports_never_set() {
     assert!(wasi_http::take_response_outparam(param_id).is_none());
 }
 
-#[test]
-fn send_informational_rejects_non_1xx() {
-    // RFC 9110 §15.2: informational responses are 1xx only.
-    let vm = vm_with_platforms();
-    let param_id = wasi_http::push_response_outparam();
-    let handle = wasi_http::response_outparam_value(&vm, param_id).expect("resource value");
-
-    let ok = call(
-        || vec![handle.clone(), Value::F64(103.0)],
-        "[method]response-outparam.send-informational",
-    );
-    assert!(!is_error(&ok), "103 Early Hints should be accepted: {ok:?}");
-
-    let bad = call(
-        || vec![handle.clone(), Value::F64(200.0)],
-        "[method]response-outparam.send-informational",
-    );
-    assert!(is_error(&bad), "200 is not informational, got {bad:?}");
-}
-
-#[test]
-fn outgoing_body_finish_succeeds_once_then_errors() {
-    // §outgoing-body.finish "must be called to signal that the response is
-    // complete"; calling it twice is not valid.
-    let response = call(|| vec![Value::F64(200.0)], "[constructor]outgoing-response");
-    assert!(!is_error(&response), "constructor failed: {response:?}");
-
-    let body = call(|| vec![response.clone()], "[method]outgoing-response.body");
-    assert!(!is_error(&body), "outgoing-response.body failed: {body:?}");
-
-    let first = call(|| vec![body.clone()], "[static]outgoing-body.finish");
-    assert!(!is_error(&first), "first finish failed: {first:?}");
-
-    let second = call(|| vec![body.clone()], "[static]outgoing-body.finish");
-    assert!(
-        is_error(&second),
-        "second finish must error, got {second:?}"
-    );
-}
+// TWO TESTS USED TO BE HERE: `send_informational_rejects_non_1xx` and
+// `outgoing_body_finish_succeeds_once_then_errors`.
+//
+// Neither subject exists in `wasi:http@0.3.1`. `types.wit` declares four
+// resources — `fields`, `request`, `request-options`, `response` — so
+// `response-outparam` and `outgoing-body` are gone, and with them informational
+// (1xx) responses and the explicit body-finish handshake. A body is a
+// `stream<u8>` handed to `response.new` and taken back by `consume-body`;
+// "finished" is the stream closing, not a call that can be made twice.
+//
+// Deleted rather than ported: RFC 9110 §15.2 still describes 1xx responses, but
+// 0.3.1 gives a guest no way to send one, so a ported test would be asserting
+// against an interface rather than about it.
 
 #[test]
 fn no_stub_registrations_remain_in_the_http_surface() {

@@ -15,6 +15,7 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, Instant};
 use vybe_runtime::value::Object;
+use vybe_runtime::component::ValType;
 use vybe_runtime::{HostContext, VM, Value};
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -32,6 +33,17 @@ pub struct SocketState {
     /// socket lives here from `tcp-socket.create` until it commits, at which
     /// point it moves into `tcp_listeners` or `tcp_streams` under the same id.
     raw_sockets: HashMap<u64, socket2::Socket>,
+    /// `stream_id → listener_id` for every live `listen()` stream.
+    ///
+    /// 0.3.1 has no `accept`: `listen` answers a `stream<tcp-socket>` and each
+    /// inbound connection is one element. Connections arrive AFTER `listen`
+    /// returns, so the stream has to be filled by something other than the
+    /// call that made it — this is the mapping the producer
+    /// (`accept-into-stream`) uses to find the listener a reader is waiting on.
+    listen_streams: HashMap<u64, u64>,
+    /// `stream_id → socket_id` for every live `receive()` stream, and the same
+    /// story: bytes arrive after the call that made the stream returned.
+    recv_streams: HashMap<u64, u64>,
 }
 
 pub fn get_state() -> Arc<Mutex<SocketState>> {
@@ -45,6 +57,8 @@ pub fn get_state() -> Arc<Mutex<SocketState>> {
                 pending_accepts: HashMap::new(),
                 udp_sockets: HashMap::new(),
                 raw_sockets: HashMap::new(),
+                listen_streams: HashMap::new(),
+                recv_streams: HashMap::new(),
             }))
         })
         .clone()
@@ -59,6 +73,8 @@ pub fn reset() {
         s.pending_accepts.clear();
         s.udp_sockets.clear();
         s.raw_sockets.clear();
+        s.listen_streams.clear();
+        s.recv_streams.clear();
     }
 }
 
@@ -325,15 +341,31 @@ fn udp_close(args: &[Value]) -> Value {
 // host.
 
 pub fn register(vm: &mut VM) {
-    // The legacy `vybe:net` namespace has been retired. Real WASI 0.2.8
-    // socket primitives (`wasi:sockets/{tcp,udp,ip-name-lookup,...}`) live
-    // in `register_wasi_sockets`; the .NET-shaped `TcpClient`/`TcpListener`/
-    // `UdpClient`/`StreamReader`/`StreamWriter` wrappers live in
-    // `register_dotnet_sockets` + `register_dotnet_io`.
-    register_wasi_io(vm);
-    register_wasi_sockets(vm);
-    register_wasi_sockets_method_forms(vm);
+    // WASI 0.3.1 collapsed `network`, `instance-network`, `tcp`,
+    // `tcp-create-socket`, `udp` and `udp-create-socket` into one
+    // `wasi:sockets/types` interface, so `register_wasi_sockets_0_3` is the
+    // whole of this package's surface: the 0.2 interfaces are not registered
+    // at all, because a name a conforming guest cannot import has no business
+    // sitting inside the `wasi:` namespace.
+    //
+    // `register_wasi_io` is NOT called any more. It was the last of the
+    // 0.3.1-deleted `wasi:io` package, kept while the socket migration
+    // settled; the byte I/O it provided is `[method]tcp-socket.receive` and
+    // `.send`, which answer a `stream<u8>` the guest drains with
+    // `canon stream.read`.
     register_wasi_sockets_0_3(vm);
+    // The inbound-connection producer. Host plumbing, not an interface — see
+    // `PRODUCER_MODULE`.
+    vm.register_host_fn(
+        PRODUCER_MODULE,
+        PRODUCER_ACCEPT,
+        Box::new(accept_into_stream),
+    );
+    vm.register_host_fn(
+        PRODUCER_MODULE,
+        PRODUCER_RECEIVE,
+        Box::new(receive_into_stream),
+    );
 }
 
 // ── wasi:sockets@0.3.0 — `types` ────────────────────────────────────────────
@@ -487,6 +519,197 @@ fn with_socket2_view(id: u64, body: impl FnOnce(&socket2::Socket) -> Value) -> V
         return body(&socket2::SockRef::from(listener));
     }
     socket_err("invalid-state")
+}
+
+/// The resource type id `own<tcp-socket>` handles are minted under.
+///
+/// Distinct from `udp-socket`'s so a handle of the wrong type is caught by
+/// `canon resource.drop`'s type check rather than silently dropping the wrong
+/// socket — that check is the entire reason handles carry a type at all.
+const TCP_SOCKET_TYPE_ID: u32 = 1;
+
+/// Socket id → the handle object that id names.
+///
+/// The other half of `create_own_resource`. §`canon resource.rep` fixes a
+/// resource's representation as an i32 and nothing else, so a host cannot make
+/// the socket OBJECT the representation and expect a guest to get it back —
+/// what comes out of `resource.rep` is an integer. The honest representation is
+/// therefore the socket's own id, and this is what turns that id back into the
+/// handle every method here already takes.
+///
+/// A separate lock from [`get_state`] on purpose: [`socket_arg`] runs at the
+/// top of nearly every registration, and making it reach for the state mutex
+/// would deadlock the moment one of them resolved an argument while already
+/// holding it.
+fn socket_reps() -> &'static Mutex<HashMap<u64, Arc<Mutex<Object>>>> {
+    use std::sync::OnceLock;
+    static REPS: OnceLock<Mutex<HashMap<u64, Arc<Mutex<Object>>>>> = OnceLock::new();
+    REPS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Record `handle` under its own id so an `own<tcp-socket>` can be resolved
+/// back from the i32 a guest holds.
+fn remember_socket_rep(handle: &Arc<Mutex<Object>>) -> u64 {
+    let id = socket_id_of(handle);
+    socket_reps().lock().unwrap().insert(id, handle.clone());
+    id
+}
+
+/// Where the inbound-connection producer is registered.
+///
+/// Deliberately NOT under `wasi:`. It is not an interface any guest may
+/// import — the WIT declares no such function, and a profile that named it
+/// would be inventing a verb exactly the way `fs.rs` once did. It is host
+/// plumbing that the VM reaches through the ordinary registry, the same way it
+/// reaches `ecma:promise.resolve` internally, and the `wasi:` namespace gate in
+/// `interface_coverage.rs` correctly ignores it.
+const PRODUCER_MODULE: &str = "wasi-host:sockets";
+const PRODUCER_ACCEPT: &str = "accept-into-stream";
+const PRODUCER_RECEIVE: &str = "receive-into-stream";
+
+/// How long a parked `accept()` waits for a connection before giving up.
+///
+/// A bound rather than a forever-block: a listener with no client would
+/// otherwise hang the process with no way to say why. On expiry nothing is
+/// pushed, the reader parks, and the event loop reports the deadlock BY NAME
+/// (`run_event_loop`'s parked-copy check) — which is the honest ending, and
+/// the one that a silent empty read never gave.
+const ACCEPT_WAIT: Duration = Duration::from_secs(20);
+
+/// Accept one inbound connection for `stream_id`'s listener and push it.
+///
+/// Called by a reader that is about to park on the stream, so blocking here IS
+/// the suspension: the guest asked for a connection and this is the wait.
+fn accept_into_stream(ctx: &mut HostContext, args: &[Value]) -> Value {
+    let stream_id = args.first().map(|v| v.as_f64() as u64).unwrap_or(0);
+    let listener_id = get_state()
+        .lock()
+        .unwrap()
+        .listen_streams
+        .get(&stream_id)
+        .copied();
+    let Some(listener_id) = listener_id else {
+        return Value::Null;
+    };
+
+    // Poll rather than a blocking accept: the listener is shared state behind
+    // a mutex, and holding that lock across a blocking syscall would stop
+    // every other socket call in the program.
+    let deadline = Instant::now() + ACCEPT_WAIT;
+    loop {
+        let accepted = {
+            let state = get_state();
+            let guard = state.lock().unwrap();
+            match guard.tcp_listeners.get(&listener_id) {
+                Some(listener) => listener.accept().ok(),
+                // The listener is gone — the socket was closed under us. Not
+                // an error, just nothing more to hand over.
+                None => return Value::Null,
+            }
+        };
+        if let Some((stream, peer)) = accepted {
+            let child_id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+            let family = if peer.is_ipv6() { "ipv6" } else { "ipv4" };
+            let child = new_socket_handle("tcp-socket", family);
+            if let Value::Object(object) = &child {
+                let mut o = object.lock().unwrap();
+                o.properties
+                    .insert("__socket_id".into(), Value::F64(child_id as f64));
+                o.properties
+                    .insert("__state".into(), Value::String(Arc::from("connected")));
+                o.properties
+                    .insert("__remote_address".into(), socket_addr_to_value(peer));
+            }
+            get_state()
+                .lock()
+                .unwrap()
+                .tcp_streams
+                .insert(child_id, stream);
+            // Same representation rule as `listen`'s own push: the id, which
+            // `resource.rep` can actually give back, never the object.
+            let rep = match &child {
+                Value::Object(object) => Value::F64(remember_socket_rep(object) as f64),
+                _ => child.clone(),
+            };
+            let item = ctx
+                .create_own_resource(TCP_SOCKET_TYPE_ID, rep)
+                .unwrap_or(child);
+            ctx.stream_push(stream_id, item);
+            return Value::Null;
+        }
+        if Instant::now() >= deadline {
+            return Value::Null;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// Read bytes for `stream_id`'s socket and push them, or close on a real
+/// end-of-stream.
+///
+/// The `receive()` counterpart of [`accept_into_stream`]. `read` answering
+/// `WouldBlock` means the peer has not sent yet, which is a reason to WAIT;
+/// `read` answering zero means the peer has closed, which is the one thing
+/// that legitimately ends the stream. Conflating those two is what made an
+/// empty socket read as a disconnect.
+fn receive_into_stream(ctx: &mut HostContext, args: &[Value]) -> Value {
+    let stream_id = args.first().map(|v| v.as_f64() as u64).unwrap_or(0);
+    let socket_id = get_state()
+        .lock()
+        .unwrap()
+        .recv_streams
+        .get(&stream_id)
+        .copied();
+    let Some(socket_id) = socket_id else {
+        return Value::Null;
+    };
+
+    let deadline = Instant::now() + ACCEPT_WAIT;
+    loop {
+        let mut chunk = [0u8; 65536];
+        let outcome = {
+            let state = get_state();
+            let mut guard = state.lock().unwrap();
+            match guard.tcp_streams.get_mut(&socket_id) {
+                Some(stream) => {
+                    let _ = stream.set_nonblocking(true);
+                    Some(stream.read(&mut chunk))
+                }
+                None => None,
+            }
+        };
+        match outcome {
+            // The socket is gone: nothing more can arrive, so this really is
+            // the end of the stream.
+            None => {
+                ctx.stream_close(stream_id);
+                return Value::Null;
+            }
+            Some(Ok(0)) => {
+                ctx.stream_close(stream_id);
+                return Value::Null;
+            }
+            Some(Ok(read)) => {
+                for byte in &chunk[..read] {
+                    ctx.stream_push(stream_id, Value::I32(*byte as i32));
+                }
+                return Value::Null;
+            }
+            Some(Err(error))
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    || error.kind() == std::io::ErrorKind::TimedOut => {}
+            // A genuine error ends the stream — the reader gets `DROPPED`
+            // rather than waiting on a socket that cannot recover.
+            Some(Err(_)) => {
+                ctx.stream_close(stream_id);
+                return Value::Null;
+            }
+        }
+        if Instant::now() >= deadline {
+            return Value::Null;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
 }
 
 fn register_tcp_socket_0_3(vm: &mut VM) {
@@ -657,11 +880,62 @@ fn register_tcp_socket_0_3(vm: &mut VM) {
                 set_handle(handle, "islistening", Value::Bool(true));
                 set_handle(handle, "__listener_id", Value::F64(id as f64));
 
-                let (stream_val, stream_id) = ctx.create_stream();
+                // `listen: func() -> result<stream<tcp-socket>, error-code>`.
+                //
+                // Each accepted socket is minted as a real `own<tcp-socket>`
+                // handle, so `canon stream.read` can lower it as the i32
+                // handle-table index the canonical ABI says a resource is. The
+                // socket object itself becomes the handle's REPRESENTATION and
+                // stays host-side, which is what `resource.rep` exists to
+                // recover.
+                //
+                // This was untyped until a host could mint a resource at all:
+                // `resource.new` is a bytecode built-in, so the object was the
+                // only thing a host function could return, and an object
+                // lowers as `as_i32()` of nothing.
+                let (stream_val, stream_id) =
+                    ctx.create_stream_of(Some(ValType::Own("tcp-socket".to_string())));
                 for socket in accepted {
-                    ctx.stream_push(stream_id, socket);
+                    // The REPRESENTATION is the socket's id, not the object.
+                    // §`canon resource.rep` gives back an i32, so an object put
+                    // in here comes out as `as_i32()` of nothing — the guest
+                    // would hold a handle it could never turn into a socket.
+                    // The id is an opaque integer this component chose, which
+                    // is exactly what a representation is meant to be, and
+                    // `socket_reps` is what resolves it on the way back in.
+                    let rep = match &socket {
+                        Value::Object(object) => Value::F64(remember_socket_rep(object) as f64),
+                        _ => socket.clone(),
+                    };
+                    // No handle table (bare VM, no component instance) means no
+                    // handle to mint — the socket object is then the only thing
+                    // there is to hand over, matching `create_stream`'s own
+                    // fallback rather than dropping the connection.
+                    let item = ctx
+                        .create_own_resource(TCP_SOCKET_TYPE_ID, rep)
+                        .unwrap_or(socket);
+                    ctx.stream_push(stream_id, item);
                 }
-                ctx.stream_close(stream_id);
+
+                // NOT closed. The spec is explicit that this is "a single
+                // perpetual stream that should only close on fatal errors",
+                // and closing it here made `listen` answer only the
+                // connections that happened to be pending BEFORE it was
+                // called — reliably none, since a server listens before its
+                // clients exist. `accept()` then returned nothing, forever,
+                // and reported clean EOF while doing it.
+                //
+                // What fills it instead is the PRODUCER: a reader that is
+                // about to park calls `accept-into-stream`, which blocks on
+                // this listener and pushes the connection it gets. That is the
+                // whole of the machinery — a host function returns once, so
+                // the reader has to be the one who asks.
+                get_state()
+                    .lock()
+                    .unwrap()
+                    .listen_streams
+                    .insert(stream_id, id);
+                ctx.set_stream_producer(stream_id, PRODUCER_MODULE, PRODUCER_ACCEPT);
                 stream_val
             })
         }),
@@ -713,6 +987,20 @@ fn register_tcp_socket_0_3(vm: &mut VM) {
                 let mut guard = state.lock().unwrap();
                 match guard.tcp_streams.get_mut(&id) {
                     Some(stream) => {
+                        // The socket MUST be non-blocking before the read.
+                        //
+                        // A socket that came from `connect` is blocking, so
+                        // `read` on a peer that has sent nothing yet parks the
+                        // thread FOREVER — and because the VM drives host calls
+                        // synchronously, that hangs the whole program, not just
+                        // this call. The `WouldBlock` arm below was written for
+                        // a non-blocking socket and was simply never reachable.
+                        //
+                        // `listen` already does this to its listener; doing it
+                        // here too means "no bytes yet" is an EMPTY stream,
+                        // which is the answer a `stream<u8>` can express, where
+                        // a hang is not an answer at all.
+                        let _ = stream.set_nonblocking(true);
                         let mut chunk = [0u8; 65536];
                         match stream.read(&mut chunk) {
                             Ok(read) => buffer.extend_from_slice(&chunk[..read]),
@@ -732,7 +1020,29 @@ fn register_tcp_socket_0_3(vm: &mut VM) {
             for byte in &buffer {
                 ctx.stream_push(stream_id, Value::I32(*byte as i32));
             }
-            ctx.stream_close(stream_id);
+            if matches!(failure, Value::Null) {
+                // Left OPEN, with a producer, for the same reason `listen`'s
+                // stream is: closing here made "the peer has not sent anything
+                // YET" indistinguishable from "the peer is gone". A guest
+                // reading a request off a socket saw clean EOF on an empty
+                // buffer and concluded the connection had ended, when in fact
+                // it had not started. The producer blocks for the bytes.
+                //
+                // §receive: "the implementation drops the stream once no more
+                // data is available" — so the producer, not this call, is what
+                // closes it, and only on a real end-of-stream.
+                if let Some(handle) = socket_arg(args) {
+                    get_state()
+                        .lock()
+                        .unwrap()
+                        .recv_streams
+                        .insert(stream_id, socket_id_of(&handle));
+                    ctx.set_stream_producer(stream_id, PRODUCER_MODULE, PRODUCER_RECEIVE);
+                }
+            } else {
+                // A failed receive has nothing more to give.
+                ctx.stream_close(stream_id);
+            }
             let (future_val, future_id) = ctx.create_future();
             ctx.resolve_future(future_id, failure);
             Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
@@ -1227,6 +1537,19 @@ fn register_udp_socket_0_3(vm: &mut VM) {
                 let Some(socket) = guard.udp_sockets.get(&id) else {
                     return socket_err("invalid-state");
                 };
+                // Non-blocking for the same reason as `tcp-socket.receive`: a
+                // blocking `recv_from` with no datagram pending parks the VM's
+                // only thread forever.
+                //
+                // "Nothing yet" is reported as `timeout`. 0.2 had a
+                // `would-block` error-code and 0.3.1 DELETED it — `receive` is
+                // an `async func` there, so not-ready is the future not having
+                // resolved, not an error. This VM drives host calls
+                // synchronously and has no such future, and `timeout` is the
+                // only DECLARED variant that means "no data within the time I
+                // was willing to wait". Inventing `would-block` back would be
+                // the same offence as the verbs this migration deleted.
+                let _ = socket.set_nonblocking(true);
                 let mut chunk = [0u8; 65536];
                 match socket.recv_from(&mut chunk) {
                     Ok((read, peer)) => {
@@ -1238,6 +1561,9 @@ fn register_udp_socket_0_3(vm: &mut VM) {
                             Value::Object(vybe_runtime::heap::alloc(Object::new_array(payload))),
                             socket_addr_to_value(peer),
                         ])))
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        socket_err("timeout")
                     }
                     Err(error) => socket_err_from(&error),
                 }
@@ -1395,9 +1721,30 @@ pub fn register_wasi_sockets_0_3(vm: &mut VM) {
     register_udp_socket_0_3(vm);
 
     // `resolve-addresses: async func(name: string) -> result<list<ip-address>,
-    // error-code>` — already bound by the 0.2 registration under the same
-    // interface name (`ip-name-lookup` is unchanged in 0.3), so it is not
-    // re-registered here.
+    // error-code>`
+    //
+    // `ip-name-lookup` is the one sibling interface 0.3.1 keeps, but the SHAPE
+    // changed: 0.2 answered a `resolve-address-stream` RESOURCE that callers
+    // drained through `resolve-next-address`, and this tree modelled that as an
+    // object carrying `__addresses`. 0.3.1 answers the list directly, so that
+    // is what this returns. Python's `gethostbyname` already indexed the result
+    // with `ARRAY_GET 0` — it was written against the list and was wrong only
+    // because the host handed back the resource.
+    //
+    // The `network` argument 0.2 took first is gone with `instance-network`,
+    // so the name is the sole argument; `args.last()` reads it either way.
+    vm.register_host_fn(
+        "wasi:sockets/ip-name-lookup",
+        "resolve-addresses",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let name = args.last().map(|v| format!("{}", v)).unwrap_or_default();
+            let addresses = resolve_name_socket_addrs(&name)
+                .into_iter()
+                .map(socket_addr_to_value)
+                .collect();
+            value_array_inner(addresses)
+        }),
+    );
 }
 
 fn register_wasi_io(vm: &mut VM) {
@@ -2451,25 +2798,37 @@ fn elems_len(lines_obj: &Arc<Mutex<Object>>) -> usize {
 fn socket_arg(args: &[Value]) -> Option<Arc<Mutex<Object>>> {
     match args.first() {
         Some(Value::Object(obj)) => Some(obj.clone()),
+        // A `borrow<tcp-socket>` self parameter lowers as an i32 handle, and a
+        // guest that read its socket off `listen`'s `stream<tcp-socket>` has
+        // exactly that and nothing else. Before this it reached here as an
+        // integer, matched no arm, and every method on an ACCEPTED connection
+        // answered `invalid-state` — the socket was fine, the argument was
+        // simply in the shape the canonical ABI says it should be.
+        Some(Value::I32(rep)) => socket_reps().lock().unwrap().get(&(*rep as u64)).cloned(),
+        Some(Value::F64(rep)) => socket_reps().lock().unwrap().get(&(*rep as u64)).cloned(),
         _ => None,
     }
 }
 
 fn method_arg<'a>(args: &'a [Value], index: usize) -> Option<&'a Value> {
-    let offset = usize::from(matches!(args.first(), Some(Value::Object(_))));
+    // A self parameter is whatever [`socket_arg`] can resolve — an object, or
+    // the i32 handle the canonical ABI actually passes. Testing for `Object`
+    // alone made an accepted socket's `bind(addr)` read the SOCKET as its
+    // address argument.
+    let offset = usize::from(socket_arg(args).is_some());
     args.get(offset + index)
 }
 
 fn socket_property(args: &[Value], key: &str) -> Value {
-    match args.first() {
-        Some(Value::Object(obj)) => obj
+    match socket_arg(args) {
+        Some(obj) => obj
             .lock()
             .unwrap()
             .properties
             .get(key)
             .cloned()
             .unwrap_or(Value::Null),
-        _ => Value::Null,
+        None => Value::Null,
     }
 }
 

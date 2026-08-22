@@ -38,12 +38,26 @@ fn borrowed(resource: &str) -> ValType {
     ValType::Borrow(resource.to_string())
 }
 
-/// A WASI `result<T, stream-error>`. The error arm is `Any`: `stream-error` is
-/// a variant carrying an `error` RESOURCE in one arm, and `ValType` has no
-/// variant. Declaring `Result` at all is still worth it — it says the call can
-/// fail, which is the half every caller has to handle.
+/// A WASI `result<T, stream-error>`.
+///
+/// The error arm used to be `Any`, with a comment saying `stream-error` is a
+/// variant and `ValType` had none. It has one now, so the real shape is
+/// declared. That is a LAYOUT difference, not a tidier spelling: `Any` is one
+/// byte, while this variant is a discriminant plus a 4-byte resource handle —
+/// the workaround outlived the limitation it was written for.
 fn wasi_result(ok: ValType) -> ValType {
-    ValType::Result(Box::new(ok), Box::new(ValType::Any))
+    ValType::Result(Some(Box::new(ok)), Some(Box::new(stream_error())))
+}
+
+/// `variant stream-error { last-operation-failed(error), closed }`.
+fn stream_error() -> ValType {
+    ValType::Variant(vec![
+        (
+            "last-operation-failed".to_string(),
+            Some(ValType::Own("error".to_string())),
+        ),
+        ("closed".to_string(), None),
+    ])
 }
 
 /// Register a `wasi:*` function WITH its WIT signature.

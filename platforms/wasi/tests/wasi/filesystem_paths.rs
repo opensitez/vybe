@@ -9,7 +9,10 @@ use vybe_runtime::{Chunk, Op, VM};
 fn scratch_dir(label: &str) -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!(
+    let dir = std::env::current_dir()
+        .expect("cwd is the `.` preopen")
+        .join("target/wasi-fs-tests")
+        .join(format!(
         "vybe-wasi-fs-paths-test-{}-{}-{}",
         std::process::id(),
         label,
@@ -82,12 +85,62 @@ fn is_error(value: &Value) -> Option<String> {
     None
 }
 
+/// `open-flags::directory` — `proposals/WASI/proposals/filesystem/wit/types.wit`.
+const OPEN_DIRECTORY: i32 = 2;
+
+/// Element 0 of the first `tuple<descriptor, string>` `get-directories` answers.
+fn first_preopen_descriptor(preopens: &Value) -> Value {
+    let Value::Object(list) = preopens else {
+        panic!("get-directories must answer a list");
+    };
+    let list = list.lock().unwrap();
+    let ObjectKind::Array(entries) = &list.kind else {
+        panic!("get-directories must answer list<tuple<descriptor, string>>");
+    };
+    let Some(Value::Object(pair)) = entries.first() else {
+        panic!("no preopened directory — the guest has no capability at all");
+    };
+    let pair = pair.lock().unwrap();
+    let ObjectKind::Array(pair) = &pair.kind else {
+        panic!("each preopen is a tuple<descriptor, string>");
+    };
+    pair.first().cloned().expect("descriptor is element 0")
+}
+
+/// Open a descriptor for the scratch directory, through the REAL capability
+/// path: `preopens.get-directories` then `open-at`.
+///
+/// This used to call `__test_open_root`, a host function that minted a
+/// descriptor for any absolute path. It was registered inside
+/// `wasi:filesystem/types` — so importable by any guest — and the WIT declares
+/// no such function. Scratch directories therefore moved under the `.` preopen
+/// (the CWD), which is the only place `open-at` can reach.
 fn open_test_root(dir: &PathBuf) -> Value {
-    invoke(
+    let cwd = std::env::current_dir().expect("cwd is the `.` preopen");
+    let rel = dir
+        .strip_prefix(&cwd)
+        .expect("scratch dirs live under the `.` preopen so `open-at` can reach them");
+
+    let preopens = invoke("wasi:filesystem/preopens", "get-directories", vec![]);
+    let root = first_preopen_descriptor(&preopens);
+
+    let opened = invoke(
         "wasi:filesystem/types",
-        "__test_open_root",
-        vec![s(dir.to_str().unwrap())],
-    )
+        "[method]descriptor.open-at",
+        vec![
+            root,
+            Value::I32(0),
+            s(rel.to_str().expect("scratch path is utf-8")),
+            Value::I32(OPEN_DIRECTORY),
+            Value::I32(0),
+        ],
+    );
+    assert!(
+        is_error(&opened).is_none(),
+        "opening the scratch dir from the preopen failed: {:?}",
+        is_error(&opened)
+    );
+    opened
 }
 
 fn open_directory(parent: Value, child: &str) -> Value {
@@ -126,29 +179,32 @@ fn bytes_from_array(value: &Value) -> Vec<u8> {
         .collect()
 }
 
-fn directory_entries(stream: Value) -> Vec<(String, String)> {
-    let mut entries = Vec::new();
-    loop {
-        let entry = types(
-            "[method]directory-entry-stream.read-directory-entry",
-            vec![stream.clone()],
-        );
-        if matches!(entry, Value::Null) {
-            break;
-        }
-        let name = match prop(&entry, "name") {
-            Value::String(text) => text.to_string(),
-            other => panic!("directory-entry.name expected string, got {:?}", other),
-        };
-        let kind = match prop(&entry, "type") {
-            Value::String(text) => text.to_string(),
-            other => panic!("directory-entry.type expected string, got {:?}", other),
-        };
-        entries.push((name, kind));
-        assert!(entries.len() < 64, "directory stream did not terminate");
-    }
-    entries.sort();
-    entries
+/// `read-directory: func() -> tuple<stream<directory-entry>,
+///                                  future<result<_, error-code>>>`.
+///
+/// The SHAPE half only — that the answer is the declared tuple rather than the
+/// 0.2 `directory-entry-stream` resource. The ENTRIES are asserted by each
+/// caller through `stream_drain::read_directory`, which drains the stream
+/// inside the VM that opened it; `invoke` cannot, because a stream end is an
+/// index into a handle table that dies with the call.
+fn assert_read_directory_tuple(result: &Value) {
+    assert!(
+        is_error(result).is_none(),
+        "read-directory failed: {:?}",
+        is_error(result)
+    );
+    let Value::Object(parts) = result else {
+        panic!("read-directory must answer a tuple, got {result:?}");
+    };
+    let parts = parts.lock().unwrap();
+    let ObjectKind::Array(parts) = &parts.kind else {
+        panic!("read-directory must answer tuple<stream<directory-entry>, future<...>>");
+    };
+    assert_eq!(
+        parts.len(),
+        2,
+        "the entry stream AND the completion future — not a resource handle"
+    );
 }
 
 macro_rules! assert_wasi_error {
@@ -359,13 +415,15 @@ fn read_directory_on_nested_subdirectory_lists_only_direct_children() {
     let root = open_test_root(&dir);
     let nested = open_directory(root, "nested");
 
-    let stream = types("[method]descriptor.read-directory", vec![nested]);
+    let result = types("[method]descriptor.read-directory", vec![nested]);
+    assert_read_directory_tuple(&result);
+
+    // ONE level. `deeper/leaf.txt` is reachable from `nested` but is not an
+    // entry OF it — the recursive walk is the caller's job, and a host that
+    // flattened the tree would still satisfy every shape assertion here.
     assert_eq!(
-        directory_entries(stream),
-        vec![
-            (String::from("deeper"), String::from("directory")),
-            (String::from("file.txt"), String::from("regular-file")),
-        ]
+        crate::stream_drain::read_directory_names(&dir.join("nested")),
+        vec!["deeper".to_string(), "file.txt".to_string()]
     );
 }
 
@@ -377,10 +435,21 @@ fn read_directory_reports_file_and_directory_entry_types() {
     let root = open_test_root(&dir);
     let nested = open_directory(root, "nested");
 
-    let stream = types("[method]descriptor.read-directory", vec![nested]);
-    let entries = directory_entries(stream);
-    assert!(entries.contains(&(String::from("dir-child"), String::from("directory"))));
-    assert!(entries.contains(&(String::from("file-child.txt"), String::from("regular-file"))));
+    let result = types("[method]descriptor.read-directory", vec![nested]);
+    assert_read_directory_tuple(&result);
+
+    // `%type` carries the `descriptor-type` DISCRIMINANT, and this is the
+    // assertion that reads it back: the two cases here are indices 2 and 5 of
+    // an eight-case variant, so a guest that lifted the wrong field width, or
+    // a case list that drifted from the WIT's order, mislabels them rather
+    // than failing.
+    assert_eq!(
+        crate::stream_drain::read_directory(&dir.join("nested")),
+        vec![
+            ("directory".to_string(), "dir-child".to_string()),
+            ("regular-file".to_string(), "file-child.txt".to_string()),
+        ]
+    );
 }
 
 #[test]
@@ -633,32 +702,16 @@ fn repeated_reads_are_positioned_by_offset_not_by_a_cursor() {
 }
 
 #[test]
-fn blocking_read_past_end_of_nested_file_returns_empty_array() {
+fn read_via_stream_past_end_of_nested_file_returns_empty() {
     let dir = scratch_dir("stream_eof");
     std::fs::create_dir_all(dir.join("nested")).unwrap();
     std::fs::write(dir.join("nested/file.txt"), b"abc").unwrap();
-    let root = open_test_root(&dir);
-    let descriptor = types(
-        "[method]descriptor.open-at",
-        vec![
-            root,
-            Value::I32(0),
-            s("nested/file.txt"),
-            Value::I32(0),
-            Value::I32(0),
-        ],
-    );
-    let stream = types(
-        "[method]descriptor.read-via-stream",
-        vec![descriptor, Value::F64(3.0)],
-    );
 
-    let bytes = invoke(
-        "wasi:io/streams",
-        "[method]input-stream.blocking-read",
-        vec![stream, Value::F64(5.0)],
-    );
-    assert_eq!(bytes_from_array(&bytes), Vec::<u8>::new());
+    // Offset 3 on a 3-byte file: at EOF, not past it, and the drain must END
+    // rather than block. This asserted `input-stream.blocking-read(stream, 5)`
+    // — a resource and a LENGTH argument 0.3.1 has neither of. The fixture is
+    // the same; only the way the bytes are fetched changed.
+    assert!(crate::stream_drain::read_via_stream(&dir.join("nested"), "file.txt", 3.0).is_empty());
 }
 
 #[cfg(unix)]

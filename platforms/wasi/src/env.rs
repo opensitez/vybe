@@ -129,20 +129,11 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    // Both spellings of the same 0.2/0.3 function return `option<string>`:
-    // the closure answers `Null` when the cwd cannot be read, which is the
-    // `none` case, not an error.
-    env_fn(
-        vm,
-        "initial-cwd",
-        vec![ValType::Option(Box::new(ValType::String))],
-        Box::new(
-            |_ctx: &mut HostContext, _args: &[Value]| match std::env::current_dir() {
-                Ok(path) => Value::String(Arc::from(path.to_string_lossy().as_ref())),
-                Err(_) => Value::Null,
-            },
-        ),
-    );
+    // §get-initial-cwd returns `option<string>`: the closure answers `Null`
+    // when the cwd cannot be read, which is the `none` case, not an error.
+    //
+    // 0.2 spelled it `initial-cwd` and both were bound here until 2026-08-21.
+    // `wasi:cli@0.3.1` declares only this one.
 
     env_fn(
         vm,

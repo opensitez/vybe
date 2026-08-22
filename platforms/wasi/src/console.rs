@@ -25,7 +25,7 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    // wasi:cli/exit — WASI 0.2.12+ spec interface. Per the component model,
+    // wasi:cli/exit — `wasi:cli@0.3.1`. Per the component model,
     // `exit` terminates the GUEST instance and returns control to the embedder;
     // it must NOT tear down the host process. Signalling the VM to end the run
     // (request_exit) is the conformant behaviour — `std::process::exit` here
@@ -67,43 +67,19 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    // wasi:cli/stdout|stderr|stdin — return a stream handle with an fd tag.
-    // These are used by [method]output-stream.blocking-write-and-flush in wasi:io/streams.
-    vm.register_host_fn(
-        "wasi:cli/stdout",
-        "get-stdout",
-        Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
-            let mut h = Object::new();
-            h.properties.insert("fd".into(), Value::I32(1));
-            h.properties
-                .insert("__type".into(), Value::String(Arc::from("output-stream")));
-            Value::Object(vybe_runtime::heap::alloc(h))
-        }),
-    );
-
-    vm.register_host_fn(
-        "wasi:cli/stderr",
-        "get-stderr",
-        Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
-            let mut h = Object::new();
-            h.properties.insert("fd".into(), Value::I32(2));
-            h.properties
-                .insert("__type".into(), Value::String(Arc::from("output-stream")));
-            Value::Object(vybe_runtime::heap::alloc(h))
-        }),
-    );
-
-    vm.register_host_fn(
-        "wasi:cli/stdin",
-        "get-stdin",
-        Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
-            let mut h = Object::new();
-            h.properties.insert("fd".into(), Value::I32(0));
-            h.properties
-                .insert("__type".into(), Value::String(Arc::from("input-stream")));
-            Value::Object(vybe_runtime::heap::alloc(h))
-        }),
-    );
+    // `get-stdout`, `get-stderr` and `get-stdin` USED TO BE REGISTERED HERE.
+    //
+    // Each answered a stream HANDLE tagged with an fd, for the 0.2 pair
+    // `get-stdout()` + `wasi:io/streams.[method]output-stream.
+    // blocking-write-and-flush`. `wasi:cli@0.3.1` declares none of them:
+    // `stdout` and `stderr` declare only `write-via-stream(data: stream<u8>)`,
+    // `stdin` only `read-via-stream()`. There is no handle to hand back
+    // because a stream stopped being a RESOURCE — it is a Component Model
+    // type now, which is the same change that deleted `wasi:io` outright.
+    //
+    // The last emitter was `platforms/jvm/src/emitter/print_adapter.rs`, which
+    // is how Java and Kotlin printed; it now uses `primitives::io`, which had
+    // the 0.3.1 transport all along.
 
     // wasi:cli/stdin — 0.3 `read-via-stream: func() -> tuple<stream<u8>,
     // future<result<_, error-code>>>` (`proposals/cli/wit/stdio.wit`).

@@ -217,6 +217,24 @@ fn response_get_headers_returns_a_usable_fields_resource() {
         vec![headers.clone(), s("content-type"), s("text/plain")],
     );
     assert!(!is_error(&set), "fields.set on response headers: {set:?}");
+
+    // Reading it back is the whole test. Asserting only that `set` did not
+    // ERROR is what let it remove the field's values, add none, and answer
+    // success — `fields.set` accepted a `list<field-value>` and nothing else,
+    // so a single value was silently dropped. A call that reports success and
+    // stores nothing cannot be caught by a test that checks only the report.
+    let all = call("[method]fields.copy-all", vec![headers]);
+    let entries = match &all {
+        Value::Object(object) => {
+            let object = object.lock().unwrap();
+            match &object.kind {
+                vybe_runtime::value::ObjectKind::Array(items) => items.len(),
+                _ => 0,
+            }
+        }
+        _ => 0,
+    };
+    assert_eq!(entries, 1, "the header set must be readable back, got {all:?}");
 }
 
 // ── fields, 0.3 additions ───────────────────────────────────────────────────
@@ -295,77 +313,67 @@ fn server_round_trip_request_in_response_out() {
     );
     let request = wasi_http::incoming_request_value(&vm, request_id).expect("request handle");
 
-    // Guest reads the request.
-    let method = call("[method]incoming-request.method", vec![request.clone()]);
+    // Guest reads the request. 0.3.1 has ONE `request`, so the arriving half
+    // is read with the same accessors a built request is.
+    let method = call("[method]request.get-method", vec![request.clone()]);
     assert_eq!(str_of(&method).as_deref(), Some("PUT"));
-    let body = call("[method]incoming-request.consume", vec![request]);
-    assert!(!is_error(&body), "consume failed: {body:?}");
+    let body = call("[static]request.consume-body", vec![request]);
+    assert!(!is_error(&body), "consume-body failed: {body:?}");
 
-    // Guest writes a response. §outgoing-response constructor takes HEADERS
-    // only and defaults to 200; the status is set separately.
-    let response = call("[constructor]outgoing-response", vec![new_fields()]);
-    assert!(!is_error(&response), "response ctor: {response:?}");
+    // Guest writes a response. §response.new takes HEADERS and defaults to
+    // 200; the status is set separately.
+    let response = call("[static]response.new", vec![new_fields()]);
+    assert!(!is_error(&response), "response.new: {response:?}");
     let set_status = call(
-        "[method]outgoing-response.set-status-code",
+        "[method]response.set-status-code",
         vec![response.clone(), Value::F64(201.0)],
     );
     assert!(!is_error(&set_status), "set-status-code: {set_status:?}");
-    let headers = call("[method]outgoing-response.headers", vec![response.clone()]);
+    let headers = call("[method]response.get-headers", vec![response.clone()]);
     call(
         "[method]fields.set",
         vec![headers, s("x-created"), s("yes")],
     );
 
-    // Host reads it back.
-    let param_id = wasi_http::push_response_outparam();
-    let param = wasi_http::response_outparam_value(&vm, param_id).expect("outparam handle");
-    let set = call("[static]response-outparam.set", vec![param, response]);
-    assert!(!is_error(&set), "response-outparam.set failed: {set:?}");
-
-    let taken = wasi_http::take_response_outparam(param_id);
-    let Some(Ok((status, _headers, _body))) = taken else {
+    // Host takes delivery. 0.2 routed this through `response-outparam.set`;
+    // 0.3.1 deleted the outparam because `handler.handle` RETURNS its
+    // response, so the host reads the resource itself.
+    let taken = wasi_http::take_response(&response);
+    let Some((status, headers, _body)) = taken else {
         panic!("host could not read the response back: {taken:?}");
     };
     assert_eq!(status, 201, "status did not survive the round trip");
-}
-
-#[test]
-fn response_outparam_set_is_at_most_once() {
-    // §response-outparam.set "consumes the `response-outparam` to ensure that
-    // it is called at most once".
-    let mut vm = VM::new();
-    register_platforms(&mut vm, &Capabilities::all());
-
-    let param_id = wasi_http::push_response_outparam();
-    let param = wasi_http::response_outparam_value(&vm, param_id).expect("outparam handle");
-    let response = call("[constructor]outgoing-response", vec![new_fields()]);
-
-    let first = call(
-        "[static]response-outparam.set",
-        vec![param.clone(), response.clone()],
+    assert!(
+        headers.iter().any(|(name, _)| name == "x-created"),
+        "headers did not survive the round trip: {headers:?}"
     );
-    assert!(!is_error(&first), "first set failed: {first:?}");
-
-    let second = call("[static]response-outparam.set", vec![param, response]);
-    assert!(is_error(&second), "second set must error, got {second:?}");
 }
 
+// `response_outparam_set_is_at_most_once` USED TO BE HERE.
+//
+// §response-outparam.set "consumes the `response-outparam` to ensure that it is
+// called at most once" — a rule about a resource `wasi:http@0.3.1` does not
+// declare. A handler returns its response, and returning once is enforced by
+// the signature rather than by a runtime check, so there is nothing left to
+// assert. `server_round_trip_request_in_response_out` above covers what the
+// outparam was FOR: the host taking delivery of the guest's response.
+
 #[test]
-fn outgoing_response_constructor_defaults_to_200() {
-    // §outgoing-response: "Construct an `outgoing-response`, with a default
-    // `status-code` of `200`." The constructor takes headers, NOT a status.
-    let response = call("[constructor]outgoing-response", vec![new_fields()]);
-    let status = call("[method]outgoing-response.status-code", vec![response]);
+fn response_new_defaults_to_200_status() {
+    // §response.new: constructed with a default `status-code` of 200. It takes
+    // headers, NOT a status.
+    let response = call("[static]response.new", vec![new_fields()]);
+    let status = call("[method]response.get-status-code", vec![response]);
     assert_eq!(num_of(&status), Some(200.0), "default status: {status:?}");
 }
 
 #[test]
-fn outgoing_response_rejects_an_invalid_status_code() {
-    // §outgoing-response.set-status-code: "Fails if the status-code given is
-    // not a valid http status code."
-    let response = call("[constructor]outgoing-response", vec![new_fields()]);
+fn response_set_status_code_rejects_an_invalid_status_code() {
+    // §response.set-status-code: "Fails if the status-code given is not a valid
+    // http status code."
+    let response = call("[static]response.new", vec![new_fields()]);
     let bad = call(
-        "[method]outgoing-response.set-status-code",
+        "[method]response.set-status-code",
         vec![response, Value::F64(999.0)],
     );
     assert!(

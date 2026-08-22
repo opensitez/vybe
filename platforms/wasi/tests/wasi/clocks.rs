@@ -1,5 +1,5 @@
 //! Behaviour tests for WASI clocks proposal interfaces.
-//! Only real WASI interfaces: wasi:clocks/wall-clock, wasi:clocks/monotonic-clock.
+//! Only real WASI interfaces: wasi:clocks/system-clock, wasi:clocks/monotonic-clock.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -87,15 +87,15 @@ fn f64_prop(value: &Value, key: &str) -> f64 {
     prop(value, key).as_f64()
 }
 
-// ── wasi:clocks/wall-clock ──────────────────────────────────────────
+// ── wasi:clocks/system-clock ────────────────────────────────────────
 
 #[test]
-fn wall_clock_now_returns_current_datetime_record() {
+fn system_clock_now_returns_current_instant_record() {
     let before = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs_f64();
-    let now = invoke("wasi:clocks/wall-clock", "now", vec![]);
+    let now = invoke("wasi:clocks/system-clock", "now", vec![]);
     let after = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -117,11 +117,15 @@ fn wall_clock_now_returns_current_datetime_record() {
     );
 }
 
+/// 0.3.1's `get-resolution` answers a `duration`, and `duration = u64`
+/// NANOSECONDS — a bare number. The interface this replaces answered a
+/// `{ seconds, nanoseconds }` record, so asserting the ABSENCE of the record
+/// is the part that would have caught a rename done by name alone.
 #[test]
-fn wall_clock_resolution_returns_single_nanosecond_tick() {
-    let resolution = invoke("wasi:clocks/wall-clock", "resolution", vec![]);
-    assert_eq!(prop(&resolution, "seconds"), Value::F64(0.0));
-    assert_eq!(prop(&resolution, "nanoseconds"), Value::F64(1.0));
+fn system_clock_get_resolution_is_a_bare_nanosecond_duration() {
+    let resolution = invoke("wasi:clocks/system-clock", "get-resolution", vec![]);
+    assert_eq!(resolution, Value::F64(1.0));
+    assert_eq!(prop(&resolution, "nanoseconds"), Value::Null);
 }
 
 // ── wasi:clocks/monotonic-clock ─────────────────────────────────────
@@ -131,15 +135,15 @@ fn monotonic_clock_now_is_non_decreasing() {
     let first = invoke("wasi:clocks/monotonic-clock", "now", vec![]).as_f64();
     std::thread::sleep(Duration::from_millis(5));
     let second = invoke("wasi:clocks/monotonic-clock", "now", vec![]).as_f64();
-    let resolution = invoke("wasi:clocks/monotonic-clock", "resolution", vec![]).as_f64();
+    let resolution = invoke("wasi:clocks/monotonic-clock", "get-resolution", vec![]).as_f64();
 
     assert!(second >= first, "monotonic time should not go backwards");
     assert!(resolution >= 1.0, "resolution should be positive");
 }
 
 #[test]
-fn monotonic_clock_resolution_is_exactly_one_nanosecond() {
-    let resolution = invoke("wasi:clocks/monotonic-clock", "resolution", vec![]);
+fn monotonic_clock_get_resolution_is_exactly_one_nanosecond() {
+    let resolution = invoke("wasi:clocks/monotonic-clock", "get-resolution", vec![]);
     assert_eq!(resolution, Value::F64(1.0));
 }
 
@@ -236,16 +240,21 @@ fn iana_id_is_a_zone_name_or_nothing() {
     }
 }
 
-/// `system-clock` is the current name for what used to be `wall-clock`; both
-/// are bound and must agree, since they are one clock.
+// The 0.2 spellings this file used to exercise — `wall-clock.now`,
+// `wall-clock.resolution`, `monotonic-clock.resolution` and `timezone.display`
+// — are gone from the host. Their ABSENCE is asserted in
+// `interface_coverage.rs::the_six_packages_register_only_what_they_declare`,
+// which reads the WIT tables rather than a list kept here: a per-file list of
+// names-that-must-not-resolve drifts from the spec the moment the spec moves,
+// and would then be asserting its own history.
+
+/// The 0.3.1 replacements answer, and `get-resolution` answers the right SHAPE.
 #[test]
-fn system_clock_and_wall_clock_are_the_same_clock() {
+fn system_clock_reports_a_moment_and_a_duration() {
     let system = invoke("wasi:clocks/system-clock", "now", vec![]);
-    let wall = invoke("wasi:clocks/wall-clock", "now", vec![]);
-    let seconds_of = |value: &Value| prop(value, "seconds").as_f64();
     assert!(
-        (seconds_of(&system) - seconds_of(&wall)).abs() <= 1.0,
-        "system-clock and wall-clock must report the same moment"
+        prop(&system, "seconds").as_f64() > 0.0,
+        "system-clock.now must report epoch seconds"
     );
     assert_eq!(
         invoke("wasi:clocks/system-clock", "get-resolution", vec![]),

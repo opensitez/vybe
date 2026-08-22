@@ -45,12 +45,10 @@ fn types(name: &str, args: Vec<Value>) -> Value {
     invoke("wasi:http/types", name, args)
 }
 
-fn outgoing(name: &str, args: Vec<Value>) -> Value {
-    invoke("wasi:http/outgoing-handler", name, args)
-}
-
-fn legacy(name: &str, args: Vec<Value>) -> Value {
-    invoke("wasi:http", name, args)
+/// 0.3.1 replaced `outgoing-handler.handle` with `client.send`, which answers
+/// the response directly instead of a `future-incoming-response`.
+fn client(name: &str, args: Vec<Value>) -> Value {
+    invoke("wasi:http/client", name, args)
 }
 
 fn s(text: &str) -> Value {
@@ -104,17 +102,16 @@ fn start_server(status_line: &str, body: &str) -> String {
 fn request_status(status_line: &str, body: &str) -> f64 {
     let authority = start_server(status_line, body);
     let headers = types("[constructor]fields", vec![]);
-    let request = types("[constructor]outgoing-request", vec![headers]);
+    let request = types("[static]request.new", vec![headers]);
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-authority",
+            "[method]request.set-authority",
             vec![request.clone(), s(&authority)]
         ))
         .is_none()
     );
-    let future = outgoing("handle", vec![request, Value::Null]);
-    let response = types("[method]future-incoming-response.get", vec![future]);
-    types("[method]incoming-response.status", vec![response]).as_f64()
+    let response = client("send", vec![request]);
+    types("[method]response.get-status-code", vec![response]).as_f64()
 }
 
 macro_rules! outgoing_status_test {

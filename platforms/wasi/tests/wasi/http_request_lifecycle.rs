@@ -46,12 +46,10 @@ fn types(name: &str, args: Vec<Value>) -> Value {
     invoke("wasi:http/types", name, args)
 }
 
-fn outgoing(name: &str, args: Vec<Value>) -> Value {
-    invoke("wasi:http/outgoing-handler", name, args)
-}
-
-fn legacy(name: &str, args: Vec<Value>) -> Value {
-    invoke("wasi:http", name, args)
+/// 0.3.1 replaced `outgoing-handler.handle` with `client.send`, which answers
+/// the response directly instead of a `future-incoming-response`.
+fn client(name: &str, args: Vec<Value>) -> Value {
+    invoke("wasi:http/client", name, args)
 }
 
 fn s(text: &str) -> Value {
@@ -127,30 +125,29 @@ fn capture_server(status_line: &str, body: &str) -> (String, Arc<Mutex<Option<St
 fn set_method_trims_and_uppercases_request_line() {
     let (authority, request_line) = capture_server("200 OK", "ok");
     let headers = types("[constructor]fields", vec![]);
-    let request = types("[constructor]outgoing-request", vec![headers]);
+    let request = types("[static]request.new", vec![headers]);
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-method",
+            "[method]request.set-method",
             vec![request.clone(), s(" post ")]
         ))
         .is_none()
     );
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-authority",
+            "[method]request.set-authority",
             vec![request.clone(), s(&authority)]
         ))
         .is_none()
     );
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-path-with-query",
+            "[method]request.set-path-with-query",
             vec![request.clone(), s("submit")]
         ))
         .is_none()
     );
-    let future = outgoing("handle", vec![request, Value::Null]);
-    let response = types("[method]future-incoming-response.get", vec![future]);
+    let response = client("send", vec![request]);
     assert!(is_error(&response).is_none());
     assert_eq!(
         request_line.lock().unwrap().clone().as_deref(),
@@ -162,16 +159,15 @@ fn set_method_trims_and_uppercases_request_line() {
 fn default_method_is_get_when_unset() {
     let (authority, request_line) = capture_server("200 OK", "ok");
     let headers = types("[constructor]fields", vec![]);
-    let request = types("[constructor]outgoing-request", vec![headers]);
+    let request = types("[static]request.new", vec![headers]);
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-authority",
+            "[method]request.set-authority",
             vec![request.clone(), s(&authority)]
         ))
         .is_none()
     );
-    let future = outgoing("handle", vec![request, Value::Null]);
-    let response = types("[method]future-incoming-response.get", vec![future]);
+    let response = client("send", vec![request]);
     assert!(is_error(&response).is_none());
     assert_eq!(
         request_line.lock().unwrap().clone().as_deref(),
@@ -183,23 +179,22 @@ fn default_method_is_get_when_unset() {
 fn set_scheme_lowercases_mixed_case_http_and_succeeds() {
     let (authority, request_line) = capture_server("200 OK", "ok");
     let headers = types("[constructor]fields", vec![]);
-    let request = types("[constructor]outgoing-request", vec![headers]);
+    let request = types("[static]request.new", vec![headers]);
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-scheme",
+            "[method]request.set-scheme",
             vec![request.clone(), s("HtTp")]
         ))
         .is_none()
     );
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-authority",
+            "[method]request.set-authority",
             vec![request.clone(), s(&authority)]
         ))
         .is_none()
     );
-    let future = outgoing("handle", vec![request, Value::Null]);
-    let response = types("[method]future-incoming-response.get", vec![future]);
+    let response = client("send", vec![request]);
     assert!(is_error(&response).is_none());
     assert_eq!(
         request_line.lock().unwrap().clone().as_deref(),
@@ -211,23 +206,22 @@ fn set_scheme_lowercases_mixed_case_http_and_succeeds() {
 fn path_without_leading_slash_is_normalized() {
     let (authority, request_line) = capture_server("200 OK", "ok");
     let headers = types("[constructor]fields", vec![]);
-    let request = types("[constructor]outgoing-request", vec![headers]);
+    let request = types("[static]request.new", vec![headers]);
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-authority",
+            "[method]request.set-authority",
             vec![request.clone(), s(&authority)]
         ))
         .is_none()
     );
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-path-with-query",
+            "[method]request.set-path-with-query",
             vec![request.clone(), s("api/items?x=1")]
         ))
         .is_none()
     );
-    let future = outgoing("handle", vec![request, Value::Null]);
-    let response = types("[method]future-incoming-response.get", vec![future]);
+    let response = client("send", vec![request]);
     assert!(is_error(&response).is_none());
     assert_eq!(
         request_line.lock().unwrap().clone().as_deref(),
@@ -238,15 +232,15 @@ fn path_without_leading_slash_is_normalized() {
 #[test]
 fn blank_authority_is_rejected() {
     let headers = types("[constructor]fields", vec![]);
-    let request = types("[constructor]outgoing-request", vec![headers]);
+    let request = types("[static]request.new", vec![headers]);
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-authority",
+            "[method]request.set-authority",
             vec![request.clone(), s("   ")]
         ))
         .is_none()
     );
-    let result = outgoing("handle", vec![request, Value::Null]);
+    let result = client("send", vec![request]);
     assert_eq!(
         is_error(&result).as_deref(),
         Some("HTTP-request-URI-invalid")
@@ -256,43 +250,39 @@ fn blank_authority_is_rejected() {
 #[test]
 fn non_string_authority_is_stringified_and_can_fail_at_transport_time() {
     let headers = types("[constructor]fields", vec![]);
-    let request = types("[constructor]outgoing-request", vec![headers]);
+    let request = types("[static]request.new", vec![headers]);
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-authority",
+            "[method]request.set-authority",
             vec![request.clone(), Value::I32(1)]
         ))
         .is_none()
     );
-    let future = outgoing("handle", vec![request, Value::Null]);
-    assert!(
-        is_error(&future).is_none(),
-        "transport errors should still surface through the future"
-    );
-    assert!(is_error(&types("[method]future-incoming-response.get", vec![future])).is_some());
+    // 0.2 surfaced the transport error one step later, through the future.
+    // 0.3.1 has no future: `send` answers the error itself.
+    assert!(is_error(&client("send", vec![request])).is_some());
 }
 
 #[test]
 fn non_string_method_is_stringified_into_request_line() {
     let (authority, request_line) = capture_server("200 OK", "ok");
     let headers = types("[constructor]fields", vec![]);
-    let request = types("[constructor]outgoing-request", vec![headers]);
+    let request = types("[static]request.new", vec![headers]);
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-method",
+            "[method]request.set-method",
             vec![request.clone(), Value::I32(9)]
         ))
         .is_none()
     );
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-authority",
+            "[method]request.set-authority",
             vec![request.clone(), s(&authority)]
         ))
         .is_none()
     );
-    let future = outgoing("handle", vec![request, Value::Null]);
-    let response = types("[method]future-incoming-response.get", vec![future]);
+    let response = client("send", vec![request]);
     assert!(is_error(&response).is_none());
     assert_eq!(
         request_line.lock().unwrap().clone().as_deref(),
@@ -304,23 +294,22 @@ fn non_string_method_is_stringified_into_request_line() {
 fn non_string_path_uses_default_slash() {
     let (authority, request_line) = capture_server("200 OK", "ok");
     let headers = types("[constructor]fields", vec![]);
-    let request = types("[constructor]outgoing-request", vec![headers]);
+    let request = types("[static]request.new", vec![headers]);
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-authority",
+            "[method]request.set-authority",
             vec![request.clone(), s(&authority)]
         ))
         .is_none()
     );
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-path-with-query",
+            "[method]request.set-path-with-query",
             vec![request.clone(), Value::I32(4)]
         ))
         .is_none()
     );
-    let future = outgoing("handle", vec![request, Value::Null]);
-    let response = types("[method]future-incoming-response.get", vec![future]);
+    let response = client("send", vec![request]);
     assert!(is_error(&response).is_none());
     assert_eq!(
         request_line.lock().unwrap().clone().as_deref(),
@@ -331,62 +320,51 @@ fn non_string_path_uses_default_slash() {
 #[test]
 fn non_string_scheme_is_stringified_and_rejected_as_invalid_uri() {
     let headers = types("[constructor]fields", vec![]);
-    let request = types("[constructor]outgoing-request", vec![headers]);
+    let request = types("[static]request.new", vec![headers]);
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-scheme",
+            "[method]request.set-scheme",
             vec![request.clone(), Value::I32(7)]
         ))
         .is_none()
     );
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-authority",
+            "[method]request.set-authority",
             vec![request.clone(), s("example.com")]
         ))
         .is_none()
     );
-    let result = outgoing("handle", vec![request, Value::Null]);
+    let result = client("send", vec![request]);
     assert_eq!(
         is_error(&result).as_deref(),
         Some("HTTP-request-URI-invalid")
     );
 }
 
-#[test]
-fn transport_error_future_returns_error_then_already_consumed() {
-    let headers = types("[constructor]fields", vec![]);
-    let request = types("[constructor]outgoing-request", vec![headers]);
-    assert!(
-        is_error(&types(
-            "[method]outgoing-request.set-authority",
-            vec![request.clone(), s("127.0.0.1:1")]
-        ))
-        .is_none()
-    );
-    let future = outgoing("handle", vec![request, Value::Null]);
-    let first = types("[method]future-incoming-response.get", vec![future.clone()]);
-    assert_eq!(is_error(&first).as_deref(), Some("connection-refused"));
-    let second = types("[method]future-incoming-response.get", vec![future]);
-    assert_eq!(is_error(&second).as_deref(), Some("already-consumed"));
-}
+// `transport_error_future_returns_error_then_already_consumed` USED TO BE HERE.
+//
+// Its first half survives as
+// `non_string_authority_is_stringified_and_can_fail_at_transport_time` above:
+// a refused connection is an error from `send`. Its second half — that reading
+// the future AGAIN answers `already-consumed` — has no 0.3.1 subject, because
+// `client.send` returns the response and there is no future to consume.
 
 #[test]
 fn response_status_tracks_non_ok_status_code() {
     let (authority, _) = capture_server("418 I'm a teapot", "short and stout");
     let headers = types("[constructor]fields", vec![]);
-    let request = types("[constructor]outgoing-request", vec![headers]);
+    let request = types("[static]request.new", vec![headers]);
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-authority",
+            "[method]request.set-authority",
             vec![request.clone(), s(&authority)]
         ))
         .is_none()
     );
-    let future = outgoing("handle", vec![request, Value::Null]);
-    let response = types("[method]future-incoming-response.get", vec![future]);
+    let response = client("send", vec![request]);
     assert_eq!(
-        types("[method]incoming-response.status", vec![response]),
+        types("[method]response.get-status-code", vec![response]),
         Value::F64(418.0)
     );
 }
@@ -395,17 +373,16 @@ fn response_status_tracks_non_ok_status_code() {
 fn response_headers_resource_can_be_queried_multiple_times() {
     let (authority, _) = capture_server("200 OK", "ok");
     let headers = types("[constructor]fields", vec![]);
-    let request = types("[constructor]outgoing-request", vec![headers]);
+    let request = types("[static]request.new", vec![headers]);
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-authority",
+            "[method]request.set-authority",
             vec![request.clone(), s(&authority)]
         ))
         .is_none()
     );
-    let future = outgoing("handle", vec![request, Value::Null]);
-    let response = types("[method]future-incoming-response.get", vec![future]);
-    let response_headers = types("[method]incoming-response.headers", vec![response]);
+    let response = client("send", vec![request]);
+    let response_headers = types("[method]response.get-headers", vec![response]);
     let first = types(
         "[method]fields.get",
         vec![response_headers.clone(), s("content-type")],

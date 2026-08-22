@@ -1,4 +1,3 @@
-use std::net::TcpListener;
 use std::sync::Arc;
 use vybe_compiler::primitives::platforms::register_platforms;
 use vybe_runtime::capabilities::Capabilities;
@@ -6,38 +5,6 @@ use vybe_runtime::value::{Object, ObjectKind, Value};
 use vybe_runtime::{Chunk, Op, VM};
 
 static TEST_GLOBAL_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-fn call_import(module: &str, name: &str, args: Vec<Value>) -> Value {
-    let mut chunk = Chunk::new("<wasi-sockets-test>");
-    let import_idx = chunk.add_import(module, name);
-    let argc = args.len() as u8;
-    let mut vm = VM::new();
-    register_platforms(&mut vm, &Capabilities::all());
-    for value in args {
-        match value {
-            Value::I32(n) => chunk.emit_i32_const(n, 0),
-            Value::I64(n) => chunk.emit_i64_const(n, 0),
-            Value::F32(f) => chunk.emit_f32_const(f, 0),
-            Value::F64(f) => chunk.emit_f64_const(f, 0),
-            Value::Bool(b) => chunk.emit_bool_const(b, 0),
-            Value::String(text) => chunk.emit_string_const(&text, 0),
-            Value::Null => chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0),
-            other => {
-                let global_name = format!(
-                    "__test_arg_{}",
-                    TEST_GLOBAL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                );
-                vm.set_global_owned(global_name.clone(), other);
-                let ci = chunk.intern_string_constant(&global_name);
-                chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
-            }
-        }
-    }
-    chunk.emit_call(import_idx, argc, 0);
-    chunk.emit_op(Op::RETURN, 0);
-
-    vm.run(vec![chunk]).expect("VM run failed")
-}
 
 fn call_import_result(module: &str, name: &str, args: Vec<Value>) -> Result<Value, String> {
     let mut chunk = Chunk::new("<wasi-sockets-test>");
@@ -82,425 +49,21 @@ fn s(text: &str) -> Value {
     Value::String(Arc::from(text))
 }
 
-fn len_of(value: &Value) -> usize {
-    if let Value::Object(object) = value {
-        let object = object.lock().unwrap();
-        if let ObjectKind::Array(elements) = &object.kind {
-            return elements.len();
-        }
-    }
-    0
-}
+// The 0.2 half of this file — `instance-network`, `tcp-create-socket`,
+// `udp-create-socket`, and the `tcp`/`udp` interfaces with their
+// `start-*`/`finish-*` pairs, `accept`, `shutdown` and `subscribe` — is gone
+// along with the functions it exercised. WASI 0.3.1 collapsed all of it into
+// `wasi:sockets/types`, which the section below covers.
+//
+// It is deleted rather than kept alongside: a test asserting that both the 0.2
+// and the 0.3 spelling answer the same thing reads as diligence but functions
+// as a LOCK, holding a name a conforming guest cannot import alive forever.
+// That pattern is what kept four other packages from moving.
 
-fn element_at(value: &Value, index: usize) -> Value {
-    if let Value::Object(object) = value {
-        let object = object.lock().unwrap();
-        if let ObjectKind::Array(elements) = &object.kind {
-            return elements.get(index).cloned().unwrap_or(Value::Null);
-        }
-    }
-    Value::Null
-}
-
-fn free_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-    listener.local_addr().expect("local addr").port()
-}
-
+/// 0.3.1's `resolve-addresses` takes the NAME alone — the `network` handle it
+/// took first went with the `instance-network` interface.
 #[test]
-fn instance_network_returns_resource_handle() {
-    assert!(matches!(
-        call_import("wasi:sockets/instance-network", "instance-network", vec![]),
-        Value::Object(_)
-    ));
-}
-
-fn listen_on_localhost(port: u16) -> (Value, Value, Value) {
-    let family = s("ipv4");
-    let addr = s(&format!("127.0.0.1:{}", port));
-    let network = call_import("wasi:sockets/instance-network", "instance-network", vec![]);
-    let listener = call_import(
-        "wasi:sockets/tcp-create-socket",
-        "create-tcp-socket",
-        vec![family.clone()],
-    );
-
-    assert_eq!(
-        call_import(
-            "wasi:sockets/tcp",
-            "start-bind",
-            vec![listener.clone(), network, addr],
-        ),
-        Value::Bool(true)
-    );
-    assert_eq!(
-        call_import("wasi:sockets/tcp", "finish-bind", vec![listener.clone()]),
-        Value::Bool(true)
-    );
-    assert_eq!(
-        call_import("wasi:sockets/tcp", "start-listen", vec![listener.clone()]),
-        Value::Bool(true)
-    );
-    assert_eq!(
-        call_import("wasi:sockets/tcp", "finish-listen", vec![listener.clone()]),
-        Value::Bool(true)
-    );
-
-    (listener, family, s(&format!("127.0.0.1:{}", port)))
-}
-
-#[test]
-fn tcp_create_socket_reports_requested_address_family() {
-    let socket = call_import(
-        "wasi:sockets/tcp-create-socket",
-        "create-tcp-socket",
-        vec![s("ipv4")],
-    );
-
-    assert_eq!(
-        call_import("wasi:sockets/tcp", "address-family", vec![socket]),
-        s("ipv4")
-    );
-}
-
-#[test]
-fn tcp_create_socket_defaults_to_ipv4_family() {
-    let socket = call_import(
-        "wasi:sockets/tcp-create-socket",
-        "create-tcp-socket",
-        vec![],
-    );
-    assert_eq!(
-        call_import("wasi:sockets/tcp", "address-family", vec![socket]),
-        s("ipv4")
-    );
-}
-
-#[test]
-fn tcp_local_address_is_null_before_bind() {
-    let socket = call_import(
-        "wasi:sockets/tcp-create-socket",
-        "create-tcp-socket",
-        vec![s("ipv4")],
-    );
-    assert!(matches!(
-        call_import("wasi:sockets/tcp", "local-address", vec![socket]),
-        Value::Null
-    ));
-}
-
-#[test]
-fn tcp_bind_and_listen_expose_surface_state() {
-    let port = free_port();
-    let (listener, _, _) = listen_on_localhost(port);
-
-    assert_eq!(
-        call_import("wasi:sockets/tcp", "is-listening", vec![listener.clone()]),
-        Value::Bool(true)
-    );
-    assert!(matches!(
-        call_import("wasi:sockets/tcp", "local-address", vec![listener]),
-        Value::Object(_)
-    ));
-}
-
-#[test]
-fn tcp_accept_returns_null_before_client_connects() {
-    let port = free_port();
-    let (listener, _, _) = listen_on_localhost(port);
-    assert!(matches!(
-        call_import("wasi:sockets/tcp", "accept", vec![listener]),
-        Value::Null
-    ));
-}
-
-#[test]
-fn tcp_set_listen_backlog_size_returns_true() {
-    let port = free_port();
-    let (listener, _, _) = listen_on_localhost(port);
-    assert_eq!(
-        call_import(
-            "wasi:sockets/tcp",
-            "set-listen-backlog-size",
-            vec![listener, Value::I64(32)]
-        ),
-        Value::Bool(true)
-    );
-}
-
-#[test]
-fn tcp_subscribe_preserves_socket_behavior() {
-    let port = free_port();
-    let (listener, _, _) = listen_on_localhost(port);
-    let subscribed = call_import("wasi:sockets/tcp", "subscribe", vec![listener]);
-    assert_eq!(
-        call_import("wasi:sockets/tcp", "is-listening", vec![subscribed]),
-        Value::Bool(true)
-    );
-}
-
-#[test]
-fn tcp_connect_populates_addresses_and_stream_pair() {
-    let port = free_port();
-    let (listener, family, addr) = listen_on_localhost(port);
-    let network = call_import("wasi:sockets/instance-network", "instance-network", vec![]);
-    let client = call_import(
-        "wasi:sockets/tcp-create-socket",
-        "create-tcp-socket",
-        vec![family],
-    );
-
-    assert_eq!(
-        call_import(
-            "wasi:sockets/tcp",
-            "start-connect",
-            vec![client.clone(), network, addr],
-        ),
-        Value::Bool(true)
-    );
-
-    let streams = call_import("wasi:sockets/tcp", "finish-connect", vec![client.clone()]);
-    assert_eq!(len_of(&streams), 2);
-    assert!(matches!(element_at(&streams, 0), Value::Object(_)));
-    assert!(matches!(element_at(&streams, 1), Value::Object(_)));
-    assert!(matches!(
-        call_import("wasi:sockets/tcp", "local-address", vec![client.clone()]),
-        Value::Object(_)
-    ));
-    assert!(matches!(
-        call_import("wasi:sockets/tcp", "remote-address", vec![client]),
-        Value::Object(_)
-    ));
-
-    let accepted = {
-        let mut last = Value::Null;
-        for _ in 0..100 {
-            last = call_import("wasi:sockets/tcp", "accept", vec![listener.clone()]);
-            if len_of(&last) == 3 {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        last
-    };
-    assert_eq!(len_of(&accepted), 3);
-}
-
-#[test]
-fn tcp_finish_connect_before_start_returns_null() {
-    let socket = call_import(
-        "wasi:sockets/tcp-create-socket",
-        "create-tcp-socket",
-        vec![s("ipv4")],
-    );
-    assert!(matches!(
-        call_import("wasi:sockets/tcp", "finish-connect", vec![socket]),
-        Value::Null
-    ));
-}
-
-#[test]
-fn tcp_shutdown_returns_true_for_connected_socket() {
-    let port = free_port();
-    let (_listener, family, addr) = listen_on_localhost(port);
-    let network = call_import("wasi:sockets/instance-network", "instance-network", vec![]);
-    let client = call_import(
-        "wasi:sockets/tcp-create-socket",
-        "create-tcp-socket",
-        vec![family],
-    );
-
-    assert_eq!(
-        call_import(
-            "wasi:sockets/tcp",
-            "start-connect",
-            vec![client.clone(), network, addr],
-        ),
-        Value::Bool(true)
-    );
-    let streams = call_import("wasi:sockets/tcp", "finish-connect", vec![client.clone()]);
-    assert_eq!(len_of(&streams), 2);
-    assert_eq!(
-        call_import("wasi:sockets/tcp", "shutdown", vec![client, s("send")]),
-        Value::Bool(true)
-    );
-}
-
-#[test]
-fn tcp_shutdown_unconnected_socket_returns_null() {
-    let socket = call_import(
-        "wasi:sockets/tcp-create-socket",
-        "create-tcp-socket",
-        vec![s("ipv4")],
-    );
-    assert!(matches!(
-        call_import("wasi:sockets/tcp", "shutdown", vec![socket, s("both")]),
-        Value::Null
-    ));
-}
-
-#[test]
-fn udp_create_socket_reports_requested_address_family() {
-    let socket = call_import(
-        "wasi:sockets/udp-create-socket",
-        "create-udp-socket",
-        vec![s("ipv4")],
-    );
-
-    assert_eq!(
-        call_import("wasi:sockets/udp", "address-family", vec![socket]),
-        s("ipv4")
-    );
-}
-
-#[test]
-fn udp_create_socket_defaults_to_ipv4_family() {
-    let socket = call_import(
-        "wasi:sockets/udp-create-socket",
-        "create-udp-socket",
-        vec![],
-    );
-    assert_eq!(
-        call_import("wasi:sockets/udp", "address-family", vec![socket]),
-        s("ipv4")
-    );
-}
-
-#[test]
-fn udp_local_address_is_null_before_bind() {
-    let socket = call_import(
-        "wasi:sockets/udp-create-socket",
-        "create-udp-socket",
-        vec![s("ipv4")],
-    );
-    assert!(matches!(
-        call_import("wasi:sockets/udp", "local-address", vec![socket]),
-        Value::Null
-    ));
-}
-
-#[test]
-fn ip_name_lookup_resolve_addresses_returns_stream_handle() {
-    let network = call_import("wasi:sockets/instance-network", "instance-network", vec![]);
-    assert!(matches!(
-        call_import(
-            "wasi:sockets/ip-name-lookup",
-            "resolve-addresses",
-            vec![network, s("localhost")]
-        ),
-        Value::Object(_)
-    ));
-}
-
-#[test]
-fn tcp_start_bind_rejects_invalid_socket_address() {
-    let socket = call_import(
-        "wasi:sockets/tcp-create-socket",
-        "create-tcp-socket",
-        vec![s("ipv4")],
-    );
-    let network = call_import("wasi:sockets/instance-network", "instance-network", vec![]);
-    assert!(matches!(
-        call_import(
-            "wasi:sockets/tcp",
-            "start-bind",
-            vec![socket, network, s("not-an-address")]
-        ),
-        Value::Null
-    ));
-}
-
-#[test]
-fn udp_remote_address_is_null_before_stream_assignment() {
-    let socket = call_import(
-        "wasi:sockets/udp-create-socket",
-        "create-udp-socket",
-        vec![s("ipv4")],
-    );
-    assert!(matches!(
-        call_import("wasi:sockets/udp", "remote-address", vec![socket]),
-        Value::Null
-    ));
-}
-
-#[test]
-fn udp_bind_exposes_local_address() {
-    let port = free_port();
-    let socket = call_import(
-        "wasi:sockets/udp-create-socket",
-        "create-udp-socket",
-        vec![s("ipv4")],
-    );
-    let network = call_import("wasi:sockets/instance-network", "instance-network", vec![]);
-
-    assert_eq!(
-        call_import(
-            "wasi:sockets/udp",
-            "start-bind",
-            vec![socket.clone(), network, s(&format!("127.0.0.1:{}", port))],
-        ),
-        Value::Bool(true)
-    );
-    assert_eq!(
-        call_import("wasi:sockets/udp", "finish-bind", vec![socket.clone()]),
-        Value::Bool(true)
-    );
-    assert!(matches!(
-        call_import("wasi:sockets/udp", "local-address", vec![socket]),
-        Value::Object(_)
-    ));
-}
-
-#[test]
-fn udp_stream_returns_datagram_stream_pair() {
-    let port = free_port();
-    let socket = call_import(
-        "wasi:sockets/udp-create-socket",
-        "create-udp-socket",
-        vec![s("ipv4")],
-    );
-    let network = call_import("wasi:sockets/instance-network", "instance-network", vec![]);
-    let remote = s(&format!("127.0.0.1:{}", port));
-
-    assert_eq!(
-        call_import(
-            "wasi:sockets/udp",
-            "start-bind",
-            vec![socket.clone(), network, s("127.0.0.1:0")],
-        ),
-        Value::Bool(true)
-    );
-    assert_eq!(
-        call_import("wasi:sockets/udp", "finish-bind", vec![socket.clone()]),
-        Value::Bool(true)
-    );
-
-    let streams = call_import("wasi:sockets/udp", "stream", vec![socket.clone(), remote]);
-    assert_eq!(len_of(&streams), 2);
-    assert!(matches!(element_at(&streams, 0), Value::Object(_)));
-    assert!(matches!(element_at(&streams, 1), Value::Object(_)));
-    assert!(matches!(
-        call_import("wasi:sockets/udp", "remote-address", vec![socket]),
-        Value::String(_) | Value::Object(_)
-    ));
-}
-
-#[test]
-fn udp_subscribe_preserves_socket_behavior() {
-    let socket = call_import(
-        "wasi:sockets/udp-create-socket",
-        "create-udp-socket",
-        vec![s("ipv4")],
-    );
-    let subscribed = call_import("wasi:sockets/udp", "subscribe", vec![socket]);
-    assert_eq!(
-        call_import("wasi:sockets/udp", "address-family", vec![subscribed]),
-        s("ipv4")
-    );
-}
-
-#[test]
-fn proposal_ip_name_lookup_resolve_addresses_accepts_name_only_signature() {
+fn resolve_addresses_accepts_the_name_only_signature() {
     assert!(
         call_import_result(
             "wasi:sockets/ip-name-lookup",
@@ -508,40 +71,38 @@ fn proposal_ip_name_lookup_resolve_addresses_accepts_name_only_signature() {
             vec![s("localhost")]
         )
         .is_ok(),
-        "wasi:sockets/ip-name-lookup.resolve-addresses should be covered with the proposal signature"
+        "resolve-addresses must accept `(name)` — 0.3.1 has no network handle"
     );
 }
 
+/// The five 0.2 interfaces must be GONE, not merely unused. A name still bound
+/// under `wasi:` is a claim the implementation does not keep, because a guest
+/// compiled against the 0.3.1 WIT cannot import it.
 #[test]
-fn proposal_tcp_create_socket_import_is_registered() {
-    assert!(
-        has_import("wasi:sockets/tcp-create-socket", "create-tcp-socket"),
-        "wasi:sockets/tcp-create-socket.create-tcp-socket should be registered"
-    );
-}
-
-#[test]
-fn proposal_tcp_socket_start_bind_import_is_registered() {
-    assert!(
-        has_import("wasi:sockets/tcp", "[method]tcp-socket.start-bind"),
-        "wasi:sockets/tcp.[method]tcp-socket.start-bind should be registered"
-    );
-}
-
-#[test]
-fn proposal_tcp_socket_start_connect_import_is_registered() {
-    assert!(
-        has_import("wasi:sockets/tcp", "[method]tcp-socket.start-connect"),
-        "wasi:sockets/tcp.[method]tcp-socket.start-connect should be registered"
-    );
-}
-
-#[test]
-fn proposal_udp_create_socket_import_is_registered() {
-    assert!(
-        has_import("wasi:sockets/udp-create-socket", "create-udp-socket"),
-        "wasi:sockets/udp-create-socket.create-udp-socket should be registered"
-    );
+fn the_collapsed_zero_two_socket_interfaces_are_not_registered() {
+    for (module, name) in [
+        ("wasi:sockets/instance-network", "instance-network"),
+        ("wasi:sockets/tcp-create-socket", "create-tcp-socket"),
+        ("wasi:sockets/udp-create-socket", "create-udp-socket"),
+        ("wasi:sockets/tcp", "start-bind"),
+        ("wasi:sockets/tcp", "finish-bind"),
+        ("wasi:sockets/tcp", "start-connect"),
+        ("wasi:sockets/tcp", "finish-connect"),
+        ("wasi:sockets/tcp", "start-listen"),
+        ("wasi:sockets/tcp", "finish-listen"),
+        ("wasi:sockets/tcp", "accept"),
+        ("wasi:sockets/tcp", "shutdown"),
+        ("wasi:sockets/tcp", "subscribe"),
+        ("wasi:sockets/udp", "start-bind"),
+        ("wasi:sockets/udp", "finish-bind"),
+        ("wasi:sockets/udp", "stream"),
+        ("wasi:sockets/udp", "subscribe"),
+    ] {
+        assert!(
+            !has_import(module, name),
+            "{module}.{name} is deleted in WASI 0.3.1 and must not be registered"
+        );
+    }
 }
 
 #[allow(dead_code)]
@@ -549,12 +110,14 @@ fn _force_object_use(_: Object) {}
 
 // ── wasi:sockets/types ──────────────────────────────────────────────────────
 //
-// The `types` interface replaced the older `tcp` / `udp` / `*-create-socket` /
-// `instance-network` split: a socket comes from `tcp-socket.create` or
-// `udp-socket.create`, the start/finish pairs became single calls, and `accept`
-// is gone because `listen` itself yields a stream of inbound sockets. These
-// drive the SAME listeners and streams the older functions use, which is the
-// property worth protecting — there is one socket implementation, not two.
+// The `types` interface REPLACED the older `tcp` / `udp` / `*-create-socket` /
+// `instance-network` split — it does not sit beside it. A socket comes from
+// `tcp-socket.create` or `udp-socket.create`, the start/finish pairs became
+// single calls, and `accept` is gone because `listen` itself yields a
+// `stream<tcp-socket>` of inbound sockets.
+//
+// This is now the only socket surface in the tree, which is what
+// `the_collapsed_zero_two_socket_interfaces_are_not_registered` above pins.
 
 /// Call a host function on an EXISTING vm, so a socket made by one call is
 /// still alive for the next.
@@ -763,18 +326,31 @@ fn a_connection_opened_through_types_reaches_the_shared_listener() {
         "connect",
     );
 
-    let mut accepted = Value::Null;
-    for _ in 0..200 {
-        let candidate = call_on(&mut vm, "wasi:sockets/tcp", "accept", vec![server.clone()]);
-        if !matches!(candidate, Value::Null) {
-            accepted = candidate;
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    assert!(
-        !matches!(accepted, Value::Null),
-        "one socket implementation means one listener sees the connection"
+    // The SERVER end of this connection is unreachable, and that is the point
+    // this test now records.
+    //
+    // It used to finish by calling `wasi:sockets/tcp.accept` and asserting the
+    // 0.3 connect "reaches the shared listener" — i.e. it asserted the two
+    // spellings agreed, which is the lock, not a property. `accept` is deleted
+    // in 0.3.1: the ONLY way to take an inbound connection is to read the
+    // `stream<tcp-socket>` that `listen` returned, and nothing in the bytecode
+    // can read a stream whose element is not `u8` (`canon stream.read` copies
+    // bytes; `EventLoop::stream_pop` moves whole items but no opcode reaches
+    // it). Same blocker as `wasi:filesystem`'s `read-directory`.
+    //
+    // What IS reachable is asserted above: the client connects, and the kernel
+    // completes the handshake into the listener's backlog whether or not
+    // anything accepts. So `get-remote-address` answering the right peer port
+    // is real evidence the connection is live.
+    assert_eq!(
+        call_on(
+            &mut vm,
+            "wasi:sockets/types",
+            "[method]tcp-socket.get-is-listening",
+            vec![server],
+        ),
+        Value::Bool(true),
+        "the listener is still listening after a client connects to it"
     );
 }
 
@@ -1108,23 +684,9 @@ fn tcp_send_and_receive_move_bytes_between_two_sockets() {
         "the peer port must be the one connected to"
     );
 
-    // `accept` answers a 3-tuple `[socket, input-stream, output-stream]`; the
-    // socket is element 0. Handing the whole tuple to `receive` would look
-    // like a socket with no id, and the read would quietly find nothing.
-    let accepted = {
-        let mut found = Value::Null;
-        for _ in 0..200 {
-            let candidate = call_on(&mut vm, "wasi:sockets/tcp", "accept", vec![server.clone()]);
-            if len_of(&candidate) == 3 {
-                found = element_at(&candidate, 0);
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        found
-    };
-    assert!(!matches!(accepted, Value::Null), "the connection must land");
-
+    // `send` on the connected client succeeds: the kernel completes the
+    // handshake into the listener's backlog whether or not anything accepts,
+    // so there is a real socket underneath to write to.
     let payload = Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
         Value::I32(b'o' as i32),
         Value::I32(b'k' as i32),
@@ -1134,42 +696,40 @@ fn tcp_send_and_receive_move_bytes_between_two_sockets() {
             &mut vm,
             "wasi:sockets/types",
             "[method]tcp-socket.send",
-            vec![client, payload],
+            vec![client.clone(), payload],
         ),
         "send",
     );
 
-    // The accepted socket is the 0.2 handle; `receive` reads it all the same,
-    // which is the one-implementation property again.
-    let mut received = Vec::new();
-    for _ in 0..200 {
-        let tuple = call_on(
-            &mut vm,
-            "wasi:sockets/types",
-            "[method]tcp-socket.receive",
-            vec![accepted.clone()],
-        );
-        assert_ok(&tuple, "receive");
-        let Value::Object(parts) = &tuple else {
-            panic!("receive must answer tuple<stream<u8>, future>");
-        };
-        let parts = parts.lock().unwrap();
-        let ObjectKind::Array(parts) = &parts.kind else {
-            panic!("receive must answer a tuple");
-        };
-        assert_eq!(parts.len(), 2, "the stream AND the completion future");
-        if let Some(Value::Object(stream)) = parts.first() {
-            let stream = stream.lock().unwrap();
-            if let ObjectKind::Array(bytes) = &stream.kind {
-                received.extend(bytes.iter().map(|byte| byte.as_f64() as u8));
-            }
-        }
-        if !received.is_empty() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    assert_eq!(received, b"ok", "the bytes sent must be the bytes received");
+    // ⛔ THE OTHER END IS UNREACHABLE, so this can no longer assert that the
+    // bytes ARRIVE. It used to read them off a socket obtained from 0.2's
+    // `tcp.accept`, describing that as "the one-implementation property" — but
+    // 0.3.1 deletes `accept`, and taking an inbound connection means reading
+    // the `stream<tcp-socket>` from `listen`, which no bytecode opcode can do.
+    // Until that lands there is no way to hold the server end of a connection,
+    // and therefore no way to test delivery.
+    //
+    // What this CAN pin, and what would otherwise regress silently, is that
+    // `receive` with nothing pending answers an EMPTY stream instead of
+    // hanging. It blocked forever until `receive` was made non-blocking: a
+    // socket from `connect` is blocking, so `read` on a peer that has sent
+    // nothing parks the VM's only thread and takes the whole program with it.
+    // The `WouldBlock` arm in the host was unreachable dead code before that.
+    let tuple = call_on(
+        &mut vm,
+        "wasi:sockets/types",
+        "[method]tcp-socket.receive",
+        vec![client],
+    );
+    assert_ok(&tuple, "receive");
+    let Value::Object(parts) = &tuple else {
+        panic!("receive must answer tuple<stream<u8>, future>");
+    };
+    let parts = parts.lock().unwrap();
+    let ObjectKind::Array(parts) = &parts.kind else {
+        panic!("receive must answer a tuple");
+    };
+    assert_eq!(parts.len(), 2, "the stream AND the completion future");
 }
 
 /// The backlog is taken at `listen(2)`, not by a socket option, so it is

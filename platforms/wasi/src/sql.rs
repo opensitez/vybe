@@ -366,8 +366,8 @@ pub fn register(vm: &mut VM) {
         "[static]connection.open",
         vec![ValType::String],
         vec![ValType::Result(
-            Box::new(ValType::Own("connection".to_string())),
-            Box::new(ValType::Own("error".to_string())),
+            Some(Box::new(ValType::Own("connection".to_string()))),
+            Some(Box::new(ValType::Own("error".to_string()))),
         )],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let raw = arg_str(args, 0);
@@ -400,8 +400,8 @@ pub fn register(vm: &mut VM) {
         "[static]statement.prepare",
         vec![ValType::String, ValType::List(Box::new(ValType::String))],
         vec![ValType::Result(
-            Box::new(ValType::Own("statement".to_string())),
-            Box::new(ValType::Own("error".to_string())),
+            Some(Box::new(ValType::Own("statement".to_string()))),
+            Some(Box::new(ValType::Own("error".to_string()))),
         )],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let query = arg_str(args, 0);
@@ -450,8 +450,8 @@ pub fn register(vm: &mut VM) {
             ValType::Borrow("statement".to_string()),
         ],
         vec![ValType::Result(
-            Box::new(ValType::List(Box::new(ValType::Any))),
-            Box::new(ValType::Own("error".to_string())),
+            Some(Box::new(ValType::List(Box::new(ValType::Any)))),
+            Some(Box::new(ValType::Own("error".to_string()))),
         )],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let conn_id = args.first().map(|v| wasi_id(v)).unwrap_or(0);
@@ -485,8 +485,8 @@ pub fn register(vm: &mut VM) {
             ValType::Borrow("statement".to_string()),
         ],
         vec![ValType::Result(
-            Box::new(ValType::I32),
-            Box::new(ValType::Own("error".to_string())),
+            Some(Box::new(ValType::I32)),
+            Some(Box::new(ValType::Own("error".to_string()))),
         )],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let conn_id = args.first().map(|v| wasi_id(v)).unwrap_or(0);

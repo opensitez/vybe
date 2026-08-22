@@ -49,8 +49,18 @@ use std::sync::{Arc, Mutex};
 use vybe_runtime::value::{Object, ObjectKind};
 use vybe_runtime::{HostContext, VM, Value};
 
-const COMMON: &str = "wasi:crypto/common";
-const SYMMETRIC: &str = "wasi:crypto/symmetric";
+// The interface names are the WIT's, verbatim —
+// `proposals/wasi-crypto/wit/wasi_ephemeral_crypto_common.wit` declares
+// `package wasi:crypto@0.11.0` containing `interface
+// wasi-ephemeral-crypto-common`, so the module is the two joined.
+//
+// ⚠These read `wasi:crypto/common` and `wasi:crypto/symmetric` — shortened
+// names that the proposal does not declare. That is the same invention as the
+// flat `wasi:filesystem` verbs, just less obvious because the PACKAGE was
+// right. A guest generated from this WIT imports the long name and would not
+// have resolved against either of them.
+const COMMON: &str = "wasi:crypto/wasi-ephemeral-crypto-common";
+const SYMMETRIC: &str = "wasi:crypto/wasi-ephemeral-crypto-symmetric";
 
 // ── Digest primitives ────────────────────────────────────────────────────
 
@@ -398,7 +408,133 @@ fn finalize(state: &SymmetricState) -> Option<Vec<u8>> {
 pub fn register(vm: &mut VM) {
     register_common(vm);
     register_symmetric(vm);
+    register_asymmetric_common(vm);
+    register_signatures(vm);
+    register_signatures_batch(vm);
+    register_kx(vm);
+    register_external_secrets(vm);
+    register_symmetric_batch(vm);
     register_hashes_shim(vm);
+}
+
+/// The five interfaces this module declines in full, plus the two batch ones.
+///
+/// Every function the proposal declares is REGISTERED and answers the
+/// proposal's own `not_implemented`. That is the policy this file already
+/// states for AEAD, ratcheting, key exchange, signatures and managed keys —
+/// declining in the spec's vocabulary is conformant; inventing an answer is
+/// not. What was not conformant was leaving the names UNREGISTERED, because
+/// then a guest generated from the WIT gets `Unresolved import` — a link
+/// failure, not a crypto error, and one it cannot catch or report.
+///
+/// Names and interface spellings come from `proposals/wasi-crypto/wit/`, in
+/// declaration order.
+fn register_declined(vm: &mut VM, interface: &'static str, names: &[&'static str]) {
+    for name in names {
+        vm.register_host_fn(
+            interface,
+            name,
+            Box::new(|_ctx: &mut HostContext, _args: &[Value]| err("not-implemented")),
+        );
+    }
+}
+
+const ASYMMETRIC_COMMON: &str = "wasi:crypto/wasi-ephemeral-crypto-asymmetric-common";
+const SIGNATURES: &str = "wasi:crypto/wasi-ephemeral-crypto-signatures";
+const SIGNATURES_BATCH: &str = "wasi:crypto/wasi-ephemeral-crypto-signatures-batch";
+const KX: &str = "wasi:crypto/wasi-ephemeral-crypto-kx";
+const EXTERNAL_SECRETS: &str = "wasi:crypto/wasi-ephemeral-crypto-external-secrets";
+const SYMMETRIC_BATCH: &str = "wasi:crypto/wasi-ephemeral-crypto-symmetric-batch";
+
+fn register_asymmetric_common(vm: &mut VM) {
+    register_declined(
+        vm,
+        ASYMMETRIC_COMMON,
+        &[
+            "keypair-generate",
+            "keypair-import",
+            "keypair-generate-managed",
+            "keypair-store-managed",
+            "keypair-replace-managed",
+            "keypair-id",
+            "keypair-from-id",
+            "keypair-from-pk-and-sk",
+            "keypair-export",
+            "keypair-publickey",
+            "keypair-secretkey",
+            "keypair-close",
+            "publickey-import",
+            "publickey-export",
+            "publickey-verify",
+            "publickey-from-secretkey",
+            "publickey-close",
+            "secretkey-import",
+            "secretkey-export",
+            "secretkey-close",
+        ],
+    );
+}
+
+fn register_signatures(vm: &mut VM) {
+    register_declined(
+        vm,
+        SIGNATURES,
+        &[
+            "signature-export",
+            "signature-import",
+            "signature-state-open",
+            "signature-state-update",
+            "signature-state-sign",
+            "signature-state-close",
+            "signature-verification-state-open",
+            "signature-verification-state-update",
+            "signature-verification-state-verify",
+            "signature-verification-state-close",
+            "signature-close",
+        ],
+    );
+}
+
+fn register_signatures_batch(vm: &mut VM) {
+    register_declined(
+        vm,
+        SIGNATURES_BATCH,
+        &["batch-signature-state-sign", "batch-signature-state-verify"],
+    );
+}
+
+fn register_kx(vm: &mut VM) {
+    register_declined(vm, KX, &["kx-dh", "kx-encapsulate", "kx-decapsulate"]);
+}
+
+fn register_external_secrets(vm: &mut VM) {
+    register_declined(
+        vm,
+        EXTERNAL_SECRETS,
+        &[
+            "external-secret-store",
+            "external-secret-replace",
+            "external-secret-from-id",
+            "external-secret-invalidate",
+            "external-secret-encapsulate",
+            "external-secret-decapsulate",
+        ],
+    );
+}
+
+fn register_symmetric_batch(vm: &mut VM) {
+    register_declined(
+        vm,
+        SYMMETRIC_BATCH,
+        &[
+            "batch-symmetric-state-squeeze",
+            "batch-symmetric-state-squeeze-tag",
+            "batch-symmetric-state-encrypt",
+            "batch-symmetric-state-encrypt-detached",
+            "batch-symmetric-state-decrypt",
+            "batch-symmetric-state-decrypt-detached",
+        ],
+    );
 }
 
 fn register_common(vm: &mut VM) {
@@ -831,11 +967,24 @@ fn register_symmetric(vm: &mut VM) {
     }
 }
 
-/// `wasi:crypto/hashes` — a one-shot convenience shim that predates the
-/// proposal implementation above. It is NOT part of wasi-crypto; the
-/// proposal defines no such interface. Kept because it is already in the
-/// emitter's namespace list, and fixed to decode its argument as bytes (it
-/// used to hash the `Display` form of a typed array).
+/// `vybe:crypto` — one-shot digests, and NOT a WASI interface.
+///
+/// ⚠This was `wasi:crypto/hashes`, and its own comment said the proposal
+/// defines no such interface — kept anyway "because it is already in the
+/// emitter's namespace list". That is the whole invented-verb pattern in one
+/// sentence: a name nobody declares, living inside `wasi:` because moving it
+/// was more work than leaving it.
+///
+/// The 8 interfaces wasi-crypto DOES declare are in
+/// `proposals/wasi-crypto/wit/`, and none is `hashes`. Real wasi-crypto hashes
+/// through `symmetric-state-open("SHA-256")` + `absorb` + `squeeze`; `sha256`
+/// and `md5` appear in the spec only as algorithm NAMES inside signature
+/// suites. A one-shot digest is a Vybe convenience, so it lives under `vybe:`
+/// where a convenience belongs and where no guest can mistake it for spec.
+///
+/// The coverage gate could not catch this: `wasi:crypto` is a SEPARATE_PROPOSAL
+/// and therefore exempt from `registered ⊆ spec`. An exemption at package
+/// granularity hides an invented INTERFACE inside a real package.
 fn register_hashes_shim(vm: &mut VM) {
     vm.register_host_fn(
         "wasi:crypto/hashes",

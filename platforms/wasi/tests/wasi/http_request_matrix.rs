@@ -46,8 +46,10 @@ fn types(name: &str, args: Vec<Value>) -> Value {
     invoke("wasi:http/types", name, args)
 }
 
-fn outgoing(name: &str, args: Vec<Value>) -> Value {
-    invoke("wasi:http/outgoing-handler", name, args)
+/// 0.3.1 replaced `outgoing-handler.handle` with `client.send`, which answers
+/// the response directly instead of a `future-incoming-response`.
+fn client(name: &str, args: Vec<Value>) -> Value {
+    invoke("wasi:http/client", name, args)
 }
 
 fn s(text: &str) -> Value {
@@ -94,11 +96,11 @@ fn capture_request_line() -> (String, Arc<Mutex<Option<String>>>) {
 fn perform_request(method: Option<&str>, path: Option<&str>) -> String {
     let (authority, request_line) = capture_request_line();
     let headers = types("[constructor]fields", vec![]);
-    let request = types("[constructor]outgoing-request", vec![headers]);
+    let request = types("[static]request.new", vec![headers]);
     if let Some(method) = method {
         assert!(
             is_error(&types(
-                "[method]outgoing-request.set-method",
+                "[method]request.set-method",
                 vec![request.clone(), s(method)]
             ))
             .is_none()
@@ -107,7 +109,7 @@ fn perform_request(method: Option<&str>, path: Option<&str>) -> String {
     if let Some(path) = path {
         assert!(
             is_error(&types(
-                "[method]outgoing-request.set-path-with-query",
+                "[method]request.set-path-with-query",
                 vec![request.clone(), s(path)]
             ))
             .is_none()
@@ -115,13 +117,12 @@ fn perform_request(method: Option<&str>, path: Option<&str>) -> String {
     }
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-authority",
+            "[method]request.set-authority",
             vec![request.clone(), s(&authority)]
         ))
         .is_none()
     );
-    let future = outgoing("handle", vec![request, Value::Null]);
-    let response = types("[method]future-incoming-response.get", vec![future]);
+    let response = client("send", vec![request]);
     assert!(is_error(&response).is_none());
     request_line.lock().unwrap().clone().unwrap_or_default()
 }

@@ -193,7 +193,7 @@ fn get_insecure_random_u64_returns_numeric_value() {
 
 #[test]
 fn insecure_seed_returns_two_number_tuple() {
-    let result = invoke("wasi:random/insecure-seed", "insecure-seed", vec![]);
+    let result = invoke("wasi:random/insecure-seed", "get-insecure-seed", vec![]);
     assert_eq!(array_len(&result), 2);
     if let Value::Object(object) = &result {
         let object = object.lock().unwrap();
@@ -208,7 +208,7 @@ fn insecure_seed_returns_two_number_tuple() {
 
 #[test]
 fn insecure_seed_values_are_non_negative_numbers() {
-    let result = invoke("wasi:random/insecure-seed", "insecure-seed", vec![]);
+    let result = invoke("wasi:random/insecure-seed", "get-insecure-seed", vec![]);
     let Value::Object(object) = result else {
         panic!("insecure-seed should return array");
     };
@@ -243,7 +243,7 @@ fn get_random_bytes_large_length_returns_requested_length() {
 #[test]
 fn proposal_insecure_seed_import_resolves() {
     assert!(
-        invoke_result("wasi:random/insecure-seed", "insecure-seed", vec![]).is_ok(),
+        invoke_result("wasi:random/insecure-seed", "get-insecure-seed", vec![]).is_ok(),
         "wasi:random/insecure-seed.insecure-seed should be covered by the random category"
     );
 }
@@ -253,7 +253,9 @@ fn proposal_insecure_seed_import_resolves() {
 /// rename, not a second generator.
 #[test]
 fn get_insecure_seed_answers_the_same_shape_as_the_older_name() {
-    for name in ["insecure-seed", "get-insecure-seed"] {
+    // Only the 0.3.1 spelling. Iterating BOTH was an assertion that the 0.2 name
+    // still resolved, which is how a deleted name survives a version bump.
+    for name in ["get-insecure-seed"] {
         let result = invoke("wasi:random/insecure-seed", name, vec![]);
         assert_eq!(array_len(&result), 2, "{name} must answer two values");
         let Value::Object(object) = result else {

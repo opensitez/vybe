@@ -228,16 +228,13 @@ fn get_arguments_matches_process_argument_vector_exactly() {
     assert_eq!(array_strings(&result), expected);
 }
 
-#[test]
-fn initial_cwd_matches_get_initial_cwd() {
-    let initial = invoke("wasi:cli/environment", "initial-cwd", vec![]);
-    let renamed = invoke("wasi:cli/environment", "get-initial-cwd", vec![]);
-    assert_eq!(initial, renamed);
-    assert_eq!(
-        initial,
-        s(std::env::current_dir().unwrap().to_string_lossy().as_ref())
-    );
-}
+// `initial_cwd_matches_get_initial_cwd` USED TO BE HERE.
+//
+// It asserted that the 0.2 spelling and the 0.3.1 one were both bound and
+// agreed — which is a guarantee that the old name still resolves, i.e. exactly
+// what keeps a deleted name alive through a version bump. `wasi:cli@0.3.1`
+// declares `get-initial-cwd`; `initial-cwd` is gone, and
+// `get_initial_cwd_returns_non_empty_string` below covers the surviving one.
 
 #[test]
 fn get_initial_cwd_returns_non_empty_string() {
@@ -337,35 +334,19 @@ fn proposal_cli_exit_import_is_registered() {
 
 // ── wasi:cli/stdout|stderr|stdin ─────────────────────────────────────────────
 
-#[test]
-fn proposal_cli_stdout_get_stdout_returns_stream_handle() {
-    let result = invoke("wasi:cli/stdout", "get-stdout", vec![]);
-    let Value::Object(obj) = result else {
-        panic!("get-stdout should return a stream handle object");
-    };
-    let obj = obj.lock().unwrap();
-    assert_eq!(obj.properties.get("fd"), Some(&Value::I32(1)));
-}
-
-#[test]
-fn proposal_cli_stderr_get_stderr_returns_stream_handle() {
-    let result = invoke("wasi:cli/stderr", "get-stderr", vec![]);
-    let Value::Object(obj) = result else {
-        panic!("get-stderr should return a stream handle object");
-    };
-    let obj = obj.lock().unwrap();
-    assert_eq!(obj.properties.get("fd"), Some(&Value::I32(2)));
-}
-
-#[test]
-fn proposal_cli_stdin_get_stdin_returns_stream_handle() {
-    let result = invoke("wasi:cli/stdin", "get-stdin", vec![]);
-    let Value::Object(obj) = result else {
-        panic!("get-stdin should return a stream handle object");
-    };
-    let obj = obj.lock().unwrap();
-    assert_eq!(obj.properties.get("fd"), Some(&Value::I32(0)));
-}
+// THREE TESTS USED TO BE HERE: `proposal_cli_{stdout,stderr,stdin}_get_*_
+// returns_stream_handle`.
+//
+// Each asserted that `get-stdout` / `get-stderr` / `get-stdin` answered a
+// resource handle carrying an `fd`. `wasi:cli@0.3.1` declares none of those
+// functions: `stdout` and `stderr` declare only `write-via-stream(data:
+// stream<u8>)`, and `stdin` only `read-via-stream()`. There is no handle to
+// return, because a stream stopped being a resource — it is a Component Model
+// TYPE, which is the same change that deleted the whole `wasi:io` package.
+//
+// The behaviour they were reaching for is covered by the `write-via-stream` /
+// `read-via-stream` tests, which assert bytes moving rather than a handle
+// existing.
 
 #[test]
 fn proposal_cli_stdout_write_via_stream_import_resolves() {

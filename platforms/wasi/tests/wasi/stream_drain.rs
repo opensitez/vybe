@@ -99,6 +99,68 @@ pub fn read_via_stream_outcome(dir: &Path, name: &str, offset: f64) -> Value {
     vm.run(vec![chunk]).expect("VM run failed")
 }
 
+/// Enumerate `dir` through `read-directory`, as `(type, name)` pairs sorted by
+/// name.
+///
+/// The `stream<directory-entry>` sibling of [`read_via_stream`], and it exists
+/// for the same one-chunk-one-VM reason — but it is worth saying what changes
+/// when the element stops being a byte. `canon stream.read` copies ELEMENTS at
+/// their canonical stride, so lifting one means reading a `descriptor-type`
+/// discriminant and a (ptr, length) string pair back out of linear memory at
+/// offsets the record layout fixes. That lift is
+/// `fs_path::emit_read_directory_entries`, and this calls it rather than
+/// repeating it: a reader only the test suite owns would prove that the HOST
+/// side works while every language still could not list a directory, which is
+/// the `__test_open_root` mistake wearing a different hat.
+///
+/// Sorted here because `read-directory` promises no order — the WIT says
+/// nothing about it and the host hands over whatever `read_dir` yielded, so an
+/// assertion on sequence would be asserting the filesystem's mood.
+pub fn read_directory(dir: &Path) -> Vec<(String, String)> {
+    let mut chunk = Chunk::new("<wasi-fs-read-directory>");
+    chunk.emit_string_const(&dir.display().to_string(), 0);
+    vybe_compiler::primitives::fs_path::emit_read_directory_entries(&mut chunk, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let mut vm = VM::new();
+    register_platforms(&mut vm, &Capabilities::all());
+    let result = vm.run(vec![chunk]).expect("VM run failed");
+
+    let Value::Object(object) = &result else {
+        panic!("expected an array of directory entries, got {result:?}");
+    };
+    let object = object.lock().unwrap();
+    let ObjectKind::Array(entries) = &object.kind else {
+        panic!("expected an array, got {:?}", object.kind);
+    };
+    let mut out: Vec<(String, String)> = entries.iter().map(entry_pair).collect();
+    // By NAME — sorting the pair would order by `type` first, which reads as a
+    // stable order right up until a test's expectation lists a directory after
+    // a file and gets a diff that looks like a host bug.
+    out.sort_by(|a, b| a.1.cmp(&b.1));
+    out
+}
+
+/// The `name`s alone, sorted — the common case, spelled once.
+pub fn read_directory_names(dir: &Path) -> Vec<String> {
+    read_directory(dir)
+        .into_iter()
+        .map(|(_, name)| name)
+        .collect()
+}
+
+fn entry_pair(value: &Value) -> (String, String) {
+    let Value::Object(object) = value else {
+        panic!("expected a directory-entry record, got {value:?}");
+    };
+    let object = object.lock().unwrap();
+    let field = |key: &str| match object.properties.get(key) {
+        Some(Value::String(text)) => text.to_string(),
+        other => panic!("directory-entry.{key} must be a string, got {other:?}"),
+    };
+    (field("type"), field("name"))
+}
+
 fn bytes_to_vec(value: &Value) -> Vec<u8> {
     let Value::Object(object) = value else {
         panic!("expected a byte array, got {value:?}");

@@ -75,23 +75,38 @@ fn hash_algorithms_produce_distinct_digests_for_same_payload() {
     assert_ne!(sha, md5);
 }
 
+/// ⚠BOTH SIDES OF THIS WERE WRONG, AND EACH HID THE OTHER.
+///
+/// The spec is `proposals/wasi-crypto/wit/`: `package wasi:crypto@0.11.0`,
+/// `interface wasi-ephemeral-crypto-common`, kebab-case function names. So the
+/// module is `wasi:crypto/wasi-ephemeral-crypto-common`.
+///
+/// This file asserted the WITX module (`wasi_ephemeral_crypto_common`, snake
+/// names) and the host registered an INVENTED short one (`wasi:crypto/common`).
+/// Neither is a name a guest generated from this WIT would import. And because
+/// the test was wrong too, it reported every function missing — so "the module
+/// name is invented" was indistinguishable from "the interface is absent".
+///
+/// The ten names below are the WIT's whole `common` surface, in declaration
+/// order, including `options-set-u64` — which the host really does not
+/// register. That is now the only thing this test can be red about.
 #[test]
 fn proposal_wasi_crypto_common_surface_is_registered() {
     let expected = [
-        "options_open",
-        "options_close",
-        "options_set",
-        "options_set_u64",
-        "options_set_guest_buffer",
-        "array_output_len",
-        "array_output_pull",
-        "secrets_manager_open",
-        "secrets_manager_close",
-        "secrets_manager_invalidate",
+        "options-open",
+        "options-close",
+        "options-set",
+        "options-set-u64",
+        "options-set-guest-buffer",
+        "array-output-len",
+        "array-output-pull",
+        "secrets-manager-open",
+        "secrets-manager-close",
+        "secrets-manager-invalidate",
     ];
     let missing = expected
         .into_iter()
-        .filter(|name| !has_import("wasi_ephemeral_crypto_common", name))
+        .filter(|name| !has_import("wasi:crypto/wasi-ephemeral-crypto-common", name))
         .collect::<Vec<_>>();
     assert!(
         missing.is_empty(),
@@ -102,30 +117,30 @@ fn proposal_wasi_crypto_common_surface_is_registered() {
 #[test]
 fn proposal_wasi_crypto_asymmetric_common_surface_is_registered() {
     let expected = [
-        "keypair_generate",
-        "keypair_import",
-        "keypair_generate_managed",
-        "keypair_store_managed",
-        "keypair_replace_managed",
-        "keypair_id",
-        "keypair_from_id",
-        "keypair_from_pk_and_sk",
-        "keypair_export",
-        "keypair_publickey",
-        "keypair_secretkey",
-        "keypair_close",
-        "publickey_import",
-        "publickey_export",
-        "publickey_verify",
-        "publickey_from_secretkey",
-        "publickey_close",
-        "secretkey_import",
-        "secretkey_export",
-        "secretkey_close",
+        "keypair-generate",
+        "keypair-import",
+        "keypair-generate-managed",
+        "keypair-store-managed",
+        "keypair-replace-managed",
+        "keypair-id",
+        "keypair-from-id",
+        "keypair-from-pk-and-sk",
+        "keypair-export",
+        "keypair-publickey",
+        "keypair-secretkey",
+        "keypair-close",
+        "publickey-import",
+        "publickey-export",
+        "publickey-verify",
+        "publickey-from-secretkey",
+        "publickey-close",
+        "secretkey-import",
+        "secretkey-export",
+        "secretkey-close",
     ];
     let missing = expected
         .into_iter()
-        .filter(|name| !has_import("wasi_ephemeral_crypto_asymmetric_common", name))
+        .filter(|name| !has_import("wasi:crypto/wasi-ephemeral-crypto-asymmetric-common", name))
         .collect::<Vec<_>>();
     assert!(
         missing.is_empty(),
@@ -136,38 +151,38 @@ fn proposal_wasi_crypto_asymmetric_common_surface_is_registered() {
 #[test]
 fn proposal_wasi_crypto_symmetric_surface_is_registered() {
     let expected = [
-        "symmetric_key_generate",
-        "symmetric_key_import",
-        "symmetric_key_export",
-        "symmetric_key_close",
-        "symmetric_key_generate_managed",
-        "symmetric_key_store_managed",
-        "symmetric_key_replace_managed",
-        "symmetric_key_id",
-        "symmetric_key_from_id",
-        "symmetric_state_open",
-        "symmetric_state_options_get",
-        "symmetric_state_options_get_u64",
-        "symmetric_state_clone",
-        "symmetric_state_close",
-        "symmetric_state_absorb",
-        "symmetric_state_squeeze",
-        "symmetric_state_squeeze_tag",
-        "symmetric_state_squeeze_key",
-        "symmetric_state_max_tag_len",
-        "symmetric_state_encrypt",
-        "symmetric_state_encrypt_detached",
-        "symmetric_state_decrypt",
-        "symmetric_state_decrypt_detached",
-        "symmetric_state_ratchet",
-        "symmetric_tag_len",
-        "symmetric_tag_pull",
-        "symmetric_tag_verify",
-        "symmetric_tag_close",
+        "symmetric-key-generate",
+        "symmetric-key-import",
+        "symmetric-key-export",
+        "symmetric-key-close",
+        "symmetric-key-generate-managed",
+        "symmetric-key-store-managed",
+        "symmetric-key-replace-managed",
+        "symmetric-key-id",
+        "symmetric-key-from-id",
+        "symmetric-state-open",
+        "symmetric-state-options-get",
+        "symmetric-state-options-get-u64",
+        "symmetric-state-clone",
+        "symmetric-state-close",
+        "symmetric-state-absorb",
+        "symmetric-state-squeeze",
+        "symmetric-state-squeeze-tag",
+        "symmetric-state-squeeze-key",
+        "symmetric-state-max-tag-len",
+        "symmetric-state-encrypt",
+        "symmetric-state-encrypt-detached",
+        "symmetric-state-decrypt",
+        "symmetric-state-decrypt-detached",
+        "symmetric-state-ratchet",
+        "symmetric-tag-len",
+        "symmetric-tag-pull",
+        "symmetric-tag-verify",
+        "symmetric-tag-close",
     ];
     let missing = expected
         .into_iter()
-        .filter(|name| !has_import("wasi_ephemeral_crypto_symmetric", name))
+        .filter(|name| !has_import("wasi:crypto/wasi-ephemeral-crypto-symmetric", name))
         .collect::<Vec<_>>();
     assert!(
         missing.is_empty(),
@@ -178,21 +193,21 @@ fn proposal_wasi_crypto_symmetric_surface_is_registered() {
 #[test]
 fn proposal_wasi_crypto_signatures_surface_is_registered() {
     let expected = [
-        "signature_export",
-        "signature_import",
-        "signature_state_open",
-        "signature_state_update",
-        "signature_state_sign",
-        "signature_state_close",
-        "signature_verification_state_open",
-        "signature_verification_state_update",
-        "signature_verification_state_verify",
-        "signature_verification_state_close",
-        "signature_close",
+        "signature-export",
+        "signature-import",
+        "signature-state-open",
+        "signature-state-update",
+        "signature-state-sign",
+        "signature-state-close",
+        "signature-verification-state-open",
+        "signature-verification-state-update",
+        "signature-verification-state-verify",
+        "signature-verification-state-close",
+        "signature-close",
     ];
     let missing = expected
         .into_iter()
-        .filter(|name| !has_import("wasi_ephemeral_crypto_signatures", name))
+        .filter(|name| !has_import("wasi:crypto/wasi-ephemeral-crypto-signatures", name))
         .collect::<Vec<_>>();
     assert!(
         missing.is_empty(),
@@ -202,10 +217,10 @@ fn proposal_wasi_crypto_signatures_surface_is_registered() {
 
 #[test]
 fn proposal_wasi_crypto_signatures_batch_surface_is_registered() {
-    let expected = ["batch_signature_state_sign", "batch_signature_state_verify"];
+    let expected = ["batch-signature-state-sign", "batch-signature-state-verify"];
     let missing = expected
         .into_iter()
-        .filter(|name| !has_import("wasi_ephemeral_crypto_signatures_batch", name))
+        .filter(|name| !has_import("wasi:crypto/wasi-ephemeral-crypto-signatures-batch", name))
         .collect::<Vec<_>>();
     assert!(
         missing.is_empty(),
@@ -215,10 +230,10 @@ fn proposal_wasi_crypto_signatures_batch_surface_is_registered() {
 
 #[test]
 fn proposal_wasi_crypto_kx_surface_is_registered() {
-    let expected = ["kx_dh", "kx_encapsulate", "kx_decapsulate"];
+    let expected = ["kx-dh", "kx-encapsulate", "kx-decapsulate"];
     let missing = expected
         .into_iter()
-        .filter(|name| !has_import("wasi_ephemeral_crypto_kx", name))
+        .filter(|name| !has_import("wasi:crypto/wasi-ephemeral-crypto-kx", name))
         .collect::<Vec<_>>();
     assert!(
         missing.is_empty(),
@@ -229,16 +244,16 @@ fn proposal_wasi_crypto_kx_surface_is_registered() {
 #[test]
 fn proposal_wasi_crypto_external_secrets_surface_is_registered() {
     let expected = [
-        "external_secret_store",
-        "external_secret_replace",
-        "external_secret_from_id",
-        "external_secret_invalidate",
-        "external_secret_encapsulate",
-        "external_secret_decapsulate",
+        "external-secret-store",
+        "external-secret-replace",
+        "external-secret-from-id",
+        "external-secret-invalidate",
+        "external-secret-encapsulate",
+        "external-secret-decapsulate",
     ];
     let missing = expected
         .into_iter()
-        .filter(|name| !has_import("wasi_ephemeral_crypto_external_secrets", name))
+        .filter(|name| !has_import("wasi:crypto/wasi-ephemeral-crypto-external-secrets", name))
         .collect::<Vec<_>>();
     assert!(
         missing.is_empty(),
@@ -249,16 +264,16 @@ fn proposal_wasi_crypto_external_secrets_surface_is_registered() {
 #[test]
 fn proposal_wasi_crypto_symmetric_batch_surface_is_registered() {
     let expected = [
-        "batch_symmetric_state_squeeze",
-        "batch_symmetric_state_squeeze_tag",
-        "batch_symmetric_state_encrypt",
-        "batch_symmetric_state_encrypt_detached",
-        "batch_symmetric_state_decrypt",
-        "batch_symmetric_state_decrypt_detached",
+        "batch-symmetric-state-squeeze",
+        "batch-symmetric-state-squeeze-tag",
+        "batch-symmetric-state-encrypt",
+        "batch-symmetric-state-encrypt-detached",
+        "batch-symmetric-state-decrypt",
+        "batch-symmetric-state-decrypt-detached",
     ];
     let missing = expected
         .into_iter()
-        .filter(|name| !has_import("wasi_ephemeral_crypto_symmetric_batch", name))
+        .filter(|name| !has_import("wasi:crypto/wasi-ephemeral-crypto-symmetric-batch", name))
         .collect::<Vec<_>>();
     assert!(
         missing.is_empty(),

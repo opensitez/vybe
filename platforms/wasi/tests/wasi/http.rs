@@ -54,12 +54,10 @@ fn types(name: &str, args: Vec<Value>) -> Value {
     invoke("wasi:http/types", name, args)
 }
 
-fn outgoing(name: &str, args: Vec<Value>) -> Value {
-    invoke("wasi:http/outgoing-handler", name, args)
-}
-
-fn legacy(name: &str, args: Vec<Value>) -> Value {
-    invoke("wasi:http", name, args)
+/// 0.3.1 replaced `outgoing-handler.handle` with `client.send`, which answers
+/// the response directly instead of a `future-incoming-response`.
+fn client(name: &str, args: Vec<Value>) -> Value {
+    invoke("wasi:http/client", name, args)
 }
 
 fn s(text: &str) -> Value {
@@ -217,7 +215,7 @@ fn outgoing_handler_round_trip_returns_status_and_headers() {
     let authority = start_server("201 Created", &[("Content-Type", "text/plain")], "ok");
 
     let headers = types("[constructor]fields", vec![]);
-    let request = types("[constructor]outgoing-request", vec![headers]);
+    let request = types("[static]request.new", vec![headers]);
     assert!(
         is_error(&request).is_none(),
         "request constructor should succeed"
@@ -225,50 +223,44 @@ fn outgoing_handler_round_trip_returns_status_and_headers() {
 
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-method",
+            "[method]request.set-method",
             vec![request.clone(), s("POST")]
         ))
         .is_none()
     );
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-scheme",
+            "[method]request.set-scheme",
             vec![request.clone(), s("http")]
         ))
         .is_none()
     );
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-authority",
+            "[method]request.set-authority",
             vec![request.clone(), s(&authority)]
         ))
         .is_none()
     );
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-path-with-query",
+            "[method]request.set-path-with-query",
             vec![request.clone(), s("/submit?ok=1")]
         ))
         .is_none()
     );
 
-    let future = outgoing("handle", vec![request, Value::Null]);
-    assert!(
-        is_error(&future).is_none(),
-        "handle should return a future resource"
-    );
-
-    let response = types("[method]future-incoming-response.get", vec![future]);
+    let response = client("send", vec![request]);
     assert!(
         is_error(&response).is_none(),
-        "future get should resolve to an incoming response"
+        "send should answer an incoming response"
     );
     assert_eq!(
-        types("[method]incoming-response.status", vec![response.clone()]),
+        types("[method]response.get-status-code", vec![response.clone()]),
         Value::F64(201.0)
     );
 
-    let response_headers = types("[method]incoming-response.headers", vec![response]);
+    let response_headers = types("[method]response.get-headers", vec![response]);
     assert_eq!(
         types(
             "[method]fields.has",
@@ -289,36 +281,32 @@ fn outgoing_handler_round_trip_returns_status_and_headers() {
 #[test]
 fn outgoing_handler_reports_transport_errors_through_future() {
     let headers = types("[constructor]fields", vec![]);
-    let request = types("[constructor]outgoing-request", vec![headers]);
+    let request = types("[static]request.new", vec![headers]);
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-scheme",
+            "[method]request.set-scheme",
             vec![request.clone(), s("http")]
         ))
         .is_none()
     );
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-authority",
+            "[method]request.set-authority",
             vec![request.clone(), s("127.0.0.1:1")]
         ))
         .is_none()
     );
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-path-with-query",
+            "[method]request.set-path-with-query",
             vec![request.clone(), s("/")]
         ))
         .is_none()
     );
 
-    let future = outgoing("handle", vec![request, Value::Null]);
-    assert!(
-        is_error(&future).is_none(),
-        "transport failures should still produce a future"
-    );
-
-    let result = types("[method]future-incoming-response.get", vec![future]);
+    // 0.2 answered a future here and deferred the failure to `.get`; 0.3.1's
+    // `send` has nowhere to defer it to, so the transport error IS the result.
+    let result = client("send", vec![request]);
     assert_eq!(is_error(&result).as_deref(), Some("connection-refused"));
 }
 
@@ -335,34 +323,33 @@ fn fields_entries_and_get_preserve_duplicate_header_values() {
     );
 
     let headers = types("[constructor]fields", vec![]);
-    let request = types("[constructor]outgoing-request", vec![headers]);
+    let request = types("[static]request.new", vec![headers]);
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-scheme",
+            "[method]request.set-scheme",
             vec![request.clone(), s("http")]
         ))
         .is_none()
     );
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-authority",
+            "[method]request.set-authority",
             vec![request.clone(), s(&authority)]
         ))
         .is_none()
     );
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-path-with-query",
+            "[method]request.set-path-with-query",
             vec![request.clone(), s("/")]
         ))
         .is_none()
     );
 
-    let future = outgoing("handle", vec![request, Value::Null]);
-    let response = types("[method]future-incoming-response.get", vec![future]);
-    let response_headers = types("[method]incoming-response.headers", vec![response]);
+    let response = client("send", vec![request]);
+    let response_headers = types("[method]response.get-headers", vec![response]);
 
-    let entries = types("[method]fields.entries", vec![response_headers.clone()]);
+    let entries = types("[method]fields.copy-all", vec![response_headers.clone()]);
     let decoded = header_entries_as_strings(&entries);
     assert!(decoded.contains(&(String::from("Set-Cookie"), String::from("a=1"))));
     assert!(decoded.contains(&(String::from("Set-Cookie"), String::from("b=2"))));
@@ -388,7 +375,7 @@ fn fields_get_missing_header_returns_empty_array() {
 #[test]
 fn fields_entries_on_new_headers_returns_empty_array() {
     let headers = types("[constructor]fields", vec![]);
-    let entries = types("[method]fields.entries", vec![headers]);
+    let entries = types("[method]fields.copy-all", vec![headers]);
     assert_eq!(array_len(&entries), 0);
 }
 
@@ -410,32 +397,31 @@ fn fields_has_is_case_insensitive_on_response_headers() {
     let authority = start_server("200 OK", &[("X-Trace", "ok")], "body");
 
     let headers = types("[constructor]fields", vec![]);
-    let request = types("[constructor]outgoing-request", vec![headers]);
+    let request = types("[static]request.new", vec![headers]);
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-scheme",
+            "[method]request.set-scheme",
             vec![request.clone(), s("http")]
         ))
         .is_none()
     );
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-authority",
+            "[method]request.set-authority",
             vec![request.clone(), s(&authority)]
         ))
         .is_none()
     );
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-path-with-query",
+            "[method]request.set-path-with-query",
             vec![request.clone(), s("/")]
         ))
         .is_none()
     );
 
-    let future = outgoing("handle", vec![request, Value::Null]);
-    let response = types("[method]future-incoming-response.get", vec![future]);
-    let response_headers = types("[method]incoming-response.headers", vec![response]);
+    let response = client("send", vec![request]);
+    let response_headers = types("[method]response.get-headers", vec![response]);
 
     assert_eq!(
         types(
@@ -477,21 +463,21 @@ fn fields_has_rejects_invalid_handle() {
 #[test]
 fn outgoing_request_headers_returns_resource_handle() {
     let headers = types("[constructor]fields", vec![]);
-    let request = types("[constructor]outgoing-request", vec![headers]);
-    let request_headers = types("[method]outgoing-request.headers", vec![request]);
-    let entries = types("[method]fields.entries", vec![request_headers]);
+    let request = types("[static]request.new", vec![headers]);
+    let request_headers = types("[method]request.get-headers", vec![request]);
+    let entries = types("[method]fields.copy-all", vec![request_headers]);
     assert_eq!(array_len(&entries), 0);
 }
 
 #[test]
-fn outgoing_request_constructor_rejects_invalid_headers_handle() {
-    let result = types("[constructor]outgoing-request", vec![s("not-headers")]);
+fn request_new_rejects_invalid_headers_handle() {
+    let result = types("[static]request.new", vec![s("not-headers")]);
     assert_eq!(is_error(&result).as_deref(), Some("invalid-argument"));
 }
 
 #[test]
 fn fields_entries_reject_invalid_handle() {
-    let result = types("[method]fields.entries", vec![s("not-fields")]);
+    let result = types("[method]fields.copy-all", vec![s("not-fields")]);
     assert_eq!(is_error(&result).as_deref(), Some("invalid-argument"));
 }
 
@@ -500,34 +486,33 @@ fn outgoing_handler_accepts_request_options_resource() {
     let authority = start_server("204 No Content", &[], "");
 
     let headers = types("[constructor]fields", vec![]);
-    let request = types("[constructor]outgoing-request", vec![headers]);
+    let request = types("[static]request.new", vec![headers]);
     let options = types("[constructor]request-options", vec![]);
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-scheme",
+            "[method]request.set-scheme",
             vec![request.clone(), s("http")]
         ))
         .is_none()
     );
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-authority",
+            "[method]request.set-authority",
             vec![request.clone(), s(&authority)]
         ))
         .is_none()
     );
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-path-with-query",
+            "[method]request.set-path-with-query",
             vec![request.clone(), s("/")]
         ))
         .is_none()
     );
 
-    let future = outgoing("handle", vec![request, options]);
-    let response = types("[method]future-incoming-response.get", vec![future]);
+    let response = client("send", vec![request]);
     assert_eq!(
-        types("[method]incoming-response.status", vec![response]),
+        types("[method]response.get-status-code", vec![response]),
         Value::F64(204.0)
     );
 }
@@ -542,25 +527,27 @@ fn request_options_constructor_returns_distinct_resources() {
 }
 
 #[test]
-fn outgoing_handler_rejects_invalid_request_handle() {
-    let result = outgoing("handle", vec![s("not-a-request"), Value::Null]);
+fn client_send_rejects_invalid_request_handle() {
+    let result = client("send", vec![s("not-a-request")]);
     assert_eq!(is_error(&result).as_deref(), Some("HTTP-request-denied"));
 }
 
-#[test]
-fn outgoing_handler_rejects_non_request_options_second_argument() {
-    let headers = types("[constructor]fields", vec![]);
-    let request = types("[constructor]outgoing-request", vec![headers]);
-    let result = outgoing("handle", vec![request, s("not-options")]);
-    assert_eq!(is_error(&result).as_deref(), Some("HTTP-request-denied"));
-}
+// `outgoing_handler_rejects_non_request_options_second_argument` USED TO BE
+// HERE. It asserted that a non-`request-options` SECOND argument was rejected.
+//
+// `client.send` in 0.3.1 takes one argument. Options are no longer passed at
+// send time at all — they are supplied when the request is built,
+// `request.new(headers, contents, trailers, options)`, and read back through
+// `request.get-options`, which `http_spec_0_3_behaviour.rs` covers. There is no
+// second argument left to reject, so this is not a test that was ported: its
+// subject stopped existing.
 
 #[test]
 fn outgoing_request_set_method_rejects_blank_methods() {
     let headers = types("[constructor]fields", vec![]);
-    let request = types("[constructor]outgoing-request", vec![headers]);
+    let request = types("[static]request.new", vec![headers]);
     let result = types(
-        "[method]outgoing-request.set-method",
+        "[method]request.set-method",
         vec![request, s("   ")],
     );
     assert_eq!(
@@ -572,7 +559,7 @@ fn outgoing_request_set_method_rejects_blank_methods() {
 #[test]
 fn outgoing_request_set_method_rejects_invalid_request_handle() {
     let result = types(
-        "[method]outgoing-request.set-method",
+        "[method]request.set-method",
         vec![s("not-a-request"), s("GET")],
     );
     assert_eq!(is_error(&result).as_deref(), Some("invalid-argument"));
@@ -581,7 +568,7 @@ fn outgoing_request_set_method_rejects_invalid_request_handle() {
 #[test]
 fn outgoing_request_set_scheme_rejects_invalid_request_handle() {
     let result = types(
-        "[method]outgoing-request.set-scheme",
+        "[method]request.set-scheme",
         vec![s("not-a-request"), s("http")],
     );
     assert_eq!(is_error(&result).as_deref(), Some("invalid-argument"));
@@ -590,7 +577,7 @@ fn outgoing_request_set_scheme_rejects_invalid_request_handle() {
 #[test]
 fn outgoing_request_set_path_with_query_rejects_invalid_request_handle() {
     let result = types(
-        "[method]outgoing-request.set-path-with-query",
+        "[method]request.set-path-with-query",
         vec![s("not-a-request"), s("/")],
     );
     assert_eq!(is_error(&result).as_deref(), Some("invalid-argument"));
@@ -599,7 +586,7 @@ fn outgoing_request_set_path_with_query_rejects_invalid_request_handle() {
 #[test]
 fn outgoing_request_set_authority_rejects_invalid_request_handle() {
     let result = types(
-        "[method]outgoing-request.set-authority",
+        "[method]request.set-authority",
         vec![s("not-a-request"), s("example.com")],
     );
     assert_eq!(is_error(&result).as_deref(), Some("invalid-argument"));
@@ -607,37 +594,37 @@ fn outgoing_request_set_authority_rejects_invalid_request_handle() {
 
 #[test]
 fn outgoing_request_headers_reject_invalid_request_handle() {
-    let result = types("[method]outgoing-request.headers", vec![s("not-a-request")]);
+    let result = types("[method]request.get-headers", vec![s("not-a-request")]);
     assert_eq!(is_error(&result).as_deref(), Some("invalid-argument"));
 }
 
 #[test]
 fn outgoing_handler_rejects_invalid_scheme() {
     let headers = types("[constructor]fields", vec![]);
-    let request = types("[constructor]outgoing-request", vec![headers]);
+    let request = types("[static]request.new", vec![headers]);
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-scheme",
+            "[method]request.set-scheme",
             vec![request.clone(), s("https")]
         ))
         .is_none()
     );
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-authority",
+            "[method]request.set-authority",
             vec![request.clone(), s("example.com")]
         ))
         .is_none()
     );
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-path-with-query",
+            "[method]request.set-path-with-query",
             vec![request.clone(), s("/")]
         ))
         .is_none()
     );
 
-    let result = outgoing("handle", vec![request, Value::Null]);
+    let result = client("send", vec![request]);
     assert_eq!(
         is_error(&result).as_deref(),
         Some("HTTP-request-URI-invalid")
@@ -648,86 +635,51 @@ fn outgoing_handler_rejects_invalid_scheme() {
 fn null_path_uses_default_slash() {
     let authority = start_server("200 OK", &[], "ok");
     let headers = types("[constructor]fields", vec![]);
-    let request = types("[constructor]outgoing-request", vec![headers]);
+    let request = types("[static]request.new", vec![headers]);
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-scheme",
+            "[method]request.set-scheme",
             vec![request.clone(), s("http")]
         ))
         .is_none()
     );
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-authority",
+            "[method]request.set-authority",
             vec![request.clone(), s(&authority)]
         ))
         .is_none()
     );
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-path-with-query",
+            "[method]request.set-path-with-query",
             vec![request.clone(), Value::Null]
         ))
         .is_none()
     );
 
-    let future = outgoing("handle", vec![request, Value::Null]);
-    let response = types("[method]future-incoming-response.get", vec![future]);
+    let response = client("send", vec![request]);
     assert_eq!(
-        types("[method]incoming-response.status", vec![response]),
+        types("[method]response.get-status-code", vec![response]),
         Value::F64(200.0)
     );
 }
 
-#[test]
-fn future_incoming_response_get_errors_when_consumed_twice() {
-    let authority = start_server("200 OK", &[], "ok");
+// TWO `future-incoming-response` TESTS USED TO BE HERE:
+// `..._get_errors_when_consumed_twice` and `..._get_rejects_invalid_handle`.
+//
+// The RESOURCE is gone in 0.3.1, not just the spelling. `client.send` answers
+// the response itself, so there is no future to consume once, twice, or with a
+// bogus handle — `already-consumed` describes a state 0.3.1 cannot reach. These
+// were deleted rather than ported because a ported version would have had to
+// invent a subject: the closest 0.3.1 behaviour, "a response can be read more
+// than once", is a DIFFERENT claim and is covered where response accessors are.
 
-    let headers = types("[constructor]fields", vec![]);
-    let request = types("[constructor]outgoing-request", vec![headers]);
-    assert!(
-        is_error(&types(
-            "[method]outgoing-request.set-scheme",
-            vec![request.clone(), s("http")]
-        ))
-        .is_none()
-    );
-    assert!(
-        is_error(&types(
-            "[method]outgoing-request.set-authority",
-            vec![request.clone(), s(&authority)]
-        ))
-        .is_none()
-    );
-    assert!(
-        is_error(&types(
-            "[method]outgoing-request.set-path-with-query",
-            vec![request.clone(), s("/")]
-        ))
-        .is_none()
-    );
-
-    let future = outgoing("handle", vec![request, Value::Null]);
-    let first = types("[method]future-incoming-response.get", vec![future.clone()]);
-    assert!(is_error(&first).is_none());
-
-    let second = types("[method]future-incoming-response.get", vec![future]);
-    assert_eq!(is_error(&second).as_deref(), Some("already-consumed"));
-}
-
-#[test]
-fn future_incoming_response_get_rejects_invalid_handle() {
-    let result = types(
-        "[method]future-incoming-response.get",
-        vec![s("not-a-future")],
-    );
-    assert_eq!(is_error(&result).as_deref(), Some("invalid-argument"));
-}
 
 #[test]
 fn incoming_response_status_rejects_invalid_handle() {
     let result = types(
-        "[method]incoming-response.status",
+        "[method]response.get-status-code",
         vec![s("not-a-response")],
     );
     assert_eq!(is_error(&result).as_deref(), Some("invalid-argument"));
@@ -736,7 +688,7 @@ fn incoming_response_status_rejects_invalid_handle() {
 #[test]
 fn incoming_response_headers_rejects_invalid_handle() {
     let result = types(
-        "[method]incoming-response.headers",
+        "[method]response.get-headers",
         vec![s("not-a-response")],
     );
     assert_eq!(is_error(&result).as_deref(), Some("invalid-argument"));
@@ -751,37 +703,36 @@ fn incoming_response_headers_expose_server_headers() {
     );
 
     let headers = types("[constructor]fields", vec![]);
-    let request = types("[constructor]outgoing-request", vec![headers]);
+    let request = types("[static]request.new", vec![headers]);
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-scheme",
+            "[method]request.set-scheme",
             vec![request.clone(), s("http")]
         ))
         .is_none()
     );
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-authority",
+            "[method]request.set-authority",
             vec![request.clone(), s(&authority)]
         ))
         .is_none()
     );
     assert!(
         is_error(&types(
-            "[method]outgoing-request.set-path-with-query",
+            "[method]request.set-path-with-query",
             vec![request.clone(), s("/")]
         ))
         .is_none()
     );
 
-    let future = outgoing("handle", vec![request, Value::Null]);
-    let response = types("[method]future-incoming-response.get", vec![future]);
+    let response = client("send", vec![request]);
     assert_eq!(
-        types("[method]incoming-response.status", vec![response.clone()]),
+        types("[method]response.get-status-code", vec![response.clone()]),
         Value::F64(203.0)
     );
 
-    let response_headers = types("[method]incoming-response.headers", vec![response]);
+    let response_headers = types("[method]response.get-headers", vec![response]);
     let content_type = types(
         "[method]fields.get",
         vec![response_headers, s("content-type")],
@@ -792,13 +743,14 @@ fn incoming_response_headers_expose_server_headers() {
     );
 }
 
-#[test]
-fn proposal_http_outgoing_handler_is_registered() {
-    assert!(
-        has_import("wasi:http/outgoing-handler", "handle"),
-        "wasi:http/outgoing-handler.handle should be registered"
-    );
-}
+// `proposal_http_outgoing_handler_is_registered` USED TO BE HERE.
+//
+// `wasi:http/outgoing-handler` is not an interface in 0.3.1 — `client.send`
+// replaced it — so the assertion had inverted into a guarantee that a name the
+// spec deleted was still bound. Its 0.3.1 counterpart already exists as
+// `http_spec_0_3.rs::wasi_http_0_3_client_and_handler_interfaces_are_registered`,
+// and the ABSENCE of the 0.2 name is `interface_coverage.rs`'s job, not a list
+// kept per file.
 
 #[test]
 fn proposal_http_fields_surface_is_registered() {
@@ -811,7 +763,7 @@ fn proposal_http_fields_surface_is_registered() {
         "[method]fields.delete",
         "[method]fields.append",
         "[method]fields.clone",
-        "[method]fields.entries",
+        "[method]fields.copy-all",
     ];
     let missing = expected
         .into_iter()
@@ -824,19 +776,19 @@ fn proposal_http_fields_surface_is_registered() {
 }
 
 #[test]
-fn proposal_http_outgoing_request_surface_is_registered() {
+fn proposal_http_request_surface_is_registered() {
     let expected = [
-        "[constructor]outgoing-request",
-        "[method]outgoing-request.method",
-        "[method]outgoing-request.set-method",
-        "[method]outgoing-request.path-with-query",
-        "[method]outgoing-request.set-path-with-query",
-        "[method]outgoing-request.scheme",
-        "[method]outgoing-request.set-scheme",
-        "[method]outgoing-request.authority",
-        "[method]outgoing-request.set-authority",
-        "[method]outgoing-request.headers",
-        "[method]outgoing-request.body",
+        "[static]request.new",
+        "[method]request.get-method",
+        "[method]request.set-method",
+        "[method]request.get-path-with-query",
+        "[method]request.set-path-with-query",
+        "[method]request.get-scheme",
+        "[method]request.set-scheme",
+        "[method]request.get-authority",
+        "[method]request.set-authority",
+        "[method]request.get-headers",
+        "[static]request.consume-body",
     ];
     let missing = expected
         .into_iter()
@@ -844,7 +796,7 @@ fn proposal_http_outgoing_request_surface_is_registered() {
         .collect::<Vec<_>>();
     assert!(
         missing.is_empty(),
-        "missing http outgoing-request imports: {missing:?}"
+        "missing http request imports: {missing:?}"
     );
 }
 
@@ -852,11 +804,11 @@ fn proposal_http_outgoing_request_surface_is_registered() {
 fn proposal_http_request_options_surface_is_registered() {
     let expected = [
         "[constructor]request-options",
-        "[method]request-options.connect-timeout",
+        "[method]request-options.get-connect-timeout",
         "[method]request-options.set-connect-timeout",
-        "[method]request-options.first-byte-timeout",
+        "[method]request-options.get-first-byte-timeout",
         "[method]request-options.set-first-byte-timeout",
-        "[method]request-options.between-bytes-timeout",
+        "[method]request-options.get-between-bytes-timeout",
         "[method]request-options.set-between-bytes-timeout",
     ];
     let missing = expected
@@ -874,8 +826,8 @@ fn proposal_http_response_surface_is_registered() {
     let expected = [
         "[static]response.new",
         "[static]response.consume-body",
-        "[method]incoming-response.status",
-        "[method]incoming-response.headers",
+        "[method]response.get-status-code",
+        "[method]response.get-headers",
     ];
     let missing = expected
         .into_iter()

@@ -3,13 +3,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use vybe_compiler::primitives::platforms::register_platforms;
 use vybe_runtime::capabilities::Capabilities;
-use vybe_runtime::value::Value;
+use vybe_runtime::value::{ObjectKind, Value};
 use vybe_runtime::{Chunk, Op, VM};
 
 fn scratch_dir(label: &str) -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!(
+    let dir = std::env::current_dir()
+        .expect("cwd is the `.` preopen")
+        .join("target/wasi-fs-tests")
+        .join(format!(
         "vybe-wasi-fs-symlink-matrix-test-{}-{}-{}",
         std::process::id(),
         label,
@@ -82,36 +85,90 @@ fn is_error(value: &Value) -> Option<String> {
     None
 }
 
-fn open_test_root(dir: &PathBuf) -> Value {
-    invoke(
-        "wasi:filesystem/types",
-        "__test_open_root",
-        vec![s(dir.to_str().unwrap())],
-    )
+/// `open-flags::directory` — `proposals/WASI/proposals/filesystem/wit/types.wit`.
+const OPEN_DIRECTORY: i32 = 2;
+
+/// Element 0 of the first `tuple<descriptor, string>` `get-directories` answers.
+fn first_preopen_descriptor(preopens: &Value) -> Value {
+    let Value::Object(list) = preopens else {
+        panic!("get-directories must answer a list");
+    };
+    let list = list.lock().unwrap();
+    let ObjectKind::Array(entries) = &list.kind else {
+        panic!("get-directories must answer list<tuple<descriptor, string>>");
+    };
+    let Some(Value::Object(pair)) = entries.first() else {
+        panic!("no preopened directory — the guest has no capability at all");
+    };
+    let pair = pair.lock().unwrap();
+    let ObjectKind::Array(pair) = &pair.kind else {
+        panic!("each preopen is a tuple<descriptor, string>");
+    };
+    pair.first().cloned().expect("descriptor is element 0")
 }
 
-fn directory_entries(stream: Value) -> Vec<(String, String)> {
-    let mut entries = Vec::new();
-    loop {
-        let entry = types(
-            "[method]directory-entry-stream.read-directory-entry",
-            vec![stream.clone()],
-        );
-        if matches!(entry, Value::Null) {
-            break;
-        }
-        let name = match prop(&entry, "name") {
-            Value::String(text) => text.to_string(),
-            other => panic!("directory-entry.name expected string, got {:?}", other),
-        };
-        let kind = match prop(&entry, "type") {
-            Value::String(text) => text.to_string(),
-            other => panic!("directory-entry.type expected string, got {:?}", other),
-        };
-        entries.push((name, kind));
-    }
-    entries.sort();
-    entries
+/// Open a descriptor for the scratch directory, through the REAL capability
+/// path: `preopens.get-directories` then `open-at`.
+///
+/// This used to call `__test_open_root`, a host function that minted a
+/// descriptor for any absolute path. It was registered inside
+/// `wasi:filesystem/types` — so importable by any guest — and the WIT declares
+/// no such function. Scratch directories therefore moved under the `.` preopen
+/// (the CWD), which is the only place `open-at` can reach.
+fn open_test_root(dir: &PathBuf) -> Value {
+    let cwd = std::env::current_dir().expect("cwd is the `.` preopen");
+    let rel = dir
+        .strip_prefix(&cwd)
+        .expect("scratch dirs live under the `.` preopen so `open-at` can reach them");
+
+    let preopens = invoke("wasi:filesystem/preopens", "get-directories", vec![]);
+    let root = first_preopen_descriptor(&preopens);
+
+    let opened = invoke(
+        "wasi:filesystem/types",
+        "[method]descriptor.open-at",
+        vec![
+            root,
+            Value::I32(0),
+            s(rel.to_str().expect("scratch path is utf-8")),
+            Value::I32(OPEN_DIRECTORY),
+            Value::I32(0),
+        ],
+    );
+    assert!(
+        is_error(&opened).is_none(),
+        "opening the scratch dir from the preopen failed: {:?}",
+        is_error(&opened)
+    );
+    opened
+}
+
+/// `read-directory: func() -> tuple<stream<directory-entry>,
+///                                  future<result<_, error-code>>>`.
+///
+/// The SHAPE half only — that the answer is the declared tuple rather than the
+/// 0.2 `directory-entry-stream` resource. The ENTRIES are asserted by each
+/// caller through `stream_drain::read_directory`, which drains the stream
+/// inside the VM that opened it; `invoke` cannot, because a stream end is an
+/// index into a handle table that dies with the call.
+fn assert_read_directory_tuple(result: &Value) {
+    assert!(
+        is_error(result).is_none(),
+        "read-directory failed: {:?}",
+        is_error(result)
+    );
+    let Value::Object(parts) = result else {
+        panic!("read-directory must answer a tuple, got {result:?}");
+    };
+    let parts = parts.lock().unwrap();
+    let ObjectKind::Array(parts) = &parts.kind else {
+        panic!("read-directory must answer tuple<stream<directory-entry>, future<...>>");
+    };
+    assert_eq!(
+        parts.len(),
+        2,
+        "the entry stream AND the completion future — not a resource handle"
+    );
 }
 
 macro_rules! assert_wasi_error {
@@ -231,11 +288,20 @@ fn read_directory_reports_file_symlink_entry_as_symbolic_link() {
     std::fs::write(dir.join("target.txt"), b"hello").unwrap();
     std::os::unix::fs::symlink("target.txt", dir.join("alias.txt")).unwrap();
     let root = open_test_root(&dir);
-    let stream = types("[method]descriptor.read-directory", vec![root]);
+    let result = types("[method]descriptor.read-directory", vec![root]);
+    assert_read_directory_tuple(&result);
 
-    assert!(
-        directory_entries(stream)
-            .contains(&(String::from("alias.txt"), String::from("symbolic-link")))
+    // `symbolic-link`, NOT `regular-file`. `read-directory` reports each
+    // entry's own type without following it — the link and its target are
+    // different entries with different types, and a host that stat'd through
+    // the link would report both as `regular-file` and lose the distinction
+    // an enumerator exists to make.
+    assert_eq!(
+        crate::stream_drain::read_directory(&dir),
+        vec![
+            ("symbolic-link".to_string(), "alias.txt".to_string()),
+            ("regular-file".to_string(), "target.txt".to_string()),
+        ]
     );
 }
 
@@ -245,11 +311,18 @@ fn read_directory_reports_directory_symlink_entry_as_symbolic_link() {
     std::fs::create_dir_all(dir.join("nested")).unwrap();
     std::os::unix::fs::symlink("nested", dir.join("nested-link")).unwrap();
     let root = open_test_root(&dir);
-    let stream = types("[method]descriptor.read-directory", vec![root]);
+    let result = types("[method]descriptor.read-directory", vec![root]);
+    assert_read_directory_tuple(&result);
 
-    assert!(
-        directory_entries(stream)
-            .contains(&(String::from("nested-link"), String::from("symbolic-link")))
+    // The same rule where the target is a DIRECTORY, which is the case a
+    // recursive walker gets wrong: following `nested-link` because it reads as
+    // `directory` is how a walker enters a cycle.
+    assert_eq!(
+        crate::stream_drain::read_directory(&dir),
+        vec![
+            ("directory".to_string(), "nested".to_string()),
+            ("symbolic-link".to_string(), "nested-link".to_string()),
+        ]
     );
 }
 

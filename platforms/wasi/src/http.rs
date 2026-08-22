@@ -1,16 +1,22 @@
-//! `wasi:http` — minimal real WASI HTTP host surface plus legacy shim.
+//! `wasi:http@0.3.1` — `types`, `client` and `handler`.
 //!
-//! This file now exposes a standards-shaped outgoing client slice:
-//! - `wasi:http/types`
-//! - `wasi:http/outgoing-handler`
+//! The client half is on the 0.3.1 model: build a `request`
+//! (`[static]request.new` + the `set-*` methods), hand it to `client.send`,
+//! and read the response through `response.get-status-code` /
+//! `response.get-headers`. `handler.handle` shares the implementation, which
+//! the spec explicitly allows — a `client.send` import may be linked directly
+//! to a `handler.handle` export.
 //!
-//! The implementation is intentionally small: enough to construct an
-//! `outgoing-request`, send it through `outgoing-handler.handle`, and read back
-//! the response status and headers. Server-side `wasi:http/incoming-handler`
-//! remains future work.
-//!
-//! Vybe also keeps the older flat `wasi:http.{get,post,fetch}` helpers as a
-//! compatibility shim for existing JS code.
+//! NOT yet on 0.3.1: the SERVER half and the 0.2 resource pairs it rests on.
+//! 0.3.1 declares four resources — `fields`, `request`, `response`,
+//! `request-options` — where this file still also registers `incoming-request`,
+//! `outgoing-response`, `incoming-response`, `response-outparam`,
+//! `outgoing-body`, `incoming-body`, `future-trailers` and
+//! `future-incoming-response`. 0.3 collapsed the incoming/outgoing pairs into
+//! one resource each and replaced `response-outparam` with `handle` simply
+//! RETURNING the response. `interface_coverage.rs` reports each of those by
+//! name; they come out with the server rewrite, not before, because
+//! `http_incoming_server.rs` is built on them.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -25,9 +31,7 @@ const KIND_HEADERS: &str = "headers";
 const KIND_OUTGOING_REQUEST: &str = "outgoing-request";
 const KIND_REQUEST_OPTIONS: &str = "request-options";
 const KIND_INCOMING_RESPONSE: &str = "incoming-response";
-const KIND_FUTURE_INCOMING_RESPONSE: &str = "future-incoming-response";
 const KIND_INCOMING_BODY: &str = "incoming-body";
-const KIND_FUTURE_TRAILERS: &str = "future-trailers";
 const KIND_OUTGOING_RESPONSE: &str = "outgoing-response";
 const KIND_OUTGOING_BODY: &str = "outgoing-body";
 const KIND_INCOMING_REQUEST: &str = "incoming-request";
@@ -59,6 +63,10 @@ struct OutgoingRequestResource {
     /// 0.3 `request.new(headers, contents, trailers, options)` — `options` is
     /// `option<request-options>`, surfaced again by `request.get-options`.
     options_id: Option<u32>,
+    /// The `contents` stream, drained at construction. 0.2 reached a request
+    /// body through `outgoing-request.body` -> `outgoing-body.write`; 0.3.1
+    /// deleted both, so the stream handed to `new` is the only body there is.
+    body: Vec<u8>,
     method: String,
     path_with_query: Option<String>,
     scheme: Option<String>,
@@ -129,12 +137,6 @@ struct IncomingResponseResource {
     body: String,
 }
 
-#[derive(Debug, Clone)]
-struct FutureIncomingResponseResource {
-    response_id: Option<u32>,
-    error: Option<String>,
-    consumed: bool,
-}
 
 #[derive(Default)]
 struct Registry {
@@ -142,7 +144,6 @@ struct Registry {
     outgoing_requests: HashMap<u32, OutgoingRequestResource>,
     request_options: HashMap<u32, RequestOptionsResource>,
     incoming_responses: HashMap<u32, IncomingResponseResource>,
-    future_incoming_responses: HashMap<u32, FutureIncomingResponseResource>,
     incoming_bodies: HashMap<u32, IncomingBodyResource>,
     outgoing_responses: HashMap<u32, OutgoingResponseResource>,
     outgoing_bodies: HashMap<u32, OutgoingBodyResource>,
@@ -369,6 +370,32 @@ fn register_resource_types(vm: &mut VM) -> HttpTypeIds {
     }
 }
 
+/// `wasi:http/types` — the four resources `wasi:http@0.3.1` declares.
+///
+/// THIRTY-NINE registrations were removed from here on 2026-08-21. 0.2 had
+/// thirteen resources where 0.3.1 has four, and every one of the extras was
+/// still bound:
+///
+///   * `outgoing-request` / `incoming-request` → one `request`
+///   * `outgoing-response` / `incoming-response` → one `response`
+///   * `future-incoming-response` → gone; `client.send` answers the response
+///   * `outgoing-body` / `incoming-body` / `future-trailers` → gone; a body is
+///     a `stream<u8>` passed to `new` and taken back by `consume-body`
+///   * `response-outparam` → gone; `handler.handle` RETURNS its response
+///   * `http-error-code` → gone with the `wasi:io` error it borrowed
+///   * `request-options.{connect,first-byte,between-bytes}-timeout` → the
+///     getters gained a `get-` prefix
+///
+/// The registry still keeps requests and responses in two tables each, because
+/// a request built here and a request off the wire genuinely differ in what
+/// they can carry. 0.3.1 constrains the INTERFACE, not the storage: the
+/// accessors read both tables (see `register_wasi3_accessors`), which is what
+/// makes them one resource from the guest's side.
+///
+/// Nothing was kept "for compatibility". A 0.2 name that still resolves fails
+/// nowhere — the caller keeps working against this host and breaks only against
+/// a conforming one, with nothing left pointing at why. `interface_coverage.rs`
+/// asserts registered ⊆ spec so a re-introduction fails by name.
 fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
     vm.register_host_fn(
         "wasi:http/types",
@@ -386,20 +413,11 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
         }),
     );
 
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[method]fields.entries",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(headers_id) = resource_id(&args[0], KIND_HEADERS) else {
-                return err("invalid-argument");
-            };
-            let registry = registry().lock().unwrap();
-            let Some(headers) = registry.headers.get(&headers_id) else {
-                return err("invalid-argument");
-            };
-            header_entries_array(&headers.entries)
-        }),
-    );
+    // `[method]fields.entries` USED TO BE REGISTERED HERE.
+    //
+    // 0.3.1 calls it `copy-all`, registered below with the same body. `entries`
+    // is not declared by `wasi:http@0.3.1` at all, so a guest built against the
+    // WIT cannot ask for it and a conforming runtime cannot answer it.
 
     vm.register_host_fn(
         "wasi:http/types",
@@ -455,114 +473,11 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
         }),
     );
 
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[constructor]outgoing-request",
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let Some(headers_id) = resource_id(&args[0], KIND_HEADERS) else {
-                return err("invalid-argument");
-            };
-            let mut registry = registry().lock().unwrap();
-            let id = alloc_id();
-            registry.outgoing_requests.insert(
-                id,
-                OutgoingRequestResource {
-                    options_id: None,
-                    headers_id,
-                    method: "GET".into(),
-                    path_with_query: None,
-                    scheme: None,
-                    authority: None,
-                },
-            );
-            make_resource(KIND_OUTGOING_REQUEST, id, type_ids.outgoing_request)
-        }),
-    );
 
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[method]outgoing-request.set-method",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(request_id) = resource_id(&args[0], KIND_OUTGOING_REQUEST) else {
-                return err("invalid-argument");
-            };
-            let Some(method) = string_arg(args, 1) else {
-                return err("HTTP-request-method-invalid");
-            };
-            let mut registry = registry().lock().unwrap();
-            let Some(request) = registry.outgoing_requests.get_mut(&request_id) else {
-                return err("invalid-argument");
-            };
-            if method.trim().is_empty() {
-                return err("HTTP-request-method-invalid");
-            }
-            request.method = method.trim().to_ascii_uppercase();
-            Value::Null
-        }),
-    );
 
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[method]outgoing-request.set-path-with-query",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(request_id) = resource_id(&args[0], KIND_OUTGOING_REQUEST) else {
-                return err("invalid-argument");
-            };
-            let mut registry = registry().lock().unwrap();
-            let Some(request) = registry.outgoing_requests.get_mut(&request_id) else {
-                return err("invalid-argument");
-            };
-            request.path_with_query = string_arg(args, 1);
-            Value::Null
-        }),
-    );
 
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[method]outgoing-request.set-scheme",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(request_id) = resource_id(&args[0], KIND_OUTGOING_REQUEST) else {
-                return err("invalid-argument");
-            };
-            let mut registry = registry().lock().unwrap();
-            let Some(request) = registry.outgoing_requests.get_mut(&request_id) else {
-                return err("invalid-argument");
-            };
-            request.scheme = string_arg(args, 1).map(|value| value.to_ascii_lowercase());
-            Value::Null
-        }),
-    );
 
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[method]outgoing-request.set-authority",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(request_id) = resource_id(&args[0], KIND_OUTGOING_REQUEST) else {
-                return err("invalid-argument");
-            };
-            let mut registry = registry().lock().unwrap();
-            let Some(request) = registry.outgoing_requests.get_mut(&request_id) else {
-                return err("invalid-argument");
-            };
-            request.authority = string_arg(args, 1);
-            Value::Null
-        }),
-    );
 
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[method]outgoing-request.headers",
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let Some(request_id) = resource_id(&args[0], KIND_OUTGOING_REQUEST) else {
-                return err("invalid-argument");
-            };
-            let registry = registry().lock().unwrap();
-            let Some(request) = registry.outgoing_requests.get(&request_id) else {
-                return err("invalid-argument");
-            };
-            make_resource(KIND_HEADERS, request.headers_id, type_ids.headers)
-        }),
-    );
 
     vm.register_host_fn(
         "wasi:http/types",
@@ -582,78 +497,10 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
         }),
     );
 
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[method]incoming-response.status",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(response_id) = resource_id(&args[0], KIND_INCOMING_RESPONSE) else {
-                return err("invalid-argument");
-            };
-            let registry = registry().lock().unwrap();
-            let Some(response) = registry.incoming_responses.get(&response_id) else {
-                return err("invalid-argument");
-            };
-            Value::F64(response.status as f64)
-        }),
-    );
 
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[method]incoming-response.headers",
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let Some(response_id) = resource_id(&args[0], KIND_INCOMING_RESPONSE) else {
-                return err("invalid-argument");
-            };
-            let registry = registry().lock().unwrap();
-            let Some(response) = registry.incoming_responses.get(&response_id) else {
-                return err("invalid-argument");
-            };
-            let _ = response.body.len();
-            make_resource(KIND_HEADERS, response.headers_id, type_ids.headers)
-        }),
-    );
 
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[method]future-incoming-response.get",
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let Some(future_id) = resource_id(&args[0], KIND_FUTURE_INCOMING_RESPONSE) else {
-                return err("invalid-argument");
-            };
-            let mut registry = registry().lock().unwrap();
-            let Some(future) = registry.future_incoming_responses.get_mut(&future_id) else {
-                return err("invalid-argument");
-            };
-            if future.consumed {
-                return err("already-consumed");
-            }
-            future.consumed = true;
-            if let Some(code) = future.error.as_deref() {
-                return err(code);
-            }
-            let Some(response_id) = future.response_id else {
-                return Value::Null;
-            };
-            make_resource(
-                KIND_INCOMING_RESPONSE,
-                response_id,
-                type_ids.incoming_response,
-            )
-        }),
-    );
 
     // future-incoming-response.subscribe → pollable (always ready in sync model)
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[method]future-incoming-response.subscribe",
-        Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
-            let mut obj = Object::new();
-            obj.properties
-                .insert("__type".into(), Value::String(Arc::from("Pollable")));
-            obj.properties.insert("__ready".into(), Value::Bool(true));
-            Value::Object(vybe_runtime::heap::alloc(obj))
-        }),
-    );
 
     // fields.set(name, values) → result
     vm.register_host_fn(
@@ -671,17 +518,48 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
                 return err("invalid-argument");
             };
             let key = name.to_ascii_lowercase();
+            // §fields.set replaces every value the field had.
+            let previous = headers.entries.len();
             headers
                 .entries
                 .retain(|(k, _)| !k.eq_ignore_ascii_case(&key));
-            if let Some(Value::Object(arr)) = args.get(2) {
-                let inner = arr.lock().unwrap();
-                if let vybe_runtime::value::ObjectKind::Array(ref elems) = inner.kind {
-                    for val in elems {
-                        let bytes = format!("{}", val).into_bytes();
-                        headers.entries.push((key.clone(), bytes));
+            // `value` is `list<field-value>` in the WIT, but a single value is
+            // how field values travel everywhere else in this module —
+            // `fields.append` takes one, and `push_incoming_request` carries
+            // `(String, Vec<u8>)`. Accepting ONLY an array is what this did
+            // until 2026-08-21: `fields.set(h, "x", "yes")` removed the old
+            // values, added nothing, and answered `Value::Null` — success. The
+            // header vanished and no caller could tell. Every test of `set`
+            // asserted the call did not error, which it never did.
+            match args.get(2) {
+                Some(Value::Object(object)) => {
+                    let inner = object.lock().unwrap();
+                    match inner.kind {
+                        vybe_runtime::value::ObjectKind::Array(ref elems) => {
+                            for value in elems {
+                                headers
+                                    .entries
+                                    .push((key.clone(), format!("{}", value).into_bytes()));
+                            }
+                        }
+                        // Not a list and not a scalar: there is no reading of
+                        // this that sets a header, so it is an error rather
+                        // than a removal the caller did not ask for.
+                        _ => {
+                            drop(inner);
+                            drop(registry);
+                            return err("invalid-syntax");
+                        }
                     }
                 }
+                // §set with an EMPTY list removes the field, so an absent
+                // argument is the one case where writing nothing is correct.
+                None | Some(Value::Null) => {
+                    let _ = previous;
+                }
+                Some(single) => headers
+                    .entries
+                    .push((key.clone(), format!("{}", single).into_bytes())),
             }
             Value::Null
         }),
@@ -786,114 +664,13 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
     );
 
     // outgoing-request getters
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[method]outgoing-request.method",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(id) = resource_id(&args[0], KIND_OUTGOING_REQUEST) else {
-                return err("invalid-argument");
-            };
-            let registry = registry().lock().unwrap();
-            let Some(req) = registry.outgoing_requests.get(&id) else {
-                return err("invalid-argument");
-            };
-            Value::String(Arc::from(req.method.as_str()))
-        }),
-    );
 
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[method]outgoing-request.path-with-query",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(id) = resource_id(&args[0], KIND_OUTGOING_REQUEST) else {
-                return err("invalid-argument");
-            };
-            let registry = registry().lock().unwrap();
-            let Some(req) = registry.outgoing_requests.get(&id) else {
-                return err("invalid-argument");
-            };
-            req.path_with_query
-                .as_deref()
-                .map(|s| Value::String(Arc::from(s)))
-                .unwrap_or(Value::Null)
-        }),
-    );
 
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[method]outgoing-request.scheme",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(id) = resource_id(&args[0], KIND_OUTGOING_REQUEST) else {
-                return err("invalid-argument");
-            };
-            let registry = registry().lock().unwrap();
-            let Some(req) = registry.outgoing_requests.get(&id) else {
-                return err("invalid-argument");
-            };
-            req.scheme
-                .as_deref()
-                .map(|s| Value::String(Arc::from(s)))
-                .unwrap_or(Value::Null)
-        }),
-    );
 
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[method]outgoing-request.authority",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(id) = resource_id(&args[0], KIND_OUTGOING_REQUEST) else {
-                return err("invalid-argument");
-            };
-            let registry = registry().lock().unwrap();
-            let Some(req) = registry.outgoing_requests.get(&id) else {
-                return err("invalid-argument");
-            };
-            req.authority
-                .as_deref()
-                .map(|s| Value::String(Arc::from(s)))
-                .unwrap_or(Value::Null)
-        }),
-    );
 
     // [method]outgoing-request.body → result<outgoing-body, error-code>
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[method]outgoing-request.body",
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let Some(_request_id) = resource_id(&args[0], KIND_OUTGOING_REQUEST) else {
-                return err("invalid-argument");
-            };
-            let mut registry = registry().lock().unwrap();
-            let body_id = alloc_id();
-            registry.outgoing_bodies.insert(
-                body_id,
-                OutgoingBodyResource {
-                    bytes: Vec::new(),
-                    finished: false,
-                    trailers: Vec::new(),
-                },
-            );
-            make_resource(KIND_OUTGOING_BODY, body_id, type_ids.outgoing_body)
-        }),
-    );
 
     // request-options timeout getters/setters (durations in nanoseconds)
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[method]request-options.connect-timeout",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(id) = resource_id(&args[0], KIND_REQUEST_OPTIONS) else {
-                return err("invalid-argument");
-            };
-            let registry = registry().lock().unwrap();
-            let Some(opt) = registry.request_options.get(&id) else {
-                return err("invalid-argument");
-            };
-            opt.connect_timeout_ns
-                .map(|n| Value::F64(n as f64))
-                .unwrap_or(Value::Null)
-        }),
-    );
 
     vm.register_host_fn(
         "wasi:http/types",
@@ -912,22 +689,6 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
         }),
     );
 
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[method]request-options.first-byte-timeout",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(id) = resource_id(&args[0], KIND_REQUEST_OPTIONS) else {
-                return err("invalid-argument");
-            };
-            let registry = registry().lock().unwrap();
-            let Some(opt) = registry.request_options.get(&id) else {
-                return err("invalid-argument");
-            };
-            opt.first_byte_timeout_ns
-                .map(|n| Value::F64(n as f64))
-                .unwrap_or(Value::Null)
-        }),
-    );
 
     vm.register_host_fn(
         "wasi:http/types",
@@ -946,22 +707,6 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
         }),
     );
 
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[method]request-options.between-bytes-timeout",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(id) = resource_id(&args[0], KIND_REQUEST_OPTIONS) else {
-                return err("invalid-argument");
-            };
-            let registry = registry().lock().unwrap();
-            let Some(opt) = registry.request_options.get(&id) else {
-                return err("invalid-argument");
-            };
-            opt.between_bytes_timeout_ns
-                .map(|n| Value::F64(n as f64))
-                .unwrap_or(Value::Null)
-        }),
-    );
 
     vm.register_host_fn(
         "wasi:http/types",
@@ -981,272 +726,30 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
     );
 
     // incoming-response.consume → incoming-body
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[method]incoming-response.consume",
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let Some(response_id) = resource_id(&args[0], KIND_INCOMING_RESPONSE) else {
-                return err("invalid-argument");
-            };
-            let mut registry = registry().lock().unwrap();
-            let Some(response) = registry.incoming_responses.get(&response_id) else {
-                return err("invalid-argument");
-            };
-            let body_bytes = response.body.as_bytes().to_vec();
-            let body_id = alloc_id();
-            registry.incoming_bodies.insert(
-                body_id,
-                IncomingBodyResource {
-                    body: body_bytes,
-                    position: 0,
-                },
-            );
-            make_resource(KIND_INCOMING_BODY, body_id, type_ids.incoming_body)
-        }),
-    );
 
     // incoming-body.%stream → input-stream resource readable via [method]input-stream.blocking-read
     // Registers the body bytes as a Buffer stream in the filesystem registry so standard
     // stream host functions can drain it without any bespoke logic in http.rs.
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[method]incoming-body.%stream",
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let Some(body_id) = resource_id(&args[0], KIND_INCOMING_BODY) else {
-                return err("invalid-argument");
-            };
-            let body_bytes = {
-                let registry = registry().lock().unwrap();
-                let Some(body) = registry.incoming_bodies.get(&body_id) else {
-                    return err("invalid-argument");
-                };
-                body.body.clone()
-            };
-            let stream_id = super::filesystem::register_buffer_stream(body_bytes);
-            let mut obj = Object::new();
-            obj.properties.insert(
-                "__wasi_kind".into(),
-                Value::String(Arc::from("input-stream")),
-            );
-            obj.properties
-                .insert("__wasi_id".into(), Value::F64(stream_id as f64));
-            Value::Object(vybe_runtime::heap::alloc(obj))
-        }),
-    );
 
     // [static]incoming-body.finish → future-trailers
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[static]incoming-body.finish",
-        Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
-            // No registry lock: this handle is minted, not stored — the
-            // trailers future has no host-side resource behind it (see
-            // `future-trailers.get`, which always answers "no trailers").
-            let id = alloc_id();
-            make_resource(KIND_FUTURE_TRAILERS, id, type_ids.future_trailers)
-        }),
-    );
 
     // future-trailers.get → option<result<option<trailers>, error-code>>
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[method]future-trailers.get",
-        Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
-            // No trailers in our HTTP/1.1 client — return Some(Ok(None))
-            Value::Null
-        }),
-    );
 
     // future-trailers.subscribe → always-ready pollable
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[method]future-trailers.subscribe",
-        Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
-            let mut obj = Object::new();
-            obj.properties
-                .insert("__type".into(), Value::String(Arc::from("Pollable")));
-            obj.properties.insert("__ready".into(), Value::Bool(true));
-            Value::Object(vybe_runtime::heap::alloc(obj))
-        }),
-    );
 
     // [constructor]outgoing-response(fields) → outgoing-response
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[constructor]outgoing-response",
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let headers_id = resource_id(&args[0], KIND_HEADERS).unwrap_or(0);
-            let mut registry = registry().lock().unwrap();
-            let id = alloc_id();
-            registry.outgoing_responses.insert(
-                id,
-                OutgoingResponseResource {
-                    status: 200,
-                    headers_id,
-                    body_id: None,
-                },
-            );
-            make_resource(KIND_OUTGOING_RESPONSE, id, type_ids.outgoing_response)
-        }),
-    );
 
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[method]outgoing-response.status-code",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(id) = resource_id(&args[0], KIND_OUTGOING_RESPONSE) else {
-                return err("invalid-argument");
-            };
-            let registry = registry().lock().unwrap();
-            let Some(resp) = registry.outgoing_responses.get(&id) else {
-                return err("invalid-argument");
-            };
-            Value::F64(resp.status as f64)
-        }),
-    );
 
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[method]outgoing-response.set-status-code",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(id) = resource_id(&args[0], KIND_OUTGOING_RESPONSE) else {
-                return err("invalid-argument");
-            };
-            // §outgoing-response.set-status-code: "Fails if the status-code
-            // given is not a valid http status code." Same rule the 0.3
-            // `response.set-status-code` already enforced; this arm accepted
-            // anything, so 999 silently became the response status.
-            let code = args.get(1).map(|v| v.as_f64() as i64).unwrap_or(200);
-            if !(100..=599).contains(&code) {
-                return err("invalid-argument");
-            }
-            let mut registry = registry().lock().unwrap();
-            let Some(resp) = registry.outgoing_responses.get_mut(&id) else {
-                return err("invalid-argument");
-            };
-            resp.status = code as u16;
-            Value::Null
-        }),
-    );
 
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[method]outgoing-response.headers",
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let Some(id) = resource_id(&args[0], KIND_OUTGOING_RESPONSE) else {
-                return err("invalid-argument");
-            };
-            let registry = registry().lock().unwrap();
-            let Some(resp) = registry.outgoing_responses.get(&id) else {
-                return err("invalid-argument");
-            };
-            make_resource(KIND_HEADERS, resp.headers_id, type_ids.headers)
-        }),
-    );
 
     // [method]outgoing-response.body → result<outgoing-body, error-code>
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[method]outgoing-response.body",
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let Some(id) = resource_id(&args[0], KIND_OUTGOING_RESPONSE) else {
-                return err("invalid-argument");
-            };
-            let mut registry = registry().lock().unwrap();
-            let body_id = alloc_id();
-            registry.outgoing_bodies.insert(
-                body_id,
-                OutgoingBodyResource {
-                    bytes: Vec::new(),
-                    finished: false,
-                    trailers: Vec::new(),
-                },
-            );
-            if let Some(resp) = registry.outgoing_responses.get_mut(&id) {
-                resp.body_id = Some(body_id);
-            }
-            make_resource(KIND_OUTGOING_BODY, body_id, type_ids.outgoing_body)
-        }),
-    );
 
     // [method]outgoing-body.write → result<output-stream, error-code>
     // Returns a simplified stream object with __body_id for later flush.
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[method]outgoing-body.write",
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let Some(body_id) = resource_id(&args[0], KIND_OUTGOING_BODY) else {
-                return err("invalid-argument");
-            };
-            let bytes_val = args.get(1).cloned().unwrap_or(Value::Null);
-            if let Value::Object(arr) = &bytes_val {
-                let inner = arr.lock().unwrap();
-                if let vybe_runtime::value::ObjectKind::Array(ref elems) = inner.kind {
-                    let bytes: Vec<u8> = elems.iter().map(|v| v.as_f64() as u8).collect();
-                    drop(inner);
-                    let mut registry = registry().lock().unwrap();
-                    if let Some(body) = registry.outgoing_bodies.get_mut(&body_id) {
-                        body.bytes.extend_from_slice(&bytes);
-                    }
-                }
-            }
-            Value::F64(0.0) // returns number of bytes written (simplified)
-        }),
-    );
 
     // [static]outgoing-body.finish → result<_, error-code>
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[static]outgoing-body.finish",
-        // §outgoing-body.finish(this, trailers) -> result<_, error-code>.
-        // "This must be called to signal that the response is complete."
-        // Finishing twice is an error, matching the write-at-most-once rule on
-        // the same resource.
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(body_id) = args
-                .first()
-                .and_then(|a| resource_id(a, KIND_OUTGOING_BODY))
-            else {
-                return err("invalid-argument");
-            };
-            let mut registry = registry().lock().unwrap();
-            let Some(body) = registry.outgoing_bodies.get_mut(&body_id) else {
-                return err("invalid-argument");
-            };
-            if body.finished {
-                return err("invalid-argument");
-            }
-            body.finished = true;
-            // `trailers` is `option<trailers>`; when present it is a headers
-            // resource whose entries are appended to the body's trailer set.
-            if let Some(trailers_id) = args.get(1).and_then(|a| resource_id(a, KIND_HEADERS)) {
-                let entries = registry
-                    .headers
-                    .get(&trailers_id)
-                    .map(|h| h.entries.clone())
-                    .unwrap_or_default();
-                if let Some(body) = registry.outgoing_bodies.get_mut(&body_id) {
-                    body.trailers = entries;
-                }
-            }
-            Value::Null
-        }),
-    );
 
     // http-error-code(err) → option<error-code>
-    vm.register_host_fn(
-        "wasi:http/types",
-        "http-error-code",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            if let Some(Value::Object(obj)) = args.first() {
-                let inner = obj.lock().unwrap();
-                if let Some(code) = inner.properties.get("__wasi_error") {
-                    return code.clone();
-                }
-            }
-            Value::Null
-        }),
-    );
 
     // ── incoming-request (server side) ─────────────────────────────────────
     //
@@ -1254,178 +757,23 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
     // transport it is serving via `push_incoming_request`; guest code reads it
     // through these accessors. Previously all six returned `Value::Null` as
     // link padding.
-    fn with_incoming_request<T>(
-        args: &[Value],
-        f: impl FnOnce(&IncomingRequestResource) -> T,
-    ) -> Option<T> {
-        let id = resource_id(args.first()?, KIND_INCOMING_REQUEST)?;
-        let registry = registry().lock().unwrap();
-        registry.incoming_requests.get(&id).map(f)
-    }
 
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[method]incoming-request.method",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            match with_incoming_request(args, |r| r.method.clone()) {
-                Some(m) => Value::String(Arc::from(m.as_str())),
-                None => err("invalid-argument"),
-            }
-        }),
-    );
 
     // `path-with-query`, `scheme` and `authority` are `option<...>` in the WIT:
     // absent is null, not an error.
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[method]incoming-request.path-with-query",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            match with_incoming_request(args, |r| r.path_with_query.clone()) {
-                Some(Some(p)) => Value::String(Arc::from(p.as_str())),
-                Some(None) => Value::Null,
-                None => err("invalid-argument"),
-            }
-        }),
-    );
 
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[method]incoming-request.scheme",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            match with_incoming_request(args, |r| r.scheme.clone()) {
-                Some(Some(v)) => Value::String(Arc::from(v.as_str())),
-                Some(None) => Value::Null,
-                None => err("invalid-argument"),
-            }
-        }),
-    );
 
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[method]incoming-request.authority",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            match with_incoming_request(args, |r| r.authority.clone()) {
-                Some(Some(v)) => Value::String(Arc::from(v.as_str())),
-                Some(None) => Value::Null,
-                None => err("invalid-argument"),
-            }
-        }),
-    );
 
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[method]incoming-request.headers",
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            match with_incoming_request(args, |r| r.headers_id) {
-                Some(headers_id) => make_resource(KIND_HEADERS, headers_id, type_ids.headers),
-                None => err("invalid-argument"),
-            }
-        }),
-    );
 
     // §incoming-request.consume: succeeds at most ONCE; later calls are errors.
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[method]incoming-request.consume",
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let Some(request_id) = args
-                .first()
-                .and_then(|a| resource_id(a, KIND_INCOMING_REQUEST))
-            else {
-                return err("invalid-argument");
-            };
-            let mut registry = registry().lock().unwrap();
-            let Some(request) = registry.incoming_requests.get(&request_id) else {
-                return err("invalid-argument");
-            };
-            if request.consumed {
-                return err("invalid-argument");
-            }
-            let body = request.body.clone();
-            if let Some(request) = registry.incoming_requests.get_mut(&request_id) {
-                request.consumed = true;
-            }
-            let body_id = alloc_id();
-            registry
-                .incoming_bodies
-                .insert(body_id, IncomingBodyResource { body, position: 0 });
-            make_resource(KIND_INCOMING_BODY, body_id, type_ids.incoming_body)
-        }),
-    );
 
     // ── response-outparam (server side) ────────────────────────────────────
     //
     // §response-outparam.set: "Set the value of the `response-outparam` to
     // either send a response, or indicate an error. This method consumes the
     // `response-outparam` to ensure that it is called at most once."
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[static]response-outparam.set",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(param_id) = args
-                .first()
-                .and_then(|a| resource_id(a, KIND_RESPONSE_OUTPARAM))
-            else {
-                return err("invalid-argument");
-            };
-            let mut registry = registry().lock().unwrap();
-            let Some(param) = registry.response_outparams.get(&param_id) else {
-                return err("invalid-argument");
-            };
-            if param.set {
-                return err("invalid-argument");
-            }
-            // arg1 is `result<outgoing-response, error-code>`: a response
-            // resource on success, anything else read as the error code.
-            let response_id = args
-                .get(1)
-                .and_then(|a| resource_id(a, KIND_OUTGOING_RESPONSE));
-            let error = match (&response_id, args.get(1)) {
-                (None, Some(Value::String(code))) => Some(code.to_string()),
-                (None, _) => Some("internal-error".to_string()),
-                _ => None,
-            };
-            if let Some(param) = registry.response_outparams.get_mut(&param_id) {
-                param.response_id = response_id;
-                param.error = error;
-                param.set = true;
-            }
-            Value::Null
-        }),
-    );
 
     // §response-outparam.send-informational — 1xx interim responses.
-    vm.register_host_fn(
-        "wasi:http/types",
-        "[method]response-outparam.send-informational",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(param_id) = args
-                .first()
-                .and_then(|a| resource_id(a, KIND_RESPONSE_OUTPARAM))
-            else {
-                return err("invalid-argument");
-            };
-            let status = match args.get(1) {
-                Some(Value::F64(n)) => *n as u16,
-                Some(Value::I32(n)) => *n as u16,
-                _ => return err("invalid-argument"),
-            };
-            // Only 1xx codes are informational (RFC 9110 §15.2).
-            if !(100..200).contains(&status) {
-                return err("invalid-argument");
-            }
-            let headers_id = args
-                .get(2)
-                .and_then(|a| resource_id(a, KIND_HEADERS))
-                .unwrap_or(0);
-            let mut registry = registry().lock().unwrap();
-            let Some(param) = registry.response_outparams.get_mut(&param_id) else {
-                return err("invalid-argument");
-            };
-            param.informational.push((status, headers_id));
-            Value::Null
-        }),
-    );
 }
 
 // ── Host-side entry points ──────────────────────────────────────────────────
@@ -1502,6 +850,83 @@ pub fn take_response_outparam(id: u32) -> Option<Result<ResponseParts, String>> 
     Some(Ok((response.status, headers, body)))
 }
 
+/// Create the `response` a served request will answer with, host-side.
+///
+/// 0.2 handed the guest a `response-outparam` to write INTO. 0.3.1 has no such
+/// resource: `handler.handle` returns its response, so the response itself is
+/// the only thing there is to hand over. The host builds it empty — status
+/// 200, no headers, per §response.new's default — and the guest mutates it
+/// through `response.set-status-code` and `response.get-headers`.
+///
+/// Pre-creating it rather than waiting for the guest to call `response.new` is
+/// what keeps a served request to ONE response: a script that sets nothing
+/// still answers through this resource rather than through a second path.
+pub fn push_response() -> u32 {
+    let mut registry = registry().lock().unwrap();
+    let headers_id = alloc_id();
+    registry
+        .headers
+        .insert(headers_id, HeadersResource { entries: Vec::new() });
+    let id = alloc_id();
+    registry.outgoing_responses.insert(
+        id,
+        OutgoingResponseResource {
+            status: 200,
+            headers_id,
+            body_id: None,
+        },
+    );
+    id
+}
+
+/// The guest-facing handle for [`push_response`].
+pub fn response_value(vm: &VM, response_id: u32) -> Option<Value> {
+    let type_id = vm.type_registry.get_id("HttpOutgoingResponse")?;
+    Some(make_resource(KIND_OUTGOING_RESPONSE, response_id, type_id))
+}
+
+/// Read a `response` resource back into its parts, host-side.
+///
+/// This is what replaces `response-outparam` for a HOST that needs the guest's
+/// answer. 0.3.1 deleted the outparam because `handler.handle` RETURNS its
+/// response; a host with no export to call — `vybex --serve` compiles a script,
+/// not a component — still needs some way to take delivery, and the resource
+/// itself is that way. Reading the response is not a `wasi:` function and is
+/// not registered as one: it is the host side of the boundary, the same role
+/// `push_incoming_request` plays for the request.
+///
+/// Accepts a response from either direction, because 0.3.1 has one `response`.
+pub fn take_response(value: &Value) -> Option<ResponseParts> {
+    let registry = registry().lock().unwrap();
+    let (status, headers_id, body) = if let Some(id) =
+        resource_id(value, KIND_OUTGOING_RESPONSE)
+    {
+        let response = registry.outgoing_responses.get(&id)?;
+        let body = response
+            .body_id
+            .and_then(|body_id| registry.outgoing_bodies.get(&body_id))
+            .map(|body| body.bytes.clone())
+            // A response whose body was never opened has an EMPTY body, which
+            // is a legal answer — not a missing resource.
+            .unwrap_or_default();
+        (response.status, response.headers_id, body)
+    } else {
+        let id = resource_id(value, KIND_INCOMING_RESPONSE)?;
+        let response = registry.incoming_responses.get(&id)?;
+        (
+            response.status,
+            response.headers_id,
+            response.body.as_bytes().to_vec(),
+        )
+    };
+    let headers = registry
+        .headers
+        .get(&headers_id)
+        .map(|headers| headers.entries.clone())
+        .unwrap_or_default();
+    Some((status, headers, body))
+}
+
 /// Build the guest-facing resource values for a served request.
 pub fn incoming_request_value(vm: &VM, request_id: u32) -> Option<Value> {
     let type_id = vm.type_registry.get_id("HttpIncomingRequest")?;
@@ -1513,106 +938,22 @@ pub fn response_outparam_value(vm: &VM, param_id: u32) -> Option<Value> {
     Some(make_resource(KIND_RESPONSE_OUTPARAM, param_id, type_id))
 }
 
-/// `wasi:http/outgoing-handler` — send an `outgoing-request` and get back a
-/// `future-incoming-response`.
-fn register_outgoing_handler(vm: &mut VM, type_ids: HttpTypeIds) {
-    vm.register_host_fn(
-        "wasi:http/outgoing-handler",
-        "handle",
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let Some(request_id) = resource_id(&args[0], KIND_OUTGOING_REQUEST) else {
-                return err("HTTP-request-denied");
-            };
-            if args.get(1).is_some() && !matches!(args.get(1), Some(Value::Null)) {
-                let Some(_options_id) = resource_id(&args[1], KIND_REQUEST_OPTIONS) else {
-                    return err("HTTP-request-denied");
-                };
-            }
-
-            let request = {
-                let registry = registry().lock().unwrap();
-                let Some(request) = registry.outgoing_requests.get(&request_id) else {
-                    return err("HTTP-request-denied");
-                };
-                request.clone()
-            };
-
-            let scheme = request.scheme.unwrap_or_else(|| "http".into());
-            if scheme != "http" {
-                return err("HTTP-request-URI-invalid");
-            }
-            let Some(authority) = request
-                .authority
-                .filter(|authority| !authority.trim().is_empty())
-            else {
-                return err("HTTP-request-URI-invalid");
-            };
-
-            let mut path = request.path_with_query.unwrap_or_else(|| "/".into());
-            if !path.starts_with('/') {
-                path = format!("/{}", path);
-            }
-            let url = format!("{}://{}{}", scheme, authority, path);
-
-            let future_id = {
-                let mut registry = registry().lock().unwrap();
-                let future_id = alloc_id();
-                match http_request(&request.method, &url, None) {
-                    Ok(response) => {
-                        let headers_id = alloc_id();
-                        registry.headers.insert(
-                            headers_id,
-                            HeadersResource {
-                                entries: response.headers,
-                            },
-                        );
-
-                        let response_id = alloc_id();
-                        registry.incoming_responses.insert(
-                            response_id,
-                            IncomingResponseResource {
-                                status: response.status,
-                                headers_id,
-                                body: response.body,
-                            },
-                        );
-
-                        registry.future_incoming_responses.insert(
-                            future_id,
-                            FutureIncomingResponseResource {
-                                response_id: Some(response_id),
-                                error: None,
-                                consumed: false,
-                            },
-                        );
-                    }
-                    Err(message) => {
-                        registry.future_incoming_responses.insert(
-                            future_id,
-                            FutureIncomingResponseResource {
-                                response_id: None,
-                                error: Some(map_transport_error(&message).into()),
-                                consumed: false,
-                            },
-                        );
-                    }
-                }
-                future_id
-            };
-
-            make_resource(
-                KIND_FUTURE_INCOMING_RESPONSE,
-                future_id,
-                type_ids.future_incoming_response,
-            )
-        }),
-    );
-}
+// `wasi:http/outgoing-handler.handle` USED TO BE REGISTERED HERE.
+//
+// The interface does not exist in `wasi:http@0.3.1` — `worlds.wit` and
+// `types.wit` declare `client` and `handler`, and nothing else. 0.3 replaced
+// 0.2's two-step (`handle` -> `future-incoming-response` -> `.get`) with a
+// single `client.send` that answers the response directly, and
+// `register_wasi3_handler` below already implemented it.
+//
+// Keeping both bound meant every caller in the tree could stay on the 0.2
+// shape indefinitely without anything failing, which is what happened: the
+// four transport test files and one interop corpus file were still written
+// against the future when this was removed on 2026-08-21.
 
 pub fn register(vm: &mut VM) {
     let type_ids = register_resource_types(vm);
     register_types(vm, type_ids);
-    register_outgoing_handler(vm, type_ids);
     register_wasi3(vm, type_ids);
     register_wasi3_handler(vm, type_ids);
     register_wasi3_accessors(vm, type_ids);
@@ -1631,10 +972,50 @@ pub fn register(vm: &mut VM) {
 /// a second implementation.
 fn register_wasi3_accessors(vm: &mut VM, type_ids: HttpTypeIds) {
     // ── request getters ────────────────────────────────────────────────
-    fn with_request<T>(args: &[Value], f: impl FnOnce(&OutgoingRequestResource) -> T) -> Option<T> {
-        let request_id = resource_id(&args[0], KIND_OUTGOING_REQUEST)?;
+    //
+    // 0.3.1 declares ONE `request` resource where 0.2 had `outgoing-request`
+    // and `incoming-request`, so a `request.get-*` accessor has to answer for
+    // a request arriving from the network as readily as for one built by
+    // `request.new`. This host still keeps the two directions in separate
+    // tables; the view below is what makes them one resource from the guest's
+    // side, the same way `response.get-status-code` already reads both
+    // response tables.
+    //
+    // Reading through a view rather than widening `resource_id` keeps the
+    // asymmetry that IS real: an incoming request has no `request-options`,
+    // because nothing on this side chose them.
+    struct RequestView {
+        method: String,
+        path_with_query: Option<String>,
+        scheme: Option<String>,
+        authority: Option<String>,
+        headers_id: u32,
+        options_id: Option<u32>,
+    }
+
+    fn with_request<T>(args: &[Value], f: impl FnOnce(&RequestView) -> T) -> Option<T> {
         let registry = registry().lock().unwrap();
-        registry.outgoing_requests.get(&request_id).map(f)
+        if let Some(id) = resource_id(&args[0], KIND_OUTGOING_REQUEST) {
+            let request = registry.outgoing_requests.get(&id)?;
+            return Some(f(&RequestView {
+                method: request.method.clone(),
+                path_with_query: request.path_with_query.clone(),
+                scheme: request.scheme.clone(),
+                authority: request.authority.clone(),
+                headers_id: request.headers_id,
+                options_id: request.options_id,
+            }));
+        }
+        let id = resource_id(&args[0], KIND_INCOMING_REQUEST)?;
+        let request = registry.incoming_requests.get(&id)?;
+        Some(f(&RequestView {
+            method: request.method.clone(),
+            path_with_query: request.path_with_query.clone(),
+            scheme: request.scheme.clone(),
+            authority: request.authority.clone(),
+            headers_id: request.headers_id,
+            options_id: None,
+        }))
     }
 
     vm.register_host_fn(
@@ -1650,7 +1031,7 @@ fn register_wasi3_accessors(vm: &mut VM, type_ids: HttpTypeIds) {
     for (name, pick) in [
         (
             "[method]request.get-path-with-query",
-            (|r: &OutgoingRequestResource| r.path_with_query.clone()) as fn(&_) -> Option<String>,
+            (|r: &RequestView| r.path_with_query.clone()) as fn(&_) -> Option<String>,
         ),
         ("[method]request.get-scheme", |r| r.scheme.clone()),
         ("[method]request.get-authority", |r| r.authority.clone()),
@@ -1823,7 +1204,15 @@ fn register_wasi3_accessors(vm: &mut VM, type_ids: HttpTypeIds) {
             (|r: &mut OutgoingRequestResource, v: Option<String>| r.path_with_query = v)
                 as fn(&mut _, Option<String>),
         ),
-        ("[method]request.set-scheme", |r, v| r.scheme = v),
+        // RFC 9110 §4.2: a scheme is case-insensitive and is normalised to
+        // lowercase. `client.send` compares it with `!=`, so a request whose
+        // scheme was stored as given is rejected for a scheme that is
+        // perfectly valid. The 0.2 setter this replaced normalised here; the
+        // rename dropped it, which is a behaviour lost to a name change and
+        // exactly what the corpus test for `HtTp` exists to catch.
+        ("[method]request.set-scheme", |r, v| {
+            r.scheme = v.map(|scheme| scheme.to_ascii_lowercase())
+        }),
         ("[method]request.set-authority", |r, v| r.authority = v),
     ] {
         vm.register_host_fn(
@@ -1918,7 +1307,7 @@ fn register_wasi3_accessors(vm: &mut VM, type_ids: HttpTypeIds) {
     );
 }
 
-/// WASI 0.3 (`wasi:http@0.3.0-rc-2025-09-16`) `client` + `handler` interfaces.
+/// `wasi:http@0.3.1` `client` + `handler` interfaces.
 ///
 /// 0.3 collapses the 0.2 dance (`outgoing-handler.handle` → `future-incoming-
 /// response` → `.get()`) into a single async call that yields the response
@@ -2008,13 +1397,19 @@ fn register_wasi3_handler(vm: &mut VM, type_ids: HttpTypeIds) {
 }
 
 fn register_wasi3(vm: &mut VM, type_ids: HttpTypeIds) {
-    // [static]request.new — WASI 0.3 constructor.
-    // Contents stream accepted but not drained (HostContext::stream_drain not yet available).
+    // [static]request.new — WASI 0.3.1 constructor.
     vm.register_host_fn(
         "wasi:http/types",
         "[static]request.new",
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let headers_id = resource_id(&args[0], KIND_HEADERS).unwrap_or(0);
+        Box::new(move |ctx: &mut HostContext, args: &[Value]| {
+            // `headers` is an OWNED `fields`. Defaulting a bad handle to id 0
+            // (which this did until 2026-08-21) turns a caller's mistake into
+            // "a request with headers it never set" — the 0.2 constructor this
+            // replaced answered `invalid-argument`, and losing that to a rename
+            // is how a wrong call starts succeeding.
+            let Some(headers_id) = resource_id(&args[0], KIND_HEADERS) else {
+                return err("invalid-argument");
+            };
             // §request.new(headers, contents, trailers, options) — the 4th
             // argument is `option<request-options>`, read back by
             // `request.get-options`. Accept it in either the spec position or
@@ -2027,6 +1422,19 @@ fn register_wasi3(vm: &mut VM, type_ids: HttpTypeIds) {
                     args.get(1)
                         .and_then(|a| resource_id(a, KIND_REQUEST_OPTIONS))
                 });
+            // `contents` sits in the spec's second position. When a caller
+            // put request-options there instead, that is not a stream and
+            // drains to nothing — the same answer an absent body gives.
+            let body = if options_id.is_some()
+                && args
+                    .get(1)
+                    .and_then(|a| resource_id(a, KIND_REQUEST_OPTIONS))
+                    .is_some()
+            {
+                Vec::new()
+            } else {
+                args.get(1).map(|c| ctx.stream_drain(c)).unwrap_or_default()
+            };
             let mut reg = registry().lock().unwrap();
             let id = alloc_id();
             reg.outgoing_requests.insert(
@@ -2034,6 +1442,7 @@ fn register_wasi3(vm: &mut VM, type_ids: HttpTypeIds) {
                 OutgoingRequestResource {
                     options_id,
                     headers_id,
+                    body,
                     method: "GET".into(),
                     path_with_query: None,
                     scheme: None,
@@ -2058,16 +1467,58 @@ fn register_wasi3(vm: &mut VM, type_ids: HttpTypeIds) {
     vm.register_host_fn(
         "wasi:http/types",
         "[static]response.new",
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let headers_id = resource_id(&args[0], KIND_HEADERS).unwrap_or(0);
+        // §response.new(headers, contents, trailers). `contents` is a
+        // `stream<u8>` and IS the body — 0.3.1 has no `outgoing-body` resource
+        // and no `body`/`write`/`finish` calls, so this is the only way a
+        // response body can come into existence. Dropping the argument (which
+        // this did until 2026-08-21, behind a comment claiming host draining
+        // was unavailable) meant every response was silently empty.
+        Box::new(move |ctx: &mut HostContext, args: &[Value]| {
+            let Some(headers_id) = resource_id(&args[0], KIND_HEADERS) else {
+                return err("invalid-argument");
+            };
+            // Drained here rather than lazily: `stream_drain` needs the VM, and
+            // the guest is free to drop its end the moment `new` returns.
+            // A non-stream argument drains to nothing, which is what an absent
+            // `option<stream>` should read as anyway.
+            let body = args.get(1).map(|c| ctx.stream_drain(c)).unwrap_or_default();
+            let trailers = args
+                .get(2)
+                .and_then(|t| resource_id(t, KIND_HEADERS))
+                .and_then(|id| {
+                    registry()
+                        .lock()
+                        .unwrap()
+                        .headers
+                        .get(&id)
+                        .map(|h| h.entries.clone())
+                })
+                .unwrap_or_default();
             let mut reg = registry().lock().unwrap();
+            let body_id = if body.is_empty() && trailers.is_empty() {
+                // No body is not the same as an EMPTY body only if something
+                // downstream can tell them apart; nothing here can, so the
+                // cheaper representation is the honest one.
+                None
+            } else {
+                let body_id = alloc_id();
+                reg.outgoing_bodies.insert(
+                    body_id,
+                    OutgoingBodyResource {
+                        bytes: body,
+                        finished: true,
+                        trailers,
+                    },
+                );
+                Some(body_id)
+            };
             let id = alloc_id();
             reg.outgoing_responses.insert(
                 id,
                 OutgoingResponseResource {
                     status: 200,
                     headers_id,
-                    body_id: None,
+                    body_id,
                 },
             );
             make_resource(KIND_OUTGOING_RESPONSE, id, type_ids.outgoing_response)
@@ -2138,11 +1589,17 @@ fn consume_body_bytes(arg: &Value) -> Option<Vec<u8>> {
         }
         return Some(body);
     }
-    // An outgoing request carries no body in this host — `request.new`'s
-    // `contents` stream is accepted and not retained — so "no body" is the
-    // truthful answer rather than an error.
-    if resource_id(arg, KIND_OUTGOING_REQUEST).is_some() {
-        return Some(Vec::new());
+    if let Some(request_id) = resource_id(arg, KIND_OUTGOING_REQUEST) {
+        let registry = registry().lock().unwrap();
+        // A request built with no `contents` has an EMPTY body, which is a
+        // legal answer — not a missing resource.
+        return Some(
+            registry
+                .outgoing_requests
+                .get(&request_id)
+                .map(|request| request.body.clone())
+                .unwrap_or_default(),
+        );
     }
     None
 }
