@@ -1817,6 +1817,30 @@ impl Document {
             return false;
         }
 
+        // **A DocumentFragment is not a box.** It has no widget for a child's
+        // widget to join and it never draws, so none of the machinery below
+        // applies to it: the child is linked and nothing else. It takes its
+        // real place — and its widget — when the fragment is spliced into
+        // something that HAS one.
+        //
+        // Ahead of every branch below because this is about the PARENT, and
+        // those all ask about the child. Without it a block-level child fell
+        // all the way through to `insert_widget`, which refused it because a
+        // fragment is not a container, and the parser's sink read the `false`
+        // as a refusal and dropped the node. An INLINE child was accepted by
+        // the leaf-caption branch, so a fragment appeared to work right up
+        // until someone put a `<div>` in one.
+        if self.is_document_fragment(parent) {
+            if let Some(previous) = self.nodes.get(&child).and_then(|n| n.parent) {
+                self.unlink_child(previous, child);
+            }
+            if let Some(n) = self.nodes.get_mut(&child) {
+                n.parent = Some(parent);
+            }
+            self.link_child(parent, child, before);
+            return true;
+        }
+
         // An `<option>` is CONTENT of its select, not a control beside it —
         // `insert_widget` would refuse, because a combobox is not a container.
         // Appending options is the DOM-native way to fill a list, so it has to
@@ -12287,7 +12311,10 @@ mod tests {
         assert!(doc.is_document_fragment(fragment));
         assert_eq!(doc.node_type(fragment), 11);
         assert_eq!(doc.node_name(fragment), "#document-fragment");
-        for tag in ["a", "b"] {
+        // A BLOCK and an inline. The block matters: a fragment is not a box,
+        // and only a block child exercises the path that has no widget to
+        // join — with two inline tags this passed while `<div>` did not work.
+        for tag in ["div", "b"] {
             let child = doc.create_element(tag);
             doc.append_child(fragment, child);
         }
@@ -12297,7 +12324,7 @@ mod tests {
         // The fragment is NOT in the tree — its children are, in order, and at
         // the level the caller asked for rather than one deeper.
         let tags: Vec<String> = doc.child_nodes(d).iter().map(|&c| doc.node_name(c)).collect();
-        assert_eq!(tags, vec!["i", "a", "b"]);
+        assert_eq!(tags, vec!["i", "div", "b"]);
         assert!(
             !tags.iter().any(|t| t == "#document-fragment"),
             "the fragment itself must not land in the tree"
@@ -12315,7 +12342,10 @@ mod tests {
         doc.append_child(d, pivot);
 
         let fragment = doc.create_document_fragment();
-        for tag in ["a", "b"] {
+        // A BLOCK and an inline. The block matters: a fragment is not a box,
+        // and only a block child exercises the path that has no widget to
+        // join — with two inline tags this passed while `<div>` did not work.
+        for tag in ["div", "b"] {
             let child = doc.create_element(tag);
             doc.append_child(fragment, child);
         }
@@ -12325,7 +12355,7 @@ mod tests {
         // Each child goes before the SAME reference, so they arrive in the
         // order they were in — not reversed.
         let tags: Vec<String> = doc.child_nodes(d).iter().map(|&c| doc.node_name(c)).collect();
-        assert_eq!(tags, vec!["a", "b", "i"]);
+        assert_eq!(tags, vec!["div", "b", "i"]);
     }
 
     #[test]
@@ -12424,7 +12454,7 @@ mod tests {
         // The naive implementation — insert each before the CURRENT first child
         // — yields b, a, i. The nodes must arrive in the order they were given.
         let tags: Vec<String> = doc.child_nodes(d).iter().map(|&c| doc.node_name(c)).collect();
-        assert_eq!(tags, vec!["a", "b", "i"]);
+        assert_eq!(tags, vec!["div", "b", "i"]);
     }
 
     #[test]
