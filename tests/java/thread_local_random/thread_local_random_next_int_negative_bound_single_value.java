@@ -33,8 +33,10 @@ public class Main {
     }
 
     public static void main(String[] args) {
-java.util.concurrent.ThreadLocalRandom rng = java.util.concurrent.ThreadLocalRandom.current(); __p(rng.nextInt(-1));
-__check("-1");
+// Expectation measured on real java (openjdk, this machine): a
+// non-positive bound throws IllegalArgumentException.
+java.util.concurrent.ThreadLocalRandom rng = java.util.concurrent.ThreadLocalRandom.current(); try { __p(rng.nextInt(-1)); } catch (IllegalArgumentException e) { __p("IAE"); }
+__check("IAE");
     }
 }
 

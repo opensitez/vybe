@@ -33,8 +33,11 @@ public class Main {
     }
 
     public static void main(String[] args) {
+// Expectation measured on real java (openjdk, this machine): ArrayList
+// permits nulls, so its spliterator does NOT report NONNULL (chars 16464 =
+// ORDERED|SIZED|SUBSIZED).
 java.util.ArrayList<Integer> list = new java.util.ArrayList<Integer>(); list.add(1); int ch = list.spliterator().characteristics(); __p((ch & java.util.Spliterator.NONNULL) != 0);
-__check("true");
+__check("false");
     }
 }
 

@@ -33,8 +33,10 @@ public class Main {
     }
 
     public static void main(String[] args) {
+// Expectation measured on real java (openjdk, this machine): "ab" + ", " +
+// "c" renders "ab, c" — length 5, not 6.
 java.util.StringJoiner sj = new java.util.StringJoiner(", "); sj.add("ab"); sj.add("c"); __p(sj.length());
-__check("6");
+__check("5");
     }
 }
 

@@ -33,8 +33,10 @@ public class Main {
     }
 
     public static void main(String[] args) {
-java.util.ArrayList<Integer> list = new java.util.ArrayList<Integer>(); list.add(1); __p(list.spliterator().getComparator() == null);
-__check("true");
+// Expectation measured on real java (openjdk, this machine): a list
+// spliterator is not SORTED, so getComparator throws IllegalStateException.
+java.util.ArrayList<Integer> list = new java.util.ArrayList<Integer>(); list.add(1); try { __p(list.spliterator().getComparator() == null); } catch (IllegalStateException e) { __p("ISE"); }
+__check("ISE");
     }
 }
 

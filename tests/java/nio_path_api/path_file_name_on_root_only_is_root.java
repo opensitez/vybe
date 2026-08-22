@@ -33,8 +33,10 @@ public class Main {
     }
 
     public static void main(String[] args) {
+// Expectation measured on real java (openjdk, this machine): the root path
+// has NO file name — `getFileName()` is null and prints "null", not "/".
 java.nio.file.Path p = java.nio.file.Paths.get("/"); __p(p.getFileName());
-__check("/");
+__check("null");
     }
 }
 

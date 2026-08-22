@@ -33,8 +33,11 @@ public class Main {
     }
 
     public static void main(String[] args) {
+// Expectation measured on real java (openjdk, this machine): merge appends
+// the OTHER joiner's contents without its prefix/suffix — "[a,b]", not
+// "[a,(b)]" (JDK javadoc says the same).
 java.util.StringJoiner a = new java.util.StringJoiner(",", "[", "]"); a.add("a"); java.util.StringJoiner b = new java.util.StringJoiner(",", "(", ")"); b.add("b"); a.merge(b); __p(a.toString());
-__check("[a,(b)]");
+__check("[a,b]");
     }
 }
 

@@ -33,8 +33,10 @@ public class Main {
     }
 
     public static void main(String[] args) {
-java.util.concurrent.ThreadLocalRandom rng = java.util.concurrent.ThreadLocalRandom.current(); __p(rng.nextDouble(0.0, 0.0));
-__check("0.0");
+// Expectation measured on real java (openjdk, this machine): an empty
+// range origin == bound throws IllegalArgumentException.
+java.util.concurrent.ThreadLocalRandom rng = java.util.concurrent.ThreadLocalRandom.current(); try { __p(rng.nextDouble(0.0, 0.0)); } catch (IllegalArgumentException e) { __p("IAE"); }
+__check("IAE");
     }
 }
 

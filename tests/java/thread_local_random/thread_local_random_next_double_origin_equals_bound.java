@@ -33,8 +33,10 @@ public class Main {
     }
 
     public static void main(String[] args) {
-java.util.concurrent.ThreadLocalRandom rng = java.util.concurrent.ThreadLocalRandom.current(); __p(rng.nextDouble(2.5, 2.5));
-__check("2.5");
+// Expectation measured on real java (openjdk, this machine): origin ==
+// bound throws IllegalArgumentException, it does not return the origin.
+java.util.concurrent.ThreadLocalRandom rng = java.util.concurrent.ThreadLocalRandom.current(); try { __p(rng.nextDouble(2.5, 2.5)); } catch (IllegalArgumentException e) { __p("IAE"); }
+__check("IAE");
     }
 }
 

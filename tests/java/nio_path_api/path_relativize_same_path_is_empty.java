@@ -33,8 +33,10 @@ public class Main {
     }
 
     public static void main(String[] args) {
+// Expectation measured on real java (openjdk, this machine): relativize of
+// equal paths is the EMPTY path, and its toString is "" — not ".".
 java.nio.file.Path p = java.nio.file.Paths.get("/same/x"); __p(p.relativize(p).toString());
-__check(".");
+__check("");
     }
 }
 

@@ -33,8 +33,10 @@ public class Main {
     }
 
     public static void main(String[] args) {
-java.util.concurrent.ThreadLocalRandom rng = java.util.concurrent.ThreadLocalRandom.current(); double first = rng.doubles(1L, 1.25, 1.25).findFirst().getAsDouble(); __p(first);
-__check("1.25");
+// Expectation measured on real java (openjdk, this machine): an empty
+// range origin == bound throws IllegalArgumentException.
+java.util.concurrent.ThreadLocalRandom rng = java.util.concurrent.ThreadLocalRandom.current(); try { double first = rng.doubles(1L, 1.25, 1.25).findFirst().getAsDouble(); __p(first); } catch (IllegalArgumentException e) { __p("IAE"); }
+__check("IAE");
     }
 }
 
