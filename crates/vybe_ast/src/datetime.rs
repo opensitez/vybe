@@ -108,6 +108,11 @@ pub enum WeekdayBase {
     MondayOne,
     /// Monday = 0 … Sunday = 6. Python `date.weekday()`.
     MondayZero,
+    /// Sunday = 1 … Saturday = 7. Visual Basic `Weekday` /
+    /// `DatePart(DateInterval.Weekday, …)` with the default `vbSunday`, and
+    /// T-SQL `DATEPART(weekday, …)` under `SET DATEFIRST 7`. A fourth real
+    /// convention — VB's own answer, not an offset someone applies afterwards.
+    SundayOne,
 }
 
 /// Which integer a language uses for January.

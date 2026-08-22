@@ -289,6 +289,25 @@ impl Statement {
     pub fn with_span(kind: StmtKind, span: Span) -> Self {
         Self { kind, span }
     }
+
+    /// Does this statement DECLARE something rather than execute?
+    ///
+    /// A declaration is not a step in the flow, so a pass that reorders or
+    /// partitions executable statements — `goto` lowering splitting a body at
+    /// its labels, say — must leave declarations where every branch can still
+    /// see them. This is a property of the NODE, not of the language: C's
+    /// lowering hoisted only `VarDecl` because C has nothing else to put
+    /// there, not because the others belong inside a numbered block.
+    pub fn is_declaration(&self) -> bool {
+        matches!(
+            self.kind,
+            StmtKind::VarDecl { .. }
+                | StmtKind::FunctionDecl { .. }
+                | StmtKind::ClassDecl { .. }
+                | StmtKind::StructDecl { .. }
+                | StmtKind::ModuleDecl { .. }
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -604,6 +623,83 @@ pub enum StmtKind {
         field_formats: Vec<Option<RecordFieldFormat>>,
     },
 
+    // ── Record files ─────────────────────────────────────────────────────
+    //
+    // These REPLACE the nine VB6 nodes above. Both models are live during the
+    // migration (`recordfileplan.md` §5): the old nodes die when their last
+    // emitter is gone, not before, and the `__vb_*` globals go after that.
+    /// A file DECLARED: its own name, the record type it holds, and how it is
+    /// organized. Everything a transfer needs to know, stated once.
+    ///
+    /// Replaces `OpenFile { file_number }`. A file's identity is its
+    /// declaration — COBOL `SELECT`, Pascal `file of Rec`, Fortran's unit — and
+    /// only VB6 identifies one by an integer the programmer invents. Six
+    /// languages were faking a number to fit a model none of them has.
+    ///
+    /// Layout is NOT here: `record` names a `StructDecl`, whose members carry
+    /// [`FieldStorage`]. One description of a record, in one place.
+    FileDecl {
+        /// The file's identity in source. Not a handle, not a number.
+        name: String,
+        path: Expression,
+        /// The record type — resolves to a `StructDecl`.
+        record: TypeRef,
+        organization: FileOrganization,
+        access: FileAccess,
+        /// What opening it permits, and what it does to existing contents.
+        mode: OpenMode,
+        /// Indexed files only: which record fields are keys, in priority order.
+        keys: Vec<RecordKey>,
+    },
+
+    /// ONE transfer over an addressing mode.
+    ///
+    /// COBOL `READ`/`WRITE`/`REWRITE`/`DELETE`, VB `Get #n`/`Put #n`, Pascal
+    /// `Read(f,r)`/`Write(f,r)` and Fortran `READ(u, rec=n)` are the same
+    /// operation with different `direction` and `at` — which is why they were
+    /// four nodes that each knew a little and none knew the layout.
+    ///
+    /// Lowers onto `wasi:filesystem/types` `[method]descriptor.read-via-stream(offset)`
+    /// / `write-via-stream(data, offset)` — the only byte-moving calls WASI
+    /// 0.3.1 defines. `at` becomes the offset: record *n* of a fixed-width
+    /// record sits at *n × width*, and the width comes from the record type's
+    /// `FieldStorage`, never re-derived at emit time.
+    RecordTransfer {
+        /// The declared file — an `Ident` naming a [`StmtKind::FileDecl`].
+        file: Expression,
+        /// The record type this transfer moves, naming the same `StructDecl`
+        /// as the file's declaration.
+        ///
+        /// Stated HERE as well as on [`StmtKind::FileDecl`] so the node is
+        /// self-contained. Looking it up through the file instead makes a
+        /// transfer depend on the declaration having been COMPILED first —
+        /// and `READ F.` in a program that never opens `F`, or a paragraph
+        /// compiled ahead of the one holding the `OPEN`, then has no type at
+        /// all. This is a NAME, not a layout: the extents still live in one
+        /// place, on the type's own members.
+        record_type: TypeRef,
+        direction: RecordDirection,
+        at: RecordAddress,
+        /// The struct read into, or written from. `None` for `Delete`, which
+        /// addresses a record without moving one.
+        record: Option<Expression>,
+        /// Where the OUTCOME of the transfer is stored, if the program asked
+        /// for one: COBOL `FILE STATUS`, Fortran `IOSTAT=`, VB `Err`.
+        ///
+        /// A transfer that reached the end of the file is not an error and
+        /// not a silent no-op — it is a fact the program is entitled to read,
+        /// and `AT END` / `EOF(n)` / `IOSTAT < 0` are three spellings of
+        /// asking for it. Without this the emitter could position a read and
+        /// then have nowhere to say it found nothing, which is the one shape
+        /// that turns an empty file into a plausible-looking record.
+        ///
+        /// Values are the two-character COBOL status codes, because they are
+        /// the only vocabulary among these that distinguishes the cases
+        /// (`"00"` ok, `"10"` at end, `"23"` key not found); a language whose
+        /// own spelling is coarser narrows at its walker.
+        status: Option<Expression>,
+    },
+
     // ── Module system (JS) ───────────────────────────────────────────────
     Export {
         declaration: Option<Box<Statement>>,
@@ -763,6 +859,15 @@ pub enum ClassMember {
         modifiers: Modifiers,
         with_events: bool,
         array_bounds: Option<Vec<Expression>>,
+        /// Declared byte extent — see [`FieldStorage`]. `None` unless the
+        /// language declares a fixed width (COBOL `PIC`, VB `String * n`,
+        /// Fortran `character(len=n)`, Pascal packed records).
+        ///
+        /// It is NOT part of `modifiers`: everything there — visibility,
+        /// static, readonly, virtual — is about access and dispatch. A byte
+        /// extent is neither, and filing it there to save edits would put the
+        /// fact where nobody looks for it.
+        storage: Option<FieldStorage>,
     },
 
     Method(Box<Statement>),
@@ -1099,6 +1204,32 @@ pub enum ArrayTransformOp {
     /// [`ArrayTraversalOrder`] is which subscript runs fastest as the source is
     /// consumed — Fortran's `ORDER=` permutation, NumPy's `order=`.
     Reshape,
+}
+
+impl ArrayTransformOp {
+    /// Which argument the result takes its SHAPE from, or `None` when the
+    /// result is always a rank-1 vector whatever went in.
+    ///
+    /// The rank of a transform's result is a property of the OPERATION, so the
+    /// node answers it once for every language. Without this, each consumer
+    /// asking "is this expression an array?" has to special-case the op list
+    /// itself — and the one that mattered is `MERGE`, whose result is a SCALAR
+    /// when its mask is one. Treating every transform as an array made
+    /// `merge(1, 0, scalar_condition) /= 1` lower elementwise, and an array is
+    /// truthy, so the comparison took the wrong branch while still printing the
+    /// right value.
+    pub fn shape_source_arg(self) -> Option<usize> {
+        match self {
+            // PACK compacts to a vector — rank 1 regardless of the source.
+            ArrayTransformOp::PackMask => None,
+            // UNPACK scatters into the mask's shape.
+            ArrayTransformOp::UnpackMask => Some(1),
+            // RESHAPE is told its shape outright.
+            ArrayTransformOp::Reshape => Some(1),
+            // MERGE selects elementwise, so it wears the mask's shape.
+            ArrayTransformOp::MergeMask => Some(2),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -2223,6 +2354,117 @@ pub enum FileKeyRelation {
     GreaterOrEqual,
     Less,
     LessOrEqual,
+}
+
+/// How records are arranged in the file — COBOL `ORGANIZATION`, VB `Open For`.
+///
+/// A property of the DECLARATION, not a directive: it is fixed where the file
+/// is declared and is the same fact at every site that touches it, in any file
+/// and any language (`directives.md` §3, question 3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FileOrganization {
+    /// Fixed-width records back to back. Record *n* is at *n × width*.
+    #[default]
+    Sequential,
+    /// Newline-delimited text. Records are NOT fixed width, so positioned
+    /// addressing does not apply — COBOL LINE SEQUENTIAL.
+    Line,
+    /// Fixed-width records addressed by 1-based record number.
+    Relative,
+    /// Fixed-width records addressed by key. See `keys` on the declaration.
+    Indexed,
+}
+
+/// What the program may do with the file, and what opening it does to what is
+/// already there — COBOL `OPEN INPUT/OUTPUT/I-O/EXTEND`, VB `Open For`, Pascal
+/// `Reset`/`Rewrite`/`Append`.
+///
+/// Named for the intent, not for one language's spelling, and it maps onto
+/// WASI's two flag words without interpretation: `descriptor-flags` says which
+/// directions are permitted, `open-flags` says whether to create and whether
+/// to truncate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OpenMode {
+    /// Existing contents, read only. Opening a file that is not there is an
+    /// error, not an empty file.
+    #[default]
+    Read,
+    /// A fresh file. Creates it, and truncates whatever was there — COBOL
+    /// `OPEN OUTPUT` starts an empty file even over a full one.
+    Write,
+    /// Both directions over existing contents, creating the file if absent
+    /// but never truncating. COBOL `OPEN I-O`, which is what `REWRITE` needs.
+    ReadWrite,
+    /// Writes land after the existing contents. COBOL `OPEN EXTEND`.
+    Append,
+}
+
+/// How the program intends to reach records — COBOL `ACCESS MODE`.
+///
+/// Distinct from [`FileOrganization`]: an INDEXED file may be read
+/// sequentially. Organization is how the bytes lie; access is how this program
+/// walks them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FileAccess {
+    #[default]
+    Sequential,
+    Random,
+    /// Either, chosen per statement. COBOL DYNAMIC.
+    Dynamic,
+}
+
+/// A key field of an INDEXED file, in priority order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecordKey {
+    /// Field name within the record type.
+    pub field: String,
+    /// A primary key rejects duplicates; an alternate key may allow them
+    /// (COBOL `WITH DUPLICATES`).
+    pub duplicates: bool,
+}
+
+/// Which way the bytes move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordDirection {
+    Read,
+    Write,
+    /// Replace the record already at `at` — COBOL `REWRITE`, VB `Put` over an
+    /// existing record. Distinct from `Write`, which may extend the file.
+    Rewrite,
+    Delete,
+}
+
+/// WHICH record a transfer addresses.
+///
+/// No `PartialEq`: the payload is an `Expression`, which has none — two
+/// addresses are compared by evaluating them, not by comparing their syntax.
+#[derive(Debug, Clone)]
+pub enum RecordAddress {
+    /// The record most recently transferred — COBOL `REWRITE` after a `READ`,
+    /// VB `Put #n` with no record number after a `Get`.
+    ///
+    /// Distinct from [`Self::Next`] rather than expressible as it: a
+    /// sequential read leaves the position ON the following record, so
+    /// "rewrite what I just read" is one record BEHIND where the next
+    /// transfer would land. Spelling it `Next` would overwrite the record
+    /// after the one the program meant, and the file would still look
+    /// plausible.
+    Current,
+    /// The next record in sequence — the file's position advances.
+    Next,
+    /// A 1-based record number. COBOL RELATIVE, Fortran `rec=n`, VB `Get #f, n`.
+    ///
+    /// ⚠ 1-BASED in every source language that has it. The lowering subtracts
+    /// one exactly once, when computing the byte offset.
+    Number(Expression),
+    /// By key value — COBOL `START`/`READ KEY`, indexed files only.
+    Key {
+        /// Index into the declaration's `keys`.
+        key_index: usize,
+        value: Expression,
+        /// `START ... KEY IS >= X` and friends; `Equal` for a plain keyed read.
+        relation: FileKeyRelation,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -3628,7 +3870,50 @@ pub struct Modifiers {
     /// `add` or a PHP `tostring` is an ordinary member unless its language
     /// says otherwise.
     pub protocol_slot: Option<ProtocolSlot>,
+    /// WHERE this member's implementation lives.
+    ///
+    /// `None` means the ordinary case — the implementation is the source body
+    /// in `FunctionDecl::body`, which is what every walker produces and what
+    /// every reader assumes today.
+    ///
+    /// It exists because the model could not previously describe a member that
+    /// has no source body but is nonetheless implemented. `StringBuilder.Append`
+    /// is a method of a class by every definition this AST uses — a name, an
+    /// arity, a receiver, visibility, a parent chain — and the only thing it
+    /// lacks is text in a file. Unable to say that, the platform BCL tables went
+    /// to the one model that could (`vybe_runtime::component_model::ClassType`),
+    /// which put a class model in the VM. See flexclassplan §4a-octies.
+    ///
+    /// ⚠ [`Modifiers::is_abstract`] is the degenerate case of this field, and
+    /// the two are meant to collapse: an abstract member is one whose
+    /// implementation is declared absent. They coexist only until every walker
+    /// sets the richer form, exactly as `is_destructor` coexists with
+    /// `protocol_slot` above.
+    pub implementation: Option<Implementation>,
     pub decorators: Vec<Expression>,
+}
+
+/// Where a member's implementation comes from.
+///
+/// **A method is a name, a signature, and an implementation.** The AST used to
+/// hardcode one of these three cases — the source body — and could spell
+/// neither of the others, which is why platform classes could not be expressed
+/// as ordinary classes.
+///
+/// These are the same three cases `vybe_runtime`'s `MethodBody` enumerates
+/// (`UserChunk` / `HostCall` / `Common`). That is the evidence the vocabulary is
+/// right rather than invented: the VM had already discovered the distinction and
+/// had to define a type to hold it *because this crate could not*. Naming them
+/// here moves an existing abstraction to the layer that owns it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Implementation {
+    /// A host import — `(module, name)`, called directly.
+    Host { module: String, name: String },
+    /// A shared compiler emit, named by string, that lowers to instructions.
+    Intrinsic(String),
+    /// Declared to have NO implementation here; a subclass must provide one.
+    /// What `is_abstract` says today.
+    Abstract,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -3705,6 +3990,72 @@ pub enum ValueEquality {
     /// Field-wise. The instance stamp `__value_eq` is this policy's runtime
     /// channel, already read by the language equality paths.
     Structural,
+}
+
+/// A field's DECLARED EXTENT — how many bytes it occupies when the record is
+/// laid out as bytes, on disk or in a fixed-layout aggregate.
+///
+/// Distinct from [`FieldLayout`], which is memory ALIGNMENT. `PIC X(10)` is ten
+/// bytes on disk whatever the alignment, and `RELATIVE`/`INDEXED` files put
+/// record *n* at offset *n × width* — so a record cannot be read or written at
+/// all without this. It is `None` for every language that does not declare
+/// fixed widths, which is most of them.
+///
+/// Why it is on the DECLARATION rather than on the transfer node: it describes
+/// a declared thing, `directives.md` §3 question 3 — the same call as
+/// `Param.pass_by`. It is the same fact at every site that touches the record,
+/// in any file, in any language. `RecordFieldFormat { decimal_places }`, which
+/// hung one integer of this off `RewriteRecordFile` and nothing else, is what
+/// it replaces.
+///
+/// ⚠ The declared width and the blank-padding rule are ONE fact, not two.
+/// Fortran blank-pads `character(len=N)` comparison (F2018 §10.1.5.5.2) exactly
+/// as COBOL pads alphanumeric; both walkers implement it separately today. A
+/// comparison against a declared-width field pads to that width — reading this
+/// is what lets that stop being per-language.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FieldStorage {
+    /// Declared width in bytes. `PIC X(10)` → 10; VB `String * 10` → 10;
+    /// Fortran `character(len=10)` → 10.
+    pub bytes: u32,
+    /// Digits after an implied decimal point — COBOL `PIC 9(5)V99` → 2. The
+    /// point is not stored, which is why the scale has to be declared.
+    pub decimal_places: u8,
+    /// How the sign is stored, when the field is signed at all.
+    pub sign: Option<SignFormat>,
+    /// Which end is padded when the value is shorter than `bytes`.
+    pub justify: Justify,
+}
+
+/// Where a signed field keeps its sign, and whether it costs a byte.
+///
+/// COBOL `SIGN IS LEADING/TRAILING SEPARATE CHARACTER` is currently dropped on
+/// the floor — the clause parses and nothing carries it, so a signed DISPLAY
+/// field round-trips wrong. `SEPARATE` also changes the byte count, which is
+/// why it belongs beside `bytes` rather than in a walker table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignFormat {
+    /// Sign overpunched onto the first digit — no extra byte.
+    LeadingOverpunch,
+    /// Sign overpunched onto the last digit — no extra byte. COBOL's default
+    /// for a signed DISPLAY field.
+    TrailingOverpunch,
+    /// A `+`/`-` byte before the digits. Costs one byte.
+    LeadingSeparate,
+    /// A `+`/`-` byte after the digits. Costs one byte.
+    TrailingSeparate,
+}
+
+/// Which end of a fixed-width field is padded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Justify {
+    /// Value at the left, padding on the right. COBOL alphanumeric default,
+    /// Fortran `character`.
+    #[default]
+    Left,
+    /// Value at the right, padding on the left. COBOL `JUSTIFIED RIGHT`, and
+    /// how numeric DISPLAY fields are stored.
+    Right,
 }
 
 /// Storage layout. Only meaningful where bytes are observable — C, COBOL
@@ -3797,6 +4148,21 @@ pub enum SetAlgebraArity {
     Variadic,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SetMembership {
+    /// ECMA SameValueZero — object elements compare by identity.
+    #[default]
+    SameValueZero,
+    /// JDK `hashCode`/`equals` model: membership identity is a STRUCTURAL
+    /// snapshot of the element, rendered at INSERTION time. Structurally
+    /// equal values collide (a set deduplicates equivalent data keys), and
+    /// mutating an element after insertion breaks its lookup — Java's
+    /// hash-at-insert behaviour, which `java.util.HashSet` and Kotlin's
+    /// data-class sets both contract. The backing store remains the ECMA
+    /// Set; the snapshot keys ride in a sidecar the primitive owns.
+    SnapshotKey,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SetSemantics {
     /// Contract for adding an element.
@@ -3807,6 +4173,8 @@ pub struct SetSemantics {
     pub algebra_arity: SetAlgebraArity,
     /// Convert raw predicate results to a language-visible bool object.
     pub predicate_bool_object: bool,
+    /// How membership identity is decided.
+    pub membership: SetMembership,
 }
 
 impl Default for SetSemantics {
@@ -3817,6 +4185,7 @@ impl Default for SetSemantics {
             missing_delete: SetMissingDelete::Ignore,
             algebra_arity: SetAlgebraArity::Binary,
             predicate_bool_object: false,
+            membership: SetMembership::SameValueZero,
         }
     }
 }
@@ -3896,6 +4265,8 @@ pub struct Directives {
     ///
     /// `None` means the receiver is an explicit parameter, which is what all but
     /// a handful of languages want.
+    pub receiver_binding: Option<ReceiverBinding>,
+
     /// What a shift or rotate count outside `[0, width)` does in this region.
     ///
     /// Genuinely lexical policy: the operand's declared type does NOT
@@ -3908,8 +4279,6 @@ pub struct Directives {
     /// but Fortran wants and what the compiler already emitted.
     pub shift_overflow: Option<ShiftOverflow>,
 
-    pub receiver_binding: Option<ReceiverBinding>,
-
     /// Does this program present a user interface?
     ///
     /// A WHOLE-PROGRAM property in the same sense case sensitivity is: the
@@ -3921,8 +4290,8 @@ pub struct Directives {
     /// to be empty when `main` returns is not a console one.
     ///
     /// It answers a question the runtime asks after the program has run —
-    /// whether to present a window and wait, or exit — which used to be
-    /// `vybe:gui.runApplication` setting `GuiState.should_run` from inside the
+    /// whether to present a window and wait, or exit — which used to be a host
+    /// call setting `GuiState.should_run` from inside the
     /// guest. That made "is this a UI program" a side effect of calling a host
     /// function, invisible to anything that did not.
     ///
@@ -3930,6 +4299,82 @@ pub struct Directives {
     /// content is a running one. [`AppShell::Headless`] is the case nothing else
     /// can express — a program that builds controls but must not open a window.
     pub app_shell: Option<AppShell>,
+
+    /// When a NAME stops referring to a value in this region, does the value's
+    /// finaliser run?
+    ///
+    /// Question 1 of `directives.md` §3: it governs a region of CODE. Python
+    /// says `del x` and `x = None` both drop a reference and may finalise;
+    /// C#, Java and JS drop the name and leave collection to the runtime. No
+    /// property of the VALUE distinguishes those — the language does, and the
+    /// same object reached from two languages must obey whichever one is
+    /// executing. That is the definition of lexical.
+    ///
+    /// It states only WHETHER. WHICH method runs is
+    /// [`ProtocolSlot::Destructor`], a property of the class (question 3), so
+    /// the two facts keep one home each. Before this, python's walker
+    /// synthesised `typeof x.__del__ == "function"` into the tree at every drop
+    /// site — a spelling carried across a layer, re-tested at runtime, for a
+    /// slot `NormalClass::destructor` had already filled by construction.
+    ///
+    /// `None` inherits "dropping a name finalises nothing", which is what every
+    /// language but python wants and what the compiler already emitted.
+    pub name_drop: Option<NameDrop>,
+
+    /// When a field declaration repeats a name an ancestor already declared,
+    /// does it get its OWN storage or write the ancestor's?
+    ///
+    /// Question 1 of `directives.md` §3: it governs a region of CODE. The two
+    /// declarations are identical in every language — what differs is the
+    /// language executing them. Java, C# and VB give the shadowing field a
+    /// declaring-class-keyed slot so both survive on the object and a read
+    /// resolves by the reference's STATIC type; python, js and ruby have one
+    /// slot per name on the instance. No property of the field distinguishes
+    /// those, which is what makes it lexical.
+    ///
+    /// It states only the language-wide RULE. Whether a particular declaration
+    /// *intends* to shadow is [`Modifiers::is_hiding`] (C# `new`, VB `Shadows`,
+    /// Pascal `reintroduce`) — a property of the DECLARATION, question 3 — so
+    /// the two facts keep one home each.
+    ///
+    /// A **private** field takes its own slot whatever this says: an ancestor's
+    /// private field is not visible here, so a same-named field is a different
+    /// field. That follows from `Access::Private` on the declaration and is not
+    /// the language's shadowing rule.
+    ///
+    /// `None` inherits [`FieldShadowing::Share`], which is what every language
+    /// but the statically-typed three wants.
+    pub field_shadowing: Option<FieldShadowing>,
+}
+
+/// Whether a field declaration that repeats an ancestor's name gets its own
+/// storage — see [`Directives::field_shadowing`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FieldShadowing {
+    /// One slot per field NAME on the instance: a subclass declaration writes
+    /// the ancestor's storage.
+    #[default]
+    Share,
+    /// The shadowing declaration gets a declaring-class-keyed slot. Both
+    /// survive on the object and a read resolves by the declared type.
+    Hide,
+}
+
+/// What happens to the referent when a name stops referring to it — see
+/// [`Directives::name_drop`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NameDrop {
+    /// The name stops referring and nothing else happens.
+    #[default]
+    Ignore,
+    /// Run the referent's [`ProtocolSlot::Destructor`] first, if it binds one.
+    ///
+    /// **Known imprecision, stated rather than hidden.** CPython finalises when
+    /// the last REFERENCE goes away; this finalises when the NAME does. With an
+    /// alias live (`y = x; del x`) CPython runs nothing and this runs the
+    /// finaliser early. Getting that exact needs refcounting in the VM. The
+    /// same trade was already made for PHP's `unset`.
+    Finalise,
 }
 
 /// Whether a program presents a user interface — see [`Directives::app_shell`].
@@ -3980,6 +4425,12 @@ impl Directives {
         }
         if other.app_shell.is_some() {
             self.app_shell = other.app_shell;
+        }
+        if other.name_drop.is_some() {
+            self.name_drop = other.name_drop;
+        }
+        if other.field_shadowing.is_some() {
+            self.field_shadowing = other.field_shadowing;
         }
     }
 }

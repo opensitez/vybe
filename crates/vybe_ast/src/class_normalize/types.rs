@@ -564,6 +564,18 @@ pub struct NormalField {
     /// `ValueSemantics::storage` is the declaration; this is where the
     /// declaration lands after resolution.
     pub value_type: Option<String>,
+
+    /// The field's declared byte extent, carried straight from
+    /// [`crate::ClassMember::Field::storage`].
+    ///
+    /// Normalization is where a declaration is supposed to survive, so this is
+    /// a copy, not a re-derivation. Without it a COBOL `PIC X(30)` reached the
+    /// AST and then vanished, and every consumer that needed a record's width
+    /// — the only thing that says where record *n* begins — had to ask the
+    /// language again.
+    ///
+    /// `None` for languages that state no width, which is most of them.
+    pub storage: Option<crate::FieldStorage>,
 }
 
 #[derive(Debug, Clone)]
