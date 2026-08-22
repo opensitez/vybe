@@ -10,7 +10,6 @@
 use crate::error::VMError;
 use crate::value::{Function, Object, ObjectKind, TypedArrayState, TypedElemKind, Value};
 use crate::vm::{CallFrame, MAX_FRAMES, VM};
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 /// True when a continuation's entry Function points at an async chunk —

@@ -1,6 +1,7 @@
 use crate::opcode::Op;
 use crate::value::Value;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// The namespace designated for imported string constants
 /// (js-string-builtins, § String constants). Every import from it is a global
@@ -255,6 +256,50 @@ pub struct StackSwitchHandler {
     pub label_index: u32,
 }
 
+/// Who declared a binding — the structural answer to a question that used to be
+/// asked of the SPELLING.
+///
+/// `!name.starts_with("__")` was standing in for "did the source declare this",
+/// in three unrelated places: the `_G`/`globalThis`/`$GLOBALS`/`globals()`
+/// membership list, and two debugger views. A string convention doing a type's
+/// job — a user variable legitimately named `__x` was invisible, and any
+/// compiler temporary that forgot the prefix leaked into the namespace.
+///
+/// The fact is known for certain at the moment the binding is created and
+/// nowhere else, so it is recorded there and travels with the binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalOrigin {
+    /// The program declared this: a parameter, a `let`/`var`/`Dim`, a catch
+    /// binding, a loop variable. A member of the global namespace object when
+    /// it sits at module scope.
+    Source,
+    /// The compiler invented this: emitter scratch, a spill slot, the closure
+    /// environment. Never a namespace member, whatever it is called.
+    Compiler,
+}
+
+/// One binding's debug record: its slot, its name, and who declared it.
+#[derive(Debug, Clone)]
+pub struct LocalName {
+    pub slot: u16,
+    pub name: String,
+    pub origin: LocalOrigin,
+}
+
+impl LocalName {
+    pub fn new(slot: u16, name: impl Into<String>, origin: LocalOrigin) -> Self {
+        Self {
+            slot,
+            name: name.into(),
+            origin,
+        }
+    }
+
+    pub fn is_source(&self) -> bool {
+        self.origin == LocalOrigin::Source
+    }
+}
+
 /// A compiled chunk of bytecode — one per function/script.
 #[derive(Debug, Clone)]
 pub struct Chunk {
@@ -273,12 +318,12 @@ pub struct Chunk {
     pub name: String,
     pub arity: u8,
     pub local_count: u16,
-    /// Debug metadata: `(slot, name)` for every local variable the compiler
-    /// defined in this chunk (params + block locals). Slots may repeat when
+    /// Debug metadata: every local the compiler defined in this chunk (params
+    /// + block locals), each carrying WHO declared it. Slots may repeat when
     /// sibling blocks reuse a slot; consumers (the debugger) take the last
-    /// name per slot. Empty when the frontend emitted no debug names. Never
+    /// entry per slot. Empty when the frontend emitted no debug names. Never
     /// read during execution — inspection/eval only.
-    pub local_names: Vec<(u16, String)>,
+    pub local_names: Vec<LocalName>,
     /// Debug metadata (script chunk only): bytecode offset where the user's
     /// own code begins, i.e. just past the injected language runtime prelude
     /// (`__vybe_user_code_start__` marker). `None` when there is no prelude or
@@ -296,17 +341,26 @@ pub struct Chunk {
     /// stops a declared global from shifting the function indices that
     /// `CALL_IMPORT` operands carry.
     pub global_imports: Vec<Import>,
-    /// The module's GLOBAL INDEX SPACE, on the script chunk (chunk 0) only —
-    /// `global_imports` first, then module-defined globals, exactly as WASM
-    /// numbers them. `GLOBAL_GET`/`GLOBAL_SET` operands index THIS, not a
-    /// per-chunk constant pool.
+    /// The module's GLOBAL INDEX SPACE — `global_imports` first, then
+    /// module-defined globals, exactly as WASM numbers them.
+    /// `GLOBAL_GET`/`GLOBAL_SET` operands index THIS, not a per-chunk constant
+    /// pool.
     ///
     /// Built after emission by `globals::normalize_global_table`, the same
     /// shape `link.rs::normalize_import_table` uses for the function imports:
     /// emitters name a global, the pass assigns it an index and rewrites the
     /// operands. Names survive here for the custom name section and for
     /// instantiation-time host binding; execution never consults them.
-    pub globals: Vec<String>,
+    ///
+    /// SHARED BY EVERY CHUNK IN THE MODULE, not parked on chunk 0. The table is
+    /// module-level in WASM — the name section names globals once and every
+    /// function body's `global.get` refers to it — so a chunk that CARRIES a
+    /// globalidx must be able to say what that index means. When only chunk 0
+    /// held it, `disassemble` could not resolve an operand from the chunk it
+    /// was handed, and the fix was threading the table through every caller,
+    /// which dragged `cli.rs` in. An `Arc` clone per chunk costs a pointer and
+    /// removes the parameter entirely.
+    pub globals: Arc<Vec<String>>,
     /// Type table — WASM GC type section. Only on the script chunk (chunk 0).
     /// Each entry defines a class type with fields and vtable methods.
     /// Loaded into VM's TypeRegistry before execution.
@@ -525,7 +579,7 @@ impl Chunk {
             dup_slot: None,
             imports: Vec::new(),
             global_imports: Vec::new(),
-            globals: Vec::new(),
+            globals: Arc::new(Vec::new()),
             types: Vec::new(),
             exception_tags: Vec::new(),
             tags: Vec::new(),

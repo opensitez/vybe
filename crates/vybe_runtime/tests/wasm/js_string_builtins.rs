@@ -50,7 +50,7 @@ fn call(module: &str, name: &str, args: Vec<Value>) -> Value {
     let mut vm = VM::new();
     vybe_runtime::js_builtins::register(&mut vm);
     for (name, value) in pending {
-        vm.globals.insert(name, value);
+        vm.set_global_owned(name, value);
     }
     vm.run(vec![chunk]).expect("VM run failed")
 }
@@ -68,7 +68,7 @@ fn expect_trap(module: &str, name: &str, args: Vec<Value>) {
     let mut vm = VM::new();
     vybe_runtime::js_builtins::register(&mut vm);
     for (name, value) in pending {
-        vm.globals.insert(name, value);
+        vm.set_global_owned(name, value);
     }
     assert!(vm.run(vec![chunk]).is_err(), "{module}.{name} should trap");
 }

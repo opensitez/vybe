@@ -227,7 +227,7 @@ fn catch_ignores_payload_stamps_tag_identity_only() {
     ret(&mut c);
 
     let mut vm = VM::new();
-    vm.globals.insert(payload_global, payload);
+    vm.set_global_owned(payload_global, payload);
     let v = vm
         .run(vec![c])
         .map_err(|e| e.to_string())

@@ -105,9 +105,9 @@ pub enum NamespaceNode {
         /// types. Encoding a count as placeholder `ValType`s would be inventing
         /// type information — the same mistake as a defaulted `CtorSpec`.
         arity: Option<u8>,
-        /// A constant argument the registrar bound to this call — the generic
-        /// `vybe:gui` accessors take the property NAME as an argument
-        /// (`controlGetProperty(this, "Text")`), so the target is the pair
+        /// A constant argument the registrar bound to this call — a generic
+        /// property accessor takes the property NAME as an argument
+        /// (`getProperty(this, "Text")`), so the target is the pair
         /// (function, bound name) and not the function alone. Dropping it made
         /// every keyed accessor call the generic getter with no key.
         bound_arg: Option<String>,
@@ -205,8 +205,8 @@ pub struct CtorSpec {
     pub ancestry: Vec<String>,
     /// Optional GUI control factory (`new_Panel`/`new_Label`/`new_Button`).
     /// When set, the type is a thin GUI adapter: construction creates the
-    /// `vybe:gui` control and, per arg, either nests a child widget/control
-    /// (`controlsAdd`) or forwards a scalar (`controlSetProperty`) — child vs
+    /// control and, per arg, either nests a child widget/control or forwards a
+    /// scalar property — child vs
     /// scalar detected at runtime. The object IS the control, so vybe_widgets
     /// holds all state/layout/rendering. `None` = plain object (no GUI).
     pub control_fn: Option<String>,
@@ -238,7 +238,7 @@ pub struct CtorSpec {
     pub value_equality: bool,
 }
 
-/// How a GUI-adapter constructor arg is applied to its `vybe:gui` control.
+/// How a GUI-adapter constructor arg is applied to its control.
 #[derive(Debug, Clone)]
 pub enum FieldGui {
     /// Nest as a child control if the value is a widget, else set it as a
@@ -857,9 +857,9 @@ pub fn host_fn(module: &str, func: &str) -> NamespaceNode {
     }
 }
 
-/// A host-backed leaf that binds a constant argument — the generic `vybe:gui`
-/// property accessors, which take the property name (`controlGetProperty(this,
-/// "Text")`). The pair IS the target; the function alone is not.
+/// A host-backed leaf that binds a constant argument — a generic property
+/// accessor, which takes the property name (`getProperty(this, "Text")`).
+/// The pair IS the target; the function alone is not.
 pub fn host_fn_keyed(module: &str, func: &str, key: &str) -> NamespaceNode {
     NamespaceNode::Fn {
         module: module.to_string(),

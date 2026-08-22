@@ -1053,7 +1053,7 @@ fn ref_is_null_on_undefined() {
             "__test_arg_{}",
             TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed)
         );
-        vm.globals.insert(name.clone(), Value::Undefined);
+        vm.set_global_owned(name.clone(), Value::Undefined);
         let ci = chunk.intern_string_constant(&name);
         chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
     }
@@ -1087,7 +1087,7 @@ fn invoke_simple_function() {
     let mut vm = VM::new();
     vm.run(vec![main, func]).unwrap();
 
-    let func_val = vm.globals.get("myFunc").cloned().unwrap();
+    let func_val = vm.global("myFunc").cloned().unwrap();
     let result = vm.invoke(&func_val, &[Value::I32(5)]).unwrap();
     assert_i32(&result, 15);
 }
@@ -1112,7 +1112,7 @@ fn invoke_with_multiple_args() {
     let mut vm = VM::new();
     vm.run(vec![main, func]).unwrap();
 
-    let func_val = vm.globals.get("add").cloned().unwrap();
+    let func_val = vm.global("add").cloned().unwrap();
     let result = vm
         .invoke(&func_val, &[Value::I32(3), Value::I32(7)])
         .unwrap();
@@ -1137,7 +1137,7 @@ fn invoke_returning_string() {
     let mut vm = VM::new();
     vm.run(vec![main, func]).unwrap();
 
-    let func_val = vm.globals.get("greet").cloned().unwrap();
+    let func_val = vm.global("greet").cloned().unwrap();
     let result = vm.invoke(&func_val, &[]).unwrap();
     assert_string(&result, "Hello from invoke!");
 }

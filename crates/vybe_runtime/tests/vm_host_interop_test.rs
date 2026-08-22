@@ -1500,7 +1500,7 @@ fn call_value_on_undefined_errors() {
             "__test_arg_{}",
             TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed)
         );
-        vm.globals.insert(name.clone(), Value::Undefined);
+        vm.set_global_owned(name.clone(), Value::Undefined);
         let ci = main.intern_string_constant(&name);
         main.emit_op_u16(Op::GLOBAL_GET, ci, 0);
     }

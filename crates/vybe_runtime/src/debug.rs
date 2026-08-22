@@ -1,6 +1,15 @@
 use crate::chunk::Chunk;
 use crate::opcode::{Op, OperandFormat, read_leb_u32, read_leb_u64};
 
+/// Disassemble a chunk, resolving `GLOBAL_GET`/`GLOBAL_SET` operands against
+/// the module's global table.
+///
+/// The table needs no parameter: `Chunk::globals` is the module-level index
+/// space, shared by every chunk (`globals::normalize_global_table`). A chunk
+/// that carries a globalidx can therefore always say what it means. The earlier
+/// `disassemble_with(chunk, globals)` split existed only because the table sat
+/// on chunk 0 alone, which forced every caller to fetch it and hand it back —
+/// and made a caller edit the price of naming a global.
 pub fn disassemble(chunk: &Chunk) -> String {
     let mut out = String::new();
     out.push_str(&format!("== {} ==\n", chunk.name));
@@ -14,6 +23,14 @@ pub fn disassemble(chunk: &Chunk) -> String {
 }
 
 pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
+    disassemble_instruction_inner(chunk, &chunk.globals, offset)
+}
+
+fn disassemble_instruction_inner(
+    chunk: &Chunk,
+    globals: &[String],
+    offset: usize,
+) -> (String, usize) {
     if offset + 3 >= chunk.code.len() {
         return ("TRUNCATED".into(), chunk.code.len());
     }
@@ -58,16 +75,25 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) 
             // "B"`), and literals — without it a disassembly of e.g. a super
             // chain is unreadable (just `struct.get 1/2/3`). LOCAL_GET/SET use
             // a *slot* index, not the constant pool, so they are excluded.
+            // ⚠ `GLOBAL_GET`/`GLOBAL_SET` carry a GLOBALIDX, not a constant
+            // index — they index the module's global table. Resolving them
+            // against the constant pool (as this did) produces a label only
+            // when the two numbers coincide, which reads as a correct name at
+            // low indices and nothing at high ones. That cost real debugging
+            // time: it looked like a duplicate-name bug in the table when the
+            // table was fine.
             let references_constant = matches!(
                 op,
-                Op::GLOBAL_GET
-                    | Op::GLOBAL_SET
-                    | Op::STRUCT_GET
-                    | Op::STRUCT_GET_S
-                    | Op::STRUCT_GET_U
-                    | Op::STRUCT_SET
+                Op::STRUCT_GET | Op::STRUCT_GET_S | Op::STRUCT_GET_U | Op::STRUCT_SET
             );
-            let extra = if references_constant && (idx as usize) < chunk.constants.len() {
+            let is_global = matches!(op, Op::GLOBAL_GET | Op::GLOBAL_SET);
+            let extra = if is_global {
+                match globals.get(idx as usize) {
+                    Some(name) => format!(" ({})", name),
+                    None if globals.is_empty() => String::new(),
+                    None => " (OUT-OF-RANGE)".to_string(),
+                }
+            } else if references_constant && (idx as usize) < chunk.constants.len() {
                 format!(" ({})", chunk.constants[idx as usize])
             } else {
                 String::new()

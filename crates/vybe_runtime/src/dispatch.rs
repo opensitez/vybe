@@ -145,6 +145,13 @@ impl VM {
         let child_host_registry = self.host_registry.clone();
         let child_import_table = self.import_table.clone();
         let child_globals = self.globals.clone();
+        // `globals_assigned` is PART OF the global store, not a side table:
+        // index i of one is index i of the other. Cloning `globals` without it
+        // left the child on `VM::new`'s `vec![true]` (len 1), so every
+        // `GLOBAL_SET` at idx ≥ 1 in a spawned thread panicked — and because
+        // the worker died mid-flight, `pthread_join` waited forever and it
+        // surfaced as a TIMEOUT rather than a crash.
+        let child_globals_assigned = self.globals_assigned.clone();
         let child_type_registry = self.type_registry.clone();
         let child_func_table = self.func_table.clone();
         let child_wasm_tables = self.wasm_tables.clone();
@@ -161,6 +168,7 @@ impl VM {
             child_vm.host_registry = child_host_registry;
             child_vm.import_table = child_import_table;
             child_vm.globals = child_globals;
+            child_vm.globals_assigned = child_globals_assigned;
             child_vm.type_registry = child_type_registry;
             child_vm.func_table = child_func_table;
             child_vm.wasm_tables = child_wasm_tables;
@@ -625,6 +633,66 @@ impl VM {
         VMError::new(format!("__jspi__:{}", promise_id))
     }
 
+    /// Park the current fiber inside a SYNCHRONOUS `canon stream.read` /
+    /// `future.read` — `CanonicalABI.md` §`canon stream.{read,write}`, where
+    /// only the `async` variant may hand `BLOCKED` back to the guest.
+    ///
+    /// The copy travels WITH the fiber (`Fiber::pending_copy`) and is redone by
+    /// `resume_fiber` once a producer appears, because by now the guest's read
+    /// instruction has retired: its operands are popped and its result slot is
+    /// the one value a resume pushes. Nothing about the copy is decided here —
+    /// only that it has not happened yet.
+    ///
+    /// The end stays in `COPYING` exactly as the BLOCKED path left it: that is
+    /// what makes a `cancel-read` legal while parked and a second concurrent
+    /// read trap.
+    /// Give a stream's registered producer a chance to supply elements.
+    ///
+    /// Returns true if anything landed, in which case the caller retries the
+    /// copy instead of parking. This is what makes a stream whose elements
+    /// arrive over time — an inbound-connection stream — readable at all: the
+    /// call that created it returned long ago, so the reader is the only one
+    /// left to ask.
+    ///
+    /// The producer is named by the host that created the stream
+    /// (`EventLoop::set_stream_producer`) and called through the ordinary host
+    /// registry, so the VM carries no knowledge of what any particular stream
+    /// produces.
+    fn run_stream_producer(&mut self, stream_id: u64) -> bool {
+        let Some((module, name)) = self.event_loop.borrow().stream_producer(stream_id) else {
+            return false;
+        };
+        let Some(idx) = self.host_registry.get(&(module, name)).copied() else {
+            return false;
+        };
+        let host_fn = self.host_fns[idx].clone();
+        let args = [Value::F64(stream_id as f64)];
+        {
+            let mut ctx = self.make_host_context();
+            host_fn(&mut ctx, &args);
+        }
+        // Ask the buffer, not the producer's return value: a producer pushes
+        // through `HostContext`, and a stream that reached EOF has an answer
+        // too (`DROPPED`), which is equally a reason not to park.
+        let el = self.event_loop.borrow();
+        el.stream_has_bytes(stream_id) || el.stream_has_item(stream_id) || el.stream_is_eof(stream_id)
+    }
+
+    fn park_sync_copy(&mut self, pending: crate::fiber::PendingCopy) -> VMError {
+        let end_id = pending.end_id;
+        let is_future = matches!(pending.kind, crate::fiber::PendingCopyKind::Future(_));
+        let mut fiber = self.save_fiber();
+        fiber.pending_copy = Some(pending);
+        let mut el = self.event_loop.borrow_mut();
+        if is_future {
+            el.suspend_future_sync_reader(end_id, fiber);
+        } else {
+            el.suspend_stream_sync_reader(end_id, fiber);
+        }
+        drop(el);
+        VMError::new(format!("__stream_read__:{}", end_id))
+    }
+
     /// Top-level settled/plain-value await (no promising boundary, not inside
     /// a driven continuation): ECMA-262 §6.2.3.1 still requires one job tick.
     /// Save the whole fiber exactly like a pending top-level await and wake it
@@ -971,6 +1039,69 @@ impl VM {
         })
     }
 
+    /// Look up a waitable set and take its ready event, as an `EventTuple`.
+    ///
+    ///     wset = inst.handles.get(si)
+    ///     trap_if(not isinstance(wset, WaitableSet))
+    ///
+    /// The trap is the point. Returning `NONE` for a handle that is not a
+    /// waitable set is indistinguishable from "the set exists and nothing is
+    /// ready", so a guest polling a bogus handle would spin forever instead of
+    /// failing at the call that was wrong.
+    fn poll_waitable_set(
+        &self,
+        builtin: &str,
+        set_handle: u32,
+    ) -> Result<(crate::waitable::EventCode, u32, u32), VMError> {
+        let el = self.event_loop.borrow();
+        let Some(set) = self.waitable_sets.get(set_handle) else {
+            return Err(VMError::new(format!(
+                "canon {builtin}: handle {set_handle} is not a waitable set (trap)"
+            )));
+        };
+        // `EventTuple = tuple[EventCode, int, int]`. `p2` is event-kind
+        // specific — `subtask.state` for SUBTASK, the packed
+        // `result | (count << 4)` for the stream/future codes. `poll_ready`
+        // reports only `(code, id)`, so p2 is 0 until it carries the payload;
+        // recorded in cmplan.md rather than left to look intentional.
+        Ok(match set.poll_ready(&el) {
+            Some((code, id)) => (code, id as u32, 0),
+            None => (crate::waitable::EventCode::None, 0, 0),
+        })
+    }
+
+    /// `unpack_event` — `CanonicalABI.md`:
+    ///
+    ///     def unpack_event(mem, inst, ptr, e: EventTuple):
+    ///       event, p1, p2 = e
+    ///       store(cx, p1, U32Type(), ptr)
+    ///       store(cx, p2, U32Type(), ptr + 4)
+    ///       return [event]
+    ///
+    /// **EIGHT bytes, `[p1, p2]`** — the event CODE is the return value and is
+    /// never written to memory. This previously wrote `[code, p1, 0]`: twelve
+    /// bytes, with the code sitting in the slot the guest reads `p1` from, so
+    /// every reader got an event code where it expected a waitable index and
+    /// four bytes past the payload were clobbered.
+    ///
+    /// `store` traps out of bounds. Silently skipping the write while still
+    /// returning a code (what this did) hands back a plausible event with
+    /// nothing behind it.
+    fn unpack_event(
+        &mut self,
+        ptr: usize,
+        (code, p1, p2): (crate::waitable::EventCode, u32, u32),
+    ) -> Result<i32, VMError> {
+        if ptr + 8 > self.memory.len() {
+            return Err(VMError::new(format!(
+                "canon waitable-set: event pointer {ptr} + 8 is out of bounds (trap)"
+            )));
+        }
+        self.memory.store_i32(ptr, p1 as i32)?;
+        self.memory.store_i32(ptr + 4, p2 as i32)?;
+        Ok(code as i32)
+    }
+
     /// `cancel_copy` — `CanonicalABI.md` §`canon
     /// {stream,future}.cancel-{read,write}`. One function for all four, as the
     /// spec factors it; `EndKind` is the only thing that differs.
@@ -1031,7 +1162,6 @@ impl VM {
     /// under module "canon" — see `ImportTarget::Canon`). Args and results
     /// ride the operand stack; each builtin pops exactly its own args.
     pub(crate) fn exec_canon_builtin(&mut self, b: crate::vm::CanonBuiltin) -> Result<(), VMError> {
-        use crate::value::ObjectKind;
         use crate::vm::CanonBuiltin as B;
         match b {
             B::Lift => {
@@ -1064,21 +1194,43 @@ impl VM {
                 self.push(val)?;
             }
             B::TaskReturn => {
-                // canon task.return — pop result, mark active task as Returned.
-                // A second task.return on the same task is a trap per spec.
+                // canon task.return — `CanonicalABI.md §canon task.return`:
+                //
+                //     task.return_(result)
+                //     return []
+                //
+                // The result belongs to the TASK. It is NOT pushed back:
+                // `canon_task_return` returns the empty list, so a value left
+                // on the operand stack here is one the spec says is not there,
+                // and the result itself would be discarded.
+                //
+                // Still missing (they need the `rs`/`opts` immediates, which
+                // an import name cannot carry — see cmplan.md):
+                //   trap_if(not task.opts.async_)
+                //   trap_if(result_type != task.ft.result)
+                //   trap_if(not LiftOptions.equal(opts, task.opts))
                 let result = self.pop();
                 if let Some(task) = self.cm_tasks.last_mut() {
-                    if !task.mark_returned() {
-                        return Err(VMError::new("task.return called twice on same task (trap)"));
-                    }
+                    task.return_(result)
+                        .map_err(|e| VMError::new(format!("canon task.return: {e} (trap)")))?;
                 }
-                // Push the result back — the function body may continue running.
-                self.push(result)?;
             }
             B::TaskCancel => {
-                // canon task.cancel — cancel the current task.
+                // canon task.cancel — `CanonicalABI.md §Task.cancel`:
+                //
+                //     trap_if(self.state != Task.State.CANCEL_DELIVERED)
+                //     trap_if(self.num_borrows > 0)
+                //     self.on_resolve(None)
+                //
+                // Both guards are the point. Cancelling a task that was never
+                // TOLD to cancel is a trap, not a no-op — the callee has not
+                // unwound, so resolving it with no value strands whatever it
+                // still holds. Writing `phase = Resolved` directly (as this
+                // did) skipped both checks and made a cancel indistinguishable
+                // from a return.
                 if let Some(task) = self.cm_tasks.last_mut() {
-                    task.phase = crate::cm_task::TaskPhase::Returned;
+                    task.cancel()
+                        .map_err(|e| VMError::new(format!("canon task.cancel: {e} (trap)")))?;
                 }
             }
             B::SubtaskCancel => {
@@ -1113,43 +1265,29 @@ impl VM {
                 self.push(Value::I32(set_id as i32))?;
             }
             B::WaitableSetWait => {
-                // canon waitable-set.wait — pops [set_handle_i32, memory_ptr_i32];
-                // writes (event_code, handle_id, 0) to memory; pushes event_code (i32).
-                // If nothing is ready, returns NONE immediately (MVP — true blocking TBD).
+                // canon waitable-set.wait — `CanonicalABI.md`:
+                //
+                //     wset = inst.handles.get(si)
+                //     trap_if(not isinstance(wset, WaitableSet))
+                //     event = wset.wait_for_event(cancellable)
+                //     return unpack_event(mem, inst, ptr, event)
+                //
+                // If nothing is ready this returns NONE immediately; true
+                // blocking needs `cancellable`, which no import name can carry.
                 let memory_ptr = self.pop().as_i32() as usize;
                 let set_handle = self.pop().as_i32() as u32;
-                let ready = {
-                    let el = self.event_loop.borrow();
-                    self.waitable_sets
-                        .get(set_handle)
-                        .and_then(|set| set.poll_ready(&el))
-                };
-                let (code, handle_id) = ready.unwrap_or((crate::waitable::EventCode::None, 0));
-                if memory_ptr + 12 <= self.memory.len() {
-                    self.memory.store_i32(memory_ptr, code as i32)?;
-                    self.memory.store_i32(memory_ptr + 4, handle_id as i32)?;
-                    self.memory.store_i32(memory_ptr + 8, 0)?;
-                }
-                self.push(Value::I32(code as i32))?;
+                let event = self.poll_waitable_set("waitable-set.wait", set_handle)?;
+                let code = self.unpack_event(memory_ptr, event)?;
+                self.push(Value::I32(code))?;
             }
             B::WaitableSetPoll => {
-                // canon waitable-set.poll — non-blocking version of waitable-set.wait.
-                // Pushes EventCode::None (0) immediately if nothing is ready.
+                // canon waitable-set.poll — identical to `wait` but never
+                // blocks; the spec factors both through `unpack_event`.
                 let memory_ptr = self.pop().as_i32() as usize;
                 let set_handle = self.pop().as_i32() as u32;
-                let ready = {
-                    let el = self.event_loop.borrow();
-                    self.waitable_sets
-                        .get(set_handle)
-                        .and_then(|set| set.poll_ready(&el))
-                };
-                let (code, handle_id) = ready.unwrap_or((crate::waitable::EventCode::None, 0));
-                if memory_ptr + 12 <= self.memory.len() {
-                    self.memory.store_i32(memory_ptr, code as i32)?;
-                    self.memory.store_i32(memory_ptr + 4, handle_id as i32)?;
-                    self.memory.store_i32(memory_ptr + 8, 0)?;
-                }
-                self.push(Value::I32(code as i32))?;
+                let event = self.poll_waitable_set("waitable-set.poll", set_handle)?;
+                let code = self.unpack_event(memory_ptr, event)?;
+                self.push(Value::I32(code))?;
             }
             B::WaitableJoin => {
                 // canon waitable.join — pops [waitable_handle_i32, set_handle_i32];
@@ -1235,6 +1373,17 @@ impl VM {
                     ));
                 }
                 let (ptr, n) = (ptr as usize, n as usize);
+
+                // `n` counts ELEMENTS, so a typed stream lifts `n` values at
+                // the element stride. Reading `n` BYTES and pushing them as
+                // items would corrupt the stream silently: the reader's typed
+                // path would then lower those bytes as if each were a whole
+                // element. `stream<u8>` keeps the byte path below unchanged.
+                let typed_elem = self.event_loop.borrow().stream_elem(end.id);
+                if let Some(elem) = typed_elem {
+                    return self.stream_write_typed(end, ptr, n, &elem);
+                }
+
                 if ptr.saturating_add(n) > self.memory.len() {
                     return Err(VMError::new(
                         "canon stream.write: buffer is out of bounds of linear memory",
@@ -1352,7 +1501,21 @@ impl VM {
                     ));
                 }
 
-                let bytes = self.event_loop.borrow_mut().stream_read_bytes(end.id, n);
+                // `n` is a count of ELEMENTS. For `stream<u8>` that is also a
+                // byte count, which is why the byte path below was correct for
+                // every stream that existed before typed elements did.
+                let typed_elem = self.event_loop.borrow().stream_elem(end.id);
+                if let Some(elem) = typed_elem {
+                    return self.stream_read_typed(handle, end, ptr, n, &elem);
+                }
+
+                let mut bytes = self.event_loop.borrow_mut().stream_read_bytes(end.id, n);
+                if bytes.is_empty()
+                    && !self.event_loop.borrow().stream_is_eof(end.id)
+                    && self.run_stream_producer(end.id)
+                {
+                    bytes = self.event_loop.borrow_mut().stream_read_bytes(end.id, n);
+                }
                 if bytes.is_empty() {
                     // Nothing copied: either the far end is gone for good, or
                     // it simply has not written yet.
@@ -1371,17 +1534,29 @@ impl VM {
                     } else {
                         // §stream_copy sets `e.state = CopyState.COPYING`
                         // BEFORE the copy, and only the delivered event resets
-                        // it. So a BLOCKED read leaves the end COPYING: that is
+                        // it. So a parked read leaves the end COPYING: that is
                         // what makes a subsequent `cancel-read` legal (it traps
                         // unless COPYING) and what makes a second concurrent
-                        // read trap (it traps unless IDLE). Returning BLOCKED
-                        // while staying IDLE would quietly permit both.
+                        // read trap (it traps unless IDLE). Staying IDLE would
+                        // quietly permit both.
                         if let Some(crate::handle_table::HandleEntry::ReadableStreamEnd(e)) =
                             self.handle_table.get_mut(handle)
                         {
                             e.state = crate::handle_table::CopyState::Copying;
                         }
-                        self.push(Value::I32(crate::canon_copy::BLOCKED as i32))?;
+                        // SUSPEND — this is the synchronous variant. Answering
+                        // `BLOCKED` here is what every reader in the tree was
+                        // written against, and it is why they all had to break
+                        // out of their drain loop on it: on a file that reads
+                        // as one short answer, but on a socket, where nothing
+                        // ready is the ordinary case, it is silent truncation.
+                        return Err(self.park_sync_copy(crate::fiber::PendingCopy {
+                            handle,
+                            end_id: end.id,
+                            ptr,
+                            n,
+                            kind: crate::fiber::PendingCopyKind::StreamBytes,
+                        }));
                     }
                 } else {
                     self.write_memory_bytes(0, ptr, &bytes)?;
@@ -1451,8 +1626,23 @@ impl VM {
                 };
                 match settled {
                     Some((crate::event_loop::FuturePhase::Resolved, Some(v))) => {
-                        crate::canon_value::store(&self.memory, &v, &t, ptr as u32)
-                            .map_err(|e| VMError::new(format!("canon future.read: {e}")))?;
+                        // `store_with`, not `store`: a future's element is a
+                        // whole component type, and `future<result<_,
+                        // error-code>>` — what every 0.3.1 stream-producing
+                        // call answers as tuple element 1 — needs a realloc
+                        // for its payload. Scalar-only `store` reported
+                        // OutOfMemory for exactly the shape futures carry most.
+                        let memory = self.memory.clone();
+                        let mut bump = self.canon_bump_start();
+                        crate::canon_value::store_with(
+                            &memory,
+                            &mut Self::bump_realloc(&memory, &mut bump),
+                            &v,
+                            &t,
+                            ptr as u32,
+                        )
+                        .map_err(|e| VMError::new(format!("canon future.read: {e}")))?;
+                        self.canon_bump_commit(bump);
                         self.push(Value::I32(crate::canon_copy::pack(
                             crate::canon_copy::CopyResult::Completed,
                             1,
@@ -1477,7 +1667,19 @@ impl VM {
                         {
                             e.state = crate::handle_table::CopyState::Copying;
                         }
-                        self.push(Value::I32(crate::canon_copy::BLOCKED as i32))?;
+                        // Pending, and this is the synchronous variant: suspend
+                        // until it settles rather than answering `BLOCKED`.
+                        // Every 0.3.1 write path ends in a
+                        // `future<result<_, error-code>>` whose whole job is to
+                        // carry the failure — a reader that gave up on BLOCKED
+                        // read "no error" off a future that had not answered.
+                        return Err(self.park_sync_copy(crate::fiber::PendingCopy {
+                            handle,
+                            end_id: end.id,
+                            ptr: ptr as usize,
+                            n: 1,
+                            kind: crate::fiber::PendingCopyKind::Future(t.clone()),
+                        }));
                     }
                 }
             }
@@ -1733,6 +1935,312 @@ impl VM {
     }
 
     /// Update the codepoint index of an iterator view in place.
+    /// Where host-side canonical lowering allocates from — `cx.opts.realloc`.
+    ///
+    /// The SAME bump global compiler-emitted marshalling uses
+    /// (`vybe_compiler::primitives::canon_marshal`). Two independent bump
+    /// pointers over one linear memory would eventually hand the same address
+    /// to a guest string and a host-stored one, so every canonical lowering in
+    /// this file goes through this pair.
+    fn canon_bump_start(&self) -> u32 {
+        self.global(canon_marshal_bump())
+            .map(|v| v.as_i32() as u32)
+            .unwrap_or(0)
+    }
+
+    fn canon_bump_commit(&mut self, bump: u32) {
+        self.set_global_owned(canon_marshal_bump().to_string(), Value::I32(bump as i32));
+    }
+
+    /// A `Realloc` over `bump`, growing linear memory a page at a time.
+    fn bump_realloc<'a>(
+        memory: &'a crate::shared_memory::SharedMemory,
+        bump: &'a mut u32,
+    ) -> impl FnMut(u32, u32) -> Option<u32> + 'a {
+        move |size: u32, align: u32| -> Option<u32> {
+            if *bump == 0 {
+                let pages = memory.grow(1);
+                if pages == usize::MAX {
+                    return None;
+                }
+                *bump = (pages * 65536) as u32;
+            }
+            let at = crate::canon_layout::align_to(*bump, align.max(1));
+            let end = at.checked_add(size)?;
+            while (end as usize) > memory.len() {
+                if memory.grow(1) == usize::MAX {
+                    return None;
+                }
+            }
+            // Left 8-ALIGNED, not at `end`. This global is shared with
+            // `canon_marshal::emit_alloc`/`emit_store_utf8`, which take the
+            // value as their buffer address DIRECTLY and only guarantee the
+            // alignment of what they leave behind. Committing a raw `end` here
+            // therefore hands the next compiler-side allocation an arbitrary
+            // address — and `canon stream.read` traps on a misaligned element
+            // buffer rather than writing it crooked, so `os.scandir` died on
+            // "buffer at 829 is not aligned to 4 bytes" the moment a string
+            // allocation left the pointer odd.
+            //
+            // 8 rather than `align`: it is the invariant the other two clients
+            // already document ("so a later i64/f64 store lands legally"), and
+            // an allocator with one rule is an allocator whose clients cannot
+            // disagree about it.
+            *bump = crate::canon_layout::align_to(end, 8);
+            Some(at)
+        }
+    }
+
+    /// `canon stream.write` for a `stream<T>` where `T` is not `u8`.
+    ///
+    /// The mirror of [`stream_read_typed`]: `n` ELEMENTS are lifted out of
+    /// linear memory at the canonical stride and pushed as whole items.
+    ///
+    /// An element type `canon_value::load` cannot lift yet is REFUSED rather
+    /// than approximated — the same rule that module already states, and the
+    /// reason matters more on this side: a wrong lift here puts a malformed
+    /// value into a stream some other component will later read as if it were
+    /// well-formed.
+    fn stream_write_typed(
+        &mut self,
+        end: crate::handle_table::StreamEnd,
+        ptr: usize,
+        n: usize,
+        elem: &crate::component::ValType,
+    ) -> Result<(), VMError> {
+        let stride = crate::canon_layout::elem_size(elem) as usize;
+        let align = crate::canon_layout::alignment(elem);
+        if ptr as u32 != crate::canon_layout::align_to(ptr as u32, align) {
+            return Err(VMError::new(format!(
+                "canon stream.write: buffer at {ptr} is not aligned to {align} bytes for this element type"
+            )));
+        }
+        if ptr.saturating_add(stride.saturating_mul(n)) > self.memory.len() {
+            return Err(VMError::new(
+                "canon stream.write: element buffer is out of bounds of linear memory",
+            ));
+        }
+
+        let mut items = Vec::with_capacity(n);
+        for i in 0..n {
+            match crate::canon_value::load(&self.memory, elem, (ptr + stride * i) as u32) {
+                Ok(value) => items.push(value),
+                Err(e) => return Err(VMError::new(format!("canon stream.write: {e}"))),
+            }
+        }
+
+        let written = items.len() as u32;
+        {
+            let mut el = self.event_loop.borrow_mut();
+            for item in items {
+                if let Some(fiber) = el.stream_push(end.id, item) {
+                    el.immediate
+                        .push_back(crate::event_loop::Task::ResumeFiber(fiber));
+                }
+            }
+        }
+        self.handle_table.release_copying(end.id, true);
+        self.push(Value::I32(crate::canon_copy::pack(
+            crate::canon_copy::CopyResult::Completed,
+            written,
+        ) as i32))?;
+        Ok(())
+    }
+
+    /// `canon stream.read` for a `stream<T>` where `T` is not `u8`.
+    ///
+    /// `CanonicalABI.md` §`stream_copy`: `n` is a count of ELEMENTS, and each
+    /// is lowered into linear memory at its canonical stride. The byte path
+    /// this splits from is not a special case of it — a `stream<u8>` copies a
+    /// byte RUN, which need not land on an item boundary, whereas a typed
+    /// element is all-or-nothing.
+    /// Redo the copy a fiber parked on, now that a producer has appeared.
+    ///
+    /// `Ok(Some(packed))` — the copy happened (or the stream is at EOF and the
+    /// answer is `DROPPED`); `Ok(None)` — still nothing to copy, so the caller
+    /// re-parks. The three arms mirror the three read paths exactly, because
+    /// this IS those paths, run one wake-up later.
+    pub(crate) fn perform_pending_copy(
+        &mut self,
+        p: &crate::fiber::PendingCopy,
+    ) -> Result<Option<i32>, VMError> {
+        use crate::canon_copy::{pack, CopyResult};
+        use crate::fiber::PendingCopyKind as K;
+
+        match &p.kind {
+            K::StreamBytes => {
+                let bytes = self.event_loop.borrow_mut().stream_read_bytes(p.end_id, p.n);
+                if !bytes.is_empty() {
+                    self.write_memory_bytes(0, p.ptr, &bytes)?;
+                    // The copy completed, so the end leaves COPYING — the reset
+                    // the spec performs when it delivers the event.
+                    self.handle_table.release_copying(p.end_id, true);
+                    return Ok(Some(pack(CopyResult::Completed, bytes.len() as u32) as i32));
+                }
+                if self.event_loop.borrow().stream_is_eof(p.end_id) {
+                    self.mark_end_done(p.handle);
+                    return Ok(Some(pack(CopyResult::Dropped, 0) as i32));
+                }
+                Ok(None)
+            }
+            K::StreamTyped(elem) => {
+                let items = self.event_loop.borrow_mut().stream_read_items(p.end_id, p.n);
+                if items.is_empty() {
+                    if self.event_loop.borrow().stream_is_eof(p.end_id) {
+                        self.mark_end_done(p.handle);
+                        return Ok(Some(pack(CopyResult::Dropped, 0) as i32));
+                    }
+                    return Ok(None);
+                }
+                let stride = crate::canon_layout::elem_size(elem) as usize;
+                let memory = self.memory.clone();
+                let mut bump = self.canon_bump_start();
+                let mut realloc = Self::bump_realloc(&memory, &mut bump);
+                let mut copied = 0u32;
+                for (i, item) in items.iter().enumerate() {
+                    let at = (p.ptr + stride * i) as u32;
+                    if let Err(e) = crate::canon_value::store_with(&memory, &mut realloc, item, elem, at)
+                    {
+                        return Err(VMError::new(format!("canon stream.read: {e}")));
+                    }
+                    copied += 1;
+                }
+                drop(realloc);
+                self.canon_bump_commit(bump);
+                self.handle_table.release_copying(p.end_id, true);
+                Ok(Some(pack(CopyResult::Completed, copied) as i32))
+            }
+            K::Future(t) => {
+                let settled = {
+                    let el = self.event_loop.borrow();
+                    el.future_states
+                        .get(&p.end_id)
+                        .map(|r| (r.phase, r.value.clone()))
+                };
+                match settled {
+                    Some((crate::event_loop::FuturePhase::Resolved, Some(v))) => {
+                        let memory = self.memory.clone();
+                        let mut bump = self.canon_bump_start();
+                        crate::canon_value::store_with(
+                            &memory,
+                            &mut Self::bump_realloc(&memory, &mut bump),
+                            &v,
+                            t,
+                            p.ptr as u32,
+                        )
+                        .map_err(|e| VMError::new(format!("canon future.read: {e}")))?;
+                        self.canon_bump_commit(bump);
+                        self.handle_table.release_copying(p.end_id, true);
+                        Ok(Some(pack(CopyResult::Completed, 1) as i32))
+                    }
+                    // Rejected is the writable end going away without ever
+                    // producing a value: no further copies are possible.
+                    Some((crate::event_loop::FuturePhase::Rejected, _)) | None => {
+                        self.mark_end_done(p.handle);
+                        Ok(Some(pack(CopyResult::Dropped, 0) as i32))
+                    }
+                    _ => Ok(None),
+                }
+            }
+        }
+    }
+
+    /// Move a readable end to DONE — no further copy is possible on it, so
+    /// anything but `drop-*` now traps.
+    fn mark_end_done(&mut self, handle: u32) {
+        match self.handle_table.get_mut(handle) {
+            Some(crate::handle_table::HandleEntry::ReadableStreamEnd(e))
+            | Some(crate::handle_table::HandleEntry::ReadableFutureEnd(e)) => {
+                e.state = crate::handle_table::CopyState::Done;
+            }
+            _ => {}
+        }
+    }
+
+    fn stream_read_typed(
+        &mut self,
+        handle: u32,
+        end: crate::handle_table::StreamEnd,
+        ptr: usize,
+        n: usize,
+        elem: &crate::component::ValType,
+    ) -> Result<(), VMError> {
+        let stride = crate::canon_layout::elem_size(elem) as usize;
+        let align = crate::canon_layout::alignment(elem);
+        if ptr as u32 != crate::canon_layout::align_to(ptr as u32, align) {
+            return Err(VMError::new(format!(
+                "canon stream.read: buffer at {ptr} is not aligned to {align} bytes for this element type"
+            )))?;
+        }
+        if ptr.saturating_add(stride.saturating_mul(n)) > self.memory.len() {
+            return Err(VMError::new(
+                "canon stream.read: element buffer is out of bounds of linear memory",
+            ));
+        }
+
+        let mut items = self.event_loop.borrow_mut().stream_read_items(end.id, n);
+        if items.is_empty()
+            && !self.event_loop.borrow().stream_is_eof(end.id)
+            && self.run_stream_producer(end.id)
+        {
+            items = self.event_loop.borrow_mut().stream_read_items(end.id, n);
+        }
+        if items.is_empty() {
+            if self.event_loop.borrow().stream_is_eof(end.id) {
+                if let Some(crate::handle_table::HandleEntry::ReadableStreamEnd(e)) =
+                    self.handle_table.get_mut(handle)
+                {
+                    e.state = crate::handle_table::CopyState::Done;
+                }
+                self.push(Value::I32(crate::canon_copy::pack(
+                    crate::canon_copy::CopyResult::Dropped,
+                    0,
+                ) as i32))?;
+            } else {
+                // Was `COMPLETED` with a count of zero — a copy that reports
+                // success without copying anything. A reader cannot tell that
+                // from a real short read, so a not-yet-ready typed stream read
+                // as an empty one. The synchronous variant SUSPENDS instead.
+                if let Some(crate::handle_table::HandleEntry::ReadableStreamEnd(e)) =
+                    self.handle_table.get_mut(handle)
+                {
+                    e.state = crate::handle_table::CopyState::Copying;
+                }
+                return Err(self.park_sync_copy(crate::fiber::PendingCopy {
+                    handle,
+                    end_id: end.id,
+                    ptr,
+                    n,
+                    kind: crate::fiber::PendingCopyKind::StreamTyped(elem.clone()),
+                }));
+            }
+            return Ok(());
+        }
+
+        // Shared with `future.read` and with compiler-emitted marshalling —
+        // see `bump_realloc`.
+        let memory = self.memory.clone();
+        let mut bump = self.canon_bump_start();
+        let mut realloc = Self::bump_realloc(&memory, &mut bump);
+
+        let mut copied = 0u32;
+        for (i, item) in items.iter().enumerate() {
+            let at = (ptr + stride * i) as u32;
+            if let Err(e) = crate::canon_value::store_with(&memory, &mut realloc, item, elem, at) {
+                return Err(VMError::new(format!("canon stream.read: {e}")))?;
+            }
+            copied += 1;
+        }
+        drop(realloc);
+        self.canon_bump_commit(bump);
+
+        self.push(Value::I32(crate::canon_copy::pack(
+            crate::canon_copy::CopyResult::Completed,
+            copied,
+        ) as i32))?;
+        Ok(())
+    }
+
     fn write_string_iter_pos(&mut self, view: &Value, pos: usize) -> Result<(), VMError> {
         if let Value::Object(o) = view {
             o.lock()
@@ -2136,17 +2644,40 @@ impl VM {
                     // A globalidx over `global_imports ++ defined`, exactly as
                     // WASM's `global.get`. No name is consulted here.
                     let idx = self.read_u16() as usize;
-                    let val = self.globals.get(idx).cloned().unwrap_or(Value::Undefined);
+                    // An UNASSIGNED slot reads exactly as it did when globals
+                    // were a map and the key was simply absent: Undefined.
+                    // That matters because emitted code tests "unset" two
+                    // different ways — `ref.is_null` (which accepts Undefined)
+                    // and `js-undefined:test` (which does NOT accept Null).
+                    // Storing Null and returning it satisfies the first and
+                    // breaks the second; storing Undefined breaks neither, but
+                    // then `GlobalInit` cannot tell unset from a real
+                    // undefined. `globals_assigned` separates the two
+                    // questions, so the READ can answer this one correctly.
+                    let val = if self.globals_assigned.get(idx).copied().unwrap_or(false) {
+                        self.globals.get(idx).cloned().unwrap_or(Value::Undefined)
+                    } else {
+                        Value::Undefined
+                    };
                     self.push(val)?;
                 }
                 _ if op == Op::GLOBAL_SET => {
                     // See GLOBAL_GET: a globalidx, not a name.
                     let idx = self.read_u16() as usize;
                     let val = self.pop();
+                    // Grow each vector against ITS OWN length. Testing only
+                    // `globals.len()` assumed the two were already in step, so
+                    // a path that populated one and not the other skipped the
+                    // guard entirely and panicked on the second index instead
+                    // of self-correcting.
                     if idx >= self.globals.len() {
                         self.globals.resize(idx + 1, Value::Null);
                     }
+                    if idx >= self.globals_assigned.len() {
+                        self.globals_assigned.resize(idx + 1, false);
+                    }
                     self.globals[idx] = val;
+                    self.globals_assigned[idx] = true;
                 }
 
                 // -- Properties --
@@ -8393,4 +8924,14 @@ impl VM {
             }
         }
     }
+}
+
+/// The bump-allocator global that compiler-emitted canonical marshalling uses
+/// (`vybe_compiler::primitives::canon_marshal`).
+///
+/// Host-side lowering shares it deliberately: two independent bump pointers
+/// over one linear memory would eventually hand the same address to a guest
+/// string and a host-stored one.
+pub(crate) fn canon_marshal_bump() -> &'static str {
+    "__vybe_chan_futex_next"
 }

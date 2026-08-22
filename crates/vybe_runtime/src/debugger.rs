@@ -135,6 +135,19 @@ pub enum DebugCommand {
     },
     /// List chunks (index, name, arity).
     Chunks,
+    /// The FRAME'S SHAPE: every slot the frame actually has, compiler-owned
+    /// ones included, next to the chunk metadata that decides the layout.
+    ///
+    /// `locals` deliberately shows only user names and hides `__*` as
+    /// "compiler scratch" — which hides exactly the slots that break. A
+    /// capturing function's closure environment is `__capture_0`, so when it
+    /// was being overwritten by emitter scratch, `locals` reported
+    /// "(no locals)" for a frame with 48 live slots. This command answers the
+    /// question that one cannot: what is really in this frame, and does the
+    /// layout the VM filled match the layout the compiler assigned.
+    Frame {
+        frame: usize,
+    },
 
     /// Stateful hot reload: recompile the source and swap changed function
     /// bodies in place, preserving heap/globals/stack (Dart-style, stage 1).
@@ -201,6 +214,7 @@ pub enum DebugResponse {
         lines: Vec<DisasmLine>,
     },
     Chunks(Vec<ChunkInfo>),
+    Frame(FrameShape),
     /// One summary line per live fiber (current + suspended).
     Fibers(Vec<String>),
 }
@@ -299,6 +313,63 @@ pub struct ChunkInfo {
     pub name: String,
     pub arity: u8,
     pub code_len: usize,
+}
+
+/// A frame's declared layout beside its actual contents.
+///
+/// The four counts are the compiler's answer to "how big is this frame and
+/// what lives where"; the slots are what the VM actually holds. When those two
+/// disagree the program misbehaves with no trap at the fault, so they are
+/// shown together on purpose.
+#[derive(Debug, Clone)]
+pub struct FrameShape {
+    pub frame: usize,
+    pub chunk_index: usize,
+    pub chunk_name: String,
+    pub arity: u8,
+    pub local_count: u16,
+    pub scratch_high_water: u16,
+    /// First slot the VM fills with upvalues at call time, and how many.
+    /// `capture_count > 0` with `capture_base` inside the parameter range is a
+    /// layout bug, not a quirk.
+    pub capture_base: u16,
+    pub capture_count: u8,
+    pub base: usize,
+    /// Every slot in `0..local_count`, named where a name exists. `owner`
+    /// distinguishes a user binding from a compiler-owned slot so scratch is
+    /// visible rather than filtered.
+    pub slots: Vec<FrameSlot>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FrameSlot {
+    pub index: usize,
+    pub name: Option<String>,
+    pub owner: SlotOwner,
+    pub value: String,
+    /// False when the slot lies beyond the frame's live stack extent — the
+    /// lazy-locals convention means an untouched slot may not exist yet.
+    pub live: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotOwner {
+    /// A binding the program declared.
+    User,
+    /// The closure environment the VM fills at entry (`__capture_*`).
+    Capture,
+    /// Any other compiler-generated slot: scratch, `__shared_env`, temporaries.
+    Compiler,
+}
+
+impl SlotOwner {
+    pub fn tag(self) -> &'static str {
+        match self {
+            SlotOwner::User => "user",
+            SlotOwner::Capture => "capture",
+            SlotOwner::Compiler => "compiler",
+        }
+    }
 }
 
 // ─── Debugger state ─────────────────────────────────────────────────────────
@@ -917,6 +988,10 @@ impl Debugger {
                 lines: disasm_window(vm, chunk_index, ip, window),
             }),
             Chunks => Control::stay(DebugResponse::Chunks(chunk_list(vm))),
+            Frame { frame } => Control::stay(match frame_shape(vm, frame) {
+                Ok(shape) => DebugResponse::Frame(shape),
+                Err(e) => DebugResponse::Error(e),
+            }),
             AddWatch { expr } => {
                 self.watches.push(expr.clone());
                 Control::stay(DebugResponse::Value(format!(
@@ -1342,6 +1417,84 @@ fn backtrace(vm: &VM) -> Vec<FrameInfo> {
 /// frame's USER variables — slots the compiler gave a source name that isn't an
 /// internal temp (`__`-prefixed). Compiler scratch (of which a chunk can have
 /// hundreds) is hidden so the view stays the program's actual variables.
+/// The frame's declared layout beside its actual contents — see [`FrameShape`].
+///
+/// Unlike [`locals`] this filters NOTHING: a slot the compiler owns is the slot
+/// most likely to be wrong, and naming its owner is what makes a collision
+/// legible ("`__capture_0` holds a number") instead of invisible.
+fn frame_shape(vm: &VM, frame_idx: usize) -> Result<FrameShape, String> {
+    let n = vm.frames.len();
+    if frame_idx >= n {
+        return Err(format!("no frame #{frame_idx} (have {n})"));
+    }
+    let real = n - 1 - frame_idx;
+    let base = vm.frames[real].base;
+    let chunk_index = vm.frames[real].chunk_index;
+    let chunk = vm
+        .chunks
+        .get(chunk_index)
+        .ok_or_else(|| format!("frame #{frame_idx} names chunk {chunk_index}, which is absent"))?;
+
+    let hard_end = vm
+        .frames
+        .get(real + 1)
+        .map(|f| f.base)
+        .unwrap_or(vm.stack.len());
+
+    // Last binding wins, matching how the compiler reuses a slot across scopes.
+    let mut bindings: std::collections::HashMap<u16, &crate::chunk::LocalName> =
+        std::collections::HashMap::new();
+    for entry in chunk.local_names.iter() {
+        bindings.insert(entry.slot, entry);
+    }
+
+    let capture_hi = chunk.capture_base as usize + chunk.capture_count as usize;
+    let slots = (0..chunk.local_count as usize)
+        .map(|index| {
+            let binding = bindings.get(&(index as u16)).copied();
+            let name = binding.map(|b| b.name.clone());
+            // Origin is recorded where the binding is created, so this asks
+            // the compiler rather than guessing from the spelling.
+            let owner = if chunk.capture_count > 0
+                && index >= chunk.capture_base as usize
+                && index < capture_hi
+            {
+                SlotOwner::Capture
+            } else if binding.is_some_and(|b| b.is_source()) {
+                SlotOwner::User
+            } else {
+                SlotOwner::Compiler
+            };
+            let abs = base + index;
+            let live = abs < hard_end && abs < vm.stack.len();
+            FrameSlot {
+                index,
+                name,
+                owner,
+                value: if live {
+                    render_value(&vm.stack[abs])
+                } else {
+                    "<unset>".into()
+                },
+                live,
+            }
+        })
+        .collect();
+
+    Ok(FrameShape {
+        frame: frame_idx,
+        chunk_index,
+        chunk_name: chunk.name.clone(),
+        arity: chunk.arity,
+        local_count: chunk.local_count,
+        scratch_high_water: chunk.scratch_high_water,
+        capture_base: chunk.capture_base,
+        capture_count: chunk.capture_count,
+        base,
+        slots,
+    })
+}
+
 fn locals(vm: &VM, frame_idx: usize) -> Result<Vec<SlotInfo>, String> {
     let n = vm.frames.len();
     if frame_idx >= n {
@@ -1360,10 +1513,11 @@ fn locals(vm: &VM, frame_idx: usize) -> Result<Vec<SlotInfo>, String> {
     // One entry per slot (last binding wins), user names only, in slot order.
     let mut seen = std::collections::HashSet::new();
     let mut slots: Vec<SlotInfo> = Vec::new();
-    for (slot, name) in chunk.local_names.iter().rev() {
-        if name.starts_with("__") {
-            continue; // compiler scratch
+    for entry in chunk.local_names.iter().rev() {
+        if !entry.is_source() {
+            continue; // compiler-owned; `frame` shows these, `locals` does not
         }
+        let (slot, name) = (&entry.slot, &entry.name);
         if !seen.insert(*slot) {
             continue;
         }
@@ -1545,10 +1699,11 @@ fn gather_frame_locals(vm: &VM) -> Vec<(String, crate::Value)> {
     };
     let mut seen_slots = std::collections::HashSet::new();
     let mut out = Vec::new();
-    for (slot, name) in chunk.local_names.iter().rev() {
-        if name.starts_with("__") {
-            continue; // compiler scratch — never part of user eval scope
+    for entry in chunk.local_names.iter().rev() {
+        if !entry.is_source() {
+            continue; // compiler-owned — never part of user eval scope
         }
+        let (slot, name) = (&entry.slot, &entry.name);
         if !seen_slots.insert(*slot) {
             continue;
         }
@@ -1565,8 +1720,8 @@ fn gather_frame_locals(vm: &VM) -> Vec<(String, crate::Value)> {
 fn read_named_value(vm: &VM, name: &str) -> Option<crate::Value> {
     if let Some(frame) = vm.frames.last() {
         if let Some(chunk) = vm.chunks.get(frame.chunk_index) {
-            if let Some((slot, _)) = chunk.local_names.iter().rev().find(|(_, n)| n == name) {
-                let idx = frame.base + *slot as usize;
+            if let Some(entry) = chunk.local_names.iter().rev().find(|e| e.name == name) {
+                let idx = frame.base + entry.slot as usize;
                 if let Some(v) = vm.stack.get(idx) {
                     return Some(v.clone());
                 }
@@ -1701,8 +1856,8 @@ fn set_var(vm: &mut VM, name: &str, literal: &str) -> Result<String, String> {
             c.local_names
                 .iter()
                 .rev()
-                .find(|(_, n)| n == name)
-                .map(|(s, _)| *s)
+                .find(|e| e.name == name)
+                .map(|e| e.slot)
         });
         if let Some(slot) = slot {
             let idx = frame.base + slot as usize;

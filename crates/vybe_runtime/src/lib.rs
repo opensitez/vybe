@@ -14,6 +14,8 @@ pub mod vm;
 // vm.rs. Private to the crate; external consumers keep using `VM::*`.
 pub(crate) mod calls;
 pub mod canon_copy;
+pub mod canon_flat;
+pub mod canon_flat_values;
 pub mod canon_layout;
 pub mod canon_value;
 pub mod cm_task;

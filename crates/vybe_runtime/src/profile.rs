@@ -508,19 +508,12 @@ pub struct LanguageProfile {
     /// `Exception` is the root and `catch (Exception)` catches everything.
     pub throwable_is_root: bool,
 
-    /// Fields are resolved by the reference's DECLARED (static) type, so a
-    /// subclass field of the same name HIDES the parent's rather than
-    /// overriding it — both occupy distinct storage slots (java/C#/VB, C++).
-    /// When false (JS/Python/PHP/Ruby: dynamic single-slot objects), a
-    /// same-named subclass field OVERRIDES the parent's one slot.
-    pub field_hiding: bool,
-
     /// Instance methods dispatch on the RUNTIME type by default, without any
     /// `virtual`/`Overridable` keyword (java/python/js/php/ruby/dart). When
     /// false (C#/VB/Pascal/C++), only a method the source explicitly marked
     /// `is_virtual`/`is_override`/`is_abstract` dispatches dynamically; every
     /// other method binds to the reference's DECLARED type — the same
-    /// static-type rule [`field_hiding`] applies to fields, and what makes C#
+    /// static-type rule the `field_shadowing` directive applies to fields, and what makes C#
     /// `new`-hiding work. The member-level marker for that is `is_hiding`
     /// (C# `new`, VB `Shadows`, Pascal `reintroduce`) — a DIFFERENT flag from
     /// `is_not_overridable` below, which they were conflated with.
@@ -883,6 +876,24 @@ pub struct LanguageProfile {
     /// Array higher-order methods routed to compiled JS builtins.
     /// "map" → "__array_map", "filter" → "__array_filter", etc.
     pub array_methods: HashMap<String, String>,
+
+    /// Which member SPELLING fills which protocol slot — flexclassplan §2b
+    /// registration path 1, the convention table.
+    ///
+    /// `"__str__" -> "to_string"`: the key is the language's own spelling, the
+    /// value is a [`vybe_ast::ProtocolSlot`] key (`ProtocolSlot::as_key`). The
+    /// shared normalizer resolves it with `ProtocolSlot::from_key` and stamps
+    /// the slot, so the spelling never leaves the frontend and no shared code
+    /// matches on it.
+    ///
+    /// For a language that identifies slots purely BY IDENTIFIER — python
+    /// dunders, lua metamethods, ruby, php magic methods — this replaces a
+    /// hand-written `canonical_method` match entirely. A language whose rule is
+    /// not a plain name lookup keeps its own `protocol.rs`: C#'s destructor is
+    /// the SIGIL `~Foo`, VB and pascal match case-insensitively, fortran
+    /// matches a normalized designator `operator(+)`. Those are rules, not
+    /// tables, and the plan is explicit that a table cannot carry them.
+    pub class_protocol: HashMap<String, String>,
 
     /// Return types of builtin free functions, for type inference on their
     /// result (e.g. VB `Command`/`Environ` → "String", `Timer` → "Double"),
@@ -1673,10 +1684,6 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .get("throwable_is_root")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let field_hiding = compiler
-        .get("field_hiding")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
     let methods_virtual_by_default = compiler
         .get("methods_virtual_by_default")
         .and_then(|v| v.as_bool())
@@ -2313,6 +2320,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
             .map(|(k, v)| (k.to_lowercase(), v))
             .collect();
     let mut array_methods = parse_string_table(&root, "array_methods");
+    let class_protocol = parse_string_table(&root, "class_protocol");
 
     let namespaces = if let Some(ns) = root.get("namespaces") {
         NamespaceConfig {
@@ -2612,7 +2620,6 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         linq_queries,
         switch_fallthrough,
         throwable_is_root,
-        field_hiding,
         methods_virtual_by_default,
         integer_division_on_slash,
         xor_is_logical_for_non_integers,
@@ -2694,6 +2701,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         value_methods,
         namespace_constants,
         array_methods,
+        class_protocol,
         builtin_return_types,
         datetime_field_functions,
         esm_defaults,

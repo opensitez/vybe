@@ -49,6 +49,41 @@ pub struct Fiber {
     /// the rest of the execution state so floors never index another fiber's
     /// frames.
     pub(crate) async_floors: Vec<usize>,
+    /// A SYNCHRONOUS `canon stream.read` / `future.read` parked mid-copy.
+    ///
+    /// `CanonicalABI.md` §`canon stream.{read,write}`: only the `async` variant
+    /// may answer `BLOCKED`; the synchronous one must SUSPEND until the copy
+    /// can proceed. The instruction that would have filled the guest's buffer
+    /// has already retired by the time the fiber parks, so the copy is
+    /// re-performed HOST-side at resume and its packed `CopyResult` becomes the
+    /// fiber's single resume value. That is what makes suspension expressible
+    /// on a resume path that pushes exactly one value.
+    pub(crate) pending_copy: Option<PendingCopy>,
+}
+
+/// The copy a parked fiber still owes: enough to redo it, nothing more.
+///
+/// `handle` is carried alongside `end_id` because the two answer different
+/// questions — `end_id` finds the data, `handle` finds the handle-table entry
+/// whose `CopyState` the copy has to settle.
+#[derive(Debug, Clone)]
+pub struct PendingCopy {
+    pub handle: u32,
+    pub end_id: u64,
+    pub ptr: usize,
+    /// Element count, not bytes — the unit `canon stream.read` copies in.
+    pub n: usize,
+    pub kind: PendingCopyKind,
+}
+
+#[derive(Debug, Clone)]
+pub enum PendingCopyKind {
+    /// `stream<u8>` — the byte path.
+    StreamBytes,
+    /// `stream<T>`, `T` ≠ `u8` — elements are stored at `T`'s layout.
+    StreamTyped(crate::component::ValType),
+    /// `future<T>` — exactly one element, or none.
+    Future(crate::component::ValType),
 }
 
 #[derive(Debug, Clone)]
@@ -78,6 +113,7 @@ impl Fiber {
             fiber_id: 0,
             result_promise: None,
             async_floors: Vec::new(),
+            pending_copy: None,
         }
     }
     pub fn with_labels(mut self, labels: Vec<crate::vm::LabelEntry>) -> Self {

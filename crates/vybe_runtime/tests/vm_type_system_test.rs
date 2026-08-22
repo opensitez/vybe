@@ -274,7 +274,7 @@ fn test_ref_test_opcode_with_type_string() {
         "__test_arg_{}",
         TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed)
     );
-    vm.globals.insert(name.clone(), obj);
+    vm.set_global_owned(name.clone(), obj);
     let ci = chunk.intern_string_constant(&name);
     chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
     // ref_test with "control" type name
@@ -307,7 +307,7 @@ fn test_ref_test_opcode_with_type_id() {
         "__test_arg_{}",
         TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed)
     );
-    vm.globals.insert(name.clone(), obj);
+    vm.set_global_owned(name.clone(), obj);
     let ci = chunk.intern_string_constant(&name);
     chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
     declare_type(&mut chunk, "control");
@@ -342,7 +342,7 @@ fn test_ref_test_opcode_negative() {
         "__test_arg_{}",
         TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed)
     );
-    vm.globals.insert(name.clone(), obj);
+    vm.set_global_owned(name.clone(), obj);
     let ci = chunk.intern_string_constant(&name);
     chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
     declare_type(&mut chunk, "button");
@@ -380,7 +380,7 @@ fn test_ref_test_with_js_types_array() {
         "__test_arg_{}",
         TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed)
     );
-    vm.globals.insert(
+    vm.set_global_owned(
         name.clone(),
         Value::Object(Arc::new(std::sync::Mutex::new(obj))),
     );

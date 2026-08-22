@@ -25,7 +25,7 @@ use crate::component::ValType;
 /// 🐘 memory64 would make this 8 and widen `string` and unfixed `list` with
 /// it. Every use goes through this constant so that becomes one edit rather
 /// than a hunt.
-const PTR_SIZE: u32 = 4;
+pub(crate) const PTR_SIZE: u32 = 4;
 
 /// `align_to(ptr, alignment)` — round `offset` up to the next multiple.
 pub fn align_to(offset: u32, alignment: u32) -> u32 {
@@ -48,15 +48,38 @@ pub fn alignment(t: &ValType) -> u32 {
         // `option`/`result` despecialise to `variant`, so they align as one:
         // the max of the discriminant's alignment and every case payload's.
         ValType::Option(inner) => alignment_variant(&[None, Some(inner.as_ref())]),
-        ValType::Result(ok, err) => {
-            alignment_variant(&[Some(ok.as_ref()), Some(err.as_ref())])
-        }
+        // `result` despecialises to a two-case variant, and EITHER case may
+        // be payload-free — `result<_, error-code>` is the common one.
+        ValType::Result(ok, err) => alignment_variant(&[ok.as_deref(), err.as_deref()]),
+        ValType::Variant(cases) => alignment_variant(&variant_cases(cases)),
         // Handles are i32 indices into the handle table.
         ValType::Own(_) | ValType::Borrow(_) => 4,
         ValType::Stream(_) | ValType::Future(_) => 4,
         // Not a component type — see `elem_size`.
         ValType::Any => 1,
     }
+}
+
+/// Borrow a `variant`'s cases in the `&[Option<&ValType>]` shape the spec
+/// helpers take — they only ever need each case's payload type, never its name.
+pub(crate) fn variant_cases(cases: &[(String, Option<ValType>)]) -> Vec<Option<&ValType>> {
+    cases.iter().map(|(_, t)| t.as_ref()).collect()
+}
+
+/// Byte width of a `variant`'s discriminant — `CanonicalABI.md` §`discriminant_type`.
+///
+/// Public because §`store_variant` writes the discriminant itself and then has
+/// to know where the payload starts; both answers come from here so they cannot
+/// drift apart.
+pub fn variant_discriminant_size(cases: &[(String, Option<ValType>)]) -> u32 {
+    discriminant_size(cases.len())
+}
+
+/// Offset of a `variant`'s payload — `CanonicalABI.md` §`store_variant`:
+/// `payload_ptr = ptr + align_to(discriminant_size, max_case_alignment)`.
+pub fn variant_payload_offset(cases: &[(String, Option<ValType>)]) -> u32 {
+    let borrowed = variant_cases(cases);
+    align_to(discriminant_size(cases.len()), max_case_alignment(&borrowed))
 }
 
 /// `alignment_variant(cases)` — `CanonicalABI.md:2269`.
@@ -109,9 +132,10 @@ pub fn elem_size(t: &ValType) -> u32 {
         ValType::List(_) => 2 * PTR_SIZE,
         ValType::Record(fields) => elem_size_record(fields),
         ValType::Option(inner) => elem_size_variant(&[None, Some(inner.as_ref())]),
-        ValType::Result(ok, err) => {
-            elem_size_variant(&[Some(ok.as_ref()), Some(err.as_ref())])
-        }
+        // `result` despecialises to a two-case variant, and EITHER case may
+        // be payload-free — `result<_, error-code>` is the common one.
+        ValType::Result(ok, err) => elem_size_variant(&[ok.as_deref(), err.as_deref()]),
+        ValType::Variant(cases) => elem_size_variant(&variant_cases(cases)),
         ValType::Own(_) | ValType::Borrow(_) => 4,
         ValType::Stream(_) | ValType::Future(_) => 4,
         // `Any` is this crate's escape hatch for dynamically typed frontends,
@@ -194,14 +218,37 @@ mod tests {
 
     #[test]
     fn result_is_a_two_case_variant_whose_payloads_overlap() {
-        // `result<_, error-code>` as this crate can spell it: two cases, a
-        // 1-byte discriminant, payload i32 → align to 4, 4 + 4 = 8.
-        let r = ValType::Result(Box::new(ValType::I32), Box::new(ValType::I32));
+        // Two cases, a 1-byte discriminant, payload i32 → align to 4, 4+4 = 8.
+        let r = ValType::Result(
+            Some(Box::new(ValType::I32)),
+            Some(Box::new(ValType::I32)),
+        );
         assert_eq!(alignment(&r), 4);
         assert_eq!(elem_size(&r), 8);
         // The cases OVERLAP — widening one does not add to the other.
-        let wide = ValType::Result(Box::new(ValType::I64), Box::new(ValType::I32));
+        let wide = ValType::Result(
+            Some(Box::new(ValType::I64)),
+            Some(Box::new(ValType::I32)),
+        );
         assert_eq!(elem_size(&wide), 16, "8-aligned discriminant + 8 payload");
+    }
+
+    /// `result<_, E>` — an ok arm carrying NOTHING, which is the shape every
+    /// WASI 0.3.1 call returns and which this crate could not spell until the
+    /// case payloads became optional.
+    ///
+    /// The old workaround declared the ok arm as some stand-in type, and this
+    /// is exactly what that cost: a 1-byte error payload gives a 2-byte result,
+    /// where a stand-in `i32` on the ok arm would have said 8.
+    #[test]
+    fn a_result_with_no_ok_payload_is_only_as_big_as_its_error() {
+        let r = ValType::Result(None, Some(Box::new(ValType::Bool)));
+        assert_eq!(alignment(&r), 1);
+        assert_eq!(elem_size(&r), 2, "1-byte discriminant + 1-byte error");
+
+        // And with nothing on either side it is the discriminant alone.
+        let bare = ValType::Result(None, None);
+        assert_eq!(elem_size(&bare), 1);
     }
 
     #[test]

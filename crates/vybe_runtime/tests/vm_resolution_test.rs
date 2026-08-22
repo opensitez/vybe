@@ -179,7 +179,7 @@ fn globals_persist_after_run() {
     chunk.emit_op_u16(Op::GLOBAL_SET, name, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     vm.run(vec![chunk]).unwrap();
-    assert_eq!(vm.globals.get("saved").unwrap().as_f64(), 99.0);
+    assert_eq!(vm.global("saved").unwrap().as_f64(), 99.0);
 }
 
 #[test]
@@ -303,7 +303,7 @@ fn invoke_function_defined_in_run() {
     main.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
 
     vm.run(vec![main, f]).unwrap();
-    let func = vm.globals.get("double").cloned().unwrap();
+    let func = vm.global("double").cloned().unwrap();
     let result = vm.invoke(&func, &[Value::F64(21.0)]).unwrap();
     assert_eq!(result.as_f64(), 42.0);
 }
@@ -353,11 +353,11 @@ fn invoke_multiple_times_globals_accumulate() {
     main.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
 
     vm.run(vec![main, f]).unwrap();
-    let inc = vm.globals.get("inc").cloned().unwrap();
+    let inc = vm.global("inc").cloned().unwrap();
     for _ in 0..5 {
         vm.invoke(&inc, &[]).unwrap();
     }
-    assert_eq!(vm.globals.get("n").unwrap().as_f64(), 5.0);
+    assert_eq!(vm.global("n").unwrap().as_f64(), 5.0);
 }
 
 // ============================================================

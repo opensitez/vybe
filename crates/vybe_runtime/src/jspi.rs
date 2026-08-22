@@ -27,7 +27,7 @@ impl VM {
             while scheduler.has_pending(self) {
                 scheduler.turn(self)?;
             }
-            return Ok(());
+            return self.report_parked_sync_copies();
         }
         loop {
             let has_pending = self.event_loop.borrow().has_pending() || self.deferred_pending();
@@ -50,7 +50,10 @@ impl VM {
                         // Keep the most recent fiber completion so `run()`'s
                         // Suspended path can surface the program's final
                         // value (top-level await suspends the script fiber).
-                        self.last_fiber_completion = Some(completion);
+                        // A re-parked fiber ran nothing and has no completion.
+                        if !self.resume_reparked {
+                            self.last_fiber_completion = Some(completion);
+                        }
                     }
                 }
             }
@@ -60,6 +63,25 @@ impl VM {
             if let Some(callback) = self.next_due_deferred() {
                 self.invoke(&callback, &[])?;
             }
+        }
+        self.report_parked_sync_copies()
+    }
+
+    /// Nothing is runnable and nothing is deferred, so no producer is left to
+    /// wake a fiber parked inside a synchronous copy: that is a DEADLOCK, and
+    /// the alternative to naming it is a program that stops in the middle of a
+    /// read and reports success.
+    ///
+    /// Called on BOTH exits from `run_event_loop`. The installed-scheduler
+    /// path is the one that runs under `vybex` — a check only on the bare-VM
+    /// fallback would be a check that never fires in production.
+    fn report_parked_sync_copies(&mut self) -> Result<(), VMError> {
+        let parked = self.event_loop.borrow().parked_sync_copies();
+        if parked > 0 {
+            return Err(VMError::new(format!(
+                "{parked} synchronous canon stream/future read(s) are parked with no \
+                 writer left to wake them — the copy can never complete"
+            )));
         }
         Ok(())
     }
@@ -103,6 +125,7 @@ impl VM {
 
     /// Resume a suspended fiber — restore its state and continue execution.
     pub(crate) fn resume_fiber(&mut self, fiber: Fiber) -> Result<Value, VMError> {
+        self.resume_reparked = false;
         // Restore state from fiber
         self.stack = fiber.stack;
         self.frames = fiber
@@ -123,6 +146,41 @@ impl VM {
         self.cur_fiber_id = fiber.fiber_id;
         self.cur_fiber_result_promise = fiber.result_promise;
         self.async_floors = fiber.async_floors;
+
+        // A synchronous `canon stream.read` / `future.read` parked mid-copy.
+        // The read instruction has already retired, so the COPY happens here,
+        // host-side, and its packed `CopyResult` is the one value the resume
+        // pushes — that is what lets a suspending copy exist on a resume path
+        // that pushes exactly one value.
+        if let Some(pending) = fiber.pending_copy {
+            match self.perform_pending_copy(&pending)? {
+                Some(packed) => self.push(Value::I32(packed))?,
+                None => {
+                    // Woken, but another reader took the data first (or the
+                    // producer pushed to a different end). Park again exactly
+                    // as the read did rather than inventing a short copy —
+                    // re-parking is the honest answer, a zero-count
+                    // `COMPLETED` would not be.
+                    let mut again = self.save_fiber();
+                    let end_id = pending.end_id;
+                    let is_future =
+                        matches!(pending.kind, crate::fiber::PendingCopyKind::Future(_));
+                    again.pending_copy = Some(pending);
+                    let mut el = self.event_loop.borrow_mut();
+                    if is_future {
+                        el.suspend_future_sync_reader(end_id, again);
+                    } else {
+                        el.suspend_stream_sync_reader(end_id, again);
+                    }
+                    drop(el);
+                    // No code ran, so there is no completion. Recorded as one,
+                    // this placeholder would become a top-level-await
+                    // program's final value.
+                    self.resume_reparked = true;
+                    return Ok(Value::Null);
+                }
+            }
+        }
 
         // Rejected promise: throw the reason into the resuming fiber so that
         // enclosing try/catch blocks fire correctly. This is the JSPI-compliant

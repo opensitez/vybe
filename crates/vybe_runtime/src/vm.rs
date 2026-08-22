@@ -101,9 +101,13 @@ pub struct HostContext<'a> {
     stack_slot: *const Vec<Value>,
     /// Raw pointer to the CM3 handle table, so host functions receiving a
     /// canon `stream<u8>` / `future<T>` i32 handle (CanonicalABI lowering)
-    /// can resolve it to the EventLoop stream/future id.
+    /// can resolve it to the EventLoop stream/future id — and so a host
+    /// function PRODUCING a `stream<u8>` can LIFT it to a handle, which is
+    /// why this is `*mut` rather than `*const`. Lowering without lifting was
+    /// only half the ABI: it let the guest hand us a stream but gave the guest
+    /// no conforming way to read one back.
     /// Null when no VM is attached (HostContext::empty()).
-    handle_table_slot: *const crate::handle_table::HandleTable,
+    handle_table_slot: *mut crate::handle_table::HandleTable,
     /// Raw pointer to the VM's shared memory, for the `wasm:threads`
     /// scheduler intrinsics (`all_parked`). Null when no VM is attached.
     shared_memory_slot: *const crate::shared_memory::SharedMemory,
@@ -192,10 +196,12 @@ impl<'a> HostContext<'a> {
         if self.globals_slot.is_null() || self.global_index_slot.is_null() {
             return Value::Undefined;
         }
+        unsafe {
         let vals: &Vec<Value> = &*self.globals_slot;
         match (*self.global_index_slot).get(name) {
             Some(&i) => vals.get(i as usize).cloned().unwrap_or(Value::Undefined),
             None => Value::Undefined,
+        }
         }
     }
 
@@ -204,6 +210,7 @@ impl<'a> HostContext<'a> {
         if self.globals_slot.is_null() || self.global_index_slot.is_null() {
             return;
         }
+        unsafe {
         let vals: &mut Vec<Value> = &mut *self.globals_slot;
         let index: &mut HashMap<String, u32> = &mut *self.global_index_slot;
         let idx = match index.get(name) {
@@ -219,6 +226,7 @@ impl<'a> HostContext<'a> {
             vals.resize(idx + 1, Value::Null);
         }
         vals[idx] = value;
+        }
     }
 
     /// Write a VM global by name — counterpart of [`Self::get_global`],
@@ -331,11 +339,86 @@ impl<'a> HostContext<'a> {
         }
     }
 
-    /// Create a stream. Returns the stream Value (for guest code) and its ID (for host push/close).
+    /// Create a stream. Returns the stream Value (for guest code) and its ID
+    /// (for host push/close).
+    ///
+    /// The Value is an i32 READABLE-END HANDLE, per `CanonicalABI.md`
+    /// §HandleTable: a `stream<u8>` in a function signature is lifted and
+    /// lowered as an index into the component instance's handle table, in BOTH
+    /// directions. The guest already lowered that way — it passes an i32 to
+    /// `wasi:cli/stdout.write-via-stream` — but every host producer handed back
+    /// an `ObjectKind::Stream` marker instead, which `canon stream.read` cannot
+    /// accept: it resolves its argument through the handle table and demands a
+    /// `ReadableStreamEnd`. So `read-via-stream`, both `consume-body`s and
+    /// socket receive were all returning a stream no conforming guest could
+    /// read. That was the whole read side of the ABI.
+    ///
+    /// Only the READABLE end gets a handle, unlike `canon stream.new` which
+    /// mints both. That is not an omission: the host keeps the raw
+    /// `stream_id` and writes through [`stream_push`]/[`stream_close`], so
+    /// there is no writable end for the guest to name.
+    ///
+    /// Falls back to the object form when no event loop is attached, which is
+    /// also the only case where there is no handle table to lift into.
     pub fn create_stream(&mut self) -> (Value, u64) {
+        self.create_stream_of(None)
+    }
+
+    /// Mint an `own<T>` handle for a host-held value — the host counterpart of
+    /// `canon resource.new`.
+    ///
+    /// Without this a host could not hand a guest a RESOURCE at all: `resource.new`
+    /// is a bytecode built-in, so only guest code could mint one, and every host
+    /// that wanted to return a resource returned a plain object pretending to be
+    /// one. That works right up until the value has to cross the canonical ABI —
+    /// `own<T>` lowers as an i32 index into the handle table, and an object
+    /// lowers as `as_i32()` of nothing. It is why `tcp-socket.listen`'s
+    /// `stream<tcp-socket>` could not declare its element type.
+    ///
+    /// The `Value` is the resource's REPRESENTATION and stays private to the
+    /// component that owns it; the handle is the only thing that crosses.
+    ///
+    /// `None` when there is no handle table to lift into, which is the same
+    /// condition under which [`create_stream`] falls back to its object form.
+    pub fn create_own_resource(&mut self, type_id: u32, rep: Value) -> Option<Value> {
+        unsafe {
+            if self.handle_table_slot.is_null() {
+                return None;
+            }
+            let handle = (*self.handle_table_slot)
+                .insert(crate::handle_table::HandleEntry::OwnedResource {
+                    type_id,
+                    value: rep,
+                });
+            Some(Value::I32(handle as i32))
+        }
+    }
+
+    /// [`create_stream`] for a `stream<T>` whose `T` is not `u8`.
+    ///
+    /// The element type has to be recorded HERE, at creation, because
+    /// `canon stream.read`'s signature carries only `(handle, ptr, n)` — the
+    /// `$stream_t` immediate lives on the canon definition, not in the call.
+    /// A stream that did not record its own element type could only ever be
+    /// read as bytes, which is precisely why `stream<directory-entry>` and
+    /// `stream<tcp-socket>` were unreadable.
+    pub fn create_stream_of(
+        &mut self,
+        elem: Option<crate::component::ValType>,
+    ) -> (Value, u64) {
         use crate::value::{Object, ObjectKind};
         if let Some(ref el) = self.event_loop {
-            let id = el.borrow_mut().create_stream();
+            let id = el.borrow_mut().create_stream_of(elem);
+            unsafe {
+                if !self.handle_table_slot.is_null() {
+                    let handle = (*self.handle_table_slot).insert(
+                        crate::handle_table::HandleEntry::ReadableStreamEnd(
+                            crate::handle_table::StreamEnd::new(id),
+                        ),
+                    );
+                    return (Value::I32(handle as i32), id);
+                }
+            }
             let obj = Object {
                 properties: indexmap::IndexMap::new(),
                 kind: ObjectKind::Stream { id },
@@ -358,6 +441,25 @@ impl<'a> HostContext<'a> {
                     .immediate
                     .push_back(crate::event_loop::Task::ResumeFiber(fiber));
             }
+        }
+    }
+
+    /// Name the host function that produces more elements for `stream_id`.
+    ///
+    /// For a stream whose elements arrive over TIME — `wasi:sockets`'
+    /// `listen()`, one element per inbound connection — the call that created
+    /// the stream cannot fill it, because a host function returns once. The
+    /// producer is called by a reader that is about to park, so the host gets
+    /// to `accept` at the moment the guest asks. Without it, such a stream can
+    /// only ever hold what was already pending when it was created, which for
+    /// a listener is reliably nothing.
+    ///
+    /// The producer receives the stream id as its only argument and pushes
+    /// through `stream_push` / `stream_close` like any other host code. It is
+    /// dropped automatically when the stream closes.
+    pub fn set_stream_producer(&mut self, stream_id: u64, module: &str, name: &str) {
+        if let Some(ref el) = self.event_loop {
+            el.borrow_mut().set_stream_producer(stream_id, module, name);
         }
     }
 
@@ -451,7 +553,7 @@ impl<'a> HostContext<'a> {
             globals_slot: std::ptr::null_mut(),
             global_index_slot: std::ptr::null_mut(),
             stack_slot: std::ptr::null(),
-            handle_table_slot: std::ptr::null(),
+            handle_table_slot: std::ptr::null_mut(),
             shared_memory_slot: std::ptr::null(),
         }
     }
@@ -842,6 +944,13 @@ pub struct VM {
     /// `GLOBAL_SET` operands index THIS directly; no string is consulted on
     /// the execution path.
     pub globals: Vec<Value>,
+    /// Whether each slot has ever been ASSIGNED. A `GlobalInit` applies only to
+    /// a slot nobody has written, which is not the same question as "is the
+    /// value null/undefined": a program may legitimately store undefined in a
+    /// global, and a host may pre-install a native over a helper. Overloading
+    /// the value to answer this either skips every helper install (Undefined
+    /// placeholder) or clobbers real values (widened guard). Both were tried.
+    pub globals_assigned: Vec<bool>,
     /// name → globalidx, consulted only at INSTANTIATION (binding host and
     /// imported globals, which WASM also resolves by name at instantiate time)
     /// and by the debugger. Not one fact in two homes: the vector is the
@@ -1003,6 +1112,14 @@ pub struct VM {
     /// happens inside `run_event_loop`, and `run()`'s Suspended path
     /// returns this so the program's final value isn't dropped.
     pub(crate) last_fiber_completion: Option<Value>,
+    /// The last `resume_fiber` re-parked instead of running.
+    ///
+    /// A fiber parked in a synchronous `canon stream.read` can be woken and
+    /// find the data already taken, so it parks again WITHOUT executing. It
+    /// therefore has no completion, and recording the placeholder as one would
+    /// make a top-level-await program answer `null` (see
+    /// `last_fiber_completion`, which `run()` surfaces as the final value).
+    pub(crate) resume_reparked: bool,
     /// TEMP diagnostics (VYBE_DEBUG_AC): last host import invoked.
     pub(crate) dbg_last_import: Option<String>,
     /// Frame-depth floors of the active (nested) `execute_until` loops.
@@ -1302,6 +1419,7 @@ impl VM {
             frames: Vec::new(),
             stack: Vec::with_capacity(256),
             globals: vec![Value::Undefined],
+            globals_assigned: vec![true],
             global_index: {
                 let mut ix = HashMap::new();
                 ix.insert("undefined".to_string(), 0u32);
@@ -1348,6 +1466,7 @@ impl VM {
             async_floors: Vec::new(),
             pending_settled_await: None,
             last_fiber_completion: None,
+            resume_reparked: false,
             dbg_last_import: None,
             exec_floors: Vec::new(),
             next_fiber_id: 1,
@@ -1461,6 +1580,7 @@ impl VM {
         // 2. Globals: script-added keys vanish; reassigned baseline keys restored.
         self.globals = snap.globals.clone();
         self.global_index = snap.global_index.clone();
+        self.globals_assigned = vec![true; self.globals.len()];
         // 3. Wasm linear memory + tables + segment-drop state → boot.
         self.memory.with_buffer_mut(|b| {
             b.clear();
@@ -2474,7 +2594,7 @@ impl VM {
             globals_slot: globals_ptr,
             global_index_slot: global_index_ptr,
             stack_slot: &self.stack as *const Vec<Value>,
-            handle_table_slot: &self.handle_table as *const crate::handle_table::HandleTable,
+            handle_table_slot: &mut self.handle_table as *mut crate::handle_table::HandleTable,
             shared_memory_slot: &self.memory as *const crate::shared_memory::SharedMemory,
         }
     }
@@ -2673,6 +2793,10 @@ impl VM {
                 }
             }
         }
+        // Rewrite the incoming set's global operands into THIS VM's index
+        // space before the chunks join it — each set was compiled against
+        // its own table.
+        self.merge_global_table(&mut adjusted);
         self.chunks.extend(adjusted);
         self.bind_imported_globals();
 
@@ -2865,6 +2989,10 @@ impl VM {
                 }
             }
         }
+        // Rewrite the incoming set's global operands into THIS VM's index
+        // space before the chunks join it — each set was compiled against
+        // its own table.
+        self.merge_global_table(&mut adjusted);
         self.chunks.extend(adjusted);
         self.bind_imported_globals();
 
@@ -3031,7 +3159,13 @@ impl VM {
         {
             let inits = self.chunks[script_idx].global_inits.clone();
             for gi in &inits {
-                if matches!(self.global(&gi.name), None | Some(Value::Null)) {
+                // Apply only to a slot nobody has written — a host-installed
+                // native or a real program value both count as written.
+                let unwritten = match self.global_index.get(&gi.name) {
+                    Some(&i) => !self.globals_assigned.get(i as usize).copied().unwrap_or(true),
+                    None => true,
+                };
+                if unwritten {
                     let val = self.eval_const_expr(&gi.init);
                     self.set_global(&gi.name, val);
                 }
@@ -3227,13 +3361,16 @@ impl VM {
                 let i = i as usize;
                 if i >= self.globals.len() {
                     self.globals.resize(i + 1, Value::Null);
+                    self.globals_assigned.resize(i + 1, false);
                 }
                 self.globals[i] = value;
+                self.globals_assigned[i] = true;
             }
             None => {
                 let i = self.globals.len() as u32;
                 self.global_index.insert(name.to_string(), i);
                 self.globals.push(value);
+                self.globals_assigned.push(true);
             }
         }
     }
@@ -3427,7 +3564,11 @@ impl VM {
     /// value through this).
     pub fn resume_scheduled_fiber(&mut self, fiber: crate::fiber::Fiber) -> Result<(), VMError> {
         let completion = self.resume_fiber(fiber)?;
-        self.last_fiber_completion = Some(completion);
+        // A fiber that re-parked inside a synchronous copy ran no code, so it
+        // has no completion to record (see `VM::resume_reparked`).
+        if !self.resume_reparked {
+            self.last_fiber_completion = Some(completion);
+        }
         Ok(())
     }
 
@@ -3443,6 +3584,171 @@ impl VM {
     /// declares its own imports. A chunk that is never bound fails silently —
     /// `GLOBAL_GET` yields `Undefined`, so every string literal in it would
     /// read as `undefined` rather than trap.
+    /// Adopt the module's GLOBAL INDEX SPACE.
+    ///
+    /// The bytecode's `GLOBAL_GET`/`GLOBAL_SET` operands were assigned against
+    /// `chunks[0].globals` at COMPILE time. So name→index here must be that
+    /// table — not whatever order names happen to arrive in at run time, which
+    /// is a second, disagreeing index space and reads the wrong global.
+    ///
+    /// Values already installed by name (host builtins bound before the module
+    /// loaded) are preserved and MOVED to their table slot; a name the table
+    /// does not mention keeps working by being appended, which is what host
+    /// interop and `eval` rely on.
+    /// MERGE an incoming chunk set's global table into this VM's, remapping the
+    /// set's `GLOBAL_GET`/`GLOBAL_SET` operands as it goes.
+    ///
+    /// ⚠ Chunk sets are APPENDED (`run_linked_impl`) — a prelude, a bundle, the
+    /// user's module, an `eval` — and each was compiled against its OWN table.
+    /// Adopting one set's table wholesale therefore leaves every other set's
+    /// operands indexing a space that no longer exists: `__stdlib_sorted` in
+    /// the bundle and the user's own globals end up numbered from two
+    /// different origins. That is the same two-index-spaces failure this whole
+    /// change exists to remove, one level up.
+    ///
+    /// The VM's table is authoritative and only ever grows; the incoming set is
+    /// rewritten into it. Same shape as `normalize_import_table`, applied at
+    /// load time instead of compile time.
+    /// This VM's slot for `name`, allocating one if it is new.
+    fn global_slot_for(&mut self, name: &str) -> u16 {
+        match self.global_index.get(name) {
+            Some(&i) => i as u16,
+            None => {
+                let i = self.globals.len() as u32;
+                self.global_index.insert(name.to_string(), i);
+                self.globals.push(Value::Null);
+                self.globals_assigned.push(false);
+                i as u16
+            }
+        }
+    }
+
+    /// `(constant index, global name)` for every global operand in a chunk —
+    /// the pre-index encoding, still emitted by paths that skip the compiler's
+    /// `normalize_global_table`.
+    fn global_operand_names(chunk: &Chunk) -> Vec<(u16, String)> {
+        let code = &chunk.code;
+        let mut out = Vec::new();
+        let mut ip = 0usize;
+        while ip + 3 < code.len() {
+            let group = ((code[ip] as u16) << 8) | code[ip + 1] as u16;
+            let sub = ((code[ip + 2] as u16) << 8) | code[ip + 3] as u16;
+            let Some(op) = crate::opcode::Op::decode(group, sub) else {
+                ip += 4;
+                continue;
+            };
+            let operand_start = ip + 4;
+            if (op == crate::opcode::Op::GLOBAL_GET || op == crate::opcode::Op::GLOBAL_SET)
+                && operand_start + 1 < code.len()
+            {
+                let idx = u16::from_be_bytes([code[operand_start], code[operand_start + 1]]);
+                if let Some(Value::String(name)) = chunk.constants.get(idx as usize) {
+                    out.push((idx, name.to_string()));
+                }
+            }
+            ip = operand_start + op.operand_format().size_in(code, operand_start);
+        }
+        out
+    }
+
+    pub(crate) fn merge_global_table(&mut self, incoming: &mut [Chunk]) {
+        let Some(table) = incoming.first().map(|c| c.globals.clone()) else {
+            return;
+        };
+
+        // ⚠ A set with NO table was produced by a path that did not run
+        // `normalize_global_table` — a bundle, a prelude, a dynamically
+        // compiled fragment. Its operands are still CONSTANT indices naming
+        // the global, the pre-index encoding. Returning early here let those
+        // through untouched and the VM read them as global indices, which is a
+        // silent wrong-global read: every bundle helper (`__stdlib_sorted`,
+        // the SQL cursor family) came back `undefined is not callable`.
+        //
+        // So derive the table from the operands themselves and remap anyway.
+        // There is no third case: either a set carries a table or it names its
+        // globals in constants, and both are handled.
+        let per_chunk_names: Vec<Vec<(u16, String)>> = incoming
+            .iter()
+            .map(|c| Self::global_operand_names(c))
+            .collect();
+
+        let mut remap: Vec<u16> = Vec::with_capacity(table.len());
+        for name in table.iter() {
+            remap.push(self.global_slot_for(name));
+        }
+
+        let legacy: Vec<std::collections::HashMap<u16, u16>> = if table.is_empty() {
+            per_chunk_names
+                .iter()
+                .map(|names| {
+                    names
+                        .iter()
+                        .map(|(c, n)| (*c, self.global_slot_for(n)))
+                        .collect()
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        for (ci, chunk) in incoming.iter_mut().enumerate() {
+            let code = &mut chunk.code;
+            let mut ip = 0usize;
+            while ip + 3 < code.len() {
+                let group = ((code[ip] as u16) << 8) | code[ip + 1] as u16;
+                let sub = ((code[ip + 2] as u16) << 8) | code[ip + 3] as u16;
+                let Some(op) = crate::opcode::Op::decode(group, sub) else {
+                    ip += 4;
+                    continue;
+                };
+                let operand_start = ip + 4;
+                let operand_len = op.operand_format().size_in(code, operand_start);
+                if (op == crate::opcode::Op::GLOBAL_GET
+                    || op == crate::opcode::Op::GLOBAL_SET)
+                    && operand_start + 1 < code.len()
+                {
+                    let old = u16::from_be_bytes([code[operand_start], code[operand_start + 1]]);
+                    let mapped = if legacy.is_empty() {
+                        remap.get(old as usize).copied()
+                    } else {
+                        legacy[ci].get(&old).copied()
+                    };
+                    if let Some(new_idx) = mapped {
+                        let b = new_idx.to_be_bytes();
+                        code[operand_start] = b[0];
+                        code[operand_start + 1] = b[1];
+                    }
+                }
+                ip = operand_start + operand_len;
+            }
+        }
+
+        // The operands now index the VM's authoritative space, so the table
+        // that DESCRIBES them has to be that space too. Leaving the incoming
+        // compile-time table in place made every chunk claim a numbering its
+        // own bytecode no longer used: the disassembler resolved a remapped
+        // operand against the pre-merge names and printed `(OUT-OF-RANGE)`.
+        //
+        // The invariant is `chunk.globals` describes `chunk.code`'s operands.
+        // Anything that rewrites those operands owns re-stating it here.
+        let authoritative = std::sync::Arc::new(self.global_operand_table());
+        for chunk in incoming.iter_mut() {
+            chunk.globals = authoritative.clone();
+        }
+    }
+
+    /// The VM's global index space as a name table, index-aligned with the
+    /// slots `GLOBAL_GET`/`GLOBAL_SET` operands carry after `merge_global_table`.
+    fn global_operand_table(&self) -> Vec<String> {
+        let mut table = vec![String::new(); self.globals.len()];
+        for (name, &slot) in &self.global_index {
+            if let Some(entry) = table.get_mut(slot as usize) {
+                *entry = name.clone();
+            }
+        }
+        table
+    }
+
     pub(crate) fn bind_imported_globals(&mut self) {
         let bindings: Vec<(String, Arc<str>)> = self
             .chunks
@@ -3667,8 +3973,7 @@ mod reset_tests {
             .unwrap()
             .properties
             .insert("boot".into(), Value::I32(7));
-        vm.globals
-            .insert("baseline".into(), Value::Object(base_obj.clone()));
+        vm.set_global_owned("baseline", Value::Object(base_obj.clone()));
 
         let snap = vm.snapshot();
 
@@ -3685,7 +3990,7 @@ mod reset_tests {
             .properties
             .insert("a".into(), Value::Object(a.clone()));
         let (wa, wb) = (Arc::downgrade(&a), Arc::downgrade(&b));
-        vm.globals.insert("script".into(), Value::Object(a.clone()));
+        vm.set_global_owned("script", Value::Object(a.clone()));
         base_obj
             .lock()
             .unwrap()
@@ -3699,13 +4004,13 @@ mod reset_tests {
         vm.reset_to(&snap);
 
         // Baseline global survives, boot contents intact, script mutation gone.
-        assert!(vm.globals.contains_key("baseline"));
+        assert!(vm.has_global("baseline"));
         let base = base_obj.lock().unwrap();
         assert_eq!(base.properties.get("boot"), Some(&Value::I32(7)));
         assert!(!base.properties.contains_key("mutated"));
         drop(base);
         // Script-added global gone.
-        assert!(!vm.globals.contains_key("script"));
+        assert!(!vm.has_global("script"));
         // Cyclic script garbage reclaimed.
         assert!(
             wa.upgrade().is_none() && wb.upgrade().is_none(),
@@ -3724,8 +4029,7 @@ mod reset_tests {
         let mut vm = VM::new();
         // A baseline object so the baseline count is a real, non-trivial number.
         let _base = crate::heap::alloc(Object::new());
-        vm.globals
-            .insert("keep".into(), Value::Object(_base.clone()));
+        vm.set_global_owned("keep", Value::Object(_base.clone()));
         let snap = vm.snapshot();
         let baseline = crate::heap::live_count();
 
@@ -3741,7 +4045,7 @@ mod reset_tests {
                 .unwrap()
                 .properties
                 .insert("a".into(), Value::Object(a.clone()));
-            vm.globals.insert(format!("cyc{i}"), Value::Object(a));
+            vm.set_global_owned(format!("cyc{i}"), Value::Object(a));
         }
         assert!(
             crate::heap::live_count() >= baseline + 1000,

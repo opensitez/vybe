@@ -84,6 +84,14 @@ pub struct FutureRecord {
 pub struct StreamRecord {
     pub buffer: VecDeque<Value>,
     pub closed: bool,
+    /// The `T` of `stream<T>`, when it is not `u8`.
+    ///
+    /// `None` means the raw byte stream every producer used before typed
+    /// elements existed, and it keeps that path EXACTLY as it was: `u8` is not
+    /// spelled as some 1-byte stand-in here, because `canon stream.read`'s
+    /// byte path and its element path are different code, and conflating the
+    /// two types is how a `stream<u8>` would silently acquire element strides.
+    pub elem: Option<crate::component::ValType>,
     /// Bytes flattened out of `buffer` but not yet handed to a reader.
     /// `canon stream.read` copies a byte count, which need not land on an item
     /// boundary; the remainder waits here. See [`EventLoop::stream_read_bytes`].
@@ -122,6 +130,32 @@ pub struct EventLoop {
     /// Fibers suspended waiting for data in a specific stream.
     pub stream_waiting_fibers: Vec<(u64, Fiber)>, // (stream_id, fiber)
     next_stream_id: u64,
+    /// Fibers parked inside a SYNCHRONOUS `canon stream.read`.
+    ///
+    /// Distinct from `stream_waiting_fibers`, and the difference is the whole
+    /// point: a fiber there is HANDED the item and resumes with it as a value,
+    /// which is the shape a `yield`-style read wants. A fiber here must find
+    /// the data still IN the stream, because what resumes it is a copy into
+    /// linear memory at a remembered `(ptr, n)` — see [`Fiber::pending_copy`].
+    /// Waking one by consuming its item would lose that item outright.
+    stream_sync_readers: Vec<(u64, Fiber)>, // (stream_id, fiber)
+    /// The same, for a synchronous `canon future.read`.
+    future_sync_readers: Vec<(u64, Fiber)>, // (future_id, fiber)
+    /// Host functions that can produce more elements for a stream on demand,
+    /// as `stream_id → (module, name)`.
+    ///
+    /// A `stream<T>` whose elements arrive over time — `wasi:sockets`'
+    /// `listen()`, where each element is an inbound connection — cannot be
+    /// filled by the call that created it: a host function returns once. The
+    /// producer is what the reader consults instead, just before it would
+    /// park: run the host's `accept` now, then look again.
+    ///
+    /// A (module, name) PAIR rather than a closure, because a closure would
+    /// have to be `Send + Sync` and carry the VM state it needs to mint
+    /// resources and push. This is the same indirection the VM already uses to
+    /// reach `ecma:promise.resolve` internally, and it keeps every socket fact
+    /// in `platforms/wasi` — the VM only knows that a stream may name one.
+    stream_producers: HashMap<u64, (String, String)>,
 }
 
 impl EventLoop {
@@ -136,7 +170,78 @@ impl EventLoop {
             stream_buffers: HashMap::new(),
             stream_waiting_fibers: Vec::new(),
             next_stream_id: 1,
+            stream_sync_readers: Vec::new(),
+            future_sync_readers: Vec::new(),
+            stream_producers: HashMap::new(),
         }
+    }
+
+    /// Name the host function that can produce more elements for `stream_id`.
+    pub fn set_stream_producer(&mut self, stream_id: u64, module: &str, name: &str) {
+        self.stream_producers
+            .insert(stream_id, (module.to_string(), name.to_string()));
+    }
+
+    /// The producer registered for `stream_id`, if any.
+    pub fn stream_producer(&self, stream_id: u64) -> Option<(String, String)> {
+        self.stream_producers.get(&stream_id).cloned()
+    }
+
+    /// Forget a stream's producer — called when the stream closes, so a
+    /// listener that has gone away is not polled forever.
+    pub fn clear_stream_producer(&mut self, stream_id: u64) {
+        self.stream_producers.remove(&stream_id);
+    }
+
+    /// Park a fiber inside a synchronous `canon stream.read`.
+    pub fn suspend_stream_sync_reader(&mut self, stream_id: u64, fiber: Fiber) {
+        self.stream_sync_readers.push((stream_id, fiber));
+    }
+
+    /// Park a fiber inside a synchronous `canon future.read`.
+    pub fn suspend_future_sync_reader(&mut self, future_id: u64, fiber: Fiber) {
+        self.future_sync_readers.push((future_id, fiber));
+    }
+
+    /// Requeue every fiber parked on `stream_id`, leaving the data in place.
+    ///
+    /// Enqueued directly rather than returned: a push can release readers of
+    /// several ends of the same stream, and the one-fiber return of
+    /// [`stream_push`] has no way to say so. Silently returning only the first
+    /// would park the rest forever.
+    fn wake_stream_sync_readers(&mut self, stream_id: u64) {
+        let mut i = 0;
+        while i < self.stream_sync_readers.len() {
+            if self.stream_sync_readers[i].0 == stream_id {
+                let (_, fiber) = self.stream_sync_readers.remove(i);
+                self.immediate.push_back(Task::ResumeFiber(fiber));
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    /// The same, for a future that has settled either way.
+    fn wake_future_sync_readers(&mut self, future_id: u64) {
+        let mut i = 0;
+        while i < self.future_sync_readers.len() {
+            if self.future_sync_readers[i].0 == future_id {
+                let (_, fiber) = self.future_sync_readers.remove(i);
+                self.immediate.push_back(Task::ResumeFiber(fiber));
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    /// Fibers parked in a synchronous copy with nothing left to wake them.
+    ///
+    /// The event loop ends when nothing is runnable. A fiber parked here at
+    /// that moment is a DEADLOCK — its producer is gone — and reporting it is
+    /// the difference between an error and a program that silently stops
+    /// mid-read. Returned as a count so the caller can name it.
+    pub fn parked_sync_copies(&self) -> usize {
+        self.stream_sync_readers.len() + self.future_sync_readers.len()
     }
 
     /// Generate a unique promise ID.
@@ -219,6 +324,9 @@ impl EventLoop {
             rec.phase = FuturePhase::Resolved;
             rec.value = Some(value.clone());
         }
+        // Recorded first: a parked `future.read` resumes by reading
+        // `future_states`, so it must find the settled phase already there.
+        self.wake_future_sync_readers(future_id);
         if let Some(pos) = self
             .future_waiting_fibers
             .iter()
@@ -238,6 +346,10 @@ impl EventLoop {
             rec.phase = FuturePhase::Rejected;
             rec.value = Some(reason.clone());
         }
+        // A rejected future is the writable end going away: the copy can never
+        // happen, so the parked reader is released to answer `DROPPED` rather
+        // than waiting on a value that will never arrive.
+        self.wake_future_sync_readers(future_id);
         if let Some(pos) = self
             .future_waiting_fibers
             .iter()
@@ -253,8 +365,13 @@ impl EventLoop {
 
     // ── CM3 streams ─────────────────────────────────────────────────────────
 
-    /// Allocate a new stream, returning its ID.
+    /// Allocate a new `stream<u8>`, returning its ID.
     pub fn create_stream(&mut self) -> u64 {
+        self.create_stream_of(None)
+    }
+
+    /// Allocate a new `stream<T>`. `None` is `stream<u8>`.
+    pub fn create_stream_of(&mut self, elem: Option<crate::component::ValType>) -> u64 {
         let id = self.next_stream_id;
         self.next_stream_id += 1;
         self.stream_buffers.insert(
@@ -263,9 +380,32 @@ impl EventLoop {
                 buffer: VecDeque::new(),
                 closed: false,
                 pending: Vec::new(),
+                elem,
             },
         );
         id
+    }
+
+    /// The `T` of `stream<T>`, or `None` for a byte stream.
+    pub fn stream_elem(&self, stream_id: u64) -> Option<crate::component::ValType> {
+        self.stream_buffers
+            .get(&stream_id)
+            .and_then(|rec| rec.elem.clone())
+    }
+
+    /// Pop up to `max` whole ITEMS off a typed stream.
+    ///
+    /// The counterpart of [`stream_read_bytes`] for `stream<T>` where `T` is
+    /// not `u8`: `canon stream.read` counts ELEMENTS, and an element of a
+    /// record type has no meaning as a byte run — flattening one the way the
+    /// byte path does would hand the guest the record's field bytes with no
+    /// layout at all.
+    pub fn stream_read_items(&mut self, stream_id: u64, max: usize) -> Vec<Value> {
+        let Some(rec) = self.stream_buffers.get_mut(&stream_id) else {
+            return Vec::new();
+        };
+        let take = max.min(rec.buffer.len());
+        rec.buffer.drain(..take).collect()
     }
 
     /// Suspend a fiber waiting for the next item from a stream.
@@ -289,6 +429,11 @@ impl EventLoop {
             if let Some(rec) = self.stream_buffers.get_mut(&stream_id) {
                 rec.buffer.push_back(item);
             }
+            // Buffered FIRST, then the parked synchronous readers are released
+            // — they resume by copying out of that buffer, so waking them
+            // before the item lands would have them find the stream still
+            // empty and park again.
+            self.wake_stream_sync_readers(stream_id);
             None
         }
     }
@@ -354,6 +499,14 @@ impl EventLoop {
         if let Some(rec) = self.stream_buffers.get_mut(&stream_id) {
             rec.closed = true;
         }
+        // A closed stream takes no more elements, so its producer is dead
+        // weight — and polling a listener whose stream is gone would keep
+        // accepting connections nobody can read.
+        self.stream_producers.remove(&stream_id);
+        // EOF is a RESULT, not a reason to stay parked: a synchronous reader
+        // waiting here now has an answer (`DROPPED`, or a final short copy of
+        // whatever is still buffered), so it must be released too.
+        self.wake_stream_sync_readers(stream_id);
         if let Some(pos) = self
             .stream_waiting_fibers
             .iter()

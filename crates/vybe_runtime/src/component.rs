@@ -59,8 +59,28 @@ pub enum ValType {
     Stream(Box<ValType>),
     /// option<T> — used in stream read results and nullable returns
     Option(Box<ValType>),
-    /// result<T, E>
-    Result(Box<ValType>, Box<ValType>),
+    /// `result<T, E>`, `result<_, E>`, `result<T>` or bare `result` — EACH
+    /// case's payload is optional.
+    ///
+    /// It used to demand both, which meant `result<_, error-code>` — the most
+    /// common return shape in all of WASI 0.3.1, and tuple element 1 of every
+    /// stream-producing function — could not be spelled at all. A caller had
+    /// to invent a stand-in type for the absent `ok`, and that stand-in then
+    /// fed `elem_size` and the payload offset, so the layout was wrong in a
+    /// way nothing reported. Same class as the missing `Variant`: the layout
+    /// code was right, the TYPE could not name the shape.
+    Result(Option<Box<ValType>>, Option<Box<ValType>>),
+    /// `variant` — the general N-case tagged union, each case optionally
+    /// carrying a payload.
+    ///
+    /// `option` and `result` above are the two SPECIALISATIONS the Component
+    /// Model despecialises into this, so they could be modelled without it.
+    /// Nothing else could: `wasi:filesystem`'s `descriptor-type` is eight
+    /// cases whose last is `other(option<string>)`, and there was no way to
+    /// name that here at all. `canon_layout` already carried
+    /// `alignment_variant`/`elem_size_variant` for exactly this shape — the
+    /// layout half was written before the type existed.
+    Variant(Vec<(String, Option<ValType>)>),
     /// Any — for dynamic languages that don't specify types
     Any,
     /// `own<T>` — an owned resource handle. The receiver takes ownership and is

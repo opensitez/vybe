@@ -89,15 +89,18 @@ pub struct ClassType {
     /// Properties, potentially backed by host getter/setter calls.
     pub properties: Vec<PropertyDef>,
     /// Instance or static methods, keyed on canonical (language-neutral)
-    /// method names. Dispatch finds a method by looking up the call
-    /// site's name, falling back to `method_aliases`.
+    /// method names.
+    ///
+    /// **Canonical means canonical — there is no alias fallback.** A
+    /// `method_aliases` table sat beside this, mapping `"__str__"`/`"to_s"` to
+    /// `"tostring"`, and it had ZERO readers anywhere in the workspace:
+    /// declared here, populated nowhere, consulted by nothing.
+    /// `classnormalization.md` says the walker resolves the alias when it
+    /// produces `NormalClass`, so by the time a name reaches the runtime it is
+    /// already canonical and the table could only ever have been dead. Same
+    /// failure family as flexclassplan §1b's `cross_language_aliases`, which
+    /// was deleted for the same reason.
     pub methods: Vec<MethodDef>,
-    /// Cross-language alias table: `"__str__" → "tostring"`,
-    /// `"to_s" → "tostring"`, etc. Populated by the walker that
-    /// produced this class, so a Python class consumed by VB code
-    /// routes `ToString` calls to the Python chunk. Absent entries
-    /// mean the source name is already canonical.
-    pub method_aliases: HashMap<String, String>,
     /// Constructor definition.
     pub constructor: Option<ConstructorDef>,
     /// Optional destructor/finalizer-like method.
@@ -331,7 +334,6 @@ impl ClassType {
             fields: Vec::new(),
             properties: Vec::new(),
             methods: Vec::new(),
-            method_aliases: HashMap::new(),
             constructor: None,
             destructor: None,
         }
@@ -347,19 +349,6 @@ impl ClassType {
     /// list — mixin methods are flattened into `methods` at walker time.
     pub fn with_interface(mut self, interface: impl Into<String>) -> Self {
         self.interfaces.push(interface.into());
-        self
-    }
-
-    /// Record a cross-language alias for a method. Dispatch consults
-    /// this map after a direct vtable miss, so `obj.ToString()` on a
-    /// class whose canonical method name is `tostring` still hits.
-    /// Populated by the walker from the canonical-name table.
-    pub fn with_method_alias(
-        mut self,
-        alias: impl Into<String>,
-        canonical: impl Into<String>,
-    ) -> Self {
-        self.method_aliases.insert(alias.into(), canonical.into());
         self
     }
 
@@ -696,17 +685,22 @@ mod tests {
         let button_class = ClassType::new("Button")
             .with_parent("Control")
             .with_field("Text")
+            // A made-up host module. This exercises `ClassType`'s SHAPE — a
+            // property with a setter, a method with a host call, a backed
+            // constructor — and nothing here resolves against a real registry.
+            // ⚠ It must not name a real module: a fixture pointing at one
+            // reads like a surviving dependency, to a reader and to grep.
             .with_property(
                 PropertyDef::new("Enabled")
-                    .with_setter(HostTarget::new("vybe:gui", "controlSetProperty")),
+                    .with_setter(HostTarget::new("test:widgets", "setProperty")),
             )
             .with_method(MethodDef::new(
                 "PerformClick",
                 0,
-                MethodBody::HostCall(HostTarget::new("vybe:gui", "buttonPerformClick")),
+                MethodBody::HostCall(HostTarget::new("test:widgets", "performClick")),
             ))
             .with_constructor(
-                ConstructorDef::new(0).with_backing(HostTarget::new("vybe:gui", "new_Button")),
+                ConstructorDef::new(0).with_backing(HostTarget::new("test:widgets", "newButton")),
             );
 
         comp.add_class(button_class.clone());
@@ -780,9 +774,9 @@ pub enum InstanceMethodTarget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstancePropertyTarget {
     /// A host-backed property accessor. `key` is `Some(PascalName)` when the
-    /// target is the *generic* `vybe:gui` property host fn
-    /// (`controlGet/SetProperty(this, "Text"[, value])`) — the compiler pushes
-    /// the key as an argument. `None` for dedicated per-property host fns
+    /// target is a *generic* property host fn
+    /// (`getProperty(this, "Text")` / `setProperty(this, "Text", value)`) — the
+    /// compiler pushes the key as an argument. `None` for dedicated per-property host fns
     /// (`Environment.NewLine` → `node:os.EOL(this)`).
     Host {
         module: String,
