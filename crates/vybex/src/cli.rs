@@ -350,6 +350,14 @@ pub fn run() {
                 print_usage();
                 return;
             }
+            "--version" | "-V" => {
+                println!("vybex {}", env!("CARGO_PKG_VERSION"));
+                return;
+            }
+            "--list-languages" => {
+                print_languages();
+                return;
+            }
             _ if serve && !arg.starts_with('-') => serve_positional.push(arg.clone()),
             _ if !arg.starts_with('-') => file_args.push(arg.clone()),
             _ => {
@@ -1022,9 +1030,43 @@ fn print_usage() {
     eprintln!("      --pool N      With --serve: warm VM workers (default: one per core)");
     eprintln!("      --cold        With --serve: fresh VM per request instead of the warm pool");
     eprintln!("      --no-cache    With --serve: recompile on every request");
+    eprintln!("      --list-languages  List registered language frontends and their extensions");
+    eprintln!("  -V, --version     Print the vybex version and exit");
     eprintln!("  -h, --help        Show this help");
     eprintln!();
     eprintln!("Supported: {}", ext_list.join(", "));
+}
+
+/// `--list-languages` — print every registered language frontend and the file
+/// extensions it claims, grouped by language. Both are read from the live
+/// plugin registry (`languages::all` / `supported_extensions`), so the list
+/// always matches the frontends actually compiled into this build.
+fn print_languages() {
+    use std::collections::BTreeMap;
+
+    // Seed with every registered language so a frontend with no extension
+    // mapping still appears, then attach each supported extension to its owner.
+    let mut by_lang: BTreeMap<&'static str, Vec<String>> = BTreeMap::new();
+    for lang in vybe_compiler::languages::all() {
+        by_lang.entry(lang.name).or_default();
+    }
+    for ext in vybe_compiler::languages::supported_extensions() {
+        if let Some(lang) = vybe_compiler::languages::find_by_extension(&ext) {
+            by_lang.entry(lang.name).or_default().push(format!(".{ext}"));
+        }
+    }
+
+    println!("vybex — {} registered language frontends:", by_lang.len());
+    println!();
+    let width = by_lang.keys().map(|n| n.len()).max().unwrap_or(0);
+    for (name, exts) in &by_lang {
+        let exts = if exts.is_empty() {
+            "(no file extensions)".to_string()
+        } else {
+            exts.join(", ")
+        };
+        println!("  {:<width$}  {exts}", name);
+    }
 }
 
 /// Heuristic to distinguish a bind address (`host:port` or `:port`) from a
