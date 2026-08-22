@@ -2007,6 +2007,61 @@ pub fn emit_map_key_set(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_end(line);
 }
 
+/// `Map.values()`, identity-aware: an identity map stores `[originalKey,
+/// value]` pairs as its ecma-map values, so the raw `ecma:map.values` answer
+/// would hand back the PAIRS. Unwrap element 1 for identity maps; everything
+/// else is the plain values view.
+pub fn emit_map_values(chunks: &mut [Chunk], current: usize, line: u32) {
+    let map = chunks[current].alloc_scratch(1);
+    let entries = chunks[current].alloc_scratch(1);
+    let index = chunks[current].alloc_scratch(1);
+    let len = chunks[current].alloc_scratch(1);
+    let pair = chunks[current].alloc_scratch(1);
+    let out = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], map, line);
+    emit_identity_map_flag(chunks, current, map, line);
+    chunks[current].emit_if_value(line);
+    collections::emit_array_new(chunks, current, 0, line);
+    set(&mut chunks[current], out, line);
+    get(&mut chunks[current], map, line);
+    host::emit(&mut chunks[current], "ecma:map", "entries", 1, line);
+    set(&mut chunks[current], entries, line);
+    get(&mut chunks[current], entries, line);
+    collections::emit_len(chunks, current, line);
+    set(&mut chunks[current], len, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    set(&mut chunks[current], index, line);
+    let outer = chunks[current].emit_block(line);
+    let (loop_id, _) = chunks[current].emit_loop_s(line);
+    get(&mut chunks[current], index, line);
+    get(&mut chunks[current], len, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+    get(&mut chunks[current], entries, line);
+    get(&mut chunks[current], index, line);
+    collections::emit_get(chunks, current, line);
+    set(&mut chunks[current], pair, line);
+    get(&mut chunks[current], out, line);
+    emit_identity_entry_value(chunks, current, map, pair, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    get(&mut chunks[current], index, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    vybe_compiler::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+    set(&mut chunks[current], index, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_id);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer);
+    get(&mut chunks[current], out, line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], map, line);
+    host::emit(&mut chunks[current], "ecma:map", "values", 1, line);
+    chunks[current].emit_end(line);
+}
+
 pub fn emit_map_entry_set(chunks: &mut [Chunk], current: usize, line: u32) {
     let map = chunks[current].alloc_scratch(1);
     let entries = chunks[current].alloc_scratch(1);

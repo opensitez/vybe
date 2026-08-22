@@ -328,6 +328,7 @@ fn java_type_ctor_target(qualified: &str) -> Option<NamespaceNode> {
         "java.util.regex.Pattern" => "jvm.java.regex_pattern_compile",
         "java.lang.StringBuilder" | "java.lang.StringBuffer" => "jvm.java.stringbuilder_new",
         "java.util.StringTokenizer" => "jvm.java.stringtokenizer_new",
+        "java.util.StringJoiner" => "jvm.java.stringjoiner_new",
         "java.lang.Object" => "jvm.java.hash_map_new",
         "java.io.ByteArrayOutputStream" => "jvm.java.io_byte_array_output_stream_new",
         "java.io.ByteArrayInputStream" => "jvm.java.io_byte_array_input_stream_new",
@@ -736,7 +737,8 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
         ("Collection", "removeall", "jvm.java.remove_all", 1, 1),
         ("Collection", "retainall", "jvm.java.retain_all", 1, 1),
         ("Collection", "containsall", "jvm.java.list_contains_all", 1, 1),
-        ("Collection", "removeif", "jvm.java.remove_if", 1, 1),
+        ("Collection", "removeif", "jvm.java.list_remove_if", 1, 1),
+        ("Collection", "spliterator", "jvm.java.spliterator_new", 0, 0),
         // ── List ───────────────────────────────────────────────────────────
         // `add(index, e)` is the List-only overload, so List widens the arity.
         ("List", "add", "jvm.java.add", 1, 2),
@@ -1003,6 +1005,15 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
         ("Map", "keySet", "java.util.Set"),
         ("Map", "values", "java.util.Collection"),
         ("Map", "entrySet", "java.util.Set"),
+        ("Collection", "spliterator", "java.util.Spliterator"),
+        // Range views are maps in their own right — `headMap(3).size()`
+        // types its second hop from these.
+        ("SortedMap", "headMap", "java.util.SortedMap"),
+        ("SortedMap", "tailMap", "java.util.SortedMap"),
+        ("SortedMap", "subMap", "java.util.SortedMap"),
+        ("NavigableMap", "descendingMap", "java.util.NavigableMap"),
+        ("NavigableMap", "descendingKeySet", "java.util.NavigableSet"),
+        ("NavigableSet", "descendingSet", "java.util.NavigableSet"),
     ];
 
     // Fold each type's ancestry, nearest first. `JAVA_TYPES` already carries
@@ -2001,6 +2012,486 @@ fn insert_java_io_methods(root: &mut Subtree) {
 /// DECLARE that they return a `java.util.EnumSet` (`member_returns`) so
 /// `EnumSet.of(x).add(y)` — and a local typed by that call — resolves the
 /// second hop through the tree as well.
+/// `java.nio.file` — `Paths`, `Files`, and the `Path` instance surface.
+///
+/// A `Path` shares `java.io.File`'s object shape (DATA = the path string)
+/// and the same in-memory file store, so the `Files` statics are thin
+/// delegates over the `java.io` adapters. Everything registers as tree
+/// leaves; the java walker carries NO nio rewrites.
+fn insert_java_nio(root: &mut Subtree) {
+    const FILES_STATICS: &[(&str, &str, u8, u8)] = &[
+        ("readstring", "jvm.java.nio_files_read_string", 1, 2),
+        ("writestring", "jvm.java.nio_files_write_string", 2, 3),
+        ("readalllines", "jvm.java.nio_files_read_all_lines", 1, 2),
+        ("lines", "jvm.java.nio_files_read_all_lines", 1, 2),
+        ("delete", "jvm.java.nio_files_delete", 1, 1),
+        ("deleteifexists", "jvm.java.nio_files_delete_if_exists", 1, 1),
+        ("exists", "jvm.java.nio_files_exists", 1, 1),
+        ("notexists", "jvm.java.nio_files_not_exists", 1, 1),
+        ("size", "jvm.java.nio_files_size", 1, 1),
+        ("createfile", "jvm.java.nio_files_create_file", 1, 1),
+        ("createdirectory", "jvm.java.nio_files_create_directories", 1, 1),
+        (
+            "createdirectories",
+            "jvm.java.nio_files_create_directories",
+            1,
+            1,
+        ),
+        ("createtempfile", "jvm.java.nio_files_create_temp_file", 0, 3),
+        (
+            "createtempdirectory",
+            "jvm.java.nio_files_create_temp_directory",
+            0,
+            2,
+        ),
+        ("copy", "jvm.java.nio_files_copy", 2, 3),
+        ("move", "jvm.java.nio_files_move", 2, 3),
+        ("isdirectory", "jvm.java.nio_files_is_directory", 1, 1),
+        ("isregularfile", "jvm.java.nio_files_is_regular_file", 1, 1),
+        ("list", "jvm.java.nio_files_list", 1, 1),
+        ("walk", "jvm.java.nio_files_walk", 1, 1),
+        ("issamefile", "jvm.java.nio_files_is_same_file", 2, 2),
+        ("mismatch", "jvm.java.nio_files_mismatch", 2, 2),
+        ("write", "jvm.java.nio_files_write_bytes", 2, 3),
+        ("readallbytes", "jvm.java.nio_files_read_all_bytes", 1, 1),
+        (
+            "newbufferedreader",
+            "jvm.java.nio_files_new_buffered_reader",
+            1,
+            2,
+        ),
+        (
+            "newoutputstream",
+            "jvm.java.nio_files_new_output_stream",
+            1,
+            2,
+        ),
+        ("newbytechannel", "jvm.java.nio_files_new_byte_channel", 1, 2),
+        (
+            "probecontenttype",
+            "jvm.java.nio_files_probe_content_type",
+            1,
+            1,
+        ),
+        ("readattributes", "jvm.java.nio_files_read_attributes", 1, 3),
+        ("getlastmodifiedtime", "jvm.java.nio_files_get_mtime", 1, 1),
+        ("setlastmodifiedtime", "jvm.java.nio_files_set_mtime", 2, 2),
+        ("isreadable", "jvm.java.nio_files_is_readable", 1, 1),
+        ("iswritable", "jvm.java.nio_files_is_readable", 1, 1),
+        ("ishidden", "jvm.java.nio_files_is_hidden", 1, 1),
+        ("isexecutable", "jvm.java.nio_files_is_executable", 1, 1),
+    ];
+    for (member, emit, min_args, max_args) in FILES_STATICS {
+        insert_path(
+            root,
+            &format!("nio.file.files.{member}"),
+            common_method(emit, *min_args, *max_args),
+        );
+    }
+    ensure_type_node(root, "nio.file.files");
+    merge_type_member_returns(
+        root,
+        "nio.file.files",
+        &[
+            ("createTempFile", "java.nio.file.Path"),
+            ("createTempDirectory", "java.nio.file.Path"),
+            ("createFile", "java.nio.file.Path"),
+            ("createDirectory", "java.nio.file.Path"),
+            ("createDirectories", "java.nio.file.Path"),
+            ("copy", "java.nio.file.Path"),
+            ("move", "java.nio.file.Path"),
+            ("writeString", "java.nio.file.Path"),
+            ("write", "java.nio.file.Path"),
+            ("newBufferedReader", "java.io.BufferedReader"),
+            ("newOutputStream", "java.io.OutputStream"),
+            ("newByteChannel", "java.nio.channels.SeekableByteChannel"),
+            ("setLastModifiedTime", "java.nio.file.Path"),
+            (
+                "getLastModifiedTime",
+                "java.nio.file.attribute.FileTime",
+            ),
+        ],
+    );
+
+    // The stream-shaped returns above: OutputStream buffers bytes and its
+    // close/flush writes back to the store; the byte channel only has to
+    // answer `isOpen`/`close` for the corpus surface.
+    ensure_type_node(root, "io.outputstream");
+    let mut os_methods = Subtree::new();
+    os_methods.insert(
+        "write".to_string(),
+        common_method("jvm.java.io_output_write", 1, 3),
+    );
+    os_methods.insert(
+        "close".to_string(),
+        common_method("jvm.java.nio_output_close", 0, 0),
+    );
+    os_methods.insert(
+        "flush".to_string(),
+        common_method("jvm.java.nio_output_close", 0, 0),
+    );
+    merge_type_methods(root, "io.outputstream", os_methods);
+
+    ensure_type_node(root, "nio.channels.seekablebytechannel");
+    let mut ch_methods = Subtree::new();
+    ch_methods.insert(
+        "isopen".to_string(),
+        common_method("jvm.java.nio_channel_is_open", 0, 0),
+    );
+    ch_methods.insert(
+        "close".to_string(),
+        common_method("jvm.java.io_flush_close", 0, 0),
+    );
+    merge_type_methods(root, "nio.channels.seekablebytechannel", ch_methods);
+
+    // `java.nio.file.attribute.FileTime` — the store keeps millis, so value
+    // equality IS FileTime equality.
+    ensure_type_node(root, "nio.file.attribute.filetime");
+    let mut ft_methods = Subtree::new();
+    ft_methods.insert("equals".to_string(), common_method("jvm.java.equals", 1, 1));
+    merge_type_methods(root, "nio.file.attribute.filetime", ft_methods);
+
+    // `StandardOpenOption` — data constants; the write emitters accept and
+    // ignore the option argument (the store always creates).
+    for option in [
+        "read",
+        "write",
+        "append",
+        "create",
+        "create_new",
+        "truncate_existing",
+        "delete_on_close",
+    ] {
+        insert_path(
+            root,
+            &format!("nio.file.standardopenoption.{option}"),
+            NamespaceNode::Const(vybe_runtime::Value::String(
+                option.to_uppercase().into(),
+            )),
+        );
+    }
+
+    insert_path(
+        root,
+        "nio.file.paths.get",
+        common_method("jvm.java.nio_paths_get", 1, 10),
+    );
+    ensure_type_node(root, "nio.file.paths");
+    merge_type_member_returns(root, "nio.file.paths", &[("get", "java.nio.file.Path")]);
+
+    const PATH_METHODS: &[(&str, &str, u8, u8)] = &[
+        ("tostring", "jvm.java.nio_path_to_string", 0, 0),
+        ("getfilename", "jvm.java.nio_path_file_name", 0, 0),
+        ("getparent", "jvm.java.nio_path_parent", 0, 0),
+        ("resolve", "jvm.java.nio_path_resolve", 1, 1),
+        ("resolvesibling", "jvm.java.nio_path_resolve_sibling", 1, 1),
+        ("isabsolute", "jvm.java.nio_path_is_absolute", 0, 0),
+        ("getroot", "jvm.java.nio_path_root", 0, 0),
+        ("toabsolutepath", "jvm.java.nio_path_to_absolute", 0, 0),
+        ("getnamecount", "jvm.java.nio_path_name_count", 0, 0),
+        ("getname", "jvm.java.nio_path_get_name", 1, 1),
+        ("subpath", "jvm.java.nio_path_subpath", 2, 2),
+        ("normalize", "jvm.java.nio_path_normalize", 0, 0),
+        ("startswith", "jvm.java.nio_path_starts_with", 1, 1),
+        ("endswith", "jvm.java.nio_path_ends_with", 1, 1),
+        ("relativize", "jvm.java.nio_path_relativize", 1, 1),
+        ("tofile", "jvm.java.nio_path_to_file", 0, 0),
+        ("touri", "jvm.java.nio_path_to_uri", 0, 0),
+        // Two Paths are equal when their path strings are — same test
+        // `Files.isSameFile` makes.
+        ("equals", "jvm.java.nio_files_is_same_file", 1, 1),
+        ("compareto", "jvm.java.nio_path_compare_to", 1, 1),
+    ];
+    ensure_type_node(root, "nio.file.path");
+    let mut methods = Subtree::new();
+    for (member, emit, min_args, max_args) in PATH_METHODS {
+        methods.insert(
+            (*member).to_string(),
+            common_method(emit, *min_args, *max_args),
+        );
+    }
+    merge_type_methods(root, "nio.file.path", methods);
+    merge_type_member_returns(
+        root,
+        "nio.file.path",
+        &[
+            ("getFileName", "java.nio.file.Path"),
+            ("getParent", "java.nio.file.Path"),
+            ("resolve", "java.nio.file.Path"),
+            ("resolveSibling", "java.nio.file.Path"),
+            ("getRoot", "java.nio.file.Path"),
+            ("toAbsolutePath", "java.nio.file.Path"),
+            ("getName", "java.nio.file.Path"),
+            ("subpath", "java.nio.file.Path"),
+            ("normalize", "java.nio.file.Path"),
+            ("relativize", "java.nio.file.Path"),
+            ("toFile", "java.io.File"),
+            ("toUri", "java.net.URI"),
+        ],
+    );
+}
+
+/// `java.util.Spliterator` — instance surface, characteristics constants,
+/// and its declared split/comparator returns. Bodies in
+/// `spliterator_adapter.rs`; `Collection.spliterator()` creates one.
+fn insert_java_util_spliterator(root: &mut Subtree) {
+    for (name, value) in [
+        ("DISTINCT", 0x0001i64),
+        ("SORTED", 0x0004),
+        ("ORDERED", 0x0010),
+        ("SIZED", 0x0040),
+        ("NONNULL", 0x0100),
+        ("IMMUTABLE", 0x0400),
+        ("CONCURRENT", 0x1000),
+        ("SUBSIZED", 0x4000),
+    ] {
+        insert_path(
+            root,
+            &format!("util.spliterator.{}", name.to_lowercase()),
+            NamespaceNode::Const(Value::F64(value as f64)),
+        );
+    }
+    ensure_type_node(root, "util.spliterator");
+    let mut methods = Subtree::new();
+    for (member, emit, min_args, max_args) in [
+        ("estimatesize", "jvm.java.spliterator_estimate_size", 0u8, 0u8),
+        (
+            "getexactsizeifknown",
+            "jvm.java.spliterator_estimate_size",
+            0,
+            0,
+        ),
+        (
+            "characteristics",
+            "jvm.java.spliterator_characteristics",
+            0,
+            0,
+        ),
+        (
+            "hascharacteristics",
+            "jvm.java.spliterator_has_characteristics",
+            1,
+            1,
+        ),
+        ("tryadvance", "jvm.java.spliterator_try_advance", 1, 1),
+        (
+            "foreachremaining",
+            "jvm.java.spliterator_for_each_remaining",
+            1,
+            1,
+        ),
+        ("trysplit", "jvm.java.spliterator_try_split", 0, 0),
+        (
+            "getcomparator",
+            "jvm.java.spliterator_get_comparator",
+            0,
+            0,
+        ),
+    ] {
+        methods.insert(member.to_string(), common_method(emit, min_args, max_args));
+    }
+    merge_type_methods(root, "util.spliterator", methods);
+    merge_type_member_returns(
+        root,
+        "util.spliterator",
+        &[("trySplit", "java.util.Spliterator")],
+    );
+
+    // `StreamSupport.stream(spliterator, parallel)` and the `isParallel`
+    // answer the returned stream carries.
+    insert_path(
+        root,
+        "util.stream.streamsupport.stream",
+        common_method("jvm.java.stream_support_stream", 1, 2),
+    );
+    ensure_type_node(root, "util.stream.streamsupport");
+    merge_type_member_returns(
+        root,
+        "util.stream.streamsupport",
+        &[("stream", "java.util.stream.Stream")],
+    );
+    ensure_type_node(root, "util.stream.stream");
+    let mut stream_methods = Subtree::new();
+    stream_methods.insert(
+        "isparallel".to_string(),
+        common_method("jvm.java.stream_is_parallel", 0, 0),
+    );
+    merge_type_methods(root, "util.stream.stream", stream_methods);
+}
+
+/// `java.util.function` (+ `Runnable`/`Callable`/`Comparator`'s SAM): each
+/// functional interface is a Type whose single abstract method INVOKES the
+/// receiver — a lambda stored in a typed variable answers its SAM name.
+/// One shared arm (`jvm.java.functional_invoke`); the rows declare which
+/// name at which arity each interface spells.
+fn insert_java_util_function(root: &mut Subtree) {
+    const SAMS: &[(&str, &str, u8)] = &[
+        ("util.function.function", "apply", 1),
+        ("util.function.bifunction", "apply", 2),
+        ("util.function.unaryoperator", "apply", 1),
+        ("util.function.binaryoperator", "apply", 2),
+        ("util.function.intfunction", "apply", 1),
+        ("util.function.intunaryoperator", "applyasint", 1),
+        ("util.function.intbinaryoperator", "applyasint", 2),
+        ("util.function.tointfunction", "applyasint", 1),
+        ("util.function.tointbifunction", "applyasint", 2),
+        ("util.function.longunaryoperator", "applyaslong", 1),
+        ("util.function.tolongfunction", "applyaslong", 1),
+        ("util.function.doubleunaryoperator", "applyasdouble", 1),
+        ("util.function.todoublefunction", "applyasdouble", 1),
+        ("util.function.supplier", "get", 0),
+        ("util.function.intsupplier", "getasint", 0),
+        ("util.function.longsupplier", "getaslong", 0),
+        ("util.function.doublesupplier", "getasdouble", 0),
+        ("util.function.booleansupplier", "getasboolean", 0),
+        ("util.function.consumer", "accept", 1),
+        ("util.function.biconsumer", "accept", 2),
+        ("util.function.intconsumer", "accept", 1),
+        ("util.function.predicate", "test", 1),
+        ("util.function.bipredicate", "test", 2),
+        ("util.function.intpredicate", "test", 1),
+        ("lang.runnable", "run", 0),
+        ("util.concurrent.callable", "call", 0),
+    ];
+    for (type_path, sam, arity) in SAMS {
+        ensure_type_node(root, type_path);
+        let mut methods = Subtree::new();
+        methods.insert(
+            (*sam).to_string(),
+            common_method("jvm.java.functional_invoke", *arity, *arity),
+        );
+        merge_type_methods(root, type_path, methods);
+    }
+}
+
+/// `java.util.concurrent` executors: `Executors` statics, the
+/// `ExecutorService` and `Future` instance surfaces. Bodies in
+/// `executor_adapter.rs`, on the same thread machinery `Thread` uses.
+fn insert_java_util_executors(root: &mut Subtree) {
+    for factory in [
+        "newfixedthreadpool",
+        "newcachedthreadpool",
+        "newsinglethreadexecutor",
+        "newworkstealingpool",
+        "newvirtualthreadpertaskexecutor",
+    ] {
+        insert_path(
+            root,
+            &format!("util.concurrent.executors.{factory}"),
+            common_method("jvm.java.executor_new", 0, 1),
+        );
+    }
+    ensure_type_node(root, "util.concurrent.executors");
+    merge_type_member_returns(
+        root,
+        "util.concurrent.executors",
+        &[
+            (
+                "newFixedThreadPool",
+                "java.util.concurrent.ExecutorService",
+            ),
+            (
+                "newCachedThreadPool",
+                "java.util.concurrent.ExecutorService",
+            ),
+            (
+                "newSingleThreadExecutor",
+                "java.util.concurrent.ExecutorService",
+            ),
+            (
+                "newWorkStealingPool",
+                "java.util.concurrent.ExecutorService",
+            ),
+            (
+                "newVirtualThreadPerTaskExecutor",
+                "java.util.concurrent.ExecutorService",
+            ),
+        ],
+    );
+
+    ensure_type_node(root, "util.concurrent.executorservice");
+    let mut es_methods = Subtree::new();
+    for (member, emit, min_args, max_args) in [
+        ("submit", "jvm.java.executor_submit", 1u8, 1u8),
+        ("execute", "jvm.java.executor_execute", 1, 1),
+        ("shutdown", "jvm.java.executor_shutdown", 0, 0),
+        ("shutdownnow", "jvm.java.executor_shutdown_now", 0, 0),
+        ("isshutdown", "jvm.java.executor_is_shutdown", 0, 0),
+        ("isterminated", "jvm.java.executor_is_shutdown", 0, 0),
+        (
+            "awaittermination",
+            "jvm.java.executor_await_termination",
+            2,
+            2,
+        ),
+    ] {
+        es_methods.insert(member.to_string(), common_method(emit, min_args, max_args));
+    }
+    merge_type_methods(root, "util.concurrent.executorservice", es_methods);
+    merge_type_member_returns(
+        root,
+        "util.concurrent.executorservice",
+        &[("submit", "java.util.concurrent.Future")],
+    );
+
+    // `ThreadLocalRandom` — `current()` is the singleton accessor; the
+    // instance surface is `Random`'s, declared by the type's ancestry.
+    insert_path(
+        root,
+        "util.concurrent.threadlocalrandom.current",
+        common_method("jvm.java.tlr_current", 0, 0),
+    );
+    ensure_type_node(root, "util.concurrent.threadlocalrandom");
+    merge_type_member_returns(
+        root,
+        "util.concurrent.threadlocalrandom",
+        &[("current", "java.util.concurrent.ThreadLocalRandom")],
+    );
+
+    ensure_type_node(root, "util.concurrent.future");
+    let mut fut_methods = Subtree::new();
+    for (member, emit, min_args, max_args) in [
+        ("get", "jvm.java.future_get", 0u8, 2u8),
+        ("isdone", "jvm.java.future_is_done", 0, 0),
+        ("iscancelled", "jvm.java.future_is_cancelled", 0, 0),
+        ("cancel", "jvm.java.future_cancel", 1, 1),
+    ] {
+        fut_methods.insert(member.to_string(), common_method(emit, min_args, max_args));
+    }
+    merge_type_methods(root, "util.concurrent.future", fut_methods);
+}
+
+/// `java.util.StringJoiner` — instance surface; the ctor rides the
+/// JAVA_TYPES row like every other class.
+fn insert_java_util_stringjoiner(root: &mut Subtree) {
+    ensure_type_node(root, "util.stringjoiner");
+    let mut methods = Subtree::new();
+    for (member, emit, min_args, max_args) in [
+        ("add", "jvm.java.stringjoiner_add", 1u8, 1u8),
+        ("merge", "jvm.java.stringjoiner_merge", 1, 1),
+        (
+            "setemptyvalue",
+            "jvm.java.stringjoiner_set_empty_value",
+            1,
+            1,
+        ),
+        ("tostring", "jvm.java.stringjoiner_to_string", 0, 0),
+        ("length", "jvm.java.stringjoiner_length", 0, 0),
+    ] {
+        methods.insert(member.to_string(), common_method(emit, min_args, max_args));
+    }
+    merge_type_methods(root, "util.stringjoiner", methods);
+    merge_type_member_returns(
+        root,
+        "util.stringjoiner",
+        &[
+            ("add", "java.util.StringJoiner"),
+            ("merge", "java.util.StringJoiner"),
+            ("setEmptyValue", "java.util.StringJoiner"),
+        ],
+    );
+}
+
 fn insert_java_util_enum_set(root: &mut Subtree) {
     const STATICS: &[(&str, &str, u8, u8)] = &[
         ("noneof", "jvm.java.enum_set_none_of", 1, 1),
@@ -2855,8 +3346,8 @@ fn insert_java_util_random(root: &mut Subtree) {
     for (name, emit, min_args, max_args) in [
         ("setseed", "jvm.java.random_set_seed", 1, 1),
         ("nextint", "jvm.java.random_next_int", 0, 2),
-        ("nextlong", "jvm.java.random_next_long", 0, 0),
-        ("nextdouble", "jvm.java.random_next_double", 0, 0),
+        ("nextlong", "jvm.java.random_next_long", 0, 2),
+        ("nextdouble", "jvm.java.random_next_double", 0, 2),
         ("nextfloat", "jvm.java.random_next_float", 0, 0),
         ("nextboolean", "jvm.java.random_next_boolean", 0, 0),
         ("nextgaussian", "jvm.java.random_next_double", 0, 0),
@@ -2868,7 +3359,16 @@ fn insert_java_util_random(root: &mut Subtree) {
     ] {
         methods.insert(name.to_string(), common_method(emit, min_args, max_args));
     }
-    for type_path in ["util.random", "util.splittablerandom"] {
+    // `ThreadLocalRandom` shares Random's whole instance surface — its own
+    // registrar adds only the `current()` static and its declared return.
+    // The two-arg bounded overloads (`nextInt(origin, bound)` and the
+    // bounded `ints/longs/doubles(count, origin, bound)` streams) widen the
+    // max arity for every random class.
+    for type_path in [
+        "util.random",
+        "util.splittablerandom",
+        "util.concurrent.threadlocalrandom",
+    ] {
         ensure_type_node(root, type_path);
         merge_type_methods(root, type_path, methods.clone());
         merge_type_member_returns(root, type_path, &[("split", "java.util.SplittableRandom")]);
@@ -3439,6 +3939,12 @@ pub const JAVA_TYPES: &[JavaType] = &[
         &["StringTokenizer", "Enumeration", "Object"],
         None,
     ),
+    t(
+        "StringJoiner",
+        "util",
+        &["StringJoiner", "Object"],
+        None,
+    ),
     // Types whose `[known_types]` entry declares a constructor but which had no
     // JAVA_TYPES row, so they never registered as tree `Type` nodes. While the
     // declarations lived in the Java profile that was invisible —
@@ -3785,6 +4291,22 @@ pub const JAVA_TYPES: &[JavaType] = &[
         &["WeakHashMap", "Map", "Object"],
         None,
     ),
+    // The concrete class the walker used to serve via `__java_map_*`
+    // rewrites; with those gone the tree row is what folds the whole Map
+    // surface over it (`insert_java_util_collection_methods` matches
+    // `util.*` packages).
+    t(
+        "ConcurrentHashMap",
+        "util.concurrent",
+        &[
+            "ConcurrentHashMap",
+            "ConcurrentMap",
+            "Map",
+            "Serializable",
+            "Object",
+        ],
+        None,
+    ),
     t(
         "CopyOnWriteArrayList",
         "util.concurrent",
@@ -3936,6 +4458,11 @@ pub fn register_namespace_tree() {
         insert_java_math_biginteger_methods(&mut root);
         insert_java_util_collection_statics(&mut root);
         insert_java_util_enum_set(&mut root);
+        insert_java_util_stringjoiner(&mut root);
+        insert_java_util_executors(&mut root);
+        insert_java_util_spliterator(&mut root);
+        insert_java_util_function(&mut root);
+        insert_java_nio(&mut root);
         insert_java_io_methods(&mut root);
         insert_java_util_uuid(&mut root);
         insert_java_util_random(&mut root);

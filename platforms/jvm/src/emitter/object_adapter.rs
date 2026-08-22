@@ -69,7 +69,25 @@ pub fn emit_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_if_value(line);
     emit_ecma_string(chunks, current, value, line);
     chunks[current].emit_else(line);
+    // `java.io.File` / `java.nio.file.Path` objects: the JDK specifies
+    // `toString()` as the path string, which is exactly the DATA field the
+    // io adapters store. Probed here because these are platform-built
+    // structs with no ToString slot to fill.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    let io_data = chunks[current].add_constant(vybe_runtime::Value::String("__java_io_data".into()));
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, io_data, line);
+    let io_path = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, io_path, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, io_path, line);
+    host::emit(&mut chunks[current], "ecma:value", "typeof", 1, line);
+    chunks[current].emit_string_const("string", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, io_path, line);
+    chunks[current].emit_else(line);
     expressions::emit_rich_to_string(&mut chunks[current], value, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
 
     chunks[current].emit_else(line);

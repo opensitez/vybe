@@ -20,6 +20,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     use crate::emitter::bitset_adapter as bitset;
     use crate::emitter::collection_adapter as collection;
     use crate::emitter::enum_set_adapter as enum_set;
+    use crate::emitter::executor_adapter as exec;
     use crate::emitter::instant_adapter as instant;
     use crate::emitter::io_adapter as io;
     use crate::emitter::list_adapter;
@@ -33,7 +34,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     use crate::emitter::regex_adapter as regex;
     use crate::emitter::stream_adapter as stream;
     use crate::emitter::string_adapter;
+    use crate::emitter::spliterator_adapter as spl;
     use crate::emitter::stringbuilder_adapter as sb;
+    use crate::emitter::stringjoiner_adapter as sj;
     use crate::emitter::stringtokenizer_adapter as st;
     use crate::emitter::system_adapter as system;
     use crate::emitter::url_adapter as url;
@@ -168,6 +171,19 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "jvm.java.semaphore_is_fair" => {
             list_adapter::emit_semaphore_is_fair(chunks, current, line);
         }
+        "jvm.java.executor_new" => exec::emit_executor_new(chunks, current, argc, line),
+        "jvm.java.executor_submit" => exec::emit_submit(chunks, current, true, line),
+        "jvm.java.executor_execute" => exec::emit_submit(chunks, current, false, line),
+        "jvm.java.executor_shutdown" => exec::emit_shutdown(chunks, current, line),
+        "jvm.java.executor_shutdown_now" => exec::emit_shutdown_now(chunks, current, line),
+        "jvm.java.executor_is_shutdown" => exec::emit_is_shutdown(chunks, current, line),
+        "jvm.java.executor_await_termination" => {
+            exec::emit_await_termination(chunks, current, argc, line)
+        }
+        "jvm.java.future_get" => exec::emit_future_get(chunks, current, argc, line),
+        "jvm.java.future_is_done" => exec::emit_future_is_done(chunks, current, line),
+        "jvm.java.future_is_cancelled" => exec::emit_future_is_cancelled(chunks, current, line),
+        "jvm.java.future_cancel" => exec::emit_future_cancel(chunks, current, argc, line),
         "jvm.java.thread_start_with" => {
             list_adapter::emit_java_thread_start_with(chunks, current, line);
         }
@@ -501,6 +517,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "jvm.java.net.url_new" => url::emit_url_new(chunks, current, argc, line),
         "jvm.java.net.uri_new" => url::emit_uri_new(chunks, current, argc, line),
         "jvm.java.random_new" => random::emit_new(chunks, current, argc, line),
+        "jvm.java.tlr_current" => random::emit_tlr_current(chunks, current, line),
         "jvm.java.regex_pattern_compile" => regex::emit_pattern_compile(chunks, current, argc, line),
         "jvm.java.regex_pattern_compile_flags" => {
             regex::emit_pattern_compile_flags(chunks, current, argc, line)
@@ -545,6 +562,109 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             io::emit_sequence_input_stream_new(chunks, current, argc, line)
         }
         "jvm.java.io_file_new" => io::emit_file_new(chunks, current, argc, line),
+        // ── java.nio.file — Path / Paths / Files ──────────────────────────
+        "jvm.java.nio_paths_get" => io::emit_nio_paths_get(chunks, current, argc, line),
+        "jvm.java.nio_path_to_string" => io::emit_file_get_path(chunks, current, line),
+        "jvm.java.nio_path_file_name" => io::emit_nio_path_file_name(chunks, current, line),
+        "jvm.java.nio_path_parent" => io::emit_nio_path_parent(chunks, current, line),
+        "jvm.java.nio_path_to_uri" => io::emit_nio_path_to_uri(chunks, current, line),
+        "jvm.java.nio_path_resolve" => io::emit_nio_path_resolve(chunks, current, line),
+        "jvm.java.nio_path_resolve_sibling" => {
+            io::emit_nio_path_resolve_sibling(chunks, current, line)
+        }
+        "jvm.java.nio_path_is_absolute" => io::emit_nio_path_is_absolute(chunks, current, line),
+        "jvm.java.nio_path_root" => io::emit_nio_path_root(chunks, current, line),
+        "jvm.java.nio_path_to_absolute" => io::emit_nio_path_to_absolute(chunks, current, line),
+        "jvm.java.nio_path_name_count" => io::emit_nio_path_name_count(chunks, current, line),
+        "jvm.java.nio_path_get_name" => io::emit_nio_path_get_name(chunks, current, line),
+        "jvm.java.nio_path_subpath" => io::emit_nio_path_subpath(chunks, current, line),
+        "jvm.java.nio_path_normalize" => io::emit_nio_path_normalize(chunks, current, line),
+        "jvm.java.nio_path_starts_with" => io::emit_nio_path_starts_with(chunks, current, line),
+        "jvm.java.nio_path_ends_with" => io::emit_nio_path_ends_with(chunks, current, line),
+        "jvm.java.nio_path_relativize" => io::emit_nio_path_relativize(chunks, current, line),
+        "jvm.java.nio_path_to_file" => {} // a Path IS the File object shape
+        "jvm.java.nio_files_read_string" => io::emit_file_read_text(chunks, current, argc, line),
+        "jvm.java.nio_files_write_string" => {
+            io::emit_nio_files_write_string(chunks, current, argc, line)
+        }
+        "jvm.java.nio_files_read_all_lines" => {
+            io::emit_file_read_lines(chunks, current, argc, line)
+        }
+        "jvm.java.nio_files_delete" => io::emit_nio_files_delete(chunks, current, line),
+        "jvm.java.nio_files_delete_if_exists" => {
+            io::emit_nio_files_delete_if_exists(chunks, current, line)
+        }
+        "jvm.java.nio_path_compare_to" => io::emit_nio_path_compare_to(chunks, current, line),
+        "jvm.java.nio_files_exists" => io::emit_file_exists(chunks, current, line),
+        "jvm.java.nio_files_not_exists" => io::emit_nio_files_not_exists(chunks, current, line),
+        "jvm.java.nio_files_size" => io::emit_nio_files_size(chunks, current, line),
+        "jvm.java.nio_files_create_file" => io::emit_nio_files_create_file(chunks, current, line),
+        "jvm.java.nio_files_create_directories" => {
+            io::emit_nio_files_create_directories(chunks, current, line)
+        }
+        "jvm.java.nio_files_create_temp_file" => {
+            io::emit_file_create_temp(chunks, current, argc, line)
+        }
+        "jvm.java.nio_files_create_temp_directory" => {
+            io::emit_nio_files_create_temp_directory(chunks, current, argc, line)
+        }
+        "jvm.java.nio_files_copy" => io::emit_nio_files_copy(chunks, current, argc, line),
+        "jvm.java.nio_files_move" => io::emit_nio_files_move(chunks, current, argc, line),
+        "jvm.java.nio_files_is_directory" => {
+            io::emit_file_is_directory(chunks, current, true, line)
+        }
+        "jvm.java.nio_files_is_regular_file" => {
+            io::emit_file_is_directory(chunks, current, false, line)
+        }
+        "jvm.java.nio_files_list" => io::emit_file_list_files(chunks, current, 1, line),
+        "jvm.java.nio_files_walk" => io::emit_file_walk(chunks, current, line),
+        "jvm.java.nio_files_is_same_file" => io::emit_nio_files_is_same_file(chunks, current, line),
+        "jvm.java.nio_files_mismatch" => io::emit_nio_files_mismatch(chunks, current, line),
+        "jvm.java.nio_files_write_bytes" => {
+            io::emit_nio_files_write_bytes(chunks, current, argc, line)
+        }
+        "jvm.java.nio_files_read_all_bytes" => {
+            io::emit_nio_files_read_all_bytes(chunks, current, line)
+        }
+        "jvm.java.nio_files_new_buffered_reader" => io::emit_file_input_stream(chunks, current, line),
+        "jvm.java.nio_files_new_byte_channel" => {
+            for _ in 1..argc {
+                chunks[current].emit_op(vybe_runtime::opcode::Op::DROP, line);
+            }
+            io::emit_file_input_stream(chunks, current, line)
+        }
+        "jvm.java.nio_files_new_output_stream" => {
+            io::emit_nio_files_new_output_stream(chunks, current, argc, line)
+        }
+        "jvm.java.nio_output_close" => io::emit_nio_output_close(chunks, current, line),
+        "jvm.java.nio_channel_is_open" => io::emit_nio_channel_is_open(chunks, current, line),
+        "jvm.java.nio_files_probe_content_type" => {
+            io::emit_nio_files_probe_content_type(chunks, current, line)
+        }
+        "jvm.java.nio_files_read_attributes" => {
+            io::emit_nio_files_read_attributes(chunks, current, argc, line)
+        }
+        "jvm.java.nio_files_get_mtime" => io::emit_nio_files_get_mtime(chunks, current, line),
+        "jvm.java.nio_files_set_mtime" => io::emit_nio_files_set_mtime(chunks, current, line),
+        // JDK `isReadable`/`isWritable` on the in-memory store reduce to
+        // existence; `isExecutable`/`isHidden` follow the store's answer for
+        // regular files (never executable, hidden only by dot-name).
+        "jvm.java.nio_files_is_readable" => io::emit_file_exists(chunks, current, line),
+        "jvm.java.nio_files_is_hidden" => {
+            io::emit_file_get_name(chunks, current, line);
+            chunks[current].emit_string_const(".", line);
+            vybe_compiler::primitives::instructions::host::emit(
+                &mut chunks[current],
+                "ecma:string",
+                "startsWith",
+                2,
+                line,
+            );
+        }
+        "jvm.java.nio_files_is_executable" => {
+            chunks[current].emit_op(vybe_runtime::opcode::Op::DROP, line);
+            chunks[current].emit_bool_const(false, line);
+        }
         "jvm.java.io_print_writer_new" => io::emit_print_writer_new(chunks, current, argc, line),
         "jvm.java.io_passthrough_new" => io::emit_passthrough_new(chunks, current, argc, line),
         "jvm.java.io_string_writer_new" => io::emit_string_writer_new(chunks, current, argc, line),
@@ -981,8 +1101,15 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "jvm.java.parse_int" => {
             host::emit(&mut chunks[current], "ecma:number", "parseInt", argc, line);
         }
+        // The bit-count family rides the SHARED `bits` emitters — one
+        // implementation per concept (the same ones fortran's popcnt/leadz/
+        // trailz rows reach), not a jvm-local opcode copy.
         "jvm.java.int_bit_count" => {
-            chunks[current].emit_op(vybe_runtime::opcode::Op::I32_POPCNT, line);
+            vybe_compiler::primitives::bits::emit_pop_count(
+                &mut chunks[current],
+                vybe_ast::BitLane::W32,
+                line,
+            );
         }
         "jvm.java.int_compare_unsigned" => {
             // Integer.compareUnsigned(a, b): both read as u32
@@ -1017,16 +1144,34 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             chunks[current].emit_end(line);
         }
         "jvm.java.int_leading_zeros" => {
-            chunks[current].emit_op(vybe_runtime::opcode::Op::I32_CLZ, line);
+            vybe_compiler::primitives::bits::emit_leading_zeros(
+                &mut chunks[current],
+                vybe_ast::BitLane::W32,
+                line,
+            );
         }
         "jvm.java.int_trailing_zeros" => {
-            chunks[current].emit_op(vybe_runtime::opcode::Op::I32_CTZ, line);
+            vybe_compiler::primitives::bits::emit_trailing_zeros(
+                &mut chunks[current],
+                vybe_ast::BitLane::W32,
+                line,
+            );
         }
         "jvm.java.int_rotate_left" => {
-            chunks[current].emit_op(vybe_runtime::opcode::Op::I32_ROTL, line);
+            vybe_compiler::primitives::bits::emit_rotate(
+                &mut chunks[current],
+                vybe_ast::BitLane::W32,
+                true,
+                line,
+            );
         }
         "jvm.java.int_rotate_right" => {
-            chunks[current].emit_op(vybe_runtime::opcode::Op::I32_ROTR, line);
+            vybe_compiler::primitives::bits::emit_rotate(
+                &mut chunks[current],
+                vybe_ast::BitLane::W32,
+                false,
+                line,
+            );
         }
         "jvm.java.int_lowest_one_bit" => {
             let s = chunks[current].alloc_scratch(1);
@@ -1383,9 +1528,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "jvm.java.map_size" => map::emit_size(chunks, current, line),
         "jvm.java.map_is_empty" => map::emit_is_empty(chunks, current, line),
         "jvm.java.map_clear" => map::emit_clear(chunks, current, line),
-        "jvm.java.map_key_set" => map::emit_key_set(chunks, current, line),
-        "jvm.java.map_values" => map::emit_values(chunks, current, line),
-        "jvm.java.entry_set" => map::emit_entry_set(chunks, current, line),
+        // Identity-aware family — the map_adapter equivalents read the RAW
+        // ecma map, which for an identity map is canonical-int keys and
+        // `[key, value]` pair values.
+        "jvm.java.map_key_set" => list_adapter::emit_map_key_set(chunks, current, line),
+        "jvm.java.map_values" => list_adapter::emit_map_values(chunks, current, line),
+        "jvm.java.entry_set" => list_adapter::emit_map_entry_set(chunks, current, line),
         "jvm.java.sorted_map_key_set" => map::emit_sorted_map_key_set(chunks, current, line),
         "jvm.java.sorted_map_first_key" => map::emit_sorted_map_key(chunks, current, false, line),
         "jvm.java.sorted_map_last_key" => map::emit_sorted_map_key(chunks, current, true, line),
@@ -1395,6 +1543,39 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "jvm.java.sorted_map_lower_key" => map::emit_sorted_map_bound_key(chunks, current, 3, line),
         "jvm.java.sorted_map_values" => map::emit_sorted_map_values(chunks, current, line),
         "jvm.java.stringbuilder_new" => sb::emit_new(chunks, current, argc, line),
+        "jvm.java.spliterator_new" => spl::emit_new(chunks, current, line),
+        "jvm.java.spliterator_estimate_size" => spl::emit_estimate_size(chunks, current, line),
+        "jvm.java.spliterator_characteristics" => {
+            spl::emit_characteristics(chunks, current, line)
+        }
+        "jvm.java.spliterator_has_characteristics" => {
+            spl::emit_has_characteristics(chunks, current, line)
+        }
+        "jvm.java.spliterator_try_advance" => spl::emit_try_advance(chunks, current, line),
+        "jvm.java.spliterator_for_each_remaining" => {
+            spl::emit_for_each_remaining(chunks, current, line)
+        }
+        "jvm.java.spliterator_try_split" => spl::emit_try_split(chunks, current, line),
+        "jvm.java.spliterator_get_comparator" => spl::emit_get_comparator(chunks, current, line),
+        "jvm.java.stream_support_stream" => {
+            spl::emit_stream_support_stream(chunks, current, argc, line)
+        }
+        "jvm.java.stream_is_parallel" => spl::emit_stream_is_parallel(chunks, current, line),
+        // A functional interface's single abstract method: the receiver IS
+        // the callable — `op.applyAsInt(4)` invokes the lambda held in `op`.
+        // One arm serves every SAM name at every arity; the tree rows say
+        // which names/arities each interface declares.
+        "jvm.java.functional_invoke" => {
+            vybe_compiler::primitives::callable::emit_direct_invoke(chunks, current, argc, line);
+        }
+        "jvm.java.stringjoiner_new" => sj::emit_new(chunks, current, argc, line),
+        "jvm.java.stringjoiner_add" => sj::emit_add(chunks, current, line),
+        "jvm.java.stringjoiner_merge" => sj::emit_merge(chunks, current, line),
+        "jvm.java.stringjoiner_set_empty_value" => {
+            sj::emit_set_empty_value(chunks, current, line)
+        }
+        "jvm.java.stringjoiner_to_string" => sj::emit_to_string(chunks, current, line),
+        "jvm.java.stringjoiner_length" => sj::emit_length(chunks, current, line),
         "jvm.java.sb_length" => sb::emit_length(chunks, current, argc, line),
         "jvm.java.sb_substring" => sb::emit_substring(chunks, current, argc, line),
         "jvm.java.sb_replace" => sb::emit_replace(chunks, current, argc, line),

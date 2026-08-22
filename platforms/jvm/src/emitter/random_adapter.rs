@@ -321,51 +321,61 @@ pub fn emit_split(chunks: &mut [Chunk], current: usize, line: u32) {
     collections::emit_array_new(chunks, current, 1, line);
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum StreamLane {
+    Ints,
+    Longs,
+    Doubles,
+}
+
 pub fn emit_ints(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_stream(chunks, current, argc, line, 1);
+    emit_stream(chunks, current, argc, line, StreamLane::Ints);
 }
 
 pub fn emit_longs(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_stream(chunks, current, argc, line, 1);
+    emit_stream(chunks, current, argc, line, StreamLane::Longs);
 }
 
 pub fn emit_doubles(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_stream(chunks, current, argc, line, 0);
+    emit_stream(chunks, current, argc, line, StreamLane::Doubles);
 }
 
-fn emit_stream(chunks: &mut [Chunk], current: usize, argc: u8, line: u32, value: i32) {
-    if argc == 2 {
-        let count_slot = chunks[current].alloc_scratch(1);
-        set(&mut chunks[current], count_slot, line);
-        chunks[current].emit_op(Op::DROP, line);
-        get(&mut chunks[current], count_slot, line);
-        emit_repeated_array(chunks, current, value, line);
-    } else if argc == 4 {
-        let count_slot = chunks[current].alloc_scratch(1);
-        chunks[current].emit_op(Op::DROP, line);
-        chunks[current].emit_op(Op::DROP, line);
-        set(&mut chunks[current], count_slot, line);
-        chunks[current].emit_op(Op::DROP, line);
-        get(&mut chunks[current], count_slot, line);
-        emit_repeated_array(chunks, current, value, line);
-    } else {
-        for _ in 0..argc {
-            chunks[current].emit_op(Op::DROP, line);
-        }
-        for _ in 0..64 {
-            chunks[current].emit_i32_const(value, line);
-        }
-        collections::emit_array_new(chunks, current, 64, line);
-    }
-}
-
-fn emit_repeated_array(chunks: &mut [Chunk], current: usize, value: i32, line: u32) {
+/// `ints(count)` / `ints(count, origin, bound)` and the long/double lanes:
+/// an ARRAY of `count` real draws from THIS rng (deterministic per seed),
+/// with the JDK's guards — negative size and empty range both throw
+/// IllegalArgumentException. The old body pushed a constant per element,
+/// which "streamed" without ever consulting the generator.
+fn emit_stream(chunks: &mut [Chunk], current: usize, argc: u8, line: u32, lane: StreamLane) {
+    let bounded = argc >= 4;
+    let bound = chunks[current].alloc_scratch(1);
+    let origin = chunks[current].alloc_scratch(1);
     let count = chunks[current].alloc_scratch(1);
+    let rng = chunks[current].alloc_scratch(1);
+    if bounded {
+        set(&mut chunks[current], bound, line);
+        set(&mut chunks[current], origin, line);
+        set(&mut chunks[current], count, line);
+        set(&mut chunks[current], rng, line);
+    } else if argc >= 2 {
+        set(&mut chunks[current], count, line);
+        set(&mut chunks[current], rng, line);
+    } else {
+        set(&mut chunks[current], rng, line);
+        chunks[current].emit_i32_const(64, line);
+        set(&mut chunks[current], count, line);
+    }
+
+    get(&mut chunks[current], count, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    chunks[current].emit_if(line);
+    emit_jvm_exception_throw(chunks, current, "IllegalArgumentException", line);
+    chunks[current].emit_end(line);
+
     let out = chunks[current].alloc_scratch(1);
-    let i = chunks[current].alloc_scratch(1);
-    set(&mut chunks[current], count, line);
     collections::emit_array_new(chunks, current, 0, line);
     set(&mut chunks[current], out, line);
+    let i = chunks[current].alloc_scratch(1);
     chunks[current].emit_i32_const(0, line);
     set(&mut chunks[current], i, line);
     let block = chunks[current].emit_block(line);
@@ -374,8 +384,27 @@ fn emit_repeated_array(chunks: &mut [Chunk], current: usize, value: i32, line: u
     get(&mut chunks[current], count, line);
     chunks[current].emit_op(Op::I32_GE_S, line);
     chunks[current].emit_br_if(1, line);
+
     get(&mut chunks[current], out, line);
-    chunks[current].emit_i32_const(value, line);
+    if bounded {
+        // The bounded draw IS the two-arg next{Int,Long,Double}: same
+        // formula, same guards (origin >= bound throws in there).
+        get(&mut chunks[current], rng, line);
+        get(&mut chunks[current], origin, line);
+        get(&mut chunks[current], bound, line);
+        match lane {
+            StreamLane::Ints => emit_next_int(chunks, current, 3, line),
+            StreamLane::Longs => emit_next_long(chunks, current, 3, line),
+            StreamLane::Doubles => emit_next_double(chunks, current, 3, line),
+        }
+    } else {
+        get(&mut chunks[current], rng, line);
+        match lane {
+            StreamLane::Ints => emit_next_int(chunks, current, 1, line),
+            StreamLane::Longs => emit_next_long(chunks, current, 1, line),
+            StreamLane::Doubles => emit_next_double(chunks, current, 1, line),
+        }
+    }
     collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     get(&mut chunks[current], i, line);
@@ -423,4 +452,50 @@ fn emit_next_bits(chunks: &mut [Chunk], current: usize, bits: i64, line: u32) {
     chunks[current].emit_i64_const(48 - bits, line);
     chunks[current].emit_op(Op::I64_SHR_U, line);
     chunks[current].emit_op(Op::I32_WRAP_I64, line);
+}
+
+/// `ThreadLocalRandom.current()` — ONE instance per thread. The instance
+/// lives in a module global; `==` on two `current()` results must hold
+/// (JDK contract), so a fresh Random per call is wrong even though the
+/// draws would look the same.
+///
+/// Thread state CLONES at spawn, so a child would inherit the parent's
+/// instance through the cloned global — the JDK contract says the child
+/// gets its OWN. The instance therefore remembers the thread object that
+/// minted it (`__j_current_thread`), and a mismatch re-mints.
+pub fn emit_tlr_current(chunks: &mut [Chunk], current: usize, line: u32) {
+    use vybe_compiler::primitives::{globals, ops};
+    let inst = chunks[current].alloc_scratch(1);
+    let stale = chunks[current].alloc_scratch(1);
+    globals::emit_read(&mut chunks[current], "__j_tlr_instance", line);
+    set(&mut chunks[current], inst, line);
+
+    get(&mut chunks[current], inst, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_bool_const(true, line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], inst, line);
+    chunks[current].emit_i32_const(1, line);
+    collections::emit_get(chunks, current, line);
+    globals::emit_read(&mut chunks[current], "__j_current_thread", line);
+    ops::emit_dyn_ne(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    set(&mut chunks[current], stale, line);
+
+    get(&mut chunks[current], stale, line);
+    chunks[current].emit_if(line);
+    emit_new(chunks, current, 0, line);
+    set(&mut chunks[current], inst, line);
+    // The rng is a small array (index 0 = seed); index 1 records the owner.
+    get(&mut chunks[current], inst, line);
+    chunks[current].emit_i32_const(1, line);
+    globals::emit_read(&mut chunks[current], "__j_current_thread", line);
+    collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    get(&mut chunks[current], inst, line);
+    globals::emit_write(&mut chunks[current], "__j_tlr_instance", line);
+    chunks[current].emit_end(line);
+    get(&mut chunks[current], inst, line);
 }

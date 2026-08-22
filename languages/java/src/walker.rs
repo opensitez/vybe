@@ -412,7 +412,15 @@ pub fn parse(source: &str) -> Result<Module, String> {
         language: Lang::Java,
         body,
         imports,
-        directives: Default::default(),
+        directives: Directives {
+            // A subclass field repeating an ancestor's name is a SEPARATE
+            // field in Java; both live on the object and a read resolves by
+            // the reference's declared type (JLS 8.3, "hiding"). Stated once
+            // for the module — the shared compiler gives the shadowing
+            // declaration a declaring-class-keyed slot.
+            field_shadowing: Some(FieldShadowing::Hide),
+            ..Default::default()
+        },
     })
 }
 
@@ -4707,7 +4715,17 @@ fn java_expr_is_char_numeric_source(
         ExprKind::Ident(name) => local_types
             .get(name)
             .is_some_and(|ty| java_type_simple_name(ty) == "char"),
-        ExprKind::Index { .. } => true,
+        // An element read is a char source only when the DECLARED element
+        // type says so. The old blanket `true` was inference (directives.md
+        // §5): it decided `String[] box; box[0] + k` was char arithmetic and
+        // added the ordinals — 'a'+'b' printed 195 — the moment closures
+        // started delivering captured arrays.
+        ExprKind::Index { object, .. } => match &object.kind {
+            ExprKind::Ident(name) => local_types
+                .get(name)
+                .is_some_and(|ty| ty.replace(' ', "") == "char[]"),
+            _ => false,
+        },
         ExprKind::Call { callee, .. } => matches!(
             &callee.kind,
             ExprKind::Member { field, .. } if field == "charAt"
@@ -4875,6 +4893,10 @@ fn walk_primary_chain(__w: &mut JavaWalker, pair: Pair<Rule>) -> Result<Expressi
         match chain.as_rule() {
             Rule::inner_new_suffix => {
                 let mut ci = chain.into_inner().peekable();
+                // The atomic `new` keyword token precedes the type.
+                if ci.peek().map(|x| x.as_rule()) == Some(Rule::kw_inner_new) {
+                    ci.next();
+                }
                 let class_name = ci
                     .next()
                     .map(|p| extract_ref_name(&p))
@@ -5017,9 +5039,6 @@ fn walk_primary_chain(__w: &mut JavaWalker, pair: Pair<Rule>) -> Result<Expressi
 
 fn java_dotted_static_call_name(name: &str) -> Option<&'static str> {
     Some(match name {
-        "Executors.newFixedThreadPool" | "java.util.concurrent.Executors.newFixedThreadPool" => {
-            "__j_exec_new"
-        }
         "ConcurrentHashMap.newKeySet" | "java.util.concurrent.ConcurrentHashMap.newKeySet" => {
             "__java_concurrent_hash_map_new_key_set"
         }
@@ -5482,29 +5501,15 @@ fn normalise_method_call(__w: &mut JavaWalker, receiver: Expression, method: Str
         }
     }
 
-    if java_map_result_receiver(&receiver) {
-        if let Some(internal) = java_map_method_name(method.as_str()) {
-            let mut call_args = vec![Argument::positional(receiver)];
-            call_args.extend(args);
-            return Expression::new(ExprKind::Call {
-                callee: Box::new(Expression::ident(internal)),
-                args: call_args,
-                optional: false,
-            });
-        }
-    }
+    // Map methods on a call-result receiver are NOT rewritten to `__java_map_*`
+    // synthetics any more: the member call stays a member call, the chained
+    // receiver types through `member_returns` (`m.keySet().iterator()`), and
+    // the jvm tree's `Map` fold owns the dispatch. A synthetic `Ident` callee
+    // is untypeable, which is exactly how every chained map call went dynamic.
 
-    if java_spliterator_receiver(&receiver) {
-        if let Some(internal) = java_spliterator_method_name(method.as_str(), args.len()) {
-            let mut call_args = vec![Argument::positional(receiver)];
-            call_args.extend(args);
-            return Expression::new(ExprKind::Call {
-                callee: Box::new(Expression::ident(internal)),
-                args: call_args,
-                optional: false,
-            });
-        }
-    }
+    // Spliterator calls are NOT rewritten — `java.util.Spliterator` is a
+    // platforms/jvm class; typed receivers and `spliterator()` chains resolve
+    // through the jvm tree.
 
     if java_runtime_receiver(&receiver) {
         if let Some(internal) = java_runtime_method_name(method.as_str(), args.len()) {
@@ -5616,20 +5621,8 @@ fn normalise_method_call(__w: &mut JavaWalker, receiver: Expression, method: Str
                         optional: false,
                     });
                 }
-                if let Some(internal) = java_map_method_name(&method) {
-                    let mut call_args =
-                        vec![Argument::positional(Expression::new(ExprKind::Member {
-                            object: Box::new(Expression::ident(&class_name)),
-                            field: name.clone(),
-                            null_safe: false,
-                        }))];
-                    call_args.extend(args);
-                    return Expression::new(ExprKind::Call {
-                        callee: Box::new(Expression::ident(internal)),
-                        args: call_args,
-                        optional: false,
-                    });
-                }
+                // General map methods: leave the member call intact — the
+                // static field's declared type carries it to the jvm tree.
             }
             if java_type_is_queue_or_deque(Some(&type_name)) {
                 if let Some(internal) =
@@ -5713,22 +5706,8 @@ fn normalise_method_call(__w: &mut JavaWalker, receiver: Expression, method: Str
                     });
                 }
             }
-            if java_type_is_executor_service(Some(&type_name)) {
-                if let Some(internal) = java_executor_method_name(&method, args.len()) {
-                    let mut call_args =
-                        vec![Argument::positional(Expression::new(ExprKind::Member {
-                            object: Box::new(Expression::ident(&class_name)),
-                            field: name.clone(),
-                            null_safe: false,
-                        }))];
-                    call_args.extend(args);
-                    return Expression::new(ExprKind::Call {
-                        callee: Box::new(Expression::ident(internal)),
-                        args: call_args,
-                        optional: false,
-                    });
-                }
-            }
+            // Executor methods are NOT rewritten — `ExecutorService` is a
+            // platforms/jvm class; the typed receiver resolves via the tree.
         }
     }
 
@@ -5779,17 +5758,8 @@ fn normalise_method_call(__w: &mut JavaWalker, receiver: Expression, method: Str
                 });
             }
         }
-        if java_type_is_executor_service(Some(&type_name)) {
-            if let Some(internal) = java_executor_method_name(&method, args.len()) {
-                let mut call_args = vec![Argument::positional(receiver)];
-                call_args.extend(args);
-                return Expression::new(ExprKind::Call {
-                    callee: Box::new(Expression::ident(internal)),
-                    args: call_args,
-                    optional: false,
-                });
-            }
-        }
+        // Executor methods are NOT rewritten — `ExecutorService` is a
+        // platforms/jvm class; the typed receiver resolves via the tree.
         if java_type_is_atomic(Some(&type_name)) {
             if let Some(internal) = java_atomic_method_name(&method) {
                 let mut call_args = vec![Argument::positional(receiver)];
@@ -5811,15 +5781,7 @@ fn normalise_method_call(__w: &mut JavaWalker, receiver: Expression, method: Str
                     optional: false,
                 });
             }
-            if let Some(internal) = java_map_method_name(&method) {
-                let mut call_args = vec![Argument::positional(receiver)];
-                call_args.extend(args);
-                return Expression::new(ExprKind::Call {
-                    callee: Box::new(Expression::ident(internal)),
-                    args: call_args,
-                    optional: false,
-                });
-            }
+            // General map methods stay member calls — jvm tree dispatch.
         }
     }
 
@@ -6302,6 +6264,29 @@ fn normalise_method_call(__w: &mut JavaWalker, receiver: Expression, method: Str
                 }
             }
         }
+        // A receiver with a DECLARED non-string type keeps its member call —
+        // `length()` belongs to whatever class the tree resolves (StringJoiner,
+        // StringBuilder, …), and this string fallback must not steal it.
+        let declared_non_string = match &receiver.kind {
+            ExprKind::Ident(n) => __w.java_local_types.get(n.as_str()).is_some_and(|hint| {
+                !matches!(
+                    java_type_simple_name(hint),
+                    "String" | "CharSequence" | "Object" | "var"
+                )
+            }),
+            _ => false,
+        };
+        if declared_non_string {
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Member {
+                    object: Box::new(receiver),
+                    field: method,
+                    null_safe: false,
+                })),
+                args,
+                optional: false,
+            });
+        }
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__j_str_length")),
             args: vec![Argument::positional(receiver)],
@@ -6333,34 +6318,9 @@ fn normalise_method_call(__w: &mut JavaWalker, receiver: Expression, method: Str
         }
     }
 
-    let string_joiner_receiver = match &receiver.kind {
-        ExprKind::Ident(n) => {
-            __w.java_string_joiner_vars.contains(n.as_str())
-        }
-        ExprKind::Call { callee, .. } => {
-            matches!(&callee.kind, ExprKind::Ident(n) if matches!(n.as_str(), "__j_sj_new" | "__j_sj_add" | "__j_sj_merge" | "__j_sj_set_empty_value"))
-        }
-        _ => false,
-    };
-    if string_joiner_receiver {
-        let prelude_fn = match method.as_str() {
-            "add" => Some("__j_sj_add"),
-            "merge" => Some("__j_sj_merge"),
-            "setEmptyValue" => Some("__j_sj_set_empty_value"),
-            "length" => Some("__j_sj_length"),
-            "toString" => Some("__j_sj_to_string"),
-            _ => None,
-        };
-        if let Some(prelude_fn) = prelude_fn {
-            let mut call_args = vec![Argument::positional(receiver)];
-            call_args.extend(args);
-            return Expression::new(ExprKind::Call {
-                callee: Box::new(Expression::ident(prelude_fn)),
-                args: call_args,
-                optional: false,
-            });
-        }
-    }
+    // StringJoiner methods are NOT rewritten: `java.util.StringJoiner` is a
+    // platforms/jvm class — the typed receiver (and chained `add(...)` via
+    // its declared returns) resolves through the jvm tree.
 
     let string_tokenizer_receiver = match &receiver.kind {
         ExprKind::Ident(n) => {
@@ -6777,13 +6737,7 @@ fn normalise_method_call(__w: &mut JavaWalker, receiver: Expression, method: Str
     }
 
     if let Some(type_name) = java_expr_dotted_name(&receiver) {
-        if java_type_simple_name(&type_name) == "StreamSupport" && method == "stream" {
-            return Expression::new(ExprKind::Call {
-                callee: Box::new(Expression::ident("__j_stream_support_stream")),
-                args,
-                optional: false,
-            });
-        }
+        // `StreamSupport.stream` is NOT rewritten — jvm tree static.
         if java_type_simple_name(&type_name) == "Runtime" && method == "getRuntime" {
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__j_runtime_get")),
@@ -6923,22 +6877,9 @@ fn normalise_method_call(__w: &mut JavaWalker, receiver: Expression, method: Str
                 return expr;
             }
         }
-        if java_simple_type_name(&type_name) == "ThreadLocalRandom" {
-            if method == "current" && args.is_empty() {
-                return Expression::new(ExprKind::Call {
-                    callee: Box::new(Expression::ident("__java_random_new")),
-                    args,
-                    optional: false,
-                });
-            }
-        }
-        if java_type_simple_name(&type_name) == "StreamSupport" && method == "stream" {
-            return Expression::new(ExprKind::Call {
-                callee: Box::new(Expression::ident("__j_stream_support_stream")),
-                args,
-                optional: false,
-            });
-        }
+        // `ThreadLocalRandom.current()` is NOT rewritten — the jvm tree's
+        // static owns the per-thread singleton (`==` identity contract).
+        // `StreamSupport.stream` is NOT rewritten — jvm tree static.
         if java_type_simple_name(&type_name) == "Runtime" && method == "getRuntime" {
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__j_runtime_get")),
@@ -7088,22 +7029,8 @@ fn normalise_method_call(__w: &mut JavaWalker, receiver: Expression, method: Str
                     return expr;
                 }
             }
-            if java_simple_type_name(type_name) == "ThreadLocalRandom" {
-                if method == "current" && args.is_empty() {
-                    return Expression::new(ExprKind::Call {
-                        callee: Box::new(Expression::ident("__java_random_new")),
-                        args,
-                        optional: false,
-                    });
-                }
-            }
-            if java_type_simple_name(type_name) == "StreamSupport" && method == "stream" {
-                return Expression::new(ExprKind::Call {
-                    callee: Box::new(Expression::ident("__j_stream_support_stream")),
-                    args,
-                    optional: false,
-                });
-            }
+            // `ThreadLocalRandom.current()` is NOT rewritten — tree static.
+            // `StreamSupport.stream` is NOT rewritten — jvm tree static.
             if java_type_simple_name(type_name) == "Runtime" && method == "getRuntime" {
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__j_runtime_get")),
@@ -7246,15 +7173,8 @@ fn normalise_method_call(__w: &mut JavaWalker, receiver: Expression, method: Str
                     optional: false,
                 });
             }
-            if java_type_base_simple_name(&type_name) == "Executors"
-                && method == "newFixedThreadPool"
-            {
-                return Expression::new(ExprKind::Call {
-                    callee: Box::new(Expression::ident("__j_exec_new")),
-                    args,
-                    optional: false,
-                });
-            }
+            // `Executors.*` factories are NOT rewritten — they are tree
+            // statics under `jvm.java.util.concurrent.executors`.
             if java_type_base_simple_name(&type_name) == "Modifier" && args.len() == 1 {
                 if let Some(expr) = java_modifier_static_predicate(&method, &args[0].value) {
                     return expr;
@@ -7277,13 +7197,8 @@ fn normalise_method_call(__w: &mut JavaWalker, receiver: Expression, method: Str
                 optional: false,
             });
         }
-        if type_name == "Executors" && method == "newFixedThreadPool" {
-            return Expression::new(ExprKind::Call {
-                callee: Box::new(Expression::ident("__j_exec_new")),
-                args,
-                optional: false,
-            });
-        }
+        // Bare `Executors.*` reaches the tree through the ambient
+        // `jvm.java.util.concurrent` root — no rewrite.
     }
 
     if method == "toCharArray" && args.is_empty() {
@@ -9036,21 +8951,8 @@ fn walk_new(__w: &mut JavaWalker, pair: Pair<Rule>) -> Result<Expression, String
                         args,
                     }));
                 }
-                if matches!(
-                    class_name.as_str(),
-                    "StringJoiner" | "java.util.StringJoiner"
-                ) {
-                    let callee = if args.len() == 3 {
-                        "__j_sj_new3"
-                    } else {
-                        "__j_sj_new"
-                    };
-                    return Ok(Expression::new(ExprKind::Call {
-                        callee: Box::new(Expression::ident(callee)),
-                        args,
-                        optional: false,
-                    }));
-                }
+                // StringJoiner construction is NOT rewritten — the jvm tree's
+                // `java.util.StringJoiner` ctor_call owns it.
                 if matches!(
                     class_name.as_str(),
                     "StringTokenizer" | "java.util.StringTokenizer"
@@ -13970,19 +13872,11 @@ fn rewrite_java_tostring_expr(__w: &mut JavaWalker,
                                 return;
                             }
                         }
-                        if field == "keySet"
-                            && matches!(
-                                locals.get(name).map(String::as_str),
-                                Some("TreeMap") | Some("java.util.TreeMap")
-                            )
-                        {
-                            *expr = Expression::new(ExprKind::Call {
-                                callee: Box::new(Expression::ident("__java_sorted_map_key_set")),
-                                args: vec![Argument::positional((**object).clone())],
-                                optional: false,
-                            });
-                            return;
-                        }
+                        // TreeMap.keySet needs no special case: the jvm
+                        // tree's SortedMap fold maps `keyset` to the sorted
+                        // view (nearest-first over TreeMap's ancestry), and
+                        // the member call keeps its declared return type so
+                        // `keySet().iterator()` chains.
                         if java_type_is_hashtable(locals.get(name).map(String::as_str)) {
                             let internal = match field.as_str() {
                                 "put" => Some("__java_hashtable_put"),
@@ -14002,19 +13896,8 @@ fn rewrite_java_tostring_expr(__w: &mut JavaWalker,
                                 return;
                             }
                         }
-                        if let Some(internal) = java_map_method_name(field) {
-                            let mut new_args = Vec::with_capacity(args.len() + 1);
-                            let receiver = java_static_field_receiver(__w, object, current_class)
-                                .unwrap_or_else(|| (**object).clone());
-                            new_args.push(Argument::positional(receiver));
-                            new_args.extend(args.iter().cloned());
-                            *expr = Expression::new(ExprKind::Call {
-                                callee: Box::new(Expression::ident(internal)),
-                                args: new_args,
-                                optional: false,
-                            });
-                            return;
-                        }
+                        // General map methods stay member calls — jvm tree
+                        // dispatch resolves them from the receiver's type.
                     }
                     if java_type_is_priority_queue(locals.get(name).map(String::as_str)) {
                         let internal = match field.as_str() {
@@ -14649,7 +14532,6 @@ fn java_list_method_name(method: &str, argc: usize) -> Option<&'static str> {
         "containsAll" if argc == 1 => "__java_list_contains_all",
         "equals" if argc == 1 => "__java_list_equals",
         "indexOf" if argc == 1 => "__java_list_index_of",
-        "spliterator" if argc == 0 => "__j_spliterator_from_array",
         _ => return None,
     })
 }
@@ -19124,18 +19006,7 @@ fn normalize_java_expr(__w: &mut JavaWalker,
                         return;
                     }
                 }
-                if java_expr_dotted_name(object)
-                    .as_deref()
-                    .is_some_and(|name| java_type_simple_name(name) == "Executors")
-                    && field == "newFixedThreadPool"
-                {
-                    *expr = Expression::new(ExprKind::Call {
-                        callee: Box::new(Expression::ident("__j_exec_new")),
-                        args: args.iter().cloned().collect(),
-                        optional: false,
-                    });
-                    return;
-                }
+                // `Executors.*` factories are NOT rewritten — tree statics.
                 if let Some(type_name) = java_expr_dotted_name(object) {
                     if let Some(class_names) = java_lookup_class_members(class_members, &type_name)
                     {
@@ -19284,20 +19155,8 @@ fn normalize_java_expr(__w: &mut JavaWalker,
                         return;
                     }
                 }
-                if java_type_is_executor_service(java_receiver_type(__w, object, local_types).as_deref())
-                {
-                    if let Some(internal) = java_executor_method_name(field, args.len()) {
-                        let mut new_args = Vec::with_capacity(args.len() + 1);
-                        new_args.push(Argument::positional((**object).clone()));
-                        new_args.extend(args.iter().cloned());
-                        *expr = Expression::new(ExprKind::Call {
-                            callee: Box::new(Expression::ident(internal)),
-                            args: new_args,
-                            optional: false,
-                        });
-                        return;
-                    }
-                }
+                // Executor methods are NOT rewritten — `ExecutorService` is a
+                // platforms/jvm class; the typed receiver resolves via the tree.
                 if java_type_is_queue_or_deque(java_receiver_type(__w, object, local_types).as_deref()) {
                     let receiver_type = java_receiver_type(__w, object, local_types);
                     if let Some(internal) =
@@ -19357,44 +19216,10 @@ fn normalize_java_expr(__w: &mut JavaWalker,
                         });
                         return;
                     }
-                    if let Some(internal) = java_map_method_name(field) {
-                        let mut new_args = Vec::with_capacity(args.len() + 1);
-                        new_args.push(Argument::positional((**object).clone()));
-                        new_args.extend(args.iter().cloned());
-                        *expr = Expression::new(ExprKind::Call {
-                            callee: Box::new(Expression::ident(internal)),
-                            args: new_args,
-                            optional: false,
-                        });
-                        return;
-                    }
+                    // General map methods stay member calls — jvm tree
+                    // dispatch resolves them from the receiver's type.
                 }
-                if java_spliterator_receiver(object) {
-                    if let Some(internal) = java_spliterator_method_name(field, args.len()) {
-                        let mut new_args = Vec::with_capacity(args.len() + 1);
-                        new_args.push(Argument::positional((**object).clone()));
-                        new_args.extend(args.iter().cloned());
-                        *expr = Expression::new(ExprKind::Call {
-                            callee: Box::new(Expression::ident(internal)),
-                            args: new_args,
-                            optional: false,
-                        });
-                        return;
-                    }
-                }
-                if java_type_is_spliterator(java_receiver_type(__w, object, local_types).as_deref()) {
-                    if let Some(internal) = java_spliterator_method_name(field, args.len()) {
-                        let mut new_args = Vec::with_capacity(args.len() + 1);
-                        new_args.push(Argument::positional((**object).clone()));
-                        new_args.extend(args.iter().cloned());
-                        *expr = Expression::new(ExprKind::Call {
-                            callee: Box::new(Expression::ident(internal)),
-                            args: new_args,
-                            optional: false,
-                        });
-                        return;
-                    }
-                }
+                // Spliterator methods are NOT rewritten — jvm tree class.
                 if java_type_is_runtime(java_receiver_type(__w, object, local_types).as_deref()) {
                     if let Some(internal) = java_runtime_method_name(field, args.len()) {
                         let mut new_args = Vec::with_capacity(args.len() + 1);
@@ -19522,12 +19347,7 @@ fn normalize_java_expr(__w: &mut JavaWalker,
         }
         ExprKind::Member { object, field, .. } => {
             if let Some(class_name) = java_expr_dotted_name(object) {
-                if java_type_simple_name(&class_name) == "Spliterator" {
-                    if let Some(value) = java_spliterator_constant(field) {
-                        *expr = Expression::int(value);
-                        return;
-                    }
-                }
+                // `Spliterator.*` constants resolve as jvm tree Consts.
                 if class_name.ends_with("ProcessBuilder.Redirect") {
                     if matches!(field.as_str(), "PIPE" | "INHERIT" | "DISCARD") {
                         *expr = Expression::new(ExprKind::Call {
@@ -19879,11 +19699,7 @@ fn normalize_java_expr(__w: &mut JavaWalker,
                 (java_expr_dotted_name(class), &member.kind)
             {
                 let member_name = member_name.clone();
-                if java_type_simple_name(&class_name) == "Spliterator" {
-                    if let Some(value) = java_spliterator_constant(&member_name) {
-                        *expr = Expression::int(value);
-                    }
-                }
+                // `Spliterator.*` constants resolve as jvm tree Consts.
                 if class_name.ends_with("ProcessBuilder.Redirect")
                     && matches!(member_name.as_str(), "PIPE" | "INHERIT" | "DISCARD")
                 {

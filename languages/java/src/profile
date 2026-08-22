@@ -14,7 +14,6 @@ extensions = ["java"]
 # default is `true`, and inheriting it silently gave Python coercive semantics
 # it never chose.
 coerces_value_to_type_hint = true
-field_hiding = true            # static-type field resolution: subclass field hides parent, distinct slots
 function_return    = "explicit"
 self_keyword       = "this"
 base_keyword       = "super"

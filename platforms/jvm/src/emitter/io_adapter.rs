@@ -922,7 +922,9 @@ pub fn emit_file_create_temp(chunks: &mut [Chunk], current: usize, argc: u8, lin
     chunks[current].emit_string_const("/tmp/", line);
     get(&mut chunks[current], prefix, line);
     strings::emit_str_concat_coercing(&mut chunks[current], line);
-    chunks[current].emit_i32_const(0, line);
+    // No dummy const before the 0-arg host call: an extra i32 became the
+    // concat's LEFT side, so the path came out `0<now><suffix>` and the
+    // `/tmp/<prefix>` prefix was orphaned on the stack.
     host::emit(&mut chunks[current], "ecma:date", "now", 0, line);
     strings::emit_str_concat_coercing(&mut chunks[current], line);
     get(&mut chunks[current], suffix, line);
@@ -2035,4 +2037,1050 @@ pub fn emit_new_filled_array(
     collections::emit_fill(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     get(&mut chunks[current], out, line);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// java.nio.file — Path / Paths / Files
+//
+// A `Path` IS the `java.io.File` object shape (a struct whose DATA field is
+// the path string) and rides the same in-memory file store, so `Files.*`
+// statics delegate to the `File` emitters above and `path.toFile()` is the
+// identity. The nio names are the JDK spec's; tree registration lives in
+// `tree_register.rs` under `jvm.java.nio.file.*`.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// `[path-or-string] -> [string]` — a Path arg and a String arg are equally
+/// legal almost everywhere in the nio API. `emit_file_path_from_slot` is a
+/// bare STRUCT_GET, which answers undefined on a plain string, so the object
+/// test happens here.
+fn path_string_from_slot(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    get(&mut chunks[current], slot, line);
+    host::emit(&mut chunks[current], "ecma:value", "typeof", 1, line);
+    chunks[current].emit_string_const("object", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    emit_file_path_from_slot(chunks, current, slot, line);
+    let data = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], data, line);
+    get(&mut chunks[current], data, line);
+    host::emit(&mut chunks[current], "ecma:value", "typeof", 1, line);
+    chunks[current].emit_string_const("string", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], data, line);
+    chunks[current].emit_else(line);
+    // Not a File/Path object — `Paths.get(uri)` hands a `java.net.URI`,
+    // whose raw spec sits in `__spec`; strip the scheme prefix back off.
+    get(&mut chunks[current], slot, line);
+    {
+        let k = chunks[current].add_constant(vybe_runtime::Value::String("__spec".into()));
+        chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
+    }
+    chunks[current].emit_string_const("file://", line);
+    chunks[current].emit_string_const("", line);
+    host::emit(&mut chunks[current], "ecma:string", "replace", 3, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], slot, line);
+    chunks[current].emit_end(line);
+}
+
+/// `[string] -> [Path]`.
+fn wrap_path_from_stack(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_file_new(chunks, current, 1, line);
+}
+
+/// `Paths.get(first, more...)` — join with '/' .
+pub fn emit_nio_paths_get(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = chunks[current].alloc_scratch(argc.max(1) as u16);
+    for i in (0..argc).rev() {
+        set(&mut chunks[current], base + i as u16, line);
+    }
+    if argc == 0 {
+        chunks[current].emit_string_const("", line);
+    } else {
+        path_string_from_slot(chunks, current, base, line);
+        for i in 1..argc {
+            chunks[current].emit_string_const("/", line);
+            strings::emit_str_concat_coercing(&mut chunks[current], line);
+            get(&mut chunks[current], base + i as u16, line);
+            strings::emit_str_concat_coercing(&mut chunks[current], line);
+        }
+    }
+    wrap_path_from_stack(chunks, current, line);
+}
+
+/// `path.resolve(other)` — absolute `other` wins; otherwise join.
+pub fn emit_nio_path_resolve(chunks: &mut [Chunk], current: usize, line: u32) {
+    let other = chunks[current].alloc_scratch(1);
+    let this = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], other, line);
+    set(&mut chunks[current], this, line);
+    path_string_from_slot(chunks, current, other, line);
+    let other_s = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], other_s, line);
+    get(&mut chunks[current], other_s, line);
+    chunks[current].emit_string_const("/", line);
+    host::emit(&mut chunks[current], "ecma:string", "startsWith", 2, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], other_s, line);
+    chunks[current].emit_else(line);
+    path_string_from_slot(chunks, current, this, line);
+    chunks[current].emit_string_const("/", line);
+    strings::emit_str_concat(&mut chunks[current], line);
+    get(&mut chunks[current], other_s, line);
+    strings::emit_str_concat(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+    wrap_path_from_stack(chunks, current, line);
+}
+
+/// `path.resolveSibling(other)` — parent + '/' + other.
+pub fn emit_nio_path_resolve_sibling(chunks: &mut [Chunk], current: usize, line: u32) {
+    let other = chunks[current].alloc_scratch(1);
+    let this = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], other, line);
+    set(&mut chunks[current], this, line);
+    get(&mut chunks[current], this, line);
+    emit_file_parent(chunks, current, line);
+    let parent = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], parent, line);
+    get(&mut chunks[current], parent, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if_value(line);
+    path_string_from_slot(chunks, current, other, line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], parent, line);
+    chunks[current].emit_string_const("/", line);
+    strings::emit_str_concat(&mut chunks[current], line);
+    path_string_from_slot(chunks, current, other, line);
+    strings::emit_str_concat(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+    wrap_path_from_stack(chunks, current, line);
+}
+
+/// `path.getFileName()` — last component, as a Path; null for the root
+/// (measured JDK behaviour: `Paths.get("/").getFileName()` is null).
+pub fn emit_nio_path_file_name(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_file_get_name(chunks, current, line);
+    let name = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], name, line);
+    get(&mut chunks[current], name, line);
+    chunks[current].emit_string_const("", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], name, line);
+    wrap_path_from_stack(chunks, current, line);
+    chunks[current].emit_end(line);
+}
+
+/// `path.isAbsolute()`.
+pub fn emit_nio_path_is_absolute(chunks: &mut [Chunk], current: usize, line: u32) {
+    let this = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], this, line);
+    path_string_from_slot(chunks, current, this, line);
+    chunks[current].emit_string_const("/", line);
+    host::emit(&mut chunks[current], "ecma:string", "startsWith", 2, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    ops::emit_i32_to_bool(&mut chunks[current], line);
+}
+
+/// `path.getRoot()` — `/` for an absolute path, null otherwise.
+pub fn emit_nio_path_root(chunks: &mut [Chunk], current: usize, line: u32) {
+    let this = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], this, line);
+    path_string_from_slot(chunks, current, this, line);
+    chunks[current].emit_string_const("/", line);
+    host::emit(&mut chunks[current], "ecma:string", "startsWith", 2, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_string_const("/", line);
+    wrap_path_from_stack(chunks, current, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunks[current].emit_end(line);
+}
+
+/// `path.toAbsolutePath()` — already-absolute is the identity; a relative
+/// path resolves against `/` (the store has no working directory).
+pub fn emit_nio_path_to_absolute(chunks: &mut [Chunk], current: usize, line: u32) {
+    let this = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], this, line);
+    path_string_from_slot(chunks, current, this, line);
+    let s = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], s, line);
+    get(&mut chunks[current], s, line);
+    chunks[current].emit_string_const("/", line);
+    host::emit(&mut chunks[current], "ecma:string", "startsWith", 2, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], this, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_string_const("/", line);
+    get(&mut chunks[current], s, line);
+    strings::emit_str_concat(&mut chunks[current], line);
+    wrap_path_from_stack(chunks, current, line);
+    chunks[current].emit_end(line);
+}
+
+/// Split a path into its non-empty '/' components. `[..] -> []`,
+/// leaves the components array in `out`.
+fn path_components_to_slot(chunks: &mut [Chunk], current: usize, path: u16, out: u16, line: u32) {
+    collections::emit_array_new(chunks, current, 0, line);
+    set(&mut chunks[current], out, line);
+    get(&mut chunks[current], path, line);
+    chunks[current].emit_string_const("/", line);
+    host::emit(&mut chunks[current], "ecma:string", "split", 2, line);
+    let parts = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], parts, line);
+    let idx = chunks[current].alloc_scratch(1);
+    let state = loops::emit_for_in_start(chunks, current, parts, idx, line);
+    let part = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], part, line);
+    get(&mut chunks[current], part, line);
+    chunks[current].emit_string_const("", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    get(&mut chunks[current], out, line);
+    get(&mut chunks[current], part, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+    loops::emit_for_in_end(chunks, current, idx, state, line);
+}
+
+/// `path.getNameCount()`.
+pub fn emit_nio_path_name_count(chunks: &mut [Chunk], current: usize, line: u32) {
+    let this = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], this, line);
+    path_string_from_slot(chunks, current, this, line);
+    let s = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], s, line);
+    let comps = chunks[current].alloc_scratch(1);
+    path_components_to_slot(chunks, current, s, comps, line);
+    get(&mut chunks[current], comps, line);
+    collections::emit_len(chunks, current, line);
+}
+
+/// `path.getName(i)` — component `i`, as a Path.
+pub fn emit_nio_path_get_name(chunks: &mut [Chunk], current: usize, line: u32) {
+    let index = chunks[current].alloc_scratch(1);
+    let this = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], index, line);
+    set(&mut chunks[current], this, line);
+    path_string_from_slot(chunks, current, this, line);
+    let s = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], s, line);
+    let comps = chunks[current].alloc_scratch(1);
+    path_components_to_slot(chunks, current, s, comps, line);
+    get(&mut chunks[current], comps, line);
+    get(&mut chunks[current], index, line);
+    collections::emit_get(chunks, current, line);
+    wrap_path_from_stack(chunks, current, line);
+}
+
+/// `path.subpath(begin, end)` — components `[begin, end)`, joined.
+pub fn emit_nio_path_subpath(chunks: &mut [Chunk], current: usize, line: u32) {
+    let end = chunks[current].alloc_scratch(1);
+    let begin = chunks[current].alloc_scratch(1);
+    let this = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], end, line);
+    set(&mut chunks[current], begin, line);
+    set(&mut chunks[current], this, line);
+    path_string_from_slot(chunks, current, this, line);
+    let s = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], s, line);
+    let comps = chunks[current].alloc_scratch(1);
+    path_components_to_slot(chunks, current, s, comps, line);
+    chunks[current].emit_string_const("", line);
+    let joined = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], joined, line);
+    let i = chunks[current].alloc_scratch(1);
+    get(&mut chunks[current], begin, line);
+    set(&mut chunks[current], i, line);
+    let outer = chunks[current].emit_block(line);
+    let (loop_id, _) = chunks[current].emit_loop_s(line);
+    get(&mut chunks[current], i, line);
+    get(&mut chunks[current], end, line);
+    ops::emit_dyn_lt(&mut chunks[current], line);
+    ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+    get(&mut chunks[current], joined, line);
+    chunks[current].emit_string_const("", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], comps, line);
+    get(&mut chunks[current], i, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], joined, line);
+    chunks[current].emit_string_const("/", line);
+    strings::emit_str_concat(&mut chunks[current], line);
+    get(&mut chunks[current], comps, line);
+    get(&mut chunks[current], i, line);
+    collections::emit_get(chunks, current, line);
+    strings::emit_str_concat_coercing(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+    set(&mut chunks[current], joined, line);
+    get(&mut chunks[current], i, line);
+    chunks[current].emit_i32_const(1, line);
+    ops::emit_dyn_add(&mut chunks[current], line);
+    set(&mut chunks[current], i, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_id);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer);
+    get(&mut chunks[current], joined, line);
+    wrap_path_from_stack(chunks, current, line);
+}
+
+/// `path.normalize()` — fold `.` and `..` components.
+pub fn emit_nio_path_normalize(chunks: &mut [Chunk], current: usize, line: u32) {
+    let this = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], this, line);
+    path_string_from_slot(chunks, current, this, line);
+    let s = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], s, line);
+    get(&mut chunks[current], s, line);
+    chunks[current].emit_string_const("/", line);
+    host::emit(&mut chunks[current], "ecma:string", "startsWith", 2, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    let absolute = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], absolute, line);
+    let comps = chunks[current].alloc_scratch(1);
+    path_components_to_slot(chunks, current, s, comps, line);
+    collections::emit_array_new(chunks, current, 0, line);
+    let kept = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], kept, line);
+    let idx = chunks[current].alloc_scratch(1);
+    let state = loops::emit_for_in_start(chunks, current, comps, idx, line);
+    let part = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], part, line);
+    get(&mut chunks[current], part, line);
+    chunks[current].emit_string_const(".", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    get(&mut chunks[current], part, line);
+    chunks[current].emit_string_const("..", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    get(&mut chunks[current], kept, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_GT_S, line);
+    chunks[current].emit_if(line);
+    get(&mut chunks[current], kept, line);
+    collections::emit_pop(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], kept, line);
+    get(&mut chunks[current], part, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    loops::emit_for_in_end(chunks, current, idx, state, line);
+    get(&mut chunks[current], kept, line);
+    chunks[current].emit_string_const("/", line);
+    host::emit(&mut chunks[current], "ecma:array", "join", 2, line);
+    let joined = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], joined, line);
+    get(&mut chunks[current], absolute, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_string_const("/", line);
+    get(&mut chunks[current], joined, line);
+    strings::emit_str_concat_coercing(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], joined, line);
+    chunks[current].emit_end(line);
+    wrap_path_from_stack(chunks, current, line);
+}
+
+/// Component-wise prefix/suffix test shared by `startsWith`/`endsWith`.
+fn nio_path_edge_match(chunks: &mut [Chunk], current: usize, suffix: bool, line: u32) {
+    let other = chunks[current].alloc_scratch(1);
+    let this = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], other, line);
+    set(&mut chunks[current], this, line);
+    path_string_from_slot(chunks, current, this, line);
+    let s = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], s, line);
+    path_string_from_slot(chunks, current, other, line);
+    let o = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], o, line);
+    get(&mut chunks[current], s, line);
+    get(&mut chunks[current], o, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_bool_const(true, line);
+    chunks[current].emit_else(line);
+    if suffix {
+        get(&mut chunks[current], s, line);
+        chunks[current].emit_string_const("/", line);
+        get(&mut chunks[current], o, line);
+        strings::emit_str_concat_coercing(&mut chunks[current], line);
+        host::emit(&mut chunks[current], "ecma:string", "endsWith", 2, line);
+    } else {
+        get(&mut chunks[current], s, line);
+        get(&mut chunks[current], o, line);
+        chunks[current].emit_string_const("/", line);
+        strings::emit_str_concat_coercing(&mut chunks[current], line);
+        host::emit(&mut chunks[current], "ecma:string", "startsWith", 2, line);
+    }
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    ops::emit_i32_to_bool(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+}
+
+pub fn emit_nio_path_starts_with(chunks: &mut [Chunk], current: usize, line: u32) {
+    nio_path_edge_match(chunks, current, false, line);
+}
+
+pub fn emit_nio_path_ends_with(chunks: &mut [Chunk], current: usize, line: u32) {
+    nio_path_edge_match(chunks, current, true, line);
+}
+
+/// `base.relativize(other)` — the JDK's component walk: drop the common
+/// prefix, one `..` per remaining base component, then `other`'s remainder.
+/// Equal paths give the EMPTY path (measured on real java).
+pub fn emit_nio_path_relativize(chunks: &mut [Chunk], current: usize, line: u32) {
+    let other = chunks[current].alloc_scratch(1);
+    let this = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], other, line);
+    set(&mut chunks[current], this, line);
+    path_string_from_slot(chunks, current, this, line);
+    let s = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], s, line);
+    path_string_from_slot(chunks, current, other, line);
+    let o = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], o, line);
+    let ca = chunks[current].alloc_scratch(1);
+    path_components_to_slot(chunks, current, s, ca, line);
+    let cb = chunks[current].alloc_scratch(1);
+    path_components_to_slot(chunks, current, o, cb, line);
+    let la = chunks[current].alloc_scratch(1);
+    get(&mut chunks[current], ca, line);
+    collections::emit_len(chunks, current, line);
+    set(&mut chunks[current], la, line);
+    let lb = chunks[current].alloc_scratch(1);
+    get(&mut chunks[current], cb, line);
+    collections::emit_len(chunks, current, line);
+    set(&mut chunks[current], lb, line);
+
+    // k = length of the common component prefix.
+    let k = chunks[current].alloc_scratch(1);
+    chunks[current].emit_i32_const(0, line);
+    set(&mut chunks[current], k, line);
+    let outer = chunks[current].emit_block(line);
+    let (loop_id, _) = chunks[current].emit_loop_s(line);
+    get(&mut chunks[current], k, line);
+    get(&mut chunks[current], la, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+    get(&mut chunks[current], k, line);
+    get(&mut chunks[current], lb, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+    get(&mut chunks[current], ca, line);
+    get(&mut chunks[current], k, line);
+    collections::emit_get(chunks, current, line);
+    get(&mut chunks[current], cb, line);
+    get(&mut chunks[current], k, line);
+    collections::emit_get(chunks, current, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_br_if(1, line);
+    get(&mut chunks[current], k, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    set(&mut chunks[current], k, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_id);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer);
+
+    // parts = [".." × (la - k)] ++ cb[k..]
+    collections::emit_array_new(chunks, current, 0, line);
+    let parts = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], parts, line);
+    let i = chunks[current].alloc_scratch(1);
+    get(&mut chunks[current], k, line);
+    set(&mut chunks[current], i, line);
+    let up_outer = chunks[current].emit_block(line);
+    let (up_loop, _) = chunks[current].emit_loop_s(line);
+    get(&mut chunks[current], i, line);
+    get(&mut chunks[current], la, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+    get(&mut chunks[current], parts, line);
+    chunks[current].emit_string_const("..", line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    get(&mut chunks[current], i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    set(&mut chunks[current], i, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(up_loop);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(up_outer);
+    get(&mut chunks[current], k, line);
+    set(&mut chunks[current], i, line);
+    let dn_outer = chunks[current].emit_block(line);
+    let (dn_loop, _) = chunks[current].emit_loop_s(line);
+    get(&mut chunks[current], i, line);
+    get(&mut chunks[current], lb, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+    get(&mut chunks[current], parts, line);
+    get(&mut chunks[current], cb, line);
+    get(&mut chunks[current], i, line);
+    collections::emit_get(chunks, current, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    get(&mut chunks[current], i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    set(&mut chunks[current], i, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(dn_loop);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(dn_outer);
+
+    get(&mut chunks[current], parts, line);
+    chunks[current].emit_string_const("/", line);
+    host::emit(&mut chunks[current], "ecma:array", "join", 2, line);
+    wrap_path_from_stack(chunks, current, line);
+}
+
+// ── Files statics ──────────────────────────────────────────────────────────
+
+/// `Files.writeString(path, text, options...)` → the path. Options are
+/// TRAILING, so they pop first — dropping after `text` dropped the text and
+/// wrote the option string instead. `APPEND` is the one option that changes
+/// behaviour; every other option is the store's default anyway.
+pub fn emit_nio_files_write_string(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let text = chunks[current].alloc_scratch(1);
+    let path = chunks[current].alloc_scratch(1);
+    let append = chunks[current].alloc_scratch(1);
+    chunks[current].emit_bool_const(false, line);
+    set(&mut chunks[current], append, line);
+    for _ in 2..argc {
+        let option = chunks[current].alloc_scratch(1);
+        set(&mut chunks[current], option, line);
+        get(&mut chunks[current], option, line);
+        chunks[current].emit_string_const("APPEND", line);
+        ops::emit_dyn_eq(&mut chunks[current], line);
+        ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if(line);
+        chunks[current].emit_bool_const(true, line);
+        set(&mut chunks[current], append, line);
+        chunks[current].emit_end(line);
+    }
+    set(&mut chunks[current], text, line);
+    set(&mut chunks[current], path, line);
+    get(&mut chunks[current], append, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    get(&mut chunks[current], path, line);
+    get(&mut chunks[current], text, line);
+    emit_file_write_text(chunks, current, 2, true, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], path, line);
+    get(&mut chunks[current], text, line);
+    emit_file_write_text(chunks, current, 2, false, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+    get(&mut chunks[current], path, line);
+}
+
+/// `Files.delete(path)` — void; a missing path throws.
+pub fn emit_nio_files_delete(chunks: &mut [Chunk], current: usize, line: u32) {
+    let path = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], path, line);
+    get(&mut chunks[current], path, line);
+    emit_file_exists(chunks, current, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    crate::emitter::exceptions::emit_jvm_exception_throw(
+        chunks,
+        current,
+        "NoSuchFileException",
+        line,
+    );
+    chunks[current].emit_end(line);
+    get(&mut chunks[current], path, line);
+    emit_file_delete(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
+/// `Files.notExists(path)`.
+pub fn emit_nio_files_not_exists(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_file_exists(chunks, current, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    ops::emit_i32_to_bool(&mut chunks[current], line);
+}
+
+/// `Files.size(path)` — the stored content's length; missing throws.
+pub fn emit_nio_files_size(chunks: &mut [Chunk], current: usize, line: u32) {
+    let path = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], path, line);
+    emit_file_path_from_slot(chunks, current, path, line);
+    let p = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], p, line);
+    emit_file_record_for_path(chunks, current, p, line);
+    let rec = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], rec, line);
+    get(&mut chunks[current], rec, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    crate::emitter::exceptions::emit_jvm_exception_throw(
+        chunks,
+        current,
+        "NoSuchFileException",
+        line,
+    );
+    chunks[current].emit_end(line);
+    object_get(chunks, current, rec, DATA, line);
+    strings::emit_length(&mut chunks[current], line);
+}
+
+/// `Files.createFile(path)` — existing throws; returns the path.
+pub fn emit_nio_files_create_file(chunks: &mut [Chunk], current: usize, line: u32) {
+    let path = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], path, line);
+    get(&mut chunks[current], path, line);
+    emit_file_exists(chunks, current, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    crate::emitter::exceptions::emit_jvm_exception_throw(
+        chunks,
+        current,
+        "FileAlreadyExistsException",
+        line,
+    );
+    chunks[current].emit_end(line);
+    emit_file_path_from_slot(chunks, current, path, line);
+    let p = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], p, line);
+    chunks[current].emit_string_const("", line);
+    let content = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], content, line);
+    emit_store_file_record(chunks, current, p, content, false, line);
+    get(&mut chunks[current], path, line);
+}
+
+/// `Files.createDirectory(path)` / `createDirectories(path)` → the path.
+pub fn emit_nio_files_create_directories(chunks: &mut [Chunk], current: usize, line: u32) {
+    let path = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], path, line);
+    get(&mut chunks[current], path, line);
+    emit_file_mkdirs(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    get(&mut chunks[current], path, line);
+}
+
+/// `Files.createTempDirectory(prefix)` → a fresh Path marked as a directory.
+pub fn emit_nio_files_create_temp_directory(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    line: u32,
+) {
+    let prefix = chunks[current].alloc_scratch(1);
+    if argc >= 1 {
+        set(&mut chunks[current], prefix, line);
+        for _ in 1..argc {
+            chunks[current].emit_op(Op::DROP, line);
+        }
+    } else {
+        chunks[current].emit_string_const("vybe", line);
+        set(&mut chunks[current], prefix, line);
+    }
+    chunks[current].emit_string_const("/tmp/", line);
+    get(&mut chunks[current], prefix, line);
+    strings::emit_str_concat_coercing(&mut chunks[current], line);
+    host::emit(&mut chunks[current], "ecma:date", "now", 0, line);
+    strings::emit_str_concat_coercing(&mut chunks[current], line);
+    let path = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], path, line);
+    chunks[current].emit_string_const("", line);
+    let content = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], content, line);
+    emit_store_file_record(chunks, current, path, content, true, line);
+    get(&mut chunks[current], path, line);
+    wrap_path_from_stack(chunks, current, line);
+}
+
+/// `Files.move(src, dst)` → dst.
+pub fn emit_nio_files_move(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    for _ in 2..argc {
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    let dst = chunks[current].alloc_scratch(1);
+    let src = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], dst, line);
+    set(&mut chunks[current], src, line);
+    get(&mut chunks[current], src, line);
+    get(&mut chunks[current], dst, line);
+    emit_file_rename_to(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    get(&mut chunks[current], dst, line);
+}
+
+/// `Files.isSameFile(a, b)`.
+pub fn emit_nio_files_is_same_file(chunks: &mut [Chunk], current: usize, line: u32) {
+    let b = chunks[current].alloc_scratch(1);
+    let a = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], b, line);
+    set(&mut chunks[current], a, line);
+    path_string_from_slot(chunks, current, a, line);
+    path_string_from_slot(chunks, current, b, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    ops::emit_i32_to_bool(&mut chunks[current], line);
+}
+
+/// `Files.mismatch(a, b)` — `-1` when the contents agree, else the first
+/// differing index (the store answers 0: enough for "is there a mismatch").
+pub fn emit_nio_files_mismatch(chunks: &mut [Chunk], current: usize, line: u32) {
+    let b = chunks[current].alloc_scratch(1);
+    let a = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], b, line);
+    set(&mut chunks[current], a, line);
+    get(&mut chunks[current], a, line);
+    emit_file_read_text(chunks, current, 1, line);
+    let ca = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], ca, line);
+    get(&mut chunks[current], b, line);
+    emit_file_read_text(chunks, current, 1, line);
+    let cb = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], cb, line);
+    get(&mut chunks[current], ca, line);
+    get(&mut chunks[current], cb, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_i32_const(-1, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_end(line);
+}
+
+/// `Files.write(path, byte[])` — bytes become the stored string; → path.
+pub fn emit_nio_files_write_bytes(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let bytes = chunks[current].alloc_scratch(1);
+    let path = chunks[current].alloc_scratch(1);
+    for _ in 2..argc {
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    set(&mut chunks[current], bytes, line);
+    set(&mut chunks[current], path, line);
+    chunks[current].emit_string_const("", line);
+    let text = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], text, line);
+    let idx = chunks[current].alloc_scratch(1);
+    let state = loops::emit_for_in_start(chunks, current, bytes, idx, line);
+    let byte = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], byte, line);
+    get(&mut chunks[current], text, line);
+    get(&mut chunks[current], byte, line);
+    strings::emit_from_char_code(&mut chunks[current], line);
+    strings::emit_str_concat_coercing(&mut chunks[current], line);
+    set(&mut chunks[current], text, line);
+    loops::emit_for_in_end(chunks, current, idx, state, line);
+    get(&mut chunks[current], path, line);
+    get(&mut chunks[current], text, line);
+    emit_file_write_text(chunks, current, 2, false, line);
+    chunks[current].emit_op(Op::DROP, line);
+    get(&mut chunks[current], path, line);
+}
+
+/// `Files.readAllBytes(path)` — the stored string as a char-code array.
+pub fn emit_nio_files_read_all_bytes(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_file_read_text(chunks, current, 1, line);
+    let text = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], text, line);
+    collections::emit_array_new(chunks, current, 0, line);
+    let out = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], out, line);
+    let i = chunks[current].alloc_scratch(1);
+    chunks[current].emit_i32_const(0, line);
+    set(&mut chunks[current], i, line);
+    let len = chunks[current].alloc_scratch(1);
+    get(&mut chunks[current], text, line);
+    strings::emit_length(&mut chunks[current], line);
+    set(&mut chunks[current], len, line);
+    let outer = chunks[current].emit_block(line);
+    let (loop_id, _) = chunks[current].emit_loop_s(line);
+    get(&mut chunks[current], i, line);
+    get(&mut chunks[current], len, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+    get(&mut chunks[current], out, line);
+    get(&mut chunks[current], text, line);
+    get(&mut chunks[current], i, line);
+    // `[str, idx] -> [code]` — `emit_char_code` reads only index 0.
+    let char_code_at = chunks[current].add_import("wasm:js-string", "charCodeAt");
+    chunks[current].emit_call(char_code_at, 2, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    get(&mut chunks[current], i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    set(&mut chunks[current], i, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_id);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer);
+    get(&mut chunks[current], out, line);
+}
+
+/// `[byte-array] -> [string]` — char-code per element.
+fn bytes_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
+    let bytes = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], bytes, line);
+    chunks[current].emit_string_const("", line);
+    let text = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], text, line);
+    let idx = chunks[current].alloc_scratch(1);
+    let state = loops::emit_for_in_start(chunks, current, bytes, idx, line);
+    let byte = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], byte, line);
+    get(&mut chunks[current], text, line);
+    get(&mut chunks[current], byte, line);
+    strings::emit_from_char_code(&mut chunks[current], line);
+    strings::emit_str_concat_coercing(&mut chunks[current], line);
+    set(&mut chunks[current], text, line);
+    loops::emit_for_in_end(chunks, current, idx, state, line);
+    get(&mut chunks[current], text, line);
+}
+
+/// `Files.newOutputStream(path)` — a byte-buffering stream whose
+/// close/flush writes the buffer back to the store at TARGET.
+pub fn emit_nio_files_new_output_stream(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    for _ in 1..argc {
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    let path = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], path, line);
+    path_string_from_slot(chunks, current, path, line);
+    let p = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], p, line);
+    let obj = chunks[current].alloc_scratch(1);
+    chunks[current].emit_struct_new(0, 0, line);
+    set(&mut chunks[current], obj, line);
+    get(&mut chunks[current], p, line);
+    field_set_from_stack(&mut chunks[current], obj, TARGET, line);
+    collections::emit_array_new(chunks, current, 0, line);
+    field_set_from_stack(&mut chunks[current], obj, DATA, line);
+    get(&mut chunks[current], obj, line);
+}
+
+/// close/flush for the stream above: DATA (bytes) → string → store[TARGET].
+pub fn emit_nio_output_close(chunks: &mut [Chunk], current: usize, line: u32) {
+    let obj = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], obj, line);
+    field_get(&mut chunks[current], obj, DATA, line);
+    bytes_to_string(chunks, current, line);
+    let text = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], text, line);
+    field_get(&mut chunks[current], obj, TARGET, line);
+    let path = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], path, line);
+    emit_store_file_record(chunks, current, path, text, false, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
+/// `ch.isOpen()` — the store model has no closed state to report.
+pub fn emit_nio_channel_is_open(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_bool_const(true, line);
+}
+
+/// `Files.probeContentType(path)` — the store records no media type;
+/// `null` is a legal JDK answer ("cannot be determined").
+pub fn emit_nio_files_probe_content_type(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
+/// `Files.readAttributes(path, "basic:*")` — the basic view as a Map.
+pub fn emit_nio_files_read_attributes(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    for _ in 1..argc {
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    let path = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], path, line);
+    collections::emit_map_new(chunks, current, line);
+    let map = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], map, line);
+    get(&mut chunks[current], map, line);
+    chunks[current].emit_string_const("size", line);
+    get(&mut chunks[current], path, line);
+    emit_nio_files_size(chunks, current, line);
+    host::emit(&mut chunks[current], "ecma:map", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    get(&mut chunks[current], map, line);
+    chunks[current].emit_string_const("isDirectory", line);
+    get(&mut chunks[current], path, line);
+    emit_file_is_directory(chunks, current, true, line);
+    host::emit(&mut chunks[current], "ecma:map", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    get(&mut chunks[current], map, line);
+    chunks[current].emit_string_const("isRegularFile", line);
+    get(&mut chunks[current], path, line);
+    emit_file_is_directory(chunks, current, false, line);
+    host::emit(&mut chunks[current], "ecma:map", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    get(&mut chunks[current], map, line);
+    chunks[current].emit_string_const("lastModifiedTime", line);
+    get(&mut chunks[current], path, line);
+    emit_nio_files_get_mtime(chunks, current, line);
+    host::emit(&mut chunks[current], "ecma:map", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    get(&mut chunks[current], map, line);
+}
+
+const MTIME: &str = "__java_io_mtime";
+
+/// `Files.getLastModifiedTime(path)` — the record's mtime, 0 if never set.
+pub fn emit_nio_files_get_mtime(chunks: &mut [Chunk], current: usize, line: u32) {
+    let path = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], path, line);
+    emit_file_path_from_slot(chunks, current, path, line);
+    let p = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], p, line);
+    emit_file_record_for_path(chunks, current, p, line);
+    let rec = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], rec, line);
+    get(&mut chunks[current], rec, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    object_get(chunks, current, rec, MTIME, line);
+    let mtime = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], mtime, line);
+    get(&mut chunks[current], mtime, line);
+    host::emit(&mut chunks[current], "ecma:value", "typeof", 1, line);
+    chunks[current].emit_string_const("number", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], mtime, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_end(line);
+}
+
+/// `Files.setLastModifiedTime(path, t)` → the path.
+pub fn emit_nio_files_set_mtime(chunks: &mut [Chunk], current: usize, line: u32) {
+    let t = chunks[current].alloc_scratch(1);
+    let path = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], t, line);
+    set(&mut chunks[current], path, line);
+    emit_file_path_from_slot(chunks, current, path, line);
+    let p = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], p, line);
+    emit_file_record_for_path(chunks, current, p, line);
+    let rec = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], rec, line);
+    get(&mut chunks[current], rec, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    object_set_from_slot(chunks, current, rec, MTIME, t, line);
+    chunks[current].emit_end(line);
+    get(&mut chunks[current], path, line);
+}
+
+/// `path.toUri()` — `file://` + path, through the shared URI parser so the
+/// result is a real `java.net.URI` object.
+pub fn emit_nio_path_to_uri(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let this = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], this, line);
+    chunks[current].emit_string_const("file://", line);
+    path_string_from_slot(chunks, current, this, line);
+    strings::emit_str_concat(&mut chunks[current], line);
+    crate::emitter::url_adapter::emit_uri_new(chunks, current, 1, line);
+}
+
+/// `path.getParent()` — null when there is no parent, a Path otherwise.
+pub fn emit_nio_path_parent(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_file_parent(chunks, current, line);
+    let parent = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], parent, line);
+    get(&mut chunks[current], parent, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], parent, line);
+    wrap_path_from_stack(chunks, current, line);
+    chunks[current].emit_end(line);
+}
+
+/// `Files.deleteIfExists(path)` — false for a missing path, never a throw.
+pub fn emit_nio_files_delete_if_exists(chunks: &mut [Chunk], current: usize, line: u32) {
+    let path = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], path, line);
+    get(&mut chunks[current], path, line);
+    emit_file_exists(chunks, current, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], path, line);
+    emit_file_delete(chunks, current, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_bool_const(false, line);
+    chunks[current].emit_end(line);
+}
+
+/// `Files.copy(src, dst, options...)` — any option in the corpus means
+/// REPLACE_EXISTING, which is `emit_file_copy_to`'s overwrite flag.
+pub fn emit_nio_files_copy(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc >= 3 {
+        for _ in 2..argc {
+            chunks[current].emit_op(Op::DROP, line);
+        }
+        chunks[current].emit_bool_const(true, line);
+        emit_file_copy_to(chunks, current, 3, line);
+    } else {
+        emit_file_copy_to(chunks, current, argc, line);
+    }
+}
+
+/// `path.compareTo(other)` — lexicographic over the path strings.
+pub fn emit_nio_path_compare_to(chunks: &mut [Chunk], current: usize, line: u32) {
+    let other = chunks[current].alloc_scratch(1);
+    let this = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], other, line);
+    set(&mut chunks[current], this, line);
+    path_string_from_slot(chunks, current, this, line);
+    path_string_from_slot(chunks, current, other, line);
+    host::emit(&mut chunks[current], "ecma:string", "localeCompare", 2, line);
 }

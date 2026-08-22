@@ -430,7 +430,12 @@ chain_suffix = {
     | index_suffix
 }
 
-inner_new_suffix = { "." ~ "new" ~ type_ref ~ type_args? ~ "(" ~ argument_list? ~ ")" }
+// `new` needs its keyword boundary: without it `.newBufferedReader(p)`
+// parses as inner-class instantiation `.new BufferedReader(p)`. The keyword
+// is ATOMIC — in a non-atomic rule pest skips whitespace before the
+// lookahead, which made the guard reject legitimate `o.new Inner()`.
+kw_inner_new = @{ "new" ~ !(ASCII_ALPHANUMERIC | "_") }
+inner_new_suffix = { "." ~ kw_inner_new ~ type_ref ~ type_args? ~ "(" ~ argument_list? ~ ")" }
 method_call_suffix  = { "." ~ type_args? ~ ident_name ~ type_args? ~ "(" ~ argument_list? ~ ")" }
 call_suffix         = { type_args? ~ "(" ~ argument_list? ~ ")" }
 member_access_suffix = { "." ~ ident_or_keyword }

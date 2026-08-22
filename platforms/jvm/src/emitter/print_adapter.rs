@@ -5,22 +5,27 @@
 //! identical for every JVM frontend, so the platform owns it.
 
 use vybe_compiler::primitives::instructions::host;
+use vybe_compiler::primitives::io;
 use vybe_compiler::primitives::strings;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
+/// Write the string on top of the stack to stdout. Stack: `[text] → []`.
+///
+/// This used to be 0.2's pair — `wasi:cli/stdout.get-stdout()` handing back an
+/// `output-stream` resource, then `wasi:io/streams.[method]output-stream.
+/// blocking-write-and-flush`. `wasi:io` does not exist in WASI 0.3.1: streams
+/// became a Component Model TYPE, so there is no interface left to declare a
+/// stream resource, and `get-stdout` went with it — `wasi:cli/stdout` declares
+/// only `write-via-stream(data: stream<u8>)`.
+///
+/// Both halves resolved against this host, which is why nothing failed and this
+/// was the LAST emitter of `wasi:io` in the tree. `primitives::io` already had
+/// the 0.3.1 transport; this file simply never adopted it.
 fn emit_stdout_text(chunk: &mut Chunk, line: u32) {
     let text_slot = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
-    host::emit(chunk, "wasi:cli/stdout", "get-stdout", 0, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
-    host::emit(
-        chunk,
-        "wasi:io/streams",
-        "[method]output-stream.blocking-write-and-flush",
-        2,
-        line,
-    );
+    io::emit_write_stdout_slot(chunk, text_slot, line);
 }
 
 /// `System.out` evaluates to the `PrintStream` identity sentinel, and every
