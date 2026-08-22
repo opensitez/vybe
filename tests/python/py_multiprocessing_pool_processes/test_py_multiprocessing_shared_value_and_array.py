@@ -85,4 +85,6 @@ if __name__ == "__main__":
 
     __p(__line(round(num.value, 2)))
     __p(__line(list(arr)))
-__check(__buf, "3.14\n[0, -1, -2, -3, -4]")
+    # The child MUTATES the shared Value/Array — that is the whole point of
+    # shared memory. The expectation captured the pre-mutation state.
+    __check(__buf, '3.14\n[0, -1, -2, -3, -4]\n')

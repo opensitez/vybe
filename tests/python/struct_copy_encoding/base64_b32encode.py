@@ -70,4 +70,4 @@ def __check(got, want):
 
 import base64
 __p(__line(base64.b32encode(b'hi').decode()))
-__check(__buf, "JZXQ====")
+__check(__buf, 'NBUQ====\n')

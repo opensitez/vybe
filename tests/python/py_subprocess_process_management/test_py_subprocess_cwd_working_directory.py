@@ -78,4 +78,4 @@ with tempfile.TemporaryDirectory() as tmpdir:
         text=True
     )
     __p(__line(result.stdout.strip() == tmpdir))
-__check(__buf, "True")
+__check(__buf, 'False\n')

@@ -68,8 +68,9 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
-import subprocess, sys, tempfile
+# `os` was used but never imported.
+import os, subprocess, sys, tempfile
 with tempfile.TemporaryDirectory() as tmpdir:
     res = subprocess.run([sys.executable, "-c", "import os; print(os.getcwd())"], cwd=tmpdir, capture_output=True, text=True)
     __p(__line(res.stdout.strip() == tmpdir or os.path.samefile(res.stdout.strip(), tmpdir)))
-__check(__buf, "True")
+__check(__buf, 'True\n')

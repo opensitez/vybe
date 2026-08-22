@@ -69,4 +69,4 @@ def __check(got, want):
         raise Exception("assertion failed")
 
 __p(__line(pow(7, 5, 11)))
-__check(__buf, "2")
+__check(__buf, '10\n')

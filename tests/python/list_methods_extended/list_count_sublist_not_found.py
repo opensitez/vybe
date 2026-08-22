@@ -68,5 +68,7 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
-__p(__line([[1], [2]].count([1])))
+# `[1] == [1]`, so counting `[1]` FINDS it. A sublist that is genuinely
+# absent is what 'not found' means.
+__p(__line([[1], [2]].count([3])))
 __check(__buf, "0")

@@ -76,4 +76,4 @@ __p(__line(encrypted))
 
 decrypted = codecs.decode(encrypted, "rot_13")
 __p(__line(decrypted))
-__check(__buf, "Uuryyb Jbeyq 2024\nHello World 2024")
+__check(__buf, 'Uryyb Jbeyq 2024\nHello World 2024\n')

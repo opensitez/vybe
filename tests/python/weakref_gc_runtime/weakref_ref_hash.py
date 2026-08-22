@@ -70,6 +70,10 @@ def __check(got, want):
 
 import weakref
 class C: pass
-r = weakref.ref(C())
+# The referent must be kept ALIVE: `weakref.proxy(C())` takes a TEMPORARY
+# with no strong reference, so it is collected immediately and every use
+# raises "weakly-referenced object no longer exists".
+_alive = C()
+r = weakref.ref(_alive)
 __p(__line(isinstance(hash(r), int)))
 __check(__buf, "True")

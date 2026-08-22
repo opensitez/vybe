@@ -67,6 +67,13 @@ def __check(got, want):
     if got != want and got != want + "\n":
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
+# PRIVATE NAME MANGLING: inside a class body CPython rewrites any `__name`
+# identifier to `_ClassName__name`, so the harness's `__p`/`__line` are
+# unreachable there. A SINGLE leading underscore is not mangled, so these
+# aliases are what a class body calls.
+_p = __p
+_line = __line
+
 
 class Restricted:
     def __setattr__(self, key, value):
@@ -75,16 +82,16 @@ class Restricted:
         self.__dict__[key] = value
 
     def __delattr__(self, key):
-        __p(__line(f"Deleting {key}"))
+        _p(_line(f"Deleting {key}"))
         object.__delattr__(self, key)
 
 r = Restricted()
 r.name = "Public"
-__p(__line(r.name))
+_p(_line(r.name))
 del r.name
 
 try:
     r._secret = 123
 except AttributeError as e:
-    __p(__line(e))
+    _p(_line(e))
 __check(__buf, "Public\nDeleting name\nPrivate key not allowed")

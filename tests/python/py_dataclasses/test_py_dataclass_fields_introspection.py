@@ -68,7 +68,7 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, MISSING
 
 @dataclass
 class Model:
@@ -76,5 +76,7 @@ class Model:
     score: float = 0.0
 
 for f in fields(Model):
-    __p(__line(f.name, f.type, f.default))
-__check(__buf, "name <class 'str'> MISSING\nscore <class 'float'> 0.0")
+    # `f.default` for a field with no default is a `_MISSING_TYPE` singleton
+    # whose repr embeds a MEMORY ADDRESS. Assert the reproducible fact.
+    __p(__line(f.name, f.type, f.default is not MISSING))
+__check(__buf, "name <class 'str'> False\nscore <class 'float'> True\n")

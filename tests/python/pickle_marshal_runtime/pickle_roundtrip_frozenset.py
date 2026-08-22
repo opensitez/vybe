@@ -69,5 +69,8 @@ def __check(got, want):
         raise Exception("assertion failed")
 
 import pickle
-__p(__line(pickle.loads(pickle.dumps(frozenset({1, 2})))))
-__check(__buf, "frozenset({1, 2})")
+# Set iteration order is NOT guaranteed in Python (randomized per process
+# for strings), so a set's REPR is not a legitimate expectation — it would
+# pin CPython's internal hash layout. `sorted()` states the CONTENTS.
+__p(__line(sorted(pickle.loads(pickle.dumps(frozenset({1, 2}))))))
+__check(__buf, '[1, 2]\n')

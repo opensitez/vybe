@@ -1,6 +1,5 @@
 # vybe-test: python/function_signatures_extended/inspect_bound_arguments
 # origin: languages/python/tests/python/test_function_signatures_extended.rs
-# vybe-test-mode: compile
 
 import inspect
 def f(a, b=1): pass

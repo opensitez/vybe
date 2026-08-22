@@ -77,4 +77,4 @@ for n in data:
     if (sq := math.sqrt(n)) > 3 if n >= 0 else False:
         results.append(sq)
 __p(__line(results))
-__check(__buf, "[3.0, 4.0, 5.0]")
+__check(__buf, '[4.0, 5.0]\n')

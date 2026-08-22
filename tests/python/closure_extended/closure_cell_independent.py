@@ -73,4 +73,4 @@ def make():
 a = make()
 b = make()
 __p(__line(a(), b()))
-__check(__buf, "1\n1")
+__check(__buf, '1 1\n')

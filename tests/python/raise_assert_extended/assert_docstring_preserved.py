@@ -70,6 +70,7 @@ def __check(got, want):
 
 def f():
   '''doc'''
- assert True
+  # EXTRACTION DAMAGE: `assert` was dedented out of the function body.
+  assert True
 __p(__line(f.__doc__))
-__check(__buf, "doc")
+__check(__buf, 'doc\n')

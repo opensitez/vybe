@@ -1,6 +1,8 @@
 # vybe-test: python/basics/unary
 # origin: languages/python/tests/python/test_basics.rs
-# vybe-test-mode: compile
+a = 1
+b = 1
+c = 1
 
 x = -a
 y = +b

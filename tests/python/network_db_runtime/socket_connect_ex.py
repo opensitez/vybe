@@ -1,6 +1,5 @@
 # vybe-test: python/network_db_runtime/socket_connect_ex
 # origin: languages/python/tests/python/test_network_db_runtime.rs
-# vybe-test-mode: compile
 
 import socket
 s = socket.socket()

@@ -79,4 +79,4 @@ with contextlib.ExitStack() as stack:
     __p(__line("to stdout"))
 
 __p(__line(buf1.getvalue().strip()))
-__check(__buf, "to stdout")
+__check(__buf, 'to stdout\n\n')

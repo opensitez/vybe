@@ -69,5 +69,7 @@ def __check(got, want):
         raise Exception("assertion failed")
 
 a = [10, 20, 30]
-__p(__line(next(a, 0)))
+# `next()` requires an ITERATOR, not merely an iterable — a list raises
+# TypeError. `iter(...)` is what makes this valid Python.
+__p(__line(next(iter(a), 0)))
 __check(__buf, "10")

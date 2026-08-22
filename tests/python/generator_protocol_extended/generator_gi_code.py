@@ -70,5 +70,5 @@ def __check(got, want):
 
 def g():
  yield 1
-__p(__line(g().__code__.co_name))
-__check(__buf, "g")
+__p(__line(g().gi_code.co_name))
+__check(__buf, 'g\n')

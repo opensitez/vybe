@@ -72,4 +72,4 @@ import pydoc
 s = "<object at 0x7f9a1b2c3d4e>"
 stripped = pydoc.stripid(s)
 __p(__line(stripped))
-__check(__buf, "<object at 0x...>")
+__check(__buf, '<object>\n')

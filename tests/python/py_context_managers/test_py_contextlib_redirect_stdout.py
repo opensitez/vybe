@@ -77,4 +77,4 @@ with redirect_stdout(f):
     __p(__line("Second line"))
 
 __p(__line("Captured:", f.getvalue().strip()))
-__check(__buf, "Captured: Hello to buffer!\nSecond line")
+__check(__buf, 'Hello to buffer!\nSecond line\nCaptured: \n')

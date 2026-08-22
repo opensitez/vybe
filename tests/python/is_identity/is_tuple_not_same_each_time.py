@@ -68,5 +68,8 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
-__p(__line((1,) is (1,)))
+# Two tuple LITERALS are folded to one constant by the compiler, so
+# `(1,) is (1,)` is True (and raises a SyntaxWarning). Building them
+# separately is what 'not the same object' means.
+__p(__line(tuple([1]) is tuple([1])))
 __check(__buf, "False")

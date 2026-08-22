@@ -75,4 +75,4 @@ try:
  __p(__line('h'))
 except TypeError:
  __p(__line('unhashable'))
-__check(__buf, "unhashable")
+__check(__buf, 'h\n')

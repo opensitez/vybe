@@ -1,5 +1,8 @@
 # vybe-test: python/basics/bitwise
 # origin: languages/python/tests/python/test_basics.rs
-# vybe-test-mode: compile
+a = 1
+b = 1
+c = 1
+d = 1
 
 x = a & b | c ^ d

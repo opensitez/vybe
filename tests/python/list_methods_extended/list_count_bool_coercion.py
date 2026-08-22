@@ -69,4 +69,4 @@ def __check(got, want):
         raise Exception("assertion failed")
 
 __p(__line([True, 1, False, 0].count(True)))
-__check(__buf, "1")
+__check(__buf, '2\n')

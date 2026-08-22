@@ -70,4 +70,4 @@ def __check(got, want):
 
 import re
 __p(__line(re.findall(r'\d+(?!\d)', '123 45')))
-__check(__buf, "['3', '5']")
+__check(__buf, "['123', '45']\n")

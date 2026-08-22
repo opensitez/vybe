@@ -1,6 +1,5 @@
 # vybe-test: python/programs/bubble_sort
 # origin: languages/python/tests/python/test_programs.rs
-# vybe-test-mode: compile
 
 def bubble_sort(lst):
     n = len(lst)

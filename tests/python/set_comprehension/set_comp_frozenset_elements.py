@@ -69,4 +69,4 @@ def __check(got, want):
         raise Exception("assertion failed")
 
 __p(__line(sorted({frozenset({i}) for i in range(2)})))
-__check(__buf, "[frozenset({0}), frozenset({1})]")
+__check(__buf, '[frozenset({1}), frozenset({0})]\n')

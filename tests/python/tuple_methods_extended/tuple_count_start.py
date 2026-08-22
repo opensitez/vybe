@@ -68,5 +68,10 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
-__p(__line((1, 2, 1, 1).count(1, 1)))
-__check(__buf, "2")
+# `tuple.count()` takes EXACTLY one argument — there is no `start`.
+try:
+ (1, 2, 1, 1).count(1, 1)
+ __p(__line('accepted'))
+except TypeError:
+ __p(__line('TypeError'))
+__check(__buf, 'TypeError\n')

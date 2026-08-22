@@ -72,4 +72,9 @@ import configparser
 c = configparser.ConfigParser()
 c.read_string('[s]\na = hello\nb = ${a}\n')
 __p(__line(c['s']['b']))
-__check(__buf, "hello")
+# GROUND TRUTH (`python3`): '${a}'. `ConfigParser` defaults to
+# `BasicInterpolation`, whose syntax is `%(a)s` — `${a}` is
+# `ExtendedInterpolation`, which this parser was not constructed with, so the
+# value is stored and returned VERBATIM. The expectation used to read "hello",
+# which no CPython configuration produces for this input.
+__check(__buf, "${a}")

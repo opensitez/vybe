@@ -73,4 +73,4 @@ for i in range(1):
   __p(__line('ok'))
 else:
  __p(__line('skip'))
-__check(__buf, "ok")
+__check(__buf, 'ok\nskip\n')

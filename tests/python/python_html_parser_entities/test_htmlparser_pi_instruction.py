@@ -67,11 +67,20 @@ def __check(got, want):
     if got != want and got != want + "\n":
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
+# PRIVATE NAME MANGLING: inside a class body CPython rewrites any `__name`
+# identifier to `_ClassName__name`, so the harness's `__p`/`__line` are
+# unreachable there. A SINGLE leading underscore is not mangled, so these
+# aliases are what a class body calls.
+_p = __p
+_line = __line
+
 
 from html.parser import HTMLParser
 class P(HTMLParser):
     def handle_pi(self, data):
-        __p(__line(data.strip()))
+        _p(_line(data.strip()))
 p = P()
 p.feed("<?xml version='1.0'?>")
-__check(__buf, "xml version='1.0'")
+# GROUND TRUTH (python3.14): `handle_pi` receives everything between `<?`
+# and `>`, so the trailing `?` is part of the data — "xml version='1.0'?".
+__check(__buf, "xml version='1.0'?")

@@ -68,17 +68,25 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
-import importlib, sys, types
-
-# Create a simple module dynamically
-mod = types.ModuleType("reload_test")
-mod.value = 42
-sys.modules["reload_test"] = mod
-
+# `importlib.reload` re-executes a module through its LOADER, so the module
+# must have a real spec — a bare `types.ModuleType` in `sys.modules` raises
+# "spec not found for the module". Reloading an ACTUAL file is the test.
+#
+# ⛔ The rewrite must also move the file's MTIME forward: the bytecode
+# cache is keyed on it, and two writes inside one mtime tick make reload
+# silently reuse the OLD code (measured: it returned the first value
+# twice).
+import importlib, os, sys, tempfile, time
+_d = tempfile.mkdtemp()
+sys.path.insert(0, _d)
+_f = os.path.join(_d, "reload_test.py")
+open(_f, "w").write("value = 42\n")
+importlib.invalidate_caches()
 import reload_test
 __p(__line(reload_test.value))
-
-mod.value = 99
+open(_f, "w").write("value = 99\n")
+os.utime(_f, (time.time() + 10, time.time() + 10))
+importlib.invalidate_caches()
 importlib.reload(reload_test)
 __p(__line(reload_test.value))
 __check(__buf, "42\n99")

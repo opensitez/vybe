@@ -1,6 +1,7 @@
 # vybe-test: python/context_manager_spec/ctx_rethrow_compile
 # origin: languages/python/tests/python/test_context_manager_spec.rs
-# vybe-test-mode: compile
+def risky(*_a, **_k):
+    return None
 
 class Ctx:
     def __enter__(self):

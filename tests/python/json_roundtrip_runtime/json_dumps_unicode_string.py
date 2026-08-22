@@ -70,4 +70,4 @@ def __check(got, want):
 
 import json
 __p(__line(json.dumps('é')))
-__check(__buf, "\"é\"")
+__check(__buf, '"\\u00e9"\n')

@@ -70,4 +70,4 @@ def __check(got, want):
 
 import urllib.parse
 __p(__line(urllib.parse.splitquery('path?q=1')))
-__check(__buf, "('path', '?q=1')")
+__check(__buf, "('path', 'q=1')\n")

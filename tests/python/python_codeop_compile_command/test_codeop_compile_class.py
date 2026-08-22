@@ -68,10 +68,12 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
+# `Compile.__call__(source, filename, symbol)` — `filename` is required and
+# positional.
 import codeop
 compiler = codeop.Compile()
-code = compiler("val = 100", symbol="exec")
+code = compiler("val = 100", "<string>", "exec")
 env = {}
 exec(code, env)
 __p(__line(env['val']))
-__check(__buf, "100")
+__check(__buf, '100\n')

@@ -69,6 +69,11 @@ def __check(got, want):
         raise Exception("assertion failed")
 
 from collections import Counter
-c = Counter.fromkeys(['a', 'b', 'a'], v=2)
-__p(__line(c['a'], c['b']))
-__check(__buf, "2 2")
+# GROUND TRUTH: `Counter.fromkeys()` is explicitly UNDEFINED and raises
+# NotImplementedError — the docs direct you to `Counter(iterable)`.
+try:
+ Counter.fromkeys(['a', 'b', 'a'], v=2)
+ __p(__line('built'))
+except NotImplementedError:
+ __p(__line('NotImplementedError'))
+__check(__buf, 'NotImplementedError\n')

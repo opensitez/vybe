@@ -71,4 +71,4 @@ def __check(got, want):
 data = [1, -2, 3, -4, 5]
 results = [y for x in data if (y := x ** 2) > 4]
 __p(__line(results))
-__check(__buf, "[4, 9, 16, 25]")
+__check(__buf, '[9, 16, 25]\n')

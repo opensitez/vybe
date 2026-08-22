@@ -71,4 +71,4 @@ def __check(got, want):
 d = {}
 __p(__line(d.setdefault('k', 5)))
 __p(__line(d['k']))
-__check(__buf, "5")
+__check(__buf, '5\n5\n')

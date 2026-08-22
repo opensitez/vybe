@@ -71,4 +71,4 @@ def __check(got, want):
 import re
 m = re.search('(ab)+', 'xxababc')
 __p(__line(m.group(0)))
-__check(__buf, "ab")
+__check(__buf, 'abab\n')

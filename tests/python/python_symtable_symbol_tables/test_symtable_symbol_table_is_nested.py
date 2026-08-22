@@ -69,13 +69,22 @@ def __check(got, want):
         raise Exception("assertion failed")
 
 import symtable
+# Python 3.14 (PEP 649, deferred annotations) inserts an `__annotate__`
+# scope, so `get_children()[0]` is no longer the function. Select the child
+# by TYPE — version-independent.
+def _fn_child(table, name=None):
+    for _c in table.get_children():
+        if _c.get_type() == 'function' and (name is None or _c.get_name() == name):
+            return _c
+    return table.get_children()[0]
+
 code = """
 def outer():
     def inner(): pass
 """
 st = symtable.symtable(code, "<string>", "exec")
-outer_st = st.get_children()[0]
-inner_st = outer_st.get_children()[0]
+outer_st = _fn_child(st)
+inner_st = _fn_child(outer_st)
 __p(__line(outer_st.is_nested()))
 __p(__line(inner_st.is_nested()))
 __check(__buf, "False\nTrue")

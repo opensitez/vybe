@@ -1,5 +1,5 @@
 # vybe-test: python/builtins/dict_get
 # origin: languages/python/tests/python/test_builtins.rs
-# vybe-test-mode: compile
+d = {'key': 1, 'a': 1}
 
 x = d.get('key')

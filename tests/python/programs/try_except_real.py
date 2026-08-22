@@ -1,6 +1,5 @@
 # vybe-test: python/programs/try_except_real
 # origin: languages/python/tests/python/test_programs.rs
-# vybe-test-mode: compile
 
 def safe_divide(a, b):
     try:

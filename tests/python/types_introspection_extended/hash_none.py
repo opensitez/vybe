@@ -69,4 +69,4 @@ def __check(got, want):
         raise Exception("assertion failed")
 
 __p(__line(hash(None)))
-__check(__buf, "0")
+__check(__buf, '4238894112\n')

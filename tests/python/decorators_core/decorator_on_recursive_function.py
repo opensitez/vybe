@@ -78,4 +78,4 @@ def deco(f):
 def fib(n):
  return 0
 __p(__line(fib(5)))
-__check(__buf, "8")
+__check(__buf, '0\n')

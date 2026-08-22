@@ -74,4 +74,6 @@ try:
  __p(__line('ok'))
 except (TypeError, pickle.PicklingError):
  __p(__line('err'))
-__check(__buf, "err")
+# GROUND TRUTH (python3.14): `range` IS picklable — it round-trips cleanly.
+# The name asserted the opposite.
+__check(__buf, "ok")

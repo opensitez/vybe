@@ -68,6 +68,7 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
+# The function is `urldefrag`; there is no `urllib.parse.defrag`.
 import urllib.parse
-__p(__line(urllib.parse.defrag('http://x#y')[0]))
+__p(__line(urllib.parse.urldefrag('http://x#y')[0]))
 __check(__buf, "http://x")

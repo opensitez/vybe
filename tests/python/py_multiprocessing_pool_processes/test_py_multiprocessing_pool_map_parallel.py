@@ -77,4 +77,4 @@ if __name__ == "__main__":
     with multiprocessing.Pool(processes=2) as pool:
         results = pool.map(square, [1, 2, 3, 4])
     __p(__line(results))
-__check(__buf, "[1, 4, 9, 16]")
+    __check(__buf, "[1, 4, 9, 16]")

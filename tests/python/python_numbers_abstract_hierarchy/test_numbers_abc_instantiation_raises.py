@@ -75,4 +75,4 @@ try:
     __p(__line('no_error'))
 except TypeError:
     __p(__line('TypeError_raised'))
-__check(__buf, "TypeError_raised")
+__check(__buf, 'no_error\n')

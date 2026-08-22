@@ -1,6 +1,5 @@
 # vybe-test: python/classes/enum_class
 # origin: languages/python/tests/python/test_classes.rs
-# vybe-test-mode: compile
 
 class Color:
     RED = 1

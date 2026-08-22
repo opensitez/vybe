@@ -68,7 +68,8 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
+# `random.sample` requires a SEQUENCE — sets were rejected in 3.11.
 import random
-r = random.sample({1, 2, 3, 4}, 2)
+r = random.sample(sorted({1, 2, 3, 4}), 2)
 __p(__line(len(r)))
-__check(__buf, "2")
+__check(__buf, '2\n')

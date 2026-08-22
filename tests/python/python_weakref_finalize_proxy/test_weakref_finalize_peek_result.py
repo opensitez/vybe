@@ -75,5 +75,8 @@ class Thing: pass
 t = Thing()
 fin = weakref.finalize(t, int, "123")
 res = fin.peek()
-__p(__line(res))
-__check(__buf, "('123', {})")
+# `peek()` returns (obj, func, args, kwargs). Its repr embeds the object's
+# MEMORY ADDRESS, which is not reproducible — assert the reproducible
+# parts instead.
+__p(__line(res[0] is t, res[1] is int, res[2], res[3]))
+__check(__buf, "True True ('123',) {}")

@@ -72,10 +72,11 @@ x = 1
 match x:
  case 2:
   __p(__line('no'))
-try:
- match x:
-  case 2:
-   pass
-except:
- __p(__line('unmatched'))
+# GROUND TRUTH (python3.14): a `match` with no matching case does NOT raise —
+# it simply falls through. The name's premise was wrong.
+_hit = False
+match x:
+ case 2:
+  _hit = True
+__p(__line('unmatched' if not _hit else 'matched'))
 __check(__buf, "unmatched")

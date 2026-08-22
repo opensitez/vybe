@@ -68,6 +68,8 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
+# `ssl.match_hostname` was REMOVED in Python 3.12 (hostname checking moved
+# into SSLContext.check_hostname).
 import ssl
-__p(__line(callable(ssl.match_hostname)))
-__check(__buf, "True")
+__p(__line(hasattr(ssl, 'match_hostname')))
+__check(__buf, 'False\n')

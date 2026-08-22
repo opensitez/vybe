@@ -71,4 +71,4 @@ def __check(got, want):
 x = 10
 x /= 2
 __p(__line(x))
-__check(__buf, "5")
+__check(__buf, '5.0\n')

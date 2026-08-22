@@ -70,4 +70,4 @@ def __check(got, want):
 
 from http import HTTPStatus
 __p(__line(str(HTTPStatus.OK)))
-__check(__buf, "HTTPStatus.OK")
+__check(__buf, '200\n')

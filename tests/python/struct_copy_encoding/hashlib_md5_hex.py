@@ -70,4 +70,4 @@ def __check(got, want):
 
 import hashlib
 __p(__line(hashlib.md5(b'hi').hexdigest()))
-__check(__buf, "49f68a5c8493ec2c0bf93ee5bf693b2")
+__check(__buf, '49f68a5c8493ec2c0bf489821c21fc3b\n')

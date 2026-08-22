@@ -71,4 +71,4 @@ def __check(got, want):
 import string
 __p(__line(string.ascii_letters[:5]))
 __p(__line(string.ascii_letters[-5:]))
-__check(__buf, "abcde\nvwxyz")
+__check(__buf, 'abcde\nVWXYZ\n')

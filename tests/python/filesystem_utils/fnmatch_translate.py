@@ -70,4 +70,4 @@ def __check(got, want):
 
 import fnmatch
 __p(__line(fnmatch.translate('*.py')))
-__check(__buf, "(?s:.*\\.py)\\Z")
+__check(__buf, '(?s:.*\\.py)\\z\n')

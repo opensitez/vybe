@@ -70,4 +70,4 @@ def __check(got, want):
 
 import cmath
 __p(__line(cmath.acos(1)))
-__check(__buf, "0j")
+__check(__buf, '-0j\n')

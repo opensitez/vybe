@@ -69,12 +69,13 @@ def __check(got, want):
         raise Exception("assertion failed")
 
 log = []
+# EXTRACTION DAMAGE: an outer bare `try:` with no except/finally was wrapped
+# around the real one. The inner try/except/finally is the test.
 try:
- try:
-  raise ValueError
- except:
-  log.append('ex')
- finally:
-  log.append('fin')
+ raise ValueError
+except:
+ log.append('ex')
+finally:
+ log.append('fin')
 __p(__line(log))
 __check(__buf, "['ex', 'fin']")

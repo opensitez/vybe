@@ -79,5 +79,7 @@ class MyClass:
 
 m = MyClass()
 __p(__line(m.value))
-__p(__line(MyClass.value))  # returns the descriptor itself when accessed on class
-__check(__buf, "42\n<__main__.LazyDescriptor object at ...")
+# Accessed on the CLASS the descriptor returns itself — but its repr embeds a
+# MEMORY ADDRESS, so assert the type rather than the repr.
+__p(__line(type(MyClass.value).__name__))
+__check(__buf, '42\nLazyDescriptor\n')

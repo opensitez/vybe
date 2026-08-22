@@ -74,10 +74,13 @@ class CM:
  def __exit__(self, *a):
   return True
 matched = False
+# EXTRACTION DAMAGE: `try/else` with no `except` is a SyntaxError. `__exit__`
+# returning True SUPPRESSES the exception, so the handler never runs and
+# `matched` stays False — which is what the expectation asserts.
 try:
  with CM():
   raise ValueError()
-else:
+except Exception:
  matched = True
 __p(__line(matched))
 __check(__buf, "False")

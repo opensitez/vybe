@@ -69,7 +69,10 @@ def __check(got, want):
         raise Exception("assertion failed")
 
 def f():
+ # EXTRACTION DAMAGE: `else` requires an `except` before it.
  try:
+  pass
+ except Exception:
   pass
  else:
   return 5

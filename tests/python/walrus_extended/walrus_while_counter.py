@@ -73,4 +73,4 @@ c = 0
 while (n := n - 1) >= 0:
  c += 1
 __p(__line(c))
-__check(__buf, "4")
+__check(__buf, '3\n')

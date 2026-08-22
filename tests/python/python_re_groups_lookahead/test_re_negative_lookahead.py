@@ -71,4 +71,4 @@ def __check(got, want):
 import re
 result = re.findall(r'\d+(?! dollars)', '100 dollars 200 euros')
 __p(__line(result))
-__check(__buf, "['200']")
+__check(__buf, "['10', '200']\n")

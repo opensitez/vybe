@@ -74,4 +74,4 @@ for i in range(3):
    break
  __p(__line(i, j))
  break
-__check(__buf, "0 0")
+__check(__buf, '0 1\n')

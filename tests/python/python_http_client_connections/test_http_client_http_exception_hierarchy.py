@@ -68,7 +68,9 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
+# `http.client.HTMLElement` does not exist — `BadStatusLine` derives from
+# `HTTPException`.
 import http.client
-__p(__line(issubclass(http.client.BadStatusLine, http.client.HTMLElement)))
+__p(__line(issubclass(http.client.BadStatusLine, http.client.HTTPException)))
 __p(__line(issubclass(http.client.CannotSendRequest, http.client.HTTPException)))
-__check(__buf, "True\nTrue")
+__check(__buf, 'True\nTrue\n')

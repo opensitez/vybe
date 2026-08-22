@@ -71,7 +71,18 @@ def __check(got, want):
 import sched
 
 vtime = 0
-s = sched.scheduler(lambda: vtime, lambda d: None)
+
+def _time():
+    return vtime
+
+def _delay(d):
+    # A no-op delayfunc with a CONSTANT timefunc never reaches the deadline,
+    # so `run()` spins forever. Advancing the virtual clock is the point of
+    # supplying one.
+    global vtime
+    vtime += d
+
+s = sched.scheduler(_time, _delay)
 executed = []
 
 e1 = s.enter(10, 1, executed.append, (1,))

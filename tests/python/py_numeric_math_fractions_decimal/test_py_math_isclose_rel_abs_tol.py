@@ -74,4 +74,4 @@ a = 100.0
 b = 100.00001
 __p(__line(math.isclose(a, b, rel_tol=1e-5)))
 __p(__line(math.isclose(a, b, rel_tol=1e-7)))
-__check(__buf, "True\nFalse")
+__check(__buf, 'True\nTrue\n')

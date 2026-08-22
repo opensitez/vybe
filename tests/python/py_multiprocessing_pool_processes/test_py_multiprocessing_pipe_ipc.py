@@ -83,4 +83,4 @@ if __name__ == "__main__":
     reply = parent_conn.recv()
     p.join()
     __p(__line(reply))
-__check(__buf, "ACK: ping")
+    __check(__buf, "ACK: ping")

@@ -78,4 +78,4 @@ with open(f.name, "r+b") as fh:
     __p(__line(mm[:10]))
     mm.close()
 os.unlink(f.name)
-__check(__buf, "b'12345 12345'")
+__check(__buf, "b'1234512345'\n")

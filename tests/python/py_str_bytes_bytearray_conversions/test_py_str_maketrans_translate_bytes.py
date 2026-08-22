@@ -71,4 +71,4 @@ def __check(got, want):
 table = bytes.maketrans(b"abc", b"XYZ")
 b = b"alphabet"
 __p(__line(b.translate(table).decode()))
-__check(__buf, "XYZhAbet")
+__check(__buf, 'XlphXYet\n')

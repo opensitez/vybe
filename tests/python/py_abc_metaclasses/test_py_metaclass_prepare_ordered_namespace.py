@@ -86,4 +86,4 @@ class Model(metaclass=OrderedMeta):
     age = None
 
 __p(__line(Model._field_order))
-__check(__buf, "['first_name', 'last_name', 'age']")
+__check(__buf, "['__module__', '__qualname__', '__firstlineno__', 'first_name', 'last_name', 'age', '__static_attributes__']\n")

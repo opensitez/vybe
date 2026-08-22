@@ -69,4 +69,4 @@ def __check(got, want):
         raise Exception("assertion failed")
 
 __p(__line(sorted(i for i in [2, 1, 2])))
-__check(__buf, "[1, 2]")
+__check(__buf, '[1, 2, 2]\n')

@@ -78,4 +78,4 @@ class Bits(IntFlag):
 b = Bits.B0 | Bits.B2
 __p(__line(int(b)))
 __p(__line(b & Bits.B0))
-__check(__buf, "5\nBits.B0")
+__check(__buf, '5\n1\n')

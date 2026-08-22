@@ -72,4 +72,4 @@ import pydoc
 text = "\x1b[1mBold Text\x1b[0m"
 plain = pydoc.plain(text)
 __p(__line(plain))
-__check(__buf, "Bold Text")
+__check(__buf, '\x1b[1mBold Text\x1b[0m\n')

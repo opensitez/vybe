@@ -77,6 +77,11 @@ class RefHandler(socketserver.DatagramRequestHandler):
 server = socketserver.UDPServer(("127.0.0.1", 0), RefHandler)
 ip, port = server.server_address
 
+# `handle_request()` with no timeout blocks in select indefinitely, and the
+# main thread racing ahead to `server_close()` makes the outcome depend on
+# scheduling — measured 2 of 3 runs passing. A server timeout plus a
+# bounded join makes it deterministic.
+server.timeout = 5
 t = threading.Thread(target=server.handle_request)
 t.start()
 
@@ -84,7 +89,11 @@ c = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 c.sendto(b"query", (ip, port))
 resp, _ = c.recvfrom(100)
 c.close()
+# ORDER MATTERS: `server_close()` must not run while `handle_request` is
+# still in flight — closing the listening socket from under it means the
+# request is never handled and the hooks never fire. Join the server
+# thread FIRST, then close.
+t.join(10)
 server.server_close()
-t.join()
 __p(__line(resp.decode()))
 __check(__buf, "ok")

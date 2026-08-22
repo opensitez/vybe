@@ -67,12 +67,18 @@ def __check(got, want):
     if got != want and got != want + "\n":
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
+# PRIVATE NAME MANGLING: inside a class body CPython rewrites `__name` to
+# `_ClassName__name`, so the harness's `__p`/`__line` are unreachable
+# there. A SINGLE leading underscore is not mangled.
+_p = __p
+_line = __line
+
 
 class CM:
  def __enter__(self):
   return self
  def __exit__(self, exc, val, tb):
-  __p(__line(exc.__name__ if exc else 'none'))
+  _p(_line(exc.__name__ if exc else 'none'))
   return True
 with CM():
  raise TypeError('t')

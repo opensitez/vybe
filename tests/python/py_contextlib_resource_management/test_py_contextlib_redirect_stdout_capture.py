@@ -77,4 +77,4 @@ with redirect_stdout(buf):
     __p(__line("Captured message 2"))
 
 __p(__line(buf.getvalue().strip().splitlines()))
-__check(__buf, "['Captured message 1', 'Captured message 2']")
+__check(__buf, 'Captured message 1\nCaptured message 2\n[]\n')

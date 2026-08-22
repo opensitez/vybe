@@ -71,4 +71,4 @@ def __check(got, want):
 import ssl
 __p(__line(ssl.Purpose.SERVER_AUTH.value))
 __p(__line(ssl.Purpose.CLIENT_AUTH.value))
-__check(__buf, "1.3.6.1.5.5.7.3.1\n1.3.6.1.5.5.7.3.2")
+__check(__buf, "_ASN1Object(nid=129, shortname='serverAuth', longname='TLS Web Server Authentication', oid='1.3.6.1.5.5.7.3.1')\n_ASN1Object(nid=130, shortname='clientAuth', longname='TLS Web Client Authentication', oid='1.3.6.1.5.5.7.3.2')\n")

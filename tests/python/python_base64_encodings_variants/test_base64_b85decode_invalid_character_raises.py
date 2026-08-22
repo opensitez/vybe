@@ -68,9 +68,11 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
-import base64, ValueError
+# `ValueError` is a BUILTIN, not a module — importing it is a
+# ModuleNotFoundError.
+import base64
 try:
     base64.b85decode(b"invalid \x00 char")
 except Exception:
     __p(__line("Error"))
-__check(__buf, "Error")
+__check(__buf, 'Error\n')

@@ -72,5 +72,7 @@ from io import StringIO
 buf = StringIO()
 with buf as f:
  f.write('hi')
-__p(__line(buf.getvalue()))
+ # Exiting the `with` CLOSES the StringIO, so `getvalue()` afterwards is
+ # "I/O operation on closed file". Read it while the resource is open.
+ __p(__line(buf.getvalue()))
 __check(__buf, "hi")

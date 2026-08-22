@@ -68,7 +68,13 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
+# GROUND TRUTH (python3.14): `+=` is NOT an alias for `|=` on sets —
+# "unsupported operand type(s) for +=: 'set' and 'set'". The union operator
+# is `|=`; asserting the TypeError is the real behaviour.
 s = {1}
-s += {2}
-__p(__line(sorted(s)))
-__check(__buf, "")
+try:
+ s += {2}
+ __p(__line('no error'))
+except TypeError:
+ __p(__line('TypeError'))
+__check(__buf, 'TypeError\n')

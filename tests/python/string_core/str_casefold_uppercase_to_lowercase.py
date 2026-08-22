@@ -69,4 +69,4 @@ def __check(got, want):
         raise Exception("assertion failed")
 
 __p(__line('Straße'.casefold()))
-__check(__buf, "straße")
+__check(__buf, 'strasse\n')

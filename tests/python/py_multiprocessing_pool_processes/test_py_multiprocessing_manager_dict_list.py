@@ -85,4 +85,5 @@ if __name__ == "__main__":
 
         __p(__line(d["status"]))
         __p(__line(list(l)))
-__check(__buf, "ok\n[42]")
+    # The child DOES mutate the managed dict/list — that is the point.
+    __check(__buf, 'ok\n[42]\n')

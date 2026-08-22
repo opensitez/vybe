@@ -70,7 +70,12 @@ def __check(got, want):
 
 import gettext, io
 
+# `GNUTranslations()` built with no fp has no `_catalog` until one is
+# installed; create it explicitly before populating.
+# A `GNUTranslations` built with no file has neither `_catalog` nor the
+# `plural` function `ngettext` needs — a real .mo install supplies both.
 gt = gettext.GNUTranslations()
+gt.plural = lambda n: int(n != 1)
 gt._catalog = {
     "Hello": "Bonjour",
     ("Apple", 1): "Pomme",
@@ -78,4 +83,4 @@ gt._catalog = {
 }
 __p(__line(gt.gettext("Hello")))
 __p(__line(gt.gettext("Missing")))
-__check(__buf, "Bonjour\nMissing")
+__check(__buf, 'Bonjour\nMissing\n')

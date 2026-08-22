@@ -76,4 +76,4 @@ class HugeVirtualObject:
 
 obj = HugeVirtualObject()
 __p(__line(sys.getsizeof(obj)))
-__check(__buf, "1048576")
+__check(__buf, '1048608\n')

@@ -68,7 +68,8 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
-import abc
+# `isabstract` lives in `inspect`, not `abc`.
+import inspect
 from abc import ABC, abstractmethod
 
 class Base(ABC):
@@ -76,11 +77,11 @@ class Base(ABC):
     def do(self):
         pass
 
-__p(__line(abc.isabstract(Base)))
+__p(__line(inspect.isabstract(Base)))
 
 class Concrete(Base):
     def do(self):
         return 1
 
-__p(__line(abc.isabstract(Concrete)))
-__check(__buf, "True\nFalse")
+__p(__line(inspect.isabstract(Concrete)))
+__check(__buf, 'True\nFalse\n')

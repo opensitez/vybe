@@ -72,4 +72,4 @@ import inspect, math
 
 __p(__line(inspect.getmodule(math.sqrt).__name__))
 __p(__line(inspect.getmodule(len)))  # builtin - might be None
-__check(__buf, "math\nNone")
+__check(__buf, "math\n<module 'builtins' (built-in)>\n")

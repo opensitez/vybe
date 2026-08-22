@@ -1,6 +1,5 @@
 # vybe-test: python/exception_flow_spec/return_in_except_compile
 # origin: languages/python/tests/python/test_exception_flow_spec.rs
-# vybe-test-mode: compile
 
 def f():
     try:

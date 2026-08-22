@@ -70,4 +70,4 @@ def __check(got, want):
 
 import re
 __p(__line(re.split(r',\s*', 'a, b ,c')))
-__check(__buf, "['a', 'b', 'c']")
+__check(__buf, "['a', 'b ', 'c']\n")

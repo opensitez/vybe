@@ -75,7 +75,8 @@ def logger(func):
     return wrapper
 
 @logger
-fn greet(name):
+# EXTRACTION DAMAGE: the generator emitted Rust's `fn` instead of `def`.
+def greet(name):
     return f"Hello {name}"
 
 __p(__line(greet("Alice")))

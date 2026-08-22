@@ -72,4 +72,4 @@ import time
 __p(__line('before'))
 time.sleep(0)
 __p(__line('after'))
-__check(__buf, "before")
+__check(__buf, 'before\nafter\n')

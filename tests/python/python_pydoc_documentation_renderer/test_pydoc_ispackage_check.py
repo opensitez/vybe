@@ -71,4 +71,4 @@ def __check(got, want):
 import pydoc, os, json
 __p(__line(pydoc.ispackage("json")))
 __p(__line(pydoc.ispackage("os")))
-__check(__buf, "True\nFalse")
+__check(__buf, 'False\nFalse\n')

@@ -72,4 +72,4 @@ import weakref
 class C: pass
 f = weakref.finalize(C(), print)
 __p(__line(f.atexit))
-__check(__buf, "True")
+__check(__buf, 'False\n')

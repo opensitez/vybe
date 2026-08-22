@@ -75,4 +75,4 @@ __p(__line(round(math.e, 5)))
 __p(__line(round(math.tau, 5)))
 __p(__line(math.inf > 1e308))
 __p(__line(math.nan != math.nan))  # NaN != NaN
-__check(__buf, "3.14159\n2.71828\n6.28318\nTrue\nTrue")
+__check(__buf, '3.14159\n2.71828\n6.28319\nTrue\nTrue\n')

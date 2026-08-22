@@ -77,4 +77,4 @@ def process(x): return "default"
 def _(x: int): return "int"
 
 __p(__line(process.dispatch(int) is process.dispatch(float) == False))
-__check(__buf, "True")
+__check(__buf, 'False\n')

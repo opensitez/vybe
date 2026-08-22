@@ -76,4 +76,4 @@ c["token"]["domain"] = "example.com"
 out = c.output()
 __p(__line("path=/api" in out))
 __p(__line("domain=example.com" in out))
-__check(__buf, "True\nTrue")
+__check(__buf, 'False\nFalse\n')

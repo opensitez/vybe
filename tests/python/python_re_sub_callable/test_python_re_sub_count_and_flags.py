@@ -71,4 +71,4 @@ def __check(got, want):
 import re
 __p(__line(re.sub(r'a', 'A', 'banana', count=2)))
 __p(__line(re.sub('x', 'y', 'XX', flags=re.IGNORECASE)))
-__check(__buf, "bAnAna\nYY")
+__check(__buf, 'bAnAna\nyy\n')

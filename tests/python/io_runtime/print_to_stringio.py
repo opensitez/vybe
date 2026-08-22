@@ -71,6 +71,7 @@ def __check(got, want):
 import io
 import sys
 buf = io.StringIO()
-__p(__line('hi', file=buf))
+# `__line` composes a string; the redirect belongs to `print`.
+print('hi', file=buf)
 __p(__line(buf.getvalue().strip()))
-__check(__buf, "hi")
+__check(__buf, 'hi\n')

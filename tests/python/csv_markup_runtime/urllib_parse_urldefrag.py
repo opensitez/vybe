@@ -70,4 +70,4 @@ def __check(got, want):
 
 import urllib.parse
 __p(__line(urllib.parse.urldefrag('http://x#f')[1]))
-__check(__buf, "#f")
+__check(__buf, 'f\n')

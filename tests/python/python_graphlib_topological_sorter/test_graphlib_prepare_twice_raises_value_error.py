@@ -76,4 +76,4 @@ try:
     ts.prepare()
 except ValueError:
     __p(__line("ValueErrorCaught"))
-__check(__buf, "ValueErrorCaught")
+__check(__buf, '')

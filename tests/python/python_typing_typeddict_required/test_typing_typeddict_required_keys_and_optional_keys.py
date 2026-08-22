@@ -76,4 +76,4 @@ class Config(TypedDict):
 
 __p(__line(set(Config.__required_keys__) == {"host", "port"}))
 __p(__line(len(Config.__optional_keys__) == 0))
-__check(__buf, "True")
+__check(__buf, 'True\nTrue\n')

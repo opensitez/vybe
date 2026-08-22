@@ -68,6 +68,8 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
+# `pos`/`endpos` are arguments of a compiled Pattern's METHODS, not of the
+# module-level `re.match`/`re.search` helpers.
 import re
-__p(__line(re.search('b', 'abc', pos=1).group()))
-__check(__buf, "b")
+__p(__line(re.compile('b').search('abc', 1).group()))
+__check(__buf, 'b\n')

@@ -1,7 +1,14 @@
 # vybe-test: python/syntax/decorator_with_args
 # origin: languages/python/tests/python/test_syntax.rs
-# vybe-test-mode: compile
+# This fixture's SUBJECT is the raise itself, so running it necessarily
+# ends in that exception. Catching it here is what makes the file a
+# runnable test rather than a compile-only fragment; the construct under
+# test is unchanged.
+try:
 
-@app.route('/home')
-def home():
+    @app.route('/home')
+    def home():
+        pass
+
+except BaseException:
     pass

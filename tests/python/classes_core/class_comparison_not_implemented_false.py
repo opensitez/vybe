@@ -72,5 +72,11 @@ class A:
  pass
 class B:
  pass
-__p(__line(A() < B()))
-__check(__buf, "False")
+# Both `__lt__` implementations return NotImplemented, so Python raises
+# TypeError rather than falling back to False.
+try:
+ A() < B()
+ __p(__line('compared'))
+except TypeError:
+ __p(__line('TypeError'))
+__check(__buf, 'TypeError\n')

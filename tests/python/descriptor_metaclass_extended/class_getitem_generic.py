@@ -72,4 +72,4 @@ class C:
  def __class_getitem__(cls, item):
   return (cls, item)
 __p(__line(C[int]))
-__check(__buf, "(<class 'C'>, <class 'int'>)")
+__check(__buf, "(<class '__main__.C'>, <class 'int'>)\n")

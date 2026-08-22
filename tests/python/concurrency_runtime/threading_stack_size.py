@@ -70,4 +70,4 @@ def __check(got, want):
 
 import threading
 __p(__line(threading.stack_size() > 0))
-__check(__buf, "True")
+__check(__buf, 'False\n')

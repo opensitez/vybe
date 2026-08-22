@@ -70,10 +70,13 @@ def __check(got, want):
 
 import glob, tempfile, os, shutil
 d = tempfile.mkdtemp()
-sub = os.path.join(d, "sub")
-os.makedirs(sub)
-open(os.path.join(sub, "deep.txt"), "w").close()
-# Without recursive=True, ** is treated as literal dir name
+# Without `recursive=True`, `**` behaves like a SINGLE `*` — it still matches
+# ONE level down, so a file at `sub/deep.txt` IS found. The claim "not
+# recursive" is about DEEPER levels, so the file must be two levels down for
+# the assertion to mean anything.
+deeper = os.path.join(d, "sub", "deeper")
+os.makedirs(deeper)
+open(os.path.join(deeper, "deepest.txt"), "w").close()
 results = glob.glob(os.path.join(d, "**", "*.txt"), recursive=False)
 __p(__line(len(results) == 0))
 shutil.rmtree(d)

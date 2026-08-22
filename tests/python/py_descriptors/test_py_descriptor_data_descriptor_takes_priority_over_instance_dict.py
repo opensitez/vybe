@@ -67,6 +67,13 @@ def __check(got, want):
     if got != want and got != want + "\n":
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
+# PRIVATE NAME MANGLING: inside a class body CPython rewrites any `__name`
+# identifier to `_ClassName__name`, so the harness's `__p`/`__line` are
+# unreachable there. A SINGLE leading underscore is not mangled, so these
+# aliases are what a class body calls.
+_p = __p
+_line = __line
+
 
 class DataDesc:
     def __get__(self, obj, objtype=None):
@@ -75,7 +82,7 @@ class DataDesc:
         return "from_data_descriptor"
 
     def __set__(self, obj, value):
-        __p(__line(f"set called with {value}"))
+        _p(_line(f"set called with {value}"))
         obj.__dict__['_hidden'] = value
 
 class MyClass:
@@ -84,5 +91,5 @@ class MyClass:
 m = MyClass()
 m.attr = "test"
 m.__dict__['attr'] = "direct_dict"  # try to shadow
-__p(__line(m.attr))  # data descriptor still wins!
+_p(_line(m.attr))  # data descriptor still wins!
 __check(__buf, "set called with test\nfrom_data_descriptor")

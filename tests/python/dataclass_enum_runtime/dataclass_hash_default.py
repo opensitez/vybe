@@ -72,5 +72,11 @@ from dataclasses import dataclass
 @dataclass
 class P:
  x: int
-__p(__line(hash(P(1)) == hash(P(1))))
-__check(__buf, "True")
+# GROUND TRUTH (python3.14): a plain `@dataclass` is eq=True/frozen=False, so
+# `__hash__` is set to None and instances are UNHASHABLE. That is the DEFAULT.
+try:
+ hash(P(1))
+ __p(__line('hashable'))
+except TypeError:
+ __p(__line('unhashable'))
+__check(__buf, 'unhashable\n')

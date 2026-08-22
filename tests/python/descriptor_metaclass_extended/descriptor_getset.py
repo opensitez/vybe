@@ -1,6 +1,5 @@
 # vybe-test: python/descriptor_metaclass_extended/descriptor_getset
 # origin: languages/python/tests/python/test_descriptor_metaclass_extended.rs
-# vybe-test-mode: compile
 
 class D:
  def __get__(self, obj, owner): return 1

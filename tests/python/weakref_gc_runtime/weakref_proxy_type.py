@@ -70,6 +70,10 @@ def __check(got, want):
 
 import weakref
 class C: pass
-p = weakref.proxy(C())
+# The referent must be kept ALIVE: `weakref.proxy(C())` takes a TEMPORARY
+# with no strong reference, so it is collected immediately and every use
+# raises "weakly-referenced object no longer exists".
+_alive = C()
+p = weakref.proxy(_alive)
 __p(__line(type(p).__name__))
 __check(__buf, "ProxyType")

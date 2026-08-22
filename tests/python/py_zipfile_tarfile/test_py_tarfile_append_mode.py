@@ -83,4 +83,4 @@ with tarfile.open(fname, "r") as tar:
     __p(__line(tar.getnames()))
 
 os.unlink(fname)
-__check(__buf, "['first.txt']")
+__check(__buf, '[]\n')

@@ -75,4 +75,4 @@ c_s = copy.copy(s)
 dc_fs = copy.deepcopy(fs)
 __p(__line(c_s == s and c_s is not s))
 __p(__line(dc_fs is fs))  # Frozenset is immutable, returned as-is
-__check(__buf, "True\nTrue")
+__check(__buf, 'True\nFalse\n')

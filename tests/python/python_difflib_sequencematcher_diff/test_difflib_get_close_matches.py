@@ -72,4 +72,4 @@ import difflib
 words = ["apple", "banana", "apricot", "avocado"]
 matches = difflib.get_close_matches("appl", words)
 __p(__line(matches))
-__check(__buf, "['apple', 'apricot']")
+__check(__buf, "['apple']\n")

@@ -68,5 +68,7 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
+# `flags` was never defined.
+flags = 0
 __p(__line(flags | 0b100))
 __check(__buf, "4")

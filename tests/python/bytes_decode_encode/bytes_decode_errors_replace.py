@@ -69,4 +69,4 @@ def __check(got, want):
         raise Exception("assertion failed")
 
 __p(__line(b'\xff'.decode('ascii', errors='replace')))
-__check(__buf, "")
+__check(__buf, '�\n')

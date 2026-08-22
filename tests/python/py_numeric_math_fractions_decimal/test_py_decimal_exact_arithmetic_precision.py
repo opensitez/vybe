@@ -74,4 +74,4 @@ getcontext().prec = 6
 d1 = Decimal("1.234567")
 d2 = Decimal("2.345678")
 __p(__line(d1 + d2))
-__check(__buf, "3.58025")
+__check(__buf, '3.58024\n')

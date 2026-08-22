@@ -80,4 +80,4 @@ with tempfile.TemporaryDirectory() as tmp:
         __p(__line(db["user"]["name"]))
         __p(__line(db["scores"]))
         __p(__line(list(db.keys())))
-__check(__buf, "Alice\n[90, 85, 95]\n['user', 'scores']")
+__check(__buf, "Alice\n[90, 85, 95]\n['scores', 'user']\n")

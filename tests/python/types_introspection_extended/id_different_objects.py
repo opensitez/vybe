@@ -68,5 +68,9 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
-__p(__line(id([]) == id([])))
+# `id([]) == id([])` is True: the first temporary is FREED and its address
+# reused before the second is built. Two LIVE objects is what the name means.
+_a = []
+_b = []
+__p(__line(id(_a) == id(_b)))
 __check(__buf, "False")

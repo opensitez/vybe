@@ -68,5 +68,7 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
-__p(__line(next([], 'x')))
+# `next()` requires an ITERATOR, not merely an iterable — a list raises
+# TypeError. `iter(...)` is what makes this valid Python.
+__p(__line(next(iter([]), 'x')))
 __check(__buf, "x")

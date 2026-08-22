@@ -71,6 +71,8 @@ def __check(got, want):
 class Counter:
  def __init__(self):
   self.n = 0
- c = Counter()
+# EXTRACTION DAMAGE: the instantiation was INDENTED into the class body, where
+# `Counter` does not exist yet.
+c = Counter()
 __p(__line(c.n))
 __check(__buf, "0")

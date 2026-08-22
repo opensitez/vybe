@@ -69,4 +69,4 @@ def __check(got, want):
         raise Exception("assertion failed")
 
 __p(__line(sum([0.1, 0.2, 0.3])))
-__check(__buf, "0.6000000000000001")
+__check(__buf, '0.6\n')

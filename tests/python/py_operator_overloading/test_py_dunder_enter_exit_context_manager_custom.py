@@ -67,23 +67,30 @@ def __check(got, want):
     if got != want and got != want + "\n":
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
+# PRIVATE NAME MANGLING: inside a class body CPython rewrites any `__name`
+# identifier to `_ClassName__name`, so the harness's `__p`/`__line` are
+# unreachable there. A SINGLE leading underscore is not mangled, so these
+# aliases are what a class body calls.
+_p = __p
+_line = __line
+
 
 class Transaction:
     def __enter__(self):
-        __p(__line("BEGIN"))
+        _p(_line("BEGIN"))
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if exc_type is not None:
-            __p(__line("ROLLBACK"))
+            _p(_line("ROLLBACK"))
             return True  # suppress
-        __p(__line("COMMIT"))
+        _p(_line("COMMIT"))
         return False
 
 with Transaction():
-    __p(__line("WORK"))
+    _p(_line("WORK"))
 
 with Transaction():
-    __p(__line("WORK FAIL"))
+    _p(_line("WORK FAIL"))
     raise ValueError("error")
 __check(__buf, "BEGIN\nWORK\nCOMMIT\nBEGIN\nWORK FAIL\nROLLBACK")

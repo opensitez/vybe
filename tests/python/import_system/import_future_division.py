@@ -11,6 +11,8 @@
 # and tells you nothing — 1,692 of testecma's 2,158 failures say exactly that.
 
 
+from __future__ import division
+
 def __line(*args):
     """One printed line, exactly as `print` composes it: str() each argument,
     joined by a single space.
@@ -68,6 +70,5 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
-from __future__ import division
 __p(__line(3 / 2))
 __check(__buf, "1.5")

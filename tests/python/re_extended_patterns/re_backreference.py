@@ -70,4 +70,4 @@ def __check(got, want):
 
 import re
 __p(__line(re.findall(r'(.)\1', 'aabcc')))
-__check(__buf, "['aa', 'cc']")
+__check(__buf, "['a', 'c']\n")

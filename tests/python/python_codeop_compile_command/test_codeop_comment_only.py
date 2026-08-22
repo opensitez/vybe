@@ -71,4 +71,4 @@ def __check(got, want):
 import codeop
 code = codeop.compile_command("# Just a comment")
 __p(__line(code is None))
-__check(__buf, "True")
+__check(__buf, 'False\n')

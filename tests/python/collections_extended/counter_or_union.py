@@ -70,4 +70,4 @@ def __check(got, want):
 
 from collections import Counter
 __p(__line(Counter(a=1) | Counter(b=2)))
-__check(__buf, "Counter({'a': 1, 'b': 2})")
+__check(__buf, "Counter({'b': 2, 'a': 1})\n")

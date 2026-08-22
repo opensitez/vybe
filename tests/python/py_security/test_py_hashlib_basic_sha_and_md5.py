@@ -77,4 +77,4 @@ __p(__line(len(h.hexdigest())))  # hex chars = 2 * bytes
 
 md5 = hashlib.md5(b"test")
 __p(__line(len(md5.hexdigest())))
-__check(__buf, "b94d27b9934d3e08a52e52d7da7dabfac484efe04294e576f3c521f5dc8cdf2\n32\n64\n32")
+__check(__buf, 'b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9\n32\n64\n32\n')

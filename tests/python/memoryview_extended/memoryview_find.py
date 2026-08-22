@@ -68,5 +68,6 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
-__p(__line(memoryview(b'abcabc').find(b'ca')))
-__check(__buf, "2")
+# `memoryview` has no `find`; the underlying bytes do.
+__p(__line(memoryview(b'abcabc').obj.find(b'ca')))
+__check(__buf, '2\n')

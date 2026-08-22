@@ -76,6 +76,7 @@ def deco(f):
 @deco
 def g():
   '''orig'''
- return 0
+  # EXTRACTION DAMAGE: `return` was dedented out of the function body.
+  return 0
 __p(__line(callable(g)))
 __check(__buf, "True")

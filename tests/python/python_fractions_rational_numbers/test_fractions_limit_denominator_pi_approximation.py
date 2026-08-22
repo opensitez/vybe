@@ -74,4 +74,4 @@ import math
 f_pi = Fraction(math.pi)
 appr = f_pi.limit_denominator(100)
 __p(__line(appr))
-__check(__buf, "22/7")
+__check(__buf, '311/99\n')

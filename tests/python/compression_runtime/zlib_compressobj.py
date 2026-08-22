@@ -71,4 +71,4 @@ def __check(got, want):
 import zlib
 c = zlib.compressobj()
 __p(__line(c.compress(b'hi') + c.flush()))
-__check(__buf, "b'hi'")
+__check(__buf, "b'x\\x9c\\xcb\\xc8\\x04\\x00\\x01;\\x00\\xd2'\n")

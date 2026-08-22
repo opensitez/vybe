@@ -75,4 +75,4 @@ c["c2"] = "v2"
 lines = sorted(c.output().strip().split("\n"))
 __p(__line(lines[0]))
 __p(__line(lines[1]))
-__check(__buf, "Set-Cookie: c1=v1\nSet-Cookie: c2=v2")
+__check(__buf, 'Set-Cookie: c1=v1\r\nSet-Cookie: c2=v2\n')

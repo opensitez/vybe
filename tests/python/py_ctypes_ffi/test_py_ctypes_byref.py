@@ -68,9 +68,10 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
+# `ctypes._CData` is not a public attribute; `byref` returns a CArgObject.
 import ctypes
 
 val = ctypes.c_int(42)
 ref = ctypes.byref(val)
-__p(__line(isinstance(ref, ctypes._CData) or type(ref).__name__ == "CArgObject"))
-__check(__buf, "True")
+__p(__line(type(ref).__name__ == "CArgObject"))
+__check(__buf, 'True\n')

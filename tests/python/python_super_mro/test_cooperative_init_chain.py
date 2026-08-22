@@ -67,20 +67,24 @@ def __check(got, want):
     if got != want and got != want + "\n":
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
+# PRIVATE NAME MANGLING: `__p` inside a class body becomes `_Class__p`.
+_p = __p
+_line = __line
+
 
 class Mixin1:
     def __init__(self, **kwargs):
-        __p(__line("Mixin1"))
+        _p(_line("Mixin1"))
         super().__init__(**kwargs)
 
 class Mixin2:
     def __init__(self, **kwargs):
-        __p(__line("Mixin2"))
+        _p(_line("Mixin2"))
         super().__init__(**kwargs)
 
 class Base:
     def __init__(self, **kwargs):
-        __p(__line("Base"))
+        _p(_line("Base"))
 
 class MyClass(Mixin1, Mixin2, Base):
     def __init__(self):

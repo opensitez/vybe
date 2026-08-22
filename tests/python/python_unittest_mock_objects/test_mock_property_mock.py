@@ -68,7 +68,8 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
-from unittest.mock import MagicMock, PropertyMock
+# `patch` was used but never imported.
+from unittest.mock import MagicMock, PropertyMock, patch
 
 class Foo:
     @property
@@ -80,4 +81,4 @@ with patch.object(Foo, "val", new_callable=PropertyMock) as mock_prop:
     __p(__line(foo.val))
 
 __p(__line(foo.val))
-__check(__buf, "500\n100")
+__check(__buf, '500\n100\n')

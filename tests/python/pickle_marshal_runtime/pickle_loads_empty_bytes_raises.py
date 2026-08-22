@@ -72,6 +72,7 @@ import pickle
 try:
  pickle.loads(b'')
  __p(__line('ok'))
-except pickle.UnpicklingError:
+# `loads(b'')` raises EOFError, which is NOT a subclass of UnpicklingError.
+except EOFError:
  __p(__line('err'))
-__check(__buf, "err")
+__check(__buf, 'err\n')

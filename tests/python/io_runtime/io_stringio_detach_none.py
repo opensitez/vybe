@@ -70,5 +70,10 @@ def __check(got, want):
 
 import io
 s = io.StringIO()
-__p(__line(s.detach() is None))
-__check(__buf, "True")
+# StringIO does not support `detach()` — it raises UnsupportedOperation.
+try:
+ s.detach()
+ __p(__line('detached'))
+except io.UnsupportedOperation:
+ __p(__line('unsupported'))
+__check(__buf, 'unsupported\n')

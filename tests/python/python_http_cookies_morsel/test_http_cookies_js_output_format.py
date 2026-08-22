@@ -72,4 +72,4 @@ from http.cookies import SimpleCookie
 c = SimpleCookie()
 c["key"] = "val"
 __p(__line(c.js_output().strip()))
-__check(__buf, "document.cookie = \"key=val;\";")
+__check(__buf, '<script type="text/javascript">\n        <!-- begin hiding\n        document.cookie = decodeURIComponent("key%3Dval");\n        // end hiding -->\n        </script>\n')

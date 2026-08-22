@@ -71,4 +71,4 @@ def __check(got, want):
 import io
 b = io.BytesIO(b'ab')
 __p(__line(list(b)))
-__check(__buf, "[97, 98]")
+__check(__buf, "[b'ab']\n")

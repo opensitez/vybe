@@ -1,6 +1,7 @@
 # vybe-test: python/exception_flow_spec/except_tuple_custom_compile
 # origin: languages/python/tests/python/test_exception_flow_spec.rs
-# vybe-test-mode: compile
+def risky(*_a, **_k):
+    return None
 
 class A(Exception): pass
 class B(Exception): pass

@@ -68,5 +68,11 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
-__p(__line([1, 2, 3, 4][1:...]))
-__check(__buf, "[2, 3, 4]")
+# `...` is valid slice SYNTAX but a list rejects it — "slice indices must be
+# integers or None". (numpy accepts it; the builtin sequence does not.)
+try:
+ [1, 2, 3, 4][1:...]
+ __p(__line('accepted'))
+except TypeError:
+ __p(__line('TypeError'))
+__check(__buf, 'TypeError\n')

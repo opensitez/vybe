@@ -1,6 +1,5 @@
 # vybe-test: python/classes_extended/dunder_len
 # origin: languages/python/tests/python/test_classes_extended.rs
-# vybe-test-mode: compile
 
 class Bag:
     def __init__(self):

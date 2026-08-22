@@ -67,6 +67,13 @@ def __check(got, want):
     if got != want and got != want + "\n":
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
+# PRIVATE NAME MANGLING: inside a class body CPython rewrites any `__name`
+# identifier to `_ClassName__name`, so the harness's `__p`/`__line` are
+# unreachable there. A SINGLE leading underscore is not mangled, so these
+# aliases are what a class body calls.
+_p = __p
+_line = __line
+
 
 class Temperature:
     def __init__(self, celsius=0.0):
@@ -84,13 +91,13 @@ class Temperature:
 
     @celsius.deleter
     def celsius(self):
-        __p(__line("Resetting temperature"))
+        _p(_line("Resetting temperature"))
         self._celsius = 0.0
 
 t = Temperature(25.0)
-__p(__line(t.celsius))
+_p(_line(t.celsius))
 t.celsius = 100.0
-__p(__line(t.celsius))
+_p(_line(t.celsius))
 del t.celsius
-__p(__line(t.celsius))
+_p(_line(t.celsius))
 __check(__buf, "25.0\n100.0\nResetting temperature\n0.0")

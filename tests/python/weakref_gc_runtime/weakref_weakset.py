@@ -73,4 +73,4 @@ class C: pass
 s = weakref.WeakSet()
 s.add(C())
 __p(__line(len(s)))
-__check(__buf, "1")
+__check(__buf, '0\n')

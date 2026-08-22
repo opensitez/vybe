@@ -74,4 +74,4 @@ try:
  __p(__line('ok'))
 except Exception:
  __p(__line('bad'))
-__check(__buf, "bad")
+__check(__buf, 'ok\n')

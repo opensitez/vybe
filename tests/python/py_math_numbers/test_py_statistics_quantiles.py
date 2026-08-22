@@ -75,4 +75,4 @@ q = statistics.quantiles(data, n=4)
 __p(__line(q[0]))   # Q1
 __p(__line(q[1]))   # median
 __p(__line(q[2]))   # Q3
-__check(__buf, "25.75\n50.5\n75.25")
+__check(__buf, '25.25\n50.5\n75.75\n')

@@ -77,4 +77,4 @@ if __name__ == "__main__":
     with multiprocessing.Pool(2) as pool:
         res = pool.starmap(add, [(1, 2), (3, 4), (5, 6)])
     __p(__line(res))
-__check(__buf, "[3, 7, 11]")
+    __check(__buf, "[3, 7, 11]")

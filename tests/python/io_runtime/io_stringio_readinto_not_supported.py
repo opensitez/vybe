@@ -71,4 +71,6 @@ def __check(got, want):
 import io
 s = io.StringIO('ab')
 __p(__line(hasattr(s, 'readinto')))
-__check(__buf, "True")
+# StringIO has NO `readinto` (it is a TEXT stream) — which is what the name
+# says. The expectation contradicted it.
+__check(__buf, "False")

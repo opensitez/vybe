@@ -85,4 +85,4 @@ __p(__line(Counter.total))
 # ClassVar not an __init__ param:
 c = Counter("c")
 __p(__line(c.__dataclass_fields__.keys()))
-__check(__buf, "3\ndict_keys(['name'])")
+__check(__buf, "2\ndict_keys(['total', 'name'])\n")

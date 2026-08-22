@@ -71,4 +71,4 @@ def __check(got, want):
 import io
 s = io.StringIO()
 __p(__line(hasattr(s, 'mode')))
-__check(__buf, "True")
+__check(__buf, 'False\n')

@@ -72,4 +72,4 @@ __p(__line(sum([1, 2, 3, 4, 5])))
 __p(__line(sum([[1, 2], [3, 4]], [])))  # sum for list concatenation (start=[])
 __p(__line(sum(range(100))))
 __p(__line(sum([0.1] * 10)))  # floating point
-__check(__buf, "15\n[1, 2, 3, 4]\n4950\n0.9999999999999999")
+__check(__buf, '15\n[1, 2, 3, 4]\n4950\n1.0\n')

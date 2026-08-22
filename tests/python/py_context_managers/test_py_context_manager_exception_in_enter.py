@@ -67,17 +67,24 @@ def __check(got, want):
     if got != want and got != want + "\n":
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
+# PRIVATE NAME MANGLING: inside a class body CPython rewrites any `__name`
+# identifier to `_ClassName__name`, so the harness's `__p`/`__line` are
+# unreachable there. A SINGLE leading underscore is not mangled, so these
+# aliases are what a class body calls.
+_p = __p
+_line = __line
+
 
 class FailingEnter:
     def __enter__(self):
-        __p(__line("enter failed"))
+        _p(_line("enter failed"))
         raise RuntimeError("Enter error")
     def __exit__(self, *args):
-        __p(__line("exit should NOT be called"))
+        _p(_line("exit should NOT be called"))
 
 try:
     with FailingEnter():
-        __p(__line("inside block"))
+        _p(_line("inside block"))
 except RuntimeError as e:
-    __p(__line(f"Caught: {e}"))
+    _p(_line(f"Caught: {e}"))
 __check(__buf, "enter failed\nCaught: Enter error")

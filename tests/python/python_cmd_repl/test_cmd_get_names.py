@@ -76,7 +76,8 @@ class MyCli(cmd.Cmd):
     def do_bar(self, arg):
         pass
 
-names = MyCli.get_names()
+# `get_names` is an INSTANCE method — it introspects `self`.
+names = MyCli().get_names()
 __p(__line('do_foo' in names))
 __p(__line('do_bar' in names))
-__check(__buf, "True\nTrue")
+__check(__buf, 'True\nTrue\n')

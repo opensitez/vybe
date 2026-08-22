@@ -68,9 +68,11 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
+# With `delimiter = '!'` the placeholder is `!name`; the trailing `!` was a
+# second, invalid delimiter.
 import string
 class MyTemplate(string.Template):
     delimiter = "!"
-t = MyTemplate("Hello !name!")
+t = MyTemplate("Hello !name")
 __p(__line(t.substitute(name="World")))
-__check(__buf, "Hello World!")
+__check(__buf, 'Hello World\n')

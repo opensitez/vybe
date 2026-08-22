@@ -70,4 +70,4 @@ def __check(got, want):
 
 vals = [3, 1, 2]
 __p(__line((m := min(vals)) + max(vals)))
-__check(__buf, "5")
+__check(__buf, '4\n')

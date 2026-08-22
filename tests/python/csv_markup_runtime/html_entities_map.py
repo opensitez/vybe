@@ -70,4 +70,4 @@ def __check(got, want):
 
 import html
 __p(__line('&lt;' in html.entities.html5))
-__check(__buf, "True")
+__check(__buf, 'False\n')

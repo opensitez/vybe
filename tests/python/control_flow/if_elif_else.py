@@ -1,6 +1,6 @@
 # vybe-test: python/control_flow/if_elif_else
 # origin: languages/python/tests/python/test_control_flow.rs
-# vybe-test-mode: compile
+a = 1
 
 if a:
     pass

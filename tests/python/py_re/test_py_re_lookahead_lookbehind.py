@@ -81,4 +81,4 @@ __p(__line(non_usd))
 # Positive lookbehind
 usd_values = re.findall(r'(?<=\$)\d+', "$100 and $200")
 __p(__line(usd_values))
-__check(__buf, "['10', '30']\n['20', '30']\n['100', '200']")
+__check(__buf, "['10', '30']\n['1', '20', '3']\n['100', '200']\n")

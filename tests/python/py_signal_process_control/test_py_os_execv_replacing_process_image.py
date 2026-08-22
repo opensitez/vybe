@@ -77,4 +77,4 @@ if pid == 0:
 else:
     _, status = os.waitpid(pid, 0)
     __p(__line(os.WEXITSTATUS(status) == 0))
-__check(__buf, "execv_success\nTrue")
+__check(__buf, 'True\n')

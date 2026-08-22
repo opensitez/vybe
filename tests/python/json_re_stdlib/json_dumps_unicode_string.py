@@ -70,4 +70,4 @@ def __check(got, want):
 
 import json
 __p(__line(json.dumps('café')))
-__check(__buf, "\"café\"")
+__check(__buf, '"caf\\u00e9"\n')

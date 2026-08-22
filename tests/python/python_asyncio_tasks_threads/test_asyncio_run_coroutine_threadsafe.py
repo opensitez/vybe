@@ -76,7 +76,9 @@ async def add(a, b):
 def thread_worker(loop, fut):
     coro = add(15, 27)
     f = asyncio.run_coroutine_threadsafe(coro, loop)
-    fut.set_result(f.result())
+    # An asyncio Future is NOT thread-safe — resolving it directly from
+    # another thread never wakes the loop and `await fut` hangs forever.
+    loop.call_soon_threadsafe(fut.set_result, f.result())
 
 async def fn():
     loop = asyncio.get_running_loop()

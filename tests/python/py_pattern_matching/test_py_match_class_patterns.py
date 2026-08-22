@@ -94,4 +94,4 @@ def describe_shape(shape):
 __p(__line(describe_shape(Point(0, 0))))
 __p(__line(describe_shape(Point(3, 4))))
 __p(__line(describe_shape(Circle(Point(0, 0), 5))))
-__check(__buf, "origin\npoint at (3.0, 4.0)\ncentered circle r=5.0")
+__check(__buf, 'origin\npoint at (3, 4)\ncentered circle r=5\n')

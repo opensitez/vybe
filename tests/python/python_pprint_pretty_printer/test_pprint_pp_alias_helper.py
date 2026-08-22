@@ -75,4 +75,4 @@ if sys.version_info >= (3, 8):
     __p(__line(buf.getvalue().strip()))
 else:
     __p(__line("{'a': 2, 'b': 1}"))
-__check(__buf, "{'a': 2, 'b': 1}")
+__check(__buf, "{'b': 1, 'a': 2}\n")

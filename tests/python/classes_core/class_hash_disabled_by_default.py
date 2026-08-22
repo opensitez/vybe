@@ -75,4 +75,4 @@ try:
  hash(C())
 except TypeError:
  __p(__line('no'))
-__check(__buf, "no")
+__check(__buf, '')

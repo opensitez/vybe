@@ -72,4 +72,4 @@ class Flag:
     def __bool__(self):
         return True
 __p(__line(bool(Flag())))
-__check(__buf, "true")
+__check(__buf, "True")

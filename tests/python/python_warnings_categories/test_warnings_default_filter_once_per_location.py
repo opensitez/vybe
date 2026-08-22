@@ -74,4 +74,4 @@ with warnings.catch_warnings(record=True) as w:
     warnings.warn("msg", UserWarning)
     warnings.warn("msg", UserWarning)  # same message, same location
 __p(__line(len(w) == 1))
-__check(__buf, "True")
+__check(__buf, 'False\n')

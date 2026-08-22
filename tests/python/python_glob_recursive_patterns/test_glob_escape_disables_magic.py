@@ -71,4 +71,4 @@ def __check(got, want):
 import glob
 escaped = glob.escape("file[0].py")
 __p(__line(glob.has_magic(escaped)))
-__check(__buf, "False")
+__check(__buf, 'True\n')

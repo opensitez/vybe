@@ -70,4 +70,4 @@ def __check(got, want):
 
 import os
 __p(__line(hasattr(os.path, 'ischar')))
-__check(__buf, "True")
+__check(__buf, 'False\n')

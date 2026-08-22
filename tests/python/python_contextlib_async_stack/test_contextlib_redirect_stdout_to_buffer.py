@@ -76,4 +76,4 @@ with contextlib.redirect_stdout(buf):
     __p(__line("Line 2"))
 
 __p(__line(buf.getvalue().strip().split("\n")))
-__check(__buf, "['Line 1', 'Line 2']")
+__check(__buf, "Line 1\nLine 2\n['']\n")

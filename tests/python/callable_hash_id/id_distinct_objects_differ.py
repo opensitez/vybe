@@ -68,5 +68,11 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
-__p(__line(id([]) == id([])))
+# The test's POINT is that distinct objects have distinct ids. Written with
+# two temporaries it asserted the opposite: CPython frees the first `[]`
+# before building the second, so the address is REUSED and
+# `id([]) == id([])` is True. Two LIVE objects are what the name means.
+_a = []
+_b = []
+__p(__line(id(_a) == id(_b)))
 __check(__buf, "False")

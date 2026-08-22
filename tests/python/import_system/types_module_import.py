@@ -70,4 +70,4 @@ def __check(got, want):
 
 import types
 __p(__line(types.ModuleType.__name__))
-__check(__buf, "type")
+__check(__buf, 'module\n')

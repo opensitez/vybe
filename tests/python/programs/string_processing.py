@@ -1,6 +1,5 @@
 # vybe-test: python/programs/string_processing
 # origin: languages/python/tests/python/test_programs.rs
-# vybe-test-mode: compile
 
 words = "hello world foo bar"
 parts = words.split()

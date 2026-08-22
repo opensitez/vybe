@@ -69,4 +69,4 @@ def __check(got, want):
         raise Exception("assertion failed")
 
 __p(__line(memoryview(b'abc').suboffsets))
-__check(__buf, "None")
+__check(__buf, '()\n')

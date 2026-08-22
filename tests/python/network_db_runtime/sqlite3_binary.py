@@ -69,5 +69,7 @@ def __check(got, want):
         raise Exception("assertion failed")
 
 import sqlite3
-__p(__line(sqlite3.Binary(b'hi')))
-__check(__buf, "b'hi'")
+# `sqlite3.Binary` is `memoryview`, whose repr embeds a MEMORY ADDRESS.
+# Assert the reproducible content instead.
+__p(__line(bytes(sqlite3.Binary(b'hi'))))
+__check(__buf, "b'hi'\n")

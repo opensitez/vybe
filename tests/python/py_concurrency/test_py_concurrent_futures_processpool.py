@@ -73,8 +73,12 @@ from concurrent.futures import ProcessPoolExecutor
 def square(n):
     return n * n
 
-with ProcessPoolExecutor(max_workers=2) as ex:
-    results = list(ex.map(square, range(5)))
+# `ProcessPoolExecutor` uses SPAWN here: every child re-imports this module
+# and re-runs its top level. Without the guard the children re-enter the pool
+# and run `__check` on an empty buffer — which is what broke the pool.
+if __name__ == "__main__":
+    with ProcessPoolExecutor(max_workers=2) as ex:
+        results = list(ex.map(square, range(5)))
 
-__p(__line(results))
-__check(__buf, "[0, 1, 4, 9, 16]")
+    __p(__line(results))
+    __check(__buf, "[0, 1, 4, 9, 16]")

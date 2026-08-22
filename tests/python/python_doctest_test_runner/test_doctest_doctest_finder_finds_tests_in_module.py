@@ -78,6 +78,12 @@ def foo():
     """
     return "bar"
 
+# `DocTestFinder` resolves ownership through `inspect.getmodule`, which looks
+# `__module__` up in `sys.modules`. A synthetic module must be BOTH registered
+# there and claimed by the function, or the finder collects nothing.
+import sys as _sys
+_sys.modules["sample"] = m
+foo.__module__ = "sample"
 m.foo = foo
 finder = doctest.DocTestFinder()
 tests = finder.find(m)

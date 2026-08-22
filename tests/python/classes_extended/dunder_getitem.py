@@ -1,6 +1,5 @@
 # vybe-test: python/classes_extended/dunder_getitem
 # origin: languages/python/tests/python/test_classes_extended.rs
-# vybe-test-mode: compile
 
 class Row:
     def __init__(self, data):

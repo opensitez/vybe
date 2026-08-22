@@ -70,4 +70,4 @@ def __check(got, want):
 
 import urllib.parse
 __p(__line(urllib.parse.urljoin('http://a.com/b/', 'c')))
-__check(__buf, "http://a.com/c")
+__check(__buf, 'http://a.com/b/c\n')

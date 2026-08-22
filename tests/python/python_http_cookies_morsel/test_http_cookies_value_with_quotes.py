@@ -72,4 +72,4 @@ from http.cookies import SimpleCookie
 c = SimpleCookie()
 c["quoted"] = '"hello world"'
 __p(__line(c["quoted"].value))
-__check(__buf, "hello world")
+__check(__buf, '"hello world"\n')

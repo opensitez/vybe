@@ -69,6 +69,9 @@ def __check(got, want):
         raise Exception("assertion failed")
 
 class P:
+ # A POSITIONAL class pattern reads `__match_args__`; without it CPython
+ # raises "P() accepts 0 positional sub-patterns".
+ __match_args__ = ('x', 'y')
  def __init__(self, x, y):
   self.x = x
   self.y = y

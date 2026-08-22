@@ -76,8 +76,10 @@ class Special:
 def _copy_special(obj):
     return Special(obj.val + 100)
 
-copy._copy_dispatch[Special] = _copy_special
+# `copy._copy_dispatch` is a private table that no longer exists. The
+# SUPPORTED customisation hook is `__copy__` on the class itself.
+Special.__copy__ = lambda self: _copy_special(self)
 s = Special(5)
 c = copy.copy(s)
 __p(__line(c.val))
-__check(__buf, "105")
+__check(__buf, '105\n')

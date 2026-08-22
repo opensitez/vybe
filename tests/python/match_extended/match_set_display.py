@@ -70,7 +70,10 @@ def __check(got, want):
 
 x = {1, 2}
 match x:
- case {1, 2}:
+ # GROUND TRUTH (python3.14): there is no SET pattern in `match` — `{...}`
+ # is a MAPPING pattern, so `case {1, 2}` is a SyntaxError. Matching a set
+ # is spelled as a capture plus a guard.
+ case s if s == {1, 2}:
   __p(__line('set'))
  case _:
   __p(__line('no'))

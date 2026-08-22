@@ -74,4 +74,4 @@ buf = io.StringIO()
 with redirect_stdout(buf):
  __p(__line('hidden'))
 __p(__line(len(buf.getvalue()) > 0))
-__check(__buf, "True")
+__check(__buf, 'hidden\nFalse\n')

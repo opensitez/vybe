@@ -68,5 +68,11 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
-__p(__line(bool(NotImplemented)))
-__check(__buf, "True")
+# GROUND TRUTH (python3.14): `bool(NotImplemented)` RAISES — it was deprecated
+# then made an error, because truth-testing it is always a bug.
+try:
+ bool(NotImplemented)
+ __p(__line('truthy'))
+except TypeError:
+ __p(__line('TypeError'))
+__check(__buf, 'TypeError\n')

@@ -70,4 +70,4 @@ def __check(got, want):
 
 import json
 __p(__line(json.JSONDecoder.__module__))
-__check(__buf, "json")
+__check(__buf, 'json.decoder\n')

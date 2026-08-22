@@ -72,4 +72,4 @@ import xml.etree.ElementTree as ET
 pi = ET.PI("php", "echo 'hello';")
 __p(__line(callable(pi.tag)))
 __p(__line(pi.text))
-__check(__buf, "True\necho 'hello';")
+__check(__buf, "True\nphp echo 'hello';\n")

@@ -72,4 +72,4 @@ import textwrap
 tw = textwrap.TextWrapper(width=40, expand_tabs=True, tabsize=4)
 result = tw.fill("\thello world")
 __p(__line(result.startswith("    hello")))
-__check(__buf, "False")
+__check(__buf, 'True\n')

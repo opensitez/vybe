@@ -72,4 +72,4 @@ import ipaddress
 addr = ipaddress.ip_address('2001:db8::1')
 __p(__line(addr.version))
 __p(__line(addr.is_global if hasattr(addr, 'is_global') else True))
-__check(__buf, "6\nTrue")
+__check(__buf, '6\nFalse\n')

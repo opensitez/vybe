@@ -70,4 +70,4 @@ def __check(got, want):
 
 import cmath
 __p(__line(cmath.cos(0)))
-__check(__buf, "(1+0j)")
+__check(__buf, '(1-0j)\n')

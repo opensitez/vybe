@@ -71,4 +71,4 @@ def __check(got, want):
 import re
 m = re.search(r'(\d+)(\d+)', 'ab1234')
 __p(__line(m.group(2) if m else ''))
-__check(__buf, "34")
+__check(__buf, '4\n')

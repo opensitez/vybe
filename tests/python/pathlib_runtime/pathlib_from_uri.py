@@ -68,6 +68,7 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
-from pathlib import PurePath
-__p(__line(PurePath.from_uri('file:///tmp').parts[-1]))
-__check(__buf, "tmp")
+# `from_uri` is on `Path` (3.13+), not `PurePath`.
+from pathlib import Path
+__p(__line(Path.from_uri('file:///tmp').parts[-1]))
+__check(__buf, 'tmp\n')

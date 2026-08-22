@@ -70,4 +70,4 @@ def __check(got, want):
 
 mv = memoryview(b'\x00\x01\x00\x02')
 __p(__line(list(mv.cast('H'))))
-__check(__buf, "[1, 2]")
+__check(__buf, '[256, 512]\n')

@@ -68,6 +68,7 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
+# `get_clock_info` returns a namespace object, not a dict — it has no `keys()`.
 import time
-__p(__line('monotonic' in time.get_clock_info('monotonic').keys()))
-__check(__buf, "True")
+__p(__line(hasattr(time.get_clock_info('monotonic'), 'monotonic')))
+__check(__buf, 'True\n')

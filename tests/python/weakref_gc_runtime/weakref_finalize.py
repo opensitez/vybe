@@ -73,4 +73,4 @@ class C: pass
 called = []
 f = weakref.finalize(C(), lambda: called.append(1))
 __p(__line(f.alive))
-__check(__buf, "True")
+__check(__buf, 'False\n')

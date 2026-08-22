@@ -81,5 +81,5 @@ class Command(UpperStrEnum):
     pause = auto()
 
 __p(__line(Command.start.value))
-__p(__line(Command.STOP.value))
-__check(__buf, "START\nSTOP")
+__p(__line(Command.stop.value))
+__check(__buf, 'START\nSTOP\n')

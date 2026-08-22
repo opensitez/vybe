@@ -67,6 +67,13 @@ def __check(got, want):
     if got != want and got != want + "\n":
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
+# PRIVATE NAME MANGLING: inside a class body CPython rewrites any `__name`
+# identifier to `_ClassName__name`, so the harness's `__p`/`__line` are
+# unreachable there. A SINGLE leading underscore is not mangled, so these
+# aliases are what a class body calls.
+_p = __p
+_line = __line
+
 
 class Tracked:
     def __init__(self):
@@ -84,7 +91,7 @@ class Tracked:
         obj.__dict__[f"_val_{self.name}"] = value
 
     def __delete__(self, obj):
-        __p(__line(f"Deleting {self.name}"))
+        _p(_line(f"Deleting {self.name}"))
         obj.__dict__.pop(f"_val_{self.name}", None)
 
 class User:
@@ -92,7 +99,7 @@ class User:
 
 u = User()
 u.name = "Alice"
-__p(__line(u.name))
+_p(_line(u.name))
 del u.name
-__p(__line(u.name))
+_p(_line(u.name))
 __check(__buf, "Alice\nDeleting name\nNone")

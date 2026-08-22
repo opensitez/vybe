@@ -73,4 +73,4 @@ import struct
 data = struct.pack("2xi", 42)
 __p(__line(len(data)))
 __p(__line(struct.unpack("2xi", data)[0]))
-__check(__buf, "6\n42")
+__check(__buf, '8\n42\n')

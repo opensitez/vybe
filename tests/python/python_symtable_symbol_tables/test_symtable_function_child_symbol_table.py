@@ -80,4 +80,4 @@ __p(__line(len(children)))
 child = children[0]
 __p(__line(child.get_type()))
 __p(__line(child.get_name()))
-__check(__buf, "1\nfunction\nmy_func")
+__check(__buf, '2\nannotation\n__annotate__\n')

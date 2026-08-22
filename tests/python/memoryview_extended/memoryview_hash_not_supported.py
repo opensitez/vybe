@@ -73,4 +73,6 @@ try:
  __p(__line('ok'))
 except TypeError:
  __p(__line('err'))
-__check(__buf, "err")
+# GROUND TRUTH (python3.14): a memoryview over an immutable buffer IS
+# hashable, so no TypeError is raised. The name asserted the opposite.
+__check(__buf, "ok")

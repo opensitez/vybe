@@ -73,4 +73,4 @@ import codecs
 bad_bytes = b"hello \xff world"
 __p(__line(bad_bytes.decode("ascii", errors="ignore")))
 __p(__line(bad_bytes.decode("ascii", errors="replace")))
-__check(__buf, "hello  world\nhello  world")
+__check(__buf, 'hello  world\nhello � world\n')

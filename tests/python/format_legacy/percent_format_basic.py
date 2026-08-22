@@ -68,5 +68,7 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
-__p(__line('{}' % 'x'))
-__check(__buf, "x")
+# `%` formatting uses `%s`; `{}` is str.format syntax and leaves the argument
+# unconverted.
+__p(__line('%s' % 'x'))
+__check(__buf, 'x\n')

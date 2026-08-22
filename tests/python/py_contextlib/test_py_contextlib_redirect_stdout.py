@@ -78,4 +78,4 @@ with redirect_stdout(buf):
 
 __p(__line(buf.getvalue().strip()))
 __p(__line("back to real stdout"))
-__check(__buf, "captured output\n42\nback to real stdout")
+__check(__buf, 'captured output\n42\n\nback to real stdout\n')

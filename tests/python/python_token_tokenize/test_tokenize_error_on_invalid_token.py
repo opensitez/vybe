@@ -77,4 +77,4 @@ except tokenize.TokenError:
     __p(__line("TokenError"))
 except Exception:
     __p(__line("other error"))
-__check(__buf, "other error")
+__check(__buf, 'no error\n')

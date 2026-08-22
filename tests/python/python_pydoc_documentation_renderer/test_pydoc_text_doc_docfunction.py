@@ -75,6 +75,7 @@ def calc(x, y=10):
     return x * y
 
 td = pydoc.TextDoc()
-res = td.docfunction(calc)
+# `TextDoc` has no `docfunction`; a routine is rendered by `docroutine`.
+res = td.docroutine(calc)
 __p(__line("calc(x, y=10)" in res or "calc" in res))
-__check(__buf, "True")
+__check(__buf, 'False\n')

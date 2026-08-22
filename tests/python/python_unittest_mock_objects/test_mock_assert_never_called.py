@@ -70,6 +70,9 @@ def __check(got, want):
 
 from unittest.mock import Mock
 m = Mock()
-m.assert_never_called()
+# There is no `assert_never_called`; the real API is `assert_not_called`.
+# (Mock auto-creates any attribute, so the typo silently produced a Mock and
+# calling it did nothing — which is why this passed under a weaker check.)
+m.assert_not_called()
 __p(__line("assert_never_called passed"))
-__check(__buf, "assert_never_called passed")
+__check(__buf, 'assert_never_called passed\n')

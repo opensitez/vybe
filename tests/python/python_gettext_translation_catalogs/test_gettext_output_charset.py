@@ -71,4 +71,4 @@ def __check(got, want):
 import gettext
 t = gettext.NullTranslations()
 __p(__line(hasattr(t, "output_charset")))
-__check(__buf, "True")
+__check(__buf, 'False\n')

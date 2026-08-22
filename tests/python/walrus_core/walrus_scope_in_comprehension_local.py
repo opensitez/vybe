@@ -70,4 +70,4 @@ def __check(got, want):
 
 out = [z for _ in [1] if (z := 9)]
 __p(__line(z if 'z' in dir() else out))
-__check(__buf, "[9]")
+__check(__buf, '9\n')

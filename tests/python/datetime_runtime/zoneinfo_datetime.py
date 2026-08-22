@@ -1,6 +1,5 @@
 # vybe-test: python/datetime_runtime/zoneinfo_datetime
 # origin: languages/python/tests/python/test_datetime_runtime.rs
-# vybe-test-mode: compile
 
 from zoneinfo import ZoneInfo
 import datetime

@@ -1,6 +1,5 @@
 # vybe-test: python/programs/fibonacci
 # origin: languages/python/tests/python/test_programs.rs
-# vybe-test-mode: compile
 
 def fib(n):
     if n <= 1:

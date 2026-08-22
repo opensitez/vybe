@@ -67,20 +67,26 @@ def __check(got, want):
     if got != want and got != want + "\n":
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
+# PRIVATE NAME MANGLING: inside a class body CPython rewrites `__name` to
+# `_ClassName__name`, so the harness's `__p`/`__line` are unreachable
+# there. A SINGLE leading underscore is not mangled.
+_p = __p
+_line = __line
+
 
 from contextlib import ContextDecorator
 
 class log_func(ContextDecorator):
     def __enter__(self):
-        __p(__line("Entering function"))
+        _p(_line("Entering function"))
         return self
     def __exit__(self, *exc):
-        __p(__line("Exiting function"))
+        _p(_line("Exiting function"))
         return False
 
 @log_func()
 def greet():
-    __p(__line("Inside greet"))
+    _p(_line("Inside greet"))
 
 greet()
 __check(__buf, "Entering function\nInside greet\nExiting function")

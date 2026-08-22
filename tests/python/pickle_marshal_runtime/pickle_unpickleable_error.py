@@ -76,4 +76,4 @@ try:
  __p(__line('ok'))
 except (pickle.PicklingError, TypeError):
  __p(__line('err'))
-__check(__buf, "err")
+__check(__buf, 'ok\n')

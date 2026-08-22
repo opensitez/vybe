@@ -70,4 +70,4 @@ def __check(got, want):
 
 from fractions import Fraction
 __p(__line(Fraction('3.14159').limit_denominator(100)))
-__check(__buf, "22/7")
+__check(__buf, '311/99\n')

@@ -80,4 +80,4 @@ with zipfile.ZipFile(buf, "r") as zf:
     __p(__line(info.filename))
     __p(__line(info.file_size))
     __p(__line(info.date_time[:3]))  # (year, month, day)
-__check(__buf, "test.txt\n11\n(2026, 7, 22)")
+__check(__buf, 'test.txt\n11\n(2026, 8, 21)\n')

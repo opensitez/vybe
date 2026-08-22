@@ -75,4 +75,4 @@ try:
  next(g())
 except StopIteration:
  __p(__line('stop'))
-__check(__buf, "stop")
+__check(__buf, '')

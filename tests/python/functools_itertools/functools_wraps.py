@@ -77,6 +77,7 @@ def deco(f):
 @deco
 def g():
   '''doc'''
- pass
+  # EXTRACTION DAMAGE: `pass` was dedented out of the function body.
+  pass
 __p(__line(g.__name__))
 __check(__buf, "g")

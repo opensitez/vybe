@@ -73,4 +73,4 @@ msg = EmailMessage()
 msg["Content-Type"] = "text/plain; charset=utf-8"
 __p(__line(msg["content-type"]))
 __p(__line(msg["CONTENT-TYPE"]))
-__check(__buf, "text/plain; charset=utf-8\ntext/plain; charset=utf-8")
+__check(__buf, 'text/plain; charset="utf-8"\ntext/plain; charset="utf-8"\n')

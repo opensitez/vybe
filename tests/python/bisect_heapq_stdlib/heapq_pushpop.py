@@ -68,7 +68,8 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
+# The function is `heappushpop`; there is no `heapq.pushpop`.
 import heapq
 h = [3, 1, 2]
-__p(__line(heapq.pushpop(h, 0)))
+__p(__line(heapq.heappushpop(h, 0)))
 __check(__buf, "0")

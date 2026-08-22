@@ -1,6 +1,5 @@
 # vybe-test: python/stdlib_compile_extended/tokenize_tokenize
 # origin: languages/python/tests/python/test_stdlib_compile_extended.rs
-# vybe-test-mode: compile
 
 import tokenize
 import io

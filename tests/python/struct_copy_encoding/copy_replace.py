@@ -73,5 +73,11 @@ class C:
  pass
 c = C()
 c.x = 1
-__p(__line(hasattr(copy.replace(c, x=2), 'x')))
-__check(__buf, "True")
+# `copy.replace` only supports types implementing `__replace__` — a plain
+# class raises "replace() does not support C objects".
+try:
+ copy.replace(c, x=2)
+ __p(__line('replaced'))
+except TypeError:
+ __p(__line('TypeError'))
+__check(__buf, 'TypeError\n')

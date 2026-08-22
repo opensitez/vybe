@@ -68,6 +68,7 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
+# `getclasstree` takes CLASSES; `getmembers` returns (name, value) pairs.
 import inspect
-__p(__line(isinstance(inspect.getclasstree(inspect.getmembers(list)), list)))
-__check(__buf, "True")
+__p(__line(isinstance(inspect.getclasstree([bool, int]), list)))
+__check(__buf, 'True\n')

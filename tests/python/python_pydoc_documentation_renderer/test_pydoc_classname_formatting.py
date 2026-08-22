@@ -74,4 +74,4 @@ class Sub(json.JSONDecoder): pass
 
 name = pydoc.classname(Sub, "json")
 __p(__line(name))
-__check(__buf, "Sub")
+__check(__buf, '__main__.Sub\n')

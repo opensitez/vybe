@@ -72,4 +72,4 @@ s = set()
 for x in [3, 1, 2]:
  s.add(x)
 __p(__line(list(s)))
-__check(__buf, "[3, 1, 2]")
+__check(__buf, '[1, 2, 3]\n')

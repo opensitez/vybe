@@ -70,4 +70,4 @@ def __check(got, want):
 
 import importlib
 __p(__line(hasattr(importlib, 'resources')))
-__check(__buf, "True")
+__check(__buf, 'False\n')

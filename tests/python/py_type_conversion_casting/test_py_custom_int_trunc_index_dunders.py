@@ -72,11 +72,13 @@ class CustomIndex:
     def __index__(self):
         return 4
 
+# `__trunc__` support in `int()` was REMOVED in Python 3.14 — `__index__` (or
+# `__int__`) is the supported protocol.
 class CustomTrunc:
-    def __trunc__(self):
+    def __index__(self):
         return 99
 
 lst = [10, 20, 30, 40, 50]
 __p(__line(lst[CustomIndex()]))
 __p(__line(int(CustomTrunc())))
-__check(__buf, "50\n99")
+__check(__buf, '50\n99\n')

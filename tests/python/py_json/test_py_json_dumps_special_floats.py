@@ -77,4 +77,4 @@ except ValueError as e:
 
 result = json.dumps(float('inf'), allow_nan=True)
 __p(__line(result))
-__check(__buf, "ValueError: Infinity not allowed\nInfinity")
+__check(__buf, 'Infinity\n')

@@ -73,4 +73,4 @@ for i in range(3):
   case 0:
    continue
  __p(__line(i))
-__check(__buf, "1")
+__check(__buf, '1\n2\n')

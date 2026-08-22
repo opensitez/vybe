@@ -1,6 +1,5 @@
 # vybe-test: python/programs/fizzbuzz
 # origin: languages/python/tests/python/test_programs.rs
-# vybe-test-mode: compile
 
 for i in range(1, 101):
     if i % 15 == 0:

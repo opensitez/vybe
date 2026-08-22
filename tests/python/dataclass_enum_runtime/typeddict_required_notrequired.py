@@ -1,6 +1,5 @@
 # vybe-test: python/dataclass_enum_runtime/typeddict_required_notrequired
 # origin: languages/python/tests/python/test_dataclass_enum_runtime.rs
-# vybe-test-mode: compile
 
 from typing import TypedDict, Required, NotRequired
 class D(TypedDict):

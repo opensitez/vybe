@@ -69,7 +69,10 @@ def __check(got, want):
         raise Exception("assertion failed")
 
 import codeop
-code = codeop.compile_command("x = 42\nprint(x)")
+# `compile_command` accepts a SINGLE interactive statement — two statements
+# raise "multiple statements found while compiling a single statement".
+code = codeop.compile_command("x = 42")
 __p(__line(code is not None))
 exec(code)
-__check(__buf, "True\n42")
+__p(__line(x))
+__check(__buf, 'True\n42\n')

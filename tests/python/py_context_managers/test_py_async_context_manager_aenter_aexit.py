@@ -67,20 +67,27 @@ def __check(got, want):
     if got != want and got != want + "\n":
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
+# PRIVATE NAME MANGLING: inside a class body CPython rewrites any `__name`
+# identifier to `_ClassName__name`, so the harness's `__p`/`__line` are
+# unreachable there. A SINGLE leading underscore is not mangled, so these
+# aliases are what a class body calls.
+_p = __p
+_line = __line
+
 
 import asyncio
 
 class AsyncResource:
     async def __aenter__(self):
-        __p(__line("async enter"))
+        _p(_line("async enter"))
         return "async_res"
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        __p(__line("async exit"))
+        _p(_line("async exit"))
         return False
 
 async def main():
     async with AsyncResource() as res:
-        __p(__line(res))
+        _p(_line(res))
 
 asyncio.run(main())
 __check(__buf, "async enter\nasync_res\nasync exit")

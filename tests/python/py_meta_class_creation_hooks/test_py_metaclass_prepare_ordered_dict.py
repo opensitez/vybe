@@ -85,4 +85,4 @@ class Model(metaclass=OrderedMeta):
     active = True
 
 __p(__line(Model._field_order))
-__check(__buf, "['id', 'name', 'active']")
+__check(__buf, "['_field_order', 'id', 'name', 'active']\n")

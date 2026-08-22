@@ -71,4 +71,4 @@ def __check(got, want):
 import ast
 c = compile('1+1', '<s>', 'eval', flags=ast.PyCF_ONLY_AST)
 __p(__line(type(c).__name__))
-__check(__buf, "Module")
+__check(__buf, 'Expression\n')

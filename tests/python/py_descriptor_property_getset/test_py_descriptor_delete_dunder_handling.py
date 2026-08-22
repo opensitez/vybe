@@ -67,6 +67,13 @@ def __check(got, want):
     if got != want and got != want + "\n":
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
+# PRIVATE NAME MANGLING: inside a class body CPython rewrites any `__name`
+# identifier to `_ClassName__name`, so the harness's `__p`/`__line` are
+# unreachable there. A SINGLE leading underscore is not mangled, so these
+# aliases are what a class body calls.
+_p = __p
+_line = __line
+
 
 class DeletableAttr:
     def __set_name__(self, owner, name):
@@ -79,7 +86,7 @@ class DeletableAttr:
         instance.__dict__[self.name] = value
 
     def __delete__(self, instance):
-        __p(__line(f"Deleting attribute {self.name}"))
+        _p(_line(f"Deleting attribute {self.name}"))
         instance.__dict__.pop(self.name, None)
 
 class Container:
@@ -87,7 +94,7 @@ class Container:
 
 c = Container()
 c.data = "payload"
-__p(__line(c.data))
+_p(_line(c.data))
 del c.data
-__p(__line(c.data))
+_p(_line(c.data))
 __check(__buf, "payload\nDeleting attribute data\nNone")

@@ -71,4 +71,4 @@ def __check(got, want):
 import difflib
 __p(__line(difflib.IS_LINE_JUNK("# comment")))
 __p(__line(difflib.IS_LINE_JUNK("valid line")))
-__check(__buf, "True\nFalse")
+__check(__buf, 'False\nFalse\n')

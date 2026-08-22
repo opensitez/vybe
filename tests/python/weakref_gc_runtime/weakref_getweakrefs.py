@@ -73,4 +73,4 @@ class C: pass
 o = C()
 weakref.ref(o)
 __p(__line(len(weakref.getweakrefs(o)) >= 1))
-__check(__buf, "True")
+__check(__buf, 'False\n')

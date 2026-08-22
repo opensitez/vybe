@@ -73,11 +73,14 @@ class CM:
   return self
  def __exit__(self, *a):
   return False
+# EXTRACTION DAMAGE: `else` was emitted BEFORE `except`. Python's clause
+# order is try/except/else/finally, and `else` runs only when no exception
+# escaped the body — which is what this test is about.
 try:
  with CM():
   pass
-else:
- __p(__line('else'))
 except:
  pass
+else:
+ __p(__line('else'))
 __check(__buf, "else")

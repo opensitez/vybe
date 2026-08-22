@@ -1,5 +1,4 @@
 # vybe-test: python/chained_ellipsis_repr/ellipsis_annotation
 # origin: languages/python/tests/python/test_chained_ellipsis_repr.rs
-# vybe-test-mode: compile
 
 def f(x: ...): pass

@@ -77,4 +77,4 @@ __p(__line(bin(a ^ b)))
 __p(__line(bin(a << 2)))
 __p(__line(bin(a >> 1)))
 __p(__line(~0))  # -1 in two's complement
-__check(__buf, "0b1000\n0b1110\n0b0110\n0b110000\n0b110\n-1")
+__check(__buf, '0b1000\n0b1110\n0b110\n0b110000\n0b110\n-1\n')

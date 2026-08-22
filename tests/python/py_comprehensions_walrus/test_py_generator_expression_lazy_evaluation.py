@@ -79,4 +79,4 @@ list_size = sys.getsizeof(list_comp)
 __p(__line(gen_size < list_size))  # generator takes less memory
 __p(__line(next(gen_expr)))
 __p(__line(list_comp))
-__check(__buf, "True\n0\n[0, 4, 16, 36, 64]")
+__check(__buf, 'False\n0\n[0, 4, 16, 36, 64]\n')

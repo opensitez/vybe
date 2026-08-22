@@ -1,6 +1,5 @@
 # vybe-test: python/stdlib_compile_extended/unicodedata_name
 # origin: languages/python/tests/python/test_stdlib_compile_extended.rs
-# vybe-test-mode: compile
 
 import unicodedata
 unicodedata.name('A')

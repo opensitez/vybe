@@ -68,6 +68,7 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
-pairs = list(map(lambda t: t[0] + t[1], enumerate(['x', 'y'])))
+# `t[0] + t[1]` is `0 + 'x'`, a TypeError. The expectation [0, 1] is the INDEX.
+pairs = list(map(lambda t: t[0], enumerate(['x', 'y'])))
 __p(__line(pairs))
-__check(__buf, "[0, 1]")
+__check(__buf, '[0, 1]\n')

@@ -79,4 +79,4 @@ if __name__ == "__main__":
         res2 = pool.apply_async(multiply, (5, 6))
         __p(__line(res1.get()))
         __p(__line(res2.get()))
-__check(__buf, "12\n30")
+    __check(__buf, "12\n30")

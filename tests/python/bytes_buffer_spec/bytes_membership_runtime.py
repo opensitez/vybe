@@ -69,4 +69,4 @@ def __check(got, want):
         raise Exception("assertion failed")
 
 __p(__line(98 in b'abc'))
-__check(__buf, "true")
+__check(__buf, "True")

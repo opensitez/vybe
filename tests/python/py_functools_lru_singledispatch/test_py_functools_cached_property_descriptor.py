@@ -67,6 +67,13 @@ def __check(got, want):
     if got != want and got != want + "\n":
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
+# PRIVATE NAME MANGLING: inside a class body CPython rewrites any `__name`
+# identifier to `_ClassName__name`, so the harness's `__p`/`__line` are
+# unreachable there. A SINGLE leading underscore is not mangled, so these
+# aliases are what a class body calls.
+_p = __p
+_line = __line
+
 
 from functools import cached_property
 
@@ -76,10 +83,10 @@ class Circle:
 
     @cached_property
     def area(self):
-        __p(__line("Calculating area"))
+        _p(_line("Calculating area"))
         return 3.14159 * (self.radius ** 2)
 
 c = Circle(5)
-__p(__line(round(c.area, 2)))
-__p(__line(round(c.area, 2)))  # cached
+_p(_line(round(c.area, 2)))
+_p(_line(round(c.area, 2)))  # cached
 __check(__buf, "Calculating area\n78.54\n78.54")

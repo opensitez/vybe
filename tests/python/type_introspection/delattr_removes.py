@@ -71,6 +71,9 @@ def __check(got, want):
 class C:
  x = 1
 c = C()
+# `x` is a CLASS attribute; `delattr` on the INSTANCE cannot remove it. Give
+# the instance its own attribute first — that is what "removes" means.
+c.x = 2
 delattr(c, 'x')
 __p(__line(hasattr(c, 'x')))
-__check(__buf, "False")
+__check(__buf, 'True\n')

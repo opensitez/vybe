@@ -77,4 +77,4 @@ class Color(int, Enum):
 __p(__line(Color.RED + 10))
 __p(__line(isinstance(Color.RED, int)))
 __p(__line(f"Color value: {Color.GREEN}"))
-__check(__buf, "11\nTrue\nColor value: 2")
+__check(__buf, '11\nTrue\nColor value: Color.GREEN\n')

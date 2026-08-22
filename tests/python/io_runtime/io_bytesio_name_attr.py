@@ -71,4 +71,4 @@ def __check(got, want):
 import io
 b = io.BytesIO()
 __p(__line(hasattr(b, 'name')))
-__check(__buf, "True")
+__check(__buf, 'False\n')

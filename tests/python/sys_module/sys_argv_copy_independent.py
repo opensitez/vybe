@@ -72,4 +72,4 @@ import sys
 a = sys.argv
 a.append('extra')
 __p(__line(len(sys.argv) == len(a) - 1 or 'extra' not in sys.argv))
-__check(__buf, "True")
+__check(__buf, 'False\n')

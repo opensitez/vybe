@@ -68,7 +68,8 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
+# `length_hint(obj, default)` is POSITIONAL-only — it takes no keywords.
 import operator
 __p(__line(operator.length_hint([10, 20, 30])))
-__p(__line(operator.length_hint(iter([1, 2]), default=99)))
-__check(__buf, "3\n2")
+__p(__line(operator.length_hint(iter([1, 2]), 99)))
+__check(__buf, '3\n2\n')

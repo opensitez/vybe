@@ -75,7 +75,8 @@ b = io.StringIO()
 with a, b:
     a.write("from a")
     b.write("from b")
-
-__p(__line(a.getvalue()))
-__p(__line(b.getvalue()))
-__check(__buf, "from a\nfrom b")
+    # Exiting the `with` CLOSES both StringIOs, so `getvalue()` afterwards is
+    # "I/O operation on closed file". Read them while they are open.
+    __p(__line(a.getvalue()))
+    __p(__line(b.getvalue()))
+__check(__buf, 'from a\nfrom b\n')

@@ -72,4 +72,4 @@ class C:
  def __repr__(self):
   return 'é'
 __p(__line(ascii(C())))
-__check(__buf, "'\\xe9'")
+__check(__buf, '\\xe9\n')

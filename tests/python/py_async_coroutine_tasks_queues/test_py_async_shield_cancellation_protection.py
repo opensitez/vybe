@@ -75,7 +75,9 @@ async def critical_task():
     return "saved"
 
 async def main():
-    task = asyncio.create_task(asyncio.shield(critical_task()))
+    # `shield()` already returns a FUTURE — `create_task` requires a
+    # coroutine, so wrapping one in the other is a TypeError.
+    task = asyncio.shield(asyncio.create_task(critical_task()))
     await asyncio.sleep(0.001)
     task.cancel()
     try:
@@ -86,4 +88,4 @@ async def main():
     __p(__line(val))
 
 asyncio.run(main())
-__check(__buf, "Wrapper cancelled\nsaved")
+__check(__buf, 'Wrapper cancelled\nsaved\n')

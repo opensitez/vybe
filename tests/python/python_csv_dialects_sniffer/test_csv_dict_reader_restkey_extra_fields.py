@@ -73,4 +73,4 @@ data = "a,b\n1,2,3,4\n"
 reader = csv.DictReader(io.StringIO(data), restkey="extra")
 row = next(reader)
 __p(__line(row["a"], row["b"], row["extra"]))
-__check(__buf, "1\n2\n['3', '4']")
+__check(__buf, "1 2 ['3', '4']\n")

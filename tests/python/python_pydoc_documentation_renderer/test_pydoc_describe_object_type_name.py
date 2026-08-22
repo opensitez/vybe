@@ -76,4 +76,4 @@ class C: pass
 __p(__line(pydoc.describe(fn)))
 __p(__line(pydoc.describe(C)))
 __p(__line(pydoc.describe(123)))
-__check(__buf, "function fn\nclass C\nint object")
+__check(__buf, 'function fn\nclass C\nint\n')

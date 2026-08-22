@@ -72,6 +72,11 @@ from contextlib import contextmanager
 
 @contextmanager
 def no_yield_cm():
+    # It must BE a generator that never yields — a plain `return` makes an
+    # ordinary function, and @contextmanager then fails with TypeError
+    # instead of the RuntimeError this test is about.
+    if False:
+        yield
     return
 
 try:
@@ -79,4 +84,4 @@ try:
         pass
 except RuntimeError as e:
     __p(__line("RuntimeError caught: generator didn't yield"))
-__check(__buf, "RuntimeError caught: generator didn't yield")
+__check(__buf, "RuntimeError caught: generator didn't yield\n")

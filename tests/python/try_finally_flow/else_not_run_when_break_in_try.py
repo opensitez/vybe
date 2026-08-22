@@ -69,8 +69,12 @@ def __check(got, want):
         raise Exception("assertion failed")
 
 for _ in range(1):
+ # EXTRACTION DAMAGE: `try/else` with no `except` or `finally` is a
+ # SyntaxError. The point of the test is that `break` skips the else.
  try:
   break
+ except Exception:
+  pass
  else:
   __p(__line('else'))
 __p(__line('done'))

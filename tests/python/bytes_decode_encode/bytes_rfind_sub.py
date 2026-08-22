@@ -69,4 +69,4 @@ def __check(got, want):
         raise Exception("assertion failed")
 
 __p(__line(b'abcabc'.rfind(b'ca')))
-__check(__buf, "5")
+__check(__buf, '2\n')

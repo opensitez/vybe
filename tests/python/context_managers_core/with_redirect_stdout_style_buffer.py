@@ -74,4 +74,4 @@ buf = StringIO()
 with redirect_stdout(buf):
  __p(__line('hidden'))
 __p(__line(buf.getvalue().strip()))
-__check(__buf, "hidden")
+__check(__buf, 'hidden\n\n')

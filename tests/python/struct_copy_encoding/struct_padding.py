@@ -68,6 +68,7 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
+# `x` is a PAD byte — it consumes no argument.
 import struct
-__p(__line(len(struct.pack('x', 0))))
-__check(__buf, "1")
+__p(__line(len(struct.pack('x'))))
+__check(__buf, '1\n')

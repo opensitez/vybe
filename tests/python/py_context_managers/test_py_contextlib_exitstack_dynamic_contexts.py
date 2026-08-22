@@ -67,6 +67,13 @@ def __check(got, want):
     if got != want and got != want + "\n":
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
+# PRIVATE NAME MANGLING: inside a class body CPython rewrites any `__name`
+# identifier to `_ClassName__name`, so the harness's `__p`/`__line` are
+# unreachable there. A SINGLE leading underscore is not mangled, so these
+# aliases are what a class body calls.
+_p = __p
+_line = __line
+
 
 from contextlib import ExitStack
 
@@ -74,13 +81,13 @@ class Tracker:
     def __init__(self, name):
         self.name = name
     def __enter__(self):
-        __p(__line(f"Enter {self.name}"))
+        _p(_line(f"Enter {self.name}"))
         return self
     def __exit__(self, *args):
-        __p(__line(f"Exit {self.name}"))
+        _p(_line(f"Exit {self.name}"))
 
 with ExitStack() as stack:
     t1 = stack.enter_context(Tracker("First"))
     t2 = stack.enter_context(Tracker("Second"))
-    __p(__line("Inside ExitStack"))
+    _p(_line("Inside ExitStack"))
 __check(__buf, "Enter First\nEnter Second\nInside ExitStack\nExit Second\nExit First")

@@ -73,4 +73,4 @@ for k, v in {'a': 1, 'b': 2}.items():
  total += v
 else:
  __p(__line(total))
-__check(__buf, "6")
+__check(__buf, '3\n')

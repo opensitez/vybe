@@ -76,7 +76,7 @@ class A:
 class B(A):
     def method_b(self): pass
 
-methods = pydoc.allmethods(B)
-names = [m.__name__ for m in methods]
+# `allmethods` returns a DICT keyed by name, not a list of functions.
+names = list(pydoc.allmethods(B))
 __p(__line("method_a" in names and "method_b" in names))
-__check(__buf, "True")
+__check(__buf, 'True\n')

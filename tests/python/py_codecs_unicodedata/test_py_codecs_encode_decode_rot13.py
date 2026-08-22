@@ -74,4 +74,4 @@ text = "Hello World"
 rot13 = codecs.encode(text, "rot_13")
 __p(__line(rot13))
 __p(__line(codecs.decode(rot13, "rot_13") == text))
-__check(__buf, "Uuryyb Jbeyq\nTrue")
+__check(__buf, 'Uryyb Jbeyq\nTrue\n')

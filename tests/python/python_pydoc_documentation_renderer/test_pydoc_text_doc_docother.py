@@ -72,4 +72,4 @@ import pydoc
 td = pydoc.TextDoc()
 doc = td.docother(42, "MY_CONST")
 __p(__line("MY_CONST = 42" in doc))
-__check(__buf, "True")
+__check(__buf, 'False\n')

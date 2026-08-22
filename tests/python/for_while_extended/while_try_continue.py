@@ -1,6 +1,5 @@
 # vybe-test: python/for_while_extended/while_try_continue
 # origin: languages/python/tests/python/test_for_while_extended.rs
-# vybe-test-mode: compile
 
 i = 0
 while i < 2:

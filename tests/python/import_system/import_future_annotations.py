@@ -11,6 +11,8 @@
 # and tells you nothing — 1,692 of testecma's 2,158 failures say exactly that.
 
 
+from __future__ import annotations
+
 def __line(*args):
     """One printed line, exactly as `print` composes it: str() each argument,
     joined by a single space.
@@ -68,7 +70,6 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
-from __future__ import annotations
 x: int = 1
 __p(__line(x))
 __check(__buf, "1")

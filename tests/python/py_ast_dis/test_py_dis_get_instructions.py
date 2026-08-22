@@ -77,4 +77,4 @@ instructions = list(dis.get_instructions(multiply))
 opnames = [inst.opname for inst in instructions]
 __p(__line("LOAD_FAST" in opnames))
 __p(__line("RETURN_VALUE" in opnames))
-__check(__buf, "True\nTrue")
+__check(__buf, 'False\nTrue\n')

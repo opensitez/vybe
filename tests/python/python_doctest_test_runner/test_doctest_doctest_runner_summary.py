@@ -82,6 +82,9 @@ test = doctest.DocTestFinder().find(ok)[0]
 runner.run(test)
 
 buf = io.StringIO()
-runner.summarize(out=buf.write)
+# `DocTestRunner.summarize()` accepts no `out` argument; it prints to stdout.
+import contextlib
+with contextlib.redirect_stdout(buf):
+    runner.summarize()
 __p(__line("1 items passed" in buf.getvalue() or "Passed" in buf.getvalue() or len(buf.getvalue()) >= 0))
 __check(__buf, "True")

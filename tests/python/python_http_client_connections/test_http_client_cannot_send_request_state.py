@@ -70,7 +70,10 @@ def __check(got, want):
 
 import http.client
 conn = http.client.HTTPConnection("dummy.host", 80)
-conn._state = http.client._CS_REQ_SENT
+# PRIVATE NAME MANGLING: HTTPConnection stores `self.__state`, which is
+# `_HTTPConnection__state` from outside. `conn._state` created an unrelated
+# attribute and left the real state untouched, so nothing raised.
+conn._HTTPConnection__state = http.client._CS_REQ_SENT
 try:
     conn.putrequest("GET", "/")
 except http.client.CannotSendRequest:

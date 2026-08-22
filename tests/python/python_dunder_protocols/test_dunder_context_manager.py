@@ -67,17 +67,24 @@ def __check(got, want):
     if got != want and got != want + "\n":
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
+# PRIVATE NAME MANGLING: inside a class body CPython rewrites any `__name`
+# identifier to `_ClassName__name`, so the harness's `__p`/`__line` are
+# unreachable there. A SINGLE leading underscore is not mangled, so these
+# aliases are what a class body calls.
+_p = __p
+_line = __line
+
 
 class Resource:
     def __init__(self, name):
         self.name = name
     def __enter__(self):
-        __p(__line(f"open {self.name}"))
+        _p(_line(f"open {self.name}"))
         return self
     def __exit__(self, exc_type, exc_val, exc_tb):
-        __p(__line(f"close {self.name}"))
+        _p(_line(f"close {self.name}"))
         return False
 
 with Resource("db") as r:
-    __p(__line(f"using {r.name}"))
+    _p(_line(f"using {r.name}"))
 __check(__buf, "open db\nusing db\nclose db")

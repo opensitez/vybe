@@ -70,4 +70,4 @@ def __check(got, want):
 
 import statistics
 __p(__line(statistics.median_grouped([1, 2, 2, 3])))
-__check(__buf, "2")
+__check(__buf, '2.0\n')

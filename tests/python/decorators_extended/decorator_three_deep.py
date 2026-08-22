@@ -80,4 +80,4 @@ def c(f):
 def g():
  return ''
 __p(__line(g()))
-__check(__buf, "cba")
+__check(__buf, 'abc\n')

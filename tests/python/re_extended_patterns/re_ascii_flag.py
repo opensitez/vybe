@@ -70,4 +70,4 @@ def __check(got, want):
 
 import re
 __p(__line(re.findall(r'\w+', 'café', re.A)))
-__check(__buf, "[]")
+__check(__buf, "['caf']\n")

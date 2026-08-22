@@ -80,10 +80,11 @@ def thread_func(loop, out):
 async def main():
     loop = asyncio.get_running_loop()
     out = []
-    t = threading.Thread(target=thread_func, args=(loop, out))
-    t.start()
-    t.join()
+    # Joining the thread from INSIDE the coroutine blocks the event loop, so
+    # the coroutine submitted by `run_coroutine_threadsafe` can never run —
+    # a guaranteed deadlock. Await the thread instead of blocking on it.
+    await asyncio.to_thread(thread_func, loop, out)
     __p(__line(out))
 
 asyncio.run(main())
-__check(__buf, "[30]")
+__check(__buf, '[30]\n')

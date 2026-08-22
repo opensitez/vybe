@@ -68,5 +68,10 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
-__p(__line(isinstance(super(), super)))
-__check(__buf, "True")
+# Zero-argument `super()` is only valid INSIDE a method — at module level it
+# raises "super(): no arguments".
+class _S:
+ def m(self):
+  return isinstance(super(), super)
+__p(__line(_S().m()))
+__check(__buf, 'True\n')

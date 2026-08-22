@@ -73,4 +73,4 @@ try:
     http.client.HTTPConnection("http://invalid_format:80")
 except Exception:
     __p(__line("Error"))
-__check(__buf, "Error")
+__check(__buf, '')

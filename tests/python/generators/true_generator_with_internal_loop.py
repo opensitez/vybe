@@ -67,6 +67,13 @@ def __check(got, want):
     if got != want and got != want + "\n":
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
+# `@generator` is a VYBE extension (`is_special_decorator`), matched by
+# NAME — CPython has no such decorator, and a `def` containing `yield` is
+# already a generator there. An identity decorator makes the file valid
+# Python without changing what Vybe does with it.
+def generator(f):
+    return f
+
 
 @generator
 def gen():

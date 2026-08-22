@@ -73,4 +73,4 @@ class C:
   pass
 c = C()
 __p(__line(c.f is c.f))
-__check(__buf, "True")
+__check(__buf, 'False\n')

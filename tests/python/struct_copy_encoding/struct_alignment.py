@@ -68,6 +68,7 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
+# `Struct` has no `alignment` attribute; `calcsize` reports the native size.
 import struct
-__p(__line(struct.Struct('i').alignment > 0))
-__check(__buf, "True")
+__p(__line(struct.calcsize('i') > 0))
+__check(__buf, 'True\n')

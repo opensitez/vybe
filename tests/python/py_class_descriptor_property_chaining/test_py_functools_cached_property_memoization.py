@@ -67,6 +67,13 @@ def __check(got, want):
     if got != want and got != want + "\n":
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
+# PRIVATE NAME MANGLING: inside a class body CPython rewrites any `__name`
+# identifier to `_ClassName__name`, so the harness's `__p`/`__line` are
+# unreachable there. A SINGLE leading underscore is not mangled, so these
+# aliases are what a class body calls.
+_p = __p
+_line = __line
+
 
 from functools import cached_property
 
@@ -76,11 +83,11 @@ class HeavyComputation:
 
     @cached_property
     def total(self):
-        __p(__line("Computing total"))
+        _p(_line("Computing total"))
         return sum(self.data)
 
 hc = HeavyComputation([1, 2, 3, 4, 5])
-__p(__line(hc.total))
-__p(__line(hc.total))  # cached in instance __dict__!
-__p(__line("total" in hc.__dict__))
+_p(_line(hc.total))
+_p(_line(hc.total))  # cached in instance __dict__!
+_p(_line("total" in hc.__dict__))
 __check(__buf, "Computing total\n15\n15\nTrue")

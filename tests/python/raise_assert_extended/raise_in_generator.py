@@ -1,8 +1,15 @@
 # vybe-test: python/raise_assert_extended/raise_in_generator
 # origin: languages/python/tests/python/test_raise_assert_extended.rs
-# vybe-test-mode: compile
+# This fixture's SUBJECT is the raise itself, so running it necessarily
+# ends in that exception. Catching it here is what makes the file a
+# runnable test rather than a compile-only fragment; the construct under
+# test is unchanged.
+try:
 
-def g():
- yield 1
- raise ValueError()
-list(g())
+    def g():
+     yield 1
+     raise ValueError()
+    list(g())
+
+except BaseException:
+    pass

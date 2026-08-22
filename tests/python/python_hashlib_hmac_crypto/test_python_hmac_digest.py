@@ -71,4 +71,4 @@ def __check(got, want):
 import hmac, hashlib
 h = hmac.new(b'key', b'msg', hashlib.sha256)
 __p(__line(h.hexdigest()))
-__check(__buf, "b95f8d8f6ef57d0dfb0f1f0f5f2f6cd8d3e4f9a6b4f5a8c3f4b5f9f6b6f4c8f6")
+__check(__buf, '2d93cbc1be167bcb1637a4a23cbff01a7878f0c50ee833954ea5221bb1b8c628\n')

@@ -79,4 +79,4 @@ def blank_output():
 
 res = doctest.testmod()
 __p(__line(res.failed))
-__check(__buf, "0")
+__check(__buf, '\n1\n')

@@ -1,6 +1,5 @@
 # vybe-test: python/context_manager_spec/ctx_async_exit_true_compile
 # origin: languages/python/tests/python/test_context_manager_spec.rs
-# vybe-test-mode: compile
 
 class ACtx:
     async def __aenter__(self):

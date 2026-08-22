@@ -67,6 +67,12 @@ def __check(got, want):
     if got != want and got != want + "\n":
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
+# PRIVATE NAME MANGLING: inside a class body CPython rewrites `__name` to
+# `_ClassName__name`, so the harness's `__p`/`__line` are unreachable
+# there. A SINGLE leading underscore is not mangled.
+_p = __p
+_line = __line
+
 
 class SuppressZeroDivision:
     def __enter__(self):
@@ -74,11 +80,11 @@ class SuppressZeroDivision:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if exc_type is ZeroDivisionError:
-            __p(__line("Suppression handled"))
+            _p(_line("Suppression handled"))
             return True # Returning True suppresses exception!
         return False
 
 with SuppressZeroDivision():
     x = 1 / 0
-__p(__line("Continued execution"))
+_p(_line("Continued execution"))
 __check(__buf, "Suppression handled\nContinued execution")

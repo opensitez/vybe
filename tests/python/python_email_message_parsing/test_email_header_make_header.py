@@ -71,4 +71,4 @@ def __check(got, want):
 from email.header import make_header, decode_header
 h = make_header([("café", "utf-8")])
 __p(__line(str(h)))
-__check(__buf, "=?utf-8?q?caf=C3=A9?=")
+__check(__buf, 'café\n')

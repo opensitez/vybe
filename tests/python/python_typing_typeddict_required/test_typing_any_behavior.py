@@ -71,4 +71,4 @@ def __check(got, want):
 from typing import Any
 __p(__line(isinstance(42, Any) if False else True))
 __p(__line(Any is not None))
-__check(__buf, "True")
+__check(__buf, 'True\nTrue\n')

@@ -72,4 +72,4 @@ import inspect
 class C:
  def m(self): pass
 __p(__line(inspect.ismethoddescriptor(C.m)))
-__check(__buf, "True")
+__check(__buf, 'False\n')

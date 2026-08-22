@@ -79,4 +79,4 @@ if __name__ == "__main__":
     p.start()
     p.join()
     __p(__line(q.get()))
-__check(__buf, "hello from worker")
+    __check(__buf, "hello from worker")

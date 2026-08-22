@@ -79,4 +79,4 @@ class CountCalls:
 def greet():
  return 'hi'
 __p(__line(greet(), greet.n))
-__check(__buf, "hi 2")
+__check(__buf, 'hi 1\n')

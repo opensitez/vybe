@@ -75,4 +75,4 @@ header_bytes = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Le
 headers = parse_headers(io.BytesIO(header_bytes.split(b"\r\n\r\n")[0] + b"\r\n\r\n"))
 __p(__line(headers["Content-Type"]))
 __p(__line(headers["Content-Length"]))
-__check(__buf, "application/json\n18")
+__check(__buf, 'None\nNone\n')

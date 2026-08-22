@@ -68,5 +68,8 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
-__p(__line((1+0j) == 1))
+# The name is 'real parts only differ' — but `(1+0j)` and `1` have the SAME
+# real part, and CPython says they ARE equal. Two complexes whose real parts
+# differ is what the name describes.
+__p(__line((1+0j) == (2+0j)))
 __check(__buf, "False")

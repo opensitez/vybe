@@ -75,4 +75,4 @@ class Settings(TypedDict, total=False):
 
 __p(__line(set(Settings.__optional_keys__) == {"debug"}))
 __p(__line(len(Settings.__required_keys__) == 0))
-__check(__buf, "True")
+__check(__buf, 'True\nTrue\n')

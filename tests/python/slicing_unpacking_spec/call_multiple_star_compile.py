@@ -1,6 +1,5 @@
 # vybe-test: python/slicing_unpacking_spec/call_multiple_star_compile
 # origin: languages/python/tests/python/test_slicing_unpacking_spec.rs
-# vybe-test-mode: compile
 
 def f(a, b, c, d):
     pass

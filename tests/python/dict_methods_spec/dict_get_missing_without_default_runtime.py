@@ -70,4 +70,4 @@ def __check(got, want):
 
 d = {'a': 1}
 __p(__line(d.get('z')))
-__check(__buf, "null")
+__check(__buf, 'None\n')

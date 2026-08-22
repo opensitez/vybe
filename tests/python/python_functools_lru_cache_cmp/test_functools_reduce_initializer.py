@@ -72,4 +72,4 @@ import functools
 numbers = [1, 2, 3, 4]
 result = functools.reduce(lambda acc, x: acc + x, numbers, 10)
 __p(__line(result))
-__check(__buf, "14")
+__check(__buf, '20\n')

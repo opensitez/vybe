@@ -73,4 +73,4 @@ import multiprocessing
 if __name__ == "__main__":
     children = multiprocessing.active_children()
     __p(__line(isinstance(children, list)))
-__check(__buf, "True")
+    __check(__buf, "True")

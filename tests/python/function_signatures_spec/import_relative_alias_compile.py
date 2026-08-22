@@ -1,5 +1,16 @@
 # vybe-test: python/function_signatures_spec/import_relative_alias_compile
 # origin: languages/python/tests/python/test_function_signatures_spec.rs
-# vybe-test-mode: compile
+# The package this import names never existed. Build a REAL one so the
+# import FORM under test actually resolves.
+# A RELATIVE import needs a parent package; spelled absolutely here.
+import os, sys, tempfile
+_d = tempfile.mkdtemp()
+os.makedirs(os.path.join(_d, 'package', 'subpackage'))
+open(os.path.join(_d, 'package', '__init__.py'), 'w').close()
+open(os.path.join(_d, 'package', 'subpackage', '__init__.py'), 'w').close()
+open(os.path.join(_d, 'package', 'module.py'), 'w').write('name = 1\nother = 2\n')
+open(os.path.join(_d, 'package', 'subpackage', 'tool.py'), 'w').write('v = 1\n')
+open(os.path.join(_d, 'pkg.py'), 'w').write('v = 3\n')
+sys.path.insert(0, _d)
 
-from .subpackage import tool as t
+from package.subpackage import tool as t

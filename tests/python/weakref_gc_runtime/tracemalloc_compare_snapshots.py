@@ -1,6 +1,5 @@
 # vybe-test: python/weakref_gc_runtime/tracemalloc_compare_snapshots
 # origin: languages/python/tests/python/test_weakref_gc_runtime.rs
-# vybe-test-mode: compile
 
 import tracemalloc
 tracemalloc.start()

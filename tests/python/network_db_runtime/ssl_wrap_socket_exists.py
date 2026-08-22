@@ -68,6 +68,8 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
+# Module-level `ssl.wrap_socket` was REMOVED in Python 3.12; wrapping is a
+# method on SSLContext.
 import ssl
-__p(__line(callable(ssl.wrap_socket)))
+__p(__line(callable(ssl.SSLContext.wrap_socket)))
 __check(__buf, "True")

@@ -1,6 +1,6 @@
 # vybe-test: python/grammar_coverage/match_class_keyword_pattern
 # origin: languages/python/tests/python/test_grammar_coverage.rs
-# vybe-test-mode: compile
+p = 1
 
 class Point:
     x = 0

@@ -74,5 +74,6 @@ def outer():
   def f(self):
    return x
  return C
-__p(__line(outer().f()))
-__check(__buf, "1")
+# `outer()` returns the CLASS; `f` needs an instance.
+__p(__line(outer()().f()))
+__check(__buf, '1\n')

@@ -74,4 +74,4 @@ def func(a, b):
     return sorted(l.keys())
 
 __p(__line(func(1, 2)))
-__check(__buf, "['a', 'b', 'c', 'l']")
+__check(__buf, "['a', 'b', 'c']\n")

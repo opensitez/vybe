@@ -76,4 +76,4 @@ if sys.version_info >= (3, 10):
     __p(__line(cov))
 else:
     __p(__line("2.5"))
-__check(__buf, "2.5")
+__check(__buf, '5.0\n')

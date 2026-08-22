@@ -71,6 +71,8 @@ def __check(got, want):
 import copy, sys
 try:
     copy.copy(sys)
-except copy.Error:
+# Copying a MODULE raises TypeError ("cannot pickle 'module' object"), not
+# `copy.Error`.
+except TypeError:
     __p(__line("Error"))
-__check(__buf, "Error")
+__check(__buf, 'Error\n')

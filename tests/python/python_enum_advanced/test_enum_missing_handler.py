@@ -79,5 +79,8 @@ class Code(Enum):
         return None
 
 __p(__line(Code(200)))
-__p(__line(Code(999)))
-__check(__buf, "Code.OK\nNone")
+try:
+ __p(__line(Code(999)))
+except ValueError:
+ __p(__line('ValueError'))
+__check(__buf, 'Code.OK\nValueError\n')

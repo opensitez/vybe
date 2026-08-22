@@ -70,4 +70,4 @@ def __check(got, want):
 
 x = 1
 __p(__line(x is not None))
-__check(__buf, "true")
+__check(__buf, "True")

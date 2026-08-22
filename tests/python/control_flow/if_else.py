@@ -1,6 +1,6 @@
 # vybe-test: python/control_flow/if_else
 # origin: languages/python/tests/python/test_control_flow.rs
-# vybe-test-mode: compile
+x = 1
 
 if x:
     print(1)

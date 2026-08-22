@@ -1,6 +1,5 @@
 # vybe-test: python/programs/word_frequency
 # origin: languages/python/tests/python/test_programs.rs
-# vybe-test-mode: compile
 
 text = "the cat sat on the mat the cat"
 words = text.split()

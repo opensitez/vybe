@@ -72,4 +72,4 @@ import site, os
 path, norm = site.makepath('foo', 'bar')
 __p(__line(path == os.path.join('foo', 'bar')))
 __p(__line(norm == os.path.normcase(path)))
-__check(__buf, "True\nTrue")
+__check(__buf, 'False\nTrue\n')

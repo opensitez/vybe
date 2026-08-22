@@ -72,4 +72,4 @@ import random
 random.seed(1)
 __p(__line(round(random.triangular(1, 10, 2), 1)))
 __p(__line(random.sample([1, 2, 3, 4], 2)))
-__check(__buf, "3.0\n[1, 4]")
+__check(__buf, '2.1\n[1, 2]\n')

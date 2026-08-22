@@ -70,4 +70,4 @@ def __check(got, want):
 
 import urllib.parse
 __p(__line(urllib.parse.splittag('path#frag')))
-__check(__buf, "('path', '#frag')")
+__check(__buf, "('path', 'frag')\n")

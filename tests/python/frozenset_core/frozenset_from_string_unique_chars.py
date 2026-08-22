@@ -68,5 +68,8 @@ def __check(got, want):
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
-__p(__line(frozenset('aba')))
-__check(__buf, "frozenset({'a', 'b'})")
+# Set iteration order is NOT guaranteed in Python (randomized per process
+# for strings), so a set's REPR is not a legitimate expectation — it would
+# pin CPython's internal hash layout. `sorted()` states the CONTENTS.
+__p(__line(sorted(frozenset('aba'))))
+__check(__buf, "['a', 'b']\n")
