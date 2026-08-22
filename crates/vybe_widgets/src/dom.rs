@@ -28,7 +28,7 @@
 //!   matches it, and it is not the widget's name.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use crate::controls::make_widget;
 use crate::css::{BoxEdges, Edges, Style};
@@ -83,6 +83,18 @@ pub enum NodeKind {
     /// Not character data: excluded from an ancestor's `textContent` the way a
     /// comment is. XML-only, for the same reason.
     ProcessingInstruction,
+    /// `Node.DOCUMENT_FRAGMENT_NODE` — a parent with no place in the document.
+    ///
+    /// The point of it is what INSERTING one does: the fragment's children move
+    /// into the target and the fragment itself does not (DOM §4.2.1). That is
+    /// what makes building a subtree off-tree and attaching it in one step a
+    /// single reflow instead of one per node, and it is why a fragment cannot
+    /// be modelled as "an element nobody appended" — appending THAT would put
+    /// an extra level in the tree the caller never asked for.
+    ///
+    /// It owns no widget, for the same reason a text node owns none: it never
+    /// becomes a box.
+    DocumentFragment,
 }
 
 /// Which grammar a document was built from — and therefore whether names in
@@ -139,6 +151,45 @@ impl Attribute {
             None => &self.name,
         }
     }
+}
+
+/// `dataset.fooBar` → `data-foo-bar` (HTML §3.2.6.6).
+///
+/// The two halves of the `dataset` name mapping are free functions rather than
+/// methods because they depend on nothing but the string, and because getting
+/// them out of step is the one way `dataset` can silently read a different
+/// attribute than it writes.
+fn dataset_attribute(key: &str) -> String {
+    let mut name = String::from("data-");
+    for ch in key.chars() {
+        if ch.is_ascii_uppercase() {
+            name.push('-');
+            name.push(ch.to_ascii_lowercase());
+        } else {
+            name.push(ch);
+        }
+    }
+    name
+}
+
+/// `data-foo-bar` → `fooBar`, or `None` for an attribute that is not `data-*`.
+fn dataset_key(attribute: &str) -> Option<String> {
+    let rest = attribute.strip_prefix("data-")?;
+    let mut key = String::new();
+    let mut upper = false;
+    for ch in rest.chars() {
+        if ch == '-' {
+            upper = true;
+            continue;
+        }
+        if upper {
+            key.extend(ch.to_uppercase());
+            upper = false;
+        } else {
+            key.push(ch);
+        }
+    }
+    Some(key)
 }
 
 /// The bookkeeping a document owns and a control does not.
@@ -348,6 +399,165 @@ pub struct DomEvent {
     pub node: NodeId,
     /// `click`, `input`, `change`, `mouseenter`, …
     pub kind: &'static str,
+    /// `preventDefault()` was called — DOM §2.3.
+    prevented: bool,
+    /// `stopPropagation()` was called.
+    stopped: bool,
+}
+
+impl DomEvent {
+    pub fn new(node: NodeId, kind: &'static str) -> Self {
+        DomEvent {
+            node,
+            kind,
+            prevented: false,
+            stopped: false,
+        }
+    }
+
+    /// `event.preventDefault()`.
+    ///
+    /// Only means anything if listeners run BEFORE the default action. A design
+    /// that queues events and dispatches them a frame later cannot honour it —
+    /// by then there is nothing left to prevent — which is why dispatch belongs
+    /// in the browser, beside the thing it is cancelling.
+    pub fn prevent_default(&mut self) {
+        self.prevented = true;
+    }
+    pub fn default_prevented(&self) -> bool {
+        self.prevented
+    }
+    /// `event.stopPropagation()`.
+    pub fn stop_propagation(&mut self) {
+        self.stopped = true;
+    }
+    pub fn propagation_stopped(&self) -> bool {
+        self.stopped
+    }
+}
+
+/// A listener's handle.
+///
+/// `removeEventListener` needs to unsubscribe the EXACT registration, and two
+/// callbacks can be indistinguishable to the browser — it never sees what they
+/// are. An id issued at registration is the only thing that identifies one.
+pub type ListenerId = u32;
+
+/// What the browser stores for a listener: an OPAQUE closure.
+///
+/// Deliberately not a guest value. `vybe_widgets` does not depend on the
+/// runtime and must not — a browser does not know what language its page is
+/// written in. A host registers by wrapping its own callback in one of these.
+///
+/// **The handler is HANDED the document.** It does not go and find it. A
+/// listener does DOM work — `getAttribute`, `setTextContent` — and if it had to
+/// re-acquire the document it would re-enter the borrow the dispatcher is
+/// already holding. Passing it in is what makes dispatch synchronous, and
+/// synchronous dispatch is the only kind in which `preventDefault` can cancel
+/// anything.
+pub type EventHandler = Box<dyn Fn(&mut DomEvent, &mut Document) + Send + Sync + 'static>;
+
+struct Registration {
+    id: ListenerId,
+    node: NodeId,
+    kind: String,
+    handler: EventHandler,
+}
+
+#[derive(Default)]
+struct EventListenersInner {
+    entries: Vec<Registration>,
+    next_id: ListenerId,
+}
+
+/// `EventTarget` — DOM §2.7.
+///
+/// Shared and interior-mutable so registering takes `&self`: a page adds a
+/// listener from inside a handler, which is already holding the document.
+#[derive(Clone, Default)]
+pub struct EventListeners {
+    inner: Arc<RwLock<EventListenersInner>>,
+}
+
+impl EventListeners {
+    /// `addEventListener(type, callback)`. Returns the handle to remove it.
+    pub fn add(&self, node: NodeId, kind: &str, handler: EventHandler) -> ListenerId {
+        let Ok(mut inner) = self.inner.write() else {
+            return 0;
+        };
+        inner.next_id += 1;
+        let id = inner.next_id;
+        inner.entries.push(Registration {
+            id,
+            node,
+            kind: kind.to_ascii_lowercase(),
+            handler,
+        });
+        id
+    }
+
+    /// `removeEventListener` — by the handle `add` issued.
+    pub fn remove(&self, id: ListenerId) {
+        if let Ok(mut inner) = self.inner.write() {
+            inner.entries.retain(|e| e.id != id);
+        }
+    }
+
+    /// Every listener on a node goes when the node does.
+    pub fn remove_all(&self, node: NodeId) {
+        if let Ok(mut inner) = self.inner.write() {
+            inner.entries.retain(|e| e.node != node);
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.read().map(|i| i.entries.is_empty()).unwrap_or(true)
+    }
+
+    /// `dispatchEvent` — run this event's listeners in registration order and
+    /// answer whether the default action survives (`false` when one called
+    /// `preventDefault`, matching the IDL).
+    ///
+    /// The table is borrowed SHARED and the document mutably, which is why the
+    /// two are separate: a handler mutates the tree while the registry it came
+    /// from stays readable, so a listener may add or remove listeners while
+    /// running.
+    /// ⚠ The read lock is HELD while handlers run, so a handler must not
+    /// register or remove a listener — that takes the write lock and would
+    /// deadlock. The same contract the other engine works under.
+    pub fn dispatch(&self, document: &mut Document, event: &mut DomEvent) -> bool {
+        // Phase 1 — which registrations match, by index, under a read borrow
+        // that ends here.
+        let matches: Vec<usize> = {
+            let Ok(inner) = self.inner.read() else {
+                return true;
+            };
+            inner
+                .entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.node == event.node && e.kind == event.kind)
+                .map(|(i, _)| i)
+                .collect()
+        };
+        if matches.is_empty() {
+            return true;
+        }
+
+        // Phase 2 — call them, handing each the document. The table is borrowed
+        // shared and the document mutably, which is the whole reason they are
+        // separate values.
+        let Ok(inner) = self.inner.read() else {
+            return true;
+        };
+        for index in matches {
+            (inner.entries[index].handler)(event, document);
+            if event.propagation_stopped() {
+                break;
+            }
+        }
+        !event.default_prevented()
+    }
 }
 
 impl DomNode {
@@ -421,6 +631,14 @@ pub struct Document {
     /// match" and for walking the document.
     order: Vec<NodeId>,
     next_id: NodeId,
+    /// `EventTarget` — the listeners registered on this document's nodes.
+    ///
+    /// The BROWSER owns these, as a browser does. They used to live above the
+    /// seam in `platforms/web`, which then had to drain a queue of "node N
+    /// fired K" and match it against its own table to reconstruct a dispatch
+    /// that had already happened. A page's listeners are document state, and
+    /// this is where document state goes.
+    listeners: EventListeners,
     /// Created but not yet inserted. The state a toolkit has no place for.
     detached: HashMap<NodeId, Box<dyn PanelWidget>>,
     /// The document element's own `style`. `DOCUMENT` is not in `nodes` — it is
@@ -522,6 +740,7 @@ impl Document {
             nodes: HashMap::new(),
             order: Vec::new(),
             next_id: 0,
+            listeners: EventListeners::default(),
             detached: HashMap::new(),
             document_style: Style::new(),
             document_computed: crate::css::CssProperties::default(),
@@ -546,11 +765,11 @@ impl Document {
         // (`relayout_body`) instead of by the flow every other block box uses.
         // With a real element there, `body` is an ordinary block container and
         // the root stops being different from a `<div>`.
-        let html = document.create_element("html", "");
+        let html = document.create_element_typed("html", "");
         document.append_child(DOCUMENT, html);
-        let head = document.create_element("head", "");
+        let head = document.create_element_typed("head", "");
         document.append_child(html, head);
-        let body = document.create_element("body", "");
+        let body = document.create_element_typed("body", "");
         document.append_child(html, body);
         document.body = Some(body);
         // **The root boxes start at zero inset.** `FlowLayoutPanel` gives
@@ -780,7 +999,29 @@ impl Document {
 
     /// `document.createElement(localName)`. The control is built; it is not
     /// in the document, and renders nothing, until something appends it.
-    pub fn create_element(&mut self, tag: &str, input_type: &str) -> NodeId {
+    /// `document.createElement(tagName)` — DOM §4.5.
+    ///
+    /// ONE argument, as the IDL has it. An `<input>` starts as its missing-value
+    /// default (`text`) and becomes a checkbox when `type` is set, exactly as it
+    /// does in a browser — `set_attribute("type", …)` already rebuilds the
+    /// control, and its own comment records what it cost to learn that ("every
+    /// `<input>` a script built rendered as a text box, because the type always
+    /// arrived after the element did").
+    ///
+    /// This used to take the type as a second parameter, which saved that one
+    /// rebuild but put an engine detail — that this browser realises a control
+    /// eagerly — into the shared surface, where the other engine has no such
+    /// need and no such argument.
+    pub fn create_element(&mut self, tag: &str) -> NodeId {
+        self.create_element_typed(tag, "")
+    }
+
+    /// Create an element WITH its input type already known, skipping the
+    /// rebuild that setting `type` afterwards would cause.
+    ///
+    /// Not the web API — an internal shortcut for callers that already know
+    /// both, kept because this browser builds the control at creation time.
+    pub fn create_element_typed(&mut self, tag: &str, input_type: &str) -> NodeId {
         let tag = self.fold_name(tag.trim());
         // The disambiguator is a VALUE, not a name — `<input type=CheckBox>`
         // names the same control as `checkbox` in HTML, and `control_kind`
@@ -875,7 +1116,7 @@ impl Document {
         qualified_name: &str,
         input_type: &str,
     ) -> NodeId {
-        let node = self.create_element(qualified_name, input_type);
+        let node = self.create_element_typed(qualified_name, input_type);
         if let Some(n) = self.nodes.get_mut(&node) {
             // An empty namespace is `null`, per spec — not the empty string.
             n.namespace = (!namespace.is_empty()).then(|| namespace.to_string());
@@ -952,6 +1193,35 @@ impl Document {
         id
     }
 
+    /// `document.createDocumentFragment()` — a detached parent to build in.
+    ///
+    /// No widget and no tag: it is never a box. What it is FOR is the moment
+    /// it gets appended, when its children move across and it does not — see
+    /// [`append_child`](Self::append_child).
+    pub fn create_document_fragment(&mut self) -> NodeId {
+        self.next_id += 1;
+        let id = self.next_id;
+        self.nodes.insert(
+            id,
+            DomNode {
+                id,
+                kind: NodeKind::DocumentFragment,
+                tag: "#document-fragment".to_string(),
+                ..DomNode::default()
+            },
+        );
+        self.order.push(id);
+        id
+    }
+
+    /// Whether this node is a `DocumentFragment` — the question
+    /// [`append_child`](Self::append_child) and
+    /// [`insert_before`](Self::insert_before) ask before deciding what
+    /// inserting it means.
+    pub fn is_document_fragment(&self, node: NodeId) -> bool {
+        self.node(node).map(|n| n.kind) == Some(NodeKind::DocumentFragment)
+    }
+
     /// `node.nodeType` — the WHATWG number (DOM §4.4).
     ///
     /// `9` for the document, which has no `DomNode` of its own; the kinds
@@ -968,6 +1238,7 @@ impl Document {
             Some(NodeKind::CData) => 4,
             Some(NodeKind::ProcessingInstruction) => 7,
             Some(NodeKind::Comment) => 8,
+            Some(NodeKind::DocumentFragment) => 11,
             None => 0,
         }
     }
@@ -984,6 +1255,7 @@ impl Document {
             Some((NodeKind::Text, _)) => "#text".to_string(),
             Some((NodeKind::CData, _)) => "#cdata-section".to_string(),
             Some((NodeKind::Comment, _)) => "#comment".to_string(),
+            Some((NodeKind::DocumentFragment, _)) => "#document-fragment".to_string(),
             None => String::new(),
         }
     }
@@ -1001,15 +1273,6 @@ impl Document {
     /// `node.parentNode` — `None` for a detached node and for the document.
     pub fn parent_node(&self, node: NodeId) -> Option<NodeId> {
         self.node(node)?.parent
-    }
-
-    /// `node.childNodes` — every child, in document order, of every kind.
-    ///
-    /// The LIVE list, answered per call. It is deliberately not a property on
-    /// a node handle: a handle is made once and a tree changes, so a stamped
-    /// copy would be right when it was taken and wrong immediately after.
-    pub fn children_of(&self, node: NodeId) -> Vec<NodeId> {
-        self.child_nodes(node)
     }
 
     /// Is this node a text node?
@@ -1131,10 +1394,27 @@ impl Document {
     ///
     /// `as_any_mut` exists on `PanelWidget` for exactly this and says so; only
     /// `Canvas` overrides it.
-    pub fn canvas_mut(&mut self, node: NodeId) -> Option<&mut crate::canvas_widget::Canvas> {
+    /// The canvas ELEMENT's widget.
+    ///
+    /// Not public: a page does not reach an element's rendering object, it asks
+    /// for a CONTEXT. `get_context_2d` below is that, and this is the hop it
+    /// takes to get there.
+    fn canvas_mut(&mut self, node: NodeId) -> Option<&mut crate::canvas_widget::Canvas> {
         self.widget_mut(node)?
             .as_any_mut()?
             .downcast_mut::<crate::canvas_widget::Canvas>()
+    }
+
+    /// `canvas.getContext("2d")` — the drawing surface, or `None` when the node
+    /// is not a `<canvas>`.
+    ///
+    /// One call, not two. Callers used to write
+    /// `canvas_mut(node)?.canvas_mut()`: the element's widget, then the surface
+    /// inside it. That second hop is an implementation detail of how a canvas
+    /// is stored, and the IDL has no name for it — `getContext` goes straight
+    /// from the element to the context.
+    pub fn get_context_2d(&mut self, node: NodeId) -> Option<&mut crate::canvas::RecordingCanvas> {
+        Some(self.canvas_mut(node)?.canvas_mut())
     }
 
     /// `context.measureText(text).width` — the one canvas call that ASKS.
@@ -1148,8 +1428,8 @@ impl Document {
     /// Shaping is done with the SAME attributes `fillText` will draw with —
     /// measuring in the regular face and drawing in bold is how text overruns
     /// the box it was sized for.
-    pub fn measure_canvas_text(&mut self, node: NodeId, text: &str) -> Option<f32> {
-        let font = self.canvas_mut(node)?.canvas_mut().current_font();
+    pub fn measure_text(&mut self, node: NodeId, text: &str) -> Option<f32> {
+        let font = self.get_context_2d(node)?.current_font();
         let spec = crate::ide_text::FontSpec {
             family: font.family.clone(),
             size: font.size,
@@ -1271,7 +1551,7 @@ impl Document {
     /// it is a different API with a different argument: a tag NAME, not a
     /// selector, so `getElementsByTagName("*")` and `querySelectorAll("*")`
     /// agreeing is a coincidence rather than a shared implementation.
-    pub fn elements_by_tag(&self, tag: &str) -> Vec<NodeId> {
+    pub fn get_elements_by_tag_name(&self, tag: &str) -> Vec<NodeId> {
         let tag = self.fold_name(tag);
         self.order
             .iter()
@@ -1405,7 +1685,7 @@ impl Document {
         // Read across the swap, not after it: the old control is the only
         // thing holding these and it is about to be dropped.
         let text = self.text_content(node);
-        let previous = self.rect(node);
+        let previous = self.get_bounding_client_rect(node);
 
         let kind = control_kind(&tag, &input_type);
         let (w, h) = default_size(kind, &tag);
@@ -1446,7 +1726,7 @@ impl Document {
         // never been told any of it. Diffing against a blank set is what makes
         // "everything this element computes to" the change, which is the same
         // trick a first cascade plays on an element that has just been born.
-        let computed = self.computed_style(node).clone();
+        let computed = self.get_computed_style(node).clone();
         self.resolve_box_edges(node);
         for (property, value) in
             crate::css::changed_declarations(&crate::css::CssProperties::default(), &computed)
@@ -1505,6 +1785,21 @@ impl Document {
         child: NodeId,
         before: Option<NodeId>,
     ) -> bool {
+        // **A fragment inserts its CHILDREN and not itself** (DOM §4.2.1).
+        // Inserting the fragment node would put a `#document-fragment` in the
+        // tree — something no selector matches and no layout knows — and leave
+        // the caller's nodes one level deeper than they asked for. Each child
+        // goes before the SAME reference, which is what keeps them in order.
+        //
+        // Ahead of the checks below because they are about the node being
+        // inserted, and after this line that node is a different one.
+        if self.is_document_fragment(child) {
+            let mut inserted = false;
+            for node in self.child_nodes(child) {
+                inserted |= self.insert_before(parent, node, before);
+            }
+            return inserted;
+        }
         let parent = self.content_parent(parent, child);
         if let Some(reference) = before {
             if reference == child || !self.child_nodes(parent).contains(&reference) {
@@ -1934,8 +2229,12 @@ impl Document {
             NodeKind::ProcessingInstruction => {
                 self.create_processing_instruction(&source.tag, &source.data)
             }
+            // Cloning a fragment gives an EMPTY fragment; `deep` below fills
+            // it. A fragment carries no name, no attributes and no data, so
+            // there is nothing else of it to copy.
+            NodeKind::DocumentFragment => self.create_document_fragment(),
             NodeKind::Element => {
-                let clone = self.create_element(&source.tag, &source.input_type);
+                let clone = self.create_element_typed(&source.tag, &source.input_type);
                 // The namespace travels with the clone — an element that lost
                 // it would be in the wrong vocabulary the moment it was
                 // inserted, and nothing about the tag would show it.
@@ -1980,14 +2279,27 @@ impl Document {
     /// `parent.removeChild(child)` — back out of the document, not destroyed.
     pub fn remove_child(&mut self, parent: NodeId, child: NodeId) -> bool {
         let parent = self.content_parent(parent, child);
-        let Some(widget) = self.extract_widget(child) else {
+        // **Being a child is the precondition — not owning a widget.**
+        //
+        // This used to bail when `extract_widget` came back empty, which reads
+        // as a "not there" check and is not one: a text or comment node never
+        // had a widget, because it is content of the box it sits in rather
+        // than a box. So `removeChild(textNode)` unlinked nothing, returned
+        // `false`, and said nothing — and `set_text_content`, which clears a
+        // box by looping this over its children, left the old text behind and
+        // appended the new beside it.
+        if !self.child_nodes(parent).contains(&child) {
             return false;
-        };
+        }
+        let widget = self.extract_widget(child);
         self.unlink_child(parent, child);
         if let Some(n) = self.nodes.get_mut(&child) {
             n.parent = None;
         }
-        self.detached.insert(child, widget);
+        // Kept for re-insertion, when there was one to keep.
+        if let Some(widget) = widget {
+            self.detached.insert(child, widget);
+        }
         // Leaving the tree changes what this element inherits just as surely as
         // joining one does — it now inherits nothing. Without this it would
         // keep the colour and font of a parent it is no longer inside, and get
@@ -2000,7 +2312,7 @@ impl Document {
     }
 
     /// `element.isConnected`.
-    pub fn connected(&self, node: NodeId) -> bool {
+    pub fn is_connected(&self, node: NodeId) -> bool {
         node == DOCUMENT
             || self
                 .nodes
@@ -2390,7 +2702,7 @@ impl Document {
         } else {
             property.to_ascii_lowercase()
         };
-        let before = self.computed_style(node).clone();
+        let before = self.get_computed_style(node).clone();
         // **A grid template is stored EXPANDED.** `repeat(7, 1fr)` and
         // `1fr 1fr 1fr 1fr 1fr 1fr 1fr` are the same template, and CSSOM
         // serialises the resolved track list — so normalising on the way in
@@ -2460,11 +2772,11 @@ impl Document {
         // var(--pad)` it invalidated sits on this same element and has to be
         // taken back.
         let own: Vec<(&'static str, String)> =
-            crate::css::changed_declarations(&before, self.computed_style(node))
+            crate::css::changed_declarations(&before, self.get_computed_style(node))
                 .into_iter()
                 .filter(|(name, _)| *name != property.as_str())
                 .collect();
-        let moved = !own.is_empty() || self.computed_style(node) != &before;
+        let moved = !own.is_empty() || self.get_computed_style(node) != &before;
         for (name, value) in own {
             self.apply_style_property(node, name, &value);
         }
@@ -3327,7 +3639,7 @@ impl Document {
         // Cascade first, for the same reason as `positions_itself`: a rule in a
         // stylesheet is as much an answer to "how is this box positioned" as an
         // inline declaration, and only one of the two used to be heard.
-        if let Some(position) = self.computed_style(node).position {
+        if let Some(position) = self.get_computed_style(node).position {
             return position.as_css().to_string();
         }
         self.style(node)
@@ -3355,11 +3667,11 @@ impl Document {
     /// used — the same exception the cascade makes, stated the same way, so the
     /// value pushed to a widget cannot disagree with the value in the store.
     fn font_context(&self, node: NodeId, property: &str) -> crate::css::FontContext {
-        let own = self.computed_style(node).font_size;
+        let own = self.get_computed_style(node).font_size;
         let parent = self
             .node(node)
             .and_then(|n| n.parent)
-            .and_then(|p| self.computed_style(p).font_size);
+            .and_then(|p| self.get_computed_style(p).font_size);
         let em = if property == "font-size" { parent } else { own.or(parent) };
         crate::css::FontContext {
             em: em.unwrap_or(16.0),
@@ -3522,7 +3834,7 @@ impl Document {
     /// [`Document::tell_container`] asks the child who its parent is, which is
     /// still nobody.
     fn announce_child_display(&mut self, parent: NodeId, child: NodeId) {
-        let Some(display) = self.computed_style(child).display else {
+        let Some(display) = self.get_computed_style(child).display else {
             return;
         };
         let spec = format!("{}={}", Self::widget_name(child), display.as_css());
@@ -3539,7 +3851,7 @@ impl Document {
         // Named parent, not `tell_container`: nothing is linked yet at this
         // point, so asking the child who its parent is answers nobody and the
         // send would silently do nothing.
-        let shrink = self.computed_style(child).flex_shrink.unwrap_or(1.0);
+        let shrink = self.get_computed_style(child).flex_shrink.unwrap_or(1.0);
         for (verb, mode) in [
             ("SetChildFlexShrink", shrink.to_string()),
             ("SetChildWidthMode", self.axis_mode(child, true).to_string()),
@@ -3562,7 +3874,7 @@ impl Document {
     /// container anyway. `fill_available_width` makes exactly this distinction
     /// for the body's children; this is the same question one level down.
     fn axis_mode(&self, node: NodeId, horizontal: bool) -> &'static str {
-        let props = self.computed_style(node);
+        let props = self.get_computed_style(node);
         let declared = if horizontal {
             props.width.is_some()
         } else {
@@ -3638,7 +3950,7 @@ impl Document {
     fn establishes_independent_track_layout(&self, node: NodeId) -> bool {
         use crate::css::Display;
         matches!(
-            self.computed_style(node).display,
+            self.get_computed_style(node).display,
             Some(Display::Flex)
                 | Some(Display::InlineFlex)
                 | Some(Display::Grid)
@@ -3660,7 +3972,7 @@ impl Document {
         if parent == DOCUMENT {
             return false;
         }
-        let container = self.computed_style(parent);
+        let container = self.get_computed_style(parent);
         let grid = matches!(
             container.display,
             Some(crate::css::Display::Grid) | Some(crate::css::Display::InlineGrid)
@@ -3673,7 +3985,7 @@ impl Document {
         {
             return false;
         }
-        let own = self.computed_style(node);
+        let own = self.get_computed_style(node);
         // **A grid item is stretched to its ROW**, and both axes stretch by
         // default — there is no main/cross split to make, so the block axis is
         // definite whenever the grid's own is. This is what carries a tight
@@ -3713,7 +4025,7 @@ impl Document {
     }
 
     fn apply_formatting(&mut self, node: NodeId) {
-        let Some(display) = self.computed_style(node).display else {
+        let Some(display) = self.get_computed_style(node).display else {
             return;
         };
         let spelling = display.as_css().to_string();
@@ -3760,7 +4072,7 @@ impl Document {
         // container, which is the moment the initial value starts to apply.
         if context == "flex" {
             let direction = self
-                .computed_style(node)
+                .get_computed_style(node)
                 .flex_direction
                 .map(|d| d.as_css().to_string())
                 .unwrap_or_else(|| "row".to_string());
@@ -3790,7 +4102,7 @@ impl Document {
     /// Tell the container where this item sits — both axes, whole, on any
     /// change, for the same reason the border is sent whole.
     fn send_grid_placement(&mut self, node: NodeId) {
-        let props = self.computed_style(node);
+        let props = self.get_computed_style(node);
         let line = |l: Option<crate::css::GridLine>| {
             l.unwrap_or(crate::css::GridLine::Auto).as_css()
         };
@@ -3816,7 +4128,7 @@ impl Document {
     /// and styles are legal CSS and rare; stated as the boundary rather than
     /// half-supported.
     fn send_border(&mut self, node: NodeId) {
-        let props = self.computed_style(node);
+        let props = self.get_computed_style(node);
         let (widths, styles, colours) = (props.border_width, props.border_style, props.border_color);
         // **Each side decides for itself.** A side whose style is `none` is
         // zero-wide however wide it was declared — CSS's rule — so the style is
@@ -3852,7 +4164,7 @@ impl Document {
     /// `None` when nothing in the cascade set that axis — which is the state
     /// that means "the container decides", not zero.
     fn computed_axis(&self, node: NodeId, axis: &str) -> Option<String> {
-        let props = self.computed_style(node);
+        let props = self.get_computed_style(node);
         let length = match axis {
             "left" => props.offsets.left,
             "top" => props.offsets.top,
@@ -3923,7 +4235,7 @@ impl Document {
                 return;
             }
             if matches!(
-                self.computed_style(parent).display,
+                self.get_computed_style(parent).display,
                 Some(Display::Table) | Some(Display::InlineTable)
             ) {
                 // **Re-setting the SAME rect is the invalidation, not a
@@ -4070,7 +4382,7 @@ impl Document {
     /// at all is one this stylesheet has never met, and stretching either
     /// across the page would be a guess wearing a rule's clothes.
     fn fill_available_width(&mut self, node: NodeId, available: f32) -> bool {
-        let props = self.computed_style(node);
+        let props = self.get_computed_style(node);
         // **Block-LEVEL, not `display: block`.** `display` says two things, and
         // this is the outer half: a `flex` or `grid` box participates in its
         // parent's flow exactly as a block does, so `width: auto` fills the
@@ -4144,7 +4456,7 @@ impl Document {
         // the CSSOM's own record and carries the `left`/`top` inference below,
         // which has no computed equivalent.
         use crate::css::Position;
-        match self.computed_style(node).position {
+        match self.get_computed_style(node).position {
             Some(Position::Absolute) | Some(Position::Fixed) => return true,
             Some(Position::Static) | Some(Position::Relative) | Some(Position::Sticky) => {
                 return false;
@@ -4174,6 +4486,712 @@ impl Document {
 
     /// An element's `style`. A node that does not exist has no declarations,
     /// which is what the CSSOM says an absent element's style reads as.
+    /// `node.parentElement` — the parent, but only when it IS an element.
+    pub fn parent_element(&self, node: NodeId) -> Option<NodeId> {
+        let parent = self.parent_node(node)?;
+        self.is_element(parent).then_some(parent)
+    }
+
+    /// `node.firstChild` / `lastChild` — of ANY kind.
+    pub fn first_child(&self, node: NodeId) -> Option<NodeId> {
+        self.child_nodes(node).first().copied()
+    }
+
+    pub fn last_child(&self, node: NodeId) -> Option<NodeId> {
+        self.child_nodes(node).last().copied()
+    }
+
+    pub fn has_child_nodes(&self, node: NodeId) -> bool {
+        !self.child_nodes(node).is_empty()
+    }
+
+    /// `node.contains(other)` — DOM §4.4. A node CONTAINS ITSELF.
+    pub fn contains(&self, node: NodeId, other: NodeId) -> bool {
+        let mut current = Some(other);
+        while let Some(id) = current {
+            if id == node {
+                return true;
+            }
+            current = self.parent_node(id);
+        }
+        false
+    }
+
+    /// `element.children` — ELEMENT children only, unlike `childNodes`.
+    pub fn children(&self, node: NodeId) -> Vec<NodeId> {
+        self.child_nodes(node)
+            .into_iter()
+            .filter(|c| self.is_element(*c))
+            .collect()
+    }
+
+    pub fn first_element_child(&self, node: NodeId) -> Option<NodeId> {
+        self.children(node).first().copied()
+    }
+
+    pub fn last_element_child(&self, node: NodeId) -> Option<NodeId> {
+        self.children(node).last().copied()
+    }
+
+    pub fn child_element_count(&self, node: NodeId) -> usize {
+        self.children(node).len()
+    }
+
+    /// `element.nextElementSibling` — skips text and comments.
+    pub fn next_element_sibling(&self, node: NodeId) -> Option<NodeId> {
+        let parent = self.parent_node(node)?;
+        let siblings = self.children(parent);
+        let at = siblings.iter().position(|n| *n == node)?;
+        siblings.get(at + 1).copied()
+    }
+
+    pub fn previous_element_sibling(&self, node: NodeId) -> Option<NodeId> {
+        let parent = self.parent_node(node)?;
+        let siblings = self.children(parent);
+        let at = siblings.iter().position(|n| *n == node)?;
+        if at == 0 { None } else { siblings.get(at - 1).copied() }
+    }
+
+    /// `element.matches(selectors)`.
+    ///
+    /// Answered through `querySelectorAll`, so one selector engine decides
+    /// both questions — a `matches` that disagreed with the selector that
+    /// found the element would be worse than not having it.
+    pub fn matches(&self, node: NodeId, selectors: &str) -> bool {
+        self.query_selector_all(selectors).contains(&node)
+    }
+
+    /// `element.closest(selectors)` — nearest ancestor-OR-SELF that matches.
+    pub fn closest(&self, node: NodeId, selectors: &str) -> Option<NodeId> {
+        let candidates = self.query_selector_all(selectors);
+        let mut current = Some(node);
+        while let Some(id) = current {
+            if candidates.contains(&id) {
+                return Some(id);
+            }
+            current = self.parent_node(id);
+        }
+        None
+    }
+
+    /// `getElementsByClassName(names)` — every element carrying ALL the named
+    /// classes, in tree order.
+    pub fn get_elements_by_class_name(&self, names: &str) -> Vec<NodeId> {
+        let wanted: Vec<&str> = names.split_whitespace().collect();
+        if wanted.is_empty() {
+            return Vec::new();
+        }
+        self.get_elements_by_tag_name("*")
+            .into_iter()
+            .filter(|id| wanted.iter().all(|c| self.class_list_contains(*id, c)))
+            .collect()
+    }
+
+    /// `element.hasAttributes()`.
+    ///
+    /// `&mut` because `getAttributeNames` reconstructs `style`/`value`/`checked`
+    /// from the live control, which this engine has to ask the widget for.
+    pub fn has_attributes(&mut self, node: NodeId) -> bool {
+        !self.get_attribute_names(node).is_empty()
+    }
+
+    /// `element.toggleAttribute(name)` — answers its presence AFTERWARDS.
+    pub fn toggle_attribute(&mut self, node: NodeId, name: &str) -> bool {
+        if self.has_attribute(node, name) {
+            self.remove_attribute(node, name);
+            false
+        } else {
+            self.set_attribute(node, name, "");
+            true
+        }
+    }
+
+    /// `element.className` / `element.id`.
+    pub fn class_name(&mut self, node: NodeId) -> String {
+        self.get_attribute(node, "class").unwrap_or_default()
+    }
+
+    pub fn set_class_name(&mut self, node: NodeId, value: &str) {
+        self.set_attribute(node, "class", value);
+    }
+
+    pub fn id(&mut self, node: NodeId) -> String {
+        self.get_attribute(node, "id").unwrap_or_default()
+    }
+
+    pub fn set_id(&mut self, node: NodeId, value: &str) {
+        self.set_attribute(node, "id", value);
+    }
+
+    /// `document.documentElement` / `head`.
+    pub fn document_element(&self) -> Option<NodeId> {
+        self.query_selector("html").or_else(|| self.body())
+    }
+
+    pub fn head(&self) -> Option<NodeId> {
+        self.query_selector("head")
+    }
+
+    // ─── Node comparison and normalisation (DOM §4.4, §4.5) ─────────────────
+
+    /// `node.normalize()` — drop empty text nodes and merge adjacent ones.
+    ///
+    /// What makes a tree built by repeated `appendChild(createTextNode(..))`
+    /// compare equal to the same tree built by a parser. Until it runs, two
+    /// documents that render identically can disagree under
+    /// [`is_equal_node`](Self::is_equal_node) purely over where the text was
+    /// split, which is a difference no reader can see.
+    pub fn normalize(&mut self, node: NodeId) {
+        let children = self.child_nodes(node);
+        for &child in &children {
+            self.normalize(child);
+        }
+        // The run being merged INTO. Reset by any non-text child, because two
+        // text nodes with an element between them are not adjacent.
+        let mut run: Option<NodeId> = None;
+        for child in children {
+            if self.node(child).map(|n| n.kind) != Some(NodeKind::Text) {
+                run = None;
+                continue;
+            }
+            let data = self.node(child).map(|n| n.data.clone()).unwrap_or_default();
+            if data.is_empty() {
+                // A zero-length text node is removed outright — and does NOT
+                // break the run, so `a`, ``, `b` merges to `ab`.
+                self.remove_child(node, child);
+                continue;
+            }
+            match run {
+                Some(first) => {
+                    if let Some(n) = self.nodes.get_mut(&first) {
+                        n.data.push_str(&data);
+                    }
+                    self.remove_child(node, child);
+                }
+                None => run = Some(child),
+            }
+        }
+    }
+
+    /// `node.isEqualNode(other)` — structural equality, not identity.
+    ///
+    /// Attribute ORDER is deliberately not part of it (DOM §4.4): an attribute
+    /// list is a set as far as equality is concerned, so two elements written
+    /// `<a id x>` and `<a x id>` are equal.
+    pub fn is_equal_node(&self, a: NodeId, b: NodeId) -> bool {
+        let (Some(x), Some(y)) = (self.node(a), self.node(b)) else {
+            // The document node itself has no `DomNode`, so identity is the
+            // only thing that can answer for it — but ONLY for it. Two ids
+            // that name nothing are not nodes, and two non-nodes are not
+            // equal to each other.
+            return a == b && a == DOCUMENT;
+        };
+        if x.kind != y.kind {
+            return false;
+        }
+        match x.kind {
+            NodeKind::Element => {
+                if x.tag != y.tag || x.namespace != y.namespace {
+                    return false;
+                }
+                if x.attributes.len() != y.attributes.len() {
+                    return false;
+                }
+                let matched = x.attributes.iter().all(|a| {
+                    y.attributes.iter().any(|b| {
+                        a.namespace == b.namespace && a.name == b.name && a.value == b.value
+                    })
+                });
+                if !matched {
+                    return false;
+                }
+            }
+            _ => {
+                if x.data != y.data {
+                    return false;
+                }
+            }
+        }
+        x.children.len() == y.children.len()
+            && x.children
+                .iter()
+                .zip(y.children.iter())
+                .all(|(&c, &d)| self.is_equal_node(c, d))
+    }
+
+    /// The root-to-node path, used to put two nodes in tree order.
+    fn ancestor_path(&self, node: NodeId) -> Vec<NodeId> {
+        let mut path = vec![node];
+        let mut current = node;
+        while let Some(parent) = self.parent_node(current) {
+            path.push(parent);
+            current = parent;
+        }
+        path.reverse();
+        path
+    }
+
+    /// `node.compareDocumentPosition(other)` — DOM §4.4's bitmask.
+    ///
+    /// `DISCONNECTED 0x01`, `PRECEDING 0x02`, `FOLLOWING 0x04`,
+    /// `CONTAINS 0x08`, `CONTAINED_BY 0x10`, `IMPLEMENTATION_SPECIFIC 0x20`.
+    /// Containment always arrives paired with a direction, which is why the
+    /// answers below are two bits and not one.
+    pub fn compare_document_position(&self, a: NodeId, b: NodeId) -> u16 {
+        const DISCONNECTED: u16 = 0x01;
+        const PRECEDING: u16 = 0x02;
+        const FOLLOWING: u16 = 0x04;
+        const CONTAINS: u16 = 0x08;
+        const CONTAINED_BY: u16 = 0x10;
+        const IMPLEMENTATION_SPECIFIC: u16 = 0x20;
+
+        if a == b {
+            return 0;
+        }
+        let pa = self.ancestor_path(a);
+        let pb = self.ancestor_path(b);
+        if pa.first() != pb.first() {
+            // The spec lets an implementation pick the direction for two
+            // detached trees, but requires it to be CONSISTENT. Ordering by
+            // the node handle is the cheapest thing that is.
+            let direction = if a < b { FOLLOWING } else { PRECEDING };
+            return DISCONNECTED | IMPLEMENTATION_SPECIFIC | direction;
+        }
+        // The first index at which the two paths part company.
+        let split = pa
+            .iter()
+            .zip(pb.iter())
+            .position(|(x, y)| x != y)
+            .unwrap_or_else(|| pa.len().min(pb.len()));
+        if split == pa.len() {
+            return CONTAINED_BY | FOLLOWING;
+        }
+        if split == pb.len() {
+            return CONTAINS | PRECEDING;
+        }
+        // Same parent at `split - 1`; their order there is the answer.
+        let siblings = self.child_nodes(pa[split - 1]);
+        let ia = siblings.iter().position(|n| *n == pa[split]);
+        let ib = siblings.iter().position(|n| *n == pb[split]);
+        match (ia, ib) {
+            (Some(ia), Some(ib)) if ia < ib => FOLLOWING,
+            (Some(_), Some(_)) => PRECEDING,
+            _ => DISCONNECTED | IMPLEMENTATION_SPECIFIC | FOLLOWING,
+        }
+    }
+
+    // ─── The rest of ParentNode / ChildNode (DOM §4.2.6) ────────────────────
+
+    /// `parent.append(...nodes)`.
+    pub fn append(&mut self, parent: NodeId, nodes: &[NodeId]) {
+        for &node in nodes {
+            self.append_child(parent, node);
+        }
+    }
+
+    /// `parent.prepend(...nodes)`.
+    ///
+    /// Every node goes before the ORIGINAL first child, not before whatever is
+    /// first at the time — inserting each before the running first child would
+    /// hand the caller its nodes back reversed.
+    pub fn prepend(&mut self, parent: NodeId, nodes: &[NodeId]) {
+        let reference = self.first_child(parent);
+        for &node in nodes {
+            self.insert_before(parent, node, reference);
+        }
+    }
+
+    /// `node.before(...nodes)`.
+    pub fn before(&mut self, node: NodeId, nodes: &[NodeId]) {
+        let Some(parent) = self.parent_node(node) else { return };
+        for &new in nodes {
+            self.insert_before(parent, new, Some(node));
+        }
+    }
+
+    /// `node.after(...nodes)`.
+    pub fn after(&mut self, node: NodeId, nodes: &[NodeId]) {
+        let Some(parent) = self.parent_node(node) else { return };
+        let reference = self.next_sibling(node);
+        for &new in nodes {
+            self.insert_before(parent, new, reference);
+        }
+    }
+
+    /// `node.replaceWith(...nodes)`.
+    pub fn replace_with(&mut self, node: NodeId, nodes: &[NodeId]) {
+        let Some(parent) = self.parent_node(node) else { return };
+        for &new in nodes {
+            self.insert_before(parent, new, Some(node));
+        }
+        self.remove_child(parent, node);
+    }
+
+    /// `element.insertAdjacentElement(position, element)`.
+    ///
+    /// Returns the inserted element, or `None` for an unknown position or a
+    /// placement with no parent to hold it — the IDL's `null`.
+    pub fn insert_adjacent_element(
+        &mut self,
+        node: NodeId,
+        position: &str,
+        other: NodeId,
+    ) -> Option<NodeId> {
+        let placed = match position.to_ascii_lowercase().as_str() {
+            "beforebegin" => {
+                let parent = self.parent_node(node)?;
+                self.insert_before(parent, other, Some(node))
+            }
+            "afterbegin" => {
+                let reference = self.first_child(node);
+                self.insert_before(node, other, reference)
+            }
+            "beforeend" => self.append_child(node, other),
+            "afterend" => {
+                let parent = self.parent_node(node)?;
+                let reference = self.next_sibling(node);
+                self.insert_before(parent, other, reference)
+            }
+            _ => false,
+        };
+        placed.then_some(other)
+    }
+
+    /// `element.insertAdjacentText(position, data)`.
+    pub fn insert_adjacent_text(&mut self, node: NodeId, position: &str, data: &str) {
+        let text = self.create_text_node(data);
+        self.insert_adjacent_element(node, position, text);
+    }
+
+    // ─── HTMLElement: dataset, innerText, tabIndex, click (HTML §3.2.6) ─────
+
+    /// `element.dataset` — every `data-*` attribute, keyed the way the IDL
+    /// names it rather than the way it is spelled in the markup.
+    ///
+    /// A snapshot, not the live `DOMStringMap`: Rust has nowhere to put an
+    /// object whose property writes reach back into the element, so the pair
+    /// [`set_dataset`](Self::set_dataset) / [`remove_dataset`](Self::remove_dataset)
+    /// carries the write side.
+    /// Sorted by key, which is the ONLY order the other engine can also
+    /// promise — it keeps its attributes in a map and has no document order
+    /// left to report. Two engines that answer in different orders would make
+    /// `dataset(n)[0]` mean different things, so neither reports its own.
+    pub fn dataset(&self, node: NodeId) -> Vec<(String, String)> {
+        let mut pairs: Vec<(String, String)> = self
+            .node(node)
+            .map(|n| {
+                n.attributes
+                    .iter()
+                    .filter_map(|a| dataset_key(&a.name).map(|k| (k, a.value.clone())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        pairs.sort();
+        pairs
+    }
+
+    /// `element.dataset[key]`.
+    pub fn dataset_get(&self, node: NodeId, key: &str) -> Option<String> {
+        let name = dataset_attribute(key);
+        self.node(node)
+            .and_then(|n| n.attributes.iter().find(|a| a.name == name))
+            .map(|a| a.value.clone())
+    }
+
+    /// `element.dataset[key] = value`.
+    pub fn set_dataset(&mut self, node: NodeId, key: &str, value: &str) {
+        let name = dataset_attribute(key);
+        self.set_attribute(node, &name, value);
+    }
+
+    /// `delete element.dataset[key]`.
+    pub fn remove_dataset(&mut self, node: NodeId, key: &str) {
+        let name = dataset_attribute(key);
+        self.remove_attribute(node, &name);
+    }
+
+    /// `element.innerText` — the RENDERED text.
+    ///
+    /// The difference from `textContent` is the cascade: a subtree the styles
+    /// hid contributes nothing, and a block boundary becomes a line break.
+    /// Reading `textContent` where a page asked for `innerText` is how hidden
+    /// markup leaks into a string a user is shown.
+    pub fn inner_text(&mut self, node: NodeId) -> String {
+        let mut out = String::new();
+        self.inner_text_into(node, &mut out);
+        out.trim_matches('\n').to_string()
+    }
+
+    fn inner_text_into(&mut self, node: NodeId, out: &mut String) {
+        match self.node(node).map(|n| n.kind) {
+            Some(NodeKind::Text) => {
+                if let Some(n) = self.node(node) {
+                    let data = n.data.clone();
+                    out.push_str(&data);
+                }
+            }
+            Some(NodeKind::Element) => {
+                let display = self.computed_style_property(node, "display");
+                if display == "none" {
+                    return;
+                }
+                let block = display != "inline";
+                if block && !out.is_empty() && !out.ends_with('\n') {
+                    out.push('\n');
+                }
+                for child in self.child_nodes(node) {
+                    self.inner_text_into(child, out);
+                }
+                if block && !out.is_empty() && !out.ends_with('\n') {
+                    out.push('\n');
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// `element.tabIndex`.
+    ///
+    /// The default is not zero for everything: HTML §6.6.3 gives 0 to what is
+    /// focusable without the attribute and −1 to the rest, so a `<div>` and a
+    /// `<button>` answer differently with no `tabindex` on either.
+    pub fn tab_index(&self, node: NodeId) -> i32 {
+        let declared = self
+            .node(node)
+            .and_then(|n| n.attributes.iter().find(|a| a.name == "tabindex"))
+            .and_then(|a| a.value.trim().parse::<i32>().ok());
+        if let Some(value) = declared {
+            return value;
+        }
+        let Some(n) = self.node(node) else { return -1 };
+        match n.tag.as_str() {
+            // A link is only in the sequence once it has somewhere to go.
+            "a" | "area" => {
+                if n.attributes.iter().any(|a| a.name == "href") {
+                    0
+                } else {
+                    -1
+                }
+            }
+            "button" | "input" | "select" | "textarea" | "iframe" => 0,
+            _ => -1,
+        }
+    }
+
+    /// `element.tabIndex = index`.
+    pub fn set_tab_index(&mut self, node: NodeId, index: i32) {
+        self.set_attribute(node, "tabindex", &index.to_string());
+    }
+
+    /// `element.click()` — a synthetic click, dispatched like a real one.
+    ///
+    /// It goes through [`dispatch_event`](Self::dispatch_event) rather than
+    /// calling handlers directly so that capture, bubbling and
+    /// `stopPropagation` behave exactly as they do for a user's click. A page
+    /// cannot tell the two apart, which is the point.
+    pub fn click(&mut self, node: NodeId) {
+        let mut event = DomEvent::new(node, "click");
+        self.dispatch_event(&mut event);
+    }
+
+    // ─── CSSOM-View (§5) ───────────────────────────────────────────────────
+
+    /// `element.getClientRects()`.
+    ///
+    /// One rect per box the element generates. A form's inline runs carry no
+    /// geometry of their own, so a wrapped inline reports the single border
+    /// box here where a line-box engine would report one rect per line.
+    pub fn get_client_rects(&mut self, node: NodeId) -> Vec<crate::layout::LayoutRect> {
+        self.get_bounding_client_rect(node).into_iter().collect()
+    }
+
+    /// `element.scrollIntoView()`.
+    ///
+    /// A form's document has no scrollable viewport — every box is laid out
+    /// inside the window it was given and nothing is clipped out of view, so
+    /// the element is already in view and there is no scroll offset to move.
+    /// Present because a page calls it unconditionally; it is not standing in
+    /// for scrolling that ought to be happening.
+    pub fn scroll_into_view(&mut self, _node: NodeId) {}
+
+    /// `element.offsetParent` — the nearest POSITIONED ancestor, else the body.
+    pub fn offset_parent(&mut self, node: NodeId) -> Option<NodeId> {
+        let mut current = self.parent_node(node)?;
+        loop {
+            let tag = self.node(current).map(|n| n.tag.clone()).unwrap_or_default();
+            if tag == "body" || tag == "html" {
+                return self.body();
+            }
+            if self.computed_style_property(current, "position") != "static" {
+                return Some(current);
+            }
+            current = self.parent_node(current)?;
+        }
+    }
+
+    /// `element.offsetTop` — the border box's top edge, relative to
+    /// [`offset_parent`](Self::offset_parent) rather than to the viewport.
+    pub fn offset_top(&mut self, node: NodeId) -> f32 {
+        let own = self.get_bounding_client_rect(node).map(|r| r.y).unwrap_or(0.0);
+        let origin = self
+            .offset_parent(node)
+            .and_then(|p| self.get_bounding_client_rect(p))
+            .map(|r| r.y)
+            .unwrap_or(0.0);
+        own - origin
+    }
+
+    /// `element.offsetLeft` — see [`offset_top`](Self::offset_top).
+    pub fn offset_left(&mut self, node: NodeId) -> f32 {
+        let own = self.get_bounding_client_rect(node).map(|r| r.x).unwrap_or(0.0);
+        let origin = self
+            .offset_parent(node)
+            .and_then(|p| self.get_bounding_client_rect(p))
+            .map(|r| r.x)
+            .unwrap_or(0.0);
+        own - origin
+    }
+
+    // ─── The namespaced accessors that were missing their pair ─────────────
+
+    /// `element.hasAttributeNS(namespace, localName)`.
+    pub fn has_attribute_ns(&self, node: NodeId, namespace: &str, local_name: &str) -> bool {
+        let namespace = (!namespace.is_empty()).then_some(namespace);
+        self.node(node)
+            .and_then(|n| n.attribute_ns(namespace, local_name))
+            .is_some()
+    }
+
+    /// `element.removeAttributeNS(namespace, localName)`.
+    pub fn remove_attribute_ns(&mut self, node: NodeId, namespace: &str, local_name: &str) {
+        let namespace = (!namespace.is_empty()).then(|| namespace.to_string());
+        if let Some(n) = self.nodes.get_mut(&node) {
+            n.attributes
+                .retain(|a| !(a.namespace == namespace && a.local_name() == local_name));
+        }
+    }
+
+    /// `element.hasAttribute(name)`.
+    ///
+    /// Not `get_attribute(..).is_some()` at the call site: an attribute present
+    /// with an EMPTY value is present, and `checked=""` is exactly that.
+    pub fn has_attribute(&self, node: NodeId, name: &str) -> bool {
+        let name = self.fold_name(name);
+        self.nodes
+            .get(&node)
+            .map(|n| n.attributes.iter().any(|a| a.name == name))
+            .unwrap_or(false)
+    }
+
+    /// `element.tagName`.
+    pub fn tag_name(&self, node: NodeId) -> Option<&str> {
+        self.nodes.get(&node).map(|n| n.tag.as_str())
+    }
+
+    /// `element.offsetWidth` / `offsetHeight` — the laid-out border box, as an
+    /// integer count of pixels. Zero for a node with no box, which is what a
+    /// browser answers for `display: none`.
+    pub fn offset_width(&mut self, node: NodeId) -> f32 {
+        self.get_bounding_client_rect(node).map(|r| r.w).unwrap_or(0.0)
+    }
+
+    pub fn offset_height(&mut self, node: NodeId) -> f32 {
+        self.get_bounding_client_rect(node).map(|r| r.h).unwrap_or(0.0)
+    }
+
+    /// `node.nextSibling` / `previousSibling` — the next node of ANY kind, not
+    /// just the next element. `None` at the end of the list.
+    pub fn next_sibling(&self, node: NodeId) -> Option<NodeId> {
+        let parent = self.parent_node(node)?;
+        let siblings = self.child_nodes(parent);
+        let i = siblings.iter().position(|n| *n == node)?;
+        siblings.get(i + 1).copied()
+    }
+
+    pub fn previous_sibling(&self, node: NodeId) -> Option<NodeId> {
+        let parent = self.parent_node(node)?;
+        let siblings = self.child_nodes(parent);
+        let i = siblings.iter().position(|n| *n == node)?;
+        if i == 0 { None } else { siblings.get(i - 1).copied() }
+    }
+
+    // ── `element.classList` ──────────────────────────────────────────────
+    //
+    // Flattened rather than returning a `DOMTokenList`: the token list is a
+    // LIVE object over the `class` attribute, and there is no object to hand
+    // back across this surface. The operations are the list's, and each one
+    // reads and rewrites the attribute, so the attribute stays the single
+    // source of truth — `getAttribute("class")` and `classList` cannot
+    // disagree.
+
+    fn class_tokens(&self, node: NodeId) -> Vec<String> {
+        self.nodes
+            .get(&node)
+            .and_then(|n| n.attributes.iter().find(|a| a.name == "class"))
+            .map(|a| a.value.split_whitespace().map(str::to_string).collect())
+            .unwrap_or_default()
+    }
+
+    fn write_class_tokens(&mut self, node: NodeId, tokens: &[String]) {
+        self.set_attribute(node, "class", &tokens.join(" "));
+    }
+
+    /// `classList.add(token)`. Adding a token already present does nothing —
+    /// the list is a SET, so this must not produce `"a a"`.
+    pub fn class_list_add(&mut self, node: NodeId, class: &str) {
+        let mut tokens = self.class_tokens(node);
+        if tokens.iter().any(|t| t == class) {
+            return;
+        }
+        tokens.push(class.to_string());
+        self.write_class_tokens(node, &tokens);
+    }
+
+    /// `classList.remove(token)` — every occurrence, since a malformed
+    /// attribute may carry duplicates.
+    pub fn class_list_remove(&mut self, node: NodeId, class: &str) {
+        let mut tokens = self.class_tokens(node);
+        let before = tokens.len();
+        tokens.retain(|t| t != class);
+        if tokens.len() != before {
+            self.write_class_tokens(node, &tokens);
+        }
+    }
+
+    /// `classList.toggle(token)` — returns whether the token is present
+    /// AFTERWARDS, which is what the IDL returns.
+    pub fn class_list_toggle(&mut self, node: NodeId, class: &str) -> bool {
+        if self.class_list_contains(node, class) {
+            self.class_list_remove(node, class);
+            false
+        } else {
+            self.class_list_add(node, class);
+            true
+        }
+    }
+
+    /// `classList.contains(token)`.
+    pub fn class_list_contains(&self, node: NodeId, class: &str) -> bool {
+        self.class_tokens(node).iter().any(|t| t == class)
+    }
+
+    /// `element.style.removeProperty(property)` — returns the value it had.
+    ///
+    /// Not the same as setting it to `""`: a declaration present with an empty
+    /// value still SHADOWS the cascade, while a removed one lets the cascade
+    /// through again.
+    pub fn remove_style_property(&mut self, node: NodeId, property: &str) -> Option<String> {
+        let property = if crate::css::is_custom_property(property) {
+            property.trim().to_string()
+        } else {
+            property.to_ascii_lowercase()
+        };
+        if node == DOCUMENT {
+            return self.document_style.remove(&property);
+        }
+        self.nodes.get_mut(&node).and_then(|n| n.style.remove(&property))
+    }
+
     pub fn style(&self, node: NodeId) -> Option<&Style> {
         if node == DOCUMENT {
             return Some(&self.document_style);
@@ -4197,12 +5215,19 @@ impl Document {
     /// top. That order is the whole rule — `CssProperties::merge` keeps every
     /// field the author did not specify, which is what lets a `<strong>` be
     /// bold and still take `font-weight: normal` from a program.
-    pub fn style_properties(&self, node: NodeId) -> crate::css::CssProperties {
-        self.computed_style(node).clone()
+    /// A CLONE of the computed properties.
+    ///
+    /// Not public: `getComputedStyle` is the web spelling and it is right next
+    /// door. This exists only as an in-crate convenience for callers that want
+    /// an owned copy rather than a borrow.
+    pub(crate) fn style_properties(&self, node: NodeId) -> crate::css::CssProperties {
+        self.get_computed_style(node).clone()
     }
 
     /// The stored computed style — a READ, never a derivation.
-    pub fn computed_style(&self, node: NodeId) -> &crate::css::CssProperties {
+    /// `getComputedStyle(element)` — the resolved property set after the
+    /// cascade.
+    pub fn get_computed_style(&self, node: NodeId) -> &crate::css::CssProperties {
         if node == DOCUMENT {
             return &self.document_computed;
         }
@@ -4241,7 +5266,7 @@ impl Document {
         let parent_size = self
             .node(node)
             .and_then(|n| n.parent)
-            .and_then(|parent| self.computed_style(parent).font_size)
+            .and_then(|parent| self.get_computed_style(parent).font_size)
             .unwrap_or(16.0);
         let root_size = self.document_computed.font_size.unwrap_or(16.0);
         let ctx = crate::css::FontContext {
@@ -4284,7 +5309,7 @@ impl Document {
         let mut props = self
             .node(node)
             .and_then(|n| n.parent)
-            .map(|parent| self.computed_style(parent).inherited())
+            .map(|parent| self.get_computed_style(parent).inherited())
             .unwrap_or_default();
         if let Some(n) = self.node(node) {
             // The UA layer is a fixed table with no `var()` in it, so only the
@@ -4415,9 +5440,9 @@ impl Document {
     fn restyle_subtree(&mut self, root: NodeId) {
         let mut stack = vec![root];
         while let Some(id) = stack.pop() {
-            let before = self.computed_style(id).clone();
+            let before = self.get_computed_style(id).clone();
             self.resolve_computed(id);
-            let changes = crate::css::changed_declarations(&before, self.computed_style(id));
+            let changes = crate::css::changed_declarations(&before, self.get_computed_style(id));
             // A run carries a RESOLVED style, so a cascade change on an inline
             // element is a change to its parent's line — there is no widget of
             // its own for the declaration to reach.
@@ -4464,7 +5489,7 @@ impl Document {
         let Some(n) = self.node(node) else {
             return false;
         };
-        let props = self.computed_style(node);
+        let props = self.get_computed_style(node);
         // **Blockification** — CSS 2.1 §9.7. Taking an element out of flow
         // makes its computed `display` block, whatever it was declared as: an
         // absolutely positioned `<span>` is a box with a rect, not a run of its
@@ -4562,7 +5587,7 @@ impl Document {
         if !self.is_element(node) || self.is_inline_content(node) {
             return false;
         }
-        let props = self.computed_style(node);
+        let props = self.get_computed_style(node);
         if props.is_out_of_flow() || self.positions_itself(node) {
             return false;
         }
@@ -4607,14 +5632,14 @@ impl Document {
             // runs, which is the whole point: order is what interleaving IS.
             if self.is_atomic_inline(child) {
                 let mut font = crate::ide_text::FontSpec::sans(14.0);
-                font.apply_computed(self.computed_style(child));
+                font.apply_computed(self.get_computed_style(child));
                 runs.push(crate::layout::InlineRun {
                     text: String::new(),
                     font,
                     color: (0, 0, 0, 255),
                     source: Some(Self::widget_name(child)),
                     atomic: Some(Self::widget_name(child)),
-                    cursor: self.computed_style(child).cursor,
+                    cursor: self.get_computed_style(child).cursor,
                 });
                 continue;
             }
@@ -4649,7 +5674,7 @@ impl Document {
             } else {
                 child
             };
-            let props = self.computed_style(styled);
+            let props = self.get_computed_style(styled);
             let mut font = crate::ide_text::FontSpec::sans(14.0);
             font.apply_computed(props);
             let color = props
@@ -4997,9 +6022,9 @@ impl Document {
         // line high however narrow it is, and measuring it against the content
         // width would give it the height of text that breaks — the number the
         // renderer then contradicts.
-        let wrap = (self.computed_style(node).white_space
+        let wrap = (self.get_computed_style(node).white_space
             != Some(crate::css::WhiteSpace::Nowrap)
-            && self.computed_style(node).white_space != Some(crate::css::WhiteSpace::Pre))
+            && self.get_computed_style(node).white_space != Some(crate::css::WhiteSpace::Pre))
         .then_some(content_w);
         let (_, content_h) = crate::ide_text::measure_rich_text(&spans, wrap);
         // The taller of the two, not one or the other: a line carrying text
@@ -5043,7 +6068,12 @@ impl Document {
     /// Every walk from the root has to know that or it stops at the document
     /// and silently covers nothing, which is what a subtree restyle starting at
     /// the body would have done.
-    pub(crate) fn child_nodes(&self, parent: NodeId) -> Vec<NodeId> {
+    /// `node.childNodes` — every child, in document order, of every kind.
+    ///
+    /// The LIVE list, answered per call. It is deliberately not a property on
+    /// a node handle: a handle is made once and a tree changes, so a stamped
+    /// copy would be right when it was taken and wrong immediately after.
+    pub fn child_nodes(&self, parent: NodeId) -> Vec<NodeId> {
         // The document's list lives on the document — see `root_children`.
         if parent == DOCUMENT {
             return self.root_children.clone();
@@ -5110,11 +6140,13 @@ impl Document {
 
     /// The **border box** — the rectangle the widget occupies, backgrounds
     /// paint, and every existing rect in the tree already means.
-    pub fn border_rect(&mut self, node: NodeId) -> LayoutRect {
-        if node == DOCUMENT {
-            return self.form.rect();
-        }
-        self.widget_mut(node).map(|w| w.rect()).unwrap_or_default()
+    /// The border box, unwrapped.
+    ///
+    /// NOT public: the web spelling is `getBoundingClientRect()`, and having
+    /// both meant two names for one measurement. Kept internally only as the
+    /// shorthand the other three boxes are derived from.
+    fn border_rect(&mut self, node: NodeId) -> LayoutRect {
+        self.get_bounding_client_rect(node).unwrap_or_default()
     }
 
     /// The **padding box** — inside the border, padding included.
@@ -5175,7 +6207,32 @@ impl Document {
     /// store, which is what makes a property the write side accepts readable —
     /// `color`, `background-color` and `font-size` all returned `""` before,
     /// having been consumed into widget commands and forgotten.
-    pub fn style_property(&mut self, node: NodeId, property: &str) -> String {
+    /// `element.style.getPropertyValue(property)` — the DECLARED value.
+    ///
+    /// ⛔ This used to answer `left`/`top`/`width`/`height` out of the laid-out
+    /// rect, so `setProperty("top", "1em")` read back `"16px"`. That is
+    /// `getComputedStyle`'s job, not this one: CSSOM §6.4.2 says a declaration
+    /// block serializes what was DECLARED, and nothing reachable from
+    /// `element.style` is resolved against layout. The resolved answer moved to
+    /// `computed_style_property` below rather than being deleted.
+    ///
+    /// The split is also what makes the engines interchangeable — htmlbox
+    /// always answered the declared value, so a single op could only ever have
+    /// been right for one of the two engines.
+    pub fn get_style_property(&mut self, node: NodeId, property: &str) -> String {
+        let property = property.to_ascii_lowercase();
+        self.declared_style(node, &property)
+    }
+
+    /// `getComputedStyle(element).getPropertyValue(property)` — the RESOLVED
+    /// value, in used units.
+    ///
+    /// Geometry comes from the laid-out rect, which is the whole point: a
+    /// toolkit's `Control.Left` wants the pixel the control actually occupies,
+    /// not whatever string was authored. Everything else falls back to the
+    /// declared value — an honest floor, since a full computed-value pass would
+    /// have to resolve every property against the cascade.
+    pub fn computed_style_property(&mut self, node: NodeId, property: &str) -> String {
         let property = property.to_ascii_lowercase();
         let rect = if node == DOCUMENT {
             self.form.rect()
@@ -5206,10 +6263,41 @@ impl Document {
     /// is depends on the control, which is exactly what HTML says: `value`
     /// means different things to a text field, a range and a select.
     pub fn set_value(&mut self, node: NodeId, value: &str) {
+        // ⛔ `select.value = v` selects the option WHOSE VALUE IS `v`
+        // (HTML §4.10.7). It is not an index — `selectedIndex` is the separate
+        // IDL member for that, and `gui.rs` already routes `SelectedIndex`
+        // there and says so. This arm used to `parse()` the string as an index,
+        // which made `sel.value = "1"` mean "select the second option" instead
+        // of "select the option worth 1", and made `value` a number in a member
+        // the IDL declares a DOMString.
+        //
+        // An item's value here is its TEXT: these lists hold strings, and
+        // `option.value` falls back to the option's label when no `value`
+        // attribute is present — which is always, for a widget-backed list.
+        if matches!(self.value_kind(node), ValueKind::Index) {
+            let mut index = 0usize;
+            while let CommandValue::Text(item) = self.command(node, &WidgetCommand::GetItem(index))
+            {
+                if item == value {
+                    self.command(node, &WidgetCommand::SetSelectedIndex(index));
+                    return;
+                }
+                index += 1;
+            }
+            // No option carries that value. HTML deselects, but the command
+            // vocabulary has no "select nothing" — `SetSelectedIndex` takes a
+            // `usize` — so the selection is left as it was. Stated rather than
+            // silently approximated with index 0, which would SELECT something
+            // the assignment never named.
+            return;
+        }
+
         let cmd = match self.value_kind(node) {
             ValueKind::Text => WidgetCommand::SetText(value.to_string()),
             ValueKind::Number => WidgetCommand::SetValue(value.trim().parse().unwrap_or(0.0)),
-            ValueKind::Index => WidgetCommand::SetSelectedIndex(value.trim().parse().unwrap_or(0)),
+            // Handled above; `value_kind` is re-matched here only for
+            // exhaustiveness.
+            ValueKind::Index => return,
             ValueKind::Checked => {
                 WidgetCommand::SetChecked(!value.eq_ignore_ascii_case("false") && !value.is_empty())
             }
@@ -5218,6 +6306,20 @@ impl Document {
     }
 
     pub fn value(&mut self, node: NodeId) -> String {
+        // The getter half of the note on `set_value`: a select answers with
+        // its SELECTED OPTION'S VALUE, not its index. `GetValue` on a list
+        // control reports `CommandValue::Index`, which the arm below would
+        // stringify — so `sel.value` used to read back `"1"` where HTML says
+        // the option's own text.
+        if matches!(self.value_kind(node), ValueKind::Index) {
+            let selected = self.selected_index(node);
+            return match usize::try_from(selected) {
+                Ok(index) => self.item_text(node, index),
+                // `selectedIndex` is -1 when nothing is selected, and `value`
+                // is the empty string then.
+                Err(_) => String::new(),
+            };
+        }
         match self.command(node, &WidgetCommand::GetValue) {
             CommandValue::Text(s) => s,
             CommandValue::Number(n) => format_number(n),
@@ -5423,7 +6525,13 @@ impl Document {
     /// a debugger dump saying "never laid out" for a control you can see is
     /// worse than saying nothing: it sent a session hunting container layout
     /// that was working.
-    pub fn rect(&mut self, node: NodeId) -> Option<LayoutRect> {
+    pub fn get_bounding_client_rect(&mut self, node: NodeId) -> Option<LayoutRect> {
+        // The DOCUMENT's box is the viewport. `border_rect` handled this and
+        // this did not, so the two disagreed for exactly the one node a page
+        // is most likely to measure.
+        if node == DOCUMENT {
+            return Some(self.form.rect());
+        }
         self.widget_mut(node).map(|w| w.rect())
     }
 
@@ -5461,7 +6569,7 @@ impl Document {
     /// and produced nothing — a declared member that was silently inert.
     pub fn add_item(&mut self, node: NodeId, text: &str) {
         if self.is_radio_group(node) {
-            let option = self.create_element("input", "radio");
+            let option = self.create_element_typed("input", "radio");
             self.append_child(node, option);
             // The caption is the control's own text, the way a VCL radio item
             // carries its label. HTML would wrap the input in a `<label>`; that
@@ -5542,6 +6650,71 @@ impl Document {
         !changed.is_empty()
     }
 
+    /// `EventTarget.addEventListener(type, callback)` — DOM §2.7.
+    ///
+    /// The browser keeps the listener. A host registers by wrapping its own
+    /// callback in a closure; nothing here knows what is inside it.
+    pub fn add_event_listener(
+        &self,
+        node: NodeId,
+        kind: &str,
+        handler: EventHandler,
+    ) -> ListenerId {
+        self.listeners.add(node, kind, handler)
+    }
+
+    /// `EventTarget.removeEventListener` — by the handle `add_event_listener`
+    /// issued.
+    ///
+    /// A HANDLE rather than the callback, because the browser cannot compare
+    /// two opaque closures and the spec's rule is identity, not equality. A
+    /// host that needs "remove the listener I registered with THIS callback"
+    /// keeps its own callback→handle map; that is a host concern, since only
+    /// the host can tell its callbacks apart.
+    pub fn remove_event_listener(&self, id: ListenerId) {
+        self.listeners.remove(id);
+    }
+
+    /// Every listener on a node, dropped with the node.
+    pub fn remove_all_listeners(&self, node: NodeId) {
+        self.listeners.remove_all(node);
+    }
+
+    /// `EventTarget.dispatchEvent(event)` — runs the listeners synchronously
+    /// and answers `false` if one called `preventDefault`.
+    ///
+    /// The registry is cloned out first: it is an `Arc`, so this is a refcount
+    /// bump, and it is what lets the handlers be borrowed from the table while
+    /// the document itself is handed to them mutably.
+    pub fn dispatch_event(&mut self, event: &mut DomEvent) -> bool {
+        let listeners = self.listeners.clone();
+        listeners.dispatch(self, event)
+    }
+
+    /// Turn the interactions that happened into DOM events and DISPATCH them.
+    ///
+    /// The replacement for handing a caller a queue. The browser translates its
+    /// own input into `click`/`input`/`change`, then calls the listeners — the
+    /// order a browser does it in, and the only order in which `preventDefault`
+    /// can still cancel anything.
+    ///
+    /// Answers how many events were dispatched, so a frame loop can tell
+    /// whether anything happened without being handed the events themselves.
+    pub fn dispatch_pending_events(&mut self) -> usize {
+        let events = self.drain_events();
+        let count = events.len();
+        for mut event in events {
+            self.dispatch_event(&mut event);
+        }
+        count
+    }
+
+    /// The interactions that happened, as DOM events.
+    ///
+    /// ⚠ NOT a web API — no browser lets a page pull from its event queue; the
+    /// UA dispatches. Kept `pub` only until the last caller moves to
+    /// `dispatch_pending_events`, and it is the translation half of it: widget
+    /// events in, `click`/`input`/`change` out.
     pub fn drain_events(&mut self) -> Vec<DomEvent> {
         self.refresh_interaction_states();
         let raw = self.form.drain_events();
@@ -5585,7 +6758,7 @@ impl Document {
                 continue;
             };
             for kind in kinds {
-                out.push(DomEvent { node, kind });
+                out.push(DomEvent::new(node, kind));
             }
         }
         out
@@ -6103,7 +7276,7 @@ mod tests {
         // answers exactly what the author wrote. A transform applied to the
         // stored text instead would pass the first assertion and fail this.
         let mut doc = Document::new("t");
-        let p = doc.create_element("p", "");
+        let p = doc.create_element_typed("p", "");
         doc.append_child(DOCUMENT, p);
         doc.set_text_content(p, "hello world");
         doc.set_style_property(p, "text-transform", "uppercase");
@@ -6118,9 +7291,9 @@ mod tests {
         // cosmic-text, this proves the declaration reaches the run's spec —
         // inherited from the container, so neither end is assumed.
         let mut doc = Document::new("t");
-        let box_ = doc.create_element("div", "");
+        let box_ = doc.create_element_typed("div", "");
         doc.append_child(DOCUMENT, box_);
-        let p = doc.create_element("p", "");
+        let p = doc.create_element_typed("p", "");
         doc.append_child(box_, p);
         doc.set_text_content(p, "spaced");
         doc.set_style_property(box_, "letter-spacing", "4px");
@@ -6134,9 +7307,9 @@ mod tests {
         // what makes it an inherited property rather than one the element must
         // declare for itself.
         let mut doc = Document::new("t");
-        let box_ = doc.create_element("div", "");
+        let box_ = doc.create_element_typed("div", "");
         doc.append_child(DOCUMENT, box_);
-        let p = doc.create_element("p", "");
+        let p = doc.create_element_typed("p", "");
         doc.append_child(box_, p);
         doc.set_text_content(p, "hello wide world");
         doc.set_style_property(box_, "text-transform", "capitalize");
@@ -6155,9 +7328,9 @@ mod tests {
         let overlapping = |z: Option<&str>, positioned: bool| {
             let mut doc = Document::new("t");
             let panel = container_with(&mut doc, 100.0, 100.0);
-            let under = doc.create_element("span", "");
+            let under = doc.create_element_typed("span", "");
             doc.append_child(panel, under);
-            let over = doc.create_element("span", "");
+            let over = doc.create_element_typed("span", "");
             doc.append_child(panel, over);
             for (node, colour) in [(under, "#ff0000"), (over, "#0000ff")] {
                 if positioned {
@@ -6207,9 +7380,9 @@ mod tests {
         // tree or carried a large z-index, neither of which the top layer
         // consults.
         let mut doc = Document::new("t");
-        let button = doc.create_element("button", "");
+        let button = doc.create_element_typed("button", "");
         doc.append_child(DOCUMENT, button);
-        let dialog = doc.create_element("dialog", "");
+        let dialog = doc.create_element_typed("dialog", "");
         doc.append_child(DOCUMENT, dialog);
 
         let before = painted(&mut doc, 200, 100);
@@ -6238,18 +7411,18 @@ mod tests {
         // `<html>`, `<head>` and `<body>` in it, so the question is whether
         // creating adds to that — not whether the count is zero.
         let before = doc.form().control_count();
-        let cb = doc.create_element("input", "checkbox");
-        assert!(!doc.connected(cb), "createElement must not insert");
+        let cb = doc.create_element_typed("input", "checkbox");
+        assert!(!doc.is_connected(cb), "createElement must not insert");
         assert_eq!(doc.form().control_count(), before);
         doc.append_child(DOCUMENT, cb);
-        assert!(doc.connected(cb));
+        assert!(doc.is_connected(cb));
         assert_eq!(doc.form().control_count(), before);
     }
 
     #[test]
     fn checked_is_the_widgets_state_not_a_copy() {
         let mut doc = Document::new("t");
-        let cb = doc.create_element("input", "checkbox");
+        let cb = doc.create_element_typed("input", "checkbox");
         doc.append_child(DOCUMENT, cb);
         doc.set_checked(cb, true);
         assert!(doc.checked(cb));
@@ -6265,7 +7438,7 @@ mod tests {
     #[test]
     fn value_survives_being_set_before_insertion() {
         let mut doc = Document::new("t");
-        let input = doc.create_element("input", "text");
+        let input = doc.create_element_typed("input", "text");
         doc.set_value(input, "hello");
         assert_eq!(doc.value(input), "hello");
         doc.append_child(DOCUMENT, input);
@@ -6275,7 +7448,7 @@ mod tests {
     #[test]
     fn id_is_an_attribute_not_a_rename() {
         let mut doc = Document::new("t");
-        let b = doc.create_element("button", "");
+        let b = doc.create_element_typed("button", "");
         doc.set_attribute(b, "id", "ok");
         assert_eq!(doc.get_element_by_id("ok"), Some(b));
         assert_eq!(doc.get_attribute(b, "id").as_deref(), Some("ok"));
@@ -6289,9 +7462,9 @@ mod tests {
     #[test]
     fn a_node_has_one_parent() {
         let mut doc = Document::new("t");
-        let a = doc.create_element("div", "");
-        let b = doc.create_element("div", "");
-        let child = doc.create_element("button", "");
+        let a = doc.create_element_typed("div", "");
+        let b = doc.create_element_typed("div", "");
+        let child = doc.create_element_typed("button", "");
         doc.append_child(DOCUMENT, a);
         doc.append_child(DOCUMENT, b);
         doc.append_child(a, child);
@@ -6304,18 +7477,18 @@ mod tests {
     fn a_subtree_can_be_built_before_it_is_inserted() {
         // The canonical DOM build order: assemble off-document, insert once.
         let mut doc = Document::new("t");
-        let panel = doc.create_element("div", "");
-        let field = doc.create_element("input", "text");
+        let panel = doc.create_element_typed("div", "");
+        let field = doc.create_element_typed("input", "text");
         assert!(doc.append_child(panel, field), "nesting off-document");
         // Reachable and configurable while the whole subtree is detached.
         doc.set_value(field, "typed");
         assert_eq!(doc.value(field), "typed");
         doc.set_style_property(field, "width", "70px");
-        assert_eq!(doc.style_property(field, "width"), "70px");
+        assert_eq!(doc.computed_style_property(field, "width"), "70px");
 
         assert!(doc.append_child(DOCUMENT, panel));
         assert!(
-            doc.connected(field),
+            doc.is_connected(field),
             "a child of an inserted node is connected"
         );
         assert_eq!(doc.value(field), "typed", "state survives insertion");
@@ -6324,9 +7497,9 @@ mod tests {
     #[test]
     fn a_child_moves_out_of_a_nested_container() {
         let mut doc = Document::new("t");
-        let outer = doc.create_element("div", "");
-        let inner = doc.create_element("div", "");
-        let b = doc.create_element("button", "");
+        let outer = doc.create_element_typed("div", "");
+        let inner = doc.create_element_typed("div", "");
+        let b = doc.create_element_typed("button", "");
         doc.append_child(DOCUMENT, outer);
         assert!(doc.append_child(outer, inner));
         assert!(doc.append_child(inner, b));
@@ -6354,18 +7527,18 @@ mod tests {
         // stated precisely: INLINE content is a leaf's caption; a BOX is a
         // genuine structural error and is still refused rather than dropped.
         let mut doc = Document::new("t");
-        let b = doc.create_element("button", "");
+        let b = doc.create_element_typed("button", "");
         doc.append_child(DOCUMENT, b);
 
-        let label = doc.create_element("span", "");
+        let label = doc.create_element_typed("span", "");
         doc.set_text_content(label, "7");
         assert!(doc.append_child(b, label), "a leaf takes inline content");
         assert_eq!(doc.text_content(b), "7", "the span is the button's caption");
 
         // A block-level child is still not a caption, and still reports.
-        let box_ = doc.create_element("div", "");
+        let box_ = doc.create_element_typed("div", "");
         assert!(!doc.append_child(b, box_), "a leaf cannot take a box");
-        assert!(!doc.connected(box_));
+        assert!(!doc.is_connected(box_));
         // Still usable — not lost.
         doc.set_text_content(box_, "still here");
         assert_eq!(doc.text_content(box_), "still here");
@@ -6374,39 +7547,39 @@ mod tests {
     #[test]
     fn a_node_cannot_contain_itself() {
         let mut doc = Document::new("t");
-        let outer = doc.create_element("div", "");
-        let inner = doc.create_element("div", "");
+        let outer = doc.create_element_typed("div", "");
+        let inner = doc.create_element_typed("div", "");
         doc.append_child(DOCUMENT, outer);
         doc.append_child(outer, inner);
         assert!(!doc.append_child(inner, outer), "cycles must be refused");
-        assert!(doc.connected(inner), "the refused move changes nothing");
+        assert!(doc.is_connected(inner), "the refused move changes nothing");
     }
 
     #[test]
     fn removing_a_nested_child_takes_it_out_of_the_document() {
         let mut doc = Document::new("t");
-        let panel = doc.create_element("div", "");
-        let b = doc.create_element("button", "");
+        let panel = doc.create_element_typed("div", "");
+        let b = doc.create_element_typed("button", "");
         doc.append_child(DOCUMENT, panel);
         doc.append_child(panel, b);
         assert!(doc.remove_child(panel, b));
-        assert!(!doc.connected(b));
+        assert!(!doc.is_connected(b));
         // Re-insertable, because removeChild detaches rather than destroys.
         assert!(doc.append_child(DOCUMENT, b));
-        assert!(doc.connected(b));
+        assert!(doc.is_connected(b));
     }
 
     #[test]
     fn style_geometry_lands_on_the_control() {
         let mut doc = Document::new("t");
-        let b = doc.create_element("button", "");
+        let b = doc.create_element_typed("button", "");
         doc.append_child(DOCUMENT, b);
         doc.set_style_property(b, "left", "10px");
         doc.set_style_property(b, "top", "20px");
         doc.set_style_property(b, "width", "80px");
-        assert_eq!(doc.style_property(b, "left"), "10px");
-        assert_eq!(doc.style_property(b, "top"), "20px");
-        assert_eq!(doc.style_property(b, "width"), "80px");
+        assert_eq!(doc.computed_style_property(b, "left"), "10px");
+        assert_eq!(doc.computed_style_property(b, "top"), "20px");
+        assert_eq!(doc.computed_style_property(b, "width"), "80px");
     }
 
     #[test]
@@ -6422,12 +7595,12 @@ mod tests {
         // container's. The buttons' `inline-block` was computed correctly the
         // whole time and no layout ever read it.
         let mut doc = Document::new("t");
-        let row = doc.create_element("div", "");
+        let row = doc.create_element_typed("div", "");
         doc.append_child(DOCUMENT, row);
         let keys: Vec<NodeId> = ["7", "8", "9", "/"]
             .iter()
             .map(|label| {
-                let key = doc.create_element("button", "");
+                let key = doc.create_element_typed("button", "");
                 let text = doc.create_text_node(label);
                 doc.append_child(key, text);
                 doc.append_child(row, key);
@@ -6475,17 +7648,17 @@ mod tests {
         // rule setting only a width has no opinion about display, so the
         // cascade has to keep the UA layer underneath it.
         let mut doc = Document::new("t");
-        let sheet = doc.create_element("style", "");
+        let sheet = doc.create_element_typed("style", "");
         let css = doc.create_text_node(".key { width: 60px; height: 40px; }");
         doc.append_child(sheet, css);
         doc.append_child(DOCUMENT, sheet);
 
-        let row = doc.create_element("div", "");
+        let row = doc.create_element_typed("div", "");
         doc.append_child(DOCUMENT, row);
         let keys: Vec<NodeId> = ["7", "8"]
             .iter()
             .map(|_| {
-                let key = doc.create_element("button", "");
+                let key = doc.create_element_typed("button", "");
                 doc.set_attribute(key, "class", "key");
                 doc.append_child(row, key);
                 key
@@ -6493,7 +7666,7 @@ mod tests {
             .collect();
 
         assert_eq!(
-            doc.computed_style(keys[0]).display,
+            doc.get_computed_style(keys[0]).display,
             Some(crate::css::Display::InlineBlock),
             "an author rule with no `display` dropped the UA layer's"
         );
@@ -6508,21 +7681,21 @@ mod tests {
         // narrower tests leave out: a text-node child on each key, a class on
         // the row, and a stylesheet appended BEFORE anything it styles.
         let mut doc = Document::new("t");
-        let sheet = doc.create_element("style", "");
+        let sheet = doc.create_element_typed("style", "");
         let css = doc.create_text_node(
             ".row { margin-left: 8px; } .key { width: 60px; height: 56px; margin: 2px; }",
         );
         doc.append_child(sheet, css);
         doc.append_child(DOCUMENT, sheet);
 
-        let row = doc.create_element("div", "");
+        let row = doc.create_element_typed("div", "");
         doc.set_attribute(row, "class", "row");
         doc.append_child(DOCUMENT, row);
 
         let keys: Vec<NodeId> = ["7", "8", "9", "/"]
             .iter()
             .map(|label| {
-                let key = doc.create_element("button", "");
+                let key = doc.create_element_typed("button", "");
                 doc.set_attribute(key, "class", "key");
                 let text = doc.create_text_node(label);
                 doc.append_child(key, text);
@@ -6532,7 +7705,7 @@ mod tests {
             .collect();
 
         assert_eq!(
-            doc.computed_style(keys[0]).display,
+            doc.get_computed_style(keys[0]).display,
             Some(crate::css::Display::InlineBlock),
             "the cascade lost the UA layer's inline-block"
         );
@@ -6553,20 +7726,20 @@ mod tests {
         // but not the WIDGET. `position` and `background` are the two that were
         // called in, so both are asked here in one document.
         let mut doc = Document::new("t");
-        let sheet = doc.create_element("style", "");
+        let sheet = doc.create_element_typed("style", "");
         let css = doc.create_text_node(
             "#box { position: absolute; left: 40px; top: 25px; background: #ff0000; }",
         );
         doc.append_child(sheet, css);
         doc.append_child(DOCUMENT, sheet);
 
-        let box_ = doc.create_element("div", "");
+        let box_ = doc.create_element_typed("div", "");
         doc.set_attribute(box_, "id", "box");
         doc.append_child(DOCUMENT, box_);
 
         // The cascade's side — if this fails the selector never matched.
         assert_eq!(
-            doc.computed_style(box_).position,
+            doc.get_computed_style(box_).position,
             Some(crate::css::Position::Absolute),
             "the rule never reached the cascade"
         );
@@ -6581,7 +7754,7 @@ mod tests {
         // cascade, not from `style_property` — that reflects the element's own
         // declarations, and a sheet's value correctly is not among them.
         assert!(
-            doc.computed_style(box_).background_color.is_some(),
+            doc.get_computed_style(box_).background_color.is_some(),
             "the `background` shorthand did not expand to a colour"
         );
     }
@@ -6593,13 +7766,13 @@ mod tests {
         // `apply_style_property` HAS a `node == DOCUMENT` arm that paints the
         // form, so the question is whether a `body` selector ever reaches it.
         let mut doc = Document::new("t");
-        let sheet = doc.create_element("style", "");
+        let sheet = doc.create_element_typed("style", "");
         let css = doc.create_text_node("body { background: #202020; }");
         doc.append_child(sheet, css);
         doc.append_child(DOCUMENT, sheet);
 
         assert!(
-            doc.computed_style(DOCUMENT).background_color.is_some(),
+            doc.get_computed_style(DOCUMENT).background_color.is_some(),
             "a `body` rule never reached the document's computed style"
         );
         assert_eq!(
@@ -6615,7 +7788,7 @@ mod tests {
         // selected a formatting context and everything else fell through. This
         // is the layout that was missing.
         let mut doc = Document::new("t");
-        let sheet = doc.create_element("style", "");
+        let sheet = doc.create_element_typed("style", "");
         let css = doc.create_text_node(
             "#g { display: grid; grid-template-columns: 100px 1fr; \
              width: 400px; column-gap: 20px; row-gap: 10px; }",
@@ -6623,12 +7796,12 @@ mod tests {
         doc.append_child(sheet, css);
         doc.append_child(DOCUMENT, sheet);
 
-        let grid = doc.create_element("div", "");
+        let grid = doc.create_element_typed("div", "");
         doc.set_attribute(grid, "id", "g");
         doc.append_child(DOCUMENT, grid);
         let cells: Vec<NodeId> = (0..4)
             .map(|_| {
-                let cell = doc.create_element("div", "");
+                let cell = doc.create_element_typed("div", "");
                 doc.append_child(grid, cell);
                 cell
             })
@@ -6665,7 +7838,7 @@ mod tests {
         // grid a layout, and it had nowhere to land — the placement was
         // `slot % col_count` and nothing else.
         let mut doc = Document::new("t");
-        let sheet = doc.create_element("style", "");
+        let sheet = doc.create_element_typed("style", "");
         let css = doc.create_text_node(
             "#g { display: grid; grid-template-columns: 100px 100px 100px; \
              width: 300px; column-gap: 0; row-gap: 0; } \
@@ -6674,17 +7847,17 @@ mod tests {
         doc.append_child(sheet, css);
         doc.append_child(DOCUMENT, sheet);
 
-        let grid = doc.create_element("div", "");
+        let grid = doc.create_element_typed("div", "");
         doc.set_attribute(grid, "id", "g");
         doc.append_child(DOCUMENT, grid);
 
         // A wide item spanning two tracks, then three ordinary ones.
-        let wide = doc.create_element("div", "");
+        let wide = doc.create_element_typed("div", "");
         doc.set_attribute(wide, "class", "wide");
         doc.append_child(grid, wide);
         let rest: Vec<NodeId> = (0..3)
             .map(|_| {
-                let c = doc.create_element("div", "");
+                let c = doc.create_element_typed("div", "");
                 doc.append_child(grid, c);
                 c
             })
@@ -6719,7 +7892,7 @@ mod tests {
         //   100px  +  10% (60)  +  auto  +  1fr
         // leaves the `fr` everything the others did not take.
         let mut doc = Document::new("t");
-        let sheet = doc.create_element("style", "");
+        let sheet = doc.create_element_typed("style", "");
         let css = doc.create_text_node(
             "#g { display: grid; grid-template-columns: 100px 10% auto 1fr; \
              width: 600px; padding: 0; column-gap: 8px; row-gap: 0; } \
@@ -6728,7 +7901,7 @@ mod tests {
         doc.append_child(sheet, css);
         doc.append_child(DOCUMENT, sheet);
 
-        let grid = doc.create_element("div", "");
+        let grid = doc.create_element_typed("div", "");
         doc.set_attribute(grid, "id", "g");
         doc.append_child(DOCUMENT, grid);
         // Only the `auto` track's item declares a width — that is what `auto`
@@ -6737,7 +7910,7 @@ mod tests {
         // test measure the items instead of the tracks.
         let cells: Vec<NodeId> = (0..4)
             .map(|i| {
-                let c = doc.create_element("div", "");
+                let c = doc.create_element_typed("div", "");
                 if i == 2 {
                     doc.set_attribute(c, "class", "m");
                 }
@@ -6771,18 +7944,18 @@ mod tests {
         // there is not enough room to share, and the track still grows when
         // there is.
         let mut doc = Document::new("t");
-        let sheet = doc.create_element("style", "");
+        let sheet = doc.create_element_typed("style", "");
         let css = doc.create_text_node(
             "#g { display: grid; grid-template-columns: minmax(200px, 1fr) 1fr; \
              width: 300px; column-gap: 0; row-gap: 0; }",
         );
         doc.append_child(sheet, css);
         doc.append_child(DOCUMENT, sheet);
-        let grid = doc.create_element("div", "");
+        let grid = doc.create_element_typed("div", "");
         doc.set_attribute(grid, "id", "g");
         doc.append_child(DOCUMENT, grid);
-        let a = doc.create_element("div", "");
-        let b = doc.create_element("div", "");
+        let a = doc.create_element_typed("div", "");
+        let b = doc.create_element_typed("div", "");
         doc.append_child(grid, a);
         doc.append_child(grid, b);
 
@@ -6810,7 +7983,7 @@ mod tests {
         // The template alone also sets the COLUMN COUNT — two names per row is
         // a two-column grid with no `grid-template-columns` in sight.
         let mut doc = Document::new("t");
-        let sheet = doc.create_element("style", "");
+        let sheet = doc.create_element_typed("style", "");
         let css = doc.create_text_node(
             "#g { display: grid; width: 400px; padding: 0; column-gap: 0; row-gap: 0; \
              grid-template-areas: \"head head\" \"side main\"; } \
@@ -6818,13 +7991,13 @@ mod tests {
         );
         doc.append_child(sheet, css);
         doc.append_child(DOCUMENT, sheet);
-        let grid = doc.create_element("div", "");
+        let grid = doc.create_element_typed("div", "");
         doc.set_attribute(grid, "id", "g");
         doc.append_child(DOCUMENT, grid);
 
         #[allow(clippy::redundant_closure_call)]
         let mut cell = |class: &str| {
-            let c = doc.create_element("div", "");
+            let c = doc.create_element_typed("div", "");
             doc.set_attribute(c, "class", class);
             doc.append_child(grid, c);
             c
@@ -6855,12 +8028,12 @@ mod tests {
         // container anyway: the container was told each child's `display` and
         // never whether its width was the author's or `auto`.
         let mut doc = Document::new("t");
-        let host = doc.create_element("div", "");
+        let host = doc.create_element_typed("div", "");
         doc.append_child(DOCUMENT, host);
-        let fixed = doc.create_element("div", "");
+        let fixed = doc.create_element_typed("div", "");
         doc.append_child(host, fixed);
         doc.set_style_property(fixed, "width", "200px");
-        let auto = doc.create_element("div", "");
+        let auto = doc.create_element_typed("div", "");
         doc.append_child(host, auto);
 
         assert!(
@@ -6883,14 +8056,14 @@ mod tests {
         // declared background and a declared border were stored, consumed for
         // layout, and silently never drawn.
         let mut doc = Document::new("t");
-        let plain = doc.create_element("div", "");
+        let plain = doc.create_element_typed("div", "");
         doc.append_child(DOCUMENT, plain);
         assert!(
             !doc.paints_own_box(plain),
             "an unstyled div must paint nothing"
         );
 
-        let styled = doc.create_element("div", "");
+        let styled = doc.create_element_typed("div", "");
         doc.append_child(DOCUMENT, styled);
         doc.set_style_property(styled, "background", "#2d7ff9");
         assert!(
@@ -6900,7 +8073,7 @@ mod tests {
 
         // A width with no style is still `border-style: none`, so it paints
         // nothing — CSS's rule, and the reason the style is what is asked.
-        let edged = doc.create_element("div", "");
+        let edged = doc.create_element_typed("div", "");
         doc.append_child(DOCUMENT, edged);
         doc.set_style_property(edged, "border-width", "3px");
         assert!(
@@ -6920,13 +8093,13 @@ mod tests {
         // rather than an inline special case: a block box closes whatever line
         // is open and nothing shares its row.
         let mut doc = Document::new("t");
-        let host = doc.create_element("div", "");
+        let host = doc.create_element_typed("div", "");
         doc.append_child(DOCUMENT, host);
-        let first = doc.create_element("button", "");
+        let first = doc.create_element_typed("button", "");
         doc.append_child(host, first);
-        let block = doc.create_element("div", "");
+        let block = doc.create_element_typed("div", "");
         doc.append_child(host, block);
-        let after = doc.create_element("button", "");
+        let after = doc.create_element_typed("button", "");
         doc.append_child(host, after);
 
         let (a, b, c) = (
@@ -6947,7 +8120,7 @@ mod tests {
         // has to keep behaving exactly as it did — normal flow is what a box
         // gets when the cascade did NOT say `flex`.
         let mut doc = Document::new("t");
-        let row = doc.create_element("div", "");
+        let row = doc.create_element_typed("div", "");
         doc.append_child(DOCUMENT, row);
         doc.set_style_property(row, "display", "flex");
         doc.set_style_property(row, "flex-direction", "row");
@@ -6960,8 +8133,8 @@ mod tests {
         // guard is for. The auto-height rule has its own test in
         // `a_column_of_flex_rows_grows_to_hold_them`.
         doc.set_style_property(row, "height", "150px");
-        let a = doc.create_element("button", "");
-        let b = doc.create_element("button", "");
+        let a = doc.create_element_typed("button", "");
+        let b = doc.create_element_typed("button", "");
         doc.append_child(row, a);
         doc.append_child(row, b);
         // `align-items` defaults to `stretch`, so a flex child fills the cross
@@ -6981,14 +8154,14 @@ mod tests {
         // `""`, because the declaration was consumed into the command and
         // forgotten. Nothing recorded what the author actually said.
         let mut doc = Document::new("t");
-        let b = doc.create_element("button", "");
+        let b = doc.create_element_typed("button", "");
         doc.append_child(DOCUMENT, b);
         doc.set_style_property(b, "color", "red");
         doc.set_style_property(b, "background-color", "#fff");
         doc.set_style_property(b, "font-size", "18px");
-        assert_eq!(doc.style_property(b, "color"), "red");
-        assert_eq!(doc.style_property(b, "background-color"), "#fff");
-        assert_eq!(doc.style_property(b, "font-size"), "18px");
+        assert_eq!(doc.get_style_property(b, "color"), "red");
+        assert_eq!(doc.get_style_property(b, "background-color"), "#fff");
+        assert_eq!(doc.get_style_property(b, "font-size"), "18px");
     }
 
     #[test]
@@ -6996,10 +8169,10 @@ mod tests {
         // The store accepts anything; layout consumes what it understands. An
         // unimplemented property is a rendering gap, not data loss.
         let mut doc = Document::new("t");
-        let b = doc.create_element("div", "");
+        let b = doc.create_element_typed("div", "");
         doc.append_child(DOCUMENT, b);
         doc.set_style_property(b, "mix-blend-mode", "multiply");
-        assert_eq!(doc.style_property(b, "mix-blend-mode"), "multiply");
+        assert_eq!(doc.get_style_property(b, "mix-blend-mode"), "multiply");
     }
 
     #[test]
@@ -7008,11 +8181,11 @@ mod tests {
         // said, so geometry must keep coming off the widget even though the
         // declaration is now recorded beside it.
         let mut doc = Document::new("t");
-        let bar = doc.create_element("div", "");
+        let bar = doc.create_element_typed("div", "");
         doc.append_child(DOCUMENT, bar);
         doc.set_style_property(bar, "left", "300px");
         doc.set_style_property(bar, "dock", "top");
-        assert_eq!(doc.style_property(bar, "left"), "0px");
+        assert_eq!(doc.computed_style_property(bar, "left"), "0px");
         // …while the declaration itself is intact underneath.
         assert_eq!(doc.style(bar).map(|s| s.get("left")), Some("300px"));
     }
@@ -7021,7 +8194,7 @@ mod tests {
     fn layout_can_read_the_declarations_it_will_need() {
         use crate::css::{Display, FlexDirection, Position};
         let mut doc = Document::new("t");
-        let row = doc.create_element("div", "");
+        let row = doc.create_element_typed("div", "");
         doc.append_child(DOCUMENT, row);
         doc.set_style_property(row, "display", "flex");
         doc.set_style_property(row, "flex-direction", "row");
@@ -7030,7 +8203,7 @@ mod tests {
         assert_eq!(props.display, Some(Display::Flex));
         assert_eq!(props.flex_direction, Some(FlexDirection::Row));
 
-        let child = doc.create_element("button", "");
+        let child = doc.create_element_typed("button", "");
         doc.append_child(row, child);
         doc.set_style_property(child, "position", "absolute");
         let child_props = doc.style_properties(child);
@@ -7043,11 +8216,11 @@ mod tests {
         // `display` meant visibility and nothing else. It now also selects a
         // layout mode, and `none` must not have quietly stopped hiding.
         let mut doc = Document::new("t");
-        let b = doc.create_element("button", "");
+        let b = doc.create_element_typed("button", "");
         doc.append_child(DOCUMENT, b);
         doc.set_style_property(b, "display", "none");
         assert!(doc.style_properties(b).display_none);
-        assert_eq!(doc.style_property(b, "display"), "none");
+        assert_eq!(doc.get_style_property(b, "display"), "none");
     }
 
     /// A container sized so it actually runs a layout pass.
@@ -7084,7 +8257,7 @@ mod tests {
     /// what they were written to mean; the default itself is pinned by
     /// `a_flex_container_that_declares_no_axis_is_a_row`.
     fn container_with(doc: &mut Document, w: f32, h: f32) -> NodeId {
-        let panel = doc.create_element("div", "");
+        let panel = doc.create_element_typed("div", "");
         doc.append_child(DOCUMENT, panel);
         doc.set_style_property(panel, "display", "flex");
         doc.set_style_property(panel, "flex-direction", "column");
@@ -7102,14 +8275,14 @@ mod tests {
         // stacked in flow order rather than at nonsense coordinates.
         let mut doc = Document::new("t");
         let panel = container_with(&mut doc, 200.0, 200.0);
-        let b = doc.create_element("button", "");
+        let b = doc.create_element_typed("button", "");
         doc.append_child(panel, b);
         doc.set_style_property(b, "left", "20px");
         doc.set_style_property(b, "top", "90px");
         doc.set_style_property(b, "width", "120px");
-        assert_eq!(doc.style_property(b, "left"), "20px");
-        assert_eq!(doc.style_property(b, "top"), "90px");
-        assert_eq!(doc.style_property(b, "width"), "120px");
+        assert_eq!(doc.computed_style_property(b, "left"), "20px");
+        assert_eq!(doc.computed_style_property(b, "top"), "90px");
+        assert_eq!(doc.computed_style_property(b, "width"), "120px");
     }
 
     #[test]
@@ -7118,12 +8291,12 @@ mod tests {
         // VCL, and appending re-runs the container's layout.
         let mut doc = Document::new("t");
         let panel = container_with(&mut doc, 200.0, 200.0);
-        let b = doc.create_element("button", "");
+        let b = doc.create_element_typed("button", "");
         doc.set_style_property(b, "left", "30px");
         doc.set_style_property(b, "top", "40px");
         doc.append_child(panel, b);
-        assert_eq!(doc.style_property(b, "left"), "30px");
-        assert_eq!(doc.style_property(b, "top"), "40px");
+        assert_eq!(doc.computed_style_property(b, "left"), "30px");
+        assert_eq!(doc.computed_style_property(b, "top"), "40px");
     }
 
     #[test]
@@ -7133,13 +8306,13 @@ mod tests {
         // does not.
         let mut doc = Document::new("t");
         let panel = container_with(&mut doc, 200.0, 200.0);
-        let a = doc.create_element("button", "");
-        let b = doc.create_element("button", "");
+        let a = doc.create_element_typed("button", "");
+        let b = doc.create_element_typed("button", "");
         doc.append_child(panel, a);
         doc.append_child(panel, b);
         // Arranged top-down, so the second child sits below the first.
-        let a_top = doc.style_property(a, "top");
-        let b_top = doc.style_property(b, "top");
+        let a_top = doc.computed_style_property(a, "top");
+        let b_top = doc.computed_style_property(b, "top");
         assert_ne!(a_top, b_top, "flowed children must not overlap");
     }
 
@@ -7149,11 +8322,11 @@ mod tests {
         // in CSS, so saying `static` out loud means "you arrange me".
         let mut doc = Document::new("t");
         let panel = container_with(&mut doc, 200.0, 200.0);
-        let b = doc.create_element("button", "");
+        let b = doc.create_element_typed("button", "");
         doc.append_child(panel, b);
         doc.set_style_property(b, "position", "static");
         doc.set_style_property(b, "left", "60px");
-        assert_ne!(doc.style_property(b, "left"), "60px");
+        assert_ne!(doc.computed_style_property(b, "left"), "60px");
     }
 
     #[test]
@@ -7162,16 +8335,16 @@ mod tests {
         // from the flow, so the flowed sibling gets the whole container.
         let mut doc = Document::new("t");
         let panel = container_with(&mut doc, 200.0, 200.0);
-        let flowed = doc.create_element("button", "");
+        let flowed = doc.create_element_typed("button", "");
         doc.append_child(panel, flowed);
-        let alone = doc.style_property(flowed, "height");
+        let alone = doc.computed_style_property(flowed, "height");
 
-        let positioned = doc.create_element("button", "");
+        let positioned = doc.create_element_typed("button", "");
         doc.append_child(panel, positioned);
         doc.set_style_property(positioned, "left", "10px");
         doc.set_style_property(positioned, "top", "10px");
         assert_eq!(
-            doc.style_property(flowed, "height"),
+            doc.computed_style_property(flowed, "height"),
             alone,
             "an absolutely positioned sibling must not shrink the flowed one"
         );
@@ -7184,10 +8357,10 @@ mod tests {
         // real nodes: appendable, serialisable, and invisible.
         let mut doc = Document::new("t");
         for tag in ["script", "style", "title", "meta", "template"] {
-            let n = doc.create_element(tag, "");
+            let n = doc.create_element_typed(tag, "");
             assert!(doc.append_child(DOCUMENT, n), "{tag} must be appendable");
-            assert_eq!(doc.style_property(n, "width"), "0px", "{tag} must not draw");
-            assert_eq!(doc.style_property(n, "height"), "0px");
+            assert_eq!(doc.computed_style_property(n, "width"), "0px", "{tag} must not draw");
+            assert_eq!(doc.computed_style_property(n, "height"), "0px");
         }
         // …and they are still in the document, which is the half that makes
         // them nodes rather than nothing.
@@ -7202,7 +8375,7 @@ mod tests {
         // what `HTMLSelectElement.selectedIndex` reports for a `size > 1`
         // select, and what `TListBox.ItemIndex` starts at.
         let mut doc = Document::new("t");
-        let list = doc.create_element("select", "6");
+        let list = doc.create_element_typed("select", "6");
         doc.append_child(DOCUMENT, list);
         doc.add_item(list, "alpha");
         doc.add_item(list, "beta");
@@ -7216,7 +8389,7 @@ mod tests {
         // Add, remove and clear existed; there was no READ, so `Items[i]` was
         // unreachable from every frontend.
         let mut doc = Document::new("t");
-        let list = doc.create_element("select", "6");
+        let list = doc.create_element_typed("select", "6");
         doc.append_child(DOCUMENT, list);
         doc.add_item(list, "alpha");
         doc.add_item(list, "beta");
@@ -7235,7 +8408,7 @@ mod tests {
         // `<fieldset>` has no option list for `AddItem` to land in. HTML's
         // answer, and VCL's, is child radios.
         let mut doc = Document::new("t");
-        let group = doc.create_element("fieldset", "");
+        let group = doc.create_element_typed("fieldset", "");
         doc.append_child(DOCUMENT, group);
         doc.add_item(group, "red");
         doc.add_item(group, "green");
@@ -7249,10 +8422,10 @@ mod tests {
         // `control_kind` had no `vybe-` handling at all, so every custom
         // element — the whole mechanism — was a 120x20 label.
         let mut doc = Document::new("t");
-        let tabs = doc.create_element("vybe-tabcontrol", "");
+        let tabs = doc.create_element_typed("vybe-tabcontrol", "");
         doc.append_child(DOCUMENT, tabs);
         // A tab control is not label-sized.
-        assert_ne!(doc.style_property(tabs, "width"), "120px");
+        assert_ne!(doc.computed_style_property(tabs, "width"), "120px");
         // …and it serialises as the custom element it is, so a browser build
         // knows exactly which `customElements.define` it needs.
         assert!(doc.to_html().contains("<vybe-tabcontrol>"));
@@ -7263,9 +8436,9 @@ mod tests {
         // A tag naming a control that does not exist is a mistake, and it must
         // fail toward something you can SEE rather than toward nothing.
         let mut doc = Document::new("t");
-        let bogus = doc.create_element("vybe-nonesuch", "");
+        let bogus = doc.create_element_typed("vybe-nonesuch", "");
         doc.append_child(DOCUMENT, bogus);
-        assert_eq!(doc.style_property(bogus, "width"), "120px");
+        assert_eq!(doc.computed_style_property(bogus, "width"), "120px");
     }
 
     #[test]
@@ -7275,22 +8448,22 @@ mod tests {
         // They drew as grey labels before.
         let mut doc = Document::new("t");
         for tag in ["vybe-timer", "vybe-tooltip", "vybe-imagelist"] {
-            let n = doc.create_element(tag, "");
+            let n = doc.create_element_typed(tag, "");
             doc.append_child(DOCUMENT, n);
-            assert_eq!(doc.style_property(n, "width"), "0px", "{tag} must not draw");
+            assert_eq!(doc.computed_style_property(n, "width"), "0px", "{tag} must not draw");
         }
     }
 
     #[test]
     fn a_hidden_input_does_not_render() {
         let mut doc = Document::new("t");
-        let hidden = doc.create_element("input", "hidden");
+        let hidden = doc.create_element_typed("input", "hidden");
         doc.append_child(DOCUMENT, hidden);
-        assert_eq!(doc.style_property(hidden, "width"), "0px");
+        assert_eq!(doc.computed_style_property(hidden, "width"), "0px");
         // …while an ordinary one does.
-        let text = doc.create_element("input", "text");
+        let text = doc.create_element_typed("input", "text");
         doc.append_child(DOCUMENT, text);
-        assert_ne!(doc.style_property(text, "width"), "0px");
+        assert_ne!(doc.computed_style_property(text, "width"), "0px");
     }
 
     #[test]
@@ -7299,13 +8472,13 @@ mod tests {
         // of nothing.
         let mut doc = Document::new("t");
         let panel = container_with(&mut doc, 200.0, 400.0);
-        let first = doc.create_element("button", "");
+        let first = doc.create_element_typed("button", "");
         doc.append_child(panel, first);
-        let alone = doc.style_property(first, "height");
+        let alone = doc.computed_style_property(first, "height");
 
-        let style = doc.create_element("style", "");
+        let style = doc.create_element_typed("style", "");
         doc.append_child(panel, style);
-        assert_eq!(doc.style_property(first, "height"), alone);
+        assert_eq!(doc.computed_style_property(first, "height"), alone);
     }
 
     #[test]
@@ -7315,13 +8488,13 @@ mod tests {
         // until something knows the containing block.
         let mut doc = Document::new("t");
         let panel = container_with(&mut doc, 400.0, 300.0);
-        let b = doc.create_element("button", "");
+        let b = doc.create_element_typed("button", "");
         doc.append_child(panel, b);
         doc.set_style_property(b, "position", "absolute");
         doc.set_style_property(b, "width", "50%");
-        assert_eq!(doc.style_property(b, "width"), "200px");
+        assert_eq!(doc.computed_style_property(b, "width"), "200px");
         doc.set_style_property(b, "height", "10%");
-        assert_eq!(doc.style_property(b, "height"), "30px");
+        assert_eq!(doc.computed_style_property(b, "height"), "30px");
     }
 
     #[test]
@@ -7336,7 +8509,7 @@ mod tests {
         // not be spelled at all.
         let offset_of = |mode: &str| {
             let mut doc = Document::new("t");
-            let panel = doc.create_element("div", "");
+            let panel = doc.create_element_typed("div", "");
             doc.append_child(DOCUMENT, panel);
             doc.set_style_property(panel, "position", "absolute");
             doc.set_style_property(panel, "width", "400px");
@@ -7347,9 +8520,9 @@ mod tests {
             doc.set_style_property(panel, "display", "flex");
             doc.set_style_property(panel, "flex-direction", "column");
 
-            let first = doc.create_element("button", "");
+            let first = doc.create_element_typed("button", "");
             doc.append_child(panel, first);
-            let second = doc.create_element("button", "");
+            let second = doc.create_element_typed("button", "");
             doc.append_child(panel, second);
 
             doc.set_style_property(first, "position", mode);
@@ -7357,8 +8530,8 @@ mod tests {
             doc.set_style_property(first, "top", "10px");
 
             (
-                doc.rect(first).expect("first is in the document"),
-                doc.rect(second).expect("second is in the document"),
+                doc.get_bounding_client_rect(first).expect("first is in the document"),
+                doc.get_bounding_client_rect(second).expect("second is in the document"),
             )
         };
 
@@ -7389,9 +8562,9 @@ mod tests {
     fn stacked_with_margin(margin: &str) -> (f32, f32) {
         let mut doc = Document::new("t");
         let panel = container_with(&mut doc, 200.0, 300.0);
-        let first = doc.create_element("button", "");
+        let first = doc.create_element_typed("button", "");
         doc.append_child(panel, first);
-        let second = doc.create_element("button", "");
+        let second = doc.create_element_typed("button", "");
         doc.append_child(panel, second);
         doc.set_style_property(first, "flex", "0");
         doc.set_style_property(second, "flex", "0");
@@ -7399,8 +8572,8 @@ mod tests {
             doc.set_style_property(first, "margin", margin);
         }
         (
-            doc.rect(first).expect("first is in the document").y,
-            doc.rect(second).expect("second is in the document").y,
+            doc.get_bounding_client_rect(first).expect("first is in the document").y,
+            doc.get_bounding_client_rect(second).expect("second is in the document").y,
         )
     }
 
@@ -7432,15 +8605,15 @@ mod tests {
         // the flow — so its margin must not push anything.
         let mut doc = Document::new("t");
         let panel = container_with(&mut doc, 200.0, 300.0);
-        let first = doc.create_element("button", "");
+        let first = doc.create_element_typed("button", "");
         doc.append_child(panel, first);
-        let second = doc.create_element("button", "");
+        let second = doc.create_element_typed("button", "");
         doc.append_child(panel, second);
 
-        let before = doc.rect(second).expect("second is in the document").y;
+        let before = doc.get_bounding_client_rect(second).expect("second is in the document").y;
         doc.set_style_property(first, "position", "absolute");
         doc.set_style_property(first, "margin", "50px");
-        let after = doc.rect(second).expect("second is in the document").y;
+        let after = doc.get_bounding_client_rect(second).expect("second is in the document").y;
 
         assert!(
             after <= before,
@@ -7459,7 +8632,7 @@ mod tests {
         let place = |margin_first: bool| {
             let mut doc = Document::new("t");
             let panel = container_with(&mut doc, 400.0, 300.0);
-            let box_ = doc.create_element("div", "");
+            let box_ = doc.create_element_typed("div", "");
             doc.append_child(panel, box_);
             doc.set_style_property(box_, "position", "absolute");
             if margin_first {
@@ -7470,7 +8643,7 @@ mod tests {
             if !margin_first {
                 doc.set_style_property(box_, "margin", "5px");
             }
-            let r = doc.rect(box_).expect("in the document");
+            let r = doc.get_bounding_client_rect(box_).expect("in the document");
             let cb = doc.containing_block(box_);
             (r.x - cb.x, r.y - cb.y)
         };
@@ -7496,9 +8669,9 @@ mod tests {
         let panel = container_with(&mut doc, 400.0, 300.0);
         doc.set_style_property(panel, "--pad", "12px");
 
-        let inner = doc.create_element("div", "");
+        let inner = doc.create_element_typed("div", "");
         doc.append_child(panel, inner);
-        let leaf = doc.create_element("button", "");
+        let leaf = doc.create_element_typed("button", "");
         doc.append_child(inner, leaf);
         doc.set_style_property(leaf, "padding", "var(--pad)");
 
@@ -7510,7 +8683,7 @@ mod tests {
         // The STORE keeps what the author wrote — the CSSOM serialises the
         // specified value, not the substituted one.
         assert_eq!(
-            doc.style_property(leaf, "padding"),
+            doc.get_style_property(leaf, "padding"),
             "var(--pad)",
             "element.style must read back the var(), not its result"
         );
@@ -7524,7 +8697,7 @@ mod tests {
         let mut doc = Document::new("t");
         let panel = container_with(&mut doc, 400.0, 300.0);
         doc.set_style_property(panel, "--pad", "4px");
-        let leaf = doc.create_element("button", "");
+        let leaf = doc.create_element_typed("button", "");
         doc.append_child(panel, leaf);
         doc.set_style_property(leaf, "padding", "var(--pad)");
         assert_eq!(doc.box_edges(leaf).padding.left, 4.0);
@@ -7541,7 +8714,7 @@ mod tests {
     fn a_var_falls_back_and_an_unresolvable_one_drops_the_declaration() {
         let mut doc = Document::new("t");
         let panel = container_with(&mut doc, 400.0, 300.0);
-        let leaf = doc.create_element("button", "");
+        let leaf = doc.create_element_typed("button", "");
         doc.append_child(panel, leaf);
 
         doc.set_style_property(leaf, "padding", "var(--absent, 7px)");
@@ -7570,15 +8743,15 @@ mod tests {
         // what the container was last told rather than from the cache.
         let mut doc = Document::new("t");
         let panel = container_with(&mut doc, 400.0, 300.0);
-        let child = doc.create_element("button", "");
+        let child = doc.create_element_typed("button", "");
         doc.append_child(panel, child);
 
         // The panel starts on its own intrinsic padding, which is NOT zero.
-        let intrinsic = doc.rect(child).expect("in the document").x;
+        let intrinsic = doc.get_bounding_client_rect(child).expect("in the document").x;
         assert!(intrinsic > 0.0, "the panel has a padding of its own");
 
         doc.set_style_property(panel, "padding", "10px");
-        let padded = doc.rect(child).expect("in the document").x;
+        let padded = doc.get_bounding_client_rect(child).expect("in the document").x;
         assert!(padded > intrinsic, "the padding reached the container");
 
         // Now make the declaration unresolvable. The widget must be told
@@ -7594,7 +8767,7 @@ mod tests {
         // better than freezing.
         doc.set_style_property(panel, "padding", "var(--nope)");
         assert_eq!(
-            doc.rect(child).expect("in the document").x,
+            doc.get_bounding_client_rect(child).expect("in the document").x,
             0.0,
             "an invalid declaration takes the CSS initial value, not the last one"
         );
@@ -7604,13 +8777,13 @@ mod tests {
         doc.set_style_property(panel, "--pad", "10px");
         doc.set_style_property(panel, "padding", "var(--pad)");
         assert_eq!(
-            doc.rect(child).expect("in the document").x,
+            doc.get_bounding_client_rect(child).expect("in the document").x,
             padded,
             "read through a variable, the padding lands in the same place"
         );
         doc.set_style_property(panel, "--pad", "");
         assert_eq!(
-            doc.rect(child).expect("in the document").x,
+            doc.get_bounding_client_rect(child).expect("in the document").x,
             0.0,
             "removing the variable must take the box back too"
         );
@@ -7626,7 +8799,7 @@ mod tests {
         doc.set_style_property(panel, "--Gap", "30px");
         doc.set_style_property(panel, "--gap", "5px");
 
-        let leaf = doc.create_element("button", "");
+        let leaf = doc.create_element_typed("button", "");
         doc.append_child(panel, leaf);
         doc.set_style_property(leaf, "padding", "var(--Gap)");
 
@@ -7650,12 +8823,12 @@ mod tests {
         use crate::canvas::{Canvas as _, Font, FontStyle, FontWeight};
 
         let mut doc = Document::new("t");
-        let canvas = doc.create_element("canvas", "");
+        let canvas = doc.create_element_typed("canvas", "");
         doc.append_child(DOCUMENT, canvas);
 
-        let small = doc.measure_canvas_text(canvas, "Hello").expect("a canvas measures");
+        let small = doc.measure_text(canvas, "Hello").expect("a canvas measures");
         assert!(small > 0.0, "a non-empty string has width, got {small}");
-        assert_eq!(doc.measure_canvas_text(canvas, ""), Some(0.0));
+        assert_eq!(doc.measure_text(canvas, ""), Some(0.0));
 
         doc.canvas_mut(canvas)
             .expect("the element owns a surface")
@@ -7666,7 +8839,7 @@ mod tests {
                 weight: FontWeight::Normal,
                 style: FontStyle::Normal,
             });
-        let large = doc.measure_canvas_text(canvas, "Hello").expect("still a canvas");
+        let large = doc.measure_text(canvas, "Hello").expect("still a canvas");
         assert!(
             large > small * 2.0,
             "a 48px face is far wider than the 12px default: {small} then {large}"
@@ -7685,16 +8858,16 @@ mod tests {
                 style: FontStyle::Normal,
             });
         doc.canvas_mut(canvas).unwrap().canvas_mut().restore();
-        let restored = doc.measure_canvas_text(canvas, "Hello").expect("still a canvas");
+        let restored = doc.measure_text(canvas, "Hello").expect("still a canvas");
         assert_eq!(
             restored, large,
             "restore puts back the 48px face, not the 8px one it replaced"
         );
 
         // A paragraph is not a drawing surface, and the absence is in the type.
-        let p = doc.create_element("p", "");
+        let p = doc.create_element_typed("p", "");
         doc.append_child(DOCUMENT, p);
-        assert_eq!(doc.measure_canvas_text(p, "Hello"), None);
+        assert_eq!(doc.measure_text(p, "Hello"), None);
     }
 
     /// Writing an attribute on the DOCUMENT must not empty the body.
@@ -7708,7 +8881,7 @@ mod tests {
     fn an_attribute_on_the_document_does_not_orphan_the_body() {
         let mut doc = Document::new("t");
         let body = doc.body().expect("an HTML document has a body");
-        let p = doc.create_element("p", "");
+        let p = doc.create_element_typed("p", "");
         doc.append_child(DOCUMENT, p);
         // Appending to the document puts content in the BODY, as tree
         // construction does — the document's own child is `<html>`.
@@ -7736,12 +8909,12 @@ mod tests {
     #[test]
     fn insert_before_orders_the_document_and_a_container_alike() {
         let mut doc = Document::new("t");
-        let first = doc.create_element("p", "");
-        let last = doc.create_element("p", "");
+        let first = doc.create_element_typed("p", "");
+        let last = doc.create_element_typed("p", "");
         doc.append_child(DOCUMENT, first);
         doc.append_child(DOCUMENT, last);
 
-        let middle = doc.create_element("p", "");
+        let middle = doc.create_element_typed("p", "");
         assert!(doc.insert_before(DOCUMENT, middle, Some(last)));
         // The root's content lives in the body — `insertBefore` has to honour
         // the reference there just as it does in any other container.
@@ -7749,13 +8922,13 @@ mod tests {
         assert_eq!(doc.child_nodes(body), vec![first, middle, last]);
 
         // And inside a container, whose children live in its own `DomNode`.
-        let box_ = doc.create_element("div", "");
+        let box_ = doc.create_element_typed("div", "");
         doc.append_child(DOCUMENT, box_);
-        let a = doc.create_element("div", "");
-        let c = doc.create_element("div", "");
+        let a = doc.create_element_typed("div", "");
+        let c = doc.create_element_typed("div", "");
         doc.append_child(box_, a);
         doc.append_child(box_, c);
-        let b = doc.create_element("div", "");
+        let b = doc.create_element_typed("div", "");
         assert!(doc.insert_before(box_, b, Some(c)));
         assert_eq!(doc.child_nodes(box_), vec![a, b, c]);
     }
@@ -7772,12 +8945,12 @@ mod tests {
     #[test]
     fn a_paragraph_is_as_tall_as_its_text() {
         let mut doc = Document::new("t");
-        let short = doc.create_element("p", "");
+        let short = doc.create_element_typed("p", "");
         doc.append_child(DOCUMENT, short);
         let text = doc.create_text_node("one line");
         doc.append_child(short, text);
 
-        let long = doc.create_element("p", "");
+        let long = doc.create_element_typed("p", "");
         doc.append_child(DOCUMENT, long);
         let words = doc.create_text_node(&"wrap ".repeat(200));
         doc.append_child(long, words);
@@ -7800,7 +8973,7 @@ mod tests {
     #[test]
     fn a_block_fills_its_containing_block_and_wraps_there() {
         let mut doc = Document::new("t");
-        let para = doc.create_element("p", "");
+        let para = doc.create_element_typed("p", "");
         doc.append_child(DOCUMENT, para);
         let words = doc.create_text_node(&"wrap ".repeat(200));
         doc.append_child(para, words);
@@ -7829,7 +9002,7 @@ mod tests {
     #[test]
     fn a_declared_height_survives_its_content() {
         let mut doc = Document::new("t");
-        let para = doc.create_element("p", "");
+        let para = doc.create_element_typed("p", "");
         doc.append_child(DOCUMENT, para);
         doc.set_style_property(para, "height", "40px");
         let words = doc.create_text_node(&"overflowing ".repeat(200));
@@ -7846,7 +9019,7 @@ mod tests {
     #[test]
     fn a_positioned_control_keeps_the_geometry_it_declared() {
         let mut doc = Document::new("t");
-        let label = doc.create_element("label", "");
+        let label = doc.create_element_typed("label", "");
         doc.append_child(DOCUMENT, label);
         for (property, value) in [
             ("left", "40px"),
@@ -7876,7 +9049,7 @@ mod tests {
     #[test]
     fn a_leaf_controls_text_children_are_its_caption() {
         let mut doc = Document::new("t");
-        let key = doc.create_element("button", "");
+        let key = doc.create_element_typed("button", "");
         doc.append_child(DOCUMENT, key);
         let seven = doc.create_text_node("7");
         assert!(doc.append_child(key, seven), "a button accepts text");
@@ -7885,7 +9058,7 @@ mod tests {
         assert_eq!(doc.child_nodes(key), vec![seven], "as a NODE, not a string");
 
         // The other spelling, on a fresh button, reaches the same place.
-        let other = doc.create_element("button", "");
+        let other = doc.create_element_typed("button", "");
         doc.append_child(DOCUMENT, other);
         doc.set_text_content(other, "7");
         assert_eq!(doc.text_content(other), "7");
@@ -7908,10 +9081,10 @@ mod tests {
         // it still fails if the height ever comes from the text runs again —
         // which is the mistake the original test was guarding against.
         let mut doc = Document::new("t");
-        let host = doc.create_element("div", "");
+        let host = doc.create_element_typed("div", "");
         doc.append_child(DOCUMENT, host);
 
-        let inner = doc.create_element("div", "");
+        let inner = doc.create_element_typed("div", "");
         doc.append_child(host, inner);
         let text = doc.create_text_node("stray text");
         doc.append_child(host, text);
@@ -7929,12 +9102,12 @@ mod tests {
     #[test]
     fn insert_before_a_stranger_is_refused_rather_than_appended() {
         let mut doc = Document::new("t");
-        let host = doc.create_element("div", "");
+        let host = doc.create_element_typed("div", "");
         doc.append_child(DOCUMENT, host);
-        let stranger = doc.create_element("p", "");
+        let stranger = doc.create_element_typed("p", "");
         doc.append_child(DOCUMENT, stranger);
 
-        let child = doc.create_element("span", "");
+        let child = doc.create_element_typed("span", "");
         assert!(
             !doc.insert_before(host, child, Some(stranger)),
             "the reference is not a child of the parent"
@@ -7950,14 +9123,14 @@ mod tests {
     #[test]
     fn replace_child_keeps_the_position() {
         let mut doc = Document::new("t");
-        let a = doc.create_element("div", "");
-        let b = doc.create_element("div", "");
-        let c = doc.create_element("div", "");
+        let a = doc.create_element_typed("div", "");
+        let b = doc.create_element_typed("div", "");
+        let c = doc.create_element_typed("div", "");
         doc.append_child(DOCUMENT, a);
         doc.append_child(DOCUMENT, b);
         doc.append_child(DOCUMENT, c);
 
-        let fresh = doc.create_element("p", "");
+        let fresh = doc.create_element_typed("p", "");
         assert!(doc.replace_child(DOCUMENT, fresh, b));
         let body = doc.body().expect("an HTML document has a body");
         assert_eq!(doc.child_nodes(body), vec![a, fresh, c]);
@@ -7968,11 +9141,11 @@ mod tests {
     #[test]
     fn clone_node_is_shallow_until_it_is_deep() {
         let mut doc = Document::new("t");
-        let host = doc.create_element("div", "");
+        let host = doc.create_element_typed("div", "");
         doc.append_child(DOCUMENT, host);
         doc.set_attribute(host, "id", "original");
         doc.set_style_property(host, "color", "#ff0000");
-        let inner = doc.create_element("p", "");
+        let inner = doc.create_element_typed("p", "");
         doc.append_child(host, inner);
 
         let shallow = doc.clone_node(host, false).expect("a node clones");
@@ -7980,7 +9153,7 @@ mod tests {
         assert_eq!(doc.get_attribute(shallow, "id").as_deref(), Some("original"));
         // The declarations came with it — a clone that lost its style would
         // look like a different element the moment it was inserted.
-        assert_eq!(doc.computed_style(shallow).color, Some(0xffff0000));
+        assert_eq!(doc.get_computed_style(shallow).color, Some(0xffff0000));
         assert_eq!(doc.node(shallow).and_then(|n| n.parent), None, "not in the document");
 
         let deep = doc.clone_node(host, true).expect("a node clones");
@@ -7996,7 +9169,7 @@ mod tests {
     #[test]
     fn cdata_counts_as_text_and_a_processing_instruction_does_not() {
         let mut doc = Document::new("t");
-        let host = doc.create_element("p", "");
+        let host = doc.create_element_typed("p", "");
         doc.append_child(DOCUMENT, host);
 
         let text = doc.create_text_node("plain ");
@@ -8026,7 +9199,7 @@ mod tests {
     fn data_nodes_need_no_line_capable_parent() {
         let mut doc = Document::new("t");
         // A `<label>` is a leaf: its text is one string, not a line of runs.
-        let leaf = doc.create_element("label", "");
+        let leaf = doc.create_element_typed("label", "");
         doc.append_child(DOCUMENT, leaf);
 
         let text = doc.create_text_node("caption");
@@ -8049,7 +9222,7 @@ mod tests {
     #[test]
     fn the_xml_node_kinds_serialise_as_themselves() {
         let mut doc = Document::new("t");
-        let host = doc.create_element("div", "");
+        let host = doc.create_element_typed("div", "");
         doc.append_child(DOCUMENT, host);
         let cdata = doc.create_cdata_section("a < b & c");
         let pi = doc.create_processing_instruction("php", "echo 1;");
@@ -8074,21 +9247,21 @@ mod tests {
     #[test]
     fn an_xml_document_keeps_the_case_an_html_one_folds() {
         let mut html = Document::new("t");
-        let folded = html.create_element("DIV", "");
+        let folded = html.create_element_typed("DIV", "");
         assert_eq!(html.node_name(folded), "div");
         html.set_attribute(folded, "DataRole", "x");
         assert_eq!(html.get_attribute(folded, "datarole").as_deref(), Some("x"));
-        assert_eq!(html.elements_by_tag("Div"), vec![folded]);
+        assert_eq!(html.get_elements_by_tag_name("Div"), vec![folded]);
 
         let mut xml = Document::new_xml("t");
-        let kept = xml.create_element("Title", "");
+        let kept = xml.create_element_typed("Title", "");
         assert_eq!(xml.node_name(kept), "Title");
         xml.set_attribute(kept, "DataRole", "x");
         // Case-sensitive both ways: the exact name finds it, a folded one does not.
         assert_eq!(xml.get_attribute(kept, "DataRole").as_deref(), Some("x"));
         assert_eq!(xml.get_attribute(kept, "datarole"), None);
-        assert_eq!(xml.elements_by_tag("Title"), vec![kept]);
-        assert!(xml.elements_by_tag("title").is_empty());
+        assert_eq!(xml.get_elements_by_tag_name("Title"), vec![kept]);
+        assert!(xml.get_elements_by_tag_name("title").is_empty());
     }
 
     /// A namespaced element knows its vocabulary, and `prefix`/`localName`
@@ -8115,7 +9288,7 @@ mod tests {
         assert_eq!(doc.local_name(bare), "item");
 
         // An element created without one has no namespace — `null`, per spec.
-        let plain = doc.create_element("item", "");
+        let plain = doc.create_element_typed("item", "");
         assert_eq!(doc.namespace_uri(plain), None);
 
         // And a clone stays in its vocabulary.
@@ -8131,7 +9304,7 @@ mod tests {
     #[test]
     fn namespaced_attributes_do_not_collapse_onto_their_local_name() {
         let mut doc = Document::new_xml("t");
-        let node = doc.create_element("use", "");
+        let node = doc.create_element_typed("use", "");
         doc.append_child(DOCUMENT, node);
 
         doc.set_attribute(node, "href", "#plain");
@@ -8162,7 +9335,7 @@ mod tests {
     #[test]
     fn setting_an_attribute_twice_does_not_move_it() {
         let mut doc = Document::new("t");
-        let node = doc.create_element("div", "");
+        let node = doc.create_element_typed("div", "");
         doc.append_child(DOCUMENT, node);
         doc.set_attribute(node, "data-a", "1");
         doc.set_attribute(node, "data-b", "2");
@@ -8185,11 +9358,11 @@ mod tests {
     #[test]
     fn the_style_attribute_and_the_declaration_store_are_one_thing() {
         let mut doc = Document::new("t");
-        let p = doc.create_element("p", "");
+        let p = doc.create_element_typed("p", "");
         doc.append_child(DOCUMENT, p);
         doc.set_attribute(p, "style", "color: #ff0000; padding: 4px");
 
-        assert_eq!(doc.computed_style(p).color, Some(0xffff0000));
+        assert_eq!(doc.get_computed_style(p).color, Some(0xffff0000));
         let read_back = doc.get_attribute(p, "style").unwrap_or_default();
         assert!(read_back.contains("color"), "got {read_back:?}");
         assert_eq!(doc.query_selector_all("[style]"), vec![p]);
@@ -8200,7 +9373,7 @@ mod tests {
 
         // And an element nobody styled has no `style` attribute rather than an
         // empty one — presence is the whole of what `[style]` tests.
-        let bare = doc.create_element("p", "");
+        let bare = doc.create_element_typed("p", "");
         doc.append_child(DOCUMENT, bare);
         assert_eq!(doc.get_attribute(bare, "style"), None);
         assert_eq!(doc.query_selector_all("[style]"), vec![p]);
@@ -8214,12 +9387,12 @@ mod tests {
         // parses and reaches no widget is the failure mode this replaced.
         let mut doc = Document::new("t");
         let panel = container_with(&mut doc, 200.0, 100.0);
-        let link = doc.create_element("a", "");
+        let link = doc.create_element_typed("a", "");
         doc.append_child(panel, link);
 
         // Compared against an author declaration of the same colour rather than
         // against a raw channel order, which is `css.rs`'s business.
-        let reference = doc.create_element("span", "");
+        let reference = doc.create_element_typed("span", "");
         doc.append_child(panel, reference);
         doc.set_style_property(reference, "color", "#0000ee");
 
@@ -8254,14 +9427,14 @@ mod tests {
         let place = |margin: &str| {
             let mut doc = Document::new("t");
             let panel = container_with(&mut doc, 400.0, 300.0);
-            let control = doc.create_element("button", "");
+            let control = doc.create_element_typed("button", "");
             doc.append_child(panel, control);
             if !margin.is_empty() {
                 doc.set_style_property(control, "margin-left", margin);
             }
             // No `position` — exactly what `emit_control_element` writes.
             doc.set_style_property(control, "left", "20px");
-            doc.rect(control).expect("in the document").x
+            doc.get_bounding_client_rect(control).expect("in the document").x
         };
 
         assert_eq!(
@@ -8282,14 +9455,14 @@ mod tests {
         let place = |margin: &str| {
             let mut doc = Document::new("t");
             let panel = container_with(&mut doc, 400.0, 300.0);
-            let box_ = doc.create_element("div", "");
+            let box_ = doc.create_element_typed("div", "");
             doc.append_child(panel, box_);
             doc.set_style_property(box_, "position", "relative");
             if !margin.is_empty() {
                 doc.set_style_property(box_, "margin-left", margin);
             }
             doc.set_style_property(box_, "left", "20px");
-            doc.rect(box_).expect("in the document").x
+            doc.get_bounding_client_rect(box_).expect("in the document").x
         };
 
         assert_eq!(
@@ -8310,19 +9483,19 @@ mod tests {
         // this fails and says exactly what changed.
         let mut doc = Document::new("t");
         let panel = container_with(&mut doc, 200.0, 300.0);
-        let first = doc.create_element("button", "");
+        let first = doc.create_element_typed("button", "");
         doc.append_child(panel, first);
-        let second = doc.create_element("button", "");
+        let second = doc.create_element_typed("button", "");
         doc.append_child(panel, second);
         // Held still for the same reason as `stacked_with_margin` — a growing
         // child eats its own margin and there is nothing left to collapse.
         doc.set_style_property(first, "flex", "0");
         doc.set_style_property(second, "flex", "0");
 
-        let baseline = doc.rect(second).expect("second is in the document").y;
+        let baseline = doc.get_bounding_client_rect(second).expect("second is in the document").y;
         doc.set_style_property(first, "margin-bottom", "10px");
         doc.set_style_property(second, "margin-top", "10px");
-        let gap = doc.rect(second).expect("second is in the document").y - baseline;
+        let gap = doc.get_bounding_client_rect(second).expect("second is in the document").y - baseline;
 
         assert_eq!(
             gap, 20.0,
@@ -8339,7 +9512,7 @@ mod tests {
         // stops five widgets each deciding for themselves whether `bold` is 700.
         for tag in ["span", "button", "input", "textarea"] {
             let mut doc = Document::new("t");
-            let node = doc.create_element(tag, "");
+            let node = doc.create_element_typed(tag, "");
             doc.append_child(DOCUMENT, node);
             doc.set_style_property(node, "font-weight", "bold");
             doc.set_style_property(node, "font-size", "20px");
@@ -8349,7 +9522,7 @@ mod tests {
                 Some(700),
                 "<{tag}> must take a declared font-weight"
             );
-            assert_eq!(doc.style_property(node, "font-size"), "20px");
+            assert_eq!(doc.get_style_property(node, "font-size"), "20px");
         }
     }
 
@@ -8361,10 +9534,10 @@ mod tests {
         // it in the author store would serialise `style="font-weight:bold"`
         // onto every `<strong>` in the output.
         let mut doc = Document::new("t");
-        let strong = doc.create_element("strong", "");
+        let strong = doc.create_element_typed("strong", "");
         doc.append_child(DOCUMENT, strong);
 
-        assert_eq!(doc.style_property(strong, "font-weight"), "");
+        assert_eq!(doc.get_style_property(strong, "font-weight"), "");
         assert_eq!(
             doc.style_properties(strong).font_weight,
             Some(700),
@@ -8377,12 +9550,12 @@ mod tests {
         // The cascade, in the only order that matters here: UA underneath,
         // author on top. Without it a `<strong>` could never be un-bolded.
         let mut doc = Document::new("t");
-        let strong = doc.create_element("strong", "");
+        let strong = doc.create_element_typed("strong", "");
         doc.append_child(DOCUMENT, strong);
         doc.set_style_property(strong, "font-weight", "normal");
 
         assert_eq!(doc.style_properties(strong).font_weight, Some(400));
-        assert_eq!(doc.style_property(strong, "font-weight"), "normal");
+        assert_eq!(doc.get_style_property(strong, "font-weight"), "normal");
     }
 
     #[test]
@@ -8392,11 +9565,11 @@ mod tests {
         // `detached` — reported as `false`, which nobody checks, and rendered
         // as nothing.
         let mut doc = Document::new("t");
-        let p = doc.create_element("p", "");
+        let p = doc.create_element_typed("p", "");
         doc.append_child(DOCUMENT, p);
         doc.set_text_content(p, "a ");
 
-        let strong = doc.create_element("strong", "");
+        let strong = doc.create_element_typed("strong", "");
         assert!(
             doc.append_child(p, strong),
             "a paragraph must accept phrasing content"
@@ -8424,11 +9597,11 @@ mod tests {
     #[test]
     fn a_table_cell_holds_flow_content_but_an_option_does_not() {
         let mut doc = Document::new("t");
-        let td = doc.create_element("td", "");
+        let td = doc.create_element_typed("td", "");
         doc.append_child(DOCUMENT, td);
         doc.set_text_content(td, "cell ");
 
-        let div = doc.create_element("div", "");
+        let div = doc.create_element_typed("div", "");
         assert!(
             doc.append_child(td, div),
             "a cell must accept flow content — it can hold a div, a form, or another table"
@@ -8439,11 +9612,11 @@ mod tests {
             "and keep its own text: a box has text AND children"
         );
 
-        let select = doc.create_element("select", "");
+        let select = doc.create_element_typed("select", "");
         doc.append_child(DOCUMENT, select);
-        let option = doc.create_element("option", "");
+        let option = doc.create_element_typed("option", "");
         doc.append_child(select, option);
-        let stray = doc.create_element("div", "");
+        let stray = doc.create_element_typed("div", "");
         assert!(
             !doc.append_child(option, stray),
             "an option is the control's content, not a box — it stays a leaf"
@@ -8460,14 +9633,14 @@ mod tests {
     #[test]
     fn an_inline_element_nests_inside_another_inline_element() {
         let mut doc = Document::new("t");
-        let p = doc.create_element("p", "");
+        let p = doc.create_element_typed("p", "");
         doc.append_child(DOCUMENT, p);
 
-        let strong = doc.create_element("strong", "");
+        let strong = doc.create_element_typed("strong", "");
         assert!(doc.append_child(p, strong), "a paragraph takes phrasing content");
         doc.set_text_content(strong, "bold ");
 
-        let em = doc.create_element("em", "");
+        let em = doc.create_element_typed("em", "");
         assert!(
             doc.append_child(strong, em),
             "phrasing content nests — `<strong>` must accept an `<em>`"
@@ -8491,11 +9664,11 @@ mod tests {
     #[test]
     fn a_link_is_a_run_of_its_sentence_and_keeps_its_identity() {
         let mut doc = Document::new("t");
-        let p = doc.create_element("p", "");
+        let p = doc.create_element_typed("p", "");
         doc.append_child(DOCUMENT, p);
         doc.set_text_content(p, "see ");
 
-        let a = doc.create_element("a", "");
+        let a = doc.create_element_typed("a", "");
         doc.set_attribute(a, "href", "#x");
         assert!(doc.append_child(p, a), "a paragraph takes a link");
         doc.set_text_content(a, "the docs");
@@ -8540,10 +9713,10 @@ mod tests {
         );
 
         let mut doc = Document::new("t");
-        let p = doc.create_element("p", "");
+        let p = doc.create_element_typed("p", "");
         doc.append_child(DOCUMENT, p);
 
-        let flowing = doc.create_element("a", "");
+        let flowing = doc.create_element_typed("a", "");
         doc.append_child(p, flowing);
         doc.set_text_content(flowing, "in a sentence");
         assert!(
@@ -8551,7 +9724,7 @@ mod tests {
             "a link in flow is a run of its parent's line"
         );
 
-        let placed = doc.create_element("a", "");
+        let placed = doc.create_element_typed("a", "");
         doc.append_child(DOCUMENT, placed);
         doc.set_style_property(placed, "position", "absolute");
         doc.set_style_property(placed, "left", "10px");
@@ -8574,15 +9747,15 @@ mod tests {
     #[test]
     fn a_link_run_carries_the_pointer_cursor_and_plain_text_does_not() {
         let mut doc = Document::new("t");
-        let p = doc.create_element("p", "");
+        let p = doc.create_element_typed("p", "");
         doc.append_child(DOCUMENT, p);
         doc.set_text_content(p, "see ");
 
-        let a = doc.create_element("a", "");
+        let a = doc.create_element_typed("a", "");
         doc.append_child(p, a);
         doc.set_text_content(a, "the docs");
 
-        let span = doc.create_element("span", "");
+        let span = doc.create_element_typed("span", "");
         doc.append_child(p, span);
         doc.set_text_content(span, " and more");
 
@@ -8624,17 +9797,17 @@ mod tests {
         let mut doc = Document::new("t");
         doc.set_viewport(800.0, 600.0);
 
-        let first = doc.create_element("button", "");
+        let first = doc.create_element_typed("button", "");
         doc.append_child(DOCUMENT, first);
         doc.set_text_content(first, "One");
 
-        let second = doc.create_element("button", "");
+        let second = doc.create_element_typed("button", "");
         doc.append_child(DOCUMENT, second);
         doc.set_text_content(second, "Two");
 
         let (a, b) = (
-            doc.rect(first).expect("in the document"),
-            doc.rect(second).expect("in the document"),
+            doc.get_bounding_client_rect(first).expect("in the document"),
+            doc.get_bounding_client_rect(second).expect("in the document"),
         );
         assert_eq!(
             a.y, b.y,
@@ -8658,18 +9831,18 @@ mod tests {
     fn a_field_is_laid_out_after_its_label_not_on_top_of_it() {
         let mut doc = Document::new("t");
         doc.set_viewport(800.0, 600.0);
-        let row = doc.create_element("div", "");
+        let row = doc.create_element_typed("div", "");
         doc.append_child(DOCUMENT, row);
 
-        let label = doc.create_element("label", "");
+        let label = doc.create_element_typed("label", "");
         doc.append_child(row, label);
         doc.set_text_content(label, "A fairly long caption:");
 
-        let field = doc.create_element("input", "text");
+        let field = doc.create_element_typed("input", "text");
         doc.append_child(row, field);
 
-        let row_rect = doc.rect(row).expect("in the document");
-        let field_rect = doc.rect(field).expect("in the document");
+        let row_rect = doc.get_bounding_client_rect(row).expect("in the document");
+        let field_rect = doc.get_bounding_client_rect(field).expect("in the document");
         assert!(
             field_rect.x > row_rect.x + 40.0,
             "the field must start after the caption's text, not at the row's \
@@ -8687,7 +9860,7 @@ mod tests {
     #[test]
     fn a_progress_bar_is_a_fraction_of_its_max_not_of_one() {
         let mut doc = Document::new("t");
-        let bar = doc.create_element("progress", "");
+        let bar = doc.create_element_typed("progress", "");
         doc.append_child(DOCUMENT, bar);
         doc.set_attribute(bar, "max", "100");
         doc.set_attribute(bar, "value", "60");
@@ -8700,7 +9873,7 @@ mod tests {
 
         // And the order the attributes arrive in must not change the answer —
         // a `max` after a `value` has to re-clamp rather than strand it.
-        let other = doc.create_element("progress", "");
+        let other = doc.create_element_typed("progress", "");
         doc.append_child(DOCUMENT, other);
         doc.set_attribute(other, "value", "60");
         doc.set_attribute(other, "max", "100");
@@ -8723,7 +9896,7 @@ mod tests {
         assert_eq!(control_kind("input", "color"), "colorpicker");
 
         let mut doc = Document::new("t");
-        let picker = doc.create_element("input", "color");
+        let picker = doc.create_element_typed("input", "color");
         doc.append_child(DOCUMENT, picker);
         doc.set_attribute(picker, "value", "#3366cc");
 
@@ -8736,15 +9909,15 @@ mod tests {
 
     /// Build `<table>` with one `<tr>` per row and the given cell texts.
     fn table_of(doc: &mut Document, rows: &[&[&str]]) -> (NodeId, Vec<Vec<NodeId>>) {
-        let table = doc.create_element("table", "");
+        let table = doc.create_element_typed("table", "");
         doc.append_child(DOCUMENT, table);
         let mut cells = Vec::new();
         for texts in rows {
-            let row = doc.create_element("tr", "");
+            let row = doc.create_element_typed("tr", "");
             doc.append_child(table, row);
             let mut in_row = Vec::new();
             for text in *texts {
-                let cell = doc.create_element("td", "");
+                let cell = doc.create_element_typed("td", "");
                 doc.append_child(row, cell);
                 doc.set_text_content(cell, text);
                 in_row.push(cell);
@@ -8820,8 +9993,8 @@ mod tests {
         let mut doc = Document::new("t");
         let (_, cells) = table_of(&mut doc, &[&["one", "two"]]);
 
-        let a = doc.rect(cells[0][0]).expect("the first cell is laid out");
-        let b = doc.rect(cells[0][1]).expect("the second cell is laid out");
+        let a = doc.get_bounding_client_rect(cells[0][0]).expect("the first cell is laid out");
+        let b = doc.get_bounding_client_rect(cells[0][1]).expect("the second cell is laid out");
         assert_eq!(a.y, b.y, "cells of one row share its top edge");
         assert!(
             b.x >= a.x + a.w,
@@ -8836,15 +10009,15 @@ mod tests {
         let mut doc = Document::new("t");
         let (_, cells) = table_of(&mut doc, &[&["one", "two"], &["three", "four"]]);
 
-        let top = doc.rect(cells[0][0]).unwrap();
-        let bottom = doc.rect(cells[1][0]).unwrap();
+        let top = doc.get_bounding_client_rect(cells[0][0]).unwrap();
+        let bottom = doc.get_bounding_client_rect(cells[1][0]).unwrap();
         assert!(
             bottom.y >= top.y + top.h,
             "the second row is below the first: {top:?} then {bottom:?}"
         );
         for column in 0..2 {
-            let first = doc.rect(cells[0][column]).unwrap();
-            let second = doc.rect(cells[1][column]).unwrap();
+            let first = doc.get_bounding_client_rect(cells[0][column]).unwrap();
+            let second = doc.get_bounding_client_rect(cells[1][column]).unwrap();
             assert_eq!(
                 first.x, second.x,
                 "column {column} is one column, not two coincidences"
@@ -8866,28 +10039,28 @@ mod tests {
     #[test]
     fn a_footer_written_first_still_renders_last() {
         let mut doc = Document::new("t");
-        let table = doc.create_element("table", "");
+        let table = doc.create_element_typed("table", "");
         doc.append_child(DOCUMENT, table);
 
         // The footer FIRST, which is legal and what §17.2.1 is about.
-        let foot = doc.create_element("tfoot", "");
+        let foot = doc.create_element_typed("tfoot", "");
         doc.append_child(table, foot);
-        let foot_row = doc.create_element("tr", "");
+        let foot_row = doc.create_element_typed("tr", "");
         doc.append_child(foot, foot_row);
-        let total = doc.create_element("td", "");
+        let total = doc.create_element_typed("td", "");
         doc.append_child(foot_row, total);
         doc.set_text_content(total, "total");
 
-        let body = doc.create_element("tbody", "");
+        let body = doc.create_element_typed("tbody", "");
         doc.append_child(table, body);
-        let body_row = doc.create_element("tr", "");
+        let body_row = doc.create_element_typed("tr", "");
         doc.append_child(body, body_row);
-        let value = doc.create_element("td", "");
+        let value = doc.create_element_typed("td", "");
         doc.append_child(body_row, value);
         doc.set_text_content(value, "value");
 
-        let footer = doc.rect(total).unwrap();
-        let content = doc.rect(value).unwrap();
+        let footer = doc.get_bounding_client_rect(total).unwrap();
+        let content = doc.get_bounding_client_rect(value).unwrap();
         assert!(
             footer.y >= content.y + content.h,
             "the footer is BELOW the body it was written above: {footer:?} vs {content:?}"
@@ -8916,8 +10089,8 @@ mod tests {
 
         let mut auto = Document::new("t");
         let (_, auto_cells) = table_of(&mut auto, &[&[short, long]]);
-        let auto_first = auto.rect(auto_cells[0][0]).unwrap();
-        let auto_second = auto.rect(auto_cells[0][1]).unwrap();
+        let auto_first = auto.get_bounding_client_rect(auto_cells[0][0]).unwrap();
+        let auto_second = auto.get_bounding_client_rect(auto_cells[0][1]).unwrap();
         assert!(
             auto_second.w > auto_first.w,
             "auto gives the longer run the wider column: {} vs {}",
@@ -8928,8 +10101,8 @@ mod tests {
         let mut fixed = Document::new("t");
         let (fixed_table, fixed_cells) = table_of(&mut fixed, &[&[short, long]]);
         fixed.set_style_property(fixed_table, "table-layout", "fixed");
-        let first = fixed.rect(fixed_cells[0][0]).unwrap();
-        let second = fixed.rect(fixed_cells[0][1]).unwrap();
+        let first = fixed.get_bounding_client_rect(fixed_cells[0][0]).unwrap();
+        let second = fixed.get_bounding_client_rect(fixed_cells[0][1]).unwrap();
         assert!(
             (first.w - second.w).abs() < 1.0,
             "fixed divides the table evenly and never asks: {} vs {}",
@@ -8947,33 +10120,33 @@ mod tests {
     #[test]
     fn cells_directly_in_a_table_share_an_anonymous_row() {
         let mut doc = Document::new("t");
-        let table = doc.create_element("table", "");
+        let table = doc.create_element_typed("table", "");
         doc.append_child(DOCUMENT, table);
 
         let mut heads = Vec::new();
         for text in ["name", "email"] {
-            let cell = doc.create_element("th", "");
+            let cell = doc.create_element_typed("th", "");
             doc.append_child(table, cell);
             doc.set_text_content(cell, text);
             heads.push(cell);
         }
         // …and a real row after them, which must NOT be swallowed into the
         // anonymous one.
-        let row = doc.create_element("tr", "");
+        let row = doc.create_element_typed("tr", "");
         doc.append_child(table, row);
-        let body_cell = doc.create_element("td", "");
+        let body_cell = doc.create_element_typed("td", "");
         doc.append_child(row, body_cell);
         doc.set_text_content(body_cell, "ada");
 
-        let first = doc.rect(heads[0]).unwrap();
-        let second = doc.rect(heads[1]).unwrap();
+        let first = doc.get_bounding_client_rect(heads[0]).unwrap();
+        let second = doc.get_bounding_client_rect(heads[1]).unwrap();
         assert!(
             second.x > first.x,
             "the loose cells are SIDE BY SIDE, which is what one row means: {first:?} then {second:?}"
         );
         assert_eq!(first.y, second.y, "and they share a top edge");
 
-        let below = doc.rect(body_cell).unwrap();
+        let below = doc.get_bounding_client_rect(body_cell).unwrap();
         assert!(
             below.y >= first.y + first.h,
             "the real row follows the anonymous one: {first:?} then {below:?}"
@@ -9000,8 +10173,8 @@ mod tests {
         let mut doc = Document::new("t");
         let (table, cells) = table_of(&mut doc, &[&["one", "two"], &["three", "four"]]);
 
-        let box_of_table = doc.rect(table).unwrap();
-        let last = doc.rect(cells[1][0]).unwrap();
+        let box_of_table = doc.get_bounding_client_rect(table).unwrap();
+        let last = doc.get_bounding_client_rect(cells[1][0]).unwrap();
         assert!(
             last.y + last.h <= box_of_table.y + box_of_table.h,
             "the last row is INSIDE the table's box: row {last:?} in {box_of_table:?}"
@@ -9027,19 +10200,19 @@ mod tests {
     fn a_row_added_after_the_table_was_laid_out_is_placed() {
         let mut doc = Document::new("t");
         let (table, cells) = table_of(&mut doc, &[&["one", "two"]]);
-        let first = doc.rect(cells[0][0]).unwrap();
+        let first = doc.get_bounding_client_rect(cells[0][0]).unwrap();
 
-        let row = doc.create_element("tr", "");
+        let row = doc.create_element_typed("tr", "");
         doc.append_child(table, row);
         let mut late = Vec::new();
         for text in ["three", "four"] {
-            let cell = doc.create_element("td", "");
+            let cell = doc.create_element_typed("td", "");
             doc.append_child(row, cell);
             doc.set_text_content(cell, text);
             late.push(cell);
         }
 
-        let below = doc.rect(late[0]).unwrap();
+        let below = doc.get_bounding_client_rect(late[0]).unwrap();
         assert!(
             below.y >= first.y + first.h,
             "the late row sits below the first: {first:?} then {below:?}"
@@ -9048,7 +10221,7 @@ mod tests {
             first.x, below.x,
             "and its cells join the columns that already existed"
         );
-        let second = doc.rect(late[1]).unwrap();
+        let second = doc.get_bounding_client_rect(late[1]).unwrap();
         assert!(
             second.x > below.x,
             "its own cells are side by side too: {below:?} then {second:?}"
@@ -9066,23 +10239,23 @@ mod tests {
     fn restyling_a_cell_re_measures_its_column() {
         let mut doc = Document::new("t");
         let (_, cells) = table_of(&mut doc, &[&["a", "b"], &["c", "d"]]);
-        let before = doc.rect(cells[0][0]).unwrap();
+        let before = doc.get_bounding_client_rect(cells[0][0]).unwrap();
 
         doc.set_attribute(cells[0][0], "style", "padding-left: 40px");
 
-        let after = doc.rect(cells[0][0]).unwrap();
+        let after = doc.get_bounding_client_rect(cells[0][0]).unwrap();
         assert!(
             after.w > before.w,
             "the padded cell got wider: {} then {}",
             before.w,
             after.w
         );
-        let neighbour = doc.rect(cells[1][0]).unwrap();
+        let neighbour = doc.get_bounding_client_rect(cells[1][0]).unwrap();
         assert_eq!(
             after.w, neighbour.w,
             "and the cell BELOW it took the same width — a column has one width"
         );
-        let right = doc.rect(cells[0][1]).unwrap();
+        let right = doc.get_bounding_client_rect(cells[0][1]).unwrap();
         assert!(
             right.x >= after.x + after.w - 1.0,
             "the next column moved out of the way: {after:?} then {right:?}"
@@ -9100,9 +10273,9 @@ mod tests {
         let (_, cells) = table_of(&mut doc, &[&["wide"], &["a", "b"]]);
         doc.set_attribute(cells[0][0], "colspan", "2");
 
-        let wide = doc.rect(cells[0][0]).unwrap();
-        let left = doc.rect(cells[1][0]).unwrap();
-        let right = doc.rect(cells[1][1]).unwrap();
+        let wide = doc.get_bounding_client_rect(cells[0][0]).unwrap();
+        let left = doc.get_bounding_client_rect(cells[1][0]).unwrap();
+        let right = doc.get_bounding_client_rect(cells[1][1]).unwrap();
         assert_eq!(wide.x, left.x, "the spanning cell starts at the first column");
         assert!(
             wide.w >= (right.x + right.w) - left.x - 1.0,
@@ -9120,9 +10293,9 @@ mod tests {
         let (_, cells) = table_of(&mut doc, &[&["tall", "top"], &["bottom"]]);
         doc.set_attribute(cells[0][0], "rowspan", "2");
 
-        let tall = doc.rect(cells[0][0]).unwrap();
-        let top = doc.rect(cells[0][1]).unwrap();
-        let bottom = doc.rect(cells[1][0]).unwrap();
+        let tall = doc.get_bounding_client_rect(cells[0][0]).unwrap();
+        let top = doc.get_bounding_client_rect(cells[0][1]).unwrap();
+        let bottom = doc.get_bounding_client_rect(cells[1][0]).unwrap();
         assert_eq!(
             bottom.x, top.x,
             "the second row's only cell sits in column 1, because column 0 is still occupied"
@@ -9141,22 +10314,22 @@ mod tests {
     #[test]
     fn a_row_group_contributes_its_rows_not_itself() {
         let mut doc = Document::new("t");
-        let table = doc.create_element("table", "");
+        let table = doc.create_element_typed("table", "");
         doc.append_child(DOCUMENT, table);
-        let head = doc.create_element("thead", "");
+        let head = doc.create_element_typed("thead", "");
         doc.append_child(table, head);
-        let row = doc.create_element("tr", "");
+        let row = doc.create_element_typed("tr", "");
         doc.append_child(head, row);
-        let cell = doc.create_element("td", "");
+        let cell = doc.create_element_typed("td", "");
         doc.append_child(row, cell);
         doc.set_text_content(cell, "header");
 
         // A body row too, so the header has something to be a column WITH.
-        let body = doc.create_element("tbody", "");
+        let body = doc.create_element_typed("tbody", "");
         doc.append_child(table, body);
-        let body_row = doc.create_element("tr", "");
+        let body_row = doc.create_element_typed("tr", "");
         doc.append_child(body, body_row);
-        let body_cell = doc.create_element("td", "");
+        let body_cell = doc.create_element_typed("td", "");
         doc.append_child(body_row, body_cell);
         doc.set_text_content(body_cell, "value");
 
@@ -9164,9 +10337,9 @@ mod tests {
         // and it passed while every grouped table rendered COMPLETELY EMPTY.
         // An unplaced cell keeps its construction size, so a nonzero box is
         // no evidence of layout at all. Only a POSITION the table chose is.
-        let head_rect = doc.rect(cell).expect("a cell inside a thead is laid out");
-        let body_rect = doc.rect(body_cell).unwrap();
-        let table_rect = doc.rect(table).unwrap();
+        let head_rect = doc.get_bounding_client_rect(cell).expect("a cell inside a thead is laid out");
+        let body_rect = doc.get_bounding_client_rect(body_cell).unwrap();
+        let table_rect = doc.get_bounding_client_rect(table).unwrap();
         assert!(
             head_rect.x > table_rect.x && head_rect.y > table_rect.y,
             "the header cell was placed INSIDE its table: {head_rect:?} in {table_rect:?}"
@@ -9195,17 +10368,17 @@ mod tests {
     #[test]
     fn a_type_set_after_creation_rebuilds_the_control() {
         let mut doc = Document::new("t");
-        let input = doc.create_element("input", "");
+        let input = doc.create_element_typed("input", "");
         doc.append_child(DOCUMENT, input);
         assert_eq!(
-            doc.rect(input).map(|r| r.w),
+            doc.get_bounding_client_rect(input).map(|r| r.w),
             Some(160.0),
             "an input with no type is a text field — HTML's missing value default"
         );
 
         doc.set_attribute(input, "type", "color");
         assert_eq!(
-            doc.rect(input).map(|r| r.w),
+            doc.get_bounding_client_rect(input).map(|r| r.w),
             Some(64.0),
             "the swatch is a different CONTROL, not a text box wearing a label"
         );
@@ -9215,7 +10388,7 @@ mod tests {
         // Removing the attribute is the missing value default, not "no type".
         doc.remove_attribute(input, "type");
         assert_eq!(
-            doc.rect(input).map(|r| r.w),
+            doc.get_bounding_client_rect(input).map(|r| r.w),
             Some(160.0),
             "back to a text field, because that is what an input with no type is"
         );
@@ -9229,7 +10402,7 @@ mod tests {
     #[test]
     fn attributes_written_before_the_type_survive_the_rebuild() {
         let mut doc = Document::new("t");
-        let input = doc.create_element("input", "");
+        let input = doc.create_element_typed("input", "");
         doc.append_child(DOCUMENT, input);
 
         doc.set_attribute(input, "value", "#3366cc");
@@ -9252,14 +10425,14 @@ mod tests {
     #[test]
     fn a_rebuilt_control_is_told_the_style_it_already_had() {
         let mut doc = Document::new("t");
-        let input = doc.create_element("input", "");
+        let input = doc.create_element_typed("input", "");
         doc.append_child(DOCUMENT, input);
         doc.set_attribute(input, "style", "width: 40px");
-        assert_eq!(doc.rect(input).map(|r| r.w), Some(40.0));
+        assert_eq!(doc.get_bounding_client_rect(input).map(|r| r.w), Some(40.0));
 
         doc.set_attribute(input, "type", "color");
         assert_eq!(
-            doc.rect(input).map(|r| r.w),
+            doc.get_bounding_client_rect(input).map(|r| r.w),
             Some(40.0),
             "the declaration outranks the new kind's starting size, as it did the old one's"
         );
@@ -9271,12 +10444,12 @@ mod tests {
         // trailing ` c` had nowhere to live, so the markup was expressible and
         // the tree was not.
         let mut doc = Document::new("t");
-        let p = doc.create_element("p", "");
+        let p = doc.create_element_typed("p", "");
         doc.append_child(DOCUMENT, p);
 
         let before = doc.create_text_node("a ");
         doc.append_child(p, before);
-        let strong = doc.create_element("strong", "");
+        let strong = doc.create_element_typed("strong", "");
         doc.append_child(p, strong);
         doc.set_text_content(strong, "B");
         let after = doc.create_text_node(" c");
@@ -9305,11 +10478,11 @@ mod tests {
         // are formatting, not content. Rendering them verbatim is the most
         // visible way a renderer stops looking like HTML.
         let mut doc = Document::new("t");
-        let p = doc.create_element("p", "");
+        let p = doc.create_element_typed("p", "");
         doc.append_child(DOCUMENT, p);
         let lead = doc.create_text_node("\n    Hello   there\n    ");
         doc.append_child(p, lead);
-        let strong = doc.create_element("strong", "");
+        let strong = doc.create_element_typed("strong", "");
         doc.append_child(p, strong);
         doc.set_text_content(strong, "world");
         let tail = doc.create_text_node("\n    again\n");
@@ -9333,14 +10506,14 @@ mod tests {
         // `</b>\n  <b>` is one space, not nothing. Dropping it is how two
         // words the author wrote on separate lines end up jammed together.
         let mut doc = Document::new("t");
-        let p = doc.create_element("p", "");
+        let p = doc.create_element_typed("p", "");
         doc.append_child(DOCUMENT, p);
-        let a = doc.create_element("strong", "");
+        let a = doc.create_element_typed("strong", "");
         doc.append_child(p, a);
         doc.set_text_content(a, "one");
         let gap = doc.create_text_node("\n   ");
         doc.append_child(p, gap);
-        let b = doc.create_element("strong", "");
+        let b = doc.create_element_typed("strong", "");
         doc.append_child(p, b);
         doc.set_text_content(b, "two");
 
@@ -9354,9 +10527,9 @@ mod tests {
         // The spec's own definition, and what makes `p.textContent = "x"` and
         // building the same tree by hand agree.
         let mut doc = Document::new("t");
-        let p = doc.create_element("p", "");
+        let p = doc.create_element_typed("p", "");
         doc.append_child(DOCUMENT, p);
-        let strong = doc.create_element("strong", "");
+        let strong = doc.create_element_typed("strong", "");
         doc.append_child(p, strong);
         doc.set_text_content(strong, "B");
         assert_eq!(doc.inline_runs(p).len(), 1);
@@ -9375,7 +10548,7 @@ mod tests {
         // paragraph's text because the text node inherits, and a text node
         // inherits everything since it declares nothing.
         let mut doc = Document::new("t");
-        let p = doc.create_element("p", "");
+        let p = doc.create_element_typed("p", "");
         doc.append_child(DOCUMENT, p);
         let data = doc.create_text_node("hello");
         doc.append_child(p, data);
@@ -9387,7 +10560,7 @@ mod tests {
     #[test]
     fn editing_a_text_nodes_data_re_derives_the_line() {
         let mut doc = Document::new("t");
-        let p = doc.create_element("p", "");
+        let p = doc.create_element_typed("p", "");
         doc.append_child(DOCUMENT, p);
         let data = doc.create_text_node("before");
         doc.append_child(p, data);
@@ -9405,10 +10578,10 @@ mod tests {
         // paragraph's line, which is why asking a toolkit for "the strong
         // widget" is the wrong question.
         let mut doc = Document::new("t");
-        let p = doc.create_element("p", "");
+        let p = doc.create_element_typed("p", "");
         doc.append_child(DOCUMENT, p);
         doc.set_text_content(p, "a ");
-        let strong = doc.create_element("strong", "");
+        let strong = doc.create_element_typed("strong", "");
         doc.append_child(p, strong);
         doc.set_text_content(strong, "b");
 
@@ -9439,9 +10612,9 @@ mod tests {
         // — which is also why the z-index tests can still use spans as the
         // only widget that paints a background.
         let mut doc = Document::new("t");
-        let p = doc.create_element("p", "");
+        let p = doc.create_element_typed("p", "");
         doc.append_child(DOCUMENT, p);
-        let span = doc.create_element("span", "");
+        let span = doc.create_element_typed("span", "");
         doc.append_child(p, span);
         assert!(doc.is_inline_content(span), "in flow, it is a run");
 
@@ -9458,9 +10631,9 @@ mod tests {
         // line at once. So the copy has to be re-derived whenever the cascade
         // moves, or the paragraph paints yesterday's answer.
         let mut doc = Document::new("t");
-        let p = doc.create_element("p", "");
+        let p = doc.create_element_typed("p", "");
         doc.append_child(DOCUMENT, p);
-        let span = doc.create_element("span", "");
+        let span = doc.create_element_typed("span", "");
         doc.append_child(p, span);
         doc.set_text_content(span, "x");
         assert_eq!(doc.inline_runs(p)[0].font.size, 14.0);
@@ -9479,9 +10652,9 @@ mod tests {
         // The stale-copy failure this migration exists to remove: a box that
         // kept painting the runs it was last told.
         let mut doc = Document::new("t");
-        let p = doc.create_element("p", "");
+        let p = doc.create_element_typed("p", "");
         doc.append_child(DOCUMENT, p);
-        let span = doc.create_element("span", "");
+        let span = doc.create_element_typed("span", "");
         doc.append_child(p, span);
         doc.set_text_content(span, "x");
         assert_eq!(doc.inline_runs(p).len(), 1);
@@ -9495,7 +10668,7 @@ mod tests {
 
     /// Put a stylesheet in the document, the way a page does.
     fn with_stylesheet(doc: &mut Document, css: &str) {
-        let style = doc.create_element("style", "");
+        let style = doc.create_element_typed("style", "");
         doc.append_child(DOCUMENT, style);
         doc.set_text_content(style, css);
     }
@@ -9506,9 +10679,9 @@ mod tests {
         // `<canvas width="640">` stored an inert attribute and the surface kept
         // its default — which is the first thing SDL and `CreateGraphics` set.
         let mut doc = Document::new("t");
-        let canvas = doc.create_element("canvas", "");
+        let canvas = doc.create_element_typed("canvas", "");
         doc.append_child(DOCUMENT, canvas);
-        let rect = doc.rect(canvas).expect("in the document");
+        let rect = doc.get_bounding_client_rect(canvas).expect("in the document");
         assert_eq!(
             (rect.w, rect.h),
             (300.0, 150.0),
@@ -9517,7 +10690,7 @@ mod tests {
 
         doc.set_attribute(canvas, "width", "640");
         doc.set_attribute(canvas, "height", "480");
-        let rect = doc.rect(canvas).expect("in the document");
+        let rect = doc.get_bounding_client_rect(canvas).expect("in the document");
         assert_eq!((rect.w, rect.h), (640.0, 480.0));
         assert_eq!(
             doc.get_attribute(canvas, "width").as_deref(),
@@ -9532,7 +10705,7 @@ mod tests {
         // only works because the spec clears the bitmap on ANY set — not on a
         // change.
         let mut doc = Document::new("t");
-        let canvas = doc.create_element("canvas", "");
+        let canvas = doc.create_element_typed("canvas", "");
         doc.append_child(DOCUMENT, canvas);
         doc.set_attribute(canvas, "width", "200");
 
@@ -9556,7 +10729,7 @@ mod tests {
         // The same attributes mean something else on `<img>` and friends: a
         // hint that maps to CSS, sizing the BOX.
         let mut doc = Document::new("t");
-        let img = doc.create_element("img", "");
+        let img = doc.create_element_typed("img", "");
         doc.append_child(DOCUMENT, img);
         doc.set_attribute(img, "width", "120");
         assert_eq!(
@@ -9571,7 +10744,7 @@ mod tests {
         // reaching the widget from it was, so paint ops went to a canvas in
         // another tree and nothing rendered.
         let mut doc = Document::new("t");
-        let canvas = doc.create_element("canvas", "");
+        let canvas = doc.create_element_typed("canvas", "");
         doc.set_attribute(canvas, "id", "surface");
         doc.append_child(DOCUMENT, canvas);
 
@@ -9579,7 +10752,7 @@ mod tests {
             doc.canvas_mut(canvas).is_some(),
             "a <canvas> element IS a canvas widget"
         );
-        let label = doc.create_element("span", "");
+        let label = doc.create_element_typed("span", "");
         doc.append_child(DOCUMENT, label);
         assert!(
             doc.canvas_mut(label).is_none(),
@@ -9594,10 +10767,10 @@ mod tests {
         // identities an element can be known by are answered, in the order a
         // caller means them.
         let mut doc = Document::new("t");
-        let named = doc.create_element("canvas", "");
+        let named = doc.create_element_typed("canvas", "");
         doc.set_attribute(named, "name", "board");
         doc.append_child(DOCUMENT, named);
-        let identified = doc.create_element("canvas", "");
+        let identified = doc.create_element_typed("canvas", "");
         doc.set_attribute(identified, "id", "surface");
         doc.append_child(DOCUMENT, identified);
 
@@ -9622,13 +10795,13 @@ mod tests {
         // renders nothing.
         let mut doc = Document::new("t");
         let panel = container_with(&mut doc, 300.0, 200.0);
-        let first = doc.create_element("p", "");
+        let first = doc.create_element_typed("p", "");
         doc.set_attribute(first, "class", "lead");
         doc.append_child(panel, first);
-        let second = doc.create_element("p", "");
+        let second = doc.create_element_typed("p", "");
         doc.set_attribute(second, "class", "lead");
         doc.append_child(panel, second);
-        let outside = doc.create_element("p", "");
+        let outside = doc.create_element_typed("p", "");
         doc.set_attribute(outside, "class", "lead");
         doc.append_child(DOCUMENT, outside);
 
@@ -9653,7 +10826,7 @@ mod tests {
         // without an exception channel, and it fails in the safe direction: a
         // call site expecting a few elements must not receive all of them.
         let mut doc = Document::new("t");
-        let a = doc.create_element("a", "");
+        let a = doc.create_element_typed("a", "");
         doc.append_child(DOCUMENT, a);
         assert!(doc.query_selector_all("a:hover").is_empty());
         assert!(doc.query_selector_all("((").is_empty());
@@ -9667,14 +10840,14 @@ mod tests {
         // input, since a rule needs a selector.
         let mut doc = Document::new("t");
         with_stylesheet(&mut doc, "p { color: #ff0000; font-size: 30px }");
-        let p = doc.create_element("p", "");
+        let p = doc.create_element_typed("p", "");
         doc.append_child(DOCUMENT, p);
 
         assert_eq!(doc.style_properties(p).font_size, Some(30.0));
         assert!(doc.style_properties(p).color.is_some());
         // …and it is NOT an inline style: `element.style` must stay empty or a
         // serialiser would write the rule onto every element it matched.
-        assert_eq!(doc.style_property(p, "font-size"), "");
+        assert_eq!(doc.get_style_property(p, "font-size"), "");
     }
 
     #[test]
@@ -9683,7 +10856,7 @@ mod tests {
         // property so the order is unambiguous.
         let mut doc = Document::new("t");
         with_stylesheet(&mut doc, "strong { font-weight: 600 }");
-        let s = doc.create_element("strong", "");
+        let s = doc.create_element_typed("strong", "");
         doc.append_child(DOCUMENT, s);
         assert_eq!(
             doc.style_properties(s).font_weight,
@@ -9707,7 +10880,7 @@ mod tests {
             &mut doc,
             "#target { font-size: 40px } p { font-size: 10px } p { font-size: 20px }",
         );
-        let p = doc.create_element("p", "");
+        let p = doc.create_element_typed("p", "");
         doc.set_attribute(p, "id", "target");
         doc.append_child(DOCUMENT, p);
         assert_eq!(
@@ -9716,7 +10889,7 @@ mod tests {
             "#id wins however it is ordered"
         );
 
-        let plain = doc.create_element("p", "");
+        let plain = doc.create_element_typed("p", "");
         doc.append_child(DOCUMENT, plain);
         assert_eq!(
             doc.style_properties(plain).font_size,
@@ -9730,11 +10903,11 @@ mod tests {
         let mut doc = Document::new("t");
         with_stylesheet(&mut doc, "div .lead { font-size: 25px }");
         let panel = container_with(&mut doc, 300.0, 200.0);
-        let lead = doc.create_element("p", "");
+        let lead = doc.create_element_typed("p", "");
         doc.set_attribute(lead, "class", "lead intro");
         doc.append_child(panel, lead);
 
-        let orphan = doc.create_element("p", "");
+        let orphan = doc.create_element_typed("p", "");
         doc.set_attribute(orphan, "class", "lead");
         doc.append_child(DOCUMENT, orphan);
 
@@ -9756,7 +10929,7 @@ mod tests {
             &mut doc,
             "a:hover { font-size: 50px } a { font-size: 12px }",
         );
-        let a = doc.create_element("a", "");
+        let a = doc.create_element_typed("a", "");
         doc.append_child(DOCUMENT, a);
         assert_eq!(doc.style_properties(a).font_size, Some(12.0));
     }
@@ -9771,7 +10944,7 @@ mod tests {
             &mut doc,
             "/* p { font-size: 99px } */ @media print { p { font-size: 88px } } p { font-size: 14px }",
         );
-        let p = doc.create_element("p", "");
+        let p = doc.create_element_typed("p", "");
         doc.append_child(DOCUMENT, p);
         assert_eq!(doc.style_properties(p).font_size, Some(14.0));
     }
@@ -9785,12 +10958,12 @@ mod tests {
         let mut doc = Document::new("t");
         let small = container_with(&mut doc, 400.0, 300.0);
         doc.set_style_property(small, "font-size", "10px");
-        let h_small = doc.create_element("h1", "");
+        let h_small = doc.create_element_typed("h1", "");
         doc.append_child(small, h_small);
 
         let big = container_with(&mut doc, 400.0, 300.0);
         doc.set_style_property(big, "font-size", "40px");
-        let h_big = doc.create_element("h1", "");
+        let h_big = doc.create_element_typed("h1", "");
         doc.append_child(big, h_big);
 
         assert_eq!(doc.style_properties(h_small).font_size, Some(20.0));
@@ -9806,7 +10979,7 @@ mod tests {
         let mut doc = Document::new("t");
         let panel = container_with(&mut doc, 400.0, 300.0);
         doc.set_style_property(panel, "font-size", "10px");
-        let h = doc.create_element("h1", "");
+        let h = doc.create_element_typed("h1", "");
         doc.append_child(panel, h);
 
         assert_eq!(doc.style_properties(h).font_size, Some(20.0));
@@ -9826,7 +10999,7 @@ mod tests {
         let mut doc = Document::new("t");
         let panel = container_with(&mut doc, 400.0, 300.0);
         doc.set_style_property(panel, "font-size", "20px");
-        let b = doc.create_element("button", "");
+        let b = doc.create_element_typed("button", "");
         doc.append_child(panel, b);
         doc.set_style_property(b, "width", "3em");
 
@@ -9837,7 +11010,7 @@ mod tests {
         );
         // …and the widget's, which is the rect it actually occupies.
         assert_eq!(
-            doc.rect(b).expect("in the document").w,
+            doc.get_bounding_client_rect(b).expect("in the document").w,
             60.0,
             "the control is as wide as the cascade says, not 3 x 16"
         );
@@ -9851,7 +11024,7 @@ mod tests {
         doc.set_style_property(DOCUMENT, "font-size", "10px");
         let panel = container_with(&mut doc, 400.0, 300.0);
         doc.set_style_property(panel, "font-size", "40px");
-        let child = doc.create_element("button", "");
+        let child = doc.create_element_typed("button", "");
         doc.append_child(panel, child);
 
         doc.set_style_property(child, "width", "2rem");
@@ -9872,13 +11045,13 @@ mod tests {
     fn a_heading_is_a_line_of_text_not_a_layout_region() {
         // Same widget as a `<div>`, nothing like the same starting geometry.
         let mut doc = Document::new("t");
-        let h = doc.create_element("h1", "");
+        let h = doc.create_element_typed("h1", "");
         doc.append_child(DOCUMENT, h);
-        let div = doc.create_element("div", "");
+        let div = doc.create_element_typed("div", "");
         doc.append_child(DOCUMENT, div);
 
-        let h_rect = doc.rect(h).expect("in the document");
-        let div_rect = doc.rect(div).expect("in the document");
+        let h_rect = doc.get_bounding_client_rect(h).expect("in the document");
+        let div_rect = doc.get_bounding_client_rect(div).expect("in the document");
         assert!(
             h_rect.h < div_rect.h,
             "a heading starts one line high ({}), a layout box a region ({})",
@@ -9896,7 +11069,7 @@ mod tests {
         // nothing under a form that does.
         let mut doc = Document::new("t");
         let form = container_with(&mut doc, 300.0, 200.0);
-        let display = doc.create_element("input", "text");
+        let display = doc.create_element_typed("input", "text");
         doc.append_child(form, display);
         doc.set_style_property(display, "text-align", "right");
 
@@ -9905,7 +11078,7 @@ mod tests {
             Some(crate::css::TextAlign::Right)
         );
 
-        let label = doc.create_element("label", "");
+        let label = doc.create_element_typed("label", "");
         doc.append_child(form, label);
         doc.set_style_property(form, "text-align", "center");
         assert_eq!(
@@ -9936,7 +11109,7 @@ mod tests {
         doc.append_child(form, outer);
         let inner = container_with(&mut doc, 200.0, 100.0);
         doc.append_child(outer, inner);
-        let button = doc.create_element("button", "");
+        let button = doc.create_element_typed("button", "");
         doc.append_child(inner, button);
 
         let props = doc.style_properties(button);
@@ -9948,7 +11121,7 @@ mod tests {
             "the colour is the form's, not a default the button chose"
         );
         assert_eq!(
-            doc.style_property(button, "font-family"),
+            doc.get_style_property(button, "font-family"),
             "",
             "and none of it is an inline style — the button declared nothing"
         );
@@ -9967,9 +11140,9 @@ mod tests {
         doc.set_style_property(form, "font-weight", "400");
         doc.set_style_property(form, "color", "#c00000");
 
-        let strong = doc.create_element("strong", "");
+        let strong = doc.create_element_typed("strong", "");
         doc.append_child(form, strong);
-        let plain = doc.create_element("span", "");
+        let plain = doc.create_element_typed("span", "");
         doc.append_child(form, plain);
 
         assert_eq!(
@@ -9999,7 +11172,7 @@ mod tests {
         // `FormCreate`, after every control is constructed.
         let mut doc = Document::new("t");
         let form = container_with(&mut doc, 200.0, 100.0);
-        let label = doc.create_element("span", "");
+        let label = doc.create_element_typed("span", "");
         doc.append_child(form, label);
         assert_eq!(doc.style_properties(label).font_size, None);
 
@@ -10020,7 +11193,7 @@ mod tests {
         // silently replace one the child declared for itself.
         let mut doc = Document::new("t");
         let form = container_with(&mut doc, 200.0, 100.0);
-        let label = doc.create_element("span", "");
+        let label = doc.create_element_typed("span", "");
         doc.append_child(form, label);
         doc.set_style_property(label, "font-size", "9px");
 
@@ -10041,12 +11214,12 @@ mod tests {
         // child dropped 40px down the panel.
         let mut doc = Document::new("t");
         let panel = container_with(&mut doc, 200.0, 200.0);
-        let child = doc.create_element("button", "");
+        let child = doc.create_element_typed("button", "");
         doc.append_child(panel, child);
         doc.set_style_property(panel, "padding", "0 40px");
 
-        let panel_rect = doc.rect(panel).expect("the panel is in the document");
-        let rect = doc.rect(child).expect("the child is in the document");
+        let panel_rect = doc.get_bounding_client_rect(panel).expect("the panel is in the document");
+        let rect = doc.get_bounding_client_rect(child).expect("the child is in the document");
         assert_eq!(
             rect.x - panel_rect.x,
             40.0,
@@ -10067,7 +11240,7 @@ mod tests {
         // top of it. Both CSS and VCL agree — a `TGroupBox`'s client area
         // excludes its bevel.
         let mut doc = Document::new("t");
-        let fieldset = doc.create_element("fieldset", "");
+        let fieldset = doc.create_element_typed("fieldset", "");
         doc.append_child(DOCUMENT, fieldset);
         doc.set_style_property(fieldset, "position", "absolute");
         doc.set_style_property(fieldset, "left", "50px");
@@ -10079,13 +11252,13 @@ mod tests {
             "the UA rule has to reach the element for any of this to matter"
         );
 
-        let child = doc.create_element("button", "");
+        let child = doc.create_element_typed("button", "");
         doc.append_child(fieldset, child);
         doc.set_style_property(child, "position", "absolute");
         doc.set_style_property(child, "left", "0px");
         doc.set_style_property(child, "top", "0px");
 
-        let rect = doc.rect(child).expect("the child is in the document");
+        let rect = doc.get_bounding_client_rect(child).expect("the child is in the document");
         assert_eq!(
             (rect.x, rect.y),
             (51.0, 31.0),
@@ -10101,7 +11274,7 @@ mod tests {
         let mut doc = Document::new("t");
         let panel = container_with(&mut doc, 400.0, 300.0);
 
-        let border_box = doc.create_element("div", "");
+        let border_box = doc.create_element_typed("div", "");
         doc.append_child(panel, border_box);
         doc.set_style_property(border_box, "position", "absolute");
         doc.set_style_property(border_box, "box-sizing", "border-box");
@@ -10110,7 +11283,7 @@ mod tests {
         doc.set_style_property(border_box, "width", "100px");
 
         // No `box-sizing` declaration at all — the initial value is enough.
-        let content_box = doc.create_element("div", "");
+        let content_box = doc.create_element_typed("div", "");
         doc.append_child(panel, content_box);
         doc.set_style_property(content_box, "position", "absolute");
         doc.set_style_property(content_box, "padding", "10px");
@@ -10118,12 +11291,12 @@ mod tests {
         doc.set_style_property(content_box, "width", "100px");
 
         assert_eq!(
-            doc.rect(border_box).expect("in the document").w,
+            doc.get_bounding_client_rect(border_box).expect("in the document").w,
             100.0,
             "border-box: the 100 INCLUDES the padding and border"
         );
         assert_eq!(
-            doc.rect(content_box).expect("in the document").w,
+            doc.get_bounding_client_rect(content_box).expect("in the document").w,
             124.0,
             "content-box: the 100 is the content, plus 2×10 padding and 2×2 border"
         );
@@ -10142,14 +11315,14 @@ mod tests {
         let mut doc = Document::new("t");
         let panel = container_with(&mut doc, 400.0, 300.0);
 
-        let field = doc.create_element("input", "text");
+        let field = doc.create_element_typed("input", "text");
         doc.append_child(panel, field);
         doc.set_style_property(field, "position", "absolute");
         doc.set_style_property(field, "padding", "10px");
         doc.set_style_property(field, "width", "100px");
 
         assert_eq!(
-            doc.rect(field).expect("in the document").w,
+            doc.get_bounding_client_rect(field).expect("in the document").w,
             100.0,
             "a control's declared width is its OUTER width, from the UA rule"
         );
@@ -10238,13 +11411,13 @@ mod tests {
         // not outside it. This half is what a "content box" mistake would fail.
         doc.set_style_property(panel, "padding", "10px");
 
-        let b = doc.create_element("button", "");
+        let b = doc.create_element_typed("button", "");
         doc.append_child(panel, b);
         doc.set_style_property(b, "position", "absolute");
         doc.set_style_property(b, "left", "0px");
         doc.set_style_property(b, "top", "0px");
 
-        let rect = doc.rect(b).expect("the button is in the document");
+        let rect = doc.get_bounding_client_rect(b).expect("the button is in the document");
         assert_eq!(
             (rect.x, rect.y),
             (43.0, 23.0),
@@ -10261,7 +11434,7 @@ mod tests {
         // the height for the vertical sides would make it 20 by 10 here.
         let mut doc = Document::new("t");
         let outer = container_with(&mut doc, 200.0, 100.0);
-        let inner = doc.create_element("div", "");
+        let inner = doc.create_element_typed("div", "");
         doc.append_child(outer, inner);
         doc.set_style_property(inner, "padding", "10%");
 
@@ -10280,11 +11453,11 @@ mod tests {
         // out as pixels. Collapsing the two would make the read side lie.
         let mut doc = Document::new("t");
         let outer = container_with(&mut doc, 300.0, 100.0);
-        let inner = doc.create_element("div", "");
+        let inner = doc.create_element_typed("div", "");
         doc.append_child(outer, inner);
         doc.set_style_property(inner, "padding", "10%");
 
-        assert_eq!(doc.style_property(inner, "padding"), "10%");
+        assert_eq!(doc.get_style_property(inner, "padding"), "10%");
         assert_eq!(doc.box_edges(inner).padding.left, 30.0);
     }
 
@@ -10299,19 +11472,19 @@ mod tests {
         doc.set_style_property(positioned, "left", "40px");
         doc.set_style_property(positioned, "top", "20px");
 
-        let passthrough = doc.create_element("div", "");
+        let passthrough = doc.create_element_typed("div", "");
         doc.append_child(positioned, passthrough);
         doc.set_style_property(passthrough, "position", "static");
         doc.set_style_property(passthrough, "left", "100px");
         doc.set_style_property(passthrough, "top", "100px");
 
-        let b = doc.create_element("button", "");
+        let b = doc.create_element_typed("button", "");
         doc.append_child(passthrough, b);
         doc.set_style_property(b, "position", "absolute");
         doc.set_style_property(b, "left", "10px");
         doc.set_style_property(b, "top", "5px");
 
-        let rect = doc.rect(b).expect("the button is in the document");
+        let rect = doc.get_bounding_client_rect(b).expect("the button is in the document");
         assert_eq!(
             (rect.x, rect.y),
             (50.0, 25.0),
@@ -10332,23 +11505,23 @@ mod tests {
         let panel = container_with(&mut doc, 320.0, 200.0);
         // The control's OWN height, read before anything lays it out — a
         // detached element has never been through a flow pass.
-        let detached = doc.create_element("input", "text");
-        let natural_height = doc.style_property(detached, "height");
+        let detached = doc.create_element_typed("input", "text");
+        let natural_height = doc.computed_style_property(detached, "height");
 
         // A flowed sibling, for contrast: it SHOULD stretch.
-        let flowed = doc.create_element("input", "text");
+        let flowed = doc.create_element_typed("input", "text");
         doc.append_child(panel, flowed);
-        assert_ne!(doc.style_property(flowed, "height"), natural_height);
+        assert_ne!(doc.computed_style_property(flowed, "height"), natural_height);
 
-        let partly = doc.create_element("input", "text");
+        let partly = doc.create_element_typed("input", "text");
         doc.append_child(panel, partly);
         doc.set_style_property(partly, "left", "10px");
         doc.set_style_property(partly, "top", "30px");
         doc.set_style_property(partly, "width", "120px");
         // Width is honoured, height falls back to the control's own — NOT to
         // whatever the flow pass left behind.
-        assert_eq!(doc.style_property(partly, "width"), "120px");
-        assert_eq!(doc.style_property(partly, "height"), natural_height);
+        assert_eq!(doc.computed_style_property(partly, "width"), "120px");
+        assert_eq!(doc.computed_style_property(partly, "height"), natural_height);
     }
 
     #[test]
@@ -10362,13 +11535,13 @@ mod tests {
         doc.set_style_property(panel, "left", "10px");
         doc.set_style_property(panel, "top", "10px");
 
-        let b = doc.create_element("button", "");
+        let b = doc.create_element_typed("button", "");
         doc.append_child(panel, b);
         doc.set_style_property(b, "left", "20px");
         doc.set_style_property(b, "top", "50px");
         // 10 + 20, 10 + 50 — not 20, 50 on the body.
-        assert_eq!(doc.style_property(b, "left"), "30px");
-        assert_eq!(doc.style_property(b, "top"), "60px");
+        assert_eq!(doc.computed_style_property(b, "left"), "30px");
+        assert_eq!(doc.computed_style_property(b, "top"), "60px");
     }
 
     #[test]
@@ -10378,7 +11551,7 @@ mod tests {
         // containing block. A browser handed this markup answers the same, and
         // that equivalence is the whole reason the widget layer is HTML.
         let mut doc = Document::new("t");
-        let panel = doc.create_element("div", "");
+        let panel = doc.create_element_typed("div", "");
         doc.append_child(DOCUMENT, panel);
         doc.set_style_property(panel, "position", "static");
         doc.set_style_property(panel, "left", "10px");
@@ -10386,12 +11559,12 @@ mod tests {
         doc.set_style_property(panel, "width", "200px");
         doc.set_style_property(panel, "height", "200px");
 
-        let b = doc.create_element("button", "");
+        let b = doc.create_element_typed("button", "");
         doc.append_child(panel, b);
         doc.set_style_property(b, "position", "absolute");
         doc.set_style_property(b, "left", "20px");
         // Resolved against the viewport, not the static panel.
-        assert_eq!(doc.style_property(b, "left"), "20px");
+        assert_eq!(doc.computed_style_property(b, "left"), "20px");
     }
 
     #[test]
@@ -10400,11 +11573,11 @@ mod tests {
         let panel = container_with(&mut doc, 200.0, 200.0);
         doc.set_style_property(panel, "left", "10px");
         doc.set_style_property(panel, "top", "10px");
-        let b = doc.create_element("button", "");
+        let b = doc.create_element_typed("button", "");
         doc.append_child(panel, b);
         doc.set_style_property(b, "position", "fixed");
         doc.set_style_property(b, "left", "20px");
-        assert_eq!(doc.style_property(b, "left"), "20px");
+        assert_eq!(doc.computed_style_property(b, "left"), "20px");
     }
 
     #[test]
@@ -10413,23 +11586,23 @@ mod tests {
         // two, which is why the other two were never wired.
         let mut doc = Document::new("t");
         let panel = container_with(&mut doc, 400.0, 300.0);
-        let b = doc.create_element("button", "");
+        let b = doc.create_element_typed("button", "");
         doc.append_child(panel, b);
         doc.set_style_property(b, "width", "100px");
         doc.set_style_property(b, "right", "20px");
         // 400 wide, 20 from the right edge, 100 wide → x = 280.
-        assert_eq!(doc.style_property(b, "left"), "280px");
+        assert_eq!(doc.computed_style_property(b, "left"), "280px");
     }
 
     #[test]
     fn left_and_right_together_stretch_the_box_between_them() {
         let mut doc = Document::new("t");
         let panel = container_with(&mut doc, 400.0, 300.0);
-        let b = doc.create_element("button", "");
+        let b = doc.create_element_typed("button", "");
         doc.append_child(panel, b);
         doc.set_style_property(b, "left", "50px");
         doc.set_style_property(b, "right", "50px");
-        assert_eq!(doc.style_property(b, "width"), "300px");
+        assert_eq!(doc.computed_style_property(b, "width"), "300px");
     }
 
     #[test]
@@ -10439,19 +11612,19 @@ mod tests {
         let mut doc = Document::new("t");
         let panel = container_with(&mut doc, 400.0, 300.0);
 
-        let after = doc.create_element("button", "");
+        let after = doc.create_element_typed("button", "");
         doc.append_child(panel, after);
         doc.set_style_property(after, "position", "absolute");
         doc.set_style_property(after, "width", "300px");
         doc.set_style_property(after, "max-width", "120px");
-        assert_eq!(doc.style_property(after, "width"), "120px");
+        assert_eq!(doc.computed_style_property(after, "width"), "120px");
 
-        let before = doc.create_element("button", "");
+        let before = doc.create_element_typed("button", "");
         doc.append_child(panel, before);
         doc.set_style_property(before, "position", "absolute");
         doc.set_style_property(before, "max-width", "120px");
         doc.set_style_property(before, "width", "300px");
-        assert_eq!(doc.style_property(before, "width"), "120px");
+        assert_eq!(doc.computed_style_property(before, "width"), "120px");
     }
 
     #[test]
@@ -10459,13 +11632,13 @@ mod tests {
         // CSS resolves the conflict in favour of `min`.
         let mut doc = Document::new("t");
         let panel = container_with(&mut doc, 400.0, 300.0);
-        let b = doc.create_element("button", "");
+        let b = doc.create_element_typed("button", "");
         doc.append_child(panel, b);
         doc.set_style_property(b, "position", "absolute");
         doc.set_style_property(b, "max-width", "50px");
         doc.set_style_property(b, "min-width", "150px");
         doc.set_style_property(b, "width", "100px");
-        assert_eq!(doc.style_property(b, "width"), "150px");
+        assert_eq!(doc.computed_style_property(b, "width"), "150px");
     }
 
     /// **`display: flex` alone is a ROW** — css-flexbox §5.1.
@@ -10482,19 +11655,19 @@ mod tests {
     #[test]
     fn a_flex_container_that_declares_no_axis_is_a_row() {
         let mut doc = Document::new("t");
-        let panel = doc.create_element("div", "");
+        let panel = doc.create_element_typed("div", "");
         doc.append_child(DOCUMENT, panel);
         doc.set_style_property(panel, "display", "flex");
         doc.set_style_property(panel, "width", "400px");
         doc.set_style_property(panel, "height", "200px");
 
-        let a = doc.create_element("button", "");
-        let b = doc.create_element("button", "");
+        let a = doc.create_element_typed("button", "");
+        let b = doc.create_element_typed("button", "");
         doc.append_child(panel, a);
         doc.append_child(panel, b);
 
-        let first = doc.rect(a).unwrap();
-        let second = doc.rect(b).unwrap();
+        let first = doc.get_bounding_client_rect(a).unwrap();
+        let second = doc.get_bounding_client_rect(b).unwrap();
         assert!(
             second.x > first.x,
             "the second child is BESIDE the first, not below it: {first:?} then {second:?}"
@@ -10509,15 +11682,15 @@ mod tests {
     fn order_rearranges_children_without_moving_them_in_the_document() {
         let mut doc = Document::new("t");
         let panel = container_with(&mut doc, 200.0, 400.0);
-        let first = doc.create_element("button", "");
-        let second = doc.create_element("button", "");
+        let first = doc.create_element_typed("button", "");
+        let second = doc.create_element_typed("button", "");
         doc.append_child(panel, first);
         doc.append_child(panel, second);
-        let first_top = doc.style_property(first, "top");
+        let first_top = doc.computed_style_property(first, "top");
         // Send the first child to the back.
         doc.set_style_property(first, "order", "5");
-        assert_ne!(doc.style_property(first, "top"), first_top);
-        assert_eq!(doc.style_property(second, "top"), first_top);
+        assert_ne!(doc.computed_style_property(first, "top"), first_top);
+        assert_eq!(doc.computed_style_property(second, "top"), first_top);
         // …and the document order is untouched.
         assert!(doc.to_html().find("</button>").is_some());
     }
@@ -10526,15 +11699,15 @@ mod tests {
     fn align_self_overrules_the_containers_align_items() {
         let mut doc = Document::new("t");
         let panel = container_with(&mut doc, 200.0, 400.0);
-        let a = doc.create_element("button", "");
-        let b = doc.create_element("button", "");
+        let a = doc.create_element_typed("button", "");
+        let b = doc.create_element_typed("button", "");
         doc.append_child(panel, a);
         doc.append_child(panel, b);
         doc.set_style_property(panel, "align-items", "stretch");
-        let stretched = doc.style_property(a, "width");
+        let stretched = doc.computed_style_property(a, "width");
         doc.set_style_property(b, "align-self", "center");
-        assert_eq!(doc.style_property(a, "width"), stretched);
-        assert_ne!(doc.style_property(b, "width"), stretched);
+        assert_eq!(doc.computed_style_property(a, "width"), stretched);
+        assert_ne!(doc.computed_style_property(b, "width"), stretched);
     }
 
     #[test]
@@ -10543,12 +11716,12 @@ mod tests {
         // with a growing child there is no leftover to distribute.
         let mut doc = Document::new("t");
         let panel = container_with(&mut doc, 200.0, 400.0);
-        let a = doc.create_element("button", "");
+        let a = doc.create_element_typed("button", "");
         doc.append_child(panel, a);
         doc.set_style_property(a, "flex", "0");
-        let packed = doc.style_property(a, "top");
+        let packed = doc.computed_style_property(a, "top");
         doc.set_style_property(panel, "justify-content", "center");
-        let centred = doc.style_property(a, "top");
+        let centred = doc.computed_style_property(a, "top");
         assert_ne!(packed, centred, "centring must move the child down");
     }
 
@@ -10558,42 +11731,42 @@ mod tests {
         // so this pins it: declaring nothing keeps the old behaviour.
         let mut doc = Document::new("t");
         let panel = container_with(&mut doc, 200.0, 200.0);
-        let a = doc.create_element("button", "");
+        let a = doc.create_element_typed("button", "");
         doc.append_child(panel, a);
-        let stretched = doc.style_property(a, "width");
+        let stretched = doc.computed_style_property(a, "width");
         doc.set_style_property(panel, "align-items", "stretch");
-        assert_eq!(doc.style_property(a, "width"), stretched);
+        assert_eq!(doc.computed_style_property(a, "width"), stretched);
         // …and asking for something else visibly differs.
         doc.set_style_property(panel, "align-items", "center");
-        assert_ne!(doc.style_property(a, "width"), stretched);
+        assert_ne!(doc.computed_style_property(a, "width"), stretched);
     }
 
     #[test]
     fn flex_direction_chooses_the_axis() {
         let mut doc = Document::new("t");
         let panel = container_with(&mut doc, 200.0, 200.0);
-        let a = doc.create_element("button", "");
-        let b = doc.create_element("button", "");
+        let a = doc.create_element_typed("button", "");
+        let b = doc.create_element_typed("button", "");
         doc.append_child(panel, a);
         doc.append_child(panel, b);
         doc.set_style_property(panel, "flex-direction", "row");
         // Side by side: same top, different left.
-        assert_eq!(doc.style_property(a, "top"), doc.style_property(b, "top"));
-        assert_ne!(doc.style_property(a, "left"), doc.style_property(b, "left"));
+        assert_eq!(doc.computed_style_property(a, "top"), doc.computed_style_property(b, "top"));
+        assert_ne!(doc.computed_style_property(a, "left"), doc.computed_style_property(b, "left"));
         // …and the COLUMN direction is what discriminates. Without this the
         // test passed for the wrong reason: normal flow also puts two
         // `inline-block` buttons side by side, so `row` was satisfied whether
         // or not `flex-direction` was read at all. A green test that no longer
         // tells the two apart is worse than a red one — nothing reports it.
         doc.set_style_property(panel, "flex-direction", "column");
-        assert_ne!(doc.style_property(a, "top"), doc.style_property(b, "top"));
+        assert_ne!(doc.computed_style_property(a, "top"), doc.computed_style_property(b, "top"));
     }
 
     #[test]
     fn a_click_arrives_as_a_dom_event() {
         use crate::layout::{MouseButton, MouseEvent, MouseEventKind};
         let mut doc = Document::new("t");
-        let b = doc.create_element("button", "");
+        let b = doc.create_element_typed("button", "");
         doc.append_child(DOCUMENT, b);
         doc.set_style_property(b, "left", "0px");
         doc.set_style_property(b, "top", "0px");
@@ -10624,7 +11797,7 @@ mod tests {
     #[test]
     fn positional_selectors_match_and_survive_an_insertion() {
         let mut doc = Document::new("t");
-        let sheet = doc.create_element("style", "");
+        let sheet = doc.create_element_typed("style", "");
         let css = doc.create_text_node(
             "p { color: #000000 } p:nth-child(odd) { color: #ff0000 } \
              p:last-child { color: #0000ff }",
@@ -10632,16 +11805,16 @@ mod tests {
         doc.append_child(sheet, css);
         doc.append_child(DOCUMENT, sheet);
 
-        let list = doc.create_element("div", "");
+        let list = doc.create_element_typed("div", "");
         doc.append_child(DOCUMENT, list);
         let mut rows = Vec::new();
         for _ in 0..3 {
-            let row = doc.create_element("p", "");
+            let row = doc.create_element_typed("p", "");
             doc.append_child(list, row);
             rows.push(row);
         }
         let colour = |doc: &mut Document, n: NodeId| {
-            doc.computed_style(n).color.map(crate::css::serialize_color)
+            doc.get_computed_style(n).color.map(crate::css::serialize_color)
         };
         assert_eq!(colour(&mut doc, rows[0]), Some("#ff0000".to_string()), "1st is odd");
         assert_eq!(colour(&mut doc, rows[1]), Some("#000000".to_string()), "2nd is even");
@@ -10651,7 +11824,7 @@ mod tests {
 
         // **Append a fourth.** The third stops being last and becomes plain
         // odd — a change to an element nobody touched.
-        let fourth = doc.create_element("p", "");
+        let fourth = doc.create_element_typed("p", "");
         doc.append_child(list, fourth);
         assert_eq!(
             colour(&mut doc, rows[2]),
@@ -10669,7 +11842,7 @@ mod tests {
     #[test]
     fn nowrap_keeps_text_on_one_line_and_the_height_agrees() {
         let mut doc = Document::new("t");
-        let para = doc.create_element("p", "");
+        let para = doc.create_element_typed("p", "");
         doc.set_style_property(para, "width", "80px");
         doc.append_child(DOCUMENT, para);
         let words = doc.create_text_node(&"wrap ".repeat(40));
@@ -10701,16 +11874,16 @@ mod tests {
     #[test]
     fn hover_styles_the_element_under_the_pointer_and_releases_it() {
         let mut doc = Document::new("t");
-        let sheet = doc.create_element("style", "");
+        let sheet = doc.create_element_typed("style", "");
         let css = doc.create_text_node("button { color: #000000 } button:hover { color: #ff0000 }");
         doc.append_child(sheet, css);
         doc.append_child(DOCUMENT, sheet);
 
-        let button = doc.create_element("button", "");
+        let button = doc.create_element_typed("button", "");
         doc.append_child(DOCUMENT, button);
         doc.refresh_interaction_states();
         assert_eq!(
-            doc.computed_style(button).color.map(crate::css::serialize_color),
+            doc.get_computed_style(button).color.map(crate::css::serialize_color),
             Some("#000000".to_string()),
             "an unhovered button takes the plain rule"
         );
@@ -10723,7 +11896,7 @@ mod tests {
             "the sweep must report that something moved"
         );
         assert_eq!(
-            doc.computed_style(button).color.map(crate::css::serialize_color),
+            doc.get_computed_style(button).color.map(crate::css::serialize_color),
             Some("#ff0000".to_string()),
             "`:hover` did not win, though it is more specific and later"
         );
@@ -10733,7 +11906,7 @@ mod tests {
         doc.widget_mut(button).expect("still there").set_hovered(false);
         doc.refresh_interaction_states();
         assert_eq!(
-            doc.computed_style(button).color.map(crate::css::serialize_color),
+            doc.get_computed_style(button).color.map(crate::css::serialize_color),
             Some("#000000".to_string()),
             "the hover style outlived the hover"
         );
@@ -10748,11 +11921,11 @@ mod tests {
     #[test]
     fn padding_insets_both_boxes_and_text_and_a_declared_height_survives_flex() {
         let mut doc = Document::new("t");
-        let bar = doc.create_element("div", "");
+        let bar = doc.create_element_typed("div", "");
         doc.set_style_property(bar, "padding-left", "16px");
         doc.set_style_property(bar, "height", "56px");
         doc.set_style_property(bar, "color", "#ffffff");
-        let child = doc.create_element("div", "");
+        let child = doc.create_element_typed("div", "");
         doc.append_child(bar, child);
         doc.append_child(DOCUMENT, bar);
 
@@ -10773,7 +11946,7 @@ mod tests {
         // colour the box declares. An `AppBar`'s title is a child `<span>` that
         // becomes an inline run of the bar, so neither fact reaches it through
         // the child's own box — the run has to carry them.
-        let title = doc.create_element("span", "");
+        let title = doc.create_element_typed("span", "");
         let words = doc.create_text_node("Calculator");
         doc.append_child(title, words);
         doc.append_child(bar, title);
@@ -10789,9 +11962,9 @@ mod tests {
         // which is the order every bottom-up frontend uses. Inheritance has to
         // survive it: the run is built when the span joins its parent, and at
         // that moment nothing above is connected.
-        let bar2 = doc.create_element("div", "");
+        let bar2 = doc.create_element_typed("div", "");
         doc.set_style_property(bar2, "color", "#ffffff");
-        let title2 = doc.create_element("span", "");
+        let title2 = doc.create_element_typed("span", "");
         let words2 = doc.create_text_node("Calculator");
         doc.append_child(title2, words2);
         doc.append_child(bar2, title2);
@@ -10808,12 +11981,12 @@ mod tests {
         // evaluates its argument before the bar exists, so the span is created,
         // and gets a computed style, while nothing is above it to inherit from.
         // The colour only becomes inheritable when it is later nested.
-        let title3 = doc.create_element("span", "");
+        let title3 = doc.create_element_typed("span", "");
         let words3 = doc.create_text_node("Calculator");
         doc.append_child(title3, words3);
         // …and on a FLEX bar, which is what an `AppBar` is
         // (`header;display:flex;align-items:center`).
-        let bar3 = doc.create_element("header", "");
+        let bar3 = doc.create_element_typed("header", "");
         doc.set_style_property(bar3, "display", "flex");
         doc.set_style_property(bar3, "align-items", "center");
         doc.set_style_property(bar3, "color", "#ffffff");
@@ -10830,11 +12003,11 @@ mod tests {
         // The same box as a `flex: 0` item of a flex column — the shape an
         // `AppBar` is in. Its declared height must not be replaced by the
         // container's guess for a non-growing item.
-        let column = doc.create_element("div", "");
+        let column = doc.create_element_typed("div", "");
         doc.set_style_property(column, "display", "flex");
         doc.set_style_property(column, "flex-direction", "column");
         doc.set_style_property(column, "height", "600px");
-        let header = doc.create_element("div", "");
+        let header = doc.create_element_typed("div", "");
         doc.set_style_property(header, "flex", "0");
         doc.set_style_property(header, "height", "56px");
         doc.append_child(column, header);
@@ -10856,11 +12029,11 @@ mod tests {
     #[test]
     fn a_percentage_size_resolves_against_the_parent_not_the_viewport() {
         let mut doc = Document::new("t");
-        let box_ = doc.create_element("div", "");
+        let box_ = doc.create_element_typed("div", "");
         doc.set_style_property(box_, "width", "200px");
         doc.set_style_property(box_, "height", "120px");
 
-        let child = doc.create_element("button", "");
+        let child = doc.create_element_typed("button", "");
         doc.set_style_property(child, "width", "100%");
         doc.set_style_property(child, "height", "100%");
         doc.append_child(box_, child);
@@ -10869,15 +12042,15 @@ mod tests {
         // …and again through the shape a Flutter row builds, where the parent's
         // own width is not declared but comes from the flow, and the whole
         // subtree is attached at the root: `Row > Expanded > Padding > button`.
-        let row = doc.create_element("div", "");
+        let row = doc.create_element_typed("div", "");
         doc.set_style_property(row, "display", "flex");
         doc.set_style_property(row, "flex-direction", "row");
         doc.set_style_property(row, "height", "100%");
-        let cell = doc.create_element("div", "");
+        let cell = doc.create_element_typed("div", "");
         doc.set_style_property(cell, "flex", "1");
-        let pad = doc.create_element("div", "");
+        let pad = doc.create_element_typed("div", "");
         doc.set_style_property(pad, "height", "100%");
-        let key = doc.create_element("button", "");
+        let key = doc.create_element_typed("button", "");
         doc.set_style_property(key, "width", "100%");
         doc.set_style_property(key, "height", "100%");
         doc.append_child(pad, key);
@@ -10930,7 +12103,7 @@ mod tests {
     #[test]
     fn a_column_of_flex_rows_grows_to_hold_them() {
         let mut doc = Document::new("t");
-        let column = doc.create_element("div", "");
+        let column = doc.create_element_typed("div", "");
         doc.set_style_property(column, "display", "flex");
         doc.set_style_property(column, "flex-direction", "column");
 
@@ -10938,20 +12111,20 @@ mod tests {
         let mut inner_rows = Vec::new();
         let mut buttons = Vec::new();
         for r in 0..4 {
-            let cell = doc.create_element("div", "");
+            let cell = doc.create_element_typed("div", "");
             doc.set_style_property(cell, "flex", "1");
-            let row = doc.create_element("div", "");
+            let row = doc.create_element_typed("div", "");
             doc.set_style_property(row, "display", "flex");
             doc.set_style_property(row, "flex-direction", "row");
             for c in 0..4 {
-                let item = doc.create_element("div", "");
+                let item = doc.create_element_typed("div", "");
                 doc.set_style_property(item, "flex", "1");
-                let pad = doc.create_element("div", "");
-                let button = doc.create_element("button", "");
+                let pad = doc.create_element_typed("div", "");
+                let button = doc.create_element_typed("button", "");
                 // A `<span>`, not a text node — Flutter's `Text` widget is an
                 // element, and a button's face being a child ELEMENT is the
                 // case that differs from a bare caption.
-                let span = doc.create_element("span", "");
+                let span = doc.create_element_typed("span", "");
                 let label = doc.create_text_node(&format!("{}", r * 4 + c));
                 doc.append_child(span, label);
                 doc.append_child(button, span);
@@ -10971,31 +12144,31 @@ mod tests {
         // with an `AppBar`, inside a `MaterialApp`, each a flex column of its
         // own, plus the `Container` whose null width/height the emitter writes
         // out as the uninterpretable `nullpx`.
-        let panel = doc.create_element("div", "");
+        let panel = doc.create_element_typed("div", "");
         doc.set_style_property(panel, "height", "nullpx");
         doc.set_style_property(panel, "width", "nullpx");
-        let display = doc.create_element("span", "");
+        let display = doc.create_element_typed("span", "");
         let zero = doc.create_text_node("0");
         doc.append_child(display, zero);
         doc.append_child(panel, display);
         doc.insert_before(column, panel, Some(rows[0]));
 
-        let header = doc.create_element("header", "");
+        let header = doc.create_element_typed("header", "");
         doc.set_style_property(header, "display", "flex");
         doc.set_style_property(header, "align-items", "center");
         doc.set_style_property(header, "flex", "0");
-        let title = doc.create_element("span", "");
+        let title = doc.create_element_typed("span", "");
         let title_text = doc.create_text_node("Calculator");
         doc.append_child(title, title_text);
         doc.append_child(header, title);
 
-        let scaffold = doc.create_element("div", "");
+        let scaffold = doc.create_element_typed("div", "");
         doc.set_style_property(scaffold, "display", "flex");
         doc.set_style_property(scaffold, "flex-direction", "column");
         doc.append_child(scaffold, header);
         doc.append_child(scaffold, column);
 
-        let app = doc.create_element("div", "");
+        let app = doc.create_element_typed("div", "");
         doc.set_style_property(app, "display", "flex");
         doc.set_style_property(app, "flex-direction", "column");
         doc.append_child(app, scaffold);
@@ -11047,6 +12220,386 @@ mod tests {
         assert!(
             last.y + last.h <= column_rect.y + column_rect.h + 0.5,
             "the column did not grow to its rows: {column_rect:?} vs {last:?}"
+        );
+    }
+
+    // ── The methods that arrived with the second engine ────────────────────
+    //
+    // `rhtmledit` carries these same tests under the same names, in
+    // `crates/htmlbox/src/tests/test_dom_api.rs`. The two engines are meant to
+    // be swappable, and a shared SIGNATURE proves nothing about shared
+    // BEHAVIOUR — only a pair of tests that assert the same thing does.
+    // The setup differs because this engine has no HTML parser; the assertions
+    // must not.
+
+    /// A `<div>` under the document, with `id` set — the closest this engine
+    /// gets to writing a line of markup.
+    fn element(doc: &mut Document, tag: &str, id: &str) -> NodeId {
+        let node = doc.create_element(tag);
+        if !id.is_empty() {
+            doc.set_id(node, id);
+        }
+        node
+    }
+
+    #[test]
+    fn normalize_merges_adjacent_text_and_drops_empties() {
+        let mut doc = Document::new("t");
+        let d = element(&mut doc, "div", "d");
+        doc.append_child(DOCUMENT, d);
+        for part in ["a", "", "b"] {
+            let t = doc.create_text_node(part);
+            doc.append_child(d, t);
+        }
+        let span = element(&mut doc, "span", "");
+        doc.append_child(d, span);
+        let tail = doc.create_text_node("c");
+        doc.append_child(d, tail);
+
+        doc.normalize(d);
+
+        // "a" and "b" merge THROUGH the empty node between them — a zero-length
+        // text node is removed, and removing it does not break adjacency. "c"
+        // is separated by an element, so it stays its own node.
+        let kinds: Vec<String> = doc
+            .child_nodes(d)
+            .iter()
+            .map(|&c| {
+                if doc.node(c).map(|n| n.kind) == Some(NodeKind::Text) {
+                    doc.text_data(c)
+                } else {
+                    format!("<{}>", doc.node_name(c))
+                }
+            })
+            .collect();
+        assert_eq!(kinds, vec!["ab", "<span>", "c"]);
+    }
+
+    #[test]
+    fn appending_a_fragment_moves_its_children_and_not_itself() {
+        let mut doc = Document::new("t");
+        let d = element(&mut doc, "div", "d");
+        doc.append_child(DOCUMENT, d);
+        let keep = element(&mut doc, "i", "");
+        doc.append_child(d, keep);
+
+        let fragment = doc.create_document_fragment();
+        assert!(doc.is_document_fragment(fragment));
+        assert_eq!(doc.node_type(fragment), 11);
+        assert_eq!(doc.node_name(fragment), "#document-fragment");
+        for tag in ["a", "b"] {
+            let child = doc.create_element(tag);
+            doc.append_child(fragment, child);
+        }
+
+        doc.append_child(d, fragment);
+
+        // The fragment is NOT in the tree — its children are, in order, and at
+        // the level the caller asked for rather than one deeper.
+        let tags: Vec<String> = doc.child_nodes(d).iter().map(|&c| doc.node_name(c)).collect();
+        assert_eq!(tags, vec!["i", "a", "b"]);
+        assert!(
+            !tags.iter().any(|t| t == "#document-fragment"),
+            "the fragment itself must not land in the tree"
+        );
+        // …and it is empty afterwards, having handed its children over.
+        assert!(doc.child_nodes(fragment).is_empty());
+    }
+
+    #[test]
+    fn inserting_a_fragment_splices_it_in_order() {
+        let mut doc = Document::new("t");
+        let d = element(&mut doc, "div", "d");
+        doc.append_child(DOCUMENT, d);
+        let pivot = element(&mut doc, "i", "pivot");
+        doc.append_child(d, pivot);
+
+        let fragment = doc.create_document_fragment();
+        for tag in ["a", "b"] {
+            let child = doc.create_element(tag);
+            doc.append_child(fragment, child);
+        }
+
+        doc.insert_before(d, fragment, Some(pivot));
+
+        // Each child goes before the SAME reference, so they arrive in the
+        // order they were in — not reversed.
+        let tags: Vec<String> = doc.child_nodes(d).iter().map(|&c| doc.node_name(c)).collect();
+        assert_eq!(tags, vec!["a", "b", "i"]);
+    }
+
+    #[test]
+    fn remove_child_can_remove_a_text_node() {
+        // The regression guard for a silent no-op. `removeChild` used to
+        // require the child to own a widget, and a text node never does — so
+        // it unlinked nothing and reported `false`, and every caller that
+        // clears a box by looping over its children left the text behind.
+        let mut doc = Document::new("t");
+        let p = element(&mut doc, "p", "p");
+        doc.append_child(DOCUMENT, p);
+        let text = doc.create_text_node("gone");
+        doc.append_child(p, text);
+        assert_eq!(doc.child_nodes(p).len(), 1);
+
+        assert!(doc.remove_child(p, text), "removing a text node must report success");
+        assert!(doc.child_nodes(p).is_empty(), "…and must actually unlink it");
+
+        // Still false for a node that is not a child of this parent — the
+        // check that replaced the widget lookup has to keep saying no.
+        let stranger = doc.create_element("i");
+        assert!(!doc.remove_child(p, stranger));
+    }
+
+    #[test]
+    fn set_text_content_replaces_rather_than_appends() {
+        // The consequence of the bug above, at the level a page would meet it.
+        let mut doc = Document::new("t");
+        let p = element(&mut doc, "p", "p");
+        doc.append_child(DOCUMENT, p);
+        doc.set_text_content(p, "first");
+        doc.set_text_content(p, "second");
+        assert_eq!(doc.text_content(p), "second", "the first text must be gone, not kept beside it");
+    }
+
+    #[test]
+    fn is_equal_node_ignores_identity_and_attribute_order() {
+        let mut doc = Document::new("t");
+        let one = doc.create_element("p");
+        doc.set_attribute(one, "id", "a");
+        doc.set_attribute(one, "class", "x");
+        let two = doc.create_element("p");
+        // The same two attributes, set in the OPPOSITE order.
+        doc.set_attribute(two, "class", "x");
+        doc.set_attribute(two, "id", "a");
+        for node in [one, two] {
+            let t = doc.create_text_node("hi");
+            doc.append_child(node, t);
+        }
+
+        assert_ne!(one, two, "these must be different NODES");
+        assert!(doc.is_equal_node(one, two), "attribute order is not part of equality");
+
+        // Same attributes, different text.
+        let three = doc.create_element("p");
+        doc.set_attribute(three, "id", "a");
+        doc.set_attribute(three, "class", "x");
+        let bye = doc.create_text_node("bye");
+        doc.append_child(three, bye);
+        assert!(!doc.is_equal_node(one, three));
+
+        assert!(doc.is_equal_node(one, one), "a node always equals itself");
+    }
+
+    #[test]
+    fn compare_document_position_reports_containment_and_order() {
+        let mut doc = Document::new("t");
+        let outer = element(&mut doc, "div", "outer");
+        doc.append_child(DOCUMENT, outer);
+        let first = element(&mut doc, "p", "first");
+        let second = element(&mut doc, "p", "second");
+        doc.append_child(outer, first);
+        doc.append_child(outer, second);
+
+        assert_eq!(doc.compare_document_position(outer, outer), 0);
+        // CONTAINED_BY | FOLLOWING — containment always carries a direction.
+        assert_eq!(doc.compare_document_position(outer, first), 0x10 | 0x04);
+        // CONTAINS | PRECEDING, the exact mirror.
+        assert_eq!(doc.compare_document_position(first, outer), 0x08 | 0x02);
+        assert_eq!(doc.compare_document_position(first, second), 0x04);
+        assert_eq!(doc.compare_document_position(second, first), 0x02);
+    }
+
+    #[test]
+    fn prepend_keeps_the_given_order() {
+        let mut doc = Document::new("t");
+        let d = element(&mut doc, "div", "d");
+        doc.append_child(DOCUMENT, d);
+        let z = element(&mut doc, "i", "");
+        doc.append_child(d, z);
+        let a = doc.create_element("a");
+        let b = doc.create_element("b");
+
+        doc.prepend(d, &[a, b]);
+
+        // The naive implementation — insert each before the CURRENT first child
+        // — yields b, a, i. The nodes must arrive in the order they were given.
+        let tags: Vec<String> = doc.child_nodes(d).iter().map(|&c| doc.node_name(c)).collect();
+        assert_eq!(tags, vec!["a", "b", "i"]);
+    }
+
+    #[test]
+    fn before_after_and_replace_with_place_nodes_around_a_sibling() {
+        let mut doc = Document::new("t");
+        let d = element(&mut doc, "div", "d");
+        doc.append_child(DOCUMENT, d);
+        let pivot = element(&mut doc, "i", "pivot");
+        doc.append_child(d, pivot);
+
+        let a = doc.create_element("a");
+        let b = doc.create_element("b");
+        doc.before(pivot, &[a]);
+        doc.after(pivot, &[b]);
+        let tags: Vec<String> = doc.child_nodes(d).iter().map(|&c| doc.node_name(c)).collect();
+        assert_eq!(tags, vec!["a", "i", "b"]);
+
+        let u = doc.create_element("u");
+        doc.replace_with(pivot, &[u]);
+        let tags: Vec<String> = doc.child_nodes(d).iter().map(|&c| doc.node_name(c)).collect();
+        assert_eq!(tags, vec!["a", "u", "b"], "the pivot is gone and `u` sits where it was");
+    }
+
+    #[test]
+    fn insert_adjacent_element_places_at_all_four_positions() {
+        let mut doc = Document::new("t");
+        let d = element(&mut doc, "div", "d");
+        doc.append_child(DOCUMENT, d);
+        let p = element(&mut doc, "p", "p");
+        doc.append_child(d, p);
+        let x = doc.create_text_node("x");
+        doc.append_child(p, x);
+
+        for (position, tag) in [
+            ("beforebegin", "a"),
+            ("afterbegin", "b"),
+            ("beforeend", "u"),
+            ("afterend", "s"),
+        ] {
+            let node = doc.create_element(tag);
+            assert_eq!(
+                doc.insert_adjacent_element(p, position, node),
+                Some(node),
+                "{position} should return the inserted element"
+            );
+        }
+
+        // `beforebegin`/`afterend` are p's SIBLINGS…
+        let outer: Vec<String> = doc.child_nodes(d).iter().map(|&c| doc.node_name(c)).collect();
+        assert_eq!(outer, vec!["a", "p", "s"]);
+        // …and `afterbegin`/`beforeend` are its children, around the text.
+        let inner: Vec<String> = doc.child_nodes(p).iter().map(|&c| doc.node_name(c)).collect();
+        assert_eq!(inner, vec!["b", "#text", "u"]);
+
+        assert_eq!(doc.insert_adjacent_element(p, "sideways", d), None);
+    }
+
+    #[test]
+    fn dataset_maps_camel_case_to_data_attributes() {
+        let mut doc = Document::new("t");
+        let d = element(&mut doc, "div", "d");
+        doc.append_child(DOCUMENT, d);
+        doc.set_attribute(d, "data-user-name", "ada");
+        doc.set_attribute(d, "data-id", "7");
+        doc.set_attribute(d, "class", "c");
+
+        // The attribute is `data-user-name`; the IDL name is `userName`.
+        assert_eq!(doc.dataset_get(d, "userName").as_deref(), Some("ada"));
+        assert_eq!(doc.dataset_get(d, "id").as_deref(), Some("7"));
+        // `class` is not `data-*` and must not appear. Asserted against the
+        // raw return value — sorting here first would hide an engine that
+        // answers in a different order from the other one.
+        assert_eq!(
+            doc.dataset(d),
+            vec![
+                ("id".to_string(), "7".to_string()),
+                ("userName".to_string(), "ada".to_string()),
+            ]
+        );
+
+        doc.set_dataset(d, "roleName", "admin");
+        assert_eq!(doc.get_attribute(d, "data-role-name").as_deref(), Some("admin"));
+        doc.remove_dataset(d, "roleName");
+        assert_eq!(doc.dataset_get(d, "roleName"), None);
+    }
+
+    #[test]
+    fn inner_text_skips_hidden_subtrees() {
+        let mut doc = Document::new("t");
+        let d = element(&mut doc, "div", "d");
+        doc.append_child(DOCUMENT, d);
+        for (tag, text, hidden) in [("p", "shown", false), ("p", "hidden", true), ("span", "tail", false)] {
+            let child = doc.create_element(tag);
+            doc.append_child(d, child);
+            if hidden {
+                doc.set_style_property(child, "display", "none");
+            }
+            let t = doc.create_text_node(text);
+            doc.append_child(child, t);
+        }
+
+        let text = doc.inner_text(d);
+        assert!(text.contains("shown"), "got {text:?}");
+        assert!(text.contains("tail"), "got {text:?}");
+        assert!(
+            !text.contains("hidden"),
+            "innerText is the RENDERED text — this is the whole difference from textContent: {text:?}"
+        );
+        // …and textContent still reports everything, unchanged.
+        assert!(doc.text_content(d).contains("hidden"));
+    }
+
+    #[test]
+    fn tab_index_defaults_by_element_kind() {
+        let mut doc = Document::new("t");
+        let div = element(&mut doc, "div", "");
+        let button = element(&mut doc, "button", "");
+        let bare = element(&mut doc, "a", "");
+        let link = element(&mut doc, "a", "");
+        doc.set_attribute(link, "href", "/");
+        let explicit = element(&mut doc, "i", "");
+        doc.set_attribute(explicit, "tabindex", "3");
+
+        assert_eq!(doc.tab_index(div), -1, "a div is not in the tab sequence by default");
+        assert_eq!(doc.tab_index(button), 0, "a button is");
+        assert_eq!(doc.tab_index(bare), -1, "an anchor with nowhere to go is not");
+        assert_eq!(doc.tab_index(link), 0, "an anchor with an href is");
+        assert_eq!(doc.tab_index(explicit), 3, "an explicit tabindex wins over any default");
+    }
+
+    #[test]
+    fn click_reaches_a_listener_like_a_real_one() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut doc = Document::new("t");
+        let button = element(&mut doc, "button", "b");
+        doc.append_child(DOCUMENT, button);
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        doc.add_event_listener(
+            button,
+            "click",
+            Box::new(move |_event, _doc| {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
+
+        doc.click(button);
+
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "element.click() must reach the same handlers a user's click does"
+        );
+    }
+
+    #[test]
+    fn has_and_remove_attribute_ns_match_by_local_name() {
+        let mut doc = Document::new("t");
+        let d = element(&mut doc, "div", "d");
+        doc.append_child(DOCUMENT, d);
+        doc.set_attribute_ns(d, "http://www.w3.org/1999/xlink", "xlink:href", "/there");
+        doc.set_attribute(d, "href", "/here");
+
+        assert!(doc.has_attribute_ns(d, "http://www.w3.org/1999/xlink", "href"));
+        assert!(!doc.has_attribute_ns(d, "urn:other", "href"));
+
+        doc.remove_attribute_ns(d, "http://www.w3.org/1999/xlink", "href");
+        assert!(!doc.has_attribute_ns(d, "http://www.w3.org/1999/xlink", "href"));
+        assert_eq!(
+            doc.get_attribute(d, "href").as_deref(),
+            Some("/here"),
+            "the un-namespaced attribute shares a local name and must survive"
         );
     }
 }

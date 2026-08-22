@@ -166,6 +166,36 @@ pub enum DomOp {
         node: NodeId,
         html: String,
     },
+    /// `element.outerHTML` — read the element AND itself as markup.
+    OuterHtml(NodeId),
+    /// `element.outerHTML = …` — replace the element itself from markup.
+    SetOuterHtml {
+        node: NodeId,
+        html: String,
+    },
+    /// `element.insertAdjacentHTML(position, text)` — parse and place, without
+    /// disturbing what is already there.
+    ///
+    /// `position` is one of `beforebegin`, `afterbegin`, `beforeend`,
+    /// `afterend`; anything else is a no-op, which is where the IDL throws.
+    InsertAdjacentHtml {
+        node: NodeId,
+        position: String,
+        html: String,
+    },
+    /// `document.createDocumentFragment()`.
+    CreateDocumentFragment,
+    /// `document.importNode(externalNode, deep)` — a copy of a node that
+    /// belongs to ANOTHER document, owned by this one.
+    ///
+    /// Carries the source document, which is what makes it different from
+    /// `cloneNode` and what stops it being an engine op: two documents are two
+    /// locks, and the engine holds one for the length of an op.
+    ImportNode {
+        source: DocumentId,
+        node: NodeId,
+        deep: bool,
+    },
     /// `node.isConnected`
     IsConnected(NodeId),
     /// `node.textContent`
@@ -200,7 +230,20 @@ pub enum DomOp {
     },
     /// `element.style.setProperty(property, value)` — CSS text with units.
     SetStyleProperty(NodeId, String, String),
+    /// `element.style.getPropertyValue(property)` — the DECLARED value, exactly
+    /// as authored. `setProperty("top", "1em")` reads back `"1em"`, NOT `"16px"`.
+    /// CSSOM §6.4.2: a declaration block serializes what was declared; nothing
+    /// on `element.style` is resolved against layout.
     GetStyleProperty(NodeId, String),
+    /// `getComputedStyle(element).getPropertyValue(property)` — the RESOLVED
+    /// value, in used units, after the cascade and layout have run.
+    ///
+    /// The other half of the pair above, and the one a toolkit geometry read
+    /// (`Control.Left`, `.Top`, `.Width`, `.Height`) actually means: those want
+    /// the laid-out pixel, which is a computed value and never a declared one.
+    /// Keeping both is what lets the two engines answer identically — a single
+    /// op could only be right for one of the two questions.
+    ComputedStyleProperty(NodeId, String),
     /// `element.focus()`
     Focus(NodeId),
 
@@ -490,9 +533,32 @@ pub fn apply(document: DocumentId, op: DomOp) -> DomValue {
     // through `e.document(..)` like every other write would deadlock on the
     // first tag. Handling it here keeps each of those inner writes an ordinary,
     // separately-locked operation.
+    // Every markup-taking write goes the same way and for the same reason:
+    // building the fragment calls `apply` again, once per tag, and the engine
+    // holds the document for the length of ONE op.
     if let DomOp::SetInnerHtml { node, html } = &op {
         crate::dom_parser::set_inner_html(document, *node, html);
         return DomValue::None;
+    }
+    if let DomOp::SetOuterHtml { node, html } = &op {
+        crate::dom_parser::set_outer_html(document, *node, html);
+        return DomValue::None;
+    }
+    if let DomOp::InsertAdjacentHtml {
+        node,
+        position,
+        html,
+    } = &op
+    {
+        crate::dom_parser::insert_adjacent_html(document, *node, position, html);
+        return DomValue::None;
+    }
+    // Two documents, so two locks — it cannot be one engine op either.
+    if let DomOp::ImportNode { source, node, deep } = &op {
+        return match crate::dom_parser::import_node(document, *source, *node, *deep) {
+            0 => DomValue::Null,
+            imported => DomValue::Node(imported),
+        };
     }
     match engine() {
         Some(e) => e.document(document, op),

@@ -165,6 +165,19 @@ impl Document {
                 };
                 return;
             }
+            // A fragment has no markup of its own — DOM Parsing serialises a
+            // fragment AS its children, which is the same thing `innerHTML`
+            // asks for. Writing a tag here would invent one that no parser
+            // could read back.
+            crate::dom::NodeKind::DocumentFragment => {
+                // Children collected BEFORE recursing, because `write_node`
+                // takes `&mut self` and the borrow of `dom_node` cannot
+                // outlive it.
+                for child in self.child_nodes_in_order(node) {
+                    self.write_node(out, child, depth);
+                }
+                return;
+            }
             crate::dom::NodeKind::Element => {}
         }
         let tag = dom_node.tag.clone();
@@ -267,7 +280,7 @@ mod tests {
     #[test]
     fn a_button_serialises_with_its_caption_as_content() {
         let mut doc = Document::new("t");
-        let b = doc.create_element("button", "");
+        let b = doc.create_element_typed("button", "");
         doc.append_child(DOCUMENT, b);
         doc.set_text_content(b, "OK");
         assert_eq!(doc.to_html(), page("    <button>OK</button>"));
@@ -281,7 +294,7 @@ mod tests {
         // markup that is simply wrong, the failure mode golden files exist to
         // catch.
         let mut doc = Document::new("t");
-        let list = doc.create_element("select", "6");
+        let list = doc.create_element_typed("select", "6");
         doc.append_child(DOCUMENT, list);
         assert_eq!(doc.to_html(), page("    <select size=\"6\"></select>"));
     }
@@ -289,7 +302,7 @@ mod tests {
     #[test]
     fn a_void_element_has_no_end_tag() {
         let mut doc = Document::new("t");
-        let input = doc.create_element("input", "text");
+        let input = doc.create_element_typed("input", "text");
         doc.append_child(DOCUMENT, input);
         assert_eq!(doc.to_html(), page("    <input type=\"text\">"));
     }
@@ -297,8 +310,8 @@ mod tests {
     #[test]
     fn nesting_is_indented_so_two_dumps_diff_cleanly() {
         let mut doc = Document::new("t");
-        let panel = doc.create_element("div", "");
-        let b = doc.create_element("button", "");
+        let panel = doc.create_element_typed("div", "");
+        let b = doc.create_element_typed("button", "");
         doc.append_child(DOCUMENT, panel);
         doc.append_child(panel, b);
         doc.set_text_content(b, "Go");
@@ -313,7 +326,7 @@ mod tests {
         // The reason this had to wait for the store: `color` was accepted by
         // the write side and unreadable afterwards, so it could not appear.
         let mut doc = Document::new("t");
-        let b = doc.create_element("button", "");
+        let b = doc.create_element_typed("button", "");
         doc.append_child(DOCUMENT, b);
         doc.set_style_property(b, "color", "red");
         doc.set_style_property(b, "background-color", "#fff");
@@ -327,7 +340,7 @@ mod tests {
     fn id_leads_the_attributes_and_the_rest_are_ordered() {
         // Stable order or a golden file diffs against itself.
         let mut doc = Document::new("t");
-        let b = doc.create_element("input", "text");
+        let b = doc.create_element_typed("input", "text");
         doc.append_child(DOCUMENT, b);
         doc.set_attribute(b, "placeholder", "name");
         doc.set_attribute(b, "id", "field");
@@ -340,7 +353,7 @@ mod tests {
     #[test]
     fn a_boolean_attribute_serialises_as_a_bare_name() {
         let mut doc = Document::new("t");
-        let b = doc.create_element("button", "");
+        let b = doc.create_element_typed("button", "");
         doc.append_child(DOCUMENT, b);
         doc.set_attribute(b, "disabled", "");
         assert_eq!(
@@ -352,7 +365,7 @@ mod tests {
     #[test]
     fn text_is_escaped_and_so_are_attribute_values() {
         let mut doc = Document::new("t");
-        let b = doc.create_element("button", "");
+        let b = doc.create_element_typed("button", "");
         doc.append_child(DOCUMENT, b);
         doc.set_text_content(b, "a < b & c");
         doc.set_attribute(b, "title", "say \"hi\"");
@@ -367,7 +380,7 @@ mod tests {
         // Creating is not inserting. The whole flutter two-tree problem is a
         // created element nothing appends, and this is where that shows.
         let mut doc = Document::new("t");
-        let orphan = doc.create_element("button", "");
+        let orphan = doc.create_element_typed("button", "");
         doc.set_text_content(orphan, "invisible");
         assert_eq!(doc.to_html(), page(""));
         // …but it serialises on its own, which is what makes the bug legible.
@@ -377,8 +390,8 @@ mod tests {
     #[test]
     fn inner_html_is_the_subtree_without_the_element() {
         let mut doc = Document::new("t");
-        let panel = doc.create_element("div", "");
-        let b = doc.create_element("button", "");
+        let panel = doc.create_element_typed("div", "");
+        let b = doc.create_element_typed("button", "");
         doc.append_child(DOCUMENT, panel);
         doc.append_child(panel, b);
         doc.set_text_content(b, "Go");

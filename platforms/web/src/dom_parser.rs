@@ -1809,6 +1809,179 @@ pub fn set_inner_html(document: crate::engine::DocumentId, node: crate::engine::
     let _ = drive(source, Grammar::Html, &mut sink);
 }
 
+/// Parse `source` into a detached `DocumentFragment` and hand back its id.
+///
+/// The fragment is what makes the two writes below simple: inserting one
+/// splices its children in at a single point, so neither has to walk a list of
+/// parsed roots and place them one at a time — and neither can get their order
+/// wrong on the way.
+fn parse_into_fragment(document: crate::engine::DocumentId, source: &str) -> crate::engine::NodeId {
+    let fragment = match crate::engine::apply(document, DomOp::CreateDocumentFragment) {
+        DomValue::Node(id) => id,
+        _ => return 0,
+    };
+    let mut sink = DocumentSink::fragment(document, fragment);
+    let _ = drive(source, Grammar::Html, &mut sink);
+    fragment
+}
+
+/// The children of `parent`, or an empty list.
+fn children_of(
+    document: crate::engine::DocumentId,
+    parent: crate::engine::NodeId,
+) -> Vec<crate::engine::NodeId> {
+    match crate::engine::apply(document, DomOp::ChildNodes(parent)) {
+        DomValue::Nodes(children) => children,
+        _ => Vec::new(),
+    }
+}
+
+/// Place `child` under `parent`, before `reference` or at the end.
+///
+/// **`InsertBefore` cannot express "at the end".** Its `reference` is a bare
+/// `NodeId`, and the two engines read a zero one differently — one takes it
+/// for the document node, the other for a mistake and does nothing. Neither
+/// appends. So the end case has to be `AppendChild`, said explicitly.
+fn place(
+    document: crate::engine::DocumentId,
+    parent: crate::engine::NodeId,
+    child: crate::engine::NodeId,
+    reference: Option<crate::engine::NodeId>,
+) {
+    match reference {
+        Some(reference) => {
+            crate::engine::apply(
+                document,
+                DomOp::InsertBefore {
+                    parent,
+                    child,
+                    reference,
+                },
+            );
+        }
+        None => {
+            crate::engine::apply(document, DomOp::AppendChild { parent, child });
+        }
+    }
+}
+
+/// `element.outerHTML = …` — replace the element ITSELF, not its contents.
+pub fn set_outer_html(
+    document: crate::engine::DocumentId,
+    node: crate::engine::NodeId,
+    source: &str,
+) {
+    let parent = match crate::engine::apply(document, DomOp::ParentNode(node)) {
+        DomValue::Node(id) => id,
+        // A detached element has nowhere to be replaced. The IDL throws here;
+        // there is no exception to raise at this seam, and doing nothing is
+        // the one outcome that cannot corrupt the tree.
+        _ => return,
+    };
+    let fragment = parse_into_fragment(document, source);
+    if fragment != 0 {
+        place(document, parent, fragment, Some(node));
+    }
+    crate::engine::apply(document, DomOp::RemoveChild { parent, child: node });
+}
+
+/// `document.importNode(externalNode, deep)`.
+///
+/// Goes through MARKUP — the source node is serialised in its own document and
+/// re-parsed in this one. That is not a shortcut around a real copy: the two
+/// documents own separate node tables and separate widgets, so nothing on the
+/// source side can be moved or referenced, only described and rebuilt. It is
+/// also why the copy carries no event listeners, which is what the spec says a
+/// clone does anyway (DOM §4.5, "clone a node" copies no listeners).
+///
+/// What it does NOT carry is state that lives on a control rather than in an
+/// attribute — a typed-into `input.value` with no `value=` attribute is the
+/// case. Returns 0 for a node that cannot be described.
+pub fn import_node(
+    document: crate::engine::DocumentId,
+    source: crate::engine::DocumentId,
+    node: crate::engine::NodeId,
+    deep: bool,
+) -> crate::engine::NodeId {
+    let markup = match crate::engine::apply(source, DomOp::OuterHtml(node)) {
+        DomValue::Text(markup) if !markup.is_empty() => markup,
+        _ => return 0,
+    };
+    let fragment = parse_into_fragment(document, &markup);
+    if fragment == 0 {
+        return 0;
+    }
+    let imported = match children_of(document, fragment).first() {
+        Some(first) => *first,
+        None => return 0,
+    };
+    if !deep {
+        // A shallow import is the node and nothing under it. Markup always
+        // brings the subtree, so the subtree comes back off.
+        for child in children_of(document, imported) {
+            crate::engine::apply(
+                document,
+                DomOp::RemoveChild {
+                    parent: imported,
+                    child,
+                },
+            );
+        }
+    }
+    // Detached, as the IDL requires — `importNode` does not insert.
+    crate::engine::apply(
+        document,
+        DomOp::RemoveChild {
+            parent: fragment,
+            child: imported,
+        },
+    );
+    imported
+}
+
+/// `element.insertAdjacentHTML(position, text)`.
+pub fn insert_adjacent_html(
+    document: crate::engine::DocumentId,
+    node: crate::engine::NodeId,
+    position: &str,
+    source: &str,
+) {
+    // Where the fragment goes, as a (parent, before) pair. `beforebegin` and
+    // `afterend` need the element's PARENT, and a detached element has none —
+    // the IDL throws for those two and does not for the other two.
+    let (parent, before) = match position.to_ascii_lowercase().as_str() {
+        "beforebegin" | "afterend" => {
+            let parent = match crate::engine::apply(document, DomOp::ParentNode(node)) {
+                DomValue::Node(id) => id,
+                _ => return,
+            };
+            if position.eq_ignore_ascii_case("beforebegin") {
+                (parent, Some(node))
+            } else {
+                // The sibling AFTER this one, found through the parent's child
+                // list because the seam has no `nextSibling` op — and `None`
+                // when there is none, which appends.
+                let siblings = children_of(document, parent);
+                let next = siblings
+                    .iter()
+                    .position(|c| *c == node)
+                    .and_then(|at| siblings.get(at + 1))
+                    .copied();
+                (parent, next)
+            }
+        }
+        "afterbegin" => (node, children_of(document, node).first().copied()),
+        "beforeend" => (node, None),
+        _ => return,
+    };
+
+    let fragment = parse_into_fragment(document, source);
+    if fragment == 0 {
+        return;
+    }
+    place(document, parent, fragment, before);
+}
+
 fn parse_markup(xml: &str, grammar: Grammar) -> Result<Value, String> {
     let mut sink = ValueSink::new();
     let recoveries = drive(xml, grammar, &mut sink)?;
@@ -3709,7 +3882,7 @@ mod html_document_tests {
         let document = parse("<html><head><style>p { color: #ff0000 }</style></head><body><p>x</p></body></html>");
         let colour = dom::with_document(document, |doc| {
             let p = doc.query_selector("p").expect("the paragraph is in the tree");
-            doc.computed_style(p).color
+            doc.get_computed_style(p).color
         })
         .expect("the document is open");
         assert_eq!(colour, Some(0xffff0000), "the parsed rule reached the cascade");
@@ -3722,7 +3895,7 @@ mod html_document_tests {
         let document = parse("<p style='color: #00ff00'>x</p>");
         let colour = dom::with_document(document, |doc| {
             let p = doc.query_selector("p").expect("the paragraph is in the tree");
-            doc.computed_style(p).color
+            doc.get_computed_style(p).color
         })
         .expect("the document is open");
         assert_eq!(colour, Some(0xff00ff00));
@@ -3738,7 +3911,7 @@ mod html_document_tests {
         );
         let colour = dom::with_document(document, |doc| {
             let p = doc.query_selector("p").expect("the paragraph is in the tree");
-            doc.computed_style(p).color
+            doc.get_computed_style(p).color
         })
         .expect("the document is open");
         assert_eq!(colour, Some(0xff0000ff), "inline wins");

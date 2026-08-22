@@ -269,6 +269,14 @@ pub fn register_types(fw: &mut Framework<'_>) {
             // CSSOM
             ("setStyleProperty", "web:cssom", "setStyleProperty"),
             ("getStyleProperty", "web:cssom", "getStyleProperty"),
+            // The resolved-value read. A frontend that wants the laid-out pixel
+            // (a toolkit's `Left`/`Top`/`Width`/`Height`) names THIS one;
+            // `getStyleProperty` above answers the declared value.
+            (
+                "getComputedStyleProperty",
+                "web:cssom",
+                "getComputedStyleProperty",
+            ),
             ("removeStyleProperty", "web:cssom", "removeStyleProperty"),
             // ⚠ `classList` is NOT here, and cannot be a flat vtable entry:
             // in the IDL it is a PROPERTY returning a live `DOMTokenList`, so

@@ -24,10 +24,9 @@ use std::sync::Arc;
 
 use crate::canvas_backend::{self, CanvasBackend, Op2D};
 // `Canvas` is the DRAWING trait (`save`, `fill_rect`, …) that `RecordingCanvas`
-// implements; `canvas_widget::Canvas` is the WIDGET that owns one. Both names,
-// so the widget is spelled out at its one use.
+// implements. The canvas WIDGET is no longer named here: `get_context_2d` hands
+// back the surface directly, so this file never sees the element's widget.
 use vybe_widgets::canvas::{Canvas as _, Color, Font, FontStyle, FontWeight, LineCap, LineJoin};
-use vybe_widgets::canvas_widget::Canvas;
 use vybe_widgets::dom::{self, NodeId};
 
 struct DocumentBackend;
@@ -58,10 +57,18 @@ fn node_of(document: &dom::Document, target: &str) -> Option<NodeId> {
 }
 
 /// Borrow the surface `target` names, in the ambient document.
-fn with_canvas<T>(target: &str, f: impl FnOnce(&mut Canvas) -> T) -> Option<T> {
+///
+/// The closure receives the 2D CONTEXT directly. It used to receive the canvas
+/// element's widget and every caller then asked it for the surface — that hop
+/// is how a canvas happens to be stored here, and `getContext` has no name for
+/// it.
+fn with_canvas<T>(
+    target: &str,
+    f: impl FnOnce(&mut vybe_widgets::canvas::RecordingCanvas) -> T,
+) -> Option<T> {
     dom::with_document(crate::html::active_document(), |document| {
         let node = node_of(document, target)?;
-        document.canvas_mut(node).map(f)
+        document.get_context_2d(node).map(f)
     })
     .flatten()
 }
@@ -80,18 +87,17 @@ impl CanvasBackend for DocumentBackend {
     fn measure_text(&self, target: &str, text: &str) -> Option<f32> {
         dom::with_document(crate::html::active_document(), |document| {
             let node = node_of(document, target)?;
-            document.measure_canvas_text(node, text)
+            document.measure_text(node, text)
         })
         .flatten()
     }
 
     fn clear_all(&self, target: &str) {
-        let _ = with_canvas(target, |canvas| canvas.canvas_mut().clear());
+        let _ = with_canvas(target, |c| c.clear());
     }
 
     fn apply(&self, target: &str, op: Op2D) {
-        let _ = with_canvas(target, |canvas| {
-            let c = canvas.canvas_mut();
+        let _ = with_canvas(target, |c| {
             match op {
                 Op2D::Save => c.save(),
                 Op2D::Restore => c.restore(),

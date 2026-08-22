@@ -60,7 +60,11 @@ fn from_fields(f: UiEventFields) -> UiEvent {
     }
 }
 
-struct Widgets;
+/// Visible to `engine_htmlbox`, which delegates the operations htmlbox has no
+/// counterpart for — the scheduler, window geometry and pointer state are host
+/// bookkeeping, not DOM. Delegating rather than re-forwarding keeps one copy of
+/// those arms.
+pub(crate) struct Widgets;
 
 impl WebEngine for Widgets {
     fn new_document(&self, title: &str) -> DocumentId {
@@ -74,13 +78,17 @@ impl WebEngine for Widgets {
     fn document(&self, document: DocumentId, op: DomOp) -> DomValue {
         dom::with_document(document, |doc| match op {
             DomOp::CreateElement { tag, input_type } => {
-                DomValue::Node(doc.create_element(&tag, &input_type))
+                // The typed shortcut, not `create_element` + `setAttribute`:
+                // the seam already knows both, and this engine builds the
+                // control eagerly, so passing the type saves an immediate
+                // rebuild. Same result either way.
+                DomValue::Node(doc.create_element_typed(&tag, &input_type))
             }
             // The bitmap and the box are the same rectangle here — the same
             // simplification `setAttribute("width")` already makes when it
             // writes one by setting the other. A canvas displayed at a
             // different size than its buffer would need them apart.
-            DomOp::CanvasSize(node) => match doc.rect(node) {
+            DomOp::CanvasSize(node) => match doc.get_bounding_client_rect(node) {
                 Some(rect) => DomValue::Pair(rect.w as f64, rect.h as f64),
                 None => DomValue::None,
             },
@@ -108,7 +116,7 @@ impl WebEngine for Widgets {
                 Some(n) => DomValue::Node(n),
                 None => DomValue::Null,
             },
-            DomOp::ElementsByTag(tag) => DomValue::Nodes(doc.elements_by_tag(&tag)),
+            DomOp::ElementsByTag(tag) => DomValue::Nodes(doc.get_elements_by_tag_name(&tag)),
             DomOp::QuerySelector(selectors) => match doc.query_selector(&selectors) {
                 Some(node) => DomValue::Node(node),
                 None => DomValue::Null,
@@ -148,14 +156,23 @@ impl WebEngine for Widgets {
                 Some(p) => DomValue::Node(p),
                 None => DomValue::Null,
             },
-            DomOp::ChildNodes(n) => DomValue::Nodes(doc.children_of(n)),
+            DomOp::ChildNodes(n) => DomValue::Nodes(doc.child_nodes(n)),
             DomOp::InnerHtml(n) => DomValue::Text(doc.inner_html(n)),
             // The SETTER is not here: parsing belongs to the parser, and it
             // needs to re-enter `apply` to build the tree — which would be a
             // second borrow of the document this closure already holds. It is
             // dispatched before the lock instead, in `apply`.
             DomOp::SetInnerHtml { .. } => DomValue::None,
-            DomOp::IsConnected(n) => DomValue::Bool(doc.connected(n)),
+            DomOp::OuterHtml(n) => DomValue::Text(doc.outer_html(n)),
+            // Both markup setters are dispatched before the lock, for the same
+            // reason the `innerHTML` one is.
+            DomOp::SetOuterHtml { .. } => DomValue::None,
+            DomOp::InsertAdjacentHtml { .. } => DomValue::None,
+            DomOp::CreateDocumentFragment => DomValue::Node(doc.create_document_fragment()),
+            // Cross-document, so dispatched before the lock like the
+            // markup setters — see `apply`.
+            DomOp::ImportNode { .. } => DomValue::Null,
+            DomOp::IsConnected(n) => DomValue::Bool(doc.is_connected(n)),
             DomOp::TextContent(n) => DomValue::Text(doc.text_content(n)),
             DomOp::SetTextContent(n, t) => {
                 doc.set_text_content(n, &t);
@@ -196,7 +213,10 @@ impl WebEngine for Widgets {
                 doc.set_style_property(n, &p, &v);
                 DomValue::None
             }
-            DomOp::GetStyleProperty(n, p) => DomValue::Text(doc.style_property(n, &p)),
+            DomOp::GetStyleProperty(n, p) => DomValue::Text(doc.get_style_property(n, &p)),
+            DomOp::ComputedStyleProperty(n, p) => {
+                DomValue::Text(doc.computed_style_property(n, &p))
+            }
             DomOp::Focus(n) => {
                 doc.focus(n);
                 DomValue::None

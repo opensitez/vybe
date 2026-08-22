@@ -1827,6 +1827,31 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
+    // `getComputedStyle(el).getPropertyValue(p)` — the RESOLVED value.
+    //
+    // The sibling of the declaration read above, and a different question:
+    // `getPropertyValue` on `element.style` serializes what was DECLARED, while
+    // this one answers in used units after cascade and layout. `setProperty
+    // ("top", "1em")` reads back `"1em"` there and `"16px"` here.
+    //
+    // Registered as its own name because a toolkit geometry read
+    // (`Control.Left`) means THIS one — it wants the laid-out pixel — while a
+    // frontend round-tripping a stylesheet means the other. One function
+    // serving both is how the two engines came to disagree.
+    css_fn(
+        vm,
+        "getComputedStyleProperty",
+        "get-computed-property-value",
+        vec![doc(), node(), ValType::String],
+        vec![ValType::String],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            as_text(apply(
+                doc_arg(args, 0),
+                DomOp::ComputedStyleProperty(node_arg(args, 1), str_arg(args, 2)),
+            ))
+        }),
+    );
+
     // ── HTMLInputElement / HTMLSelectElement IDL ────────────────────────
     // `value` is a DOMString in the IDL whatever the input's type is — a
     // number field's value is the TEXT the user typed, which is why an empty
