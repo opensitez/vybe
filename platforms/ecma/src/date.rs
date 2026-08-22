@@ -454,12 +454,14 @@ fn parse_natural(s: &str) -> f64 {
 pub fn register(vm: &mut VM) {
     // ── ECMA-262 §21.4 Date primitives ────────────────────────────────
     //
-    // The underlying timestamp source is `wasi:clocks/wall-clock.now`
-    // (WASI 0.2.11 — see proposals/WASI/proposals/clocks/wit/wall-clock.wit).
+    // The underlying timestamp source is `wasi:clocks/system-clock.now`
+    // (`wasi:clocks@0.3.1` — see
+    // proposals/WASI/proposals/clocks/wit/system-clock.wit; 0.2 spelled the
+    // interface `wall-clock`, and that .wit is not in the 0.3.1 tree).
     // ECMA Date is the §21.4 adapter on top: it normalizes the WASI
     // `datetime` record `{ seconds, nanoseconds }` into ECMA's
     // [[DateValue]] millisecond representation. Calling
-    // `wasi:clocks/wall-clock.now` directly through the host_registry
+    // `wasi:clocks/system-clock.now` directly through the host_registry
     // would require Promise-shaped indirection (host_fns are by index);
     // instead we share the underlying `SystemTime::now()` source — the
     // WASI host fn and the inline calls below produce identical
