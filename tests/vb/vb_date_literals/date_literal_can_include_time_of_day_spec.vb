@@ -45,6 +45,11 @@ Module M
     Sub Main()
         Dim d As Date = #5/14/2024 3:45 PM#
         __P(CStr(CStr(d)))
-        __Check("5/14/2024 3:45 PM")
+        ' `tools/vbrun` on this exact source prints `5/14/2024 3:45:00 PM` —
+        ' VB's General Date format is short date + LONG time, so the seconds
+        ' are always rendered. The bare `3:45 PM` this used to expect was an
+        ' artifact of the walker's chrono `format_vb_time`, which omitted a
+        ' zero seconds field.
+        __Check("5/14/2024 3:45:00 PM")
     End Sub
 End Module

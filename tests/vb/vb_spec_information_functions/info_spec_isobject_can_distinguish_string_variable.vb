@@ -44,7 +44,16 @@ End Module
 Module M
     Sub Main()
         Dim value As String = "vb"
-        __P(CStr(IsObject(value)))
-        __Check("False")
+        ' `IsObject` was dropped from Microsoft.VisualBasic in .NET — even an
+        ' explicit `Imports Microsoft.VisualBasic.Information` answers BC30451.
+        ' The .NET spelling of "is this a reference, not a value" is the runtime
+        ' type test below.
+        '
+        ' ⛔THE ANSWER CHANGED, deliberately. VB6's `IsObject` said False for a
+        ' String; .NET says a String IS a reference type, so this now reads
+        ' True. The expectation was re-derived from real VB.NET rather than
+        ' carried over — the test asserts .NET semantics now, not VB6's.
+        __P(CStr(Not CObj(value).GetType().IsValueType))
+        __Check("True")
     End Sub
 End Module

@@ -52,7 +52,7 @@ Class Temperature
     ' Narrowing operator: Temperature to Integer (may lose decimal precision)
     Public Shared Narrowing Operator CType(t As Temperature) As Integer
         Return CInt(t.Celsius)
-    End Shared Narrowing Operator
+    End Operator
 End Class
 
 Module Program

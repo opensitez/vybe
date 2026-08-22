@@ -48,7 +48,7 @@ Class Meter
     End Sub
     Public Shared Widening Operator CType(v As Double) As Meter
         Return New Meter(v)
-    End Shared Widening Operator
+    End Operator
 End Class
 
 Class Kilometer
@@ -58,7 +58,7 @@ Class Kilometer
     End Sub
     Public Shared Widening Operator CType(m As Meter) As Kilometer
         Return New Kilometer(m.Value / 1000.0)
-    End Shared Widening Operator
+    End Operator
 End Class
 
 Module Program

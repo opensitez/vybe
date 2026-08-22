@@ -52,7 +52,7 @@ Class BoundedVal
     Public Shared Narrowing Operator CType(b As BoundedVal) As Byte
         If b.Value < 0 OrElse b.Value > 255 Then Throw New OverflowException("BoundedVal Byte Overflow")
         Return CByte(b.Value)
-    End Shared Narrowing Operator
+    End Operator
 End Class
 
 Module Program

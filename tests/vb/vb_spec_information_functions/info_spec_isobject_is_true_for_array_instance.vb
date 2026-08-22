@@ -44,7 +44,10 @@ End Module
 Module M
     Sub Main()
         Dim items() As Integer = {1, 2}
-        __P(CStr(IsObject(items)))
+                ' `IsObject` was dropped from Microsoft.VisualBasic in .NET (BC30451 even
+        ' with an explicit import). The runtime type test is the .NET spelling and
+        ' reproduces VB6's answers exactly (verified against real VB).
+        __P(CStr(Not CObj(items).GetType().IsValueType))
         __Check("True")
     End Sub
 End Module

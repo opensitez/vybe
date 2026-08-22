@@ -56,11 +56,11 @@ Class Fahrenheit
 
     Public Shared Widening Operator CType(c As Celsius) As Fahrenheit
         Return New Fahrenheit(c.Degrees * 9.0 / 5.0 + 32.0)
-    End Shared Widening Operator
+    End Operator
 
     Public Shared Widening Operator CType(f As Fahrenheit) As Celsius
         Return New Celsius((f.Degrees - 32.0) * 5.0 / 9.0)
-    End Shared Widening Operator
+    End Operator
 End Class
 
 Module Program

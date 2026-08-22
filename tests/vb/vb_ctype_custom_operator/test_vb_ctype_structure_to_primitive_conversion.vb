@@ -51,7 +51,7 @@ Structure ComplexNumber
 
     Public Shared Narrowing Operator CType(c As ComplexNumber) As Double
         Return c.Real
-    End Shared Narrowing Operator
+    End Operator
 End Structure
 
 Module Program

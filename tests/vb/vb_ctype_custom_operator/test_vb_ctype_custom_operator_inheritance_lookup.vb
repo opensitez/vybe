@@ -49,7 +49,7 @@ Class BaseVal
 
     Public Shared Widening Operator CType(v As Integer) As BaseVal
         Return New BaseVal(v)
-    End Shared Widening Operator
+    End Operator
 End Class
 
 Module Program

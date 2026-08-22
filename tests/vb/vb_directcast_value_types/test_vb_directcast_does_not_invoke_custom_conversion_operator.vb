@@ -51,7 +51,7 @@ Class Money
 
     Public Shared Widening Operator CType(a As Decimal) As Money
         Return New Money(a)
-    End Shared Widening Operator
+    End Operator
 End Class
 
 Module Program

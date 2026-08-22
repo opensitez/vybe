@@ -49,7 +49,7 @@ Structure Wrapper(Of T)
 
     Public Shared Widening Operator CType(v As T) As Wrapper(Of T)
         Return New Wrapper(Of T)(v)
-    End Shared Widening Operator
+    End Operator
 End Structure
 
 Module Program

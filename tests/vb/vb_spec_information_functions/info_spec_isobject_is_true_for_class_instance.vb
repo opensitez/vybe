@@ -45,7 +45,10 @@ Class Box
 End Class
 Module M
     Sub Main()
-        __P(CStr(IsObject(New Box())))
+                ' `IsObject` was dropped from Microsoft.VisualBasic in .NET (BC30451 even
+        ' with an explicit import). The runtime type test is the .NET spelling and
+        ' reproduces VB6's answers exactly (verified against real VB).
+        __P(CStr(Not CObj(New Box()).GetType().IsValueType))
         __Check("True")
     End Sub
 End Module

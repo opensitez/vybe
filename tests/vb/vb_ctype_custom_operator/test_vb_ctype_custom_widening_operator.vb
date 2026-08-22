@@ -52,7 +52,7 @@ Class Distance
     ' Widening operator: Double to Distance
     Public Shared Widening Operator CType(m As Double) As Distance
         Return New Distance(m)
-    End Shared Widening Operator
+    End Operator
 End Class
 
 Module Program
