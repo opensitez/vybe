@@ -352,6 +352,9 @@ pub fn run_request(
         }
     }
 
+    // The response half of `wasi:http`, taken back before anything is flushed.
+    take_wasi_http_response(vm, ctx);
+
     persist_superglobals(vm, ctx);
 
     // Ensure end() is called so the client sees EOF, even if the script
@@ -406,7 +409,7 @@ fn inject_superglobals(vm: &mut vybe_runtime::VM, ctx: &Arc<RequestContext>) {
     // PHP variables and functions live in separate namespaces; the
     // walker preserves the `$` sigil on variable identifiers so a
     // function `foo` and a variable `$foo` don't collide.
-    vm.set_global_owned("$_SESSION".to_string(), session);
+    vm.set_global_owned("$_SESSION", session);
     vm.set_global_owned(
         PHP_SESSION_ID_GLOBAL.to_string(),
         Value::String(StdArc::from(session_id.as_str())),
@@ -901,8 +904,7 @@ mod tests {
             cookie_pair_value(&cookie, PHP_SESSION_COOKIE_NAME).expect("session id from cookie");
         assert_eq!(
             first_vm
-                .globals
-                .get(PHP_SESSION_ID_GLOBAL)
+                .global(PHP_SESSION_ID_GLOBAL)
                 .map(value_as_string),
             Some(session_id.clone())
         );
@@ -1029,13 +1031,18 @@ mod tests {
 
 /// Globals holding this request's `wasi:http` handles.
 ///
-/// The spec has the HOST create `incoming-request` / `response-outparam` and
-/// hand them to the guest — for a component that is `incoming-handler.handle`'s
-/// two arguments. `vybex --serve` compiles a SCRIPT rather than a component, so
-/// there is no export to call: the handles are published as globals under
-/// reserved names instead, and the request-shaping primitives read them.
+/// `wasi:http@0.3.1` has the host call a component's exported
+/// `handler.handle(request) -> result<response, error-code>`. `vybex --serve`
+/// compiles a SCRIPT rather than a component, so there is no export to call and
+/// nothing to return from: the argument is published under a reserved global,
+/// and the return value is taken back from another.
+///
+/// 0.2 published a `response-outparam` here instead. That resource does not
+/// exist in 0.3.1 — a handler returns its response — so what is published now
+/// is the `response` itself, created empty by the host and mutated by the guest
+/// through `response.set-status-code` and `response.get-headers`.
 pub const WASI_REQUEST_GLOBAL: &str = "__wasi_http_incoming_request";
-pub const WASI_RESPONSE_OUT_GLOBAL: &str = "__wasi_http_response_out";
+pub const WASI_RESPONSE_GLOBAL: &str = "__wasi_http_response";
 
 /// Build the `wasi:http` view of this request and expose it to the VM.
 fn install_wasi_http_request(vm: &mut vybe_runtime::VM, ctx: &Arc<RequestContext>) {
@@ -1144,13 +1151,48 @@ pub fn publish_wasi_request(
         headers,
         body,
     );
-    let param_id = vybe_platform_wasi::http::push_response_outparam();
+    let response_id = vybe_platform_wasi::http::push_response();
 
     if let Some(value) = vybe_platform_wasi::http::incoming_request_value(vm, request_id) {
         vm.set_global_owned(WASI_REQUEST_GLOBAL.to_string(), value);
     }
-    if let Some(value) = vybe_platform_wasi::http::response_outparam_value(vm, param_id) {
-        vm.set_global_owned(WASI_RESPONSE_OUT_GLOBAL.to_string(), value);
+    if let Some(value) = vybe_platform_wasi::http::response_value(vm, response_id) {
+        vm.set_global_owned(WASI_RESPONSE_GLOBAL.to_string(), value);
     }
-    (request_id, param_id)
+    (request_id, response_id)
+}
+
+/// Take delivery of the guest's `wasi:http` response.
+///
+/// This is the return half of `handler.handle`. The status and headers the
+/// script set on the published `response` are the ones that go on the wire —
+/// there is no second place to set them, which is the point.
+///
+/// The BODY is not read from here. A `wasi:http` response holds its body as
+/// bytes, and this runs after the script has finished, so taking the body from
+/// the resource would mean buffering every response to completion before
+/// sending a byte. Output streams as it is written, and `headers_sent` below is
+/// how that shows up: once the first byte has gone, the head is already on the
+/// wire and a late status change cannot be honoured. Saying so is better than
+/// appearing to accept it.
+fn take_wasi_http_response(vm: &vybe_runtime::VM, ctx: &Arc<RequestContext>) {
+    let Some(value) = vm.global(WASI_RESPONSE_GLOBAL).cloned() else {
+        return;
+    };
+    let Some((status, headers, _body)) = vybe_platform_wasi::http::take_response(&value) else {
+        return;
+    };
+    let mut response = ctx.response.lock().unwrap();
+    if response.headers_sent {
+        return;
+    }
+    response.status = status;
+    for (name, raw) in headers {
+        // `field-value` is `list<u8>` in the WIT — bytes, not text. A header
+        // that is not UTF-8 is dropped rather than replaced with U+FFFD, which
+        // would put a different value on the wire than the script set.
+        if let Ok(value) = String::from_utf8(raw) {
+            response.headers.push((name, value));
+        }
+    }
 }

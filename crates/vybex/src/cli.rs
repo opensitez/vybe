@@ -192,34 +192,12 @@ fn print_chunk_summary(chunks: &[Chunk], filter: Option<&str>) {
 /// itself at link time, and this runs whatever `vybex` linked. Adding or
 /// removing a plugin is a Cargo edit; this file never changes.
 
-/// Every plugin registers into `vm` in a single loop. Non-GUI (drawing-only) —
-/// installs `vybe:gui` no-op stubs so compiled control/form code doesn't hit
-/// unresolved imports.
+/// Every plugin registers into `vm` in a single loop.
 pub fn register_plugins(
     vm: &mut vybe_runtime::VM,
     caps: &vybe_runtime::capabilities::Capabilities,
 ) {
     vybe_runtime::init_all_registered(vm, caps);
-    if vm
-        .host_registry
-        .get(&("vybe:gui".to_string(), "controlSetProperty".to_string()))
-        .is_none()
-    {
-        vybe_platform_vybe::register_gui_stubs(vm);
-    }
-}
-
-/// GUI variant of [`register_plugins`]: a fresh `GuiState` is installed before
-/// the same one loop runs, and the shared handle is returned for the form
-/// launcher.
-pub fn register_plugins_with_gui(
-    vm: &mut vybe_runtime::VM,
-    caps: &vybe_runtime::capabilities::Capabilities,
-) -> std::sync::Arc<std::sync::Mutex<vybe_platform_vybe::gui_state::GuiState>> {
-    let vybe = vybe_platform_vybe::Plugin::with_gui();
-    vybe_runtime::init_all_registered(vm, caps);
-    vybe.gui_state()
-        .expect("with_gui() always installs a GuiState")
 }
 
 pub fn run() {
@@ -434,7 +412,7 @@ pub fn run() {
     } else if portable {
         eprintln!("[portable] Running with WASM stdlib only — no Vybe host optimizations");
     }
-    let gui = register_plugins_with_gui(&mut vm, &dynamic_compile_caps);
+    register_plugins(&mut vm, &dynamic_compile_caps);
     if portable {
         vm.register_host_fn(
             "wasi:cli",
@@ -671,7 +649,10 @@ pub fn run() {
     if dump {
         print_chunk_summary(&compiled.chunks, chunk_filter.as_deref());
         for chunk in filter_chunks(&compiled.chunks, chunk_filter.as_deref()) {
-            println!("{}", vybe_runtime::debug::disassemble(chunk));
+            println!(
+                "{}",
+                vybe_runtime::debug::disassemble(chunk)
+            );
         }
         return;
     }
@@ -731,10 +712,6 @@ pub fn run() {
         // why no form object is looked up here — the same call the window makes
         // (`gui_launch::dispatch_document_events`), so the two cannot drift.
         //
-        // `GuiState` is the fallback, and only for what is NOT a DOM event: a
-        // form's `Load`, and a designer form's handlers. That path keeps the
-        // arity rule it always had (0→[], 1→[me], 2→[me, sender]).
-        let fire_gui = gui.clone();
         vm.set_event_fire_hook(Box::new(move |vm, control, event| {
             // A DOM type is lowercase where the debugger's word is `Click`;
             // `listeners_for` folds the case, so they are the same event.
@@ -747,36 +724,14 @@ pub fn run() {
                     return Ok(vm.invoke_callback(&cb, &[evt]));
                 }
             }
-            let (handler, form_object) = {
-                let g = fire_gui
-                    .lock()
-                    .map_err(|_| "gui state unavailable".to_string())?;
-                (
-                    g.get_event_handler(control, event).cloned(),
-                    g.form_object.clone(),
-                )
-            };
-            let Some(cb) = handler else {
-                return Err(format!(
-                    "no `{event}` handler on `{control}` (see `widgets` for wired events)"
-                ));
-            };
-            let me = form_object
-                .or_else(|| vm.global("__f").cloned())
-                .unwrap_or(vybe_runtime::Value::Null);
-            let sender = vybe_runtime::Value::String(std::sync::Arc::from(control));
-            let args: Vec<vybe_runtime::Value> = match crate::gui_launch::fn_arity(&cb) {
-                0 => vec![],
-                1 => vec![me],
-                2 => vec![me, sender],
-                _ => vec![me, sender, vybe_runtime::Value::Null],
-            };
-            Ok(vm.invoke_callback(&cb, &args))
+            Err(format!(
+                "no `{event}` listener on `{control}` (see `widgets` for wired events)"
+            ))
         }));
         if let Some(port) = dap_port {
             crate::dap::attach(&mut vm, port, source_path.display().to_string());
         } else {
-            crate::debug_repl::attach(&mut vm, gui.clone());
+            crate::debug_repl::attach(&mut vm);
         }
     }
 
@@ -807,8 +762,7 @@ pub fn run() {
             //
             // The SAME question the launch gate asks, so the debugger cannot
             // decide a run is over while the gate goes on to open a window.
-            let gui_should_run =
-                should_present(gui.lock().unwrap().should_run, declared_shell);
+            let gui_should_run = should_present(declared_shell);
             if debug && !gui_should_run {
                 eprintln!("\n● program exited → {v}");
                 std::process::exit(0);
@@ -852,36 +806,26 @@ pub fn run() {
         std::process::exit(vm.pending_exit_code);
     }
 
-    if should_present(gui.lock().unwrap().should_run, declared_shell) {
+    if should_present(declared_shell) {
         match capture {
-            Some(path) => run_capture(vm, gui, &path, capture_control.as_deref()),
-            None => crate::gui_launch::launch_gui(vm, gui),
+            Some(path) => run_capture(vm, &path, capture_control.as_deref()),
+            None => crate::gui_launch::launch_gui(vm),
         }
     }
 }
 
 /// Does this run end in a window?
 ///
-/// Three answers, because three different things know, and only asking one of
-/// them was the bug:
+/// Two answers, because two different things know:
 ///
 /// - **The program declared it.** `AppShell::Windowed` covers a UI built LATER —
 ///   from a timer or an event handler — which no test taken at this instant can
 ///   see. `Headless` is the only way to say "builds controls, must not present",
 ///   and it wins outright.
-/// - **The document has content.** A page is not told to run; it runs because it
-///   HAS a document. This is what every converted frontend relies on, and it is
+/// - **A browsing context was opened.** A page is not told to run; it runs
+///   because it HAS a document. This is what every frontend relies on, and it is
 ///   the same test `gui_document::with_live` and `render_into` paint by.
-/// - **`GuiState::should_run`.** The legacy answer, set by
-///   `vybe:gui.runApplication`. Kept while frontends still call it, so nothing
-///   regresses as they convert one at a time.
-///
-/// Asking only the third meant a converted program drew every frame and exited
-/// without ever showing a window.
-fn should_present(
-    gui_should_run: bool,
-    declared: Option<vybe_compiler::ast::AppShell>,
-) -> bool {
+fn should_present(declared: Option<vybe_compiler::ast::AppShell>) -> bool {
     match declared {
         Some(vybe_compiler::ast::AppShell::Headless) => false,
         Some(vybe_compiler::ast::AppShell::Windowed) => true,
@@ -899,20 +843,15 @@ fn should_present(
         // Opening the context is deliberate: `active_document` creates on first
         // use, so a program that never touches the DOM never has one and stays
         // a console program.
-        None => gui_should_run || vybe_platform_web::html::has_browsing_context(),
+        None => vybe_platform_web::html::has_browsing_context(),
     }
 }
 
 /// Write one offscreen GUI frame to `path`, reporting the result on stderr.
 /// A capture that finds no frame is an ERROR exit, not a silent empty file —
 /// the whole point is to be usable as a check.
-fn run_capture(
-    vm: vybe_runtime::VM,
-    gui: std::sync::Arc<std::sync::Mutex<vybe_platform_vybe::gui_state::GuiState>>,
-    path: &str,
-    control: Option<&str>,
-) {
-    match crate::gui_launch::capture_gui(vm, gui, path, control) {
+fn run_capture(vm: vybe_runtime::VM, path: &str, control: Option<&str>) {
+    match crate::gui_launch::capture_gui(vm, path, control) {
         Ok((w, h)) => eprintln!("[vybex] captured {w}x{h} → {path}"),
         Err(e) => {
             eprintln!("[vybex] capture failed: {e}");
@@ -930,7 +869,7 @@ fn recompile_for_reload(
 ) -> Result<Vec<vybe_runtime::Chunk>, String> {
     let bundle = vybe_compiler::projects::load(source_path).map_err(|e| e.to_string())?;
     let mut tv = vybe_runtime::VM::new();
-    let _gui = register_plugins_with_gui(&mut tv, &vybe_runtime::capabilities::Capabilities::all());
+    register_plugins(&mut tv, &vybe_runtime::capabilities::Capabilities::all());
     crate::server::programmatic::register(&mut tv);
     let _ = crate::adapters::register_all(&mut tv);
     let compiled = crate::dynamic::RuntimeCompilerService::with_capabilities(&mut tv, caps)
@@ -966,13 +905,16 @@ fn run_wasm(
 
     if dump {
         for chunk in filter_chunks(&chunks, chunk_filter) {
-            println!("{}", vybe_runtime::debug::disassemble(chunk));
+            println!(
+                "{}",
+                vybe_runtime::debug::disassemble(chunk)
+            );
         }
         return;
     }
 
     let mut vm = VM::new();
-    let gui = register_plugins_with_gui(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    register_plugins(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
 
     if trace {
         vm.set_trace(true);
@@ -995,10 +937,10 @@ fn run_wasm(
 
     // A prebuilt `.wasm` carries no directives — the declaration lives in the
     // AST, and this path starts from bytecode — so the document answers alone.
-    if should_present(gui.lock().unwrap().should_run, None) {
+    if should_present(None) {
         match capture {
-            Some(path) => run_capture(vm, gui, path, capture_control),
-            None => crate::gui_launch::launch_gui(vm, gui),
+            Some(path) => run_capture(vm, path, capture_control),
+            None => crate::gui_launch::launch_gui(vm),
         }
     }
 }

@@ -1,10 +1,17 @@
 //! `vybex --serve` publishes each request through the `wasi:http` spec surface.
 //!
 //! Step 2 of `documentation/httpserver.md` §4a.10: the server stops being the
-//! only thing that knows what a request is. It builds `incoming-request` /
-//! `response-outparam` handles and exposes them as globals, so request-shaping
+//! only thing that knows what a request is. It builds the request and
+//! response-outparam handles and exposes them as globals, so request-shaping
 //! PRIMITIVES — and through them PHP superglobals, WSGI environ, Rack env —
 //! read one language-neutral source.
+//!
+//! Read through the names `wasi:http@0.3.1` declares — `request.get-*` — and
+//! NOT through 0.2's `incoming-request.*`, because those are the names
+//! `primitives/http_request_env.rs` emits. This file used to call the 0.2
+//! spelling, which meant it stayed green while covering a surface the compiler
+//! no longer reached: the one test guarding `--serve` was testing the wrong
+//! function names.
 //!
 //! These assert the MAPPING, which is where the spec is easy to get wrong:
 //! `path-with-query` joins path and query; `scheme`/`authority` are
@@ -16,7 +23,7 @@ use vybe_compiler::primitives::platforms::register_platforms;
 use vybe_runtime::capabilities::Capabilities;
 use vybe_runtime::value::Value;
 use vybe_runtime::{Chunk, Op, VM};
-use vybex::server::script::{WASI_REQUEST_GLOBAL, WASI_RESPONSE_OUT_GLOBAL, publish_wasi_request};
+use vybex::server::script::{WASI_REQUEST_GLOBAL, WASI_RESPONSE_GLOBAL, publish_wasi_request};
 
 fn vm() -> VM {
     let mut vm = VM::new();
@@ -47,7 +54,7 @@ fn call(name: &str, args: Vec<Value>) -> Value {
                     "__test_arg_{}",
                     TEST_GLOBAL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                 );
-                vm.globals.insert(global_name.clone(), other);
+                vm.set_global_owned(global_name.clone(), other);
                 let ci = chunk.intern_string_constant(&global_name);
                 chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
             }
@@ -77,8 +84,7 @@ fn publish(vm: &mut VM, method: &str, path: &str, query: &str, scheme: &str, hos
         vec![("accept".to_string(), b"text/html".to_vec())],
         b"body-bytes".to_vec(),
     );
-    vm.globals
-        .get(WASI_REQUEST_GLOBAL)
+    vm.global(WASI_REQUEST_GLOBAL)
         .cloned()
         .expect("request global missing")
 }
@@ -89,12 +95,13 @@ fn serving_a_request_publishes_both_wasi_handles() {
     publish(&mut vm, "GET", "/", "", "http", "localhost:8080");
 
     assert!(
-        vm.globals.contains_key(WASI_REQUEST_GLOBAL),
-        "incoming-request must be published for the request-shaping primitives"
+        vm.has_global(WASI_REQUEST_GLOBAL),
+        "the request handle must be published for the request-shaping primitives"
     );
     assert!(
-        vm.globals.contains_key(WASI_RESPONSE_OUT_GLOBAL),
-        "response-outparam must be published so the guest can answer"
+        vm.has_global(WASI_RESPONSE_GLOBAL),
+        "the response handle must be published so the guest can answer — 0.3.1 \
+         deleted `response-outparam`, `handler.handle` RETURNS its response"
     );
 }
 
@@ -103,10 +110,10 @@ fn method_and_headers_survive_the_mapping() {
     let mut vm = vm();
     let request = publish(&mut vm, "PATCH", "/items", "", "https", "api.test");
 
-    let method = call("[method]incoming-request.method", vec![request.clone()]);
+    let method = call("[method]request.get-method", vec![request.clone()]);
     assert_eq!(str_of(&method).as_deref(), Some("PATCH"), "got {method:?}");
 
-    let headers = call("[method]incoming-request.headers", vec![request]);
+    let headers = call("[method]request.get-headers", vec![request]);
     let has = call(
         "[method]fields.has",
         vec![headers, Value::String(Arc::from("accept"))],
@@ -119,7 +126,7 @@ fn method_and_headers_survive_the_mapping() {
 
 #[test]
 fn path_with_query_joins_path_and_query() {
-    // §incoming-request.path-with-query — "the path with query parameters".
+    // §request.get-path-with-query — "the path with query parameters".
     // The server holds them separately, so this join is ours to get right.
     let mut vm = vm();
     let request = publish(
@@ -131,7 +138,7 @@ fn path_with_query_joins_path_and_query() {
         "x.test",
     );
 
-    let got = call("[method]incoming-request.path-with-query", vec![request]);
+    let got = call("[method]request.get-path-with-query", vec![request]);
     assert_eq!(
         str_of(&got).as_deref(),
         Some("/search?q=cats&page=2"),
@@ -144,7 +151,7 @@ fn path_with_query_omits_the_separator_when_there_is_no_query() {
     let mut vm = vm();
     let request = publish(&mut vm, "GET", "/plain", "", "https", "x.test");
 
-    let got = call("[method]incoming-request.path-with-query", vec![request]);
+    let got = call("[method]request.get-path-with-query", vec![request]);
     assert_eq!(str_of(&got).as_deref(), Some("/plain"), "got {got:?}");
 }
 
@@ -156,8 +163,8 @@ fn empty_scheme_and_host_map_to_none_not_empty_string() {
     let request = publish(&mut vm, "GET", "/", "", "", "");
 
     for name in [
-        "[method]incoming-request.scheme",
-        "[method]incoming-request.authority",
+        "[method]request.get-scheme",
+        "[method]request.get-authority",
     ] {
         let got = call(name, vec![request.clone()]);
         assert!(
@@ -172,10 +179,10 @@ fn scheme_and_authority_are_carried_when_present() {
     let mut vm = vm();
     let request = publish(&mut vm, "GET", "/", "", "https", "example.test:8443");
 
-    let scheme = call("[method]incoming-request.scheme", vec![request.clone()]);
+    let scheme = call("[method]request.get-scheme", vec![request.clone()]);
     assert_eq!(str_of(&scheme).as_deref(), Some("https"), "got {scheme:?}");
 
-    let authority = call("[method]incoming-request.authority", vec![request]);
+    let authority = call("[method]request.get-authority", vec![request]);
     assert_eq!(
         str_of(&authority).as_deref(),
         Some("example.test:8443"),

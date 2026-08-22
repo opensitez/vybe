@@ -73,8 +73,8 @@ pub fn with_live<T>(f: impl FnOnce(&mut Document) -> T) -> Option<T> {
 ///
 /// The same test [`with_live`] gates on, asked without borrowing: a document
 /// with content is a running one. This is what tells the runner to present a
-/// window for a program that never called `vybe:gui.runApplication` — which is
-/// every converted frontend, since a page is not told to run.
+/// window for a program that never asked to be run — which is every frontend,
+/// since a page is not told to run.
 ///
 /// A program that declares [`vybe_ast::AppShell::Windowed`] is presented even
 /// when this is false: the declaration covers a UI built later, from a timer or
@@ -100,7 +100,7 @@ pub mod inspect {
     }
 
     pub fn style(node: NodeId, property: &str) -> Option<String> {
-        with_live(|d| d.style_property(node, property))
+        with_live(|d| d.get_style_property(node, property))
     }
 
     pub fn set_style(node: NodeId, property: &str, value: &str) -> Option<()> {
@@ -213,7 +213,7 @@ pub fn controls() -> Vec<DomControl> {
             let id = named.get(&node).cloned().unwrap_or_default();
             // The widget the element renders as is named after the node — the
             // convention `Document::node_for_widget` parses back the other way.
-            let rect = d.rect(node);
+            let rect = d.get_bounding_client_rect(node);
             let tag = d.node(node).map(|n| n.tag.clone()).unwrap_or_default();
             let mut properties = Vec::new();
             let text = d.text_content(node);
@@ -228,14 +228,14 @@ pub fn controls() -> Vec<DomControl> {
                 properties.push(("checked".to_string(), "true".to_string()));
             }
             for css in ["left", "top", "width", "height"] {
-                let v = d.style_property(node, css);
+                let v = d.get_style_property(node, css);
                 if !v.is_empty() {
                     properties.push((css.to_string(), v));
                 }
             }
             let mut events = listener_types.get(&node).cloned().unwrap_or_default();
             events.sort();
-            let connected = d.connected(node);
+            let connected = d.is_connected(node);
             out.push(DomControl {
                 node,
                 id,

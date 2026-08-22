@@ -17,59 +17,10 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
-use vybe_platform_vybe::gui_state::GuiState;
 
 use vybe_widgets::{
-    // Application framework
-    Application,
-    CommandValue,
-    FontSystem,
-    KeyEvent,
-    // Layout types
-    LayoutRect,
-    MouseEvent,
-    // Widget trait + events/commands
-    PanelWidget,
-    Pixmap,
-    SwashCache,
-    WidgetCommand,
-    WidgetEvent,
-    run_app,
+    Application, FontSystem, KeyEvent, MouseEvent, PanelWidget, Pixmap, SwashCache, run_app,
 };
-
-
-// ── Data binding types ─────────────────────────────────────────────────
-
-#[derive(Clone, Debug)]
-struct DataBindingEntry {
-    control_name: String,
-    property: String,
-    source_name: String,
-    column: String,
-}
-
-#[derive(Clone, Debug)]
-struct BindingSourceInfo {
-    name: String,
-    data_adapter_name: String,
-    data_member: String,
-}
-
-#[derive(Clone, Debug)]
-struct NavigatorInfo {
-    navigator_name: String,
-    binding_source_name: String,
-}
-
-#[allow(dead_code)]
-struct DataStore {
-    columns: Vec<String>,
-    rows: Vec<std::collections::HashMap<String, String>>,
-    position: i32,
-}
-
-// ── Control type → Widget mapping (designer forms only) ────────────────
 
 
 // ── FormApp — Application impl ─────────────────────────────────────────
@@ -78,30 +29,20 @@ struct FormApp {
     font_system: FontSystem,
     swash_cache: SwashCache,
     vm: Rc<RefCell<vybe_runtime::VM>>,
-    gui: Arc<Mutex<GuiState>>,
-    // Data binding state
-    data_bindings: Vec<DataBindingEntry>,
-    binding_sources: Vec<BindingSourceInfo>,
-    navigators: Vec<NavigatorInfo>,
-    data_store: std::collections::HashMap<String, DataStore>,
     initialised: bool,
-    /// Last time each GUI timer fired, keyed by control name — used by `on_tick`
-    /// to decide when a timer's interval has elapsed.
-    timer_last_fire: std::collections::HashMap<String, std::time::Instant>,
 }
 
 impl Application for FormApp {
     fn on_init(&mut self, width: f32, height: f32, _scale: f32) {
-        Self::lay_out(&self.gui, width, height);
+        Self::lay_out(width, height);
         if !self.initialised {
             self.initialised = true;
             self.fire_load_event();
-            self.init_data_bindings();
         }
     }
 
     fn on_resize(&mut self, width: f32, height: f32) {
-        Self::lay_out(&self.gui, width, height);
+        Self::lay_out(width, height);
     }
 
     /// **The window's title is the document's title.**
@@ -123,7 +64,6 @@ impl Application for FormApp {
         // One renderer, shared with `--capture` and the debugger's `capture`,
         // so a captured frame is byte-for-byte what the window shows.
         crate::gui_capture::render_into(
-            &self.gui,
             pixmap,
             &mut self.font_system,
             &mut self.swash_cache,
@@ -167,10 +107,7 @@ impl Application for FormApp {
                 ..UiEvent::default()
             });
         }
-        if crate::gui_document::with_live(|d| d.form_mut().handle_mouse(&event)).is_none() {
-            self.gui.lock().unwrap().form.handle_mouse(&event);
-        }
-        self.process_widget_events();
+        crate::gui_document::with_live(|d| d.form_mut().handle_mouse(&event));
         self.dispatch_document_events();
         true
     }
@@ -197,10 +134,7 @@ impl Application for FormApp {
                 return false;
             }
         }
-        if crate::gui_document::with_live(|d| d.form_mut().handle_key(&event)).is_none() {
-            self.gui.lock().unwrap().form.handle_key(&event);
-        }
-        self.process_widget_events();
+        crate::gui_document::with_live(|d| d.form_mut().handle_key(&event));
         self.dispatch_document_events();
         true
     }
@@ -218,11 +152,8 @@ impl Application for FormApp {
                 ..UiEvent::default()
             });
         }
-        let handled =
-            match crate::gui_document::with_live(|d| d.form_mut().handle_scroll(delta, x, y)) {
-                Some(handled) => handled,
-                None => self.gui.lock().unwrap().form.handle_scroll(delta, x, y),
-            };
+        let handled = crate::gui_document::with_live(|d| d.form_mut().handle_scroll(delta, x, y))
+            .unwrap_or(false);
         self.dispatch_document_events();
         handled
     }
@@ -231,11 +162,8 @@ impl Application for FormApp {
         vybe_widgets::CursorIcon::Default
     }
 
-    /// Fire any GUI timers whose interval has elapsed. Called ~60 Hz from the
-    /// event loop's `about_to_wait`. Each due timer's `OnTimer`/`Tick` handler
-    /// runs through the VM (like a click); the ~60 Hz repaint then reflects any
-    /// state it changed. This is what makes `TTimer`/`WinForms.Timer` actually
-    /// tick — nothing drove them before.
+    /// The frame callback, called ~60 Hz from the event loop's
+    /// `about_to_wait`.
     fn on_tick(&mut self) {
         // ── The frame boundary ────────────────────────────────────────────
         //
@@ -265,40 +193,6 @@ impl Application for FormApp {
         // drain — a widget that reports on a later frame, or an event raised
         // by a timer/animation callback rather than by a click.
         self.dispatch_document_events();
-
-        let now = std::time::Instant::now();
-        let due: Vec<vybe_runtime::Value> = {
-            let timers = self.gui.lock().unwrap().active_timers();
-            let mut due = Vec::new();
-            for (name, interval_ms, handler) in timers {
-                let last = self.timer_last_fire.entry(name).or_insert(now);
-                if now.duration_since(*last) >= std::time::Duration::from_millis(interval_ms) {
-                    *last = now;
-                    due.push(handler);
-                }
-            }
-            due
-        };
-        if due.is_empty() {
-            return;
-        }
-        // Receiver for instance-method handlers (`procedure Tick(Sender)`), same
-        // rule as click handlers: the form, from `__f` (falling back to the live
-        // GuiState form object). Args by arity.
-        let me = {
-            let vm = self.vm.borrow();
-            vm.global("__f").cloned()
-        }
-        .or_else(|| self.gui.lock().unwrap().form_object.clone())
-        .unwrap_or(vybe_runtime::Value::Null);
-        for handler in due {
-            let mut vm = self.vm.borrow_mut();
-            let _ = match fn_arity(&handler) {
-                0 => vm.invoke(&handler, &[]),
-                1 => vm.invoke(&handler, &[me.clone()]),
-                _ => vm.invoke(&handler, &[me.clone(), vybe_runtime::Value::Null]),
-            };
-        }
     }
 }
 
@@ -314,15 +208,8 @@ impl FormApp {
     /// Give the tree the window's size. The document's viewport IS the body's
     /// containing block, so a document that never gets one lays every control
     /// out against its 800×600 default instead of the window.
-    ///
-    /// Both forms are sized, not one: `GuiState.form` is still the tree for a
-    /// designer form, and neither is authoritative for every program.
-    fn lay_out(gui: &Arc<Mutex<GuiState>>, width: f32, height: f32) {
+    fn lay_out(width: f32, height: f32) {
         crate::gui_document::with_live(|d| d.set_viewport(width, height));
-        gui.lock()
-            .unwrap()
-            .form
-            .set_rect(LayoutRect::new(0.0, 0.0, width, height));
     }
 
     /// Turn what the user did in the document into VM calls.
@@ -352,466 +239,19 @@ impl FormApp {
         }
     }
 
+    /// `Handles Me.Load` is a subscription on the FORM, and a form IS the
+    /// document's body — so the listener lives on the body node and this is a
+    /// plain `load` dispatch, exactly what a page does.
     fn fire_load_event(&mut self) {
-        // `Handles Me.Load` is a subscription on the FORM, and a form IS the
-        // document's body — so the listener lives on the body node, not in
-        // `GuiState`'s name-keyed table. Reading only the table meant a
-        // designer form's `Form1_Load` never ran: `TicTacToe` left `turn`
-        // unset, so every cell click hit `If turn <> "X" Then Exit Sub` and the
-        // window looked completely dead while every handler was correctly
-        // wired. The table stays as the fallback for a form built without a
-        // document, which is the same rule the rest of this file paints by.
-        let document_listeners =
-            crate::gui_document::listeners_for(vybe_widgets::dom::DOCUMENT, "load");
-        if !document_listeners.is_empty() {
-            let event = crate::gui_document::event_object("load", vybe_widgets::dom::DOCUMENT);
-            for listener in document_listeners {
-                let mut vm = self.vm.borrow_mut();
-                if let Err(e) = vm.invoke(&listener, &[event.clone()]) {
-                    eprintln!("[LOAD] Error: {e}");
-                }
-            }
-            return;
-        }
-        let callback = {
-            let g = self.gui.lock().unwrap();
-            g.get_event_handler("form1", "Load")
-                .cloned()
-                .or_else(|| g.get_event_handler("me", "Load").cloned())
-        };
-        if let Some(cb) = callback {
+        let event = crate::gui_document::event_object("load", vybe_widgets::dom::DOCUMENT);
+        for listener in crate::gui_document::listeners_for(vybe_widgets::dom::DOCUMENT, "load") {
             let mut vm = self.vm.borrow_mut();
-            let me = vm
-                
-                .global("__f")
-                .cloned()
-                .unwrap_or(vybe_runtime::Value::Null);
-            let arity = fn_arity(&cb);
-            let result = match arity {
-                0 => vm.invoke(&cb, &[]),
-                1 => vm.invoke(&cb, &[me]),
-                _ => vm.invoke(
-                    &cb,
-                    &[me, vybe_runtime::Value::Null, vybe_runtime::Value::Null],
-                ),
-            };
-            if let Err(e) = result {
+            if let Err(e) = vm.invoke(&listener, &[event.clone()]) {
                 eprintln!("[LOAD] Error: {e}");
             }
         }
     }
 
-    fn fire_click(&mut self, control_name: &str) {
-        let callback = {
-            let g = self.gui.lock().unwrap();
-            if Self::gui_trace_enabled() {
-                eprintln!(
-                    "[gui] fire_click control={} keys={:?}",
-                    control_name,
-                    g.event_keys()
-                );
-            }
-            g.get_event_handler(control_name, "Click").cloned()
-        };
-        if Self::gui_trace_enabled() {
-            eprintln!("[gui] fire_click found={}", callback.is_some());
-        }
-        if let Some(cb) = callback {
-            self.invoke_callback(&cb, control_name);
-        }
-    }
-
-    /// Fire a value-bearing input event (checkbox toggle, radio select, text
-    /// change, slider change). The control's NEW value becomes the handler's
-    /// FIRST argument for an arity-1 handler — matching Flutter's
-    /// `onChanged(v)`. Arity-2+ handlers keep the framework-agnostic
-    /// `(sender, e)` shape (`.NET`/VB), so no language is special-cased.
-    fn fire_value_event(&mut self, control_name: &str, value: vybe_runtime::Value) {
-        let callback = {
-            let g = self.gui.lock().unwrap();
-            g.get_event_handler(control_name, "Click").cloned()
-        };
-        if let Some(cb) = callback {
-            self.invoke_callback_with_value(&cb, control_name, value);
-        }
-    }
-
-    fn invoke_callback_with_value(
-        &mut self,
-        cb: &vybe_runtime::Value,
-        control_name: &str,
-        value: vybe_runtime::Value,
-    ) {
-        let mut vm = self.vm.borrow_mut();
-        let me = vm
-            
-            .global("__f")
-            .cloned()
-            .unwrap_or(vybe_runtime::Value::Null);
-        let arity = fn_arity(cb);
-        let sender = vybe_runtime::Value::String(Arc::from(control_name));
-        let result = match arity {
-            0 => vm.invoke(cb, &[]),
-            // Flutter `onChanged(value)` — the new value is the sole argument.
-            1 => vm.invoke(cb, &[value]),
-            // .NET/VB `(sender, e)` — unchanged.
-            2 => vm.invoke(cb, &[me, sender]),
-            _ => vm.invoke(cb, &[me, sender, value]),
-        };
-        if let Err(e) = result {
-            eprintln!("Event handler error: {e}");
-        }
-        drop(vm);
-    }
-
-    fn invoke_callback(&mut self, cb: &vybe_runtime::Value, control_name: &str) {
-        let mut vm = self.vm.borrow_mut();
-        let me = vm
-            
-            .global("__f")
-            .cloned()
-            .unwrap_or(vybe_runtime::Value::Null);
-        let arity = fn_arity(cb);
-        let sender = vybe_runtime::Value::String(Arc::from(control_name));
-        if Self::gui_trace_enabled() {
-            eprintln!(
-                "[gui] invoke_callback control={} sender={} arity={} me_type={}",
-                control_name,
-                control_name,
-                arity,
-                me.type_tag()
-            );
-        }
-        let _t0 = std::time::Instant::now();
-        let result = match arity {
-            0 => vm.invoke(cb, &[]),
-            1 => vm.invoke(cb, &[me]),
-            2 => vm.invoke(cb, &[me, sender]),
-            _ => vm.invoke(cb, &[me, sender, vybe_runtime::Value::Null]),
-        };
-        if Self::gui_trace_enabled() {
-            eprintln!(
-                "[gui] callback elapsed={:.1}ms control={}",
-                _t0.elapsed().as_secs_f64() * 1000.0,
-                control_name
-            );
-        }
-        if let Err(e) = result {
-            eprintln!("Event handler error: {e}");
-        } else if Self::gui_trace_enabled() {
-            eprintln!("[gui] invoke_callback ok");
-            if let Some(vybe_runtime::Value::Object(form_obj)) = vm.global("__f") {
-                let form = form_obj.lock().unwrap();
-                let keys: Vec<String> = form.properties.keys().cloned().collect();
-                let txtcalc_text = form.properties.get("txtcalc").and_then(|value| {
-                    if let vybe_runtime::Value::Object(control_obj) = value {
-                        let control = control_obj.lock().unwrap();
-                        control
-                            .properties
-                            .get("text")
-                            .map(|text| format!("{}", text))
-                    } else {
-                        None
-                    }
-                });
-                let txtdisplay_text = form.properties.get("txtdisplay").and_then(|value| {
-                    if let vybe_runtime::Value::Object(control_obj) = value {
-                        let control = control_obj.lock().unwrap();
-                        control
-                            .properties
-                            .get("text")
-                            .map(|text| format!("{}", text))
-                    } else {
-                        None
-                    }
-                });
-                eprintln!(
-                    "[gui] post_callback form_keys={:?} txtcalc.text={:?} txtdisplay.text={:?}",
-                    keys, txtcalc_text, txtdisplay_text,
-                );
-            }
-        }
-        drop(vm);
-    }
-
-    fn sync_widgets_from_vm(&mut self) {
-        let updates = {
-            let vm = self.vm.borrow();
-            let mut ups: Vec<(String, String)> = Vec::new();
-            if let Some(vybe_runtime::Value::Object(form_obj)) = vm.global("__f") {
-                let fo = form_obj.lock().unwrap();
-                for (field_name, value) in &fo.properties {
-                    if let vybe_runtime::Value::Object(control_obj) = value {
-                        let control = control_obj.lock().unwrap();
-                        let control_name = control
-                            .properties
-                            .get("__control_name")
-                            .or_else(|| control.properties.get("name"))
-                            .map(|v| format!("{}", v).to_lowercase())
-                            .filter(|name| !name.is_empty())
-                            .unwrap_or_else(|| field_name.to_lowercase());
-                        if let Some(text) = control.properties.get("text") {
-                            ups.push((control_name, format!("{}", text)));
-                        }
-                    }
-                }
-            }
-            ups
-        };
-        if Self::gui_trace_enabled() && !updates.is_empty() {
-            eprintln!("[gui] sync_widgets_from_vm updates={:?}", updates);
-        }
-        if !updates.is_empty() {
-            let mut g = self.gui.lock().unwrap();
-            for (name, text) in updates {
-                g.form.send_command(&name, &WidgetCommand::SetText(text));
-            }
-        }
-    }
-
-    fn process_widget_events(&mut self) {
-        let events = self.gui.lock().unwrap().form.drain_events();
-        if Self::gui_trace_enabled() && !events.is_empty() {
-            eprintln!("[gui] process_widget_events events={:?}", events);
-        }
-        for event in events {
-            match &event {
-                WidgetEvent::ButtonClicked(name) | WidgetEvent::LinkClicked(name) => {
-                    self.fire_click(name);
-                }
-                // Value-bearing input events carry the control's NEW value
-                // (checkbox/radio bool, text string, slider number). Deliver
-                // that value as the handler's first argument so Flutter's
-                // `onChanged(v)` receives it (see `fire_value_event`).
-                WidgetEvent::CheckboxToggled(name, v) | WidgetEvent::RadioSelected(name, v) => {
-                    self.fire_value_event(name, vybe_runtime::Value::Bool(*v));
-                }
-                WidgetEvent::TextChanged(name, s) => {
-                    self.fire_value_event(name, vybe_runtime::Value::String(Arc::from(s.as_str())));
-                }
-                WidgetEvent::SliderChanged(name, v) => {
-                    self.fire_value_event(name, vybe_runtime::Value::F64(*v as f64));
-                }
-                WidgetEvent::SelectChanged(name, _) | WidgetEvent::ListBoxSelected(name, _) => {
-                    let callback = {
-                        let g = self.gui.lock().unwrap();
-                        g.get_event_handler(&name, "SelectedIndexChanged")
-                            .cloned()
-                            .or_else(|| g.get_event_handler(&name, "Click").cloned())
-                    };
-                    if let Some(cb) = callback {
-                        self.invoke_callback(&cb, name);
-                    }
-                }
-                WidgetEvent::Action(action_str) => {
-                    if action_str.starts_with("nav:") {
-                        let parts: Vec<&str> = action_str.splitn(3, ':').collect();
-                        if parts.len() == 3 {
-                            let nav_name = parts[1];
-                            let action = parts[2];
-                            if let Some(nav_info) = self
-                                .navigators
-                                .iter()
-                                .find(|n| n.navigator_name.eq_ignore_ascii_case(nav_name))
-                            {
-                                let bs_name = nav_info.binding_source_name.clone();
-                                self.navigate_binding_source(&bs_name, action);
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    // ── Data binding ───────────────────────────────────────────────────
-
-    fn init_data_bindings(&mut self) {
-        if self.binding_sources.is_empty() {
-            return;
-        }
-
-        let bs_infos: Vec<_> = self.binding_sources.clone();
-        for bs_info in &bs_infos {
-            let conn_str = self.get_connection_string(&bs_info.name, &bs_info.data_adapter_name);
-            if conn_str.is_empty() {
-                continue;
-            }
-
-            let sql = format!("SELECT * FROM {}", bs_info.data_member);
-            match vybe_platform_wasi::sql::query_rows(&conn_str, &sql) {
-                Ok((columns, rows)) => {
-                    let store = DataStore {
-                        columns: columns.clone(),
-                        rows: rows.clone(),
-                        position: if rows.is_empty() { -1 } else { 0 },
-                    };
-                    self.data_store.insert(bs_info.name.to_lowercase(), store);
-                    self.sync_bound_controls(&bs_info.name);
-                }
-                Err(e) => {
-                    eprintln!("[DATA] Query error for '{}': {}", bs_info.name, e);
-                    self.data_store.insert(
-                        bs_info.name.to_lowercase(),
-                        DataStore {
-                            columns: Vec::new(),
-                            rows: Vec::new(),
-                            position: -1,
-                        },
-                    );
-                }
-            }
-        }
-        self.update_navigator_positions();
-    }
-
-    fn get_connection_string(&self, bs_name: &str, adapter_name: &str) -> String {
-        let vm = self.vm.borrow();
-        if let Some(vybe_runtime::Value::Object(form_obj)) = vm.global("__f") {
-            let fo = form_obj.lock().unwrap();
-            if let Some(vybe_runtime::Value::Object(bs_obj)) =
-                fo.properties.get(&bs_name.to_lowercase())
-            {
-                let bs = bs_obj.lock().unwrap();
-                if let Some(vybe_runtime::Value::Object(da_obj)) = bs.properties.get("datasource") {
-                    let da = da_obj.lock().unwrap();
-                    if let Some(v) = da.properties.get("connectionstring") {
-                        return format!("{}", v);
-                    }
-                }
-            }
-            if let Some(vybe_runtime::Value::Object(da_obj)) =
-                fo.properties.get(&adapter_name.to_lowercase())
-            {
-                let da = da_obj.lock().unwrap();
-                if let Some(v) = da.properties.get("connectionstring") {
-                    return format!("{}", v);
-                }
-            }
-        }
-        String::new()
-    }
-
-    fn sync_bound_controls(&mut self, bs_name: &str) {
-        let bs_lower = bs_name.to_lowercase();
-        let store = match self.data_store.get(&bs_lower) {
-            Some(s) => s,
-            None => return,
-        };
-        if store.position < 0 || store.position as usize >= store.rows.len() {
-            return;
-        }
-        let row = &store.rows[store.position as usize];
-
-        let vm = self.vm.borrow_mut();
-        if let Some(vybe_runtime::Value::Object(form_obj)) = vm.global("__f") {
-            let fo = form_obj.lock().unwrap();
-            for binding in &self.data_bindings {
-                if !binding.source_name.eq_ignore_ascii_case(bs_name) {
-                    continue;
-                }
-                let col_key = row
-                    .keys()
-                    .find(|k| k.eq_ignore_ascii_case(&binding.column))
-                    .cloned();
-                let value = col_key
-                    .and_then(|k| row.get(&k))
-                    .cloned()
-                    .unwrap_or_default();
-                let ctrl_lower = binding.control_name.to_lowercase();
-                // A bound control IS an element, so the binding writes to the
-                // DOCUMENT — through `set_text`, the same entry point the guest
-                // reaches for the `text` role, which is what makes an `<input>`
-                // take its `value` and a `<select>` take its options without
-                // this knowing the difference.
-                //
-                // Writing `ctrl_obj.properties["text"]` was the old model: a
-                // plain property on the control OBJECT, which nothing paints
-                // from once the control is a node. Same shape as the `Load`
-                // event and `vybe.gui.setProperty` — an axis converted to the
-                // document with one reader left on the old registry.
-                //
-                // The BOUND PROPERTY decides which write, the same two-way
-                // split the guest's own property path makes: a text-ish role
-                // goes through `set_text`, and anything else becomes an
-                // attribute — which is where an unmapped property belongs on
-                // the web, and exactly what `emit_gui_property_set` does with
-                // one it has no operation for.
-                let bound_to_document = crate::gui_document::node_by_id(&binding.control_name)
-                    .and_then(|node| {
-                        let property = binding.property.to_ascii_lowercase();
-                        match property.as_str() {
-                            "text" | "value" | "caption" => {
-                                crate::gui_document::inspect::set_text(node, &value)
-                            }
-                            _ => crate::gui_document::inspect::set_attribute(
-                                node, &property, &value,
-                            ),
-                        }
-                    })
-                    .is_some();
-                if let Some(vybe_runtime::Value::Object(ctrl_obj)) = fo.properties.get(&ctrl_lower)
-                {
-                    // The object keeps the value too: a guest reading
-                    // `txt.Text` before the next paint asks the object, and a
-                    // form built with no document has only this.
-                    ctrl_obj.lock().unwrap().properties.insert(
-                        binding.property.to_lowercase(),
-                        vybe_runtime::Value::String(Arc::from(value.as_str())),
-                    );
-                }
-                let _ = bound_to_document;
-            }
-        }
-        drop(vm);
-        self.sync_widgets_from_vm();
-    }
-
-    fn update_navigator_positions(&mut self) {
-        let mut g = self.gui.lock().unwrap();
-        for nav_info in &self.navigators {
-            if let Some(store) = self
-                .data_store
-                .get(&nav_info.binding_source_name.to_lowercase())
-            {
-                let pos_count = format!("{},{}", store.position, store.rows.len());
-                g.form.send_command(
-                    &nav_info.navigator_name.to_lowercase(),
-                    &WidgetCommand::Custom(
-                        "set_position_and_count".into(),
-                        CommandValue::Text(pos_count),
-                    ),
-                );
-            }
-        }
-    }
-
-    fn navigate_binding_source(&mut self, bs_name: &str, action: &str) {
-        let bs_lower = bs_name.to_lowercase();
-        let new_pos = {
-            let store = match self.data_store.get(&bs_lower) {
-                Some(s) => s,
-                None => return,
-            };
-            let count = store.rows.len() as i32;
-            if count == 0 {
-                return;
-            }
-            match action {
-                "first" => 0,
-                "prev" => (store.position - 1).max(0),
-                "next" => (store.position + 1).min(count - 1),
-                "last" => count - 1,
-                _ => store.position,
-            }
-        };
-        if let Some(store) = self.data_store.get_mut(&bs_lower) {
-            store.position = new_pos;
-        }
-        self.sync_bound_controls(bs_name);
-        self.update_navigator_positions();
-    }
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -901,441 +341,54 @@ fn dom_key_fields(key: &vybe_widgets::winit::keyboard::Key) -> (String, String, 
     }
 }
 
-// ── Extract binding info from form definition (designer forms only) ────
-
-
 // ── Public launch functions ────────────────────────────────────────────
 
+/// The window's size is the document's viewport — a form's `Width`/`Height`
+/// are CSS on the body and land there. A document that never got one keeps the
+/// 800×600 initial containing block.
+fn window_size() -> (u32, u32) {
+    crate::gui_document::viewport().unwrap_or((800, 600))
+}
 
-/// Launch a programmatic form — GuiState already has all widgets and event handlers.
-pub fn launch_gui(mut vm: vybe_runtime::VM, gui: Arc<Mutex<GuiState>>) {
-    // The document's viewport is where a form's `Width`/`Height` land — they
-    // are CSS on the body. `GuiState`'s pair is the fallback for a form built
-    // without a document.
-    let (title, width, height) = {
-        let g = gui.lock().unwrap();
-        let (width, height) = crate::gui_document::viewport().unwrap_or((g.width, g.height));
-        ("Form1".to_string(), width, height)
-    };
-
-    if let Some(form_obj) = gui.lock().unwrap().form_object.clone() {
-        vm.set_global_owned("__f", form_obj);
-    }
+/// Open a window on the live document and run the event loop.
+pub fn launch_gui(vm: vybe_runtime::VM) {
+    let (width, height) = window_size();
 
     let app = FormApp {
         font_system: FontSystem::new(),
         swash_cache: SwashCache::new(),
         vm: Rc::new(RefCell::new(vm)),
-        gui,
-        data_bindings: Vec::new(),
-        binding_sources: Vec::new(),
-        navigators: Vec::new(),
-        data_store: std::collections::HashMap::new(),
         initialised: false,
-        timer_last_fire: std::collections::HashMap::new(),
     };
 
-    run_app(&title, width, height, 1.0, app);
+    run_app("Form1", width, height, 1.0, app);
 }
 
-/// Headless counterpart to `launch_gui`: lay the form out, render ONE frame
+/// Headless counterpart to `launch_gui`: lay the document out, render ONE frame
 /// offscreen, write it as a PNG, and return — no window, no event loop.
 ///
-/// Everything a GUI program drew during its run is already in `GuiState`, so
-/// this replays it exactly as the window would. Used by `--capture`; it makes a
-/// GUI program's output readable without a screenshot, which also means a frame
-/// can be diffed as a regression check.
+/// Used by `--capture`; it makes a GUI program's output readable without a
+/// screenshot, which also means a frame can be diffed as a regression check.
 pub fn capture_gui(
-    mut vm: vybe_runtime::VM,
-    gui: Arc<Mutex<GuiState>>,
+    vm: vybe_runtime::VM,
     path: &str,
     control: Option<&str>,
 ) -> Result<(u32, u32), String> {
-    if let Some(form_obj) = gui.lock().unwrap().form_object.clone() {
-        vm.set_global_owned("__f", form_obj);
-    }
-
-    // Same size question as `launch_gui`, same answer — a capture must be the
-    // frame the window would show.
-    let (width, height) = {
-        let g = gui.lock().unwrap();
-        crate::gui_document::viewport().unwrap_or((g.width, g.height))
-    };
+    let (width, height) = window_size();
 
     let mut app = FormApp {
         font_system: FontSystem::new(),
         swash_cache: SwashCache::new(),
         vm: Rc::new(RefCell::new(vm)),
-        gui: Arc::clone(&gui),
-        data_bindings: Vec::new(),
-        binding_sources: Vec::new(),
-        navigators: Vec::new(),
-        data_store: std::collections::HashMap::new(),
         initialised: false,
-        timer_last_fire: std::collections::HashMap::new(),
     };
 
-    // Lays the form out and fires Load + data bindings, exactly as the window
-    // path does — without this, controls have no rect and the frame is blank.
+    // Lays the document out and fires `load`, exactly as the window path does —
+    // without this, controls have no rect and the frame is blank.
     app.on_init(width as f32, height as f32, 1.0);
 
-    crate::gui_capture::capture_to_png(&gui, path, control, 1.0)
+    crate::gui_capture::capture_to_png(path, control, 1.0)
 }
 
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::{Arc, Mutex};
-    use vybe_compiler::primitives::Compiler;
-    use vybe_compiler::profile::parse_profile;
-    use vybe_compiler::projects;
-    use vybe_language_vb as vb;
-    use vybe_platform_vybe::gui_state::GuiState;
-    use vybe_runtime::value::ObjectKind;
-    use vybe_runtime::{HostContext, VM, Value};
-    use vybe_widgets::layout::{MouseButton, MouseEvent, MouseEventKind};
 
-    fn run_vb_gui(src: &str) -> (VM, Arc<Mutex<GuiState>>) {
-        let module = vb::parse(src).expect("VB parse failed");
-        let profile = parse_profile(vb::profile_source()).expect("Failed to parse VB profile");
-        let chunks = Compiler::with_profile(profile)
-            .compile(&module)
-            .expect("VB compile failed");
-
-        let mut vm = VM::new();
-        let gui = crate::cli::register_plugins_with_gui(
-            &mut vm,
-            &vybe_runtime::capabilities::Capabilities::all(),
-        );
-        vm.register_host_fn(
-            "web:console",
-            "log",
-            Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::Null),
-        );
-
-        vm.run(chunks).expect("VB run failed");
-        (vm, gui)
-    }
-
-    fn run_bundle_gui(path: &str) -> (VM, Arc<Mutex<GuiState>>) {
-        let bundle = projects::load(std::path::Path::new(path)).expect("project load failed");
-        let chunks = bundle.compile().expect("project compile failed");
-
-        let mut vm = VM::new();
-        let gui = crate::cli::register_plugins_with_gui(
-            &mut vm,
-            &vybe_runtime::capabilities::Capabilities::all(),
-        );
-        vm.register_host_fn(
-            "web:console",
-            "log",
-            Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::Null),
-        );
-
-        vm.run(chunks).expect("project run failed");
-        (vm, gui)
-    }
-
-    fn control_widget_name(form: &Value, field_name: &str) -> String {
-        match form {
-            Value::Object(form_obj) => {
-                let form_guard = form_obj.lock().unwrap();
-                match form_guard.properties.get(field_name) {
-                    Some(Value::Object(control_obj)) => {
-                        let control_guard = control_obj.lock().unwrap();
-                        control_guard
-                            .properties
-                            .get("__control_name")
-                            .or_else(|| control_guard.properties.get("name"))
-                            .map(|value| format!("{}", value).to_lowercase())
-                            .unwrap_or_else(|| field_name.to_string())
-                    }
-                    _ => field_name.to_string(),
-                }
-            }
-            _ => field_name.to_string(),
-        }
-    }
-
-    fn collection_count(value: &Value) -> usize {
-        match value {
-            Value::Object(obj) => {
-                let obj = obj.lock().unwrap();
-                match &obj.kind {
-                    ObjectKind::Array(items) => items.len(),
-                    _ => 0,
-                }
-            }
-            _ => 0,
-        }
-    }
-
-    fn collection_contains(collection: &Value, needle: &Value) -> bool {
-        match collection {
-            Value::Object(obj) => {
-                let obj = obj.lock().unwrap();
-                match &obj.kind {
-                    ObjectKind::Array(items) => items.iter().any(|item| item.eq(needle)),
-                    _ => false,
-                }
-            }
-            _ => false,
-        }
-    }
-
-    #[test]
-    fn simulated_button_click_updates_display() {
-        let source = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../examples/vb/calculator.vb"
-        ))
-        .expect("calculator source");
-
-        let (mut vm, gui) = run_vb_gui(&source);
-        if let Some(form_obj) = gui.lock().unwrap().form_object.clone() {
-            vm.set_global_owned("__f", form_obj);
-        }
-
-        let mut app = FormApp {
-            font_system: FontSystem::new(),
-            swash_cache: SwashCache::new(),
-            vm: Rc::new(RefCell::new(vm)),
-            gui: gui.clone(),
-            data_bindings: Vec::new(),
-            binding_sources: Vec::new(),
-            navigators: Vec::new(),
-            data_store: std::collections::HashMap::new(),
-            initialised: false,
-            timer_last_fire: std::collections::HashMap::new(),
-        };
-
-        app.on_init(300.0, 400.0, 1.0);
-
-        let press = MouseEvent {
-            x: 20.0,
-            y: 70.0,
-            kind: MouseEventKind::Press(MouseButton::Left),
-            cmd: false,
-            shift: false,
-            alt: false,
-        };
-        let release = MouseEvent {
-            x: 20.0,
-            y: 70.0,
-            kind: MouseEventKind::Release(MouseButton::Left),
-            cmd: false,
-            shift: false,
-            alt: false,
-        };
-
-        assert!(app.handle_mouse(press));
-        assert!(app.handle_mouse(release));
-
-        let form = app
-            .vm
-            .borrow()
-            
-            .global("__f")
-            .cloned()
-            .expect("__f global");
-        let display_name = control_widget_name(&form, "txtdisplay");
-        let display_text = {
-            let mut guard = gui.lock().unwrap();
-            match guard
-                .form
-                .send_command(&display_name, &WidgetCommand::GetText)
-            {
-                CommandValue::Text(text) => text,
-                other => panic!("Expected txtdisplay widget text, got {:?}", other),
-            }
-        };
-
-        assert_eq!(display_text, "7");
-    }
-
-    #[test]
-    fn simulated_project_button_click_updates_widget_text() {
-        let (mut vm, gui) = run_bundle_gui(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../examples/vb/calc/Calculator.vbproj"
-        ));
-        if let Some(form_obj) = gui.lock().unwrap().form_object.clone() {
-            vm.set_global_owned("__f", form_obj);
-        }
-
-        let mut app = FormApp {
-            font_system: FontSystem::new(),
-            swash_cache: SwashCache::new(),
-            vm: Rc::new(RefCell::new(vm)),
-            gui: gui.clone(),
-            data_bindings: Vec::new(),
-            binding_sources: Vec::new(),
-            navigators: Vec::new(),
-            data_store: std::collections::HashMap::new(),
-            initialised: false,
-            timer_last_fire: std::collections::HashMap::new(),
-        };
-
-        app.on_init(340.0, 280.0, 1.0);
-
-        app.fire_click("btn8");
-        app.fire_click("btn5");
-
-        let form = app
-            .vm
-            .borrow()
-            
-            .global("__f")
-            .cloned()
-            .expect("__f global");
-        let txtcalc_name = control_widget_name(&form, "txtcalc");
-        let text = {
-            let mut guard = gui.lock().unwrap();
-            match guard
-                .form
-                .send_command(&txtcalc_name, &WidgetCommand::GetText)
-            {
-                CommandValue::Text(text) => text,
-                other => panic!("Expected txtcalc widget text, got {:?}", other),
-            }
-        };
-
-        assert_eq!(text, "85");
-    }
-
-    #[test]
-    fn simulated_project_textbox_starts_empty_and_first_click_has_no_null_prefix() {
-        let (mut vm, gui) = run_bundle_gui(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../examples/vb/calc/Calculator.vbproj"
-        ));
-        if let Some(form_obj) = gui.lock().unwrap().form_object.clone() {
-            vm.set_global_owned("__f", form_obj);
-        }
-
-        let mut app = FormApp {
-            font_system: FontSystem::new(),
-            swash_cache: SwashCache::new(),
-            vm: Rc::new(RefCell::new(vm)),
-            gui: gui.clone(),
-            data_bindings: Vec::new(),
-            binding_sources: Vec::new(),
-            navigators: Vec::new(),
-            data_store: std::collections::HashMap::new(),
-            initialised: false,
-            timer_last_fire: std::collections::HashMap::new(),
-        };
-
-        app.on_init(340.0, 280.0, 1.0);
-
-        let form = app
-            .vm
-            .borrow()
-            
-            .global("__f")
-            .cloned()
-            .expect("__f global");
-        let txtcalc_name = control_widget_name(&form, "txtcalc");
-
-        let initial_text = {
-            let mut guard = gui.lock().unwrap();
-            match guard
-                .form
-                .send_command(&txtcalc_name, &WidgetCommand::GetText)
-            {
-                CommandValue::Text(text) => text,
-                other => panic!("Expected txtcalc widget text, got {:?}", other),
-            }
-        };
-
-        assert_eq!(initial_text, "");
-
-        app.fire_click("btn8");
-
-        let updated_text = {
-            let mut guard = gui.lock().unwrap();
-            match guard
-                .form
-                .send_command(&txtcalc_name, &WidgetCommand::GetText)
-            {
-                CommandValue::Text(text) => text,
-                other => panic!("Expected txtcalc widget text, got {:?}", other),
-            }
-        };
-
-        assert_eq!(updated_text, "8");
-    }
-
-    #[test]
-    fn project_form_exposes_controls_components_and_openforms_collections() {
-        let source = r#"
-Imports System.Windows.Forms
-
-Public Class Form1
-    Inherits Form
-
-    Friend WithEvents txt1 As TextBox
-    Friend WithEvents bs1 As BindingSource
-
-    Public Sub New()
-        MyBase.New()
-        InitializeComponent()
-    End Sub
-
-    Private Sub InitializeComponent()
-        Me.txt1 = New TextBox()
-        Me.bs1 = New BindingSource()
-        Me.txt1.Name = "txt1"
-        Me.bs1.Name = "bs1"
-        Me.Controls.Add(Me.txt1)
-    End Sub
-End Class
-
-Module Program
-    Sub Main()
-        Dim f As New Form1()
-        Application.Run(f)
-    End Sub
-End Module
-"#;
-
-        let (mut vm, gui) = run_vb_gui(source);
-        if let Some(form_obj) = gui.lock().unwrap().form_object.clone() {
-            vm.set_global_owned("__f", form_obj);
-        }
-
-        let form = vm.global("__f").cloned().expect("__f global");
-        let open_forms = vm
-            
-            .global("__openforms")
-            .cloned()
-            .expect("__openforms global");
-
-        let (controls, components, txt1, bs1) = match &form {
-            Value::Object(form_obj) => {
-                let form = form_obj.lock().unwrap();
-                (
-                    form.properties
-                        .get("controls")
-                        .cloned()
-                        .expect("controls collection"),
-                    form.properties
-                        .get("components")
-                        .cloned()
-                        .expect("components collection"),
-                    form.properties.get("txt1").cloned().expect("txt1 field"),
-                    form.properties.get("bs1").cloned().expect("bs1 field"),
-                )
-            }
-            _ => panic!("expected form object"),
-        };
-
-        assert!(collection_count(&controls) > 0);
-        assert!(collection_count(&components) > 0);
-        assert!(collection_contains(&controls, &txt1));
-        assert!(!collection_contains(&controls, &bs1));
-        assert!(collection_contains(&components, &bs1));
-        assert!(collection_contains(&open_forms, &form));
-    }
-}

@@ -9,21 +9,16 @@
 
 use std::io::{BufRead, Write};
 use std::sync::mpsc::{Sender, channel};
-use std::sync::{Arc, Mutex};
 use std::thread;
 
-use vybe_platform_vybe::gui_state::GuiState;
 use vybe_runtime::debugger::{
     ChunkRef, DebugEvent, DebugResponse, FrameInfo, Location, PauseReason,
 };
 use vybe_runtime::{DebugCommand, DebugRequest, VM};
 
 /// Attach a debugger to `vm` and spawn the REPL worker threads. Call this before
-/// running the VM; it pauses on entry so breakpoints can be set first. `gui` is
-/// the live GUI state shared with the host functions — the `widgets` command
-/// reads it directly (client-side), so it reflects live controls regardless of
-/// the isolated eval VM.
-pub fn attach(vm: &mut VM, gui: Arc<Mutex<GuiState>>) {
+/// running the VM; it pauses on entry so breakpoints can be set first.
+pub fn attach(vm: &mut VM) {
     let (cmd_tx, cmd_rx) = channel::<DebugRequest>();
     let (evt_tx, evt_rx) = channel::<DebugEvent>();
     vm.attach_debugger(cmd_rx, evt_tx, /* pause_on_entry */ true);
@@ -51,19 +46,18 @@ pub fn attach(vm: &mut VM, gui: Arc<Mutex<GuiState>>) {
             if line.is_empty() {
                 continue;
             }
-            // `widgets`/`gui`/`controls` are handled entirely client-side: they
-            // read the live GuiState Arc directly (safe to lock while the VM is
-            // paused or running), so they never round-trip through the VM.
+            // `widgets`/`controls` are handled entirely client-side: they walk
+            // the live document, which is safe whether the VM is paused or
+            // running, so they never round-trip through the VM.
             let head = line.split_whitespace().next().unwrap_or("");
             if matches!(head, "widgets" | "controls") {
-                print_widgets(&gui);
+                print_document_widgets();
                 continue;
             }
             // `capture` is client-side for the same reason: it renders the live
-            // GuiState into an offscreen pixmap, so it works whether the VM is
-            // paused or running.
+            // document into an offscreen pixmap.
             if head == "capture" {
-                capture_frame(&gui, &line.split_whitespace().skip(1).collect::<Vec<_>>());
+                capture_frame(&line.split_whitespace().skip(1).collect::<Vec<_>>());
                 continue;
             }
             // `html` is client-side for the same reason as `widgets`: it reads
@@ -81,7 +75,7 @@ pub fn attach(vm: &mut VM, gui: Arc<Mutex<GuiState>>) {
                 continue;
             }
             if matches!(head, "draws" | "drawlist") {
-                print_draws(&gui, &line.split_whitespace().skip(1).collect::<Vec<_>>());
+                print_draws(&line.split_whitespace().skip(1).collect::<Vec<_>>());
                 continue;
             }
             // `trace canvas on|off` is client-side — it flips a process-wide
@@ -164,14 +158,7 @@ fn format_draw_cmd(cmd: &vybe_widgets::canvas::DrawCmd) -> String {
 ///
 /// This is what tells "nothing was drawn" apart from "drawn in the wrong place"
 /// and "drawn, then painted over" — three failures that look identical on screen.
-fn print_draws(gui: &Arc<Mutex<GuiState>>, args: &[&str]) {
-    // Read-only now: the canvases are read from the document, and `GuiState` is
-    // consulted only for `resolve_control_name`.
-    let g = match gui.lock() {
-        Ok(g) => g,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-
+fn print_draws(args: &[&str]) {
     let limit: usize = args
         .iter()
         .find_map(|a| a.parse().ok())
@@ -179,26 +166,20 @@ fn print_draws(gui: &Arc<Mutex<GuiState>>, args: &[&str]) {
     let wanted = args
         .iter()
         .find(|a| a.parse::<usize>().is_err())
-        .map(|w| g.resolve_control_name(w));
+        .map(|w| w.to_lowercase());
 
     // **A drawing surface is a `<canvas>` ELEMENT in the document.**
-    //
-    // This used to look in two places, neither of which is where canvases live
-    // now: `GuiState.form.controls` (a second, empty form once a document
-    // exists) and `overlay_canvases` (deleted — it was only ever painted by
-    // `--capture`, never by a window). A program that had plainly drawn
-    // therefore listed nothing.
     let mut found: Vec<(String, Vec<vybe_widgets::canvas::DrawCmd>)> = Vec::new();
     crate::gui_document::with_live(|document| {
-        for node in document.elements_by_tag("canvas") {
+        for node in document.get_elements_by_tag_name("canvas") {
             // Report the name a caller would recognise — the `id`/`name` they
             // gave it — falling back to the internal node name.
             let label = document
                 .get_attribute(node, "id")
                 .or_else(|| document.get_attribute(node, "name"))
                 .unwrap_or_else(|| format!("n{node}"));
-            if let Some(canvas) = document.canvas_mut(node) {
-                found.push((label, canvas.canvas_mut().commands_for_debug().to_vec()));
+            if let Some(context) = document.get_context_2d(node) {
+                found.push((label, context.commands_for_debug().to_vec()));
             }
         }
     });
@@ -213,7 +194,7 @@ fn print_draws(gui: &Arc<Mutex<GuiState>>, args: &[&str]) {
         if let Some(w) = &wanted {
             // Same forgiving match as `--capture-control`: a canvas named after
             // a window title is not something anyone types exactly.
-            if !name.to_lowercase().contains(&w.to_lowercase()) {
+            if !name.to_lowercase().contains(w.as_str()) {
                 continue;
             }
         }
@@ -241,7 +222,7 @@ fn print_draws(gui: &Arc<Mutex<GuiState>>, args: &[&str]) {
 /// Both arguments are optional: with none it writes the whole form to
 /// `vybe-capture.png`. A single argument ending in `.png` is taken as the file,
 /// otherwise as a control name.
-fn capture_frame(gui: &Arc<Mutex<GuiState>>, args: &[&str]) {
+fn capture_frame(args: &[&str]) {
     let is_file = |s: &str| s.ends_with(".png");
     let (control, path) = match args {
         [] => (None, "vybe-capture.png"),
@@ -249,91 +230,16 @@ fn capture_frame(gui: &Arc<Mutex<GuiState>>, args: &[&str]) {
         [one] => (Some(*one), "vybe-capture.png"),
         [a, b, ..] => (Some(*a), *b),
     };
-    match crate::gui_capture::capture_to_png(gui, path, control, 1.0) {
+    match crate::gui_capture::capture_to_png(path, control, 1.0) {
         Ok((w, h)) => eprintln!("  wrote {w}x{h} PNG → {path}"),
         Err(e) => eprintln!("  capture failed: {e}"),
     }
 }
 
-/// Dump the live GUI state (controls, their properties, wired events). Reads the
-/// shared `GuiState` directly — reflects the live program, not the eval VM.
-fn print_widgets(gui: &Arc<Mutex<GuiState>>) {
-    // A control IS `document.createElement(tag)` for every frontend, so the
-    // document is what a running program has built. `GuiState` is still the
-    // tree for a designer form, and only then is it what to report.
-    if print_document_widgets() {
-        return;
-    }
-    let g = match gui.lock() {
-        Ok(g) => g,
-        Err(_) => {
-            eprintln!("  (gui state unavailable)");
-            return;
-        }
-    };
-    if g.control_names.is_empty() {
-        eprintln!("  (no controls realized yet)");
-        return;
-    }
-    let form_rect = vybe_widgets::PanelWidget::rect(&g.form);
-    eprintln!(
-        "  form {}×{}  running={}  ({} control(s))",
-        g.width,
-        g.height,
-        g.should_run,
-        g.control_names.len()
-    );
-    // Without a window nothing has called `on_init`, so no control has a rect
-    // yet. Say so once, rather than printing a blank rect on every line and
-    // leaving it looking like the controls are broken.
-    if form_rect.w < 1.0 || form_rect.h < 1.0 {
-        eprintln!("  (form not laid out yet — no window; rects appear once it is)");
-    }
-    for name in &g.control_names {
-        // Properties recorded for this control (keyed by (control, prop_lower)).
-        let mut props: Vec<String> = g
-            .properties
-            .iter()
-            .filter(|((c, _), _)| c.eq_ignore_ascii_case(name))
-            .map(|((_, p), v)| format!("{p}={v}"))
-            .collect();
-        props.sort();
-        // Events wired on this control (keys are "control.event").
-        let mut events: Vec<String> = g
-            .event_handlers
-            .keys()
-            .filter_map(|k| k.rsplit_once('.'))
-            .filter(|(c, _)| c.eq_ignore_ascii_case(name))
-            .map(|(_, ev)| ev.to_string())
-            .collect();
-        events.sort();
-        let prop_str = if props.is_empty() {
-            String::new()
-        } else {
-            format!("  {{{}}}", props.join(", "))
-        };
-        let evt_str = if events.is_empty() {
-            String::new()
-        } else {
-            format!("  events[{}]", events.join(","))
-        };
-        // The LAID-OUT rect, which the property store does not carry. A zero
-        // rect means the control was never laid out — it will not render and it
-        // cannot be hit-tested, and nothing else in this dump reveals that.
-        let rect_str = match g.form.get_control_rect(name) {
-            Some(r) if r.w >= 1.0 && r.h >= 1.0 => {
-                format!("  rect={},{} {}x{}", r.x, r.y, r.w, r.h)
-            }
-            Some(_) => "  rect=0x0 ← never laid out".to_string(),
-            None => String::new(),
-        };
-        eprintln!("  • {name}{rect_str}{prop_str}{evt_str}");
-    }
-}
-
 /// Dump the document's elements — geometry, observable properties, listeners.
-/// Returns false when there is no document tree to report on, so the caller can
-/// fall back to `GuiState`.
+///
+/// A control IS `document.createElement(tag)` for every frontend, so the
+/// document is what a running program has built.
 /// `html` — the live document as markup.
 ///
 /// The companion to `widgets`, not a replacement: that one reports each
@@ -615,6 +521,9 @@ fn parse_command(line: &str) -> Result<DebugCommand, String> {
             window: rest.first().and_then(|s| s.parse().ok()).unwrap_or(4),
         },
         "chunks" => DebugCommand::Chunks,
+        "frame" | "fr" => DebugCommand::Frame {
+            frame: rest.first().and_then(|s| s.parse().ok()).unwrap_or(0),
+        },
         "watch" | "w" => {
             let expr = rest.join(" ");
             if expr.is_empty() {
@@ -820,6 +729,30 @@ fn print_event(event: &DebugEvent) {
     }
 }
 
+/// Collapse a rendered value to ONE line, bounded.
+///
+/// A frame dump is read as a table. A value holding a newline — every buffered
+/// stdout slot does — splits its own row and makes the column of slot indices
+/// unreadable, which is the single thing that view exists to show.
+fn one_line(value: &str) -> String {
+    const MAX: usize = 72;
+    let flat: String = value
+        .chars()
+        .map(|c| match c {
+            '\n' => '␊',
+            '\r' => '␍',
+            '\t' => '→',
+            c => c,
+        })
+        .collect();
+    if flat.chars().count() > MAX {
+        let head: String = flat.chars().take(MAX).collect();
+        format!("{head}… ({} chars)", value.chars().count())
+    } else {
+        flat
+    }
+}
+
 fn print_response(resp: &DebugResponse) {
     match resp {
         DebugResponse::Ok => {}
@@ -865,6 +798,39 @@ fn print_response(resp: &DebugResponse) {
                     Some(name) => eprintln!("  {} [{}] = {}", name, s.index, s.value),
                     None => eprintln!("  [{}] = {}", s.index, s.value),
                 }
+            }
+        }
+        DebugResponse::Frame(shape) => {
+            eprintln!(
+                "  frame #{} — chunk [{}] {} (arity {})",
+                shape.frame, shape.chunk_index, shape.chunk_name, shape.arity
+            );
+            // The layout facts first: a capture region overlapping the
+            // parameters, or a local_count below the highest slot in use, is
+            // the bug itself rather than a symptom of one.
+            eprintln!(
+                "  locals {} · scratch high-water {} · captures {}..{} ({}) · stack base {}",
+                shape.local_count,
+                shape.scratch_high_water,
+                shape.capture_base,
+                shape.capture_base as usize + shape.capture_count as usize,
+                shape.capture_count,
+                shape.base,
+            );
+            if shape.slots.is_empty() {
+                eprintln!("  (frame declares no locals)");
+            }
+            for s in &shape.slots {
+                let name = s.name.as_deref().unwrap_or("-");
+                let dead = if s.live { "" } else { "  (beyond frame)" };
+                eprintln!(
+                    "  [{:>3}] {:<8} {:<28} = {}{}",
+                    s.index,
+                    s.owner.tag(),
+                    name,
+                    one_line(&s.value),
+                    dead
+                );
             }
         }
         DebugResponse::OperandStack(vals) => {
@@ -936,6 +902,7 @@ fn print_help() {
          \x20 breaks+:  bf <fn> · lp <line> <msg with {{expr}}> logpoint · rt <line> run-to · ignore <id> <n> · catch throw|uncaught|off\n\
          \x20 data:     wp <name> watchpoint · wps list · unwp clear · fibers/threads · restart\n\
          \x20 inspect:  bt backtrace · locals [frame] · stack · g/globals [prefix] · dis [n] · chunks\n\
+         \x20 frame:    fr/frame [n]  EVERY slot incl. compiler+capture, with local_count/capture_base\n\
          \x20 vars:     p <name>[.field][idx] or p <expr> · set <name> = <literal> · watch <expr> · watches · unwatch\n\
          \x20 gui:      widgets/controls · click <control> · fire <control> <event> · close [control]\n\
          \x20 gui+:     draws [control] [n] recorded draw cmds · capture [control] [file.png] offscreen PNG\n\
