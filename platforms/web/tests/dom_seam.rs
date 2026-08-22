@@ -31,8 +31,23 @@ fn create(doc: u64, tag: &str, input_type: &str) -> u64 {
     ))
 }
 
-fn setup() -> u64 {
+/// Install whichever browser this build selected.
+///
+/// The ONE engine-specific line in this file. Everything below is the WHATWG
+/// contract, so the same assertions run against either browser and there is no
+/// second copy to drift:
+///
+///     cargo test -p vybe_platform_web --features gui             # vybe_widgets
+///     cargo test -p vybe_platform_web --features engine-htmlbox  # htmlbox
+fn install() {
+    #[cfg(feature = "engine-htmlbox")]
+    vybe_platform_web::engine_htmlbox::install();
+    #[cfg(not(feature = "engine-htmlbox"))]
     vybe_platform_web::engine_widgets::install();
+}
+
+fn setup() -> u64 {
+    install();
     new_document("test")
 }
 
@@ -134,8 +149,21 @@ fn select_options_are_the_elements_content() {
     );
     apply(doc, DomOp::AddItem(s, "one".into()));
     apply(doc, DomOp::AddItem(s, "two".into()));
-    apply(doc, DomOp::SetValue(s, "1".into()));
-    assert_eq!(text(apply(doc, DomOp::Value(s))), "1");
+
+    // The items ARE the element's content — `select.options[i].text`.
+    assert_eq!(text(apply(doc, DomOp::ItemText(s, 0))), "one");
+    assert_eq!(text(apply(doc, DomOp::ItemText(s, 1))), "two");
+
+    // ⚠ This asserted `SetValue("1")` then `Value == "1"` — which passed
+    // whether or not `AddItem` did anything, because it only round-tripped a
+    // string. `select.value = v` selects the option WORTH v (HTML §4.10.7);
+    // the index is `selectedIndex`, its own IDL member.
+    apply(doc, DomOp::SetValue(s, "two".into()));
+    assert_eq!(text(apply(doc, DomOp::Value(s))), "two");
+    assert!(
+        matches!(apply(doc, DomOp::SelectedIndex(s)), DomValue::Number(n) if n == 1.0),
+        "assigning a value must move selectedIndex to that option"
+    );
 }
 
 #[test]
@@ -158,15 +186,29 @@ fn style_uses_css_units() {
         text(apply(doc, DomOp::GetStyleProperty(b, "left".into()))),
         "40px"
     );
+    // CSSOM §6.4.2: `element.style.getPropertyValue()` serializes the DECLARED
+    // value. `1em` was authored, so `1em` reads back.
+    //
+    // This asserted `"16px"` until the resolved read got its own op. The engine
+    // was answering `left`/`top`/`width`/`height` out of the laid-out rect —
+    // `getComputedStyle`'s job — so a stylesheet round-trip through
+    // `getPropertyValue` silently rewrote authored units. htmlbox always
+    // answered the declared value, which is how the divergence surfaced.
     assert_eq!(
         text(apply(doc, DomOp::GetStyleProperty(b, "top".into()))),
+        "1em",
+        "getPropertyValue must not resolve against layout"
+    );
+    // The resolved answer still exists — under the name that means it.
+    assert_eq!(
+        text(apply(doc, DomOp::ComputedStyleProperty(b, "top".into()))),
         "16px"
     );
 }
 
 #[test]
 fn two_documents_are_two_trees() {
-    vybe_platform_web::engine_widgets::install();
+    install();
     let a = new_document("a");
     let b = new_document("b");
     assert_ne!(a, b);
@@ -181,22 +223,15 @@ fn two_documents_are_two_trees() {
     );
 }
 
-#[test]
-fn a_click_comes_back_as_a_dom_event() {
+/// Synthesise a real user click on `node`, however THIS browser takes input.
+///
+/// The one place an engine difference is unavoidable: injecting OS-level input
+/// is not a WHATWG operation — a browser receives it from the platform and no
+/// page script does this. Everything the test then ASSERTS is standard.
+#[cfg(not(feature = "engine-htmlbox"))]
+fn click_at(doc: u64, _node: u64) {
     use vybe_platform_web::engine_widgets::with_document;
     use vybe_widgets::layout::{MouseButton, MouseEvent, MouseEventKind, PanelWidget};
-
-    let doc = setup();
-    let b = create(doc, "button", "");
-    apply(doc, DomOp::SetAttribute(b, "id".into(), "go".into()));
-    apply(
-        doc,
-        DomOp::AppendChild {
-            parent: DOCUMENT,
-            child: b,
-        },
-    );
-    assert_eq!(node(apply(doc, DomOp::GetElementById("go".into()))), b);
 
     let press = MouseEvent {
         kind: MouseEventKind::Press(MouseButton::Left),
@@ -214,6 +249,43 @@ fn a_click_comes_back_as_a_dom_event() {
             ..press
         });
     });
+}
+
+#[cfg(feature = "engine-htmlbox")]
+fn click_at(doc: u64, node: u64) {
+    use rhtmledit::dom::HtmlEventType;
+    use rhtmledit::layout::LayoutEngine;
+    use vybe_platform_web::engine_htmlbox::with_document;
+
+    with_document(doc, |d| {
+        // Hit-testing needs boxes to have rects, and a document that has never
+        // been laid out has none.
+        LayoutEngine::new().layout(d, 1024.0);
+        let pt = d
+            .get_bounding_client_rect(node as u32)
+            .map(|r| (r.x + r.w / 2.0, r.y + r.h / 2.0))
+            .unwrap_or((0.0, 0.0));
+        d.process_mouse_event(HtmlEventType::MouseDown, pt, 0);
+        d.process_mouse_event(HtmlEventType::MouseUp, pt, 0);
+        d.process_mouse_event(HtmlEventType::Click, pt, 0);
+    });
+}
+
+#[test]
+fn a_click_comes_back_as_a_dom_event() {
+    let doc = setup();
+    let b = create(doc, "button", "");
+    apply(doc, DomOp::SetAttribute(b, "id".into(), "go".into()));
+    apply(
+        doc,
+        DomOp::AppendChild {
+            parent: DOCUMENT,
+            child: b,
+        },
+    );
+    assert_eq!(node(apply(doc, DomOp::GetElementById("go".into()))), b);
+
+    click_at(doc, b);
 
     let DomValue::Events(events) = apply(doc, DomOp::DrainEvents) else {
         panic!("DrainEvents must answer with events");
@@ -483,4 +555,224 @@ fn inner_html_keeps_its_nesting() {
         3,
         "children escaped the wrapper after the first"
     );
+}
+
+/// Helper: a host `<div>` attached to the document, to build inside.
+fn host(doc: u64) -> u64 {
+    let host = create(doc, "div", "");
+    apply(
+        doc,
+        DomOp::AppendChild {
+            parent: DOCUMENT,
+            child: host,
+        },
+    );
+    host
+}
+
+fn tags_of(doc: u64, parent: u64) -> Vec<String> {
+    match apply(doc, DomOp::ChildNodes(parent)) {
+        DomValue::Nodes(children) => children
+            .into_iter()
+            .map(|c| text(apply(doc, DomOp::NodeName(c))))
+            .collect(),
+        other => panic!("expected nodes, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_document_fragment_splices_its_children_through_the_seam() {
+    install();
+    let doc = new_document("t");
+    let host = host(doc);
+
+    let fragment = node(apply(doc, DomOp::CreateDocumentFragment));
+    for tag in ["a", "b"] {
+        let child = create(doc, tag, "");
+        apply(
+            doc,
+            DomOp::AppendChild {
+                parent: fragment,
+                child,
+            },
+        );
+    }
+    apply(
+        doc,
+        DomOp::AppendChild {
+            parent: host,
+            child: fragment,
+        },
+    );
+
+    // Whichever engine is installed, the fragment itself does not land.
+    assert_eq!(tags_of(doc, host), vec!["a", "b"]);
+}
+
+#[test]
+fn insert_adjacent_html_places_markup_without_disturbing_what_is_there() {
+    install();
+    let doc = new_document("t");
+    let host = host(doc);
+    let pivot = create(doc, "p", "");
+    apply(
+        doc,
+        DomOp::AppendChild {
+            parent: host,
+            child: pivot,
+        },
+    );
+
+    for (position, markup) in [
+        ("beforebegin", "<a></a>"),
+        ("afterend", "<s></s>"),
+        ("afterbegin", "<b></b>"),
+        ("beforeend", "<u></u>"),
+    ] {
+        apply(
+            doc,
+            DomOp::InsertAdjacentHtml {
+                node: pivot,
+                position: position.into(),
+                html: markup.into(),
+            },
+        );
+    }
+
+    // `beforebegin`/`afterend` are the pivot's SIBLINGS, and the pivot is
+    // still between them — the whole point of `insertAdjacent*` is that it
+    // adds without replacing.
+    assert_eq!(tags_of(doc, host), vec!["a", "p", "s"]);
+    // …and the other two are its children, in order.
+    assert_eq!(tags_of(doc, pivot), vec!["b", "u"]);
+}
+
+#[test]
+fn outer_html_reads_the_element_and_its_setter_replaces_it() {
+    install();
+    let doc = new_document("t");
+    let host = host(doc);
+    let victim = create(doc, "p", "");
+    apply(
+        doc,
+        DomOp::AppendChild {
+            parent: host,
+            child: victim,
+        },
+    );
+
+    let outer = text(apply(doc, DomOp::OuterHtml(victim)));
+    assert!(outer.contains("<p"), "outerHTML includes the element: {outer:?}");
+
+    apply(
+        doc,
+        DomOp::SetOuterHtml {
+            node: victim,
+            html: "<a></a><b></b>".into(),
+        },
+    );
+    // The element is REPLACED — not emptied, and not left beside the new
+    // markup. Two nodes go in where one came out.
+    assert_eq!(tags_of(doc, host), vec!["a", "b"]);
+}
+
+#[test]
+fn import_node_copies_across_documents_without_inserting() {
+    install();
+    let source = new_document("source");
+    let target = new_document("target");
+
+    // Build `<div id="x"><span></span></div>` in the SOURCE document.
+    let outer = create(source, "div", "");
+    apply(source, DomOp::SetAttribute(outer, "id".into(), "x".into()));
+    let inner = create(source, "span", "");
+    apply(
+        source,
+        DomOp::AppendChild {
+            parent: outer,
+            child: inner,
+        },
+    );
+    apply(
+        source,
+        DomOp::AppendChild {
+            parent: DOCUMENT,
+            child: outer,
+        },
+    );
+
+    // The mechanism, asserted first: importing goes through markup, so the
+    // source has to be able to describe itself.
+    let described = text(apply(source, DomOp::OuterHtml(outer)));
+    assert!(
+        described.contains("<div") && described.contains("<span"),
+        "the source node must serialise before it can be imported: {described:?}"
+    );
+
+    // Deep import: the subtree comes with it.
+    let imported = apply(
+        target,
+        DomOp::ImportNode {
+            source,
+            node: outer,
+            deep: true,
+        },
+    );
+    assert!(
+        matches!(imported, DomValue::Node(_)),
+        "importing {described:?} produced {imported:?}"
+    );
+    let deep = node(imported);
+    assert_eq!(text(apply(target, DomOp::NodeName(deep))), "div");
+    assert_eq!(
+        text(apply(target, DomOp::GetAttribute(deep, "id".into()))),
+        "x"
+    );
+    assert_eq!(tags_of(target, deep), vec!["span"]);
+
+    // …and it is DETACHED. `importNode` copies; it does not insert.
+    assert!(
+        matches!(apply(target, DomOp::ParentNode(deep)), DomValue::Null),
+        "an imported node must have no parent until the caller inserts it"
+    );
+
+    // Shallow import: the node and nothing under it.
+    let shallow = node(apply(
+        target,
+        DomOp::ImportNode {
+            source,
+            node: outer,
+            deep: false,
+        },
+    ));
+    assert!(
+        tags_of(target, shallow).is_empty(),
+        "deep:false must not bring the subtree"
+    );
+
+    // The source is untouched — this is a copy, not a move.
+    assert_eq!(tags_of(source, outer), vec!["span"]);
+}
+
+#[test]
+fn a_fragment_accepts_children_in_any_document() {
+    install();
+    let _first = new_document("first");
+    let second = new_document("second");
+
+    let fragment = node(apply(second, DomOp::CreateDocumentFragment));
+    let child = create(second, "div", "");
+    let appended = apply(
+        second,
+        DomOp::AppendChild {
+            parent: fragment,
+            child,
+        },
+    );
+    assert!(
+        matches!(appended, DomValue::Bool(true)),
+        "appending into a fragment answered {appended:?} — the parser's sink \
+         treats anything but Bool(true) as a refusal and drops the node"
+    );
+    assert_eq!(tags_of(second, fragment), vec!["div"]);
 }
