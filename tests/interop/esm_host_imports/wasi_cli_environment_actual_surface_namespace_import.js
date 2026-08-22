@@ -52,7 +52,8 @@ function __check(got, want) {
 import * as environment from "wasi:cli/environment";
 const envPairs = environment["get-environment"]();
 const args = environment["get-arguments"]();
-const cwd = environment["initial-cwd"]();
+// 0.3.1 spells it `get-initial-cwd`; `initial-cwd` was the 0.2 name.
+const cwd = environment["get-initial-cwd"]();
 __p(__line(Array.isArray(envPairs)));
 __p(__line(Array.isArray(args)));
 __p(__line(cwd === null || typeof cwd === "string"));

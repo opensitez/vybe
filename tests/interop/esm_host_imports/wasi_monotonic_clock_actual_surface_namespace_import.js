@@ -53,5 +53,5 @@ import * as monotonicClock from "wasi:clocks/monotonic-clock";
 const now = monotonicClock.now();
 __p(__line(typeof now === "number"));
 __p(__line(now >= 0));
-__p(__line(monotonicClock.resolution() >= 0));
+__p(__line(monotonicClock["get-resolution"]() >= 0));
 __checkLater("true\ntrue\ntrue");

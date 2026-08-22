@@ -1,4 +1,4 @@
-// vybe-test: interop/esm_host_imports/wasi_wall_clock_actual_surface_namespace_import
+// vybe-test: interop/esm_host_imports/wasi_system_clock_actual_surface_namespace_import
 // origin: languages/js/tests/js/test_esm_host_imports.rs
 
 function __fmt(v) {
@@ -49,8 +49,8 @@ function __check(got, want) {
     }
 }
 
-import * as wallClock from "wasi:clocks/wall-clock";
-const now = wallClock.now();
+import * as systemClock from "wasi:clocks/system-clock";
+const now = systemClock.now();
 __p(__line(typeof now === "object"));
 __p(__line(now.seconds > 0));
 __p(__line(now.nanoseconds >= 0));

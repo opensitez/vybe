@@ -50,13 +50,16 @@ function __check(got, want) {
 }
 
 import * as httpTypes from "wasi:http/types";
-import * as outgoingHandler from "wasi:http/outgoing-handler";
+import * as client from "wasi:http/client";
+// 0.3.1 collapsed 0.2's `outgoing-request`/`incoming-request` pair into one
+// `request` resource, and replaced the `outgoing-handler.handle` ->
+// `future-incoming-response.get` two-step with a single `client.send` that
+// answers the response directly. There is no future to consume here.
 const headers = httpTypes["[constructor]fields"]();
-const request = httpTypes["[constructor]outgoing-request"](headers);
-httpTypes["[method]outgoing-request.set-scheme"](request, "http");
-httpTypes["[method]outgoing-request.set-authority"](request, "127.0.0.1:1");
-httpTypes["[method]outgoing-request.set-path-with-query"](request, "/");
-const future = outgoingHandler.handle(request, null);
-const result = httpTypes["[method]future-incoming-response.get"](future);
+const request = httpTypes["[static]request.new"](headers);
+httpTypes["[method]request.set-scheme"](request, "http");
+httpTypes["[method]request.set-authority"](request, "127.0.0.1:1");
+httpTypes["[method]request.set-path-with-query"](request, "/");
+const result = client.send(request);
 __p(__line(result.__wasi_error === "connection-refused" || result.__wasi_error === "internal-error"));
 __checkLater("true");

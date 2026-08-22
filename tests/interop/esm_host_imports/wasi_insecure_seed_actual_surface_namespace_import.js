@@ -50,7 +50,8 @@ function __check(got, want) {
 }
 
 import * as seed from "wasi:random/insecure-seed";
-const pair = seed["insecure-seed"]();
+// 0.3.1 spells it `get-insecure-seed`; `insecure-seed` was the 0.2 name.
+const pair = seed["get-insecure-seed"]();
 __p(__line(Array.isArray(pair)));
 __p(__line(pair.length === 2));
 __p(__line(typeof pair[0] === "number"));

@@ -1,4 +1,4 @@
-// vybe-test: interop/esm_host_imports/wasi_wall_clock_resolution_actual_surface
+// vybe-test: interop/esm_host_imports/wasi_system_clock_get_resolution_actual_surface
 // origin: languages/js/tests/js/test_esm_host_imports.rs
 
 function __fmt(v) {
@@ -49,9 +49,17 @@ function __check(got, want) {
     }
 }
 
-import * as wallClock from "wasi:clocks/wall-clock";
-const resolution = wallClock.resolution();
-__p(__line(typeof resolution === "object"));
-__p(__line(resolution.seconds === 0));
-__p(__line(resolution.nanoseconds >= 0));
+import * as systemClock from "wasi:clocks/system-clock";
+// 0.3.1 declares `get-resolution: func() -> duration`, and `duration = u64`
+// NANOSECONDS (`clocks/wit/types.wit`) — a bare number. The 0.2 interface this
+// replaces answered a `{ seconds, nanoseconds }` record instead, so this is a
+// change of SHAPE and not just of name. The third assertion is what pins that
+// down: a record would satisfy neither, but without it a record that happened
+// to coerce would slip through the first two.
+// Kebab-case is not a JS identifier, so it is read the way
+// `preopens["get-directories"]` is.
+const resolution = systemClock["get-resolution"]();
+__p(__line(typeof resolution === "number"));
+__p(__line(resolution > 0));
+__p(__line(resolution.seconds === undefined));
 __checkLater("true\ntrue\ntrue");
