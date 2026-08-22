@@ -86,9 +86,7 @@ pub fn emit_environment_set_exit_code(chunks: &mut [Chunk], current: usize, line
 }
 
 pub fn emit_environment_system_directory(chunks: &mut [Chunk], current: usize, line: u32) {
-    let cwd = chunks[current].add_import("node:process", "cwd");
-    let chunk = &mut chunks[current];
-    chunk.emit_call(cwd, 0, line);
+    crate::emitter::core::filesystem_adapter::emit_current_directory(chunks, current, line);
 }
 
 pub fn emit_environment_get_command_line_args(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -98,10 +96,13 @@ pub fn emit_environment_get_command_line_args(chunks: &mut [Chunk], current: usi
 }
 
 pub fn emit_environment_get_folder_path(chunks: &mut [Chunk], current: usize, line: u32) {
-    let cwd = chunks[current].add_import("node:process", "cwd");
-    let chunk = &mut chunks[current];
-    chunk.emit_op(Op::DROP, line);
-    chunk.emit_call(cwd, 0, line);
+    // The `SpecialFolder` argument is dropped, as it was before: WASI grants
+    // preopened directories, not a `MyDocuments`. Answering the working
+    // directory for every folder is the pre-existing approximation; what
+    // changed is only that the directory now comes from
+    // `wasi:cli/environment` rather than from the host process.
+    chunks[current].emit_op(Op::DROP, line);
+    crate::emitter::core::filesystem_adapter::emit_current_directory(chunks, current, line);
 }
 
 pub fn emit_environment_special_folder(

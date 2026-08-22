@@ -235,10 +235,56 @@ fn emit_version_parts_from_string(
     }
 }
 
+/// The three-way comparison as a standalone 2-arg method, so it can be BOUND
+/// on the object rather than only reachable as a named call.
+///
+/// This is what gives `v1 < v2` (and `>`, `<=`, `>=`) their meaning in every
+/// language at once. `emit_rich_compare_locals` — the shared relational
+/// lowering — probes the left operand for `compare` / `CompareTo` /
+/// `compareTo` / `__cmp__` / `<=>` and derives the operator from the sign of
+/// what it finds. A component-class `MethodDef` is NOT an own property of the
+/// struct, so that probe missed `Version` entirely and every consumer had to
+/// rebuild the ordering itself — which is exactly what the VB walker was
+/// doing, rewriting `<` into a named `op_LessThan` call.
+///
+/// Sign is the standard one the shared path assumes: NEGATIVE when the left
+/// operand sorts first. `emit_version_compare_internal` already produces that.
+fn push_version_compare_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut method = create_function_chunk("__dotnet_version_compareto", 2);
+    // BEFORE any `reserve_slot`. `alloc_scratch` hands out `local_count` and
+    // bumps it, so on a fresh chunk it would return 0 — aliasing `this`.
+    method.local_count = 2;
+    method.emit_op_u16(Op::LOCAL_GET, 0, line);
+    method.emit_op_u16(Op::LOCAL_GET, 1, line);
+    chunks.push(method);
+    let idx = chunks.len() - 1;
+    emit_version_compare_internal(chunks, idx, line);
+    chunks[idx].emit_op(Op::RETURN, line);
+    idx
+}
+
+fn bind_version_compare(chunk: &mut Chunk, obj_slot: u16, method_idx: usize, line: u32) {
+    // Both spellings: `CompareTo` is what .NET calls it and what the shared
+    // probe looks for first among the .NET-shaped names; `compare` is the
+    // lowercase form a case-insensitive frontend folds to.
+    for name in ["CompareTo", "compareto", "compare"] {
+        emit_bind_method_with_slot(
+            chunk,
+            obj_slot,
+            name,
+            Some(vybe_ast::ProtocolSlot::Compare),
+            method_idx,
+            None,
+            line,
+        );
+    }
+}
+
 fn emit_build_version_from_slots(
     chunks: &mut [Chunk],
     current: usize,
     tostring_method_idx: usize,
+    compare_method_idx: usize,
     major_slot: u16,
     minor_slot: u16,
     build_slot: u16,
@@ -301,6 +347,7 @@ fn emit_build_version_from_slots(
     let obj_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
     bind_version_to_string(chunk, obj_slot, tostring_method_idx, line);
+    bind_version_compare(chunk, obj_slot, compare_method_idx, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
 }
 
@@ -373,7 +420,15 @@ fn emit_version_compare_internal(chunks: &mut [Chunk], current: usize, line: u32
     chunk.emit_op_u16(Op::LOCAL_SET, right_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, left_slot, line);
 
-    let done = chunk.emit_block(line);
+    // TYPED, result_count 1 — the block CARRIES the comparison result. Each
+    // `br 1` below branches out with -1/1 already pushed, and `emit_block` is
+    // `emit_block_typed(line, 0)`, i.e. VOID: every early exit discarded its
+    // own answer and the block fell through to the trailing `0.0`. So
+    // `New Version(1,0,0,0).CompareTo(New Version(2,0,0,0))` was 0 — every
+    // Version compared EQUAL to every other Version. The relational helpers
+    // around this function had been sign-patched against that constant 0,
+    // which is why `emit_version_lt` tested the result with `>`.
+    let done = chunk.emit_block_typed(line, 1);
     for key in [MAJOR_KEY, MINOR_KEY, BUILD_KEY, REVISION_KEY] {
         emit_version_part(chunk, left_slot, key, line);
         chunk.emit_op_u16(Op::LOCAL_SET, left_part_slot, line);
@@ -406,6 +461,7 @@ fn emit_version_compare_internal(chunks: &mut [Chunk], current: usize, line: u32
 
 pub fn emit_version_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     let tostring_method_idx = push_version_tostring_chunk(chunks, line);
+    let compare_method_idx = push_version_compare_chunk(chunks, line);
     let chunk = &mut chunks[current];
     let revision_slot = reserve_slot(chunk);
     let build_slot = reserve_slot(chunk);
@@ -450,6 +506,7 @@ pub fn emit_version_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line:
         chunks,
         current,
         tostring_method_idx,
+        compare_method_idx,
         major_slot,
         minor_slot,
         build_slot,
@@ -460,6 +517,7 @@ pub fn emit_version_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line:
 
 pub fn emit_version_parse(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let tostring_method_idx = push_version_tostring_chunk(chunks, line);
+    let compare_method_idx = push_version_compare_chunk(chunks, line);
     let to_str_idx = chunks[current].add_import("ecma:string", "String");
     let chunk = &mut chunks[current];
     let text_slot = reserve_slot(chunk);
@@ -491,6 +549,7 @@ pub fn emit_version_parse(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
         chunks,
         current,
         tostring_method_idx,
+        compare_method_idx,
         major_slot,
         minor_slot,
         build_slot,
@@ -501,6 +560,7 @@ pub fn emit_version_parse(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
 
 pub fn emit_version_try_parse(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let tostring_method_idx = push_version_tostring_chunk(chunks, line);
+    let compare_method_idx = push_version_compare_chunk(chunks, line);
     let to_str_idx = chunks[current].add_import("ecma:string", "String");
     let chunk = &mut chunks[current];
     let text_slot = reserve_slot(chunk);
@@ -592,6 +652,7 @@ pub fn emit_version_try_parse(chunks: &mut Vec<Chunk>, current: usize, line: u32
         chunks,
         current,
         tostring_method_idx,
+        compare_method_idx,
         major_slot,
         minor_slot,
         build_slot,
@@ -610,7 +671,16 @@ pub fn emit_version_to_string(chunks: &mut [Chunk], current: usize, argc: u8, li
     let out_slot = reserve_slot(chunk);
     let defined_count_slot = reserve_slot(chunk);
 
-    if argc > 0 {
+    // `argc` COUNTS THE RECEIVER. An instance method reaches here through
+    // `InstanceMethodTarget::Common`, whose call site is
+    // `total_argc = arg_exprs.len() + 1` — so bare `v.ToString()` arrives as
+    // `argc == 1`, not `0`. Reading it as the user arg count made the no-arg
+    // overload pop the RECEIVER as its field count and then take whatever sat
+    // below it on the stack as the object: `"s" & v.ToString()` rendered
+    // `nullundefined.undefined`, eating the left operand of the concat.
+    let has_field_count = argc > 1;
+
+    if has_field_count {
         chunk.emit_op_u16(Op::LOCAL_SET, field_count_slot, line);
     } else {
         push_const(chunk, Value::F64(4.0), line);
@@ -635,7 +705,7 @@ pub fn emit_version_to_string(chunks: &mut [Chunk], current: usize, argc: u8, li
     chunk.emit_op_u16(Op::LOCAL_SET, defined_count_slot, line);
     chunk.emit_end(line);
 
-    if argc > 0 {
+    if has_field_count {
         chunk.emit_op_u16(Op::LOCAL_GET, field_count_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, defined_count_slot, line);
         chunk.emit_op(Op::F64_GT, line);
@@ -662,7 +732,7 @@ pub fn emit_version_to_string(chunks: &mut [Chunk], current: usize, argc: u8, li
     chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
 
     for (idx, key) in [(3.0, BUILD_KEY), (4.0, REVISION_KEY)] {
-        if argc > 0 {
+        if has_field_count {
             chunk.emit_op_u16(Op::LOCAL_GET, field_count_slot, line);
             push_const(chunk, Value::F64(idx), line);
             chunk.emit_op(Op::F64_GE, line);
@@ -680,7 +750,7 @@ pub fn emit_version_to_string(chunks: &mut [Chunk], current: usize, argc: u8, li
         vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
         chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
         chunk.emit_end(line);
-        if argc > 0 {
+        if has_field_count {
             chunk.emit_end(line);
         }
     }
@@ -690,6 +760,7 @@ pub fn emit_version_to_string(chunks: &mut [Chunk], current: usize, argc: u8, li
 
 pub fn emit_version_clone(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let tostring_method_idx = push_version_tostring_chunk(chunks, line);
+    let compare_method_idx = push_version_compare_chunk(chunks, line);
     let chunk = &mut chunks[current];
     let obj_slot = reserve_slot(chunk);
     let major_slot = reserve_slot(chunk);
@@ -710,6 +781,7 @@ pub fn emit_version_clone(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
         chunks,
         current,
         tostring_method_idx,
+        compare_method_idx,
         major_slot,
         minor_slot,
         build_slot,
@@ -723,8 +795,12 @@ pub fn emit_version_compare(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 pub fn emit_version_compare_instance(chunks: &mut [Chunk], current: usize, line: u32) {
+    // The `F64_NEG` that stood here was compensation for a compare that always
+    // answered 0 (see `emit_version_compare_internal`'s void-block note) — with
+    // the three-way result correct, negating it reports `a.CompareTo(b)` as
+    // POSITIVE when `a` sorts first. Stack is `[left, right]` for both the
+    // instance and the static two-arg form, so neither needs a flip.
     emit_version_compare_internal(chunks, current, line);
-    chunks[current].emit_op(Op::F64_NEG, line);
 }
 
 pub fn emit_version_equals(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -736,11 +812,15 @@ pub fn emit_version_equals(chunks: &mut [Chunk], current: usize, line: u32) {
     vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
 }
 
+// `a < b` is `compare(a, b) < 0`. These two tested the result with the OPPOSITE
+// operator, which was invisible while the compare was a constant 0 — both
+// answered `false` for every pair, so `v1 < v2` and `v1 > v2` were BOTH false
+// and no test that asserted only one direction could see it.
 pub fn emit_version_lt(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_version_compare_internal(chunks, current, line);
     let chunk = &mut chunks[current];
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
 }
@@ -749,7 +829,7 @@ pub fn emit_version_gt(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_version_compare_internal(chunks, current, line);
     let chunk = &mut chunks[current];
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
 }

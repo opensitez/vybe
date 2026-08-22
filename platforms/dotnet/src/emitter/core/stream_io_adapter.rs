@@ -6,16 +6,23 @@
 //!   - `StreamWriter(path)` — opens file for writing; `Write` / `WriteLine`
 //!     append; `Flush`/`Close` persists.
 //!
-//! Implementation strategy: load-whole-file model (matches the pre-migration
-//! host fns in `vybe_host`). Construction reads the entire file via
-//! `node:fs.readFileSync(path, "utf8")` and stashes the string on the
-//! reader's `__content` field; subsequent `ReadLine`/`ReadToEnd` walk the
-//! cached content. The writer accumulates into `__buf` and flushes via
-//! `node:fs.writeFileSync(__path, __buf)` on `Flush`/`Close`.
+//! Implementation strategy: load-whole-file model. Construction reads the
+//! entire file through `fs_path::emit_read_file` — `open-at` +
+//! `read-via-stream` + `canon stream.read`, decoded as UTF-8 — and stashes the
+//! string on the reader's `__content` field; subsequent `ReadLine`/`ReadToEnd`
+//! walk the cached content. The writer accumulates into `__buf` and flushes
+//! through `fs_path::emit_write_file` on `Flush`/`Close`.
 //!
-//! The cleaner streaming model would compose `wasi:io/streams` (read/write
-//! 1 byte at a time) but the load-whole-file shape preserves the existing
-//! ABI contract — no test exercises true streaming behaviour.
+//! ⚠It is still LOAD-WHOLE-FILE, and that is the remaining gap: a `StreamReader`
+//! over a 2GB file materialises 2GB. The transport underneath is now a real
+//! Component Model stream, so incremental reads are expressible — what is
+//! missing is a reader that keeps the stream handle alive across `ReadLine`
+//! calls, and a stream end is an index into the VM's handle table, so that is
+//! a lifetime question rather than a call.
+//!
+//! It used to say the cleaner model would compose `wasi:io/streams`. That
+//! package does not exist in WASI 0.3.1 — streams became Component Model
+//! built-ins — so the sentence outlived the thing it described.
 //!
 //! Conventions:
 //!   * Stack on entry for static ctors: `[arg0, arg1, ...]`

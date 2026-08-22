@@ -76,7 +76,7 @@ fn emit_throw_io(
     chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
     paths::emit_full_path(chunk, line);
     chunk.emit_string_const("'.", line);
-    host::emit(chunk, "ecma:string", "concat", 3, line);
+    vybe_compiler::primitives::strings::emit_concat(chunk, 3, line);
     vybe_compiler::primitives::errors::emit_exception_new_finalize(chunk, kind, line);
     vybe_compiler::primitives::errors::emit_throw(chunk, line);
 }
@@ -111,7 +111,6 @@ fn emit_read_or_throw(chunks: &mut [Chunk], current: usize, path_slot: u16, line
 /// rather than pushed on — dropping it at the call site instead is how a failed
 /// write became a silent success.
 fn emit_write_or_throw(chunks: &mut [Chunk], current: usize, path_slot: u16, line: u32) {
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     vybe_compiler::primitives::ops::emit_dyn_not(&mut chunks[current], line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);

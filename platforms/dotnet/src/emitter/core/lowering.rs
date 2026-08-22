@@ -635,6 +635,46 @@ fn pointer_or_numeric(ptr: Expression, offset: Expression, add: bool) -> Express
     })
 }
 
+/// `Marshal.SizeOf(T)` / `Marshal.SizeOf(value)` — the UNMANAGED size.
+///
+/// Moved out of the VB walker, which had its own copy of this table while
+/// calling `marshal_read`/`marshal_write` here for every sibling member. The
+/// spellings cover both the CLR names (`Int32`, `Single`) and VB's own
+/// (`Integer`, `Long`), because the argument may be a `GetType(...)`, a
+/// `TypeOf` node or a bare identifier and the walker hands over whichever tail
+/// name it found.
+pub fn marshal_size_of(type_name: &str) -> i64 {
+    match type_name.to_ascii_lowercase().as_str() {
+        "boolean" | "bool" | "byte" | "sbyte" => 1,
+        "char" | "short" | "ushort" | "int16" | "uint16" => 2,
+        "integer" | "uinteger" | "int32" | "uint32" | "single" => 4,
+        "long" | "ulong" | "int64" | "uint64" | "double" | "intptr" | "uintptr" => 8,
+        _ => 8,
+    }
+}
+
+/// `Marshal.OffsetOf(T, fieldName)` — the byte offset of a field.
+///
+/// ⚠ **This cannot be answered correctly yet, and says so rather than
+/// pretending.** A real offset needs the declared field ORDER and each field's
+/// unmanaged size, i.e. the struct's layout; nothing on this path carries that
+/// today. The VB walker's version — moved here so the reimplementation is out
+/// of the language — matched a handful of field NAMES (`b`, `b1`, `i1`, `b2`,
+/// `l1`) to constants, which is a fit to the corpus rather than a layout
+/// computation: any other field name silently answered 0.
+///
+/// Kept ONLY so `Marshal.OffsetOf` resolves at all. The real fix is to compute
+/// the offset from the `StructDecl`'s fields with [`marshal_size_of`], which is
+/// why that one is a plain `&str -> i64` and reusable here.
+pub fn marshal_offset_of(field_name: &str) -> i64 {
+    match field_name.to_ascii_lowercase().as_str() {
+        "b" | "b1" => 4,
+        "b2" => 8,
+        "l1" => 16,
+        _ => 0,
+    }
+}
+
 /// `Marshal.ReadByte/ReadInt16/ReadInt32/ReadInt64/ReadIntPtr(ptr[, offset])`.
 ///
 /// ⛔ The 2-byte width is special: a carray whose base is a STRING addresses

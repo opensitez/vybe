@@ -387,7 +387,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::static_method(
                     "GetCurrentDirectory",
                     0,
-                    MethodBody::HostCall(HostTarget::new("node:process", "cwd")),
+                    MethodBody::Common("dotnet.get_current_directory".into()),
                 )),
         ),
         DotnetClassExport::new(

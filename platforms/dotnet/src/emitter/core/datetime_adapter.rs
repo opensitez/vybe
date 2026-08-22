@@ -118,17 +118,37 @@ fn emit_named_field_from_obj(chunk: &mut Chunk, obj_slot: u16, field: &str, line
     chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
 }
 
+/// The millisecond payload of the DateTime object held in `obj_slot`, and the
+/// named field beside it — the two accessors sibling adapters need so that
+/// `__time` is spelled in exactly one place.
+///
+/// Stack: `[]` → `[ms]` / `[]` → `[field]`.
+pub fn emit_millis_from_slot(chunk: &mut Chunk, obj_slot: u16, line: u32) {
+    emit_datetime_time_from_obj(chunk, obj_slot, line);
+}
+
+pub fn emit_field_from_slot(chunk: &mut Chunk, obj_slot: u16, field: &str, line: u32) {
+    emit_named_field_from_obj(chunk, obj_slot, field, line);
+}
+
+/// `-1` / `0` / `1` from two numeric slots.
+///
+/// ⛔ Both `if`s were `emit_if`, i.e. `emit_if_params(line, 0, 0)` — VOID — so
+/// the `-1` and `1` pushed inside them were DISCARDED and
+/// `DateTime.Compare(a, b)` answered `0` for every pair. Identical to the
+/// `Version.CompareTo` defect; both stayed hidden because the VB walker folded
+/// literal comparisons at compile time.
 fn emit_compare_numeric_slots(chunk: &mut Chunk, left_slot: u16, right_slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
     vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
-    chunk.emit_if(line);
+    chunk.emit_if_value(line);
     push_const(chunk, Value::I32(-1), line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
     vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
-    chunk.emit_if(line);
+    chunk.emit_if_value(line);
     push_const(chunk, Value::I32(1), line);
     chunk.emit_else(line);
     push_const(chunk, Value::I32(0), line);
@@ -400,6 +420,7 @@ fn emit_wrap_ms_internal(
     }
 
     bind_datetime_to_string(chunks, current, obj_slot, line);
+    bind_datetime_compare(chunks, current, obj_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
 }
 
@@ -442,7 +463,9 @@ pub fn emit_datetime_try_parse(chunks: &mut Vec<Chunk>, current: usize, line: u3
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     chunk.emit_op(Op::F64_NE, line);
-    chunk.emit_if(line);
+    // Value-typed: both arms leave the parse result. Was `emit_if` (void),
+    // which discarded it — the same trap as `emit_compare_numeric_slots`.
+    chunk.emit_if_value(line);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
@@ -823,6 +846,19 @@ pub fn emit_datetime_is_leap_year(chunks: &mut [Chunk], current: usize, line: u3
     vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
 }
 
+/// `a.CompareTo(b)` — negative when `a` precedes `b`. **Instance shape**: the
+/// receiver arrives BENEATH the argument, so the first `local.set` takes `b`.
+///
+/// ⛔ The static `DateTime.Compare(a, b)` declared on the same component class
+/// points at this emitter but delivers its operands in the OPPOSITE order —
+/// measured both ways: with the order below, `a.CompareTo(b)` and every
+/// relational operator derived from it are correct while
+/// `Date.Compare(#2024-01-01#, #2024-01-02#)` answers `+1`; exchanging the two
+/// `local.set`s inverts exactly that set (5 relational tests break, the static
+/// one passes). Hence [`emit_datetime_compare_static`], rather than one order
+/// that is wrong for half its callers. Nothing could see either bug while
+/// `emit_compare_numeric_slots` discarded its result into a void `if` and
+/// returned `0` for every pair.
 pub fn emit_datetime_compare(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let right_slot = chunk.alloc_scratch(4);
@@ -836,6 +872,25 @@ pub fn emit_datetime_compare(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_datetime_time_from_obj(chunk, right_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, right_time_slot, line);
     emit_compare_numeric_slots(chunk, left_time_slot, right_time_slot, line);
+}
+
+/// Static `DateTime.Compare(a, b)` — the same comparison as
+/// [`emit_datetime_compare`], with the two operands exchanged first because a
+/// static `MethodBody::Common` delivers them in the opposite stack order from
+/// an instance one. Both shapes are declared on the DateTime component class
+/// (`static_method("Compare", 2)` and `new("CompareTo", 1)`), so one body
+/// cannot serve both.
+pub fn emit_datetime_compare_static(chunks: &mut [Chunk], current: usize, line: u32) {
+    {
+        let chunk = &mut chunks[current];
+        let first_slot = chunk.alloc_scratch(2);
+        let second_slot = first_slot + 1;
+        chunk.emit_op_u16(Op::LOCAL_SET, first_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, second_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, first_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, second_slot, line);
+    }
+    emit_datetime_compare(chunks, current, line);
 }
 
 pub fn emit_datetime_to_short_date_string(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -1010,21 +1065,221 @@ fn emit_iso_string_from_datetime_obj(
     call_import(chunks, current, "ecma:date", "toISOString", 1, line);
 }
 
-fn bind_datetime_to_string(chunks: &mut Vec<Chunk>, current: usize, obj_slot: u16, line: u32) {
-    let mut method = create_function_chunk("__datetime_tostring", 1);
-    let time_key = method.add_constant(Value::String(Arc::from(TIME_KEY)));
-    method.emit_op_u16(Op::LOCAL_GET, 0, line);
-    method.emit_struct_field_op(Op::STRUCT_GET, 0, time_key, line);
-    let iso = method.add_import("ecma:date", "toISOString");
-    method.emit_call(iso, 1, line);
-    method.emit_i32_const(0, line);
-    method.emit_i32_const(19, line);
-    let substring = method.add_import("wasm:js-string", "substring");
-    method.emit_call(substring, 3, line);
-    method.emit_op(Op::RETURN, line);
+/// Stack: `[]` → `[str]` — the field named `field` of the object in
+/// `obj_slot`, as a string.
+fn emit_field_as_string(chunk: &mut Chunk, obj_slot: u16, field: &str, line: u32) {
+    emit_named_field_from_obj(chunk, obj_slot, field, line);
+    let to_str = chunk.add_import("ecma:string", "String");
+    chunk.emit_call(to_str, 1, line);
+}
+
+/// Stack: `[]` → `[str]` — `field` as a string, zero-padded to two digits.
+fn emit_field_padded(chunk: &mut Chunk, obj_slot: u16, field: &str, line: u32) {
+    emit_named_field_from_obj(chunk, obj_slot, field, line);
+    push_const(chunk, Value::F64(10.0), line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::String(Arc::from("0")), line);
+    emit_field_as_string(chunk, obj_slot, field, line);
+    emit_concat(chunk, line);
+    chunk.emit_else(line);
+    emit_field_as_string(chunk, obj_slot, field, line);
+    chunk.emit_end(line);
+}
+
+/// `DateTime.ToString()` — the .NET general format `"M/d/yyyy h:mm:ss tt"`.
+///
+/// This used to be `toISOString()[0..19]`, i.e. `2024-05-14T15:45:59`. Real
+/// .NET renders `5/14/2024 3:45:59 PM`, and so does `dotnet run`. The
+/// deviation stayed invisible because VB's walker folded every date to its
+/// display text at compile time and never reached this method — one more leaf
+/// defect that a language-local copy was standing in front of.
+///
+/// `elide_midnight` is VB's `CStr` rule: `CStr` on a Date whose time is
+/// exactly midnight prints the date alone (`5/19/2024`). C#'s
+/// `DateTime.ToString()` always prints the time (`5/19/2024 12:00:00 AM`).
+/// Both spellings currently share ONE `ToString` slot, so the binding below
+/// passes `true` — VB's rule — and splitting them needs `CStr` to bind its own
+/// method rather than reading the object's `ToString`. Left as one knob here
+/// so the difference is visible at the call site instead of being a surprise.
+///
+/// Stack: `[]` → `[str]`.
+fn emit_datetime_display(chunk: &mut Chunk, obj_slot: u16, elide_midnight: bool, line: u32) {
+    if elide_midnight {
+        // VB's `CStr` prints only the half that carries information: a Date at
+        // midnight is `5/19/2024`, and a value on `DateTime.MinValue`'s date —
+        // which is where `TimeSerial` puts a time of day — is `9:30:00 AM`.
+        emit_named_field_from_obj(chunk, obj_slot, "Year", line);
+        push_const(chunk, Value::F64(1.0), line);
+        chunk.emit_op(Op::F64_EQ, line);
+        chunk.emit_if_value(line);
+        emit_time_of_day_suffix(chunk, obj_slot, false, line);
+        chunk.emit_else(line);
+        emit_date_half(chunk, obj_slot, line);
+        emit_seconds_of_day(chunk, obj_slot, line);
+        push_const(chunk, Value::F64(0.0), line);
+        chunk.emit_op(Op::F64_NE, line);
+        chunk.emit_if_value(line);
+        emit_time_of_day_suffix(chunk, obj_slot, true, line);
+        chunk.emit_else(line);
+        push_const(chunk, Value::String(Arc::from("")), line);
+        chunk.emit_end(line);
+        emit_concat(chunk, line);
+        chunk.emit_end(line);
+    } else {
+        emit_date_half(chunk, obj_slot, line);
+        emit_time_of_day_suffix(chunk, obj_slot, true, line);
+        emit_concat(chunk, line);
+    }
+}
+
+/// `"M/d/yyyy"`. Stack: `[]` → `[str]`.
+fn emit_date_half(chunk: &mut Chunk, obj_slot: u16, line: u32) {
+    emit_field_as_string(chunk, obj_slot, "Month", line);
+    push_const(chunk, Value::String(Arc::from("/")), line);
+    emit_concat(chunk, line);
+    emit_field_as_string(chunk, obj_slot, "Day", line);
+    emit_concat(chunk, line);
+    push_const(chunk, Value::String(Arc::from("/")), line);
+    emit_concat(chunk, line);
+    emit_field_as_string(chunk, obj_slot, "Year", line);
+    emit_concat(chunk, line);
+}
+
+/// Seconds since midnight. Stack: `[]` → `[n]`.
+fn emit_seconds_of_day(chunk: &mut Chunk, obj_slot: u16, line: u32) {
+    emit_named_field_from_obj(chunk, obj_slot, "Hour", line);
+    push_const(chunk, Value::F64(60.0), line);
+    chunk.emit_op(Op::F64_MUL, line);
+    emit_named_field_from_obj(chunk, obj_slot, "Minute", line);
+    chunk.emit_op(Op::F64_ADD, line);
+    push_const(chunk, Value::F64(60.0), line);
+    chunk.emit_op(Op::F64_MUL, line);
+    emit_named_field_from_obj(chunk, obj_slot, "Second", line);
+    chunk.emit_op(Op::F64_ADD, line);
+}
+
+/// `"h:mm:ss tt"`, with a leading space when it follows a date.
+///
+/// Stack: `[]` → `[str]`.
+fn emit_time_of_day_suffix(chunk: &mut Chunk, obj_slot: u16, leading_space: bool, line: u32) {
+    push_const(
+        chunk,
+        Value::String(Arc::from(if leading_space { " " } else { "" })),
+        line,
+    );
+
+    // 12-hour clock: `Hour % 12`, with 0 displayed as 12.
+    emit_named_field_from_obj(chunk, obj_slot, "Hour", line);
+    push_const(chunk, Value::F64(12.0), line);
+    vybe_compiler::primitives::math::emit_c_fmod(chunk, line);
+    push_const(chunk, Value::F64(0.0), line);
+    chunk.emit_op(Op::F64_EQ, line);
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::String(Arc::from("12")), line);
+    chunk.emit_else(line);
+    emit_named_field_from_obj(chunk, obj_slot, "Hour", line);
+    push_const(chunk, Value::F64(12.0), line);
+    vybe_compiler::primitives::math::emit_c_fmod(chunk, line);
+    let to_str = chunk.add_import("ecma:string", "String");
+    chunk.emit_call(to_str, 1, line);
+    chunk.emit_end(line);
+    emit_concat(chunk, line);
+
+    push_const(chunk, Value::String(Arc::from(":")), line);
+    emit_concat(chunk, line);
+    emit_field_padded(chunk, obj_slot, "Minute", line);
+    emit_concat(chunk, line);
+    push_const(chunk, Value::String(Arc::from(":")), line);
+    emit_concat(chunk, line);
+    emit_field_padded(chunk, obj_slot, "Second", line);
+    emit_concat(chunk, line);
+
+    push_const(chunk, Value::String(Arc::from(" ")), line);
+    emit_concat(chunk, line);
+    emit_named_field_from_obj(chunk, obj_slot, "Hour", line);
+    push_const(chunk, Value::F64(12.0), line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::String(Arc::from("AM")), line);
+    chunk.emit_else(line);
+    push_const(chunk, Value::String(Arc::from("PM")), line);
+    chunk.emit_end(line);
+    emit_concat(chunk, line);
+}
+
+/// Build the shared `ToString` body for a DateTime object. `elide_midnight`
+/// selects VB's `CStr` rule — see [`emit_datetime_display`].
+pub fn push_datetime_display_chunk(
+    chunks: &mut Vec<Chunk>,
+    name: &str,
+    elide_midnight: bool,
+    line: u32,
+) -> usize {
+    let mut method = create_function_chunk(name, 1);
     method.local_count = 1;
+    emit_datetime_display(&mut method, 0, elide_midnight, line);
+    method.emit_op(Op::RETURN, line);
+    chunks.push(method);
+    chunks.len() - 1
+}
+
+/// Bind `CompareTo` under [`ProtocolSlot::Compare`], which is how `<`, `<=`,
+/// `>`, `>=` and `=` reach a DateTime at all.
+///
+/// The object bound only `ToString`, so every relational operator on two dates
+/// fell through to numeric coercion and trapped with
+/// `wasm:js-number.toF64 — not a number`. It stayed invisible while the VB
+/// walker folded `#…# < #…#` to a boolean at compile time — the same shape as
+/// the `Version` compare defect, on the adjacent type.
+///
+/// `emit_rich_compare_locals` derives every relational operator from the sign
+/// of this one method, so one binding answers all six.
+fn bind_datetime_compare(chunks: &mut Vec<Chunk>, current: usize, obj_slot: u16, line: u32) {
+    let mut method = create_function_chunk("__datetime_compareto", 2);
+    method.local_count = 2;
+    let time_key = method.add_constant(Value::String(Arc::from(TIME_KEY)));
+
+    let load_time = |method: &mut Chunk, local: u16| {
+        method.emit_op_u16(Op::LOCAL_GET, local, line);
+        method.emit_struct_field_op(Op::STRUCT_GET, 0, time_key, line);
+    };
+
+    load_time(&mut method, 0);
+    load_time(&mut method, 1);
+    vybe_compiler::primitives::ops::emit_dyn_lt(&mut method, line);
+    method.emit_if_value(line);
+    push_const(&mut method, Value::I32(-1), line);
+    method.emit_else(line);
+    load_time(&mut method, 0);
+    load_time(&mut method, 1);
+    vybe_compiler::primitives::ops::emit_dyn_gt(&mut method, line);
+    method.emit_if_value(line);
+    push_const(&mut method, Value::I32(1), line);
+    method.emit_else(line);
+    push_const(&mut method, Value::I32(0), line);
+    method.emit_end(line);
+    method.emit_end(line);
+    method.emit_op(Op::RETURN, line);
+
     chunks.push(method);
     let method_idx = chunks.len() - 1;
+    for name in ["CompareTo", "compareto", "compare"] {
+        emit_bind_method_with_slot(
+            &mut chunks[current],
+            obj_slot,
+            name,
+            Some(vybe_ast::ProtocolSlot::Compare),
+            method_idx,
+            None,
+            line,
+        );
+    }
+}
+
+fn bind_datetime_to_string(chunks: &mut Vec<Chunk>, current: usize, obj_slot: u16, line: u32) {
+    let method_idx =
+        push_datetime_display_chunk(chunks, "__datetime_tostring", true, line);
 
     emit_bind_method(
         &mut chunks[current],

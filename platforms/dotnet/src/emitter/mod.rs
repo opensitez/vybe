@@ -1079,6 +1079,82 @@ pub fn static_member_constant(prefix: &str, member_name: &str) -> Option<&'stati
             return Some("__dotnet_stringsplit_none");
         }
     }
+    // `MidpointRounding.*` — the member's own name IS the value, same shape as
+    // `TypeCode` below.
+    //
+    // Nothing in the tree defined `MidpointRounding` at all, so every explicit
+    // overload — `Math.Round(x, d, MidpointRounding.ToEven)`,
+    // `Decimal.Round(x, d, MidpointRounding.AwayFromZero)` — failed to resolve.
+    // The POLICIES themselves have been available the whole time as
+    // `common:math.round_half_even` / `common:math.round_half_away`; only the
+    // name that SELECTS one was missing. Kept as the .NET spelling so the
+    // selecting lowering can match on it without a second representation.
+    if normalized.eq_ignore_ascii_case("MidpointRounding")
+        || normalized.eq_ignore_ascii_case("System.MidpointRounding")
+    {
+        return Some(match member_name.to_ascii_lowercase().as_str() {
+            "toeven" => "ToEven",
+            "awayfromzero" => "AwayFromZero",
+            _ => return None,
+        });
+    }
+    // `Microsoft.VisualBasic.DateInterval.*` — the member's own name IS the
+    // value, same shape as `TypeCode` below.
+    //
+    // `DateAdd(DateInterval.Day, …)` and `DateAdd("d", …)` are the same call
+    // in VB, so the enum member has to arrive as an ordinary value that the
+    // DateAndTime adapter's interval tables can match — which they do, case
+    // insensitively, against both this spelling and the abbreviation.
+    if normalized.eq_ignore_ascii_case("DateInterval")
+        || normalized.eq_ignore_ascii_case("Microsoft.VisualBasic.DateInterval")
+    {
+        return Some(match member_name.to_ascii_lowercase().as_str() {
+            "year" => "Year",
+            "quarter" => "Quarter",
+            "month" => "Month",
+            "dayofyear" => "DayOfYear",
+            "day" => "Day",
+            "weekofyear" => "WeekOfYear",
+            "weekday" => "Weekday",
+            "hour" => "Hour",
+            "minute" => "Minute",
+            "second" => "Second",
+            _ => return None,
+        });
+    }
+    // `TypeCode.*` — the member's own name IS the value.
+    //
+    // `Type.GetTypeCode(t)` (resolved in `primitives/reflection.rs` off the
+    // .NET type-name leaf) yields the same spelling, so `= TypeCode.Int32`
+    // compares equal and `.ToString()` renders it, with no separate enum
+    // representation to keep in sync. Nothing in the tree defined `TypeCode`
+    // before this — VB's walker answered `Type.GetTypeCode` itself, in VB's
+    // own type spelling.
+    if normalized.eq_ignore_ascii_case("TypeCode")
+        || normalized.eq_ignore_ascii_case("System.TypeCode")
+    {
+        return Some(match member_name.to_ascii_lowercase().as_str() {
+            "empty" => "Empty",
+            "object" => "Object",
+            "dbnull" => "DBNull",
+            "boolean" => "Boolean",
+            "char" => "Char",
+            "sbyte" => "SByte",
+            "byte" => "Byte",
+            "int16" => "Int16",
+            "uint16" => "UInt16",
+            "int32" => "Int32",
+            "uint32" => "UInt32",
+            "int64" => "Int64",
+            "uint64" => "UInt64",
+            "single" => "Single",
+            "double" => "Double",
+            "decimal" => "Decimal",
+            "datetime" => "DateTime",
+            "string" => "String",
+            _ => return None,
+        });
+    }
     if normalized.contains("EqualityComparer<") && member_name.eq_ignore_ascii_case("Default") {
         return Some("__dotnet_equalitycomparer_default");
     }

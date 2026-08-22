@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use vybe_compiler::primitives::instructions::core_wasm;
+use vybe_compiler::primitives::loops;
 
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
@@ -14,7 +15,10 @@ const GROUP_VALUES_KEY: &str = "__group_values";
 const RAW_GROUPS_KEY: &str = "groups";
 const KEYS_KEY: &str = "__keys";
 const GROUP_NAMES_KEY: &str = "__group_names";
-const GROUP_NUMBERS_KEY: &str = "__group_numbers";
+// `GROUP_NUMBERS_KEY` ("__group_numbers") stood here. It was READ by
+// `GroupNumberFromName` and written by nothing, ever — a second dead key beside
+// `__group_names`. A name's index in `__group_names` IS its group number, so
+// there is one array with one writer and no second structure to keep in sync.
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     match &val {
@@ -362,6 +366,143 @@ fn emit_dotnet_match_groups_shape(chunk: &mut Chunk, result_slot: u16, obj_slot:
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, group_values_key, line);
 }
 
+/// Populate `__group_names` on a freshly built Regex, from its own pattern.
+///
+/// ⛔ `emit_regex_get_group_names` / `..._group_name_from_number` /
+/// `..._group_number_from_name` all READ this key and NOTHING EVER WROTE IT, so
+/// all three answered empty. They looked implemented — declared on the component
+/// class, dispatched, with a real emitter each — which is exactly why the gap
+/// survived: the VB walker carried its own compile-time copy that worked for
+/// literal patterns, and that copy was the only thing making the tests pass.
+///
+/// .NET's ordering is group 0, then the UNNAMED capturing groups by number, then
+/// the NAMED ones in declaration order — `(\w+)(?<n>\d)` gives `0,1,n`.
+///
+/// Built as a delimited string and `split` at the end rather than by appending
+/// to an array: `ARRAY_SET` pushes nothing, so a growing array needs an index
+/// dance that string concatenation avoids entirely.
+///
+/// ⚠ Known limit: an ESCAPED `\(` counts as a capturing group here, so a pattern
+/// that matches a literal paren over-reports the unnamed count. Fixing that needs
+/// a real pattern scan rather than two regex passes.
+///
+/// Loop scaffolding comes from `primitives::loops` rather than being spelled out
+/// here. Hand-rolling it once already cost a HANG: `emit_loop_end` emits TWO
+/// `END`s — one for the loop, one for the enclosing block — and dropping the
+/// second leaves the block open, so the `br_if` meant to exit targets the wrong
+/// depth. The primitive cannot get that wrong.
+fn emit_store_group_names(
+    chunks: &mut [Chunk],
+    current: usize,
+    obj_slot: u16,
+    pattern_slot: u16,
+    line: u32,
+) {
+    let match_all_idx = chunks[current].add_import("ecma:regexp", "matchAll");
+    let split_idx = chunks[current].add_import("ecma:regexp", "split");
+    let chunk = &mut chunks[current];
+    let group_names_key = chunk.add_constant(Value::String(Arc::from(GROUP_NAMES_KEY)));
+
+    let named_slot = reserve_slot(chunk);
+    let unnamed_slot = reserve_slot(chunk);
+    let out_slot = reserve_slot(chunk);
+    let i_slot = reserve_slot(chunk);
+    let n_slot = reserve_slot(chunk);
+
+    // named = matchAll(pattern, "\(\?<([A-Za-z_][A-Za-z0-9_]*)>")
+    chunk.emit_op_u16(Op::LOCAL_GET, pattern_slot, line);
+    push_const(
+        chunk,
+        Value::String(Arc::from(r"\(\?<([A-Za-z_][A-Za-z0-9_]*)>")),
+        line,
+    );
+    chunk.emit_call(match_all_idx, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, named_slot, line);
+
+    // unnamed = matchAll(pattern, "\((?!\?)")
+    chunk.emit_op_u16(Op::LOCAL_GET, pattern_slot, line);
+    push_const(chunk, Value::String(Arc::from(r"\((?!\?)")), line);
+    chunk.emit_call(match_all_idx, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, unnamed_slot, line);
+
+    push_const(chunk, Value::String(Arc::from("0")), line);
+    chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
+
+    // `,1`, `,2`, … for each unnamed capturing group.
+    emit_count_into(chunk, unnamed_slot, n_slot, i_slot, line);
+    let state = loops::emit_loop_start(chunks, current, line);
+    emit_index_below_count(&mut chunks[current], i_slot, n_slot, line);
+    loops::emit_loop_cond(chunks, current, line);
+    {
+        let chunk = &mut chunks[current];
+        emit_append_comma(chunk, out_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
+        push_const(chunk, Value::F64(1.0), line);
+        vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
+        emit_increment(chunk, i_slot, line);
+    }
+    loops::emit_loop_end(chunks, current, state, line);
+
+    // `,<name>` for each named group — capture 1 of each match.
+    emit_count_into(&mut chunks[current], named_slot, n_slot, i_slot, line);
+    let state = loops::emit_loop_start(chunks, current, line);
+    emit_index_below_count(&mut chunks[current], i_slot, n_slot, line);
+    loops::emit_loop_cond(chunks, current, line);
+    {
+        let chunk = &mut chunks[current];
+        emit_append_comma(chunk, out_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, named_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+        push_const(chunk, Value::F64(1.0), line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+        vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
+        emit_increment(chunk, i_slot, line);
+    }
+    loops::emit_loop_end(chunks, current, state, line);
+
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, out_slot, line);
+    push_const(chunk, Value::String(Arc::from(",")), line);
+    chunk.emit_call(split_idx, 2, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, group_names_key, line);
+}
+
+/// `n = array.length; i = 0` — the counted-loop preamble.
+fn emit_count_into(chunk: &mut Chunk, array_slot: u16, n_slot: u16, i_slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, array_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, n_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
+}
+
+/// Leaves `i < n` on the stack for [`loops::emit_loop_cond`], which applies the
+/// ToBoolean/negate itself — so this must NOT pre-negate.
+fn emit_index_below_count(chunk: &mut Chunk, i_slot: u16, n_slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, n_slot, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+}
+
+/// Leaves `out & ","` on the stack, ready for the piece being appended.
+fn emit_append_comma(chunk: &mut Chunk, out_slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, out_slot, line);
+    push_const(chunk, Value::String(Arc::from(",")), line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+}
+
+fn emit_increment(chunk: &mut Chunk, slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
+}
+
 pub fn emit_regex_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     let pattern_key = chunk.add_constant(Value::String(Arc::from(PATTERN_KEY)));
@@ -388,6 +529,12 @@ pub fn emit_regex_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
                 chunk.emit_bool_const(true, line);
                 chunk.emit_struct_field_op(Op::STRUCT_SET, 0, timeout_key, line);
             }
+            // The object is still the only thing on the stack here; park it in a
+            // slot so the group-name scan can write to it, then hand it back.
+            let obj_slot = reserve_slot(chunk);
+            chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+            emit_store_group_names(chunks, current, obj_slot, pattern_slot, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
         }
     }
 }
@@ -713,17 +860,61 @@ pub fn emit_regex_group_name_from_number(chunks: &mut [Chunk], current: usize, l
     chunk.emit_op(Op::ARRAY_GET, line);
 }
 
+/// `regex.GroupNumberFromName(name)` — the number of a named group, or -1.
+///
+/// ⛔ This used to read a `__group_numbers` key which, like `__group_names`
+/// before it, **nothing ever wrote** — a second dead key on the same object, so
+/// the call answered `undefined` for every name.
+///
+/// No separate map is needed: `__group_names` is already built in .NET's own
+/// order — `0`, then the unnamed groups by number, then the named ones — so a
+/// name's INDEX in that array IS its group number. One array, one writer, and
+/// `GroupNameFromNumber` is its exact inverse by construction.
 pub fn emit_regex_group_number_from_name(chunks: &mut [Chunk], current: usize, line: u32) {
-    let object_get = chunks[current].add_import("ecma:object", "get");
     let chunk = &mut chunks[current];
     let name_slot = reserve_slot(chunk);
     let self_slot = reserve_slot(chunk);
-    let group_numbers_key = chunk.add_constant(Value::String(Arc::from(GROUP_NUMBERS_KEY)));
+    let names_slot = reserve_slot(chunk);
+    let i_slot = reserve_slot(chunk);
+    let n_slot = reserve_slot(chunk);
+    let res_slot = reserve_slot(chunk);
+    let group_names_key = chunk.add_constant(Value::String(Arc::from(GROUP_NAMES_KEY)));
 
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, self_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, self_slot, line);
-    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, group_numbers_key, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line);
-    chunk.emit_call(object_get, 2, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, group_names_key, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, names_slot, line);
+
+    push_const(chunk, Value::F64(-1.0), line);
+    chunk.emit_op_u16(Op::LOCAL_SET, res_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, names_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, n_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
+
+    // Scans the whole array rather than breaking on the first hit: group names
+    // are unique, so the answer is the same, and it keeps every branch inside
+    // the `if` — nothing has to `br` out through two levels to get wrong.
+    let state = loops::emit_loop_start(chunks, current, line);
+    emit_index_below_count(&mut chunks[current], i_slot, n_slot, line);
+    loops::emit_loop_cond(chunks, current, line);
+    {
+        let chunk = &mut chunks[current];
+        chunk.emit_op_u16(Op::LOCAL_GET, names_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_if(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, res_slot, line);
+        chunk.emit_end(line);
+        emit_increment(chunk, i_slot, line);
+    }
+    loops::emit_loop_end(chunks, current, state, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, res_slot, line);
 }

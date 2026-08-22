@@ -298,7 +298,11 @@ pub fn emit_sb_append_line(chunks: &mut [Chunk], current: usize, argc: u8, line:
     let s_slot = reserve_slot(chunk);
     let sb_slot = reserve_slot(chunk);
 
-    if argc > 0 {
+    // `argc` COUNTS THE RECEIVER — the sibling `emit_sb_append_format` documents
+    // the same entry stack as `[sb, fmt, arg0, ...]`. Bare `sb.AppendLine()`
+    // arrives as `argc == 1`, so `argc > 0` consumed the StringBuilder itself as
+    // the text to append and then took the object from below it on the stack.
+    if argc > 1 {
         chunk.emit_op_u16(Op::LOCAL_SET, s_slot, line);
     } else {
         push_const(chunk, Value::String(Arc::from("")), line);

@@ -44,6 +44,7 @@ pub mod thread_adapter;
 pub mod timespan_adapter;
 pub mod types;
 pub mod uri_adapter;
+pub mod vb_dateandtime_adapter;
 pub mod version_adapter;
 pub mod visualbasic_adapter;
 pub mod xml_linq_adapter;

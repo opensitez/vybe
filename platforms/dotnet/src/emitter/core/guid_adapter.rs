@@ -286,13 +286,19 @@ pub fn emit_guid_to_string(chunks: &mut Vec<Chunk>, current: usize, argc: u8, li
     let obj_slot = reserve_slot(chunk);
     let fmt_slot = reserve_slot(chunk);
     let value_key = chunk.add_constant(Value::String(Arc::from(VALUE_KEY)));
-    if argc > 0 {
+    // `argc` COUNTS THE RECEIVER — `Guid.ToString` is declared only as an
+    // INSTANCE method, and `InstanceMethodTarget::Common` calls with
+    // `arg_exprs.len() + 1`. Bare `g.ToString()` therefore arrives as `1`, so
+    // `argc > 0` took the receiver itself for the format string and then read
+    // the object off whatever sat below it.
+    let has_format = argc > 1;
+    if has_format {
         chunk.emit_op_u16(Op::LOCAL_SET, fmt_slot, line);
     }
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunk.emit_struct_field_op(Op::STRUCT_GET, 0, value_key, line);
-    if argc > 0 {
+    if has_format {
         let value_slot = reserve_slot(chunk);
         chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);

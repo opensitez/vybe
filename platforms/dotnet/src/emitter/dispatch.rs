@@ -1524,6 +1524,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.datetime_compare" => {
             crate::emitter::core::datetime_adapter::emit_datetime_compare(chunks, current, line)
         }
+        "dotnet.datetime_compare_static" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_compare_static(
+                chunks, current, line,
+            )
+        }
         "dotnet.datetime_equals_static" | "dotnet.datetime_equals_instance" => {
             crate::emitter::core::datetime_adapter::emit_datetime_equals(chunks, current, line)
         }
@@ -1825,6 +1830,36 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             chunks, current, argc, line,
         ),
 
+        // ── Microsoft.VisualBasic.DateAndTime shared by .NET languages ──────
+        // Not `System.DateTime` API — the VB intrinsics, lowered on top of the
+        // System.DateTime adapter beside them.
+        "dotnet.vb_dateadd" => {
+            crate::emitter::core::vb_dateandtime_adapter::emit_vb_date_add(chunks, current, line)
+        }
+        "dotnet.vb_datediff" => {
+            crate::emitter::core::vb_dateandtime_adapter::emit_vb_date_diff(chunks, current, line)
+        }
+        "dotnet.vb_datepart" => {
+            crate::emitter::core::vb_dateandtime_adapter::emit_vb_date_part(chunks, current, line)
+        }
+        "dotnet.vb_dateserial" => {
+            crate::emitter::core::vb_dateandtime_adapter::emit_vb_date_serial(chunks, current, line)
+        }
+        "dotnet.vb_timeserial" => {
+            crate::emitter::core::vb_dateandtime_adapter::emit_vb_time_serial(chunks, current, line)
+        }
+        "dotnet.vb_weekday" => crate::emitter::core::vb_dateandtime_adapter::emit_vb_weekday(
+            chunks, current, argc, line,
+        ),
+        "dotnet.vb_weekdayname" => {
+            crate::emitter::core::vb_dateandtime_adapter::emit_vb_weekday_name(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.vb_monthname" => crate::emitter::core::vb_dateandtime_adapter::emit_vb_month_name(
+            chunks, current, argc, line,
+        ),
+
         // ── Microsoft.VisualBasic.Financial shared by .NET languages ────────
         "dotnet.vb_pmt" => {
             crate::emitter::core::financial_adapter::emit_vb_pmt(chunks, current, argc, line)
@@ -1964,6 +1999,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::core::filesystem_adapter::emit_file_write_all_lines(
                 chunks, current, line,
             )
+        }
+        "dotnet.get_current_directory" => {
+            crate::emitter::core::filesystem_adapter::emit_current_directory(chunks, current, line)
         }
         // The three text verbs: `filesystem.*` underneath, `System.IO`'s
         // exceptions on top. See `filesystem_adapter`'s failure-model section.

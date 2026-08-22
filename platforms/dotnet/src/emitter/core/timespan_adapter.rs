@@ -164,12 +164,48 @@ pub(crate) fn emit_build_timespan_from_total_ms(chunk: &mut Chunk, line: u32) {
     math::emit_trunc(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, seconds_slot, line);
 
+    // The MILLISECONDS component — what is left after whole seconds. `rem_slot`
+    // is finished with by this point, so it carries the answer rather than
+    // costing a seventh scratch slot.
+    chunk.emit_op_u16(Op::LOCAL_GET, rem_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, seconds_slot, line);
+    push_const(chunk, Value::F64(1000.0), line);
+    chunk.emit_op(Op::F64_MUL, line);
+    chunk.emit_op(Op::F64_SUB, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, rem_slot, line);
+
     let object_new = chunk.add_import("ecma:object", "new");
     chunk.emit_call(object_new, 0, line);
 
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("TimeSpan")), line);
     struct_set_field(chunk, type_key, line);
+
+    // ⛔ The COMPONENT properties — `Days`/`Hours`/`Minutes`/`Seconds`/
+    // `Milliseconds`. Every one of them was already COMPUTED above, into
+    // `days_slot`/`hours_slot`/`minutes_slot`/`seconds_slot`, and then THROWN
+    // AWAY: only the `total*` keys and `ticks` were ever stored, so `ts.Days`
+    // read `undefined` while `ts.TotalHours` answered correctly. The VB walker's
+    // `fold_timespan_member_field` computed these at compile time and hid it.
+    //
+    // Both spellings, like every other field here: the lowercase key is what a
+    // case-insensitive frontend folds to, the PascalCase one is .NET's own.
+    for (slot, lower, pascal) in [
+        (days_slot, "days", "Days"),
+        (hours_slot, "hours", "Hours"),
+        (minutes_slot, "minutes", "Minutes"),
+        (seconds_slot, "seconds", "Seconds"),
+        (rem_slot, "milliseconds", "Milliseconds"),
+    ] {
+        let key = string_key(chunk, lower);
+        core_wasm::dup(chunk, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+        struct_set_field(chunk, key, line);
+
+        core_wasm::dup(chunk, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+        struct_set_named_field(chunk, pascal, line);
+    }
 
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);

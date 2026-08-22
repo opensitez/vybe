@@ -327,7 +327,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::static_method(
                     "Compare",
                     2,
-                    MethodBody::Common("dotnet.datetime_compare".into()),
+                    MethodBody::Common("dotnet.datetime_compare_static".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "SpecifyKind",
